@@ -896,3 +896,192 @@ fn product_node_overflow_is_rejected() {
         "Expected overflow error message, got: {msg}"
     );
 }
+
+// ── reset() ───────────────────────────────────────────────────────────────
+//
+// `StepParameterSpaceIterator::reset()` rewinds the iterator without
+// rebuilding it, preserving any adaptive chunk-size override set via
+// `set_chunks_default_task_count`. The three observable behaviors below
+// each correspond to a distinct branch of the implementation.
+
+/// Build an iterator from a job template (allowing TASK_CHUNKING) so the
+/// reset tests can exercise both random-access and sequential paths.
+fn iterator_from_template(
+    template_json: &str,
+    supported_extensions: &[&str],
+) -> StepParameterSpaceIterator {
+    let v = yaml_val(template_json);
+    let jt = decode_job_template(v, Some(supported_extensions), &CallerLimits::default()).unwrap();
+    let processed = preprocess_job_parameters(
+        &jt,
+        &JobParameterInputValues::new(),
+        &[],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: "/tmp/template",
+            current_working_dir: "/tmp/cwd",
+            allow_template_dir_walk_up: true,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .unwrap();
+    let job = create_job(&jt, &processed, &jt.default_validation_context()).unwrap();
+    let ps = job.steps[0].parameter_space.as_ref().unwrap();
+    StepParameterSpaceIterator::new(ps).unwrap()
+}
+
+/// Stringify a task as `"Name1=value1,Name2=value2"` so two walks of an
+/// iterator can be compared with `assert_eq!`. Sorted by parameter name
+/// for determinism since `TaskParameterSet` is an `IndexMap`.
+fn task_to_str(task: &openjd_model::types::TaskParameterSet) -> String {
+    let mut entries: Vec<(String, String)> = task
+        .iter()
+        .map(|(k, v)| (k.clone(), v.value.to_display_string()))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+        .into_iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn collect_walk(iter: &mut StepParameterSpaceIterator) -> Vec<String> {
+    let mut out = Vec::new();
+    for task in iter.by_ref() {
+        out.push(task_to_str(&task));
+    }
+    out
+}
+
+#[test]
+fn test_reset_non_sequential_iterator() {
+    // Pure product space — no chunking, no contiguous-with-gaps — so the
+    // iterator takes the random-access path (`current_index` cursor).
+    // `reset()` must zero that cursor so a second walk yields the same
+    // sequence as the first.
+    let mut iter = iterator_from_template(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "Job",
+        "steps": [{"name": "step", "script": {"actions": {"onRun": {"command": "echo"}}},
+            "parameterSpace": {
+                "taskParameterDefinitions": [
+                    {"name": "Frame", "type": "INT", "range": [1, 2, 3]},
+                    {"name": "Camera", "type": "STRING", "range": ["main", "side"]}
+                ],
+                "combination": "Frame * Camera"
+            }
+        }]
+    }"#,
+        &[],
+    );
+
+    assert!(!iter.chunks_adaptive());
+    assert_eq!(iter.len(), 6);
+
+    let first_walk = collect_walk(&mut iter);
+    assert_eq!(first_walk.len(), 6);
+    // Confirm we actually drained the iterator.
+    assert!(iter.next().is_none());
+
+    iter.reset();
+
+    let second_walk = collect_walk(&mut iter);
+    assert_eq!(first_walk, second_walk);
+    // And reset is idempotent — calling it on an already-rewound iterator
+    // mid-walk also restarts cleanly.
+    let _ = iter.next();
+    let _ = iter.next();
+    iter.reset();
+    let third_walk = collect_walk(&mut iter);
+    assert_eq!(first_walk, third_walk);
+}
+
+#[test]
+fn test_reset_sequential_iterator_contiguous_chunks() {
+    // CHUNK[INT] with rangeConstraint=CONTIGUOUS forces the sequential
+    // path (`needs_sequential = adaptive || has_contiguous_chunks`).
+    // `reset()` here delegates to the inner `node_iter.reset()`. No
+    // adaptive chunking — `targetRuntimeSeconds` is omitted — so the
+    // chunk size is fixed at `defaultTaskCount = 10` and a re-walk
+    // produces the same chunks deterministically.
+    let mut iter = iterator_from_template(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["TASK_CHUNKING"],
+        "name": "Job",
+        "steps": [{"name": "step", "script": {"actions": {"onRun": {"command": "echo"}}},
+            "parameterSpace": {"taskParameterDefinitions": [
+                {"name": "Frame", "type": "CHUNK[INT]", "range": "1-35",
+                 "chunks": {"defaultTaskCount": 10, "rangeConstraint": "CONTIGUOUS"}}
+            ]}
+        }]
+    }"#,
+        &["TASK_CHUNKING"],
+    );
+
+    assert!(!iter.chunks_adaptive());
+
+    let first_walk = collect_walk(&mut iter);
+    // 35 frames divided into 10-frame chunks, evenly spread:
+    // four chunks of {9, 9, 9, 8} or similar — exact split is implementation-
+    // defined, but the count is what we lock in.
+    assert_eq!(first_walk.len(), 4);
+    assert!(iter.next().is_none());
+
+    iter.reset();
+
+    let second_walk = collect_walk(&mut iter);
+    assert_eq!(first_walk, second_walk);
+}
+
+#[test]
+fn test_reset_preserves_adaptive_chunk_size_override() {
+    // Adaptive iterator: `targetRuntimeSeconds > 0` means the chunk size
+    // is mutable at runtime via `set_chunks_default_task_count`. `reset()`
+    // must not undo that override — long-lived owners (e.g. a binding
+    // wrapper that exposes the iterator across multiple FFI calls) rely
+    // on tuned chunk sizes surviving rewind.
+    let mut iter = iterator_from_template(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["TASK_CHUNKING"],
+        "name": "Job",
+        "steps": [{"name": "step", "script": {"actions": {"onRun": {"command": "echo"}}},
+            "parameterSpace": {"taskParameterDefinitions": [
+                {"name": "Frame", "type": "CHUNK[INT]", "range": "1-35",
+                 "chunks": {"defaultTaskCount": 10, "targetRuntimeSeconds": 20,
+                            "rangeConstraint": "CONTIGUOUS"}}
+            ]}
+        }]
+    }"#,
+        &["TASK_CHUNKING"],
+    );
+
+    assert!(iter.chunks_adaptive());
+    assert_eq!(iter.chunks_default_task_count(), Some(10));
+
+    // Initial walk at chunk size 10: ceil(35/10) = 4 chunks.
+    let walk_at_10 = collect_walk(&mut iter);
+    assert_eq!(walk_at_10.len(), 4);
+
+    // Shrink the chunk size *before* resetting.
+    iter.set_chunks_default_task_count(5);
+    assert_eq!(iter.chunks_default_task_count(), Some(5));
+
+    iter.reset();
+
+    // The override survives reset — reading the property after reset
+    // returns the new value, not the template's original 10.
+    assert_eq!(iter.chunks_default_task_count(), Some(5));
+
+    // And it actually drives chunking on the next walk: ceil(35/5) = 7.
+    let walk_at_5 = collect_walk(&mut iter);
+    assert_eq!(walk_at_5.len(), 7);
+
+    // Walking a third time after another reset still uses chunk size 5.
+    iter.reset();
+    let walk_at_5_again = collect_walk(&mut iter);
+    assert_eq!(walk_at_5, walk_at_5_again);
+}

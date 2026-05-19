@@ -919,6 +919,11 @@ impl StepParameterSpaceIterator {
     pub fn chunks_parameter_name(&self) -> Option<&str>;
     pub fn chunks_default_task_count(&self) -> Option<usize>;
     pub fn set_chunks_default_task_count(&mut self, value: usize);
+
+    /// Rewind the iterator so a fresh `Iterator::next` walk yields the
+    /// same elements again. Preserves the adaptive chunk size set via
+    /// `set_chunks_default_task_count`.
+    pub fn reset(&mut self);
 }
 
 impl Iterator for StepParameterSpaceIterator {
