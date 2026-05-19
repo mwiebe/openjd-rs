@@ -611,9 +611,51 @@ impl ExprValue {
     }
 
     /// Coerce a value to the given type.
+    ///
+    /// Coercion is non-destructive: only conversions that don't lose
+    /// information are attempted (`int → float`, `int → string`, etc).
+    ///
+    /// For union targets, the rules are:
+    ///
+    /// 1. **Match first** — if the value's type is already one of the
+    ///    union members, return it unchanged.
+    /// 2. **Per-member coercion** — otherwise try non-destructive
+    ///    coercion to each scalar member (skipping `nulltype`, `list[T]`,
+    ///    and nested unions). Return the first successful coercion.
+    /// 3. **Error** — if neither step yields a result.
+    ///
+    /// This mirrors the behavior of the pure-Python reference
+    /// implementation's `evaluate.try_coerce_nondestructive` loop and
+    /// satisfies RFC 0005 §"Implicit Type Coercion": `int | string`
+    /// accepts an `int` value as-is rather than rejecting it.
     pub fn coerce(self, target: &ExprType, path_format: PathFormat) -> Result<Self, String> {
+        // Match-first: also accepts the case where the target is a union
+        // and the value's type is one of its members. Falls back to the
+        // existing strict-equality behavior for non-union targets.
         if self.expr_type() == *target {
             return Ok(self);
+        }
+        if target.code() == TypeCode::Union && target.match_type(&self.expr_type()).is_some() {
+            return Ok(self);
+        }
+        // For union targets that don't match by type-membership: try
+        // non-destructive coercion to each scalar member. Skip
+        // `nulltype` (only matches `null`, which would have matched
+        // above), `list[T]` (lists must satisfy by membership, not
+        // coercion — matching the reference), and nested unions.
+        if target.code() == TypeCode::Union {
+            for member in target.params() {
+                if matches!(
+                    member.code(),
+                    TypeCode::NullType | TypeCode::List | TypeCode::Union
+                ) {
+                    continue;
+                }
+                if let Ok(coerced) = self.clone().coerce(member, path_format) {
+                    return Ok(coerced);
+                }
+            }
+            return Err(format!("Cannot coerce {} to {target}", self.expr_type()));
         }
         match (&self, target.code()) {
             (ExprValue::Int(i), TypeCode::Float) => {

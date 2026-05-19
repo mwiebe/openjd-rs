@@ -333,6 +333,29 @@ Applied when the evaluation result needs to match an expected type:
 - RANGE_EXPR → LIST[INT]
 - LIST[T] → LIST[U] (element-wise coercion)
 
+For **union** targets (e.g., `int | string`, `T?` which is sugar for
+`T | nulltype`), `coerce` follows two steps:
+
+1. **Match-first** — if the value's type is already one of the union's
+   members (per [`ExprType::match_type`](type-system.md)), the value is
+   returned unchanged. So a `string` value against `int | string` stays
+   a `string`; a `null` value against `T?` stays a `null`. This matches
+   the pure-Python reference and RFC 0005 §"Implicit Type Coercion"
+   ("non-destructive type coercion is performed where the intent is
+   obvious" — if the value already satisfies the target, no coercion
+   is needed).
+2. **Per-member coercion** — otherwise iterate through the union's
+   members and try each one in turn, skipping `nulltype`, `list[T]`,
+   and nested unions. The first member whose non-destructive coercion
+   succeeds wins. So a `path` value against `string | int` becomes a
+   `string` (`path → string` is in the table above), but `path`
+   against `int | float` errors (no non-destructive `path → int`
+   conversion exists).
+
+Member iteration order is the union's normalized order (alphabetic by
+`TypeCode`), which makes the result deterministic across calls but
+is not guaranteed to follow the order the user wrote the type in.
+
 ### from_str_coerce
 
 `ExprValue::from_str_coerce(s, target_type, path_format)` parses a string into a
