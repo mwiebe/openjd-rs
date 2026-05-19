@@ -19,6 +19,7 @@ impl StepParameterSpaceIterator {
     pub fn chunks_parameter_name(&self) -> Option<&str>
     pub fn chunks_default_task_count(&self) -> Option<usize>
     pub fn set_chunks_default_task_count(&mut self, value: usize)
+    pub fn reset(&mut self)
 }
 
 impl Iterator for StepParameterSpaceIterator {
@@ -34,6 +35,14 @@ product of parameter dimensions overflows `usize`). `get` returns `Option<TaskPa
 `new_with_chunk_override` accepts an optional chunk size that overrides the template's
 `defaultTaskCount` for all chunk nodes. When `Some(n)`, it also suppresses adaptive
 chunking (the parameter is treated as static with chunk size `n`).
+
+`reset` rewinds the iterator so a fresh `Iterator::next` walk yields the same elements
+again, without rebuilding from the parameter space. For non-sequential (random-access)
+iterators it sets the internal `current_index` to 0; for sequential iterators (adaptive
+chunking, contiguous chunks with gaps) it delegates to the inner node iterator's reset.
+The adaptive `Arc<AtomicUsize>` chunk-size override set via
+`set_chunks_default_task_count` is preserved across `reset` calls — `reset` does not
+restore the template's original `defaultTaskCount`.
 
 ## Node Tree Architecture
 

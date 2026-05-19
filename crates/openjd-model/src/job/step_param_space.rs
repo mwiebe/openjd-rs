@@ -163,7 +163,7 @@ trait Node: Send + Sync {
 }
 
 /// Iterator trait for node-level iteration (supports adaptive chunking).
-trait NodeIterator {
+trait NodeIterator: Send + Sync {
     fn next(&mut self, result: &mut TaskParameterSet) -> bool;
     fn reset(&mut self);
 }
@@ -1403,6 +1403,22 @@ impl StepParameterSpaceIterator {
         if let Some(ref a) = self.adaptive_chunk_size {
             a.store(value, Ordering::Relaxed);
             // The Arc<AtomicUsize> propagates to the live iterator — no reset needed.
+        }
+    }
+
+    /// Rewind the iterator to the beginning so a fresh `Iterator::next`
+    /// walk yields the same elements again.
+    ///
+    /// For non-sequential (random-access) iterators this resets the
+    /// internal cursor used by `Iterator::next` to 0. For sequential
+    /// (adaptive or contiguous-with-gaps) iterators it delegates to the
+    /// inner node iterator's `reset()`. The adaptive `Arc<AtomicUsize>`
+    /// chunk size is preserved across resets — `reset()` does not undo
+    /// `set_chunks_default_task_count`.
+    pub fn reset(&mut self) {
+        self.current_index = 0;
+        if let Some(iter) = self.node_iter.as_mut() {
+            iter.reset();
         }
     }
 }
