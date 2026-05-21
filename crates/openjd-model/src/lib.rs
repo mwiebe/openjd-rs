@@ -42,6 +42,7 @@ pub use parse::{
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;
 pub use template::TaskParameterDefinition;
+pub use template::RangeConstraint;
 pub use types::{
     CallerLimits, DataFlow, EndOfLine, Extensions, FileType, JobParameterInputValues,
     JobParameterType, JobParameterValue, JobParameterValues, ModelExtension, ModelProfile,
