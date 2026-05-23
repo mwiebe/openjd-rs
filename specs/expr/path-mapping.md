@@ -36,6 +36,15 @@ pub struct PathMappingRule {
 }
 ```
 
+### Equality
+
+`PathMappingRule` derives `PartialEq`, `Eq`, and `Hash`. Two rules
+compare equal when all three fields match exactly — there is no
+format-aware normalisation at the `PartialEq` layer (e.g.
+`Posix("/a/")` and `Posix("/a")` are not equal even though they would
+match the same paths via `apply()`). The `Hash` impl lets the type
+live in `HashSet`/`HashMap` keys for rule-set deduplication.
+
 ### Application
 
 `rule.apply(path) -> Option<String>` returns `Some(mapped)` if `path` starts with the

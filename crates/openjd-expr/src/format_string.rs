@@ -31,6 +31,16 @@ pub struct FormatString {
     segments: Vec<Segment>,
 }
 
+// `PartialEq` and `Eq` are implemented manually below (near the
+// `Display` impl) and compare on the `raw` source string. This
+// `Hash` impl matches that contract: same `raw` ⇒ same hash, so
+// `FormatString` can live in `HashSet`/`HashMap` keys.
+impl std::hash::Hash for FormatString {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.raw.hash(state);
+    }
+}
+
 /// Maximum permitted input length (in bytes) for [`FormatString::new`].
 ///
 /// Caps the raw source text a format string may carry. Templates this large

@@ -24,6 +24,36 @@ pub struct ParsedExpression {
     pub(crate) local_bindings: HashSet<String>,
 }
 
+/// Two parsed expressions compare equal when their trimmed
+/// `expr` source strings are equal. Parsing is deterministic
+/// (same string + same profile → same AST), so source-string
+/// equality is the right contract here. Comparing on the
+/// underlying `ast::Expr` would force `PartialEq` on
+/// `ruff_python_ast`'s AST types, which is a third-party crate
+/// outside our control. The `expr` field is the trimmed input
+/// (so leading/trailing whitespace differences are absorbed)
+/// but lexical differences within the expression
+/// (e.g. `"a + b"` vs `"a+b"`) are preserved as inequalities.
+///
+/// Note: `ruff_python_ast::Expr` carries `AtomicNodeIndex`
+/// fields (interior mutability) that trip clippy's
+/// `mutable_key_type` lint when `ParsedExpression` is used as
+/// a `HashMap`/`HashSet` key. The atomics are only set during
+/// AST construction and never mutated thereafter — but clippy
+/// cannot prove this, so callers may need to add
+/// `#[allow(clippy::mutable_key_type)]` at the use site.
+impl PartialEq for ParsedExpression {
+    fn eq(&self, other: &Self) -> bool {
+        self.expr == other.expr
+    }
+}
+impl Eq for ParsedExpression {}
+impl std::hash::Hash for ParsedExpression {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.expr.hash(state);
+    }
+}
+
 impl ParsedExpression {
     /// The trimmed expression string.
     pub fn expression(&self) -> &str {

@@ -8,6 +8,17 @@ contain literal text and `{{...}}` expressions that are resolved against a symbo
 Defined in `format_string.rs`. For why this module lives in `openjd-expr` rather than
 `openjd-model`, see [architecture.md](architecture.md) § "Why FormatString Lives Here".
 
+## Equality
+
+`FormatString` implements `PartialEq`, `Eq`, and `Hash`. Comparison is on
+the `raw` source string. Parsing is deterministic, so equal raw inputs
+always produce equal `segments`; comparing on `raw` avoids forcing
+`PartialEq` on the internal `Segment` enum (which carries a
+`ParsedExpression` whose AST type is from a third-party crate without
+`PartialEq`). Lexically distinct sources that would yield the same
+evaluated output (e.g. `"{{ Param.X }}"` vs `"{{Param.X}}"`) compare
+unequal.
+
 ## Parsing
 
 `FormatString::new(input)` scans for `{{...}}` pairs and produces a list of segments:

@@ -94,7 +94,11 @@ impl ExprExtension {
 /// three possible states of host availability in a single type, replacing
 /// the previous split between `FunctionLibrary::with_host_context` and
 /// `FunctionLibrary::with_unresolved_host_context`.
-#[derive(Debug, Clone, Default)]
+///
+/// Two host contexts compare equal when they are the same variant
+/// and (for `WithRules`) carry equivalent rule sets, regardless of
+/// whether they share the same `Arc` allocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum HostContext {
     /// No host-context functions are registered. Default.
     #[default]
@@ -247,7 +251,10 @@ pub(crate) enum SyntaxFeature {
 /// let lib = FunctionLibrary::for_profile(&profile);
 /// assert!(lib.host_context_enabled);
 /// ```
-#[derive(Debug, Clone)]
+///
+/// Two profiles compare equal when they have the same revision,
+/// extension set, and host context.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprProfile {
     revision: ExprRevision,
     extensions: HashSet<ExprExtension>,

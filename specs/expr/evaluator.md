@@ -13,6 +13,12 @@ counters propagated back via `absorb_counters()`.
 
 ## Builder Pattern
 
+`ParsedExpression` itself is `PartialEq + Eq + Hash` — comparison is on
+the trimmed source string, so two `ParsedExpression`s built from the same
+input compare equal even after distinct `with_*` builder chains. See the
+[Public API spec](public-api.md#parsedexpression--parse-once-evaluate-many)
+for the precise contract.
+
 Evaluation is configured through builder methods on `ParsedExpression`:
 
 ```rust

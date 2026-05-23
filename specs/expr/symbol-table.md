@@ -24,6 +24,16 @@ enum SymbolTableEntry {
 A dotted path like `Param.Frame` creates a nested structure: the key `"Param"` maps to
 a child `SymbolTable` containing `"Frame"` → `ExprValue::Int(42)`.
 
+## Equality
+
+`SymbolTable` and `SymbolTableEntry` derive `PartialEq` and `Eq`. Two
+symbol tables compare equal when they contain the same set of dotted-path
+→ value mappings; insertion order in the underlying `HashMap` does not
+affect equality, and equality is recursive through nested
+`Table(SymbolTable)` entries. There is no `Hash` impl — `HashMap` keys
+must themselves be `Hash`, and a hash that walked the entire tree on
+every key access would invite footguns.
+
 ## Construction
 
 ```rust

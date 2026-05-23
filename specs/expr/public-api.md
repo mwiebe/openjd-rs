@@ -71,6 +71,18 @@ for building custom host-side tools.
 
 ### `ParsedExpression` — parse once, evaluate many
 
+`ParsedExpression` implements `PartialEq`, `Eq`, and `Hash` — comparison is
+on the trimmed source string, **not** on the underlying AST. Two parsed
+expressions are equal iff their (trimmed) `expression()` strings are equal.
+Equal source strings always parse to equal ASTs, so equality on the source
+is the right contract; lexical differences (`"a + b"` vs `"a+b"`) are
+preserved as inequalities. Note that `ruff_python_ast::Expr` carries
+`AtomicNodeIndex` fields (interior mutability used during parse), so callers
+using `ParsedExpression` as a `HashMap`/`HashSet` key will see clippy's
+`mutable_key_type` lint and can silence it locally with
+`#[allow(clippy::mutable_key_type)]` — the atomics are not mutated after
+construction, but clippy cannot prove this.
+
 ```rust
 pub struct ParsedExpression { /* private fields */ }
 
@@ -264,7 +276,12 @@ pub enum ExprExtension {}
 
 /// Host-context state available to expression evaluation. Today this gates
 /// `apply_path_mapping`.
-#[derive(Debug, Clone, Default)]
+///
+/// Two host contexts compare equal when they are the same variant and (for
+/// `WithRules`) carry equivalent rule sets — `Arc` is compared by inner
+/// value, not by allocation identity. `Hash` follows the same contract,
+/// so distinct `Arc` allocations of the same rule list hash equal.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub enum HostContext {
     /// No host-context functions registered. Default.
     #[default]
@@ -286,7 +303,13 @@ impl HostContext {
 }
 
 /// A complete expression profile: revision, extensions, host context.
-#[derive(Debug, Clone)]
+///
+/// Two profiles compare equal when they have the same revision, extension
+/// set (`HashSet` equality, insertion order irrelevant), and host context.
+/// `ExprProfile` is intentionally **not** `Hash` — `HashSet` does not
+/// implement `Hash` (set hashing would have to canonicalise insertion
+/// order), and there is no concrete use case for profile-keyed maps.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExprProfile { /* private fields */ }
 
 impl ExprProfile {
@@ -801,11 +824,15 @@ pub fn value::format_float(f: f64) -> String;
 /// and `Env.File.script` as dotted names, reflected 1:1 in this tree.
 /// Subtables can be used to namespace a whole scope (e.g. merging a
 /// `Task` subtable onto an existing table).
-#[derive(Debug, Clone, Default)]
+///
+/// Two symbol tables compare equal when they contain the same set of
+/// dotted-path → value mappings. Insertion order in the underlying
+/// `HashMap` does not affect equality.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SymbolTable { /* private field */ }
 
 /// A leaf value or a nested subtable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SymbolTableEntry {
     Table(SymbolTable),
     Value(ExprValue),
@@ -923,6 +950,13 @@ macro_rules! symtab { /* ... */ }
 /// EXPR-extension field like `"{{Param.Frame * 2 + 1}}"` are both valid
 /// inputs — the EXPR extension widens the `<StringInterpExpr>` grammar
 /// only; the outer `{{...}}` parse is identical.
+///
+/// Implements `PartialEq`, `Eq`, and `Hash`. Comparison is on the `raw`
+/// source string; lexically distinct sources that would yield the same
+/// evaluated output (e.g. `"{{ Param.X }}"` vs `"{{Param.X}}"`) compare
+/// unequal. Same caveat as `ParsedExpression` re: clippy's
+/// `mutable_key_type` lint when used as a `HashMap`/`HashSet` key —
+/// silenceable locally with `#[allow(clippy::mutable_key_type)]`.
 #[derive(Debug, Clone)]
 pub struct FormatString { /* private fields */ }
 ```
@@ -1181,7 +1215,13 @@ impl PathFormat {
 
 ```rust
 /// A path mapping rule. Field names match the spec's JSON form.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// A path mapping rule. Field names match the spec's JSON form.
+///
+/// `PathMappingRule` is `PartialEq + Eq + Hash`. Two rules compare
+/// equal when all three fields (`source_path_format`, `source_path`,
+/// `destination_path`) are equal — `Hash` lets the type live in
+/// `HashSet`/`HashMap` keys for rule-set deduplication.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathMappingRule {
     pub source_path_format: PathFormat,

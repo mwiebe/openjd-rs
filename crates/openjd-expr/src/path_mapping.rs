@@ -34,7 +34,7 @@ impl PathFormat {
 ///
 /// Serializes to/from the JSON format specified in the OpenJD spec:
 /// <https://github.com/OpenJobDescription/openjd-specifications/wiki/How-Jobs-Are-Run#path-mapping>
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathMappingRule {
     pub source_path_format: PathFormat,

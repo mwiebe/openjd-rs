@@ -89,7 +89,7 @@ impl From<SymbolTableError> for crate::error::ExpressionError {
 }
 
 /// Entry in a symbol table: either a nested table or a value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SymbolTableEntry {
     Table(SymbolTable),
     Value(ExprValue),
@@ -99,7 +99,11 @@ pub enum SymbolTableEntry {
 ///
 /// Supports dotted paths: `table.set("Param.Frame", 42)`
 /// creates a nested structure `Param -> Frame -> 42`.
-#[derive(Debug, Clone, Default)]
+///
+/// Two symbol tables compare equal when they contain the same set
+/// of dotted-path → value mappings (entry order in the underlying
+/// `HashMap` does not affect equality).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SymbolTable {
     pub(crate) table: HashMap<String, SymbolTableEntry>,
 }

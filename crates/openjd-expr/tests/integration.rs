@@ -17,6 +17,8 @@ mod test_ast_validation;
 mod test_comparison;
 #[path = "integration/test_error_formatting.rs"]
 mod test_error_formatting;
+#[path = "integration/test_equality.rs"]
+mod test_equality;
 #[path = "integration/test_evaluation.rs"]
 mod test_evaluation;
 #[path = "integration/test_expr_value.rs"]
