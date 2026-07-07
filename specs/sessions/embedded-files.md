@@ -100,10 +100,27 @@ must be a single safe path component:
 | contains `/` or `\` | path separators |
 | contains `\0` | null byte |
 | exactly `.` or `..` | current/parent dir component |
+| not a single "normal" path component (e.g. `D:relative`, `C:`) | platform prefix/root |
 
 Rejection surfaces as `SessionError::EmbeddedFilePath { name, filename, reason }`.
 Backslash is rejected on all platforms — embedded file filenames are single
 path components by spec, so `\` has no legitimate use even on POSIX.
+
+The last rule uses `std::path::Path::components`, which parses for the host
+platform. It catches strings that contain no `/` or `\` yet are not plain
+basenames — most importantly Windows drive-relative anchors such as
+`D:relative` or a bare `C:`. `Path::join` treats these as a drive prefix and
+would otherwise write outside the target directory. On POSIX the same strings
+are ordinary filenames and are accepted.
+
+After the filename is joined to the target directory, the sessions layer makes
+a final containment check: the resulting path is lexically normalized (`.`/`..`
+collapsed, no filesystem access or symlink resolution) and must still lie
+within the session files directory, otherwise the same
+`SessionError::EmbeddedFilePath` is raised with reason "resolves to a path
+outside the session files directory". This backs up the per-component
+validation so a bug there cannot lead to a write outside the session
+directory.
 
 This check is not required for correctness when the model layer is
 functioning. It provides protection against:
