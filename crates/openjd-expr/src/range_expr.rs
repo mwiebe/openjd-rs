@@ -117,30 +117,44 @@ impl IntRange {
             ));
         }
         if step < 0 {
-            // Normalize descending to ascending form (matching Python _IntRange)
-            let count = ((start - end) / (-step)) + 1;
-            let last = start + (count - 1) * step; // smallest value
+            // Normalize descending to ascending form (matching Python _IntRange).
+            //
+            // Arithmetic is done in i128: the span `start - end` of two
+            // i64 values can be up to 2^64 - 1, which overflows i64 for
+            // extreme ranges like `-9223372036854775807-9223372036854775807`
+            // (Python handles these with bignums, so parsing must succeed).
+            let count = ((start as i128 - end as i128) / (-(step as i128))) + 1;
+            let last = start as i128 + (count - 1) * step as i128; // smallest value
             Ok(Self {
-                start: last,
+                // `last` lies between `end` and `start`, so it fits in i64.
+                start: last as i64,
                 end: start,
                 step: -step,
             })
         } else {
-            // Normalize end to actual last value in the range
-            let count = (end - start) / step + 1;
-            let actual_end = start + (count - 1) * step;
+            // Normalize end to actual last value in the range (i128 for the
+            // same overflow reason as above).
+            let count = (end as i128 - start as i128) / step as i128 + 1;
+            let actual_end = start as i128 + (count - 1) * step as i128;
             Ok(Self {
                 start,
-                end: actual_end,
+                // `actual_end` lies between `start` and `end`, so it fits in i64.
+                end: actual_end as i64,
                 step,
             })
         }
     }
 
     /// Number of integers in this range.
+    ///
+    /// Computed in i128 because the span `end - start` can exceed
+    /// `i64::MAX`. Saturates at `usize::MAX` for the single pathological
+    /// range covering the full i64 domain (count 2^64), which cannot be
+    /// materialized within evaluator limits anyway.
     pub fn len(&self) -> usize {
         // After normalization, start <= end and step > 0 always
-        ((self.end - self.start) / self.step + 1) as usize
+        let count = (self.end as i128 - self.start as i128) / self.step as i128 + 1;
+        usize::try_from(count).unwrap_or(usize::MAX)
     }
 
     /// Returns `true` if the range contains no elements.
@@ -153,18 +167,22 @@ impl IntRange {
         if value < self.start || value > self.end {
             return false;
         }
-        (value - self.start) % self.step == 0
+        // i128: `value - start` can exceed i64::MAX for extreme ranges.
+        (value as i128 - self.start as i128) % self.step as i128 == 0
     }
 
     /// Iterate over all values in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = i64> + '_ {
-        (0..self.len() as i64).map(move |i| self.start + i * self.step)
+        // step_by on an inclusive range handles the full i64 domain
+        // without the index arithmetic overflowing.
+        (self.start..=self.end).step_by(self.step as usize)
     }
 
     /// Get element by zero-based index, or `None` if out of bounds.
     pub fn get(&self, index: usize) -> Option<i64> {
         if index < self.len() {
-            Some(self.start + index as i64 * self.step)
+            // i128: `index * step` can exceed i64::MAX for extreme ranges.
+            Some((self.start as i128 + index as i128 * self.step as i128) as i64)
         } else {
             None
         }
@@ -345,14 +363,18 @@ impl RangeExpr {
         }
         // Use saturating arithmetic when summing per-chunk lengths so that a
         // multi-chunk range whose combined logical length exceeds `usize`
-        // capacity saturates at `usize::MAX` rather than wrapping to a small
-        // value that would corrupt `len()`/`is_empty()`. `RangeExpr` stores
-        // chunks symbolically, so an enormous logical length is not itself a
-        // DoS vector — only the chunk count is capped via
+        // capacity saturates rather than wrapping to a small value that
+        // would corrupt `len()`/`is_empty()`. The cap is `LENGTH_MASK`
+        // (2^63 - 1), not `usize::MAX`, because the MSB of the packed
+        // `length` field is the contiguous-display flag — saturating into
+        // it would silently flip Display formatting. `RangeExpr` stores
+        // chunks symbolically, so an enormous logical length is not itself
+        // a DoS vector — only the chunk count is capped via
         // [`MAX_RANGE_EXPR_CHUNKS`].
         let length: usize = merged
             .iter()
-            .fold(0usize, |acc, r| acc.saturating_add(r.len()));
+            .fold(0usize, |acc, r| acc.saturating_add(r.len()))
+            .min(LENGTH_MASK);
         let cumulative_lengths = build_cumulative(&merged);
         Ok(Self {
             ranges: merged,
@@ -512,7 +534,12 @@ impl RangeExpr {
                 length: 0,
             });
         }
-        let length = result_ranges.iter().map(|r| r.len()).sum();
+        // Saturating sum capped at LENGTH_MASK — same rationale as
+        // `from_ranges` (the MSB of `length` is the display flag).
+        let length = result_ranges
+            .iter()
+            .fold(0usize, |acc, r| acc.saturating_add(r.len()))
+            .min(LENGTH_MASK);
         let cumulative_lengths = build_cumulative(&result_ranges);
         Ok(RangeExpr {
             ranges: result_ranges,
@@ -531,9 +558,14 @@ impl RangeExpr {
 
 fn build_cumulative(ranges: &[IntRange]) -> Vec<usize> {
     let mut cum = Vec::with_capacity(ranges.len());
-    let mut total = 0;
+    let mut total: usize = 0;
     for r in ranges {
-        total += r.len();
+        // Saturating: two extreme chunks can sum past usize::MAX
+        // (e.g. "-9223372036854775807--1,1-9223372036854775807").
+        // Saturated cumulative entries only affect indices beyond
+        // LENGTH_MASK, which `get` can never receive because `len()`
+        // is capped there too.
+        total = total.saturating_add(r.len());
         cum.push(total);
     }
     cum

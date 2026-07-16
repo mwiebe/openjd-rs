@@ -203,8 +203,11 @@ pub fn split_fn(ctx: Ctx, a: &[ExprValue]) -> R {
         return Err(ExpressionError::new("split failed: empty separator"));
     }
     ctx.count_string_ops(s.len())?;
+    // Python semantics: a negative maxsplit means "no limit", so map
+    // it to the unlimited branch. (`*n as usize` on a negative value
+    // would wrap huge, and `n + 1` below would overflow.)
     let maxsplit = a.get(2).and_then(|v| match v {
-        ExprValue::Int(n) => Some(*n as usize),
+        ExprValue::Int(n) if *n >= 0 => Some(*n as usize),
         _ => None,
     });
     let parts: Vec<ExprValue> = match maxsplit {
@@ -235,8 +238,10 @@ pub fn rsplit_fn(ctx: Ctx, a: &[ExprValue]) -> R {
         return Err(ExpressionError::new("split failed: empty separator"));
     }
     ctx.count_string_ops(s.len())?;
+    // Python semantics: a negative maxsplit means "no limit" (see
+    // split_fn above for the wrap/overflow hazard).
     let maxsplit = a.get(2).and_then(|v| match v {
-        ExprValue::Int(n) => Some(*n as usize),
+        ExprValue::Int(n) if *n >= 0 => Some(*n as usize),
         _ => None,
     });
     let parts: Vec<ExprValue> = match maxsplit {
@@ -342,12 +347,22 @@ pub fn capitalize_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     Ok(ExprValue::String(result))
 }
 
+/// Extract a padding width argument, clamping negatives to zero.
+///
+/// Python semantics: `'a'.center(-1) == 'a'` — a width smaller than the
+/// string length (including any negative width) leaves the string
+/// unchanged. Clamping to 0 realizes that while avoiding the huge-wrap
+/// hazard of `*w as usize` on a negative value.
+fn get_pad_width(v: &ExprValue, name: &str) -> Result<usize, ExpressionError> {
+    match v {
+        ExprValue::Int(w) => Ok((*w).max(0) as usize),
+        _ => Err(ExpressionError::new(format!("{name}() width must be int"))),
+    }
+}
+
 pub fn center_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
-        _ => return Err(ExpressionError::new("center() width must be int")),
-    };
+    let width = get_pad_width(&a[1], "center")?;
     ctx.count_string_ops(width.max(s.len()))?;
     let clen = s.chars().count();
     if clen >= width {
@@ -366,20 +381,14 @@ pub fn center_fn(ctx: Ctx, a: &[ExprValue]) -> R {
 
 pub fn ljust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
-        _ => return Err(ExpressionError::new("ljust() width must be int")),
-    };
+    let width = get_pad_width(&a[1], "ljust")?;
     ctx.count_string_ops(width.max(s.len()))?;
     Ok(ExprValue::String(format!("{:<width$}", s, width = width)))
 }
 
 pub fn rjust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
-        _ => return Err(ExpressionError::new("rjust() width must be int")),
-    };
+    let width = get_pad_width(&a[1], "rjust")?;
     ctx.count_string_ops(width.max(s.len()))?;
     Ok(ExprValue::String(format!("{:>width$}", s, width = width)))
 }

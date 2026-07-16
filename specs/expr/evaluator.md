@@ -100,6 +100,19 @@ Every function call increments the operation counter:
 The proportional costs prevent DoS via large strings or lists — a million-element list
 comprehension costs 1M operations even if each iteration is trivial.
 
+A call's own operation is charged *after* its arguments are evaluated,
+immediately before dispatch — matching the Python reference's
+`_call_function`. This affects which node a limit error is attributed
+to: in `any([False] * 1000)` with a limit of 100, the multiplication's
+batch charge (1001 total) trips the limit and the error points at the
+`*` expression, not the enclosing `any()` call.
+
+Functions that produce output proportional to an argument value batch
+their charges up front with `count_ops(n)`/`count_string_ops(len)`
+using *checked* size arithmetic, so the limit trips before any
+allocation and oversized repeat counts (e.g. `'abcd' * 2^62`) surface
+as integer-overflow errors rather than wrapped-length budget bypasses.
+
 ### Depth Limit
 
 In addition to memory and operation counters, the evaluator carries a

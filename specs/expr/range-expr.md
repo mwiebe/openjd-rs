@@ -49,6 +49,18 @@ specified. Descending ranges like `"10-1:-1"` are normalized to ascending form d
 `IntRange::new`: the original direction is not retained. Iteration, indexing, and
 `Display` all operate on the canonical ascending form.
 
+Span arithmetic inside `IntRange` (`new`, `len`, `contains`, `get`) is
+performed in i128: the span of two i64 endpoints can reach 2^64 − 1,
+which overflows i64 for extreme inputs like
+`"-9223372036854775807-9223372036854775807"` (which the Python
+reference accepts via bignums, so parsing must succeed here too).
+`IntRange::len` saturates at `usize::MAX`; `RangeExpr::len` saturates
+at 2^63 − 1 because the packed `length` field reserves its most
+significant bit as the contiguous-display flag. Values at these
+magnitudes are far beyond what the evaluator's operation limit permits
+materializing, so the saturation is observable only through the
+symbolic accessors.
+
 This is a deliberate simplification over the Python reference implementation, which
 preserves the user-supplied direction. The Rust crate chose canonical form because
 (a) every consumer of `RangeExpr` in openjd-rs treats a range as an unordered

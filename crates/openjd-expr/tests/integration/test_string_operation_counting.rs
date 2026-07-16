@@ -414,6 +414,11 @@ fn limit_large_string_repetition_exceeds() {
 }
 #[test]
 fn limit_chained_string_ops_accumulate() {
+    // Python cost model: 'a' * 1000 charges 1 (dispatch) + 4 (string
+    // ops) = 5, within the limit. The .upper() call's own operation
+    // (charged after argument evaluation, matching the Python
+    // reference) is #6 and trips the limit, so the error points at
+    // the .upper() call.
     assert_op_limit_err(
         "('a' * 1000).upper().lower().strip()",
         100_000_000,
@@ -421,12 +426,14 @@ fn limit_chained_string_ops_accumulate() {
         &[
             "Operation limit exceeded\n",
             "  ('a' * 1000).upper().lower().strip()\n",
-            "   ~~~~^~~~~~",
+            "  ~~~~~~~~~~~~^~~~~~~~",
         ],
     );
 }
 #[test]
 fn limit_large_path_operation_exceeds() {
+    // Same model as above: 'a' * 1000 = 5 ops, then the path() call's
+    // own operation is #6 and trips the limit at the path() call.
     assert_op_limit_err(
         "path('a' * 1000).name",
         100_000_000,
@@ -434,7 +441,7 @@ fn limit_large_path_operation_exceeds() {
         &[
             "Operation limit exceeded\n",
             "  path('a' * 1000).name\n",
-            "       ~~~~^~~~~~",
+            "  ^~~~~~~~~~~~~~~~",
         ],
     );
 }

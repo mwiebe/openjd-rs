@@ -225,11 +225,14 @@ fn list_concat_iterations_count() {
 
 #[test]
 fn list_multiply_iterations_count() {
+    // Matches the Python reference exactly: _mul_list batch-charges all
+    // 3000 result elements after the dispatch op (test_operation_limit.py
+    // expects 3001).
     let e = eval_op("[1, 2, 3] * 1000", 100).unwrap_err().to_string();
     assert!(
         e.contains(
             &[
-                "Expression operation count (101) exceeded limit (100)\n",
+                "Expression operation count (3001) exceeded limit (100)\n",
                 "  [1, 2, 3] * 1000\n",
                 "  ~~~~~~~~~~^~~~~~"
             ]
@@ -245,7 +248,7 @@ fn any_iterations_count() {
     assert!(
         e.contains(
             &[
-                "Expression operation count (101) exceeded limit (100)\n",
+                "Expression operation count (1001) exceeded limit (100)\n",
                 "  any([False] * 1000)\n",
                 "      ~~~~~~~~^~~~~~"
             ]
@@ -261,7 +264,7 @@ fn all_iterations_count() {
     assert!(
         e.contains(
             &[
-                "Expression operation count (101) exceeded limit (100)\n",
+                "Expression operation count (1001) exceeded limit (100)\n",
                 "  all([True] * 1000)\n",
                 "      ~~~~~~~^~~~~~"
             ]
@@ -279,7 +282,7 @@ fn flatten_iterations_count() {
     assert!(
         e.contains(
             &[
-                "Expression operation count (101) exceeded limit (100)\n",
+                "Expression operation count (1001) exceeded limit (100)\n",
                 "  flatten([[1,2],[3,4]] * 500)\n",
                 "          ~~~~~~~~~~~~~~^~~~~"
             ]

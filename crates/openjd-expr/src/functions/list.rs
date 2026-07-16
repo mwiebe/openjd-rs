@@ -114,17 +114,27 @@ pub fn range_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     }
     let mut elements = Vec::new();
     let mut v = start;
+    // checked_add: the increment past the final element can overflow
+    // i64 when `stop` is near the domain edge (e.g.
+    // range(i64::MAX - 1, i64::MAX, 2)). Overflow means we've walked
+    // off the end of the domain, so the range is complete.
     if step > 0 {
         while v < stop {
             elements.push(ExprValue::Int(v));
-            v += step;
             ctx.count_op()?;
+            match v.checked_add(step) {
+                Some(next) => v = next,
+                None => break,
+            }
         }
     } else {
         while v > stop {
             elements.push(ExprValue::Int(v));
-            v += step;
             ctx.count_op()?;
+            match v.checked_add(step) {
+                Some(next) => v = next,
+                None => break,
+            }
         }
     }
     ExprValue::make_list_checked(ctx, elements, ExprType::INT)

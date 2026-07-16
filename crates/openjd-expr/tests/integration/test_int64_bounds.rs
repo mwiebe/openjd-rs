@@ -282,3 +282,57 @@ fn int_from_float_boundary_overflow() {
     // i64::MAX as f64 rounds up to 9223372036854775808.0 which exceeds i64::MAX
     assert_err("int(9223372036854775808.0)", &["Integer overflow"]);
 }
+
+// === Regression tests: checked arithmetic at i64 extremes (quality report §7 X3, X4, X5) ===
+
+#[test]
+fn range_near_i64_max_no_overflow() {
+    // The step increment past the final element previously overflowed
+    // (debug panic). Overflow past the end means the range is complete.
+    assert_eq!(
+        eval("range(9223372036854775806, 9223372036854775807, 2)").to_display_string(),
+        "[9223372036854775806]"
+    );
+}
+#[test]
+fn range_near_i64_min_no_overflow() {
+    assert_eq!(
+        eval("range(-9223372036854775807, -9223372036854775808, -2)").to_display_string(),
+        "[-9223372036854775807]"
+    );
+}
+#[test]
+fn sum_range_expr_overflow_error() {
+    // The range sum previously used an unchecked iterator sum
+    // (debug panic / silent wrap in release).
+    assert_err(
+        "sum(range_expr('9223372036854775000-9223372036854775806:2'))",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  sum(range_expr('9223372036854775000-9223372036854775806:2'))\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
+}
+#[test]
+fn round_float_i64_min_ndigits() {
+    // Negating i64::MIN previously panicked in debug builds. Rounding
+    // any float at 10^|huge| precision is 0.
+    assert_eq!(
+        eval("round(1.5, -9223372036854775808)").to_display_string(),
+        "0.0"
+    );
+}
+#[test]
+fn round_int_i64_min_ndigits() {
+    assert_eq!(
+        eval("round(15, -9223372036854775808)").to_display_string(),
+        "0"
+    );
+}
+#[test]
+fn round_float_huge_positive_ndigits_hits_limit() {
+    // The formatted output grows with ndigits; a huge precision must
+    // trip the operation budget instead of allocating to match.
+    assert!(eval_fails("round(1.5, 9223372036854775807)"));
+}

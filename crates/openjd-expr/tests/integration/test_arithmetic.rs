@@ -905,3 +905,47 @@ fn sum_int_list_overflow() {
 fn floordiv_float_large_result_overflow() {
     assert_err("1e300 // 1.0", &["Integer overflow"]);
 }
+
+// === Regression tests: repeat-count overflow (quality report §7 X2) ===
+// `len * n` previously used unchecked multiplication: debug builds
+// panicked, and in release a wrapped-to-small result defeated the
+// operation and memory budgets.
+
+#[test]
+fn mul_string_huge_count_overflow_error() {
+    // 4 bytes * 2^62 == 2^64 wraps to 0 with unchecked math.
+    assert_err(
+        "'abcd' * 4611686018427387904",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  'abcd' * 4611686018427387904\n",
+            "  ~~~~~~~^~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
+}
+#[test]
+fn mul_string_large_count_hits_limits() {
+    // Non-wrapping but huge: must produce a clean budget error.
+    assert!(ParsedExpression::new("'abcd' * 1000000000000")
+        .and_then(|p| p.evaluate(&SymbolTable::new()))
+        .is_err());
+}
+#[test]
+fn mul_list_huge_count_overflow_error() {
+    // 4 elements * 2^62 == 2^64 wraps to 0 with unchecked math,
+    // which previously skipped op counting entirely.
+    assert_err(
+        "[1, 2, 3, 4] * 4611686018427387904",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  [1, 2, 3, 4] * 4611686018427387904\n",
+            "  ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
+}
+#[test]
+fn mul_empty_list_huge_count_no_hang() {
+    // Previously looped 2^62 times building nothing, uncounted.
+    // With up-front batch counting the result is an empty list.
+    assert_eq!(eval("[] * 4611686018427387904").to_display_string(), "[]");
+}

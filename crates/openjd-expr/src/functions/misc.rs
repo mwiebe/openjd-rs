@@ -31,13 +31,23 @@ pub fn zfill_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     };
     ctx.count_string_ops(s.len())?;
     let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
+        // Python semantics: a width smaller than the string length
+        // (including any negative width) returns the string unchanged.
+        // Clamp negatives to 0 — `*w as usize` on a negative value
+        // wraps to a huge width, and the `"0".repeat(zeros)` below
+        // would abort the process attempting the allocation.
+        ExprValue::Int(w) => (*w).max(0) as usize,
         _ => return Err(ExpressionError::new("zfill() width must be int")),
     };
     let clen = s.chars().count();
     let result = if clen >= width {
         s
     } else {
+        // The output is `width` characters; check the memory budget
+        // before allocating (matches the Python reference's
+        // `_check_string_result_size`, which is a memory-only check —
+        // no additional operation charge).
+        ctx.check_memory(width)?;
         let (sign, num) = if s.starts_with('-') || s.starts_with('+') {
             (&s[..1], &s[1..])
         } else {

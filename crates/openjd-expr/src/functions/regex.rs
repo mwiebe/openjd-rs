@@ -353,20 +353,28 @@ pub fn re_split_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let (s, pat) = get_two_strings(a, "re_split")?;
     ctx.count_string_ops(s.len())?;
     validate_regex_pattern(&pat)?;
+    // Python `re.split` maxsplit semantics (which differ from
+    // `str.split`): 0 means "no limit", negative means "no splits at
+    // all". Handling the negative case explicitly also avoids the
+    // huge-wrap of `*n as usize` and the `n + 1` overflow below.
     let maxsplit = a.get(2).and_then(|v| match v {
-        ExprValue::Int(n) => Some(*n as usize),
+        ExprValue::Int(n) => Some(*n),
         _ => None,
     });
     let re = ctx.get_or_compile_regex(&pat)?;
     let parts: Vec<ExprValue> = match maxsplit {
-        Some(n) => re
-            .splitn(&s, n + 1)
+        Some(n) if n < 0 => vec![ExprValue::String(s.to_string())],
+        Some(n) if n > 0 => re
+            .splitn(&s, n as usize + 1)
             .map(|p| ExprValue::String(p.to_string()))
             .collect(),
-        None => re
+        // No maxsplit argument, or maxsplit == 0: unlimited.
+        _ => re
             .split(&s)
             .map(|p| ExprValue::String(p.to_string()))
             .collect(),
     };
-    ExprValue::make_list(parts, ExprType::STRING)
+    // make_list_checked: charge the allocation like the sibling regex
+    // functions do (this was the only one using unchecked make_list).
+    ExprValue::make_list_checked(ctx, parts, ExprType::STRING)
 }

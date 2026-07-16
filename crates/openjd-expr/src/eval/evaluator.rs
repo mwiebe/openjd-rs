@@ -891,7 +891,6 @@ impl<'a> Evaluator<'a> {
     }
 
     fn eval_call(&mut self, c: &ast::ExprCall) -> Result<ExprValue, ExpressionError> {
-        self.count_op()?;
         // Reject keyword args and **kwargs
         if !c.arguments.keywords.is_empty() {
             return Err(ExpressionError::unsupported(
@@ -944,6 +943,13 @@ impl<'a> Evaluator<'a> {
                     name
                 )));
             }
+            // Count every function call as 1 operation — *after* the
+            // arguments are evaluated, matching the Python reference
+            // (`_call_function`). Charging before args would inflate the
+            // reported count by 1 when an argument expression trips the
+            // limit (e.g. `any([False] * 1000)` must report 1001, not
+            // 1002, at a limit of 100).
+            self.count_op()?;
             {
                 let lib = self.library;
                 let result = if is_method_call {

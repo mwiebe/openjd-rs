@@ -7,7 +7,7 @@
 use crate::error::ExpressionError;
 use crate::function_library::EvalContext;
 use crate::types::ExprType;
-use crate::value::{ExprValue, Float64};
+use crate::value::{float_fits_i64, ExprValue, Float64};
 
 type R = Result<ExprValue, ExpressionError>;
 type Ctx<'a> = &'a mut dyn EvalContext;
@@ -186,7 +186,11 @@ pub fn floordiv_float(_: Ctx, a: &[ExprValue]) -> R {
         return Err(ExpressionError::division_by_zero("Division"));
     }
     let v = (l / r).floor();
-    if v.abs() > i64::MAX as f64 {
+    // Exact range check: valid i64 doubles are in [-2^63, 2^63).
+    // (`> i64::MAX as f64` is wrong because i64::MAX rounds up to 2^63
+    // in f64, letting 2^63 through to a silently saturating cast; an
+    // `abs()` check is wrong because -2^63 == i64::MIN is valid.)
+    if !float_fits_i64(v) {
         return Err(ExpressionError::integer_overflow());
     }
     Ok(ExprValue::Int(v as i64))
@@ -270,7 +274,13 @@ pub fn mul_string(ctx: Ctx, a: &[ExprValue]) -> R {
             if *n < 0 {
                 return Ok(ExprValue::String(String::new()));
             }
-            let result_len = s.len() * (*n as usize);
+            // Checked multiply: `len * n` can overflow usize for huge
+            // repeat counts, and a wrapped-to-small result would defeat
+            // both the operation and memory budgeting below.
+            let result_len = s
+                .len()
+                .checked_mul(*n as usize)
+                .ok_or_else(ExpressionError::integer_overflow)?;
             ctx.count_string_ops(result_len)?;
             ctx.check_memory(result_len)?;
             Ok(ExprValue::String(s.repeat(*n as usize)))
@@ -327,13 +337,30 @@ pub fn mul_list(ctx: Ctx, a: &[ExprValue]) -> R {
         ExprValue::Int(n) => *n,
         _ => return Err(ExpressionError::type_error("type error")),
     };
-    if n <= 0 {
+    if n <= 0 || elements.is_empty() {
+        // Empty-element early return also guards the build loop below,
+        // which iterates `n` times: with no elements to append, a huge
+        // `n` would otherwise spin ~2^62 uncounted no-op iterations.
         return ExprValue::make_list_checked(ctx, Vec::new(), elem_type);
     }
-    let result_len = elements.len() * n as usize;
-    for _ in 0..result_len {
-        ctx.count_op()?;
-    }
+    // Checked multiply: `len * n` can overflow usize for huge repeat
+    // counts; a wrapped-to-zero result would skip op counting entirely
+    // and let the build loop below run up to 2^62 uncounted iterations.
+    let result_len = elements
+        .len()
+        .checked_mul(n as usize)
+        .ok_or_else(ExpressionError::integer_overflow)?;
+    // Memory check before op counting, matching the Python reference's
+    // `_mul_list` ("check before allocating"): an over-memory repetition
+    // reports a memory error even when it would also blow the op limit.
+    let elem_bytes: usize = elements.iter().map(|e| e.memory_size()).sum();
+    let result_bytes = elem_bytes
+        .checked_mul(n as usize)
+        .ok_or_else(ExpressionError::integer_overflow)?;
+    ctx.check_memory(result_bytes)?;
+    // Charge the whole result up front (single call, not a per-element
+    // loop) so the operation limit trips before any allocation.
+    ctx.count_ops(result_len)?;
     let mut result = Vec::new();
     for _ in 0..n {
         result.extend(elements.iter().cloned());

@@ -6,7 +6,7 @@
 
 use crate::error::ExpressionError;
 use crate::function_library::EvalContext;
-use crate::value::{ExprValue, Float64};
+use crate::value::{float_fits_i64, ExprValue, Float64};
 
 type R = Result<ExprValue, ExpressionError>;
 type Ctx<'a> = &'a mut dyn EvalContext;
@@ -99,7 +99,7 @@ pub fn floor_float(_: Ctx, a: &[ExprValue]) -> R {
     match &a[0] {
         ExprValue::Float(f) => {
             let v = f.floor();
-            if v.abs() > i64::MAX as f64 {
+            if !float_fits_i64(v) {
                 return Err(ExpressionError::integer_overflow());
             }
             Ok(ExprValue::Int(v as i64))
@@ -119,7 +119,7 @@ pub fn ceil_float(_: Ctx, a: &[ExprValue]) -> R {
     match &a[0] {
         ExprValue::Float(f) => {
             let v = f.ceil();
-            if v.abs() > i64::MAX as f64 {
+            if !float_fits_i64(v) {
                 return Err(ExpressionError::integer_overflow());
             }
             Ok(ExprValue::Int(v as i64))
@@ -135,7 +135,7 @@ pub fn ceil_int(_: Ctx, a: &[ExprValue]) -> R {
     }
 }
 
-pub fn round_fn(_: Ctx, a: &[ExprValue]) -> R {
+pub fn round_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     match &a[0] {
         ExprValue::Float(f) => {
             let has_ndigits = a.len() > 1;
@@ -148,13 +148,24 @@ pub fn round_fn(_: Ctx, a: &[ExprValue]) -> R {
                 .unwrap_or(0);
             if !has_ndigits {
                 let v = round_half_even(f.value());
-                if v.abs() > i64::MAX as f64 {
+                if !float_fits_i64(v) {
                     return Err(ExpressionError::integer_overflow());
                 }
                 Ok(ExprValue::Int(v as i64))
             } else if ndigits >= 0 {
-                let factor = 10f64.powi(ndigits as i32);
-                let rounded = round_half_even(f.value() * factor) / factor;
+                // The formatted output grows with ndigits; charge the
+                // budget before computing so a huge precision (e.g.
+                // round(1.5, 10**18)) trips the operation limit instead
+                // of attempting a matching allocation.
+                ctx.count_string_ops(ndigits as usize)?;
+                let factor = 10f64.powi(ndigits.min(i32::MAX as i64) as i32);
+                // 10^ndigits overflows f64 beyond ~308 digits; rounding
+                // at that precision leaves any f64 unchanged.
+                let rounded = if factor.is_infinite() {
+                    f.value()
+                } else {
+                    round_half_even(f.value() * factor) / factor
+                };
                 if ndigits == 0 {
                     Ok(ExprValue::Float(Float64::with_str(
                         rounded,
@@ -167,6 +178,14 @@ pub fn round_fn(_: Ctx, a: &[ExprValue]) -> R {
                     )?))
                 }
             } else {
+                // ndigits < 0. round(v, n) is 0 whenever 10^|n| exceeds
+                // 2·|v|, and every finite f64 is below 10^309 / 2, so
+                // short-circuit — this also keeps the negation and powi
+                // below in range (ndigits can be i64::MIN, whose direct
+                // negation overflows).
+                if ndigits <= -309 {
+                    return Ok(ExprValue::Float(Float64::new(0.0)?));
+                }
                 let factor = 10f64.powi((-ndigits) as i32);
                 Ok(ExprValue::Float(Float64::new(
                     round_half_even(f.value() / factor) * factor,
@@ -184,9 +203,15 @@ pub fn round_fn(_: Ctx, a: &[ExprValue]) -> R {
             if ndigits >= 0 {
                 Ok(ExprValue::Int(*i))
             } else {
+                // 10^20 / 2 exceeds i64::MAX, so every i64 rounds to 0
+                // for ndigits <= -20. Short-circuiting also keeps the
+                // negation below from overflowing on extreme ndigits.
+                if ndigits <= -20 {
+                    return Ok(ExprValue::Int(0));
+                }
                 let factor = 10f64.powi((-ndigits) as i32);
                 let v = round_half_even(*i as f64 / factor) * factor;
-                if v.abs() > i64::MAX as f64 {
+                if !float_fits_i64(v) {
                     return Err(ExpressionError::integer_overflow());
                 }
                 Ok(ExprValue::Int(v as i64))
@@ -223,10 +248,17 @@ pub fn sum_list(ctx: Ctx, a: &[ExprValue]) -> R {
             Ok(ExprValue::Int(int_sum))
         }
     } else if let ExprValue::RangeExpr(r) = &a[0] {
-        for _ in r.iter() {
-            ctx.count_op()?;
+        // Charge all elements up front (single call), then sum with
+        // checked addition — range sums can exceed i64 well within the
+        // operation limit (e.g. 10M values near i64::MAX).
+        ctx.count_ops(r.len())?;
+        let mut sum: i64 = 0;
+        for v in r.iter() {
+            sum = sum
+                .checked_add(v)
+                .ok_or_else(ExpressionError::integer_overflow)?;
         }
-        Ok(ExprValue::Int(r.iter().sum()))
+        Ok(ExprValue::Int(sum))
     } else {
         Err(ExpressionError::new("sum() requires list or range_expr"))
     }

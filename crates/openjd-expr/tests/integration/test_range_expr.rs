@@ -426,3 +426,36 @@ fn range_expr_max_large_range_perf() {
         "max(range_expr('1-1000000000')) took {elapsed:?}, expected < 1s"
     );
 }
+
+// === Regression tests: extreme range bounds (quality report §7 X1) ===
+// IntRange::new previously used unchecked i64 subtraction to compute
+// the span, which overflowed for ranges wider than i64::MAX (debug
+// panic / silent wrap in release). Python parses these fine (bignums).
+
+#[test]
+fn parse_extreme_span_range() {
+    use openjd_expr::RangeExpr;
+    let r: RangeExpr = "-9223372036854775807-9223372036854775807"
+        .parse()
+        .expect("extreme-span range must parse");
+    // 2^64 - 1 logical elements; RangeExpr::len() caps at 2^63 - 1
+    // because the packed length field reserves its MSB as the
+    // contiguous-display flag. (Python reports the exact bignum count;
+    // anything at this magnitude is far beyond materialization limits.)
+    assert_eq!(r.len(), (usize::MAX >> 1));
+    assert!(r.contains(0));
+    assert!(r.contains(-9223372036854775807));
+    assert!(r.contains(9223372036854775807));
+}
+#[test]
+fn parse_full_domain_range_with_step() {
+    use openjd_expr::RangeExpr;
+    let r: RangeExpr = "-9223372036854775807-9223372036854775807:4611686018427387904"
+        .parse()
+        .expect("stepped extreme range must parse");
+    // Elements: -(2^63 - 1) + k * 2^62 for k = 0..=3 → 4 elements.
+    assert_eq!(r.len(), 4);
+    assert!(r.contains(-9223372036854775807));
+    assert!(r.contains(1)); // k = 2
+    assert!(!r.contains(0));
+}

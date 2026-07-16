@@ -2554,3 +2554,102 @@ fn repr_sh_list_with_null_byte_returns_error() {
         "repr_sh on list with null-byte string should error"
     );
 }
+
+// === Regression tests: negative int arguments (quality report §7 X6, X7, X14) ===
+// These previously wrapped via `as usize`, panicking in debug builds
+// (split/rsplit/re_split) or producing bogus op-limit errors
+// (center/ljust/rjust) or attempting huge allocations (zfill).
+
+#[test]
+fn split_negative_maxsplit_means_no_limit() {
+    // Python: 'a b c'.split(' ', -1) == ['a', 'b', 'c']
+    assert_eq!(
+        eval("split('a b c', ' ', -1)").to_display_string(),
+        "[\"a\", \"b\", \"c\"]"
+    );
+}
+#[test]
+fn split_negative_maxsplit_large_negative() {
+    assert_eq!(
+        eval("split('a b c', ' ', -9223372036854775808)").to_display_string(),
+        "[\"a\", \"b\", \"c\"]"
+    );
+}
+#[test]
+fn rsplit_negative_maxsplit_means_no_limit() {
+    // Python: 'a b c'.rsplit(' ', -1) == ['a', 'b', 'c']
+    assert_eq!(
+        eval("rsplit('a b c', ' ', -1)").to_display_string(),
+        "[\"a\", \"b\", \"c\"]"
+    );
+}
+#[test]
+fn re_split_negative_maxsplit_means_no_splits() {
+    // Python re.split semantics: negative maxsplit performs no splits.
+    assert_eq!(
+        eval("re_split('a b c', ' ', -1)").to_display_string(),
+        "[\"a b c\"]"
+    );
+}
+#[test]
+fn re_split_zero_maxsplit_means_no_limit() {
+    // Python re.split semantics: maxsplit=0 means unlimited splits
+    // (unlike str.split, where 0 means no splits).
+    assert_eq!(
+        eval("re_split('a b c', ' ', 0)").to_display_string(),
+        "[\"a\", \"b\", \"c\"]"
+    );
+}
+#[test]
+fn re_split_positive_maxsplit_limits() {
+    assert_eq!(
+        eval("re_split('a b c', ' ', 1)").to_display_string(),
+        "[\"a\", \"b c\"]"
+    );
+}
+#[test]
+fn center_negative_width_returns_unchanged() {
+    // Python: 'a'.center(-1) == 'a'
+    assert_eq!(eval("center('a', -1)").to_display_string(), "a");
+}
+#[test]
+fn center_large_negative_width_returns_unchanged() {
+    assert_eq!(
+        eval("center('a', -9223372036854775808)").to_display_string(),
+        "a"
+    );
+}
+#[test]
+fn ljust_negative_width_returns_unchanged() {
+    assert_eq!(eval("ljust('ab', -5)").to_display_string(), "ab");
+}
+#[test]
+fn rjust_negative_width_returns_unchanged() {
+    assert_eq!(eval("rjust('ab', -5)").to_display_string(), "ab");
+}
+#[test]
+fn zfill_negative_width_returns_unchanged() {
+    // Python: '5'.zfill(-1) == '5'. Previously the negative width
+    // wrapped to usize::MAX and aborted on allocation.
+    assert_eq!(eval("zfill('5', -1)").to_display_string(), "5");
+}
+#[test]
+fn zfill_large_negative_width_returns_unchanged() {
+    assert_eq!(
+        eval("zfill('5', -9223372036854775808)").to_display_string(),
+        "5"
+    );
+}
+#[test]
+fn zfill_huge_width_memory_error() {
+    // The output size must be charged to the memory budget before
+    // allocation (previously unchecked — a multi-GB width allocated).
+    assert_err(
+        "zfill('5', 2000000000)",
+        &[
+            "Expression memory usage (2000000000 bytes) exceeded limit (100000000 bytes)\n",
+            "  zfill('5', 2000000000)\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
+}

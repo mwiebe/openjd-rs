@@ -68,13 +68,17 @@ fn string_mul_exceeds_limit() {
 
 #[test]
 fn list_mul_exceeds_limit() {
+    // Matches the Python reference: _mul_list checks the projected
+    // result size against the memory limit *before* op counting, so an
+    // over-memory repetition reports a memory error (test_memory.py
+    // asserts "would exceed memory limit" for this input).
     let e = eval_bounded("[1, 2, 3] * 10000000", 10000)
         .unwrap_err()
         .to_string();
     assert!(
         e.contains(
             &[
-                "Expression operation count (10000001) exceeded limit (10000000)\n",
+                "Expression memory usage (1920000576 bytes) exceeded limit (10000 bytes)\n",
                 "  [1, 2, 3] * 10000000\n",
                 "  ~~~~~~~~~~^~~~~~~~~~",
             ]
