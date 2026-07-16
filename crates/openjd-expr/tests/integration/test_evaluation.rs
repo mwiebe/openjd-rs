@@ -102,6 +102,50 @@ fn keyword_with_conditional() {
     );
 }
 
+// Regression tests (quality report §7 X9): the contextual-keyword
+// retry previously scanned the source for ".keyword" and rewrote the
+// first occurrence — including inside string literals, silently
+// corrupting values. It now locates the keyword via the parse error
+// span, which a string literal can never produce.
+#[test]
+fn keyword_in_string_literal_not_corrupted() {
+    let mut st = SymbolTable::new();
+    st.set("X.class", ExprValue::String("c1".to_string()))
+        .unwrap();
+    assert_eq!(
+        eval_with("'a.class' + X.class", &st).to_display_string(),
+        "a.classc1"
+    );
+}
+#[test]
+fn keyword_in_string_literal_alone() {
+    // A literal containing ".class" with no keyword attribute at all.
+    assert_eq!(eval("'a.class'").to_display_string(), "a.class");
+}
+#[test]
+fn keyword_attr_after_multibyte_string_literal() {
+    // Non-ASCII text earlier in the source shifts byte offsets away
+    // from char offsets; the boundary logic must use bytes throughout.
+    let mut st = SymbolTable::new();
+    st.set("X.class", ExprValue::String("v".to_string()))
+        .unwrap();
+    assert_eq!(
+        eval_with("'日本語' + X.class", &st).to_display_string(),
+        "日本語v"
+    );
+}
+#[test]
+fn keyword_literal_and_attr_multiline() {
+    // Both hazards at once, in a multiline (paren-wrapped) source:
+    // the error-span offset must be mapped back through the wrapping.
+    let mut st = SymbolTable::new();
+    st.set("X.for", ExprValue::String("f".to_string())).unwrap();
+    assert_eq!(
+        eval_with("'x.for' +\nX.for", &st).to_display_string(),
+        "x.forf"
+    );
+}
+
 #[test]
 fn keyword_multiline_list() {
     let mut st = SymbolTable::new();

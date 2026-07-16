@@ -533,40 +533,64 @@ fn parse_inner(
                 });
             }
             Err(e) => {
-                // Try to find a keyword after '.' that caused the error
+                // Contextual-keyword recovery, mirroring the Python
+                // reference (`ast_parse_keyword_context`): use the parse
+                // error's *location* to find a Python keyword used as an
+                // attribute name (`X.class`). ruff reports "Expected an
+                // identifier, but found a keyword ..." with the span of
+                // the keyword itself.
+                //
+                // Locating the keyword via the error span — rather than
+                // scanning the source for ".keyword" — is what keeps
+                // string literals safe: a literal like `'a.class'` never
+                // produces a parse error, so it is never rewritten. All
+                // offsets are byte offsets into `to_parse`, used
+                // consistently for both the boundary check and the
+                // replacement (a previous version mixed byte and char
+                // indices).
+                let start = e.location.start().to_usize();
+                let end = e.location.end().to_usize();
+                // Map offsets in `to_parse` back to `source`: multiline
+                // sources are wrapped in one leading "(".
+                let offset = usize::from(is_multiline);
                 let mut found = false;
-                for kw in PYTHON_KEYWORDS {
-                    let pattern = format!(".{kw}");
-                    if let Some(pos) = source.find(&pattern) {
-                        // Check that the keyword is followed by a non-identifier char
-                        let after_pos = pos + 1 + kw.len();
-                        let after_char = source.chars().nth(after_pos);
-                        if after_char.is_none_or(|c| !c.is_alphanumeric() && c != '_') {
+                if start > offset && end > start {
+                    let src_start = start - offset;
+                    let src_end = end - offset;
+                    let preceded_by_dot = source.as_bytes().get(src_start - 1) == Some(&b'.');
+                    if preceded_by_dot && src_end <= source.len() {
+                        // Keywords are ASCII, so if the span is a keyword
+                        // these are char boundaries; `get` returns None
+                        // otherwise instead of panicking.
+                        let span_text = source.get(src_start..src_end).unwrap_or("");
+                        if let Some(kw) = PYTHON_KEYWORDS.iter().find(|k| **k == span_text).copied()
+                        {
                             let replacement = keyword_renames
                                 .iter()
-                                .find(|(_, v)| v.as_str() == *kw)
+                                .find(|(_, v)| v.as_str() == kw)
                                 .map(|(k, _)| k.clone())
                                 .unwrap_or_else(|| {
                                     let r = make_replacement(kw, &source);
                                     keyword_renames.insert(r.clone(), kw.to_string());
                                     r
                                 });
-                            // Replace in source — same length, preserves positions
+                            // Replace exactly the error span — same
+                            // length, preserves positions.
                             source = format!(
-                                "{}.{}{}",
-                                &source[..pos],
+                                "{}{}{}",
+                                &source[..src_start],
                                 replacement,
-                                &source[after_pos..]
+                                &source[src_end..]
                             );
                             found = true;
-                            break;
                         }
                     }
                 }
                 if !found {
                     let msg = format!("Syntax error: {}", e.error);
-                    let start = e.location.start().to_usize();
-                    let end = e.location.end().to_usize();
+                    // Map the span back to `source` (see above).
+                    let start = start.saturating_sub(offset);
+                    let end = end.saturating_sub(offset);
                     // For zero-width ranges (like EOF), point at the last char
                     let (col, end_col) = if start == end && !source.is_empty() {
                         (0, source.len())

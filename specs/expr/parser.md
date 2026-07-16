@@ -63,14 +63,23 @@ accessible as `Param.def` or `Param.is`.
 The solution:
 
 1. Attempt to parse the expression
-2. If parsing fails, scan for Python keywords used as attribute names (after `.`)
-3. Replace each keyword with a same-length placeholder identifier to preserve column offsets
+2. If parsing fails with ruff's "Expected an identifier, but found a
+   keyword" error, inspect the **error span**: if the span is
+   immediately preceded by `.` and its text is a Python keyword, it is
+   a contextual keyword use
+3. Replace exactly that span with a same-length placeholder identifier
+   to preserve column offsets
 4. Re-parse with the placeholders
 5. Record the renames in `keyword_renames: HashMap<String, String>` so the evaluator
    can map placeholder names back to the original attribute names
 
-This matches the Python implementation's `ast_parse_keyword_context()` approach, which
-renames keywords before parsing and restores them after.
+Locating the keyword via the parse-error span (all offsets are byte
+offsets; for multiline sources they are mapped back through the
+parenthesis wrapping) rather than scanning the source for `.keyword`
+is what keeps string literals safe: a literal like `'a.class'` never
+produces a parse error, so it is never rewritten. This matches the
+Python implementation's `ast_parse_keyword_context()`, which likewise
+derives the keyword position from the `SyntaxError` offset.
 
 ### Reverse mapping at evaluation
 
