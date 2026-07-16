@@ -949,3 +949,37 @@ fn mul_empty_list_huge_count_no_hang() {
     // With up-front batch counting the result is an empty list.
     assert_eq!(eval("[] * 4611686018427387904").to_display_string(), "[]");
 }
+
+// === Regression tests: float passthrough in multiline expressions (quality report §7 X10) ===
+// AST ranges are offsets into the paren-wrapped parse text for
+// multiline sources; the passthrough slice previously used them
+// unadjusted against the unwrapped source, capturing shifted text
+// (e.g. "2.5 " out of "12.5 if Cond else\n0.0").
+
+#[test]
+fn float_passthrough_multiline_ifexp() {
+    let mut st = SymbolTable::new();
+    st.set("Cond", ExprValue::Bool(true)).unwrap();
+    assert_eq!(
+        eval_with("12.5 if Cond else\n0.0", &st).to_display_string(),
+        "12.5"
+    );
+}
+#[test]
+fn float_passthrough_multiline_else_branch() {
+    let mut st = SymbolTable::new();
+    st.set("Cond", ExprValue::Bool(false)).unwrap();
+    assert_eq!(
+        eval_with("12.5 if Cond else\n3.500", &st).to_display_string(),
+        "3.500"
+    );
+}
+#[test]
+fn float_passthrough_multiline_list() {
+    assert_eq!(eval("[1.50,\n 2.250]").to_display_string(), "[1.50, 2.250]");
+}
+#[test]
+fn float_passthrough_single_line_still_preserved() {
+    assert_eq!(eval("3.500").to_display_string(), "3.500");
+    assert_eq!(eval("1.5e3").to_display_string(), "1.5e3");
+}

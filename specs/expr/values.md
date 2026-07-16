@@ -46,6 +46,15 @@ pub struct Float64(pub f64, pub Option<Box<str>>);
 `Box<str>` instead of `String` saves 8 bytes per value (no capacity field). Most floats
 computed at runtime won't have an original string, so the `Option` is usually `None`.
 
+The preserved string is **trusted, not validated** against the value —
+matching the Python reference's `ExprValue.from_float(value, string)`:
+a display string may legitimately differ from the value (e.g. `round()`
+produces fixed-precision renderings like `"2.00"`). Callers that derive
+the string by slicing expression source (the evaluator's float-literal
+passthrough) validate the slice parses back to the literal's value, and
+account for the parser's multiline parenthesis wrapping when mapping
+AST ranges to source offsets.
+
 Invariants enforced on construction:
 - No NaN
 - No Infinity / -Infinity

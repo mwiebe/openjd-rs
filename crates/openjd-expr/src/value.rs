@@ -68,6 +68,14 @@ impl Float64 {
         })
     }
     /// Create a `Float64` preserving the original string representation for lossless display.
+    ///
+    /// The string is trusted and NOT validated against `v` — mirroring
+    /// the Python reference's `ExprValue.from_float(value, string)`,
+    /// whose permissive contract is pinned by ported tests (a display
+    /// string may legitimately differ from the value, e.g. fixed-
+    /// precision renderings from `round()`). Callers that derive the
+    /// string by slicing source text are responsible for slicing
+    /// correctly (see `eval_number`'s wrap-offset handling).
     pub fn with_str(v: f64, s: String) -> Result<Self, crate::error::ExpressionError> {
         let v = normalize_zero(v);
         if v.is_nan() {

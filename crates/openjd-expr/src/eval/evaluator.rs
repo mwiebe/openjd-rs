@@ -480,18 +480,30 @@ impl<'a> Evaluator<'a> {
                 }
                 // Preserve original source text for passthrough (e.g., "1.5e3", "3.500")
                 let original = self.expr_source.as_ref().and_then(|src| {
-                    let start = n.range.start().to_usize();
-                    let end = n.range.end().to_usize();
-                    if end <= src.len() {
-                        let s = &src[start..end];
-                        // Don't preserve malformed forms like "3." or ".5" or underscore-containing
-                        if s.ends_with('.') || s.starts_with('.') || s.contains('_') {
-                            None
-                        } else {
-                            Some(s.to_string())
-                        }
-                    } else {
+                    // AST ranges are offsets into the *parsed* text. For
+                    // multiline sources the parser wraps the text in
+                    // parentheses, shifting every offset by 1 relative to
+                    // the unwrapped source held here (the same convention
+                    // `ExpressionError`'s Display corrects for). Without
+                    // this adjustment a multiline expression sliced the
+                    // wrong text (e.g. "2.5 " out of "12.5 if C else\n0.0").
+                    let wrap_offset = usize::from(src.contains('\n'));
+                    let start = n.range.start().to_usize().checked_sub(wrap_offset)?;
+                    let end = n.range.end().to_usize().checked_sub(wrap_offset)?;
+                    let s = src.get(start..end)?;
+                    // Don't preserve malformed forms like "3." or ".5" or underscore-containing
+                    if s.ends_with('.') || s.starts_with('.') || s.contains('_') {
                         None
+                    } else if s.parse::<f64>().ok() != Some(*f) {
+                        // Backstop: the sliced text must parse back to the
+                        // literal's value. `Float64::with_str` deliberately
+                        // trusts its input (fixed-precision display strings
+                        // from round() legitimately differ), so a mis-slice
+                        // here would otherwise silently display the wrong
+                        // number.
+                        None
+                    } else {
+                        Some(s.to_string())
                     }
                 });
                 self.track(ExprValue::Float(if let Some(s) = original {
