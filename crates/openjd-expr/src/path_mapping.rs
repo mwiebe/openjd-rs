@@ -111,8 +111,23 @@ impl PathMappingRule {
     }
 
     fn apply_filesystem(&self, path: &str, case_insensitive: bool, sep: char) -> Option<String> {
-        let source_parts = split_path_parts(&self.source_path);
-        let path_parts = split_path_parts(path);
+        // Split with pathlib-style parts (functions::path_parse::parts),
+        // which include the anchor ("/", "C:\", "\\server\share\") as
+        // the first component — exactly like Python's PurePath.parts,
+        // which the reference implementation matches against via
+        // is_relative_to. This preserves the absolute/relative
+        // distinction (a relative "home/user/f" must NOT match the
+        // absolute rule "/home/user": the rule's "/" anchor part has no
+        // counterpart in the relative path) and applies the correct
+        // separator rules per format (POSIX paths do not split on '\\',
+        // which is a valid filename character there).
+        let fmt = if case_insensitive {
+            PathFormat::Windows
+        } else {
+            PathFormat::Posix
+        };
+        let source_parts = crate::functions::path_parse::parts(&self.source_path, fmt);
+        let path_parts = crate::functions::path_parse::parts(path, fmt);
 
         if path_parts.len() < source_parts.len() {
             return None;
@@ -142,14 +157,6 @@ impl PathMappingRule {
 
         Some(result)
     }
-}
-
-/// Split a path into parts, handling both `/` and `\` separators.
-/// Preserves drive letters as the first part (e.g., "C:" from "C:\foo").
-fn split_path_parts(path: &str) -> Vec<&str> {
-    path.split(&['/', '\\'][..])
-        .filter(|s| !s.is_empty())
-        .collect()
 }
 
 /// Check if a path has a trailing slash.

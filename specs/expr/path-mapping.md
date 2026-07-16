@@ -45,9 +45,18 @@ slashes are preserved. Output separators use the host-native format — use
 `apply_with_format` for explicit control.
 
 Format-appropriate comparison means:
-- **Posix**: exact byte comparison
-- **Windows**: case-insensitive, normalizes backslashes to forward slashes
+- **Posix**: exact byte comparison; only `/` is a separator (`\` is a
+  valid filename character)
+- **Windows**: case-insensitive (ASCII), `\` and `/` both separate
 - **URI**: scheme and authority compared case-insensitively, path compared exactly
+
+Filesystem matching splits both the rule's `source_path` and the input
+into **pathlib-style parts** (`functions::path_parse::parts`), whose
+first component is the anchor (`/`, `C:\`, `\\server\share\`) — the
+same shape as Python's `PurePath.parts`, which the reference
+implementation matches via `is_relative_to`. Because the anchor is a
+component, a relative input can never match an absolute rule (and vice
+versa): `home/user/f` does not match a rule for `/home/user`.
 
 ### apply_with_format
 

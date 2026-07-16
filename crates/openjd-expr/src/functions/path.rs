@@ -523,7 +523,15 @@ fn extract_unc_root(path: &str) -> Option<&str> {
 
 fn path_starts_with(path: &str, base: &str, fmt: PathFormat) -> bool {
     if fmt == PathFormat::Windows {
-        path.len() >= base.len() && path[..base.len()].eq_ignore_ascii_case(base)
+        // Compare bytes, not a `&str` slice: `path[..base.len()]` panics
+        // when the boundary falls inside a multibyte character (e.g.
+        // path "日" with a 2-byte base). Byte-wise ASCII-case-insensitive
+        // equality is identical to the str version where both are valid
+        // slices — non-ASCII bytes only match themselves, so a match
+        // also guarantees `base.len()` is a char boundary of `path`
+        // (which `relative_to_fn`'s tail slice relies on).
+        path.len() >= base.len()
+            && path.as_bytes()[..base.len()].eq_ignore_ascii_case(base.as_bytes())
     } else {
         path.starts_with(base)
     }

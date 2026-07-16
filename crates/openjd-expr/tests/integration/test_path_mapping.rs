@@ -1067,3 +1067,84 @@ mod uri_case_sensitivity {
 fn rule_vec(r: PathMappingRule) -> Vec<PathMappingRule> {
     vec![r]
 }
+
+// === Regression tests: absolute/relative distinction (quality report §7 X12) ===
+// The rule matcher previously split paths on separators discarding the
+// anchor, so a *relative* path like "home/user/f" matched the absolute
+// rule "/home/user". Matching now uses pathlib-style parts (anchor
+// included), mirroring Python's PurePath.is_relative_to.
+
+#[test]
+fn relative_path_does_not_match_absolute_posix_rule() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "/home/user".to_string(),
+        destination_path: "/mnt/x".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("home/user/f", PathFormat::Posix),
+        None
+    );
+}
+#[test]
+fn absolute_path_does_not_match_relative_posix_rule() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "home/user".to_string(),
+        destination_path: "/mnt/x".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("/home/user/f", PathFormat::Posix),
+        None
+    );
+}
+#[test]
+fn relative_path_matches_relative_posix_rule() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "home/user".to_string(),
+        destination_path: "/mnt/x".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("home/user/f", PathFormat::Posix),
+        Some("/mnt/x/f".to_string())
+    );
+}
+#[test]
+fn relative_path_does_not_match_absolute_windows_rule() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Windows,
+        source_path: "C:\\Users\\user".to_string(),
+        destination_path: "D:\\x".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("Users\\user\\f", PathFormat::Windows),
+        None
+    );
+}
+#[test]
+fn drive_rooted_windows_rule_still_matches() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Windows,
+        source_path: "C:\\Users\\user".to_string(),
+        destination_path: "D:\\x".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("c:\\users\\USER\\f", PathFormat::Windows),
+        Some("D:\\x\\f".to_string())
+    );
+}
+#[test]
+fn posix_backslash_is_filename_char_not_separator() {
+    // pathlib parity: PurePosixPath("/a/b\\c") is a single "b\c"
+    // component; the old splitter treated '\' as a separator on POSIX.
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "/a".to_string(),
+        destination_path: "/dst".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("/a/b\\c/d", PathFormat::Posix),
+        Some("/dst/b\\c/d".to_string())
+    );
+}

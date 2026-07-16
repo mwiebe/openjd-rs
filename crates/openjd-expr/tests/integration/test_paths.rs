@@ -3149,3 +3149,47 @@ fn with_name_drive_letter_pattern_prepended_with_dot_slash() {
         ".\\x:y"
     );
 }
+
+// === Regression tests: multibyte chars in Windows-format prefix compare (quality report §7 X8) ===
+// path_starts_with previously sliced `path[..base.len()]`, panicking
+// when the boundary fell inside a multibyte character.
+
+#[test]
+fn is_relative_to_multibyte_path_shorter_base() {
+    // "日" is 3 bytes; base "ab" is 2 — the old slice split the char.
+    let st = SymbolTable::new();
+    assert_eq!(
+        eval_windows("path('日').is_relative_to('ab')", &st).to_display_string(),
+        "false"
+    );
+}
+#[test]
+fn is_relative_to_multibyte_match() {
+    let st = SymbolTable::new();
+    assert_eq!(
+        eval_windows(
+            "path('C:\\\\日本語\\\\file.txt').is_relative_to('C:\\\\日本語')",
+            &st
+        )
+        .to_display_string(),
+        "true"
+    );
+}
+#[test]
+fn relative_to_multibyte_tail() {
+    let st = SymbolTable::new();
+    assert_eq!(
+        eval_windows("path('C:\\\\日\\\\x.txt').relative_to('C:\\\\日')", &st).to_display_string(),
+        "x.txt"
+    );
+}
+#[test]
+fn is_relative_to_multibyte_base_case_insensitive() {
+    // ASCII portions compare case-insensitively; multibyte bytes must
+    // match exactly.
+    let st = SymbolTable::new();
+    assert_eq!(
+        eval_windows("path('c:\\\\日\\\\X').is_relative_to('C:\\\\日')", &st).to_display_string(),
+        "true"
+    );
+}
