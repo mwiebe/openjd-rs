@@ -419,3 +419,53 @@ fn float_gt_string_errors() {
         "got:\n{e}"
     );
 }
+
+// === Regression tests: list == range_expr without materialization (quality report §8 item 9) ===
+// The equality previously collected the range into a Vec before the
+// length check — up to the range's full logical length in memory
+// (outside every evaluator budget). The length check now runs first
+// and the zip iterates the range lazily, so these huge-range
+// comparisons complete instantly.
+
+#[test]
+fn list_eq_huge_range_expr_length_mismatch_is_fast_false() {
+    assert_eq!(
+        eval("[1] == range_expr('1-100000000')").to_display_string(),
+        "false"
+    );
+}
+#[test]
+fn list_eq_extreme_range_expr_is_fast_false() {
+    assert_eq!(
+        eval("[1] == range_expr('1-9223372036854775806')").to_display_string(),
+        "false"
+    );
+}
+#[test]
+fn list_eq_range_expr_equal() {
+    assert_eq!(
+        eval("[1, 2, 3] == range_expr('1-3')").to_display_string(),
+        "true"
+    );
+}
+#[test]
+fn range_expr_eq_list_equal() {
+    assert_eq!(
+        eval("range_expr('1-3') == [1, 2, 3]").to_display_string(),
+        "true"
+    );
+}
+#[test]
+fn list_eq_range_expr_same_len_different_values() {
+    assert_eq!(
+        eval("[1, 2, 4] == range_expr('1-3')").to_display_string(),
+        "false"
+    );
+}
+#[test]
+fn list_eq_range_expr_with_step() {
+    assert_eq!(
+        eval("[1, 3, 5] == range_expr('1-5:2')").to_display_string(),
+        "true"
+    );
+}

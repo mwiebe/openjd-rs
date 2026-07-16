@@ -1134,8 +1134,13 @@ impl ExprValue {
             }
             (Self::ListInt(elems), Self::RangeExpr(r))
             | (Self::RangeExpr(r), Self::ListInt(elems)) => {
-                let rv: Vec<i64> = r.iter().collect();
-                elems.len() == rv.len() && elems.iter().zip(rv.iter()).all(|(a, b)| a == b)
+                // Length check first, then zip the range's iterator
+                // directly. Collecting the range into a Vec before
+                // comparing materialized up to the range's full logical
+                // length (e.g. 800 MB for `[1] == range_expr('1-100000000')`)
+                // outside every evaluator budget; the list length now
+                // bounds the work.
+                elems.len() == r.len() && elems.iter().copied().zip(r.iter()).all(|(a, b)| a == b)
             }
             (Self::RangeExpr(a), Self::RangeExpr(b)) => a == b,
             (Self::Unresolved(a), Self::Unresolved(b)) => a == b,
