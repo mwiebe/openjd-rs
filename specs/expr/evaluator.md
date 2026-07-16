@@ -109,9 +109,18 @@ batch charge (1001 total) trips the limit and the error points at the
 
 Functions that produce output proportional to an argument value batch
 their charges up front with `count_ops(n)`/`count_string_ops(len)`
-using *checked* size arithmetic, so the limit trips before any
-allocation and oversized repeat counts (e.g. `'abcd' * 2^62`) surface
-as integer-overflow errors rather than wrapped-length budget bypasses.
+using *checked* size arithmetic, so oversized repeat counts (e.g.
+`'abcd' * 2^62`) surface as integer-overflow errors rather than
+wrapped-length budget bypasses, and repeat/padding outputs are also
+checked against the memory budget before their final allocation.
+Comparison operators (`==`, `!=`, `<`, …) and the `repr_*` functions
+charge one operation per list element (`max(len_a, len_b)` for
+comparisons, *before* the length check — matching the Python
+reference, where comparing against a large `range_expr` materializes
+it). Note that these guarantees are per-function-final-output:
+intermediate allocations (e.g. split's part vectors) may still occur
+before a final `make_list_checked`-style check, bounded by the
+input-proportional operation charges.
 
 ### Depth Limit
 

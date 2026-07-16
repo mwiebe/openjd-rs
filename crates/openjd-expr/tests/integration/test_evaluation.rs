@@ -146,6 +146,51 @@ fn keyword_literal_and_attr_multiline() {
     );
 }
 
+// Regression test (review finding 3): replacement-candidate collisions.
+// The old generator tried 26 candidates then fell back to an unchecked
+// "xx", so a source containing every candidate plus "xx" silently
+// rewrote the legitimate attribute Y.xx into Y.if. The generator now
+// enumerates a much larger space and the evaluator resolves renames by
+// exact component match, so this evaluates correctly.
+#[test]
+fn keyword_replacement_collision_does_not_corrupt_attributes() {
+    let candidates: Vec<String> = (b'a'..=b'z').map(|c| format!("Q.{}f", c as char)).collect();
+    let mut st = SymbolTable::new();
+    st.set("X.if", ExprValue::Int(42)).unwrap();
+    st.set("Y.xx", ExprValue::Int(1)).unwrap();
+    for c in &candidates {
+        st.set(c, ExprValue::Int(0)).unwrap();
+    }
+    let expr = format!(
+        "X.if + Y.xx + {}",
+        candidates
+            .iter()
+            .map(|c| c.as_str())
+            .collect::<Vec<_>>()
+            .join(" + ")
+    );
+    assert_eq!(eval_with(&expr, &st).to_display_string(), "43");
+}
+
+// Regression test (review finding 3 / latent): two keywords whose
+// replacements are prefixes of one another ("aa" for "if", "aaaa" for
+// "else") previously corrupted rename resolution nondeterministically,
+// because renames were applied by sequential substring replacement in
+// HashMap iteration order. Resolution is now by exact path component.
+#[test]
+fn keyword_renames_with_prefix_overlap_resolve_exactly() {
+    let mut st = SymbolTable::new();
+    st.set("Param.if", ExprValue::Int(10)).unwrap();
+    st.set("Param.else", ExprValue::Int(20)).unwrap();
+    st.set("Param.for", ExprValue::Int(30)).unwrap();
+    st.set("Param.while", ExprValue::Int(40)).unwrap();
+    // Multiple keywords of different lengths in one expression.
+    assert_eq!(
+        eval_with("Param.if + Param.else + Param.for + Param.while", &st).to_display_string(),
+        "100"
+    );
+}
+
 #[test]
 fn keyword_multiline_list() {
     let mut st = SymbolTable::new();

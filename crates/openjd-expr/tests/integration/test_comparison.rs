@@ -420,25 +420,41 @@ fn float_gt_string_errors() {
     );
 }
 
-// === Regression tests: list == range_expr without materialization (quality report §8 item 9) ===
+// === Regression tests: list == range_expr (quality report §8 item 9, review finding 5) ===
 // The equality previously collected the range into a Vec before the
-// length check — up to the range's full logical length in memory
-// (outside every evaluator budget). The length check now runs first
-// and the zip iterates the range lazily, so these huge-range
-// comparisons complete instantly.
+// length check (up to 800 MB outside every budget) and charged no
+// per-element operations. It now mirrors the Python reference's
+// _values_equal: max(len_a, len_b) operations are charged *before*
+// the length check, so comparing against a huge symbolic range trips
+// the operation limit exactly as it does in Python (where the range
+// would be materialized), and never allocates.
 
 #[test]
-fn list_eq_huge_range_expr_length_mismatch_is_fast_false() {
-    assert_eq!(
-        eval("[1] == range_expr('1-100000000')").to_display_string(),
-        "false"
+fn list_eq_huge_range_expr_hits_operation_limit() {
+    let e = ParsedExpression::new("[1] == range_expr('1-100000000')")
+        .and_then(|p| p.evaluate(&SymbolTable::new()))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains(
+            &[
+                "Expression operation count (100000003) exceeded limit (10000000)\n",
+                "  [1] == range_expr('1-100000000')\n",
+                "  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+            ]
+            .concat()
+        ),
+        "got:\n{e}"
     );
 }
 #[test]
-fn list_eq_extreme_range_expr_is_fast_false() {
-    assert_eq!(
-        eval("[1] == range_expr('1-9223372036854775806')").to_display_string(),
-        "false"
+fn list_eq_extreme_range_expr_hits_operation_limit() {
+    // No materialization: a 9.2e18-element symbolic range fails the
+    // op budget instantly instead of allocating.
+    let e = eval_err("[1] == range_expr('1-9223372036854775806')");
+    assert!(
+        e.contains("exceeded limit (10000000)"),
+        "expected operation-limit error, got: {e}"
     );
 }
 #[test]

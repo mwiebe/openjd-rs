@@ -1132,16 +1132,14 @@ impl ExprValue {
                 }
                 a_iter.zip(b_iter).all(|(x, y)| x.equals(&y))
             }
-            (Self::ListInt(elems), Self::RangeExpr(r))
-            | (Self::RangeExpr(r), Self::ListInt(elems)) => {
-                // Length check first, then zip the range's iterator
-                // directly. Collecting the range into a Vec before
-                // comparing materialized up to the range's full logical
-                // length (e.g. 800 MB for `[1] == range_expr('1-100000000')`)
-                // outside every evaluator budget; the list length now
-                // bounds the work.
-                elems.len() == r.len() && elems.iter().copied().zip(r.iter()).all(|(a, b)| a == b)
-            }
+            // NOTE: no list ↔ RangeExpr equality here. The expression
+            // language's `==` operator does treat `[1, 2, 3]` and
+            // `range_expr('1-3')` as equal, but that lives in the
+            // context-aware `functions::comparison::values_equal` (which
+            // also charges the per-element operations the spec requires).
+            // Including it in this method — which backs `PartialEq` —
+            // would violate the `a == b ⇒ hash(a) == hash(b)` contract,
+            // because lists and ranges hash under different tags.
             (Self::RangeExpr(a), Self::RangeExpr(b)) => a == b,
             (Self::Unresolved(a), Self::Unresolved(b)) => a == b,
             _ => false,

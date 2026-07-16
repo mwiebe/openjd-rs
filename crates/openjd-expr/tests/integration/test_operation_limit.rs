@@ -713,3 +713,101 @@ fn operation_limit_error_kind_from_evaluator() {
         err.kind()
     );
 }
+
+// === Regression tests: comparison and repr charge per element (review finding 5) ===
+// eq/ne/ordering and the repr_* functions previously charged nothing
+// (or only a top-level string) for list arguments, violating the
+// spec's list-operation accounting. Values are injected via the symbol
+// table so construction costs don't mask the missing charges.
+
+fn big_int_list(n: i64) -> openjd_expr::ExprValue {
+    openjd_expr::ExprValue::make_list(
+        (0..n).map(openjd_expr::ExprValue::Int).collect(),
+        openjd_expr::ExprType::INT,
+    )
+    .unwrap()
+}
+
+fn eval_op_with(
+    expr: &str,
+    st: &SymbolTable,
+    ops: usize,
+) -> Result<openjd_expr::EvalResult, openjd_expr::ExpressionError> {
+    ParsedExpression::new(expr)
+        .and_then(|p| p.with_operation_limit(ops).evaluate_with_metrics(&[st]))
+}
+
+#[test]
+fn injected_list_equality_charges_elements() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10_000)).unwrap();
+    st.set("R", big_int_list(10_000)).unwrap();
+    let e = eval_op_with("L == R", &st, 100).unwrap_err().to_string();
+    assert!(
+        e.contains(
+            &[
+                "Expression operation count (10002) exceeded limit (100)\n",
+                "  L == R\n",
+                "  ^~~~~~",
+            ]
+            .concat()
+        ),
+        "got:\n{e}"
+    );
+}
+#[test]
+fn injected_list_ordering_charges_elements() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10_000)).unwrap();
+    st.set("R", big_int_list(10_000)).unwrap();
+    let e = eval_op_with("L < R", &st, 100).unwrap_err().to_string();
+    assert!(
+        e.contains("Expression operation count (10002) exceeded limit (100)"),
+        "got:\n{e}"
+    );
+}
+#[test]
+fn injected_list_repr_py_charges_elements() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10_000)).unwrap();
+    let e = eval_op_with("repr_py(L)", &st, 100)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        e.contains(
+            &[
+                "Expression operation count (10001) exceeded limit (100)\n",
+                "  repr_py(L)\n",
+                "  ^~~~~~~~~~",
+            ]
+            .concat()
+        ),
+        "got:\n{e}"
+    );
+}
+#[test]
+fn injected_list_repr_json_charges_elements() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10_000)).unwrap();
+    let e = eval_op_with("repr_json(L)", &st, 100)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("exceeded limit (100)"), "got:\n{e}");
+}
+#[test]
+fn injected_list_repr_pwsh_charges_elements() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10_000)).unwrap();
+    let e = eval_op_with("repr_pwsh(L)", &st, 100)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("exceeded limit (100)"), "got:\n{e}");
+}
+#[test]
+fn equality_within_limit_still_works() {
+    let mut st = SymbolTable::new();
+    st.set("L", big_int_list(10)).unwrap();
+    st.set("R", big_int_list(10)).unwrap();
+    let r = eval_op_with("L == R", &st, 100).unwrap();
+    assert_eq!(r.value.to_display_string(), "true");
+}

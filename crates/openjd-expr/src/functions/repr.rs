@@ -19,31 +19,39 @@ fn repr_string_len(a: &ExprValue) -> usize {
     }
 }
 
+/// Charge the budgets every repr_* function owes: one operation per
+/// list element for list arguments (matching the Python reference's
+/// `_repr_*_list` implementations and the spec's list-operation rule),
+/// plus string ops proportional to a string/path argument's length.
+fn count_repr_ops(ctx: Ctx, a: &ExprValue) -> Result<(), ExpressionError> {
+    if a.is_list() {
+        ctx.count_ops(a.list_len().unwrap_or(0))?;
+    }
+    ctx.count_string_ops(repr_string_len(a))
+}
+
 pub fn repr_py_fn(ctx: Ctx, a: &[ExprValue]) -> R {
-    ctx.count_string_ops(repr_string_len(&a[0]))?;
+    count_repr_ops(ctx, &a[0])?;
     Ok(ExprValue::String(repr_py(&a[0])))
 }
 
 pub fn repr_json_fn(ctx: Ctx, a: &[ExprValue]) -> R {
-    ctx.count_string_ops(repr_string_len(&a[0]))?;
+    count_repr_ops(ctx, &a[0])?;
     Ok(ExprValue::String(repr_json(&a[0])))
 }
 
 pub fn repr_sh_fn(ctx: Ctx, a: &[ExprValue]) -> R {
-    if a[0].is_list() {
-        ctx.count_ops(a[0].list_len().unwrap_or(0))?;
-    }
-    ctx.count_string_ops(repr_string_len(&a[0]))?;
+    count_repr_ops(ctx, &a[0])?;
     repr_sh(&a[0]).map(ExprValue::String)
 }
 
 pub fn repr_cmd_fn(ctx: Ctx, a: &[ExprValue]) -> R {
-    ctx.count_string_ops(repr_string_len(&a[0]))?;
+    count_repr_ops(ctx, &a[0])?;
     Ok(ExprValue::String(repr_cmd(&a[0])))
 }
 
 pub fn repr_pwsh_fn(ctx: Ctx, a: &[ExprValue]) -> R {
-    ctx.count_string_ops(repr_string_len(&a[0]))?;
+    count_repr_ops(ctx, &a[0])?;
     Ok(ExprValue::String(repr_pwsh(&a[0])))
 }
 

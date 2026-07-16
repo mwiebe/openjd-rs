@@ -368,6 +368,9 @@ pub fn center_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     if clen >= width {
         return Ok(ExprValue::String(s.to_string()));
     }
+    // Check the output size against the memory budget *before*
+    // allocating the padded string.
+    ctx.check_memory(width)?;
     let pad = width - clen;
     let left = pad / 2;
     let right = pad - left;
@@ -383,12 +386,34 @@ pub fn ljust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
     let width = get_pad_width(&a[1], "ljust")?;
     ctx.count_string_ops(width.max(s.len()))?;
-    Ok(ExprValue::String(format!("{:<width$}", s, width = width)))
+    // Manual padding instead of `format!("{:<width$}")`: Rust's
+    // formatting machinery panics ("Formatting argument out of range")
+    // for widths above u16::MAX, and moderate widths like 1,000,000
+    // pass the operation budget. Pads by char count, matching both
+    // format!'s counting and Python's str.ljust.
+    let clen = s.chars().count();
+    if clen >= width {
+        return Ok(ExprValue::String(s.to_string()));
+    }
+    ctx.check_memory(width)?;
+    Ok(ExprValue::String(format!(
+        "{s}{}",
+        " ".repeat(width - clen)
+    )))
 }
 
 pub fn rjust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
     let width = get_pad_width(&a[1], "rjust")?;
     ctx.count_string_ops(width.max(s.len()))?;
-    Ok(ExprValue::String(format!("{:>width$}", s, width = width)))
+    // Manual padding — see ljust_fn for the rationale.
+    let clen = s.chars().count();
+    if clen >= width {
+        return Ok(ExprValue::String(s.to_string()));
+    }
+    ctx.check_memory(width)?;
+    Ok(ExprValue::String(format!(
+        "{}{s}",
+        " ".repeat(width - clen)
+    )))
 }

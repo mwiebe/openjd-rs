@@ -336,3 +336,26 @@ fn round_float_huge_positive_ndigits_hits_limit() {
     // trip the operation budget instead of allocating to match.
     assert!(eval_fails("round(1.5, 9223372036854775807)"));
 }
+
+// === Regression tests: round with moderate precision (review finding 2) ===
+// format!("{:.prec$}") panics for precision above u16::MAX; round now
+// formats at most an f64's 1074 meaningful fractional digits and
+// zero-fills the rest (identical output to Python's f"{x:.{n}f}").
+
+#[test]
+fn round_moderate_precision_succeeds() {
+    let v = eval("len(string(round(1.5, 100000)))");
+    // "1." + 100000 fractional digits
+    assert_eq!(v.to_display_string(), "100002");
+}
+#[test]
+fn round_moderate_precision_value_prefix() {
+    let v = eval("string(round(1.5, 100000))[0:6]").to_display_string();
+    assert_eq!(v, "1.5000");
+}
+#[test]
+fn round_precision_over_u16_boundary() {
+    // Just above the fmt machinery's u16::MAX limit.
+    let v = eval("len(string(round(2.25, 65536)))");
+    assert_eq!(v.to_display_string(), "65538");
+}

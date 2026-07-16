@@ -58,27 +58,44 @@ const PYTHON_KEYWORDS: &[&str] = &[
 ];
 
 /// Generate a same-length replacement identifier that doesn't appear in the source.
-fn make_replacement(keyword: &str, source: &str) -> String {
-    // Use a deterministic scheme: prefix with underscores to match length
-    // e.g., "if" → "xf", "def" → "xef", "else" → "xlse"
-    // If that collides, try incrementing the first char
+///
+/// Enumerates candidates systematically: the first character from
+/// `[a-zA-Z]`, remaining characters from `[a-zA-Z0-9]`, encoding a
+/// counter in mixed radix. For an n-character keyword the space has
+/// `52 * 62^(n-1)` candidates (≥ 3,224 even for 2-character keywords
+/// like `if`), while a `MAX_PARSE_INPUT_LEN` source can contain at most
+/// ~64K distinct substrings of any given length — exhaustion is
+/// practically impossible, but if it happens `None` is returned and the
+/// caller reports a parse error instead of picking a colliding name.
+/// (An earlier version fell back to an unchecked `"xxx…"` after 26
+/// attempts; a source containing all candidates plus the fallback then
+/// silently rewrote unrelated attributes that happened to match.)
+fn make_replacement(keyword: &str, source: &str) -> Option<String> {
+    const FIRST: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const REST: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    // More than enough to beat the ~64K distinct substrings a max-size
+    // source can contain, while bounding the work.
+    const MAX_ATTEMPTS: u64 = 1 << 20;
     let len = keyword.len();
-    for prefix in b'a'..=b'z' {
+    for counter in 0..MAX_ATTEMPTS {
+        // Encode `counter` in mixed radix across the identifier chars.
         let mut replacement = String::with_capacity(len);
-        replacement.push(prefix as char);
-        for (_i, c) in keyword.chars().enumerate().skip(1) {
-            // Use the original chars but shifted, to maintain length
-            replacement.push(if c.is_alphabetic() { c } else { 'x' });
+        let mut n = counter;
+        replacement.push(FIRST[(n % FIRST.len() as u64) as usize] as char);
+        n /= FIRST.len() as u64;
+        for _ in 1..len {
+            replacement.push(REST[(n % REST.len() as u64) as usize] as char);
+            n /= REST.len() as u64;
         }
-        if replacement.len() == len
-            && !source.contains(&replacement)
-            && !PYTHON_KEYWORDS.contains(&replacement.as_str())
-        {
-            return replacement;
+        if n > 0 {
+            // Counter exceeds the candidate space for this length.
+            return None;
+        }
+        if !source.contains(&replacement) && !PYTHON_KEYWORDS.contains(&replacement.as_str()) {
+            return Some(replacement);
         }
     }
-    // Fallback: all x's
-    "x".repeat(len)
+    None
 }
 
 /// Parse a Python expression, handling contextual keywords (Python keywords
@@ -565,15 +582,33 @@ fn parse_inner(
                         let span_text = source.get(src_start..src_end).unwrap_or("");
                         if let Some(kw) = PYTHON_KEYWORDS.iter().find(|k| **k == span_text).copied()
                         {
-                            let replacement = keyword_renames
+                            let existing = keyword_renames
                                 .iter()
                                 .find(|(_, v)| v.as_str() == kw)
-                                .map(|(k, _)| k.clone())
-                                .unwrap_or_else(|| {
-                                    let r = make_replacement(kw, &source);
-                                    keyword_renames.insert(r.clone(), kw.to_string());
-                                    r
-                                });
+                                .map(|(k, _)| k.clone());
+                            let replacement = match existing {
+                                Some(r) => r,
+                                None => match make_replacement(kw, &source) {
+                                    Some(r) => {
+                                        keyword_renames.insert(r.clone(), kw.to_string());
+                                        r
+                                    }
+                                    None => {
+                                        // Candidate space exhausted (the
+                                        // source contains every same-length
+                                        // identifier we can generate).
+                                        // Refuse rather than pick a name
+                                        // that collides with a legitimate
+                                        // attribute and silently rewrites
+                                        // it.
+                                        return Err(ExpressionError::new(format!(
+                                            "Cannot parse keyword attribute '.{kw}': \
+                                             no unused replacement identifier exists \
+                                             for this expression"
+                                        )));
+                                    }
+                                },
+                            };
                             // Replace exactly the error span — same
                             // length, preserves positions.
                             source = format!(

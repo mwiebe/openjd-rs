@@ -2707,3 +2707,49 @@ fn repr_py_newline_in_list_elements() {
         "['a\\nb', 'c']"
     );
 }
+
+// === Regression tests: moderate widths/precision (review finding 2) ===
+// Rust's formatting machinery panics ("Formatting argument out of
+// range") for width/precision above u16::MAX, and values like
+// 1,000,000 pass the operation budget. Padding is now manual with a
+// memory check before allocation.
+
+#[test]
+fn ljust_moderate_width_succeeds() {
+    let v = eval("len(ljust('x', 1000000))");
+    assert_eq!(v.to_display_string(), "1000000");
+}
+#[test]
+fn rjust_moderate_width_succeeds() {
+    let v = eval("len(rjust('x', 1000000))");
+    assert_eq!(v.to_display_string(), "1000000");
+}
+#[test]
+fn center_moderate_width_succeeds() {
+    let v = eval("len(center('x', 1000000))");
+    assert_eq!(v.to_display_string(), "1000000");
+}
+#[test]
+fn pad_functions_memory_error_before_alloc() {
+    // With a small memory limit the padded output must be rejected by
+    // the budget check before allocation.
+    for expr in [
+        "ljust('x', 1000000)",
+        "rjust('x', 1000000)",
+        "center('x', 1000000)",
+    ] {
+        let e = openjd_expr::ParsedExpression::new(expr)
+            .and_then(|p| {
+                let st = SymbolTable::new();
+                let tables = [&st];
+                p.with_memory_limit(1024).evaluate_with_metrics(&tables)
+            })
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("Expression memory usage (1000000 bytes) exceeded limit (1024 bytes)"),
+            "{expr}: got {e}"
+        );
+    }
+}

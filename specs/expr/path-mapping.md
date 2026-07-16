@@ -54,9 +54,13 @@ Filesystem matching splits both the rule's `source_path` and the input
 into **pathlib-style parts** (`functions::path_parse::parts`), whose
 first component is the anchor (`/`, `C:\`, `\\server\share\`) — the
 same shape as Python's `PurePath.parts`, which the reference
-implementation matches via `is_relative_to`. Because the anchor is a
-component, a relative input can never match an absolute rule (and vice
-versa): `home/user/f` does not match a rule for `/home/user`.
+implementation matches via `is_relative_to`. An explicit absoluteness
+comparison guards the parts match: pathlib's `parts` for `"."` (and
+`""`) is empty, so without the gate a relative-dot source would act as
+a universal prefix. With it, a `"."` rule matches exactly the relative
+inputs (as `PurePosixPath("a/b").is_relative_to(".")` is True while
+`PurePosixPath("/x").is_relative_to(".")` is False), and a relative
+input can never match an absolute rule or vice versa.
 
 ### apply_with_format
 

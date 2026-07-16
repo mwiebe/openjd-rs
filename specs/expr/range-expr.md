@@ -51,15 +51,16 @@ specified. Descending ranges like `"10-1:-1"` are normalized to ascending form d
 
 Span arithmetic inside `IntRange` (`new`, `len`, `contains`, `get`) is
 performed in i128: the span of two i64 endpoints can reach 2^64 − 1,
-which overflows i64 for extreme inputs like
-`"-9223372036854775807-9223372036854775807"` (which the Python
-reference accepts via bignums, so parsing must succeed here too).
-`IntRange::len` saturates at `usize::MAX`; `RangeExpr::len` saturates
-at 2^63 − 1 because the packed `length` field reserves its most
-significant bit as the contiguous-display flag. Values at these
-magnitudes are far beyond what the evaluator's operation limit permits
-materializing, so the saturation is observable only through the
-symbolic accessors.
+which overflows i64. Ranges whose logical element count exceeds
+`i64::MAX` are **rejected at construction** (both per chunk in
+`IntRange::new` and for the exact u128 total in `from_ranges`): the
+expression language's `int` type is int64, so `len(r)`, indexing, and
+slicing on a larger range cannot produce representable values. This is
+a deliberate divergence from the Python reference, which parses such
+ranges via bignums but fails its own int64 bounds check as soon as a
+count crosses into the value model. Within the accepted domain every
+length, index, and cumulative sum is exact — no saturation is
+observable through any public accessor.
 
 This is a deliberate simplification over the Python reference implementation, which
 preserves the user-supplied direction. The Rust crate chose canonical form because

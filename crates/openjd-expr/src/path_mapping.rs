@@ -126,6 +126,18 @@ impl PathMappingRule {
         } else {
             PathFormat::Posix
         };
+        // Absoluteness gate: pathlib's `parts` for "." (and "") is empty,
+        // so without this check a relative-dot source would act as a
+        // universal prefix and match absolute inputs. Python's
+        // `PurePosixPath("/x").is_relative_to(".")` is False because the
+        // anchors differ; compare absoluteness explicitly for the same
+        // effect (the anchor components handle the rest — including
+        // drive-relative "C:foo" vs "foo" — once both sides agree here).
+        if crate::functions::path::is_absolute(&self.source_path, fmt)
+            != crate::functions::path::is_absolute(path, fmt)
+        {
+            return None;
+        }
         let source_parts = crate::functions::path_parse::parts(&self.source_path, fmt);
         let path_parts = crate::functions::path_parse::parts(path, fmt);
 

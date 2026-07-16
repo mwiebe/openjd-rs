@@ -427,25 +427,28 @@ fn range_expr_max_large_range_perf() {
     );
 }
 
-// === Regression tests: extreme range bounds (quality report §7 X1) ===
-// IntRange::new previously used unchecked i64 subtraction to compute
-// the span, which overflowed for ranges wider than i64::MAX (debug
-// panic / silent wrap in release). Python parses these fine (bignums).
+// === Regression tests: extreme range bounds (quality report §7 X1, review finding 1) ===
+// IntRange::new originally used unchecked i64 subtraction to compute
+// the span, panicking for ranges wider than i64::MAX. Such ranges are
+// now rejected at construction with a clean error: the expression
+// language's `int` type cannot represent their length, so `len()`,
+// indexing, and slicing on them would be wrong. (The Python reference
+// parses them via bignums, but any result crossing into the int type
+// fails its int64 bounds check there too.)
 
 #[test]
-fn parse_extreme_span_range() {
+fn parse_extreme_span_range_rejected() {
     use openjd_expr::RangeExpr;
-    let r: RangeExpr = "-9223372036854775807-9223372036854775807"
-        .parse()
-        .expect("extreme-span range must parse");
-    // 2^64 - 1 logical elements; RangeExpr::len() caps at 2^63 - 1
-    // because the packed length field reserves its MSB as the
-    // contiguous-display flag. (Python reports the exact bignum count;
-    // anything at this magnitude is far beyond materialization limits.)
-    assert_eq!(r.len(), (usize::MAX >> 1));
-    assert!(r.contains(0));
-    assert!(r.contains(-9223372036854775807));
-    assert!(r.contains(9223372036854775807));
+    let err = "-9223372036854775807-9223372036854775807"
+        .parse::<RangeExpr>()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains(
+            "Range: length (18446744073709551615) exceeds the maximum supported (9223372036854775807)"
+        ),
+        "got: {err}"
+    );
 }
 #[test]
 fn parse_full_domain_range_with_step() {
@@ -458,4 +461,7 @@ fn parse_full_domain_range_with_step() {
     assert!(r.contains(-9223372036854775807));
     assert!(r.contains(1)); // k = 2
     assert!(!r.contains(0));
+    // Consumers are exact for stepped extreme ranges.
+    assert_eq!(r.get(-1), Some(4611686018427387905));
+    assert_eq!(r.get(0), Some(-9223372036854775807));
 }

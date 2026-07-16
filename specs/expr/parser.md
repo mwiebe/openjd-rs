@@ -81,6 +81,16 @@ produces a parse error, so it is never rewritten. This matches the
 Python implementation's `ast_parse_keyword_context()`, which likewise
 derives the keyword position from the `SyntaxError` offset.
 
+Replacement identifiers are enumerated systematically (first char from
+`[a-zA-Z]`, rest from `[a-zA-Z0-9]`) and each candidate is verified
+absent from the source before use. If the space is exhausted — the
+source contains every same-length candidate — parsing fails with a
+clean error rather than picking a name that collides with a legitimate
+attribute. At evaluation time, renames are resolved by **exact dotted-
+path component match** (`resolve_keyword_renames`), never by substring
+replacement, so replacements that are prefixes of one another (e.g.
+`aa` and `aaaa`) cannot corrupt each other's paths.
+
 ### Reverse mapping at evaluation
 
 The parse-time replacement only rewrites the source; the resulting AST contains the

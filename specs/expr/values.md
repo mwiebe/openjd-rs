@@ -282,10 +282,16 @@ on length mismatch without iterating.
 
 `PartialEq` delegates to the `equals()` method, which handles cross-type matching
 explicitly: Int↔Float compares via `(i as f64) == f`, String↔Path compares the string
-values, and list↔list iterates element-wise using `equals()` recursively. List↔RangeExpr
-comparison checks lengths first (O(1) on the range), then zips the range's lazy
-iterator against the list — it never materializes the range, so comparing a small
-list against a symbolic range with billions of logical elements is O(list length).
+values, and list↔list iterates element-wise using `equals()` recursively.
+
+List↔RangeExpr equality is **not** part of `equals()`/`PartialEq`: the
+language's `==` operator does treat `[1, 2, 3]` and `range_expr('1-3')`
+as equal, but that rule lives in the context-aware
+`functions::comparison::values_equal`, which charges
+`max(len_a, len_b)` operations before the length check (mirroring the
+Python reference, where the comparison materializes the range).
+Keeping it out of `PartialEq` preserves the `a == b ⇒ hash(a) ==
+hash(b)` contract — lists and ranges hash under different tags.
 
 ### Tag-Based Hashing Strategy
 

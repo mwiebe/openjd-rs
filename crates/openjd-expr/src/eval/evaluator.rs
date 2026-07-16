@@ -1533,14 +1533,25 @@ fn resolve_keyword_renames(
     if renames.is_empty() {
         return name.to_string();
     }
-    let mut result = name.to_string();
-    for (replacement, original) in renames {
-        // Replace .replacement with .original in dotted paths
-        let from = format!(".{replacement}");
-        let to = format!(".{original}");
-        result = result.replace(&from, &to);
-    }
-    result
+    // Exact component matching: split the dotted path and map each
+    // component through the rename table. (An earlier version did
+    // sequential substring replacement of ".replacement" in HashMap
+    // iteration order, which corrupted paths whenever one replacement
+    // was a prefix of another — e.g. renames {aa→if, aaaa→else} turned
+    // ".aaaa" into ".ifaa" when ".aa" happened to be applied first.)
+    name.split('.')
+        .enumerate()
+        .map(|(i, part)| {
+            // The first component is never an attribute position, so it
+            // is never renamed by the parser.
+            if i > 0 {
+                renames.get(part).map_or(part, |orig| orig.as_str())
+            } else {
+                part
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 use crate::types::ExprType;

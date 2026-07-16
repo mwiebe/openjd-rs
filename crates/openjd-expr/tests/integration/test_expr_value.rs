@@ -1303,3 +1303,45 @@ fn nonempty_list_elem_type_unchanged() {
     let v = ExprValue::ListString(vec!["a".into(), "b".into()], 2);
     assert_eq!(v.list_elem_type(), Some(ExprType::STRING));
 }
+
+// === Regression tests: Eq/Hash contract for lists vs ranges (review finding 5) ===
+// ExprValue::equals previously treated ListInt([1,2,3]) and
+// range_expr('1-3') as equal while they hash under different tags,
+// violating `a == b ⇒ hash(a) == hash(b)`. The cross-type rule now
+// lives only in the language-level comparison (with op accounting);
+// PartialEq treats the variants as distinct.
+
+#[test]
+fn list_and_range_are_not_partial_eq() {
+    let list = ExprValue::make_list(
+        vec![ExprValue::Int(1), ExprValue::Int(2), ExprValue::Int(3)],
+        ExprType::INT,
+    )
+    .unwrap();
+    let range = ExprValue::RangeExpr("1-3".parse().unwrap());
+    assert_ne!(list, range);
+    assert_ne!(range, list);
+}
+#[test]
+fn eq_hash_contract_holds_for_list_and_range() {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    fn h(v: &ExprValue) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        v.hash(&mut hasher);
+        hasher.finish()
+    }
+    let list = ExprValue::make_list(
+        vec![ExprValue::Int(1), ExprValue::Int(2), ExprValue::Int(3)],
+        ExprType::INT,
+    )
+    .unwrap();
+    let range = ExprValue::RangeExpr("1-3".parse().unwrap());
+    // The contract: equal values hash equally. Since the hashes differ
+    // by design (different tags), the values must not compare equal.
+    if list == range {
+        assert_eq!(h(&list), h(&range));
+    }
+    // The *language* operator still sees them as equal (see
+    // test_comparison.rs list_eq_range_expr_equal).
+}

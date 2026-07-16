@@ -172,10 +172,27 @@ pub fn round_fn(ctx: Ctx, a: &[ExprValue]) -> R {
                         format!("{}.0", rounded as i64),
                     )?))
                 } else {
-                    Ok(ExprValue::Float(Float64::with_str(
-                        rounded,
-                        format!("{:.prec$}", rounded, prec = ndigits as usize),
-                    )?))
+                    // Rust's formatting machinery panics ("Formatting
+                    // argument out of range") for precision above
+                    // u16::MAX, and operation budgeting alone admits
+                    // precisions like 100,000. An f64's exact decimal
+                    // expansion has at most 1074 fractional digits, so
+                    // format at most that many and zero-fill the rest —
+                    // identical output to Python's f"{x:.{n}f}", with the
+                    // full length checked against the memory budget
+                    // before allocation.
+                    const MAX_F64_FRACTION_DIGITS: usize = 1074;
+                    let prec = (ndigits as usize).min(MAX_F64_FRACTION_DIGITS);
+                    let mut text = format!("{:.prec$}", rounded, prec = prec);
+                    let pad = ndigits as usize - prec;
+                    if pad > 0 {
+                        ctx.check_memory(text.len() + pad)?;
+                        text.reserve_exact(pad);
+                        for _ in 0..pad {
+                            text.push('0');
+                        }
+                    }
+                    Ok(ExprValue::Float(Float64::with_str(rounded, text)?))
                 }
             } else {
                 // ndigits < 0. round(v, n) is 0 whenever 10^|n| exceeds

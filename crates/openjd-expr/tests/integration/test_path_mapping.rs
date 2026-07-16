@@ -1148,3 +1148,69 @@ fn posix_backslash_is_filename_char_not_separator() {
         Some("/dst/b\\c/d".to_string())
     );
 }
+
+// === Regression tests: "." and empty sources (review finding 4) ===
+// pathlib parts("."/"") are empty; without an explicit absoluteness
+// gate a relative-dot rule became a universal prefix matching absolute
+// inputs (Python: PurePosixPath("/x").is_relative_to(".") is False).
+
+#[test]
+fn dot_rule_does_not_match_absolute_path() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: ".".to_string(),
+        destination_path: "/dst".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("/absolute/file", PathFormat::Posix),
+        None
+    );
+}
+#[test]
+fn dot_rule_matches_relative_path() {
+    // Python: PurePosixPath("a/b").is_relative_to(".") is True.
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: ".".to_string(),
+        destination_path: "/dst".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("a/b", PathFormat::Posix),
+        Some("/dst/a/b".to_string())
+    );
+}
+#[test]
+fn empty_rule_does_not_match_absolute_path() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: String::new(),
+        destination_path: "/dst".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("/absolute/file", PathFormat::Posix),
+        None
+    );
+}
+#[test]
+fn root_rule_matches_absolute_only() {
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Posix,
+        source_path: "/".to_string(),
+        destination_path: "/dst".to_string(),
+    };
+    assert_eq!(
+        rule.apply_with_format("/a/b", PathFormat::Posix),
+        Some("/dst/a/b".to_string())
+    );
+    assert_eq!(rule.apply_with_format("a/b", PathFormat::Posix), None);
+}
+#[test]
+fn drive_relative_rule_does_not_match_bare_relative() {
+    // PureWindowsPath("foo").is_relative_to("C:foo") is False.
+    let rule = PathMappingRule {
+        source_path_format: PathFormat::Windows,
+        source_path: "C:foo".to_string(),
+        destination_path: "D:\\x".to_string(),
+    };
+    assert_eq!(rule.apply_with_format("foo\\f", PathFormat::Windows), None);
+}

@@ -116,25 +116,58 @@ impl IntRange {
                 "Range: an ascending range must have a positive step",
             ));
         }
+        // Count computed in i128: the span of two i64 endpoints can
+        // reach 2^64 - 1, which overflows i64.
+        //
+        // Ranges with more than i64::MAX elements are rejected: the
+        // expression language's `int` type is int64, so `len(r)`,
+        // indexing, and slicing on a larger range cannot produce
+        // representable values. (The Python reference parses such
+        // ranges thanks to bignums, but any operation whose result
+        // crosses into the int type fails its int64 bounds check
+        // there too — rejecting at construction keeps every Rust
+        // consumer exact rather than saturating inconsistently.)
+        const MAX_COUNT: i128 = i64::MAX as i128;
         if step < 0 {
-            // Normalize descending to ascending form (matching Python _IntRange).
-            //
-            // Arithmetic is done in i128: the span `start - end` of two
-            // i64 values can be up to 2^64 - 1, which overflows i64 for
-            // extreme ranges like `-9223372036854775807-9223372036854775807`
-            // (Python handles these with bignums, so parsing must succeed).
-            let count = ((start as i128 - end as i128) / (-(step as i128))) + 1;
-            let last = start as i128 + (count - 1) * step as i128; // smallest value
+            // Normalize descending to ascending form (matching Python
+            // _IntRange). All arithmetic in i128 — this also avoids
+            // negating `step == i64::MIN`, which would overflow i64.
+            let neg_step = -(step as i128);
+            let count = (start as i128 - end as i128) / neg_step + 1;
+            if count > MAX_COUNT {
+                return Err(ExpressionError::parse_error(format!(
+                    "Range: length ({count}) exceeds the maximum supported ({MAX_COUNT})"
+                )));
+            }
+            let last = start as i128 + (count - 1) * -neg_step; // smallest value
+            let norm_step = if count == 1 {
+                // A single-element range's step is irrelevant; use 1 so
+                // a descending step of i64::MIN normalizes representably.
+                1
+            } else if neg_step > i64::MAX as i128 {
+                // Two elements 2^63 apart: the ascending step doesn't
+                // fit in i64.
+                return Err(ExpressionError::parse_error(
+                    "Range: step magnitude exceeds the supported range",
+                ));
+            } else {
+                neg_step as i64
+            };
             Ok(Self {
                 // `last` lies between `end` and `start`, so it fits in i64.
                 start: last as i64,
                 end: start,
-                step: -step,
+                step: norm_step,
             })
         } else {
             // Normalize end to actual last value in the range (i128 for the
             // same overflow reason as above).
             let count = (end as i128 - start as i128) / step as i128 + 1;
+            if count > MAX_COUNT {
+                return Err(ExpressionError::parse_error(format!(
+                    "Range: length ({count}) exceeds the maximum supported ({MAX_COUNT})"
+                )));
+            }
             let actual_end = start as i128 + (count - 1) * step as i128;
             Ok(Self {
                 start,
@@ -148,9 +181,9 @@ impl IntRange {
     /// Number of integers in this range.
     ///
     /// Computed in i128 because the span `end - start` can exceed
-    /// `i64::MAX`. Saturates at `usize::MAX` for the single pathological
-    /// range covering the full i64 domain (count 2^64), which cannot be
-    /// materialized within evaluator limits anyway.
+    /// `i64::MAX`. Constructor-validated ranges always have counts
+    /// `<= i64::MAX`; the saturating conversion is defense-in-depth for
+    /// values built through the public fields.
     pub fn len(&self) -> usize {
         // After normalization, start <= end and step > 0 always
         let count = (self.end as i128 - self.start as i128) / self.step as i128 + 1;
@@ -284,17 +317,25 @@ impl RangeExpr {
         let mut i = 0;
         while i < values.len() {
             let start = values[i];
-            // Detect step: check if next values form an arithmetic sequence
+            // Detect step: check if next values form an arithmetic sequence.
+            // Deltas are computed in i128 — adjacent sorted i64 values can
+            // differ by more than i64::MAX (e.g. [i64::MIN, i64::MAX]).
             if i + 1 < values.len() {
-                let step = values[i + 1] - values[i];
-                if step != 0 {
+                let step = values[i + 1] as i128 - values[i] as i128;
+                if step != 0 && step <= i64::MAX as i128 {
                     let mut j = i + 1;
-                    while j < values.len() && values[j] == start + (j - i) as i64 * step {
+                    while j < values.len()
+                        && values[j] as i128 == start as i128 + (j - i) as i128 * step
+                    {
                         j += 1;
                     }
                     if j > i + 1 {
                         let end = values[j - 1];
-                        ranges.push(IntRange { start, end, step });
+                        ranges.push(IntRange {
+                            start,
+                            end,
+                            step: step as i64,
+                        });
                         i = j;
                         continue;
                     }
@@ -334,11 +375,13 @@ impl RangeExpr {
         }
         // Sort by start
         ranges.sort_by_key(|r| (r.start, r.end));
-        // Merge adjacent ranges with same step
+        // Merge adjacent ranges with same step. The adjacency test is
+        // computed in i128: `end + step` overflows i64 when `end` is at
+        // the domain edge.
         let mut merged = vec![ranges[0].clone()];
         for r in &ranges[1..] {
             let last = merged.last().unwrap();
-            if last.step == r.step && last.end + r.step == r.start {
+            if last.step == r.step && last.end as i128 + r.step as i128 == r.start as i128 {
                 let new_end = r.end;
                 let last_start = last.start;
                 let step = last.step;
@@ -361,20 +404,22 @@ impl RangeExpr {
                 )));
             }
         }
-        // Use saturating arithmetic when summing per-chunk lengths so that a
-        // multi-chunk range whose combined logical length exceeds `usize`
-        // capacity saturates rather than wrapping to a small value that
-        // would corrupt `len()`/`is_empty()`. The cap is `LENGTH_MASK`
-        // (2^63 - 1), not `usize::MAX`, because the MSB of the packed
-        // `length` field is the contiguous-display flag — saturating into
-        // it would silently flip Display formatting. `RangeExpr` stores
-        // chunks symbolically, so an enormous logical length is not itself
-        // a DoS vector — only the chunk count is capped via
-        // [`MAX_RANGE_EXPR_CHUNKS`].
-        let length: usize = merged
-            .iter()
-            .fold(0usize, |acc, r| acc.saturating_add(r.len()))
-            .min(LENGTH_MASK);
+        // Exact total count in u128 (each chunk count <= i64::MAX after
+        // IntRange::new validation, and the chunk count is capped, so
+        // u128 cannot overflow). Reject totals beyond i64::MAX — the
+        // expression language's `int` cannot represent such a length,
+        // so `len(r)`, indexing, and slicing would all be wrong. This
+        // also guarantees the packed `length` field's MSB (the
+        // contiguous-display flag) is never touched by a length, and
+        // that `build_cumulative`'s per-chunk prefix sums are exact.
+        let total: u128 = merged.iter().map(|r| r.len() as u128).sum();
+        if total > i64::MAX as u128 {
+            return Err(ExpressionError::parse_error(format!(
+                "Range expression length ({total}) exceeds the maximum supported ({})",
+                i64::MAX
+            )));
+        }
+        let length = total as usize;
         let cumulative_lengths = build_cumulative(&merged);
         Ok(Self {
             ranges: merged,
@@ -994,13 +1039,10 @@ mod tests {
     }
 
     #[test]
-    fn length_uses_saturating_sum() {
-        // `from_ranges` uses `saturating_add` when summing per-chunk lengths,
-        // so a multi-chunk range whose combined logical length would exceed
-        // `usize::MAX` cannot wrap to a small value that would corrupt
-        // `len()` / `is_empty()`. This test confirms the happy-path summation
-        // matches the expected total; the saturating behavior is exercised
-        // only in the arithmetic failure mode and is a defensive guard.
+    fn length_sums_chunks_exactly() {
+        // `from_ranges` sums per-chunk counts exactly in u128 and rejects
+        // totals beyond i64::MAX (see reject_oversized_total_length), so
+        // the packed length is always exact.
         let ranges = vec![
             IntRange::new(0, 1_000_000, 1).unwrap(),
             IntRange::new(2_000_000, 3_000_000, 1).unwrap(),
@@ -1008,6 +1050,82 @@ mod tests {
         let r = RangeExpr::from_ranges(ranges).unwrap();
         assert_eq!(r.ranges().len(), 2);
         assert_eq!(r.len(), 1_000_001 + 1_000_001);
+    }
+
+    #[test]
+    fn reject_oversized_single_chunk() {
+        // A single chunk spanning more than i64::MAX values is rejected at
+        // construction: `len(r)` returns the language's int type, which
+        // cannot represent the count, and indexing/slicing would be wrong.
+        let err = "-9223372036854775807-9223372036854775807"
+            .parse::<RangeExpr>()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "Range: length (18446744073709551615) exceeds the maximum supported (9223372036854775807)"
+            ),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_oversized_total_length() {
+        // Two chunks each under the cap whose combined count exceeds
+        // i64::MAX are rejected by the exact u128 total check.
+        let ranges = vec![
+            IntRange::new(i64::MIN, -2, 1).unwrap(),
+            IntRange::new(1, i64::MAX, 1).unwrap(),
+        ];
+        let err = RangeExpr::from_ranges(ranges).unwrap_err().to_string();
+        assert!(
+            err.contains("Range expression length (18446744073709551614) exceeds the maximum supported (9223372036854775807)"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn max_representable_chunk_is_exact() {
+        // Exactly i64::MAX elements: 0..=i64::MAX-1 — allowed, with an
+        // exact length and exact endpoint accessors.
+        let r = IntRange::new(0, i64::MAX - 1, 1).unwrap();
+        assert_eq!(r.len(), i64::MAX as usize);
+        let re = RangeExpr::from_ranges(vec![r]).unwrap();
+        assert_eq!(re.len(), i64::MAX as usize);
+        assert_eq!(re.get(-1), Some(i64::MAX - 1));
+        assert_eq!(re.get(0), Some(0));
+    }
+
+    #[test]
+    fn intrange_min_step_single_element_no_panic() {
+        // A descending step of i64::MIN cannot be negated in i64; the
+        // single-element normalization uses step 1.
+        let r = IntRange::new(1, 0, i64::MIN).unwrap();
+        assert_eq!((r.start, r.end, r.step), (1, 1, 1));
+    }
+
+    #[test]
+    fn intrange_min_step_two_elements_rejected() {
+        // Two elements 2^63 apart would need an ascending step of 2^63,
+        // which i64 cannot represent.
+        let err = IntRange::new(i64::MAX, i64::MIN, i64::MIN)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Range: step magnitude exceeds the supported range"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn from_values_extreme_span_no_panic() {
+        // Adjacent sorted values can differ by more than i64::MAX; run
+        // detection must not overflow. Result: two single-value chunks.
+        let r = RangeExpr::from_values(vec![i64::MIN, i64::MAX]);
+        assert_eq!(r.len(), 2);
+        assert!(r.contains(i64::MIN));
+        assert!(r.contains(i64::MAX));
+        assert_eq!(r.get(-1), Some(i64::MAX));
     }
 
     #[test]
