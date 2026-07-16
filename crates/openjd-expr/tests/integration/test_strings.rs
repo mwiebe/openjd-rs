@@ -2653,3 +2653,57 @@ fn zfill_huge_width_memory_error() {
         ],
     );
 }
+
+// === Regression tests: repr_py control chars and quote selection (quality report §7 X15) ===
+// repr_py previously escaped only backslash and single-quote, emitting
+// raw newlines/control characters (invalid Python literals). It now
+// follows CPython's repr, which spec §2.2.6 pins it to. Expected
+// values below verified against CPython 3.13 repr().
+
+#[test]
+fn repr_py_escapes_newline() {
+    assert_eq!(eval("repr_py('a\\nb')").to_display_string(), "'a\\nb'");
+}
+#[test]
+fn repr_py_escapes_tab_and_cr() {
+    assert_eq!(
+        eval("repr_py('a\\tb\\rc')").to_display_string(),
+        "'a\\tb\\rc'"
+    );
+}
+#[test]
+fn repr_py_escapes_nul_as_hex() {
+    assert_eq!(eval("repr_py('a\\x00b')").to_display_string(), "'a\\x00b'");
+}
+#[test]
+fn repr_py_escapes_c1_control_as_hex() {
+    assert_eq!(eval("repr_py('\\x85')").to_display_string(), "'\\x85'");
+}
+#[test]
+fn repr_py_double_quotes_when_contains_single_quote() {
+    // CPython: repr("'s") == "\"'s\""
+    assert_eq!(eval("repr_py(\"'s\")").to_display_string(), "\"'s\"");
+}
+#[test]
+fn repr_py_single_quotes_when_contains_both() {
+    // CPython: repr('it\'s "x"') == '\'it\\\'s "x"\''
+    assert_eq!(
+        eval("repr_py('it\\'s \"x\"')").to_display_string(),
+        "'it\\'s \"x\"'"
+    );
+}
+#[test]
+fn repr_py_backslash_still_escaped() {
+    assert_eq!(eval("repr_py('a\\\\b')").to_display_string(), "'a\\\\b'");
+}
+#[test]
+fn repr_py_printable_unicode_passes_through() {
+    assert_eq!(eval("repr_py('café')").to_display_string(), "'café'");
+}
+#[test]
+fn repr_py_newline_in_list_elements() {
+    assert_eq!(
+        eval("repr_py(['a\\nb', 'c'])").to_display_string(),
+        "['a\\nb', 'c']"
+    );
+}

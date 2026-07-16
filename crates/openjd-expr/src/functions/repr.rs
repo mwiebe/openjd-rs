@@ -47,9 +47,53 @@ pub fn repr_pwsh_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     Ok(ExprValue::String(repr_pwsh(&a[0])))
 }
 
+/// Render a string as a Python string literal, following CPython's
+/// `repr(str)` (which the spec §2.2.6 pins `repr_py` to):
+///
+/// - Prefer single quotes; switch to double quotes when the string
+///   contains `'` but not `"`.
+/// - Escape `\`, the active quote character, and the named control
+///   escapes `\n`, `\r`, `\t`.
+/// - Escape other control characters (Unicode category Cc — all below
+///   U+0100) as `\xNN`.
+///
+/// Divergence note: CPython additionally escapes non-printable
+/// characters in categories Cf/Zl/Zp/Zs/Cs/Cn (e.g. U+200B → `\u200b`),
+/// which requires Unicode category tables this crate does not carry.
+/// Those characters pass through literally here; all *control*
+/// characters — the class that breaks generated scripts — are escaped.
+fn python_str_repr(s: &str) -> String {
+    use std::fmt::Write;
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if c.is_control() => {
+                let _ = write!(out, "\\x{:02x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
 fn repr_py(val: &ExprValue) -> String {
     match val {
-        ExprValue::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'")),
+        ExprValue::String(s) => python_str_repr(s),
         ExprValue::Bool(b) => if *b { "True" } else { "False" }.to_string(),
         ExprValue::Null => "None".to_string(),
         ExprValue::Int(i) => i.to_string(),
@@ -67,9 +111,7 @@ fn repr_py(val: &ExprValue) -> String {
                 iter.map(|e| repr_py(&e)).collect::<Vec<_>>().join(", ")
             )
         }
-        ExprValue::Path { value, .. } => {
-            format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
-        }
+        ExprValue::Path { value, .. } => python_str_repr(value),
         ExprValue::RangeExpr(r) => format!("'{r}'"),
         _ => val.to_display_string(),
     }
