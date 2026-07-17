@@ -43,7 +43,7 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
 │   ├── env_script              — EnvironmentScriptRunner
 │   └── step_script             — StepScriptRunner
-├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier
+├── session                     — Session, SessionConfig, SessionState, SessionCancelHandle, EnvironmentIdentifier
 ├── session_user                — SessionUser trait, PosixSessionUser, WindowsSessionUser
 ├── tempdir                     — TempDir, StickyBitPolicy, openjd_temp_dir
 ├── win32 (Windows only)        — Windows helpers (mostly crate-internal; get_process_user is public)
@@ -257,7 +257,42 @@ impl Session {
 }
 ```
 
-#### Test-only constructors
+### `SessionCancelHandle`
+
+A thread-safe, reusable handle for cancelling whichever action is currently
+running while another thread or task owns the mutable `Session`. Obtain it from
+`Session::cancel_handle`; it remains valid for the session's lifetime and each
+call targets the per-action cancellation state installed for the action that is
+running at that moment.
+
+```rust
+pub struct SessionCancelHandle { /* private fields */ }
+
+impl SessionCancelHandle {
+    /// Request cancellation of the current action.
+    ///
+    /// `time_limit` has the same semantics as `Session::cancel_action`:
+    /// `Some(Duration::ZERO)` requests immediate termination, `Some(d)` uses
+    /// `d` as the notify-then-terminate period, and `None` uses the action or
+    /// session default. When `mark_action_failed` is true, a canceled action
+    /// is published as Failed rather than Canceled.
+    ///
+    /// Returns true when an action was found and cancellation was delivered;
+    /// returns false when the session had no running action.
+    pub fn cancel(
+        &self,
+        time_limit: Option<Duration>,
+        mark_action_failed: bool,
+    ) -> bool;
+}
+```
+
+Unlike `Session::cancel_action`, this method cannot publish the transient
+`SessionState::Canceling` state because it does not own the `Session`; callers
+observe the Running state followed by the terminal action state. For cross-user
+sessions it also sends the corresponding command to the helper process.
+
+### Test-only `Session` constructors
 
 These are technically public but exist only for test instrumentation
 (they allow building a `Session` that skips the full `SessionConfig`

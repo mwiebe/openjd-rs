@@ -330,10 +330,14 @@ channel, `mark_failed` flag, all behind one `Arc<Mutex<..>>`).
 `SessionCancelHandle::cancel(time_limit, mark_action_failed) -> bool`:
 
 - Returns `false` if no action is running (no per-action token installed).
-- Otherwise delivers exactly what `cancel_action` delivers — the helper pipe cancel
-  command (cross-user sessions), the `time_limit` over the watch channel, and the
-  token cancel — while holding the shared lock so the target action cannot change
-  mid-delivery.
+- Otherwise snapshots the action-specific token and watch sender, marks the
+  action failed when requested, and releases the shared action-state lock before
+  delivery. In-process cancellation is delivered first so a blocked helper pipe
+  cannot delay it or block action setup/teardown.
+- Cross-user helper commands are serialized by a separate shared writer lock and
+  emitted as one newline-terminated record, preventing concurrent
+  `cancel_action`/handle writers from interleaving JSON bytes without retaining
+  the action-state lock during blocking I/O.
 - Unlike `cancel_action`, it cannot set the session's transient `Canceling` state
   (the `Session` is owned elsewhere); the state moves directly to the terminal value
   when the canceled action finishes.
