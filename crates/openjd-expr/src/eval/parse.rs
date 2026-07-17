@@ -567,11 +567,17 @@ fn parse_inner(
                     let msg = format!("Syntax error: {}", e.error);
                     let start = e.location.start().to_usize();
                     let end = e.location.end().to_usize();
-                    // For zero-width ranges (like EOF), point at the last char
+                    // Parser locations are measured in `to_parse`, including
+                    // the synthetic opening parenthesis for multiline input.
+                    // Keep that coordinate system here: Display removes the
+                    // opening-parenthesis offset exactly once. Clamping to the
+                    // unwrapped source length would effectively remove one
+                    // byte from an end span before Display corrects it.
+                    let max_offset = source.len() + usize::from(is_multiline);
                     let (col, end_col) = if start == end && !source.is_empty() {
-                        (0, source.len())
+                        (0, max_offset)
                     } else {
-                        (start.min(source.len()), end.min(source.len()))
+                        (start.min(max_offset), end.min(max_offset))
                     };
                     let mut err = ExpressionError::new(msg);
                     if !source.is_empty() {

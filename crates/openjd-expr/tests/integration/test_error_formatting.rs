@@ -640,6 +640,18 @@ fn unclosed_string() {
 // === TestMultiLineExpressions ===
 
 #[test]
+fn multiline_syntax_error_uses_parser_wrap_offset_once() {
+    assert_err(
+        "1 +\n0777",
+        &[
+            "Syntax error: Invalid decimal integer literal\n",
+            "  0777\n",
+            "  ^~~~",
+        ],
+    );
+}
+
+#[test]
 fn multiline_error_in_parens() {
     assert_err(
         "(\n  1 + int('bad')\n)",
