@@ -1006,6 +1006,37 @@ impl Session {
         e
     }
 
+    /// Publish a completed action consistently for local and helper-routed
+    /// subprocesses, including mark-as-failed cancellation and ending-only
+    /// session state.
+    fn finish_action(
+        &mut self,
+        result: crate::subprocess::SubprocessResult,
+    ) -> crate::subprocess::SubprocessResult {
+        let final_state = if self.cancel.lock().mark_failed && result.state == ActionState::Canceled
+        {
+            ActionState::Failed
+        } else {
+            result.state
+        };
+
+        self.action.state = Some(final_state);
+        self.action.ended_at = Some(std::time::SystemTime::now());
+        self.action.exit_code = result.exit_code;
+        self.cancel.reset();
+        self.state = if self.ending_only || final_state != ActionState::Success {
+            SessionState::ReadyEnding
+        } else {
+            SessionState::Ready
+        };
+        self.notify_callback();
+
+        crate::subprocess::SubprocessResult {
+            state: final_state,
+            ..result
+        }
+    }
+
     /// Clean up the session. Deletes working directory if not retained.
     pub fn cleanup(&mut self) {
         if self.cleanup_called {
@@ -1814,29 +1845,7 @@ impl Session {
         // error branch.
         let r = result.map_err(|e| self.fail_action_setup(e))?;
 
-        // Same mark_failed conversion as drive_action: a cancel requested
-        // with mark_action_failed=true (e.g. via SessionCancelHandle) must
-        // report the canceled action as Failed, not Canceled.
-        let final_state = if self.cancel.lock().mark_failed && r.state == ActionState::Canceled {
-            ActionState::Failed
-        } else {
-            r.state
-        };
-
-        self.action.state = Some(final_state);
-        self.action.ended_at = Some(std::time::SystemTime::now());
-        self.action.exit_code = r.exit_code;
-        self.cancel.reset();
-        self.state = if final_state == ActionState::Success {
-            SessionState::Ready
-        } else {
-            SessionState::ReadyEnding
-        };
-        self.notify_callback();
-        Ok(crate::subprocess::SubprocessResult {
-            state: final_state,
-            ..r
-        })
+        Ok(self.finish_action(r))
     }
 
     // --- Internal helpers ---
@@ -1877,66 +1886,11 @@ impl Session {
             }
         }
 
-        let r = match result.expect("loop guarantees result is Some") {
-            Ok(r) => r,
-            Err(e) => {
-                // The subprocess failed to start or the runner encountered an error.
-                // Update session state so callers see Failed instead of stuck Running,
-                // record the reason on the action status, and log it — otherwise the
-                // failure is invisible to log-followers and status pollers alike.
-                session_log!(
-                    error,
-                    &self.session_id,
-                    LogContent::EXCEPTION_INFO,
-                    "Action failed to run: {e}"
-                );
-                self.action.state = Some(ActionState::Failed);
-                self.action.fail_message = Some(e.to_string());
-                self.action.ended_at = Some(std::time::SystemTime::now());
-                self.action.exit_code = None;
-                self.cancel.reset();
-                self.state = SessionState::ReadyEnding;
+        let r = result
+            .expect("loop guarantees result is Some")
+            .map_err(|e| self.fail_action_setup(e))?;
 
-                if let Some(cb) = &self.callback {
-                    if let Some(status) = self.action_status() {
-                        cb(&self.session_id, &status);
-                    }
-                }
-
-                return Err(e);
-            }
-        };
-
-        // If the action was canceled but mark_action_failed is set,
-        // report it as Failed instead of Canceled (matches Python behavior)
-        let final_state = if self.cancel.lock().mark_failed && r.state == ActionState::Canceled {
-            ActionState::Failed
-        } else {
-            r.state
-        };
-
-        self.action.state = Some(final_state);
-        self.action.ended_at = Some(std::time::SystemTime::now());
-        self.action.exit_code = r.exit_code;
-        self.cancel.reset();
-
-        self.state = if self.ending_only || final_state != ActionState::Success {
-            SessionState::ReadyEnding
-        } else {
-            SessionState::Ready
-        };
-
-        if let Some(cb) = &self.callback {
-            if let Some(status) = self.action_status() {
-                cb(&self.session_id, &status);
-            }
-        }
-
-        Ok(crate::subprocess::SubprocessResult {
-            state: final_state,
-            exit_code: r.exit_code,
-            stdout: r.stdout,
-        })
+        Ok(self.finish_action(r))
     }
 
     /// Apply a single ActionMessage to session state.
