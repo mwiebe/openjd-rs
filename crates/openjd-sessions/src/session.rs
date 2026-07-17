@@ -220,6 +220,9 @@ struct CancelShared {
 struct CancelFields {
     /// Per-action cancellation state, shared with `SessionCancelHandle`s.
     shared: Arc<StdMutex<CancelShared>>,
+    /// Serializes writes from `Session::cancel_action` and all cancel handles
+    /// without holding the action-state mutex across blocking pipe I/O.
+    helper_write_lock: Arc<StdMutex<()>>,
     /// External cancellation token from the caller; action tokens are children of this.
     parent_token: Option<CancellationToken>,
 }
@@ -232,6 +235,7 @@ impl CancelFields {
                 request_tx: None,
                 mark_failed: false,
             })),
+            helper_write_lock: Arc::new(StdMutex::new(())),
             parent_token,
         }
     }
@@ -281,6 +285,7 @@ impl CancelFields {
 /// themselves.
 pub struct SessionCancelHandle {
     shared: Arc<StdMutex<CancelShared>>,
+    helper_write_lock: Arc<StdMutex<()>>,
     /// Dup'd cancel-command pipe to the cross-user helper, when one exists.
     cancel_writer: Option<std::fs::File>,
     helper_auth_token: Option<String>,
@@ -298,32 +303,43 @@ impl SessionCancelHandle {
     /// Returns `true` if a running action was found and cancellation was
     /// delivered; `false` if no action was running.
     pub fn cancel(&self, time_limit: Option<Duration>, mark_action_failed: bool) -> bool {
-        // Hold the lock across the whole delivery so the target cannot
-        // change out from under us: `set_action`/`reset` (start/end of an
-        // action on the session thread) take the same lock, so the helper
-        // pipe command, the time-limit send, and the token cancel are all
-        // guaranteed to refer to the same action.
-        let mut shared = self
-            .shared
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let Some(token) = shared.token.clone() else {
-            return false;
+        // Snapshot action-specific cancellation primitives while holding the
+        // state mutex, then release it before any potentially blocking helper
+        // pipe I/O. The token and watch sender remain tied to this action even
+        // if the session installs the next action while delivery is underway.
+        let (token, request_tx) = {
+            let mut shared = self
+                .shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(token) = shared.token.clone() else {
+                return false;
+            };
+            if mark_action_failed {
+                shared.mark_failed = true;
+            }
+            (token, shared.request_tx.clone())
         };
-        if mark_action_failed {
-            shared.mark_failed = true;
-        }
 
-        // Cross-user sessions: also deliver the cancel command to the helper
-        // process over the dup'd pipe, mirroring Session::cancel_action.
-        if let Some(ref writer) = self.cancel_writer {
-            send_helper_cancel_command(writer, self.helper_auth_token.as_deref(), time_limit);
-        }
-
-        if let Some(tx) = &shared.request_tx {
+        // Deliver in-process cancellation first so a blocked helper pipe
+        // cannot delay token cancellation or prevent the session thread from
+        // resetting/installing cancellation state.
+        if let Some(tx) = request_tx {
             let _ = tx.send(time_limit);
         }
         token.cancel();
+
+        // Cross-user sessions also need a helper command. Serialize all local
+        // writers so JSON records cannot interleave, using a lock independent
+        // of CancelShared so action lifecycle transitions remain unblocked.
+        if let Some(ref writer) = self.cancel_writer {
+            let _write_guard = self
+                .helper_write_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            send_helper_cancel_command(writer, self.helper_auth_token.as_deref(), time_limit);
+        }
+
         true
     }
 }
@@ -342,18 +358,58 @@ fn send_helper_cancel_command(
         None => String::new(),
     };
     let cmd = if is_terminate {
-        format!(r#"{{{token_field}"cancel":"TERMINATE"}}"#)
+        format!("{{{token_field}\"cancel\":\"TERMINATE\"}}\n")
     } else {
         let notify_period = time_limit
             .unwrap_or(Duration::from_secs(DEFAULT_CANCEL_NOTIFY_PERIOD_SECS))
             .as_secs();
         format!(
-            r#"{{{token_field}"cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
+            "{{{token_field}\"cancel\":\"NOTIFY_THEN_TERMINATE\",\"notifyPeriodInSeconds\":{notify_period}}}\n"
         )
     };
     let _ = writer.write_all(cmd.as_bytes());
-    let _ = writer.write_all(b"\n");
     let _ = writer.flush();
+}
+
+#[cfg(test)]
+mod cancel_handle_tests {
+    use super::*;
+
+    #[test]
+    fn blocked_helper_write_does_not_hold_action_state_lock() {
+        let token = CancellationToken::new();
+        let (request_tx, _request_rx) = tokio::sync::watch::channel(None);
+        let shared = Arc::new(StdMutex::new(CancelShared {
+            token: Some(token.clone()),
+            request_tx: Some(request_tx),
+            mark_failed: false,
+        }));
+        let helper_write_lock = Arc::new(StdMutex::new(()));
+        let write_guard = helper_write_lock.lock().unwrap();
+        let handle = SessionCancelHandle {
+            shared: shared.clone(),
+            helper_write_lock: helper_write_lock.clone(),
+            cancel_writer: Some(tempfile::tempfile().unwrap()),
+            helper_auth_token: None,
+        };
+
+        let cancel_thread = std::thread::spawn(move || handle.cancel(None, false));
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !token.is_cancelled() && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(
+            token.is_cancelled(),
+            "in-process cancellation was not delivered"
+        );
+        assert!(
+            shared.try_lock().is_ok(),
+            "helper write wait must not retain the action-state mutex"
+        );
+
+        drop(write_guard);
+        assert!(cancel_thread.join().unwrap());
+    }
 }
 
 /// Cross-user execution state.
@@ -815,6 +871,24 @@ impl Session {
         result
     }
 
+    /// Install cancellation state before publishing the Running transition.
+    /// This ordering lets a state-change callback cancel the action without
+    /// racing a not-yet-installed token.
+    fn begin_action(
+        &mut self,
+    ) -> (
+        CancellationToken,
+        tokio::sync::watch::Receiver<Option<Duration>>,
+    ) {
+        let cancel_token = self.new_action_cancel_token();
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
+        self.cancel.set_action(cancel_token.clone(), cancel_tx);
+        self.action.reset();
+        self.state = SessionState::Running;
+        self.notify_callback();
+        (cancel_token, cancel_rx)
+    }
+
     /// Create a cancellation token for an action. If a parent token was
     /// provided at session construction, the action token is a child of it
     /// so that cancelling the parent cascades to all actions.
@@ -851,6 +925,11 @@ impl Session {
         // asserting whatever framing it expects; we still write a valid
         // tokenized command if we have a token.
         if let Some(ref writer) = self.cross_user.cancel_writer {
+            let _write_guard = self
+                .cancel
+                .helper_write_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             send_helper_cancel_command(
                 writer,
                 self.cross_user.helper_auth_token.as_deref(),
@@ -892,6 +971,7 @@ impl Session {
         }
         SessionCancelHandle {
             shared: self.cancel.shared.clone(),
+            helper_write_lock: self.cancel.helper_write_lock.clone(),
             cancel_writer,
             helper_auth_token: self.cross_user.helper_auth_token.clone(),
         }
@@ -1065,18 +1145,12 @@ impl Session {
             .and_then(|s| s.actions.on_enter.as_ref())
             .is_some()
         {
-            self.action.reset();
-            self.state = SessionState::Running;
-            self.notify_callback();
+            let (cancel_token, cancel_rx) = self.begin_action();
 
             log_section_banner(
                 &self.session_id,
                 &format!("Entering Environment: {}", env.name),
             );
-
-            let cancel_token = self.new_action_cancel_token();
-            let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
-            self.cancel.set_action(cancel_token.clone(), cancel_tx);
 
             let env_vars = self.evaluate_env_vars(os_env_vars);
             let mut action_symtab = symtab.clone();
@@ -1279,18 +1353,12 @@ impl Session {
             .and_then(|s| s.actions.on_exit.as_ref())
             .is_some()
         {
-            self.action.reset();
-            self.state = SessionState::Running;
-            self.notify_callback();
+            let (cancel_token, cancel_rx) = self.begin_action();
 
             log_section_banner(
                 &self.session_id,
                 &format!("Exiting Environment: {}", env.name),
             );
-
-            let cancel_token = self.new_action_cancel_token();
-            let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
-            self.cancel.set_action(cancel_token.clone(), cancel_tx);
 
             let mut action_symtab = symtab.clone();
             self.materialize_path_mapping(&mut action_symtab)
@@ -1449,15 +1517,9 @@ impl Session {
 
         let symtab = self.build_symbol_table(task_parameter_values, resolved_symtab)?;
 
-        self.action.reset();
-        self.state = SessionState::Running;
-        self.notify_callback();
+        let (cancel_token, cancel_rx) = self.begin_action();
 
         log_section_banner(&self.session_id, "Running Task");
-
-        let cancel_token = self.new_action_cancel_token();
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
-        self.cancel.set_action(cancel_token.clone(), cancel_tx);
 
         let env_vars = self.evaluate_env_vars(os_env_vars);
         let mut action_symtab = symtab.clone();
@@ -1623,9 +1685,7 @@ impl Session {
             log_section_banner(&self.session_id, msg);
         }
 
-        self.action.reset();
-        self.state = SessionState::Running;
-        self.notify_callback();
+        let (cancel_token, cancel_rx) = self.begin_action();
 
         let env_vars = if use_session_env_vars {
             self.evaluate_env_vars(os_env_vars)
@@ -1651,13 +1711,9 @@ impl Session {
         // Route through the persistent helper process when cross-user helper is active.
         if self.cross_user.helper.is_some() {
             return self
-                .run_subprocess_via_helper(&cmd_args, env_vars, timeout)
+                .run_subprocess_via_helper(&cmd_args, env_vars, timeout, cancel_rx)
                 .await;
         }
-
-        let cancel_token = self.new_action_cancel_token();
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
-        self.cancel.set_action(cancel_token.clone(), cancel_tx);
 
         let config = crate::subprocess::SubprocessConfig {
             args: cmd_args,
@@ -1703,21 +1759,12 @@ impl Session {
         &mut self,
         args: &[String],
         env_vars: std::collections::HashMap<String, Option<String>>,
-        _timeout: Option<Duration>,
+        timeout: Option<Duration>,
+        cancel_rx: tokio::sync::watch::Receiver<Option<Duration>>,
     ) -> Result<crate::subprocess::SubprocessResult, SessionError> {
-        // Register per-action cancel state even though the helper protocol —
-        // not the token — carries the cancel to the subprocess: the token's
-        // presence is what tells a `SessionCancelHandle` that an action is
-        // in flight, so `cancel()` proceeds to write the helper pipe command
-        // (and returns true) instead of reporting "nothing running".
-        //
-        // The watch receiver goes into the SubprocessConfig: run_via_helper
-        // classifies the exit as Canceled only when the cancel-request
-        // channel has fired (rx.has_changed()), so without it a canceled
-        // helper subprocess would be misreported as Failed.
-        let cancel_token = self.new_action_cancel_token();
-        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
-        self.cancel.set_action(cancel_token, cancel_tx);
+        // The caller installs per-action cancellation state before publishing
+        // Running to callbacks. The receiver is retained here so
+        // run_via_helper can classify a helper cancellation as Canceled.
 
         let mut filter = crate::action_filter::ActionFilter::new(
             &self.session_id,
@@ -1735,7 +1782,7 @@ impl Session {
             args: args.to_vec(),
             env_vars,
             working_dir: Some(self.working_directory.clone()),
-            timeout: _timeout,
+            timeout,
             user: self.cross_user.user.clone(),
             cancel_method: crate::runner::CancelMethod::Terminate,
             cancel_request_rx: Some(cancel_rx),

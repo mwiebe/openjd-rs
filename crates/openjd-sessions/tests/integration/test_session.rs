@@ -9,7 +9,7 @@ use openjd_model::job::{
     Action, Environment, EnvironmentActions, EnvironmentScript, StepActions, StepScript,
 };
 use openjd_sessions::action::ActionState;
-use openjd_sessions::session::{Session, SessionConfig, SessionState};
+use openjd_sessions::session::{Session, SessionCancelHandle, SessionConfig, SessionState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
@@ -3281,6 +3281,53 @@ async fn test_cancel_handle_idle_returns_false() {
         "no action running — cancel must report nothing to cancel"
     );
     assert_eq!(s.state(), SessionState::Ready);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_cancel_handle_from_running_callback_is_delivered() {
+    let tmp = TempDir::new().unwrap();
+    let handle_slot: Arc<Mutex<Option<SessionCancelHandle>>> = Arc::new(Mutex::new(None));
+    let delivered: Arc<Mutex<Option<bool>>> = Arc::new(Mutex::new(None));
+    let callback_slot = handle_slot.clone();
+    let callback_delivered = delivered.clone();
+    let config = SessionConfig {
+        session_id: "cancel-from-running-callback".into(),
+        job_parameter_values: HashMap::new(),
+        path_mapping_rules: None,
+        retain_working_dir: false,
+        callback: Some(Box::new(move |_sid, status| {
+            if status.state == ActionState::Running {
+                let was_delivered = callback_slot
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|handle| handle.cancel(None, false));
+                *callback_delivered.lock().unwrap() = Some(was_delivered);
+            }
+        })),
+        os_env_vars: None,
+        session_root_directory: Some(tmp.path().to_path_buf()),
+        user: None,
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+    };
+    let mut session = Session::with_config(config).unwrap();
+    *handle_slot.lock().unwrap() = Some(session.cancel_handle());
+
+    #[cfg(unix)]
+    let script = step("sh", vec!["-c", "sleep 30"]);
+    #[cfg(windows)]
+    let script = step("cmd", vec!["/C", "ping -n 30 127.0.0.1 >NUL"]);
+
+    let result = session
+        .run_task("t", &script, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(result.state, ActionState::Canceled);
+    assert_eq!(*delivered.lock().unwrap(), Some(true));
 }
 
 #[tokio::test]
