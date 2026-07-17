@@ -535,13 +535,35 @@ pub fn escape_format_string(s: &str) -> String {
     openjd_expr::escape_format_string(s)
 }
 
-/// Parse a range expression (e.g., "1-10:2") into an array of integers.
-#[wasm_bindgen(js_name = "parseRangeExpr")]
-pub fn parse_range_expr(expr: &str) -> Result<Vec<i64>, JsError> {
+/// Maximum number of integers that [`parse_range_expr`] will materialize.
+///
+/// Range expressions themselves are symbolic and may legally describe far
+/// larger sets. This JS convenience API returns a concrete Wasm/JS array, so
+/// it needs an explicit bound independent of the expression evaluator's
+/// memory and operation budgets.
+const MAX_PARSED_RANGE_ELEMENTS: usize = 1_000_000;
+
+fn parse_range_expr_bounded(expr: &str) -> Result<Vec<i64>, String> {
     let range: openjd_expr::RangeExpr = expr
         .parse()
-        .map_err(|e: openjd_expr::ExpressionError| JsError::new(&e.to_string()))?;
+        .map_err(|e: openjd_expr::ExpressionError| e.to_string())?;
+    if range.len() > MAX_PARSED_RANGE_ELEMENTS {
+        return Err(format!(
+            "Range expression expands to {} elements; parseRangeExpr supports at most {}",
+            range.len(),
+            MAX_PARSED_RANGE_ELEMENTS
+        ));
+    }
     Ok(range.iter().collect())
+}
+
+/// Parse a range expression (e.g., "1-10:2") into an array of integers.
+///
+/// Throws when the range expands to more than one million elements, before
+/// allocating the result array.
+#[wasm_bindgen(js_name = "parseRangeExpr")]
+pub fn parse_range_expr(expr: &str) -> Result<Vec<i64>, JsError> {
+    parse_range_expr_bounded(expr).map_err(|e| JsError::new(&e))
 }
 
 /// Default memory limit for expression evaluation.
@@ -560,4 +582,26 @@ pub fn get_default_memory_limit() -> usize {
 #[wasm_bindgen(js_name = "getDefaultOperationLimit")]
 pub fn get_default_operation_limit() -> usize {
     openjd_expr::DEFAULT_OPERATION_LIMIT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_range_materialization_accepts_limit() {
+        let values = parse_range_expr_bounded("1-1000000").unwrap();
+        assert_eq!(values.len(), MAX_PARSED_RANGE_ELEMENTS);
+        assert_eq!(values[0], 1);
+        assert_eq!(values[MAX_PARSED_RANGE_ELEMENTS - 1], 1_000_000);
+    }
+
+    #[test]
+    fn bounded_range_materialization_rejects_before_collecting() {
+        let error = parse_range_expr_bounded("1-4000000000").unwrap_err();
+        assert_eq!(
+            error,
+            "Range expression expands to 4000000000 elements; parseRangeExpr supports at most 1000000"
+        );
+    }
 }

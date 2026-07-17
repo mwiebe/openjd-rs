@@ -144,7 +144,14 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 | `getDefaultMemoryLimit` | `() → number` | Report the built-in memory budget (bytes) used when `EvalOptions.memoryLimit` is omitted. Informational only. |
 | `getDefaultOperationLimit` | `() → number` | Report the built-in operation budget used when `EvalOptions.operationLimit` is omitted. Informational only. |
 | `escapeFormatString` | `(s: string) → string` | Escape `{{` and `}}` in a string for literal use in format strings. |
-| `parseRangeExpr` | `(expr: string) → number[]` | Parse an IntRangeExpr (e.g., `"1-10:2"`) into an array of integers. |
+| `parseRangeExpr` | `(expr: string) → bigint[]` | Parse an IntRangeExpr (e.g., `"1-10:2"`) into an array of integers. Throws before allocation if the symbolic range expands beyond 1,000,000 elements. |
+
+`parseRangeExpr` is intentionally bounded even though the underlying Rust
+`RangeExpr` can represent much larger ranges symbolically. This binding
+materializes every value into both Wasm and ECMAScript-managed memory and does
+not run through the expression evaluator, so evaluator memory/operation options
+do not apply. Callers that need larger ranges should retain the range expression
+in symbolic form or page it in application-specific code.
 
 `EvalOptions` is a structural type (plain JS object) with optional camelCase keys mirroring [`openjd_expr::EvalBuilder`]. Omit or pass `undefined` / `{}` to use the spec-default budgets:
 

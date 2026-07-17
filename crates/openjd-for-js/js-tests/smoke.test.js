@@ -299,6 +299,12 @@ describe("parseRangeExpr", () => {
     const result = mod.parseRangeExpr("1-10:3");
     expect(Array.from(result)).toEqual([1n, 4n, 7n, 10n]);
   });
+
+  it("rejects ranges that exceed the materialization limit", () => {
+    expect(() => mod.parseRangeExpr("1-4000000000")).toThrow(
+      "Range expression expands to 4000000000 elements; parseRangeExpr supports at most 1000000",
+    );
+  });
 });
 
 describe("getDefaultLibrary", () => {
