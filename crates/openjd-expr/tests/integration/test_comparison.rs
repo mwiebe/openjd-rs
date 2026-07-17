@@ -326,16 +326,14 @@ fn string_lt_int_errors() {
         .and_then(|p| p.evaluate(&SymbolTable::new()))
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Cannot use '<' operator with string and int\n",
-                "  \"5\" < 5\n",
-                "  ^~~~~~~"
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
+    assert_eq!(
+        e,
+        [
+            "Cannot use '<' operator with string and int\n",
+            "  \"5\" < 5\n",
+            "  ^~~~~~~"
+        ]
+        .concat()
     );
 }
 #[test]
@@ -344,16 +342,14 @@ fn string_gt_int_errors() {
         .and_then(|p| p.evaluate(&SymbolTable::new()))
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Cannot use '>' operator with string and int\n",
-                "  \"abc\" > 123\n",
-                "  ^~~~~~~~~~~"
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
+    assert_eq!(
+        e,
+        [
+            "Cannot use '>' operator with string and int\n",
+            "  \"abc\" > 123\n",
+            "  ^~~~~~~~~~~"
+        ]
+        .concat()
     );
 }
 #[test]
@@ -362,16 +358,14 @@ fn bool_lt_int_errors() {
         .and_then(|p| p.evaluate(&SymbolTable::new()))
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Cannot use '<' operator with bool and int\n",
-                "  True < 0\n",
-                "  ^~~~~~~~"
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
+    assert_eq!(
+        e,
+        [
+            "Cannot use '<' operator with bool and int\n",
+            "  True < 0\n",
+            "  ^~~~~~~~"
+        ]
+        .concat()
     );
 }
 
@@ -389,16 +383,14 @@ fn int_lt_string_errors() {
         .and_then(|p| p.evaluate(&SymbolTable::new()))
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Cannot use '<' operator with int and string\n",
-                "  5 < \"5\"\n",
-                "  ^~~~~~~"
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
+    assert_eq!(
+        e,
+        [
+            "Cannot use '<' operator with int and string\n",
+            "  5 < \"5\"\n",
+            "  ^~~~~~~"
+        ]
+        .concat()
     );
 }
 #[test]
@@ -407,15 +399,13 @@ fn float_gt_string_errors() {
         .and_then(|p| p.evaluate(&SymbolTable::new()))
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Cannot use '>' operator with float and string\n",
-                "  3.14 > \"pi\"\n",
-                "  ^~~~~~~~~~~"
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
+    assert_eq!(
+        e,
+        [
+            "Cannot use '>' operator with float and string\n",
+            "  3.14 > \"pi\"\n",
+            "  ^~~~~~~~~~~"
+        ]
+        .concat()
     );
 }

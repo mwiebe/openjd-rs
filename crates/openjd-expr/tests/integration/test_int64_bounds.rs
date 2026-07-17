@@ -29,7 +29,7 @@ fn assert_err(expr: &str, expected: &[&str]) {
         .unwrap_err()
         .to_string();
     let joined = expected.concat();
-    assert!(e.contains(&joined), "got:\n{e}\nexpected:\n{joined}");
+    assert_eq!(e, joined);
 }
 
 // === TestInt64ValidBounds ===
@@ -253,32 +253,74 @@ fn large_negative_float() {
 // === Bug 2: floor/ceil/round with large floats ===
 #[test]
 fn floor_large_float_overflow() {
-    assert_err("floor(1e300)", &["Integer overflow"]);
+    assert_err(
+        "floor(1e300)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  floor(1e300)\n",
+            "  ^~~~~~~~~~~~",
+        ],
+    );
 }
 
 #[test]
 fn ceil_large_float_overflow() {
-    assert_err("ceil(1e300)", &["Integer overflow"]);
+    assert_err(
+        "ceil(1e300)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  ceil(1e300)\n",
+            "  ^~~~~~~~~~~",
+        ],
+    );
 }
 
 #[test]
 fn round_large_float_overflow() {
-    assert_err("round(1e300)", &["Integer overflow"]);
+    assert_err(
+        "round(1e300)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  round(1e300)\n",
+            "  ^~~~~~~~~~~~",
+        ],
+    );
 }
 
 #[test]
 fn floor_large_negative_float_overflow() {
-    assert_err("floor(-1e300)", &["Integer overflow"]);
+    assert_err(
+        "floor(-1e300)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  floor(-1e300)\n",
+            "  ^~~~~~~~~~~~~",
+        ],
+    );
 }
 
 #[test]
 fn ceil_large_negative_float_overflow() {
-    assert_err("ceil(-1e300)", &["Integer overflow"]);
+    assert_err(
+        "ceil(-1e300)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  ceil(-1e300)\n",
+            "  ^~~~~~~~~~~~",
+        ],
+    );
 }
 
 // === Bug 4: int_from_float boundary ===
 #[test]
 fn int_from_float_boundary_overflow() {
     // i64::MAX as f64 rounds up to 9223372036854775808.0 which exceeds i64::MAX
-    assert_err("int(9223372036854775808.0)", &["Integer overflow"]);
+    assert_err(
+        "int(9223372036854775808.0)",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  int(9223372036854775808.0)\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
 }

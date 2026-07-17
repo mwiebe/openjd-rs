@@ -22,7 +22,7 @@ fn eval_err(expr: &str) -> ExpressionError {
 fn assert_err(expr: &str, expected: &[&str]) {
     let e = eval_err(expr).to_string();
     let joined = expected.concat();
-    assert!(e.contains(&joined), "got:\n{e}\nexpected:\n{joined}");
+    assert_eq!(e, joined);
 }
 
 fn eval_with(expr: &str, st: &SymbolTable) -> ExprValue {
@@ -211,7 +211,7 @@ fn int_zero_to_negative_power_error() {
         &[
             "Cannot raise zero to a negative power\n",
             "  0 ** (-1)\n",
-            "  ~~^~~~~~",
+            "  ~~^~~~~~~",
         ],
     );
 }
@@ -513,7 +513,7 @@ fn fail_if_else_false_condition() {
         &[
             "condition was false\n",
             "  1 if false else fail(\"condition was false\")\n",
-            "                  ^~~~~~~~~~~~~~~~~~~~~~~~~~",
+            "                  ^~~~~~~~~~~~~~~~~~~~~~~~~~~",
         ],
     );
 }
@@ -638,7 +638,7 @@ fn int_zero_to_negative_power_error_large() {
         &[
             "Cannot raise zero to a negative power\n",
             "  0 ** (-5)\n",
-            "  ~~^~~~~~",
+            "  ~~^~~~~~~",
         ],
     );
 }
@@ -897,11 +897,25 @@ fn mod_float_result_sign_matches_divisor_negative() {
 // === Bug 1: sum_list integer overflow ===
 #[test]
 fn sum_int_list_overflow() {
-    assert_err("sum([9223372036854775807, 1])", &["Integer overflow"]);
+    assert_err(
+        "sum([9223372036854775807, 1])",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  sum([9223372036854775807, 1])\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
 }
 
 // === Bug 3: floordiv_float large result overflow ===
 #[test]
 fn floordiv_float_large_result_overflow() {
-    assert_err("1e300 // 1.0", &["Integer overflow"]);
+    assert_err(
+        "1e300 // 1.0",
+        &[
+            "Integer overflow: result is outside the 64-bit signed range\n",
+            "  1e300 // 1.0\n",
+            "  ~~~~~~^~~~~~",
+        ],
+    );
 }

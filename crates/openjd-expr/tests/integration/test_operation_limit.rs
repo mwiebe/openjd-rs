@@ -645,14 +645,22 @@ fn sorted_exceeds_limit_via_symtab() {
         ExprValue::make_list((0..1000).map(ExprValue::Int).collect(), ExprType::INT).unwrap(),
     )
     .unwrap();
-    let r = ParsedExpression::new("sorted(L)").and_then(|p| {
-        p.with_memory_limit(usize::MAX)
-            .with_operation_limit(100)
-            .evaluate_with_metrics(&[&st])
-    });
-    assert!(
-        r.is_err(),
-        "sorted(1000 elements) with limit 100 should fail"
+    let e = ParsedExpression::new("sorted(L)")
+        .and_then(|p| {
+            p.with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&st])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression operation count (1001) exceeded limit (100)\n",
+            "  sorted(L)\n",
+            "  ^~~~~~~~~",
+        ]
+        .concat()
     );
 }
 
@@ -664,14 +672,22 @@ fn unique_exceeds_limit_via_symtab() {
         ExprValue::make_list((0..1000).map(ExprValue::Int).collect(), ExprType::INT).unwrap(),
     )
     .unwrap();
-    let r = ParsedExpression::new("unique(L)").and_then(|p| {
-        p.with_memory_limit(usize::MAX)
-            .with_operation_limit(100)
-            .evaluate_with_metrics(&[&st])
-    });
-    assert!(
-        r.is_err(),
-        "unique(1000 elements) with limit 100 should fail"
+    let e = ParsedExpression::new("unique(L)")
+        .and_then(|p| {
+            p.with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&st])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression operation count (1001) exceeded limit (100)\n",
+            "  unique(L)\n",
+            "  ^~~~~~~~~",
+        ]
+        .concat()
     );
 }
 
@@ -683,12 +699,23 @@ fn min_exceeds_limit_via_symtab() {
         ExprValue::make_list((0..1000).map(ExprValue::Int).collect(), ExprType::INT).unwrap(),
     )
     .unwrap();
-    let r = ParsedExpression::new("min(L)").and_then(|p| {
-        p.with_memory_limit(usize::MAX)
-            .with_operation_limit(100)
-            .evaluate_with_metrics(&[&st])
-    });
-    assert!(r.is_err(), "min(1000 elements) with limit 100 should fail");
+    let e = ParsedExpression::new("min(L)")
+        .and_then(|p| {
+            p.with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&st])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression operation count (1001) exceeded limit (100)\n",
+            "  min(L)\n",
+            "  ^~~~~~",
+        ]
+        .concat()
+    );
 }
 
 #[test]
