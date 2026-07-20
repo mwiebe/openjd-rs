@@ -939,3 +939,60 @@ environment:
         ROUND_TRIP_EXTS,
     );
 }
+
+#[test]
+fn wrap_hook_timing_fields_validate_with_full_wrap_scope() {
+    // The runtime resolves wrap-hook timeout/cancelation fields with the
+    // same scope as the hook's command/args: full session scope, the
+    // companion WrappedEnv.Name / WrappedStep.Name variables, and the
+    // host function library. Validation must accept everything the
+    // runtime can execute — previously it checked these fields against
+    // the template scope plus WrappedAction.* only, rejecting valid
+    // templates like the WrappedStep.Name conditional below.
+    expect_env_ok(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]
+environment:
+  name: Wrapper
+  script:
+    actions:
+      onWrapEnvEnter:
+        command: echo
+        args: ["{{WrappedAction.Command}}"]
+        timeout: "{{WrappedEnv.Name == 'Wrapper' and 30 or 60}}"
+      onWrapTaskRun:
+        command: echo
+        args: ["{{WrappedAction.Command}}"]
+        timeout: "{{WrappedStep.Name == 'A' and 1 or 2}}"
+        cancelation:
+          mode: "{{WrappedAction.Cancelation.Mode}}"
+          notifyPeriodInSeconds: "{{Session.WorkingDirectory != '' and 5 or 10}}"
+      onWrapEnvExit:
+        command: echo
+        args: ["{{WrappedAction.Command}}"]
+"#,
+        ROUND_TRIP_EXTS,
+    );
+}
+
+#[test]
+fn plain_action_timing_fields_still_template_scoped() {
+    // Plain lifecycle actions resolve timing fields at job creation, so
+    // wrap/session variables must still be rejected there.
+    expect_env_err(
+        r#"
+specificationVersion: environment-2023-09
+extensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]
+environment:
+  name: Wrapper
+  script:
+    actions:
+      onEnter:
+        command: echo
+        timeout: "{{WrappedAction.Timeout}}"
+"#,
+        ROUND_TRIP_EXTS,
+        &["timeout", "Undefined variable"],
+    );
+}

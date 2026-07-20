@@ -318,6 +318,57 @@ fn validate_fs(
 }
 
 /// Validate a format string in an action (command + args).
+/// Validate the timing/cancelation @fmtstring fields of one env action:
+/// `timeout`, DeferredMode `cancelation.mode`, and
+/// `cancelation.notifyPeriodInSeconds`. The caller picks the symtab and
+/// library that match where the fields resolve (template scope for plain
+/// lifecycle actions, the wrap-hook session scope for RFC 0008 hooks).
+fn validate_action_timing_fs(
+    action: &Action,
+    symtab: &SymbolTable,
+    lib: &FunctionLibrary,
+    action_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if let Some(timeout) = &action.timeout {
+        validate_fs(
+            timeout,
+            symtab,
+            lib,
+            &path_field(action_path, "timeout"),
+            errors,
+        );
+    }
+    let (mode_fs, notify_fs) = match &action.cancelation {
+        Some(CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds,
+        }) => (None, notify_period_in_seconds.as_ref()),
+        Some(CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => (Some(mode), notify_period_in_seconds.as_ref()),
+        _ => (None, None),
+    };
+    if let Some(mode) = mode_fs {
+        validate_fs(
+            mode,
+            symtab,
+            lib,
+            &path_field(action_path, "cancelation"),
+            errors,
+        );
+    }
+    if let Some(notify) = notify_fs {
+        validate_fs(
+            notify,
+            symtab,
+            lib,
+            &path_field(action_path, "cancelation"),
+            errors,
+        );
+    }
+}
+
 fn validate_action_fs(
     action: &Action,
     symtab: &SymbolTable,
@@ -1165,57 +1216,38 @@ fn validate_env_format_strings(
         // notifyPeriodInSeconds on env actions are @fmtstring fields. On
         // the plain lifecycle actions they resolve at job creation, before
         // any session exists, so they validate against the template-scope
-        // symtab. On the RFC 0008 wrap hooks they resolve at run time with
-        // the `WrappedAction.*` variables seeded — that is what makes
-        // round-trip forwarding (`timeout: "{{WrappedAction.Timeout}}"`,
-        // `mode: "{{WrappedAction.Cancelation.Mode}}"`) possible — so they
-        // validate against the wrapped-action scope.
+        // symtab and library. On the RFC 0008 wrap hooks the runtime
+        // resolves them exactly like the hook's command/args — full
+        // session scope, `WrappedAction.*` plus the companion
+        // `WrappedEnv.Name`/`WrappedStep.Name`, and the host function
+        // library (see `seed_wrapped_action_symbols` and
+        // `resolve_action_timeout` in openjd-sessions) — so they validate
+        // against that same scope. That is what makes round-trip
+        // forwarding (`timeout: "{{WrappedAction.Timeout}}"`,
+        // `mode: "{{WrappedAction.Cancelation.Mode}}"`) and expressions
+        // over the wrapped context (`{{WrappedStep.Name == 'A' and 1 or
+        // 2}}`) possible.
         let wrap_hook_names: [&str; 3] = ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"];
         for (name, action) in script.actions.iter_named() {
+            if wrap_hook_names.contains(&name) {
+                continue; // validated below with the runtime's wrap scope
+            }
             let action_path = path_field(&actions_path, name);
-            let scoped_symtab: SymbolTable;
-            let field_symtab: &SymbolTable = if wrap_hook_names.contains(&name) {
-                let mut st = template_symtab.clone();
+            validate_action_timing_fs(action, template_symtab, template_lib, &action_path, errors);
+        }
+        for (hook_name, action_opt, extra) in script.actions.wrap_hooks() {
+            if let Some(action) = action_opt {
+                let mut st = symtab.clone();
                 add_wrapped_action_scope(&mut st);
-                scoped_symtab = st;
-                &scoped_symtab
-            } else {
-                template_symtab
-            };
-            if let Some(timeout) = &action.timeout {
-                validate_fs(
-                    timeout,
-                    field_symtab,
-                    template_lib,
-                    &path_field(&action_path, "timeout"),
-                    errors,
-                );
-            }
-            let (mode_fs, notify_fs) = match &action.cancelation {
-                Some(CancelationMode::NotifyThenTerminate {
-                    notify_period_in_seconds,
-                }) => (None, notify_period_in_seconds.as_ref()),
-                Some(CancelationMode::DeferredMode {
-                    mode,
-                    notify_period_in_seconds,
-                }) => (Some(mode), notify_period_in_seconds.as_ref()),
-                _ => (None, None),
-            };
-            if let Some(mode) = mode_fs {
-                validate_fs(
-                    mode,
-                    field_symtab,
-                    template_lib,
-                    &path_field(&action_path, "cancelation"),
-                    errors,
-                );
-            }
-            if let Some(notify) = notify_fs {
-                validate_fs(
-                    notify,
-                    field_symtab,
-                    template_lib,
-                    &path_field(&action_path, "cancelation"),
+                match extra {
+                    WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
+                    WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                }
+                validate_action_timing_fs(
+                    action,
+                    &st,
+                    lib,
+                    &path_field(&actions_path, hook_name),
                     errors,
                 );
             }
