@@ -253,7 +253,7 @@ async fn run_scenario(scenario_path: &Path) {
 
     let config = SessionConfig {
         session_id: "scenario-test".into(),
-        job_parameter_values: job_params.clone(),
+        job_parameter_values: job_params.values().clone(),
         path_mapping_rules: if path_rules.is_empty() {
             None
         } else {

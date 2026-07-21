@@ -1367,7 +1367,7 @@ fn float_param_large_value_roundtrip() {
         },
     )
     .unwrap();
-    match &result["Big"].value {
+    match &result.values()["Big"].value {
         openjd_expr::ExprValue::Float(f) => {
             let reparsed: f64 = f.to_string().parse().unwrap();
             assert_eq!(reparsed, 1e20);

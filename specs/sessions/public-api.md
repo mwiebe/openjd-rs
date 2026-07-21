@@ -287,7 +287,8 @@ pub struct SessionConfig {
 
     /// Resolved job parameter values. These become `Param.*` in the
     /// session's symbol table. Produce this via
-    /// `openjd_model::preprocess_job_parameters`.
+    /// `openjd_model::preprocess_job_parameters` (extract the raw map
+    /// from the returned `PreprocessedJobParameters` with `.values()`).
     pub job_parameter_values: JobParameterValues,
 
     /// Path-mapping rules from the spec's Path Mapping JSON object.

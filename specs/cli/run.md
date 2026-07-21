@@ -286,7 +286,7 @@ The `SessionConfig` struct is populated with:
 | Field | Source |
 |-------|--------|
 | `session_id` | `"cli-{pid}"` where pid is the current process ID |
-| `job_parameter_values` | From `preprocess_job_parameters()` |
+| `job_parameter_values` | From `preprocess_job_parameters()` (`.values()` of the returned `PreprocessedJobParameters`) |
 | `path_mapping_rules` | From `--path-mapping-rules` (None if empty) |
 | `retain_working_dir` | From `--preserve` |
 | `callback` | `None` (CLI doesn't use action callbacks) |

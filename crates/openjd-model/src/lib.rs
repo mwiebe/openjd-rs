@@ -31,7 +31,7 @@ pub use error::{PathElement, ValidationError, ValidationErrors};
 pub use job::create_job::{
     build_symbol_table, convert_environment, create_job, evaluate_let_bindings,
     merge_job_parameter_definitions, preprocess_job_parameters, MergedParameterDefinition,
-    PathParameterOptions,
+    PathParameterOptions, PreprocessedJobParameters,
 };
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;

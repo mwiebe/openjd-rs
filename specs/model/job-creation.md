@@ -44,10 +44,18 @@ pub fn preprocess_job_parameters(
     input_values: &JobParameterInputValues,
     environment_templates: &[EnvironmentTemplate],
     path_options: &PathParameterOptions<'_>,
-) -> Result<JobParameterValues, ModelError>
+) -> Result<PreprocessedJobParameters, ModelError>
 ```
 
 Validates and coerces user-provided parameter values against merged definitions.
+
+The result is a `PreprocessedJobParameters`: the processed values bundled with
+the merged parameter definitions they were validated against.
+`PreprocessedJobParameters::new(values, merged_definitions)` constructs one
+directly for callers that already hold both — direct construction skips
+default-filling, type coercion, and PATH resolution, which only this function
+performs. `values()`, `into_values()`, and `merged_definitions()` provide
+access (e.g. the session runtime consumes the raw `JobParameterValues`).
 
 `PathParameterOptions` consolidates path-related options:
 
@@ -103,28 +111,36 @@ mapping is applied at session time. `RawParam.*` for PATH types is forced to STR
 ```rust
 pub fn create_job(
     job_template: &JobTemplate,
-    job_parameter_values: &JobParameterValues,
+    job_parameters: &PreprocessedJobParameters,
+    ctx: &ValidationContext,
 ) -> Result<job::Job, ModelError>
 ```
 
-Full template instantiation pipeline. Takes 2 arguments — environment templates should
-already be merged into `job_parameter_values` via `preprocess_job_parameters` before
-calling this function.
+Full template instantiation pipeline. `job_parameters` comes from
+`preprocess_job_parameters`, which merges environment-template parameter
+definitions and validates values against the merged constraints.
 
-1. Build symbol table from parameter values
-2. Resolve template-scope fields:
+1. Re-check parameter values against the bundled merged definitions. This is
+   a defensive backstop against unvalidated values in a directly-constructed
+   `PreprocessedJobParameters` — a caller that went through
+   `preprocess_job_parameters` already had every value validated. Unlike
+   preprocess (which accumulates all errors), this re-check fails fast on the
+   first violation; the difference is intentional since it only fires on the
+   direct-construction path.
+2. Build symbol table from parameter values
+3. Resolve template-scope fields:
    - Job name (evaluate FormatString)
    - Step names
    - Host requirement values (amounts min/max, attribute values)
    - Parameter space ranges (evaluate range expressions, resolve FormatString ranges)
    - Step-level let bindings
-3. Carry forward session/task-scope fields as FormatString (plus action
+4. Carry forward session/task-scope fields as FormatString (plus action
    `timeout`/`notifyPeriodInSeconds`, which validate in template scope but
    resolve on the worker)
-4. With EXPR extension: inject `Job.Name` and `Step.Name` into symbol table
-5. Convert environments from template to job types
-6. Build step dependency list
-7. Attach resolved symbol table to each step
+5. With EXPR extension: inject `Job.Name` and `Step.Name` into symbol table
+6. Convert environments from template to job types
+7. Build step dependency list
+8. Attach resolved symbol table to each step
 
 ### convert_environment
 

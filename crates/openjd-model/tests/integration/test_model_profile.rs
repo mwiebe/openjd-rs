@@ -14,7 +14,7 @@ use openjd_expr::path_mapping::PathFormat;
 use openjd_model::types::{ModelExtension, ModelProfile, ValidationContext};
 use openjd_model::{
     create_job, decode_job_template, preprocess_job_parameters, CallerLimits,
-    JobParameterInputValues, JobParameterValues, PathParameterOptions,
+    JobParameterInputValues, PathParameterOptions,
 };
 
 fn yaml_val(s: &str) -> serde_json::Value {
@@ -22,7 +22,9 @@ fn yaml_val(s: &str) -> serde_json::Value {
 }
 
 /// Helper: preprocess with default path options and no user-supplied values.
-fn preprocess_defaults(jt: &openjd_model::template::JobTemplate) -> JobParameterValues {
+fn preprocess_defaults(
+    jt: &openjd_model::template::JobTemplate,
+) -> openjd_model::PreprocessedJobParameters {
     preprocess_job_parameters(
         jt,
         &JobParameterInputValues::new(),

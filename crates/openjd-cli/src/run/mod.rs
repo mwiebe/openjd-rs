@@ -234,7 +234,7 @@ pub async fn execute(args: RunArgs) -> Result<(), Box<dyn std::error::Error>> {
     let cancel_token = CancellationToken::new();
     let session_config = openjd_sessions::session::SessionConfig {
         session_id: format!("cli-{}", std::process::id()),
-        job_parameter_values: param_values.clone(),
+        job_parameter_values: param_values.into_values(),
         path_mapping_rules: if path_rules.is_empty() {
             None
         } else {

@@ -18,7 +18,7 @@ use crate::error::ModelError;
 use crate::job;
 use crate::template::validate_v2023_09::EffectiveLimits;
 use crate::template::JobTemplate;
-use crate::types::{JobParameterValues, ValidationContext};
+use crate::types::ValidationContext;
 
 // Re-exports — preserve the existing public API
 pub use instantiate::{
@@ -26,13 +26,17 @@ pub use instantiate::{
 };
 pub use parameters::{
     build_symbol_table, merge_job_parameter_definitions, preprocess_job_parameters,
-    MergedParameterDefinition, PathParameterOptions,
+    MergedParameterDefinition, PathParameterOptions, PreprocessedJobParameters,
 };
 
 /// Create an instantiated Job from a validated JobTemplate and preprocessed parameter values.
 ///
-/// Environment template parameters should already be merged into `job_parameter_values`
-/// via [`preprocess_job_parameters`] before calling this function.
+/// `job_parameters` comes from [`preprocess_job_parameters`], which merges
+/// parameter definitions across the job template and any environment
+/// templates, fills defaults, and validates the values against the merged
+/// constraints. The bundled merged definitions are used here to re-check
+/// the values as a defensive backstop against callers that construct a
+/// [`PreprocessedJobParameters`] directly via `new` with unvalidated values.
 ///
 /// The `ctx` parameter carries the specification revision, enabled
 /// extensions, and caller limits that apply to this job instance. It
@@ -48,12 +52,18 @@ pub use parameters::{
 /// across all steps is checked after parameter spaces are resolved.
 pub fn create_job(
     job_template: &JobTemplate,
-    job_parameter_values: &JobParameterValues,
+    job_parameters: &PreprocessedJobParameters,
     ctx: &ValidationContext,
 ) -> Result<job::Job, ModelError> {
-    // Validate parameter values against template constraints.
-    let merged = parameters::merge_job_parameter_definitions(job_template, &[])?;
-    for param in &merged {
+    let job_parameter_values = job_parameters.values();
+
+    // Re-check parameter values against the merged constraints. This is a
+    // defensive backstop: a disciplined caller obtained `job_parameters`
+    // from `preprocess_job_parameters`, which already validated every value
+    // (accumulating all errors). This re-check fails fast on the first
+    // violation — that difference in error style is intentional, since it
+    // only fires for values that bypassed the preprocess path.
+    for param in job_parameters.merged_definitions() {
         if let Some(jpv) = job_parameter_values.get(&param.name) {
             param.check_constraints(&jpv.value)?;
         }

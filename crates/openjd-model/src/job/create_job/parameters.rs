@@ -814,7 +814,66 @@ impl<'a> PathParameterOptions<'a> {
     }
 }
 
+/// Job parameter values together with the merged parameter definitions
+/// they were validated against.
+///
+/// This is the output of [`preprocess_job_parameters`] and the input to
+/// [`create_job`](crate::create_job). Bundling the two keeps them paired:
+/// the merged definitions carry the tightened cross-template constraints
+/// (job template + environment templates), and `create_job` re-checks the
+/// values against exactly those constraints rather than recomputing a
+/// weaker job-template-only merge.
+///
+/// Fields are private (leaving room to grow the bundle) but construction
+/// is open: [`preprocess_job_parameters`] is the validated path, and
+/// [`new`](Self::new) builds one directly for callers that already hold
+/// values and definitions — e.g. language bindings reconstructing after
+/// a serialization boundary, or test fixtures.
+#[derive(Debug, Clone, Default)]
+pub struct PreprocessedJobParameters {
+    values: JobParameterValues,
+    merged_definitions: Vec<MergedParameterDefinition>,
+}
+
+impl PreprocessedJobParameters {
+    /// Construct directly without running [`preprocess_job_parameters`].
+    ///
+    /// This does **not** fill defaults, coerce types, or resolve PATH
+    /// values — `create_job` re-checks constraints against the supplied
+    /// definitions, but no other preprocessing is re-done. Passing an
+    /// empty `merged_definitions` disables that constraint re-check
+    /// entirely.
+    pub fn new(
+        values: JobParameterValues,
+        merged_definitions: Vec<MergedParameterDefinition>,
+    ) -> Self {
+        Self {
+            values,
+            merged_definitions,
+        }
+    }
+
+    /// The processed parameter values (name → typed value).
+    pub fn values(&self) -> &JobParameterValues {
+        &self.values
+    }
+
+    /// Consume, returning the processed parameter values.
+    pub fn into_values(self) -> JobParameterValues {
+        self.values
+    }
+
+    /// The merged parameter definitions the values were validated against.
+    pub fn merged_definitions(&self) -> &[MergedParameterDefinition] {
+        &self.merged_definitions
+    }
+}
+
 /// Preprocess job parameters: validate inputs, fill defaults, check constraints.
+///
+/// Returns the processed values bundled with the merged parameter
+/// definitions they were validated against — see
+/// [`PreprocessedJobParameters`].
 ///
 /// Errors are accumulated rather than fail-fast: a single bad parameter
 /// won't mask later problems. The returned `ModelError::DecodeValidation`
@@ -835,7 +894,7 @@ pub fn preprocess_job_parameters(
     input_values: &JobParameterInputValues,
     environment_templates: &[EnvironmentTemplate],
     path_options: &PathParameterOptions<'_>,
-) -> Result<JobParameterValues, ModelError> {
+) -> Result<PreprocessedJobParameters, ModelError> {
     let job_template_dir = path_options.job_template_dir;
     let current_working_dir = path_options.current_working_dir;
     let path_format = path_options.path_format;
@@ -1017,7 +1076,10 @@ pub fn preprocess_job_parameters(
         return Err(ModelError::DecodeValidation(errors.join("\n")));
     }
 
-    Ok(result)
+    Ok(PreprocessedJobParameters {
+        values: result,
+        merged_definitions: merged,
+    })
 }
 
 /// Extract a flat string from a `ModelError`.

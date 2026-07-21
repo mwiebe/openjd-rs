@@ -15,7 +15,7 @@ fn yaml_val(s: &str) -> serde_json::Value {
 fn preprocess(
     jt: &crate::template::JobTemplate,
     input: &JobParameterInputValues,
-) -> crate::JobParameterValues {
+) -> crate::PreprocessedJobParameters {
     preprocess_job_parameters(
         jt,
         input,

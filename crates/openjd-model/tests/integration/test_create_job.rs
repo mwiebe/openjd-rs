@@ -96,7 +96,9 @@ fn test_preprocess_string_param() {
         },
     )
     .unwrap();
-    assert!(matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "hello"));
+    assert!(
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "hello")
+    );
 }
 
 #[test]
@@ -120,7 +122,7 @@ fn test_preprocess_int_param() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Int(42)
     ));
 }
@@ -146,7 +148,7 @@ fn test_preprocess_float_param() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Float(_)
     ));
 }
@@ -170,7 +172,9 @@ fn test_preprocess_uses_default() {
         },
     )
     .unwrap();
-    assert!(matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "bar"));
+    assert!(
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "bar")
+    );
 }
 
 #[test]
@@ -284,7 +288,7 @@ fn test_path_default_joined_to_template_dir() {
         },
     )
     .unwrap();
-    if let openjd_expr::ExprValue::String(ref s) = result["DataDir"].value {
+    if let openjd_expr::ExprValue::String(ref s) = result.values()["DataDir"].value {
         let exp = TestDirs::join_normalized(td.template(), "data/input.csv");
         assert_eq!(s, &exp);
     } else {
@@ -315,7 +319,7 @@ fn test_path_user_value_joined_to_cwd() {
         },
     )
     .unwrap();
-    if let openjd_expr::ExprValue::String(ref s) = result["DataDir"].value {
+    if let openjd_expr::ExprValue::String(ref s) = result.values()["DataDir"].value {
         let exp = std::path::Path::new(td.cwd())
             .join("my/output")
             .to_string_lossy()
@@ -353,7 +357,7 @@ fn test_path_absolute_user_value_unchanged() {
         },
     )
     .unwrap();
-    if let openjd_expr::ExprValue::String(ref s) = result["DataDir"].value {
+    if let openjd_expr::ExprValue::String(ref s) = result.values()["DataDir"].value {
         assert_eq!(s, &abs_path);
     } else {
         panic!("Expected String");
@@ -440,7 +444,7 @@ fn test_path_empty_default_not_joined() {
     )
     .unwrap();
     assert!(
-        matches!(result["DataDir"].value, openjd_expr::ExprValue::String(ref s) if s.is_empty())
+        matches!(result.values()["DataDir"].value, openjd_expr::ExprValue::String(ref s) if s.is_empty())
     );
 }
 
@@ -465,7 +469,7 @@ fn test_path_empty_user_value_not_joined() {
     )
     .unwrap();
     assert!(
-        matches!(result["DataDir"].value, openjd_expr::ExprValue::String(ref s) if s.is_empty())
+        matches!(result.values()["DataDir"].value, openjd_expr::ExprValue::String(ref s) if s.is_empty())
     );
 }
 
@@ -491,7 +495,7 @@ fn test_build_symbol_table_int() {
         },
     )
     .unwrap();
-    let symtab = build_symbol_table(&params).unwrap();
+    let symtab = build_symbol_table(params.values()).unwrap();
     let val = symtab.get_value("Param.Frame").unwrap();
     assert_eq!(val.to_display_string(), "42");
 }
@@ -519,7 +523,7 @@ fn test_build_symbol_table_string() {
         },
     )
     .unwrap();
-    let symtab = build_symbol_table(&params).unwrap();
+    let symtab = build_symbol_table(params.values()).unwrap();
     let val = symtab.get_value("Param.Name").unwrap();
     assert_eq!(val.to_display_string(), "hello");
 }
@@ -618,7 +622,7 @@ fn test_uri_user_value_preserved() {
     )
     .unwrap();
     // URI should be preserved as-is, not joined with /tmp/cwd
-    match &result["S3File"].value {
+    match &result.values()["S3File"].value {
         openjd_expr::ExprValue::String(s) => assert_eq!(s, "s3://my-bucket/assets/teapot.obj"),
         other => panic!("Expected String, got {:?}", other),
     }
@@ -643,7 +647,7 @@ fn test_uri_default_preserved() {
         },
     )
     .unwrap();
-    match &result["S3File"].value {
+    match &result.values()["S3File"].value {
         openjd_expr::ExprValue::String(s) => assert_eq!(s, "s3://my-bucket/default.obj"),
         other => panic!("Expected String, got {:?}", other),
     }
@@ -672,7 +676,7 @@ fn test_https_uri_user_value_preserved() {
         },
     )
     .unwrap();
-    match &result["HttpFile"].value {
+    match &result.values()["HttpFile"].value {
         openjd_expr::ExprValue::String(s) => {
             assert_eq!(s, "https://cdn.example.com/models/scene.obj")
         }
@@ -712,7 +716,7 @@ fn test_uri_joined_without_expr_extension() {
         },
     )
     .unwrap();
-    match &result["S3File"].value {
+    match &result.values()["S3File"].value {
         openjd_expr::ExprValue::String(s) => {
             // Should be joined with cwd since URI is not recognized without EXPR
             assert!(
@@ -804,7 +808,7 @@ fn test_posix_absolute_path_recognized_with_posix_format() {
         },
     )
     .unwrap();
-    match &result["Dir"].value {
+    match &result.values()["Dir"].value {
         openjd_expr::ExprValue::String(s) => assert_eq!(s, "/foo/bar"),
         other => panic!("Expected String, got {:?}", other),
     }
@@ -833,7 +837,7 @@ fn test_posix_path_is_relative_under_windows_format() {
         },
     )
     .unwrap();
-    match &result["Dir"].value {
+    match &result.values()["Dir"].value {
         openjd_expr::ExprValue::String(s) => {
             // Root-relative: drive from cwd + the /foo/bar path
             assert_eq!(s, "C:/foo/bar");
@@ -865,7 +869,7 @@ fn test_windows_absolute_path_recognized_with_windows_format() {
         },
     )
     .unwrap();
-    match &result["Dir"].value {
+    match &result.values()["Dir"].value {
         openjd_expr::ExprValue::String(s) => assert_eq!(s, "C:\\foo\\bar"),
         other => panic!("Expected String, got {:?}", other),
     }
@@ -894,7 +898,7 @@ fn test_windows_path_is_relative_under_posix_format() {
         },
     )
     .unwrap();
-    match &result["Dir"].value {
+    match &result.values()["Dir"].value {
         openjd_expr::ExprValue::String(s) => {
             assert_eq!(
                 s, "/cwd/C:\\foo\\bar",
@@ -928,7 +932,7 @@ fn test_unc_path_recognized_as_absolute() {
         },
     )
     .unwrap();
-    match &result["Dir"].value {
+    match &result.values()["Dir"].value {
         openjd_expr::ExprValue::String(s) => assert_eq!(s, "\\\\server\\share"),
         other => panic!("Expected String, got {:?}", other),
     }
@@ -958,7 +962,7 @@ fn test_relative_path_still_joined_with_expr() {
         },
     )
     .unwrap();
-    match &result["LocalFile"].value {
+    match &result.values()["LocalFile"].value {
         openjd_expr::ExprValue::String(s) => {
             let exp = std::path::Path::new(td.cwd())
                 .join("subdir/file.txt")
@@ -995,7 +999,7 @@ fn test_uri_in_build_symbol_table() {
         },
     )
     .unwrap();
-    let symtab = build_symbol_table(&params).unwrap();
+    let symtab = build_symbol_table(params.values()).unwrap();
     // RawParam should be the original string
     assert_eq!(
         symtab.get_string("RawParam.S3File").unwrap(),
@@ -1012,6 +1016,19 @@ fn test_uri_in_build_symbol_table() {
 
 use openjd_model::create_job;
 use openjd_model::job;
+
+/// Wrap hand-built parameter values for `create_job` without running
+/// `preprocess_job_parameters`, pairing them with the template's own merged
+/// definitions so the constraint re-check in `create_job` stays exercised.
+fn hand_built_params(
+    jt: &openjd_model::template::JobTemplate,
+    values: openjd_model::JobParameterValues,
+) -> openjd_model::PreprocessedJobParameters {
+    openjd_model::PreprocessedJobParameters::new(
+        values,
+        openjd_model::merge_job_parameter_definitions(jt, &[]).unwrap(),
+    )
+}
 
 fn parse_and_create(template_json: &str, params: &[(&str, &str)]) -> job::Job {
     let td = TestDirs::new();
@@ -2381,10 +2398,10 @@ fn test_preprocess_collects_defaults_with_environments() {
     )
     .unwrap();
     assert!(
-        matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "defaultValue")
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "defaultValue")
     );
     assert!(
-        matches!(result["Bar"].value, openjd_expr::ExprValue::String(ref s) if s == "alsoDefaultValue")
+        matches!(result.values()["Bar"].value, openjd_expr::ExprValue::String(ref s) if s == "alsoDefaultValue")
     );
 }
 
@@ -2504,7 +2521,7 @@ fn test_preprocess_ignores_defaults_when_value_provided() {
     )
     .unwrap();
     assert!(
-        matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "FooValue")
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "FooValue")
     );
 }
 
@@ -2573,7 +2590,7 @@ fn test_preprocess_int_to_float_coercion() {
         },
     )
     .unwrap();
-    match &result["Foo"].value {
+    match &result.values()["Foo"].value {
         openjd_expr::ExprValue::Float(f) => assert_eq!(f.value(), 42.0),
         other => panic!("Expected Float, got {:?}", other),
     }
@@ -2613,7 +2630,7 @@ fn test_preprocess_float_to_int_coercion_whole() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Int(5)
     ));
 }
@@ -2679,7 +2696,7 @@ fn test_preprocess_bool_coercion_true() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Bool(true)
     ));
 }
@@ -2705,7 +2722,7 @@ fn test_preprocess_bool_coercion_false() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Bool(false)
     ));
 }
@@ -2731,7 +2748,7 @@ fn test_preprocess_bool_coercion_yes() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Bool(true)
     ));
 }
@@ -2757,7 +2774,7 @@ fn test_preprocess_bool_coercion_0() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Bool(false)
     ));
 }
@@ -2808,7 +2825,7 @@ fn test_preprocess_bool_from_bool_value() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Bool(true)
     ));
 }
@@ -2835,7 +2852,7 @@ fn test_preprocess_range_expr_coercion() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::RangeExpr(_)
     ));
 }
@@ -2919,7 +2936,7 @@ fn test_preprocess_list_int_json_coercion() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::ListInt(_)
     ));
 }
@@ -2953,7 +2970,7 @@ fn test_preprocess_list_string_json_coercion() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::ListString(_, _)
     ));
 }
@@ -2987,7 +3004,7 @@ fn test_preprocess_list_bool_json_coercion() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::ListBool(_)
     ));
 }
@@ -3106,7 +3123,7 @@ fn test_coerce_valid_int_string_succeeds() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Int(42)
     ));
 }
@@ -3133,7 +3150,7 @@ fn test_coerce_valid_float_string_succeeds() {
     )
     .unwrap();
     assert!(matches!(
-        result["Foo"].value,
+        result.values()["Foo"].value,
         openjd_expr::ExprValue::Float(_)
     ));
 }
@@ -3223,7 +3240,9 @@ fn test_preprocess_int_coerced_to_string_repr() {
         },
     )
     .unwrap();
-    assert!(matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "42"));
+    assert!(
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "42")
+    );
 }
 
 #[test]
@@ -3247,7 +3266,9 @@ fn test_preprocess_bool_coerced_to_string_repr() {
         },
     )
     .unwrap();
-    assert!(matches!(result["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "true"));
+    assert!(
+        matches!(result.values()["Foo"].value, openjd_expr::ExprValue::String(ref s) if s == "true")
+    );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -3282,7 +3303,7 @@ fn test_path_absolute_default_allowed_with_walkup() {
         },
     )
     .unwrap();
-    if let openjd_expr::ExprValue::String(ref s) = result["DataDir"].value {
+    if let openjd_expr::ExprValue::String(ref s) = result.values()["DataDir"].value {
         assert_eq!(s, expected);
     } else {
         panic!("Expected String");
@@ -3775,7 +3796,12 @@ fn zero_dimension_parameter_space() {
     );
     let jt = decode_job_template(template, None, &CallerLimits::default()).unwrap();
     let params: HashMap<String, openjd_model::JobParameterValue> = HashMap::new();
-    let job = create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    let job = create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
     let step = &job.steps[0];
     if let Some(ref space) = step.parameter_space {
         let iter = openjd_model::StepParameterSpaceIterator::new(space).unwrap();
@@ -3957,7 +3983,11 @@ fn script_let_binding_syntax_error_is_caught() {
     // This should be caught either at validation or create_job time
     if let Ok(jt) = result {
         let params = std::collections::HashMap::new();
-        let result = openjd_model::create_job(&jt, &params, &jt.default_validation_context());
+        let result = openjd_model::create_job(
+            &jt,
+            &hand_built_params(&jt, params),
+            &jt.default_validation_context(),
+        );
         assert!(
             result.is_err(),
             "Script-level let binding with syntax error should produce an error"
@@ -4249,7 +4279,7 @@ fn path_user_value_with_empty_cwd_no_prefix() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "12",
         "relative path with empty cwd should remain unchanged"
     );
@@ -4282,7 +4312,7 @@ fn path_user_value_with_empty_cwd_subdir_no_prefix() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "sub/file.txt",
         "relative path with empty cwd should remain unchanged"
     );
@@ -4310,7 +4340,7 @@ fn path_default_with_empty_template_dir_no_prefix() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "output",
         "relative default with empty template_dir should remain unchanged"
     );
@@ -4336,7 +4366,12 @@ fn create_job_rejects_int_below_min() {
             value: openjd_expr::ExprValue::Int(5),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': value 5 is less than minimum 10"
@@ -4359,7 +4394,12 @@ fn create_job_rejects_int_above_max() {
             value: openjd_expr::ExprValue::Int(200),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': value 200 exceeds maximum 100"
@@ -4382,7 +4422,12 @@ fn create_job_rejects_string_exceeding_max_length() {
             value: openjd_expr::ExprValue::String("too long".into()),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': value length 8 exceeds maximum 5"
@@ -4405,8 +4450,80 @@ fn create_job_accepts_value_within_constraints() {
             value: openjd_expr::ExprValue::Int(50),
         },
     );
-    let job = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    let job = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
     assert_eq!(job.name, "test");
+}
+
+/// The merged definitions bundled by preprocess carry environment-template
+/// constraints, so create_job's backstop enforces the tightened cross-template
+/// bounds — not just the job template's own.
+#[test]
+fn create_job_recheck_uses_env_template_merged_constraints() {
+    let td = TestDirs::new();
+    let jt = decode_job_template(
+        minimal_job_template(r#"{"name": "Foo", "type": "INT", "maxValue": 100}"#),
+        None,
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    // Env template tightens the max from 100 to 10.
+    let et = decode_environment_template(
+        minimal_env_template(r#"{"name": "Foo", "type": "INT", "maxValue": 10}"#),
+        None,
+    )
+    .unwrap();
+    let mut input = JobParameterInputValues::new();
+    input.insert("Foo".into(), openjd_expr::ExprValue::Int(5));
+    let params = preprocess_job_parameters(
+        &jt,
+        &input,
+        &[et],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: td.template(),
+            current_working_dir: td.cwd(),
+            allow_template_dir_walk_up: false,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .unwrap();
+    // The bundled merged definitions carry the tightened max: a value
+    // of 50 satisfies the job template (max 100) but violates the env
+    // template (max 10).
+    let foo_def = params
+        .merged_definitions()
+        .iter()
+        .find(|d| d.name == "Foo")
+        .unwrap();
+    let probe = openjd_expr::ExprValue::Int(50);
+    assert!(
+        foo_def.check_constraints(&probe).is_err(),
+        "merged definition should reject 50 (env template tightened max to 10)"
+    );
+
+    // A value violating only the env-template constraint trips the
+    // create_job backstop when smuggled in via direct construction.
+    let merged = params.merged_definitions().to_vec();
+    let mut bad = openjd_model::JobParameterValues::new();
+    bad.insert(
+        "Foo".into(),
+        openjd_model::types::JobParameterValue {
+            param_type: openjd_model::JobParameterType::Int,
+            value: openjd_expr::ExprValue::Int(50),
+        },
+    );
+    let smuggled = openjd_model::PreprocessedJobParameters::new(bad, merged);
+    let err =
+        openjd_model::create_job(&jt, &smuggled, &jt.default_validation_context()).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Parameter 'Foo': value 50 exceeds maximum 10"
+    );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4433,7 +4550,12 @@ fn create_job_rejects_interpolated_name_exceeding_128_chars() {
             value: openjd_expr::ExprValue::String(long_name),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Job name exceeds maximum length of 128 characters (got 200)"
@@ -4460,7 +4582,12 @@ fn create_job_allows_name_at_max_length() {
             value: openjd_expr::ExprValue::String(name_128.clone()),
         },
     );
-    let job = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    let job = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
     assert_eq!(job.name, name_128);
 }
 
@@ -4502,7 +4629,12 @@ fn create_job_rejects_list_int_too_short() {
             value: openjd_expr::ExprValue::ListInt(vec![1]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': list length 1 is less than minimum 2"
@@ -4525,7 +4657,12 @@ fn create_job_rejects_list_int_too_long() {
             value: openjd_expr::ExprValue::ListInt(vec![1, 2, 3, 4, 5]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': list length 5 exceeds maximum 3"
@@ -4548,7 +4685,12 @@ fn create_job_rejects_list_int_item_below_min() {
             value: openjd_expr::ExprValue::ListInt(vec![-5]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] value -5 is less than minimum 0"
@@ -4573,7 +4715,12 @@ fn create_job_rejects_list_int_item_above_max() {
             value: openjd_expr::ExprValue::ListInt(vec![200]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] value 200 exceeds maximum 100"
@@ -4598,7 +4745,12 @@ fn create_job_rejects_list_int_item_not_in_allowed() {
             value: openjd_expr::ExprValue::ListInt(vec![99]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] value 99 is not in allowed values"
@@ -4623,7 +4775,12 @@ fn create_job_accepts_list_int_within_constraints() {
             value: openjd_expr::ExprValue::ListInt(vec![1, 50, 100]),
         },
     );
-    openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -4646,7 +4803,12 @@ fn create_job_rejects_list_string_too_short() {
             value: openjd_expr::ExprValue::ListString(vec!["a".into()], 0),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': list length 1 is less than minimum 2"
@@ -4671,7 +4833,12 @@ fn create_job_rejects_list_string_item_too_long() {
             value: openjd_expr::ExprValue::ListString(vec!["abcdef".into()], 0),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] length 6 exceeds maximum 3"
@@ -4696,7 +4863,12 @@ fn create_job_rejects_list_string_item_not_in_allowed() {
             value: openjd_expr::ExprValue::ListString(vec!["xyz".into()], 0),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] value 'xyz' is not in allowed values"
@@ -4721,7 +4893,12 @@ fn create_job_accepts_list_string_within_constraints() {
             value: openjd_expr::ExprValue::ListString(vec!["hello".into(), "world".into()], 0),
         },
     );
-    openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -4748,7 +4925,12 @@ fn create_job_rejects_list_float_item_below_min() {
             ]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] value -5 is less than minimum 0"
@@ -4776,7 +4958,12 @@ fn create_job_accepts_list_float_within_constraints() {
             ]),
         },
     );
-    openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -4799,7 +4986,12 @@ fn create_job_rejects_list_bool_too_long() {
             value: openjd_expr::ExprValue::ListBool(vec![true, false, true]),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': list length 3 exceeds maximum 2"
@@ -4824,7 +5016,12 @@ fn create_job_accepts_list_bool_within_constraints() {
             value: openjd_expr::ExprValue::ListBool(vec![true, false]),
         },
     );
-    openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -4855,7 +5052,12 @@ fn create_job_rejects_list_list_int_outer_too_long() {
             ),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': list length 3 exceeds maximum 2"
@@ -4884,7 +5086,12 @@ fn create_job_rejects_list_list_int_inner_too_long() {
             ),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0] length 5 exceeds maximum 3"
@@ -4913,7 +5120,12 @@ fn create_job_rejects_list_list_int_inner_item_below_min() {
             ),
         },
     );
-    let err = openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap_err();
+    let err = openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err();
     assert_eq!(
         err.to_string(),
         "Validation error: Parameter 'Foo': item[0][0] value -1 is less than minimum 0"
@@ -4945,7 +5157,12 @@ fn create_job_accepts_list_list_int_within_constraints() {
             ),
         },
     );
-    openjd_model::create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    openjd_model::create_job(
+        &jt,
+        &hand_built_params(&jt, params),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4974,7 +5191,7 @@ fn path_default_dotdot_normalized_walk_up_true() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "/tmp/templates",
         ".. should resolve to parent of template dir"
     );
@@ -5002,7 +5219,7 @@ fn path_default_dot_slash_dotdot_normalized_walk_up_true() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "/tmp/templates",
         "./.. should resolve to parent of template dir"
     );
@@ -5030,7 +5247,7 @@ fn path_default_down_up_normalized_walk_up_true() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "/tmp/templates/job1/other",
         "sub/../other should normalize to just other within template dir"
     );
@@ -5122,7 +5339,7 @@ fn path_default_back_to_template_dir_accepted_walk_up_false() {
     )
     .unwrap();
     assert_eq!(
-        params["P"].value.to_display_string(),
+        params.values()["P"].value.to_display_string(),
         "/a/job1",
         "sub/.. should resolve to exactly the template dir and be accepted"
     );

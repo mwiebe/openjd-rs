@@ -30,7 +30,7 @@ fn yaml_val(s: &str) -> serde_json::Value {
 fn preprocess(
     jt: &openjd_model::template::JobTemplate,
     input: &JobParameterInputValues,
-) -> openjd_model::JobParameterValues {
+) -> openjd_model::PreprocessedJobParameters {
     let td = tempfile::TempDir::new().unwrap();
     let dir = td.path().to_str().unwrap();
     openjd_model::preprocess_job_parameters(

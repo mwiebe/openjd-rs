@@ -127,9 +127,21 @@ by the spec.
 ### Job Instantiation
 
 ```rust
+pub struct PreprocessedJobParameters { /* private fields */ }
+
+impl PreprocessedJobParameters {
+    pub fn new(
+        values: JobParameterValues,
+        merged_definitions: Vec<MergedParameterDefinition>,
+    ) -> Self;
+    pub fn values(&self) -> &JobParameterValues;
+    pub fn into_values(self) -> JobParameterValues;
+    pub fn merged_definitions(&self) -> &[MergedParameterDefinition];
+}
+
 pub fn create_job(
     job_template: &JobTemplate,
-    job_parameter_values: &JobParameterValues,
+    job_parameters: &PreprocessedJobParameters,
     ctx: &ValidationContext,
 ) -> Result<job::Job, ModelError>;
 
@@ -138,7 +150,7 @@ pub fn preprocess_job_parameters(
     input_values: &JobParameterInputValues,
     environment_templates: &[EnvironmentTemplate],
     path_options: &PathParameterOptions<'_>,
-) -> Result<JobParameterValues, ModelError>;
+) -> Result<PreprocessedJobParameters, ModelError>;
 
 pub fn merge_job_parameter_definitions(
     job_template: &JobTemplate,
@@ -170,6 +182,20 @@ extensions + caller limits — and callers commonly get one from
 default-value pipeline from spec §2: type coercion, constraint checks,
 PATH resolution relative to the template directory and the current
 working directory, merging of env-template parameters per §1.2.1.
+
+[`PreprocessedJobParameters`] is preprocess's output and `create_job`'s
+input: the processed values bundled with the merged parameter
+definitions they were validated against. Bundling keeps the pair
+together so `create_job` can re-check values against the *actual*
+merged constraints (fail-fast, unlike preprocess's error accumulation —
+a caller that went through preprocess never trips it). The `new`
+constructor builds one directly for callers that already hold values
+and definitions — language bindings reconstructing after a
+serialization boundary, test fixtures. Direct construction does not
+fill defaults, coerce types, or resolve PATH values (only preprocess
+does those); passing an empty `merged_definitions` disables the
+constraint re-check. Fields are private only to leave room to grow the
+bundle without breaking construction sites.
 
 [`merge_job_parameter_definitions`] exposes just the merge step —
 useful for UIs that need to display the merged constraints before

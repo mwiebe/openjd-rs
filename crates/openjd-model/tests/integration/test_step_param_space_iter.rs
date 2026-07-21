@@ -925,7 +925,15 @@ fn lazy_param_space_range_expr_within_limit() {
     );
     let jt = decode_job_template(template, None, &CallerLimits::default()).unwrap();
     let params: HashMap<String, openjd_model::JobParameterValue> = HashMap::new();
-    let job = create_job(&jt, &params, &jt.default_validation_context()).unwrap();
+    let job = create_job(
+        &jt,
+        &openjd_model::PreprocessedJobParameters::new(
+            params,
+            openjd_model::merge_job_parameter_definitions(&jt, &[]).unwrap(),
+        ),
+        &jt.default_validation_context(),
+    )
+    .unwrap();
     let space = job.steps[0].parameter_space.as_ref().unwrap();
     let iter = openjd_model::StepParameterSpaceIterator::new(space).unwrap();
     assert_eq!(iter.len(), 1024);
@@ -969,9 +977,16 @@ fn product_node_overflow_is_rejected() {
     let jt = decode_job_template(template, None, &CallerLimits::default()).unwrap();
     let params: HashMap<String, openjd_model::JobParameterValue> = HashMap::new();
     // Overflow is caught at create_job time (parameter space iterator validation)
-    let msg = create_job(&jt, &params, &jt.default_validation_context())
-        .unwrap_err()
-        .to_string();
+    let msg = create_job(
+        &jt,
+        &openjd_model::PreprocessedJobParameters::new(
+            params,
+            openjd_model::merge_job_parameter_definitions(&jt, &[]).unwrap(),
+        ),
+        &jt.default_validation_context(),
+    )
+    .unwrap_err()
+    .to_string();
     assert!(
         msg.contains("parameter space") || msg.contains("overflow"),
         "Expected overflow error message, got: {msg}"

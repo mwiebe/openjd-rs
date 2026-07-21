@@ -78,6 +78,9 @@ These are two distinct operations:
 
 - **`check_constraints`** runs at `preprocess_job_parameters` time against user-provided values.
   It checks: value within min/max range, value in allowedValues, string length within bounds.
+  `create_job` re-runs it against the merged definitions bundled in
+  `PreprocessedJobParameters` as a defensive backstop for values placed in a
+  directly-constructed `PreprocessedJobParameters`.
 
 - **`validate_definition`** runs during template validation (Pass 3). It checks: min ≤ max,
   minLength ≤ maxLength, default satisfies own constraints, allowedValues entries satisfy

@@ -696,6 +696,7 @@ pub fn preprocess_job_parameters_with_map(
             .map_err(|e| e.to_string())?;
 
     Ok(param_values
+        .into_values()
         .into_iter()
         .map(|(k, v)| {
             (
