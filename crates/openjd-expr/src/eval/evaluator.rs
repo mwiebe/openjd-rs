@@ -1323,26 +1323,42 @@ impl<'a> Evaluator<'a> {
             return self.track(ExprValue::unresolved(ExprType::list(body_type)));
         }
 
-        // Materialize iterable elements
-        let items: Vec<ExprValue> = if let Some(iter) = iterable.list_iter() {
-            iter.collect()
-        } else if let ExprValue::RangeExpr(r) = &iterable {
-            r.iter().map(ExprValue::Int).collect()
-        } else {
-            return Err(ExpressionError::type_error(format!(
-                "Cannot iterate over {}",
-                iterable.expr_type()
-            )));
-        };
-        self.release(&iterable);
+        // Iterate the iterable in place — lists via a borrowing ListIter
+        // (elements were already tracked when the list was built; each
+        // yielded clone is transient), ranges lazily (a symbolic range's
+        // element count is bounded only by the range value domain, up to
+        // ~2^63, so materializing it up front could not be held to the
+        // memory limit). Neither branch copies the iterable's storage.
+        // The per-item loop below charges +1 op per element for both.
+        let iter: Box<dyn Iterator<Item = ExprValue> + '_> =
+            if let Some(list_iter) = iterable.list_iter() {
+                Box::new(list_iter)
+            } else if let ExprValue::RangeExpr(r) = &iterable {
+                Box::new(r.iter().map(ExprValue::Int))
+            } else {
+                return Err(ExpressionError::type_error(format!(
+                    "Cannot iterate over {}",
+                    iterable.expr_type()
+                )));
+            };
 
-        // Evaluate each element with a child scope
+        // Evaluate each element with a child scope. Each iteration's
+        // memory baseline is saved and restored: the child's transients
+        // (loop-variable clones, intermediates) are gone by the loop end,
+        // and the finished list is tracked exactly once by
+        // make_list_checked. The growing result Vec is bounded separately
+        // via `result_bytes` plus projected capacity: a check each
+        // iteration trips the memory limit while the result is being
+        // built, so a small limit cannot be exceeded by a large transient
+        // result allocation.
         let mut result = Vec::new();
+        let mut result_bytes = 0usize;
         let base_symtabs: Vec<&SymbolTable> = self.symtabs.to_vec();
-        for item in &items {
+        for item in iter {
             self.count_op()?;
+            let memory_baseline = self.current_memory;
             let mut tmp = crate::symbol_table::SymbolTable::new();
-            tmp.set(&var_name, item.clone())
+            tmp.set(&var_name, item)
                 .map_err(|e| ExpressionError::new(e.to_string()))?;
             let mut combined = base_symtabs.clone();
             combined.push(&tmp);
@@ -1366,12 +1382,38 @@ impl<'a> Evaluator<'a> {
                 }
             }
             if include {
-                result.push(child.evaluate(&lc.elt)?);
+                let elt = child.evaluate(&lc.elt)?;
+                result_bytes = result_bytes.saturating_add(elt.memory_size());
+                // The Vec's buffer is capacity-sized, not len-sized, and
+                // push doubles capacity when full — so check the
+                // projected post-growth footprint (logical bytes plus
+                // the unused capacity slots) BEFORE push allocates it.
+                let elem_size = std::mem::size_of::<ExprValue>();
+                let projected_cap = if result.len() == result.capacity() {
+                    result.capacity().saturating_mul(2).max(4)
+                } else {
+                    result.capacity()
+                };
+                let slack = projected_cap.saturating_sub(result.len() + 1);
+                crate::function_library::EvalContext::check_memory(
+                    self,
+                    result_bytes.saturating_add(slack.saturating_mul(elem_size)),
+                )?;
+                result.push(elt);
             }
             self.absorb_counters(&child);
             self.regex_cache = child.regex_cache;
-            self.current_memory = self.current_memory.saturating_sub(item.memory_size());
+            // Restore the iteration baseline: the child's tracked
+            // transients (the loop-variable clone and any intermediates)
+            // do not survive the iteration, and the result elements are
+            // accounted separately via result_bytes. Peak memory keeps
+            // the high-water mark absorbed above.
+            self.current_memory = memory_baseline;
         }
+        // The iterable is consumed by the comprehension: release its
+        // tracked memory now that iteration is done (the borrowing
+        // iterators above held it until the loop ended).
+        self.release(&iterable);
 
         // Check nesting depth
         for e in &result {
