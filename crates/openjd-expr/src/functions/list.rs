@@ -150,7 +150,16 @@ pub fn list_from_range(ctx: Ctx, a: &[ExprValue]) -> R {
     match &a[0] {
         ExprValue::RangeExpr(r) => {
             ctx.count_ops(r.len())?;
-            let elements: Vec<ExprValue> = r.iter().map(ExprValue::Int).collect();
+            // Pre-check the projected allocation before collecting: the
+            // op charge alone admits up to the operation limit in
+            // elements (~640 MB of ExprValues under default limits)
+            // before make_list_checked's post-hoc memory check.
+            ctx.check_memory(r.len().saturating_mul(std::mem::size_of::<ExprValue>()))?;
+            // Preallocate to the exact checked size so the buffer never
+            // exceeds what was checked (an empty Vec's doubling growth
+            // can overshoot the projection by ~2x).
+            let mut elements: Vec<ExprValue> = Vec::with_capacity(r.len());
+            elements.extend(r.iter().map(ExprValue::Int));
             Ok(ExprValue::make_list_checked(ctx, elements, ExprType::INT)?)
         }
         _ => Err(ExpressionError::new("list() argument must be range_expr")),
@@ -184,7 +193,7 @@ pub fn range_expr_from_list(ctx: Ctx, a: &[ExprValue]) -> R {
         }
         ints.sort();
         ints.dedup();
-        let r = crate::range_expr::RangeExpr::from_values(ints);
+        let r = crate::range_expr::RangeExpr::from_values(ints)?;
         Ok(ExprValue::RangeExpr(r))
     } else {
         Err(ExpressionError::new("range_expr() argument must be list"))
