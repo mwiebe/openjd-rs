@@ -70,9 +70,16 @@ pub trait EvalContext {
     fn count_op(&mut self) -> Result<(), ExpressionError>;
     fn count_ops(&mut self, n: usize) -> Result<(), ExpressionError>;
     fn count_string_ops(&mut self, len: usize) -> Result<(), ExpressionError>;
+    /// Pre-check that an allocation of `bytes` would not exceed the memory
+    /// limit. Call before large allocations to avoid temporarily exceeding
+    /// the limit.
+    fn check_memory(&self, bytes: usize) -> Result<(), ExpressionError>;
     fn get_or_compile_regex(&mut self, pattern: &str) -> Result<regex::Regex, ExpressionError> {
         // Default: compile without caching
-        regex::Regex::new(pattern).map_err(|e| ExpressionError::new(format!("Invalid regex: {e}")))
+        regex::RegexBuilder::new(pattern)
+            .size_limit(1 << 20)
+            .build()
+            .map_err(|e| ExpressionError::new(format!("Invalid regex: {e}")))
     }
 }
 ```
@@ -86,6 +93,36 @@ is per-evaluation, not global.
 The evaluator implements `EvalContext` directly. This trait boundary prevents function
 implementations from calling evaluation methods (like `evaluate` or `dispatch`),
 enforcing the separation between evaluation control flow and pure function logic.
+
+### Preflighting Output Budgets
+
+Functions whose output size is computable from their inputs must charge the
+budgets **before** building the result, so an over-limit call fails without
+first performing the work or allocating the output:
+
+1. Compute the output's size (bytes for strings, element count for lists).
+2. `count_ops` / `count_string_ops` for the work proportional to that size.
+3. `check_memory` for the projected allocation (a pre-check only — `dispatch`
+   tracks the actual output value after the function returns).
+4. Only then build the result.
+
+Two function families implement this pattern with shared helpers:
+
+- **Padded strings** (`zfill`, `center`, `ljust`, `rjust`) — a shared
+  `padding_metrics` helper (`string.rs`) clamps negative widths to zero
+  (matching Python: the string is returned unchanged) and computes the exact
+  output byte count, accounting for multi-byte characters (width is measured
+  in characters, budgets in bytes). Without the clamp, a negative width cast
+  through `as usize` wraps to a huge value — `zfill('5', -1)` previously
+  attempted a `usize::MAX` allocation.
+- **Representation functions** (`repr_py`, `repr_json`, `repr_sh`,
+  `repr_cmd`, `repr_pwsh`) — a `repr_budget` recursion (`repr.rs`) walks the
+  input value and computes a per-style upper bound on the escaped output:
+  list traversal charged to `count_ops`, string-escaping work to
+  `count_string_ops`, and the projected output bytes to `check_memory`. The
+  bound must always be ≥ the rendered length (pinned by a unit test that
+  renders and compares); it may overestimate (e.g., `repr_sh` counts quotes
+  for safe strings that shlex leaves bare).
 
 ## Registration
 

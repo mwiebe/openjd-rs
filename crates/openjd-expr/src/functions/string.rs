@@ -342,44 +342,69 @@ pub fn capitalize_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     Ok(ExprValue::String(result))
 }
 
+fn padding_metrics(s: &str, requested_width: i64) -> (usize, usize, usize) {
+    let width = usize::try_from(requested_width.max(0)).unwrap_or(usize::MAX);
+    let char_len = s.chars().count();
+    let output_bytes = s.len().saturating_add(width.saturating_sub(char_len));
+    (width, char_len, output_bytes)
+}
+
 pub fn center_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
+    let requested_width = match &a[1] {
+        ExprValue::Int(w) => *w,
         _ => return Err(ExpressionError::new("center() width must be int")),
     };
-    ctx.count_string_ops(width.max(s.len()))?;
-    let clen = s.chars().count();
-    if clen >= width {
+    let (width, char_len, output_bytes) = padding_metrics(s, requested_width);
+    ctx.count_string_ops(output_bytes)?;
+    ctx.check_memory(output_bytes)?;
+    if char_len >= width {
         return Ok(ExprValue::String(s.to_string()));
     }
-    let pad = width - clen;
+    let pad = width - char_len;
     let left = pad / 2;
     let right = pad - left;
-    Ok(ExprValue::String(format!(
-        "{}{}{}",
-        " ".repeat(left),
-        s,
-        " ".repeat(right)
-    )))
+    let mut result = String::with_capacity(output_bytes);
+    for _ in 0..left {
+        result.push(' ');
+    }
+    result.push_str(s);
+    for _ in 0..right {
+        result.push(' ');
+    }
+    Ok(ExprValue::String(result))
 }
 
 pub fn ljust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
+    let requested_width = match &a[1] {
+        ExprValue::Int(w) => *w,
         _ => return Err(ExpressionError::new("ljust() width must be int")),
     };
-    ctx.count_string_ops(width.max(s.len()))?;
-    Ok(ExprValue::String(format!("{:<width$}", s, width = width)))
+    let (width, char_len, output_bytes) = padding_metrics(s, requested_width);
+    ctx.count_string_ops(output_bytes)?;
+    ctx.check_memory(output_bytes)?;
+    let mut result = String::with_capacity(output_bytes);
+    result.push_str(s);
+    for _ in char_len..width {
+        result.push(' ');
+    }
+    Ok(ExprValue::String(result))
 }
 
 pub fn rjust_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let s = get_str(&a[0])?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
+    let requested_width = match &a[1] {
+        ExprValue::Int(w) => *w,
         _ => return Err(ExpressionError::new("rjust() width must be int")),
     };
-    ctx.count_string_ops(width.max(s.len()))?;
-    Ok(ExprValue::String(format!("{:>width$}", s, width = width)))
+    let (width, char_len, output_bytes) = padding_metrics(s, requested_width);
+    ctx.count_string_ops(output_bytes)?;
+    ctx.check_memory(output_bytes)?;
+    let mut result = String::with_capacity(output_bytes);
+    for _ in char_len..width {
+        result.push(' ');
+    }
+    result.push_str(s);
+    Ok(ExprValue::String(result))
 }

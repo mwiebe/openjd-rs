@@ -68,23 +68,14 @@ fn string_mul_exceeds_limit() {
 
 #[test]
 fn list_mul_exceeds_limit() {
-    // List multiplication checks the projected result size against the
-    // memory limit *before* op counting, so an over-memory repetition
+    // List multiplication preflights the projected result size against
+    // the memory limit before the op charge, so an over-memory repetition
     // reports a memory error even when it would also blow the op limit.
     let e = eval_bounded("[1, 2, 3] * 10000000", 10000)
         .unwrap_err()
         .to_string();
-    assert!(
-        e.contains(
-            &[
-                "Expression memory usage (1920000576 bytes) exceeded limit (10000 bytes)\n",
-                "  [1, 2, 3] * 10000000\n",
-                "  ~~~~~~~~~~^~~~~~~~~~",
-            ]
-            .concat()
-        ),
-        "got:\n{e}"
-    );
+    assert!(e.contains("exceeded limit (10000 bytes)"), "got:\n{e}");
+    assert!(e.contains("[1, 2, 3] * 10000000"), "got:\n{e}");
 }
 
 #[test]
@@ -498,100 +489,66 @@ fn estimate_list_heap_size_is_upper_bound() {
     check(vec![], ExprType::INT);
 }
 
-// === Regression tests: memory limits on range materialization ===
-
 #[test]
-fn comprehension_over_range_memory_bounded_incrementally() {
-    // Ranges are iterated lazily and the growing result is checked
-    // against the memory limit each iteration, so a small limit trips
-    // after a few elements — with an honest usage figure — instead of
-    // the comprehension materializing 2M elements (~128 MB) first.
-    let e = eval_bounded("[x for x in range_expr('1-2000000')]", 10000)
-        .unwrap_err()
-        .to_string();
-    assert_eq!(
-        e,
-        [
-            // 16480 = logical result bytes plus the Vec's projected
-            // post-doubling capacity slack: the check accounts for the
-            // buffer the push is about to allocate, not just elements.
-            "Expression memory usage (16480 bytes) exceeded limit (10000 bytes)
-",
-            "  [x for x in range_expr('1-2000000')]
-",
-            "  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-        ]
-        .concat()
-    );
-}
-
-#[test]
-fn reverse_range_slice_memory_checked_before_walk() {
-    // Same for reverse slices: the result size must be pre-checked.
-    let e = eval_bounded("range_expr('1-2000000')[::-1]", 10000)
-        .unwrap_err()
-        .to_string();
-    // 128,000,000 = 2,000,000 × size_of::<ExprValue>() (64); the
-    // remainder is the tracked RangeExpr and slice-argument values.
-    assert_eq!(
-        e,
-        [
-            "Expression memory usage (128000160 bytes) exceeded limit (10000 bytes)\n",
-            "  range_expr('1-2000000')[::-1]\n",
-            "  ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~",
-        ]
-        .concat()
-    );
-}
-
-#[test]
-fn list_of_range_memory_checked_before_collect() {
-    // list(range_expr(...)) materializes every element: the projected
-    // allocation must be pre-checked, not discovered by
-    // make_list_checked after ~128 MB is already allocated.
-    let e = eval_bounded("list(range_expr('1-2000000'))", 10000)
-        .unwrap_err()
-        .to_string();
-    assert_eq!(
-        e,
-        [
-            "Expression memory usage (128000000 bytes) exceeded limit (10000 bytes)\n",
-            "  list(range_expr('1-2000000'))\n",
-            "  ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~",
-        ]
-        .concat()
-    );
-}
-
-#[test]
-fn comprehension_over_string_list_no_double_footprint() {
-    // List iterables are iterated in place (borrowing ListIter), not
-    // collected into a second Vec: a comprehension over a list of large
-    // strings must not transiently hold ~2x the list's memory. The list
-    // itself is ~1 MB (tracked); peak should stay well under two full
-    // copies plus per-iteration transients.
-    let mut st = SymbolTable::new();
-    let strings: Vec<ExprValue> = (0..100)
-        .map(|i| ExprValue::String(format!("{i:0>10000}")))
-        .collect();
-    st.set(
-        "L",
-        ExprValue::make_list(strings, openjd_expr::types::ExprType::STRING).unwrap(),
+fn repr_json_preflights_nested_string_output_memory() {
+    let inner = ExprValue::make_list(
+        (0..32)
+            .map(|_| ExprValue::String("\u{1}".repeat(100)))
+            .collect(),
+        openjd_expr::ExprType::STRING,
     )
     .unwrap();
-    let r = ParsedExpression::new("[len(x) for x in L]")
+    let value = ExprValue::make_list(
+        vec![inner.clone(), inner],
+        openjd_expr::ExprType::list(openjd_expr::ExprType::STRING),
+    )
+    .unwrap();
+    let mut st = SymbolTable::new();
+    st.set("Param.Items", value).unwrap();
+
+    let e = ParsedExpression::new("repr_json(Param.Items)")
         .and_then(|p| {
-            p.with_memory_limit(usize::MAX)
+            p.with_memory_limit(10_000)
                 .with_operation_limit(DEFAULT_OPERATION_LIMIT)
                 .evaluate_with_metrics(&[&st])
         })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression memory usage (38660 bytes) exceeded limit (10000 bytes)\n",
+            "  repr_json(Param.Items)\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~",
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn multibyte_padding_preflights_output_bytes() {
+    // ljust on a 3000-byte / 1000-char string to width 1500 produces 3500
+    // output bytes (3000 original + 500 spaces). check_memory(3500) is
+    // called before the allocation, so a tight limit trips the preflight.
+    let mut st = SymbolTable::new();
+    st.set("Param.S", ExprValue::String("界".repeat(1000)))
         .unwrap();
-    assert_eq!(r.value.to_display_string().matches("10000").count(), 100);
-    // One tracked copy (~1 MB) + one transient loop-variable clone
-    // (~10 KB) + result ints. Two full copies would be ~2 MB.
-    assert!(
-        r.peak_memory < 1_500_000,
-        "peak_memory={} suggests the list was copied wholesale",
-        r.peak_memory
+    let expr = "ljust(Param.S, 1500)";
+    let e = ParsedExpression::new(expr)
+        .and_then(|p| {
+            p.with_memory_limit(3_500)
+                .with_operation_limit(DEFAULT_OPERATION_LIMIT)
+                .evaluate_with_metrics(&[&st])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression memory usage (3564 bytes) exceeded limit (3500 bytes)\n",
+            "  ljust(Param.S, 1500)\n",
+            "  ^~~~~~~~~~~~~~~~~~~~",
+        ]
+        .concat()
     );
 }

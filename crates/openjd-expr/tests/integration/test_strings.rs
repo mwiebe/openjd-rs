@@ -2554,3 +2554,19 @@ fn repr_sh_list_with_null_byte_returns_error() {
         "repr_sh on list with null-byte string should error"
     );
 }
+
+#[test]
+fn padding_width_counts_characters_but_budgets_bytes() {
+    assert_eq!(eval("center('界', 4)").to_display_string(), " 界  ");
+    assert_eq!(eval("ljust('界', 4)").to_display_string(), "界   ");
+    assert_eq!(eval("rjust('界', 4)").to_display_string(), "   界");
+    assert_eq!(eval("zfill('界', 4)").to_display_string(), "000界");
+}
+
+#[test]
+fn negative_padding_width_returns_input_unchanged() {
+    assert_eq!(eval("center('界', -1)").to_display_string(), "界");
+    assert_eq!(eval("ljust('界', -1)").to_display_string(), "界");
+    assert_eq!(eval("rjust('界', -1)").to_display_string(), "界");
+    assert_eq!(eval("zfill('界', -1)").to_display_string(), "界");
+}

@@ -29,13 +29,16 @@ pub fn zfill_fn(ctx: Ctx, a: &[ExprValue]) -> R {
         ExprValue::Int(i) => i.to_string(),
         _ => a[0].to_display_string(),
     };
-    ctx.count_string_ops(s.len())?;
-    let width = match &a[1] {
-        ExprValue::Int(w) => *w as usize,
+    let requested_width = match &a[1] {
+        ExprValue::Int(w) => *w,
         _ => return Err(ExpressionError::new("zfill() width must be int")),
     };
-    let clen = s.chars().count();
-    let result = if clen >= width {
+    let width = usize::try_from(requested_width.max(0)).unwrap_or(usize::MAX);
+    let char_len = s.chars().count();
+    let output_bytes = s.len().saturating_add(width.saturating_sub(char_len));
+    ctx.count_string_ops(output_bytes)?;
+    ctx.check_memory(output_bytes)?;
+    let result = if char_len >= width {
         s
     } else {
         let (sign, num) = if s.starts_with('-') || s.starts_with('+') {
@@ -43,8 +46,14 @@ pub fn zfill_fn(ctx: Ctx, a: &[ExprValue]) -> R {
         } else {
             ("", s.as_str())
         };
-        let zeros = width - clen;
-        format!("{}{}{}", sign, "0".repeat(zeros), num)
+        let zeros = width - char_len;
+        let mut buf = String::with_capacity(output_bytes);
+        buf.push_str(sign);
+        for _ in 0..zeros {
+            buf.push('0');
+        }
+        buf.push_str(num);
+        buf
     };
     Ok(ExprValue::String(result))
 }

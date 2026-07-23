@@ -172,6 +172,19 @@ impl Float64 {
     pub fn value(&self) -> f64 {
         self.value
     }
+    /// Byte length of the preserved display representation without allocating.
+    pub(crate) fn display_len(&self) -> usize {
+        self.original.as_ref().map_or_else(
+            || {
+                // `format_float` uses Rust's shortest finite-f64 rendering;
+                // 32 bytes is a conservative upper bound including sign,
+                // decimal point, and exponent.
+                32
+            },
+            |s| s.len(),
+        )
+    }
+
     /// Display string: the original literal if preserved, otherwise formatted.
     pub fn to_display_string(&self) -> String {
         if let Some(s) = &self.original {

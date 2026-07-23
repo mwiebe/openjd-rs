@@ -958,3 +958,36 @@ fn mixed_list_mismatch_at_head_cheap() {
         r.operation_count
     );
 }
+
+#[test]
+fn repr_json_counts_nested_elements_and_string_work() {
+    let inner = ExprValue::make_list(
+        (0..32)
+            .map(|_| ExprValue::String("\u{1}".repeat(100)))
+            .collect(),
+        ExprType::STRING,
+    )
+    .unwrap();
+    let value =
+        ExprValue::make_list(vec![inner.clone(), inner], ExprType::list(ExprType::STRING)).unwrap();
+    let mut st = SymbolTable::new();
+    st.set("Param.Items", value).unwrap();
+
+    let e = ParsedExpression::new("repr_json(Param.Items)")
+        .and_then(|p| {
+            p.with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&st])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        e,
+        [
+            "Expression operation count (220) exceeded limit (100)\n",
+            "  repr_json(Param.Items)\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~",
+        ]
+        .concat()
+    );
+}
