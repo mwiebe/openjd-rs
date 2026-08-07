@@ -497,6 +497,21 @@ fn listcomp_element_derives_target_from_list_target() {
 }
 
 #[test]
+fn listcomp_element_derives_target_with_unresolved_iterable() {
+    let st = symtab(&[("L", ExprValue::unresolved(ExprType::list(ExprType::INT)))]);
+    let result = eval_with_target_type(
+        "[[x, '2'] for x in L]",
+        &ExprType::list(ExprType::list(ExprType::INT)),
+        &st,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        ExprValue::unresolved(ExprType::list(ExprType::list(ExprType::INT)))
+    );
+}
+
+#[test]
 fn slice_bounds_not_constrained_by_target() {
     // Slice bounds are ints regardless of the parent target.
     assert_eq!(

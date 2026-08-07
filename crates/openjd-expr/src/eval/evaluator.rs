@@ -1464,7 +1464,7 @@ impl<'a> Evaluator<'a> {
             let mut child = self.child_evaluator(&combined);
             // Check filter clause type if present
             if let Some(if_clause) = gen.ifs.first() {
-                let cond = child.evaluate(if_clause)?;
+                let cond = child.eval_node(if_clause, None)?;
                 let cond_inner = unwrap_unresolved(&cond.expr_type());
                 let is_bool_compatible = cond_inner == ExprType::BOOL
                     || cond_inner.code() == crate::types::TypeCode::Unresolved
@@ -1483,7 +1483,7 @@ impl<'a> Evaluator<'a> {
                     });
                 }
             }
-            let body_val = child.evaluate(&lc.elt)?;
+            let body_val = child.eval_node(&lc.elt, elem_target.as_ref())?;
             self.absorb_counters(&child);
             let body_type = unwrap_unresolved(&body_val.expr_type());
             return self.track(ExprValue::unresolved(ExprType::list(body_type)));
@@ -1528,7 +1528,7 @@ impl<'a> Evaluator<'a> {
             child.regex_cache = std::mem::take(&mut self.regex_cache);
             let mut include = true;
             if let Some(if_clause) = gen.ifs.first() {
-                let cond = child.evaluate(if_clause)?;
+                let cond = child.eval_node(if_clause, None)?;
                 if let ExprValue::Bool(b) = cond {
                     include = b;
                 } else {
