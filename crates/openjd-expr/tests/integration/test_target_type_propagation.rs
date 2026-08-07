@@ -384,6 +384,20 @@ fn outer_target_float_promotes_int_result() {
 }
 
 #[test]
+fn outer_target_float_rejects_inexact_int_result() {
+    let expr = "9007199254740993";
+    let err = eval_with_target_type(expr, &ExprType::FLOAT, &SymbolTable::new())
+        .unwrap_err()
+        .to_string();
+    let expected = concat!(
+        "Cannot coerce int to float: 9007199254740993 is not exactly representable\n",
+        "  9007199254740993\n",
+        "  ^~~~~~~~~~~~~~~~"
+    );
+    assert!(err.contains(expected), "got:\n{err}\nexpected:\n{expected}");
+}
+
+#[test]
 fn outer_target_string_subtraction_with_param() {
     // Plain `Param.End - 1` with target_type=string. Both operands
     // evaluate as int, `__sub__` runs in int land, the int result

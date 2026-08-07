@@ -108,6 +108,19 @@ fn coerce_int_to_float() {
 }
 
 #[test]
+fn coerce_inexact_int_to_float_errors() {
+    for value in [9_007_199_254_740_993, i64::MAX] {
+        let error = ExprValue::Int(value)
+            .coerce(&ExprType::FLOAT, PathFormat::Posix)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            format!("Cannot coerce int to float: {value} is not exactly representable")
+        );
+    }
+}
+
+#[test]
 fn coerce_same_type_passthrough() {
     let v = ExprValue::Int(42)
         .coerce(&ExprType::INT, PathFormat::Posix)
@@ -790,6 +803,21 @@ fn list_int_float_mix() {
         assert!(matches!(e, ExprValue::Float(_)));
     }
 }
+#[test]
+fn list_int_float_mix_rejects_inexact_promotion() {
+    let error = ExprValue::make_list(
+        vec![
+            ExprValue::Int(9_007_199_254_740_993),
+            ExprValue::Float(Float64::new(2.0).unwrap()),
+        ],
+        ExprType::FLOAT,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Cannot coerce int to float: 9007199254740993 is not exactly representable"
+    );
+}
 
 #[test]
 fn list_nested() {
@@ -797,6 +825,7 @@ fn list_nested() {
         ExprValue::make_list(vec![ExprValue::Int(1), ExprValue::Int(2)], ExprType::INT).unwrap();
     let inner2 =
         ExprValue::make_list(vec![ExprValue::Int(3), ExprValue::Int(4)], ExprType::INT).unwrap();
+
     let v = ExprValue::make_list(vec![inner1, inner2], ExprType::list(ExprType::INT)).unwrap();
     assert_eq!(v.expr_type().to_string(), "list[list[int]]");
 }

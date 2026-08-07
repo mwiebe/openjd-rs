@@ -387,7 +387,7 @@ pub struct FunctionEntry {
 /// Registry of functions available in expression evaluation.
 ///
 /// Dispatch is signature-based with three phases (exact match, coerced
-/// match, generic/typevar match) and supports implicit `int→float` and
+/// match, generic/typevar match) and supports exact implicit `int→float` and
 /// `path→string` coercion. See the EXPR spec §2 for the canonical
 /// catalogue of operators and functions.
 #[derive(Clone, Default)]
@@ -677,7 +677,7 @@ impl ExprValue {
     // ── List construction ──
 
     /// Build a typed list from elements, promoting element types where
-    /// needed (int+float → float, path+string → string). `hint_type`
+    /// needed (exact int+float → float, path+string → string). `hint_type`
     /// determines the element type for an empty list.
     pub fn make_list(
         elements: Vec<ExprValue>, hint_type: ExprType,

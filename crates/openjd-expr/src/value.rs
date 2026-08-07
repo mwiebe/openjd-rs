@@ -79,6 +79,17 @@ pub(crate) fn int_float_eq(i: i64, v: f64) -> bool {
     float_as_exact_i64(v) == Some(i)
 }
 
+/// Convert an integer to float only when the result represents the same value.
+pub(crate) fn implicit_int_to_float(i: i64) -> Result<Float64, String> {
+    let value = i as f64;
+    if !int_float_eq(i, value) {
+        return Err(format!(
+            "Cannot coerce int to float: {i} is not exactly representable"
+        ));
+    }
+    Ok(Float64::new(value).expect("a finite i64 always converts to a finite f64"))
+}
+
 /// Exact int↔float ordering (`i` vs `v`), matching Python; `None` for NaN.
 ///
 /// Ordering must agree with [`int_float_eq`]: with the rounding
@@ -434,7 +445,8 @@ impl ExprValue {
 
     /// Construct a typed list from heterogeneous elements.
     ///
-    /// Applies type promotion rules: int+float→float, path+string→string.
+    /// Applies type promotion rules: exactly representable int+float→float,
+    /// path+string→string.
     /// Uses `hint_type` for empty lists to determine the element type.
     /// Returns an error if any element is a `ListList`, which would create 3+ nesting levels.
     ///
@@ -517,7 +529,9 @@ impl ExprValue {
         if has_int && has_float {
             for e in &mut elements {
                 if let Self::Int(i) = e {
-                    *e = Self::Float(Float64::new(*i as f64).unwrap());
+                    *e = Self::Float(
+                        implicit_int_to_float(*i).map_err(crate::error::ExpressionError::new)?,
+                    );
                 }
             }
             return Ok(Self::ListFloat(
@@ -539,11 +553,13 @@ impl ExprValue {
         if has_list_int && has_list_float {
             for e in &mut elements {
                 if let Self::ListInt(ints) = e {
-                    *e = Self::ListFloat(
-                        ints.iter()
-                            .map(|i| Float64::new(*i as f64).unwrap())
-                            .collect(),
-                    );
+                    let floats = ints
+                        .iter()
+                        .map(|i| {
+                            implicit_int_to_float(*i).map_err(crate::error::ExpressionError::new)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    *e = Self::ListFloat(floats);
                 }
             }
             return Ok(Self::make_list_list(elements, ExprType::NULLTYPE));
@@ -725,7 +741,8 @@ impl ExprValue {
     /// Coerce a value to the given type.
     ///
     /// Coercion is non-destructive: only conversions that don't lose
-    /// information are attempted (`int → float`, `int → string`, etc).
+    /// information are attempted (exactly representable `int → float`,
+    /// `int → string`, etc).
     ///
     /// An `any` target is unconstrained: every value is returned
     /// unchanged.
@@ -779,7 +796,7 @@ impl ExprValue {
         }
         match (&self, target.code()) {
             (ExprValue::Int(i), TypeCode::Float) => {
-                Ok(ExprValue::Float(Float64::new(*i as f64).unwrap()))
+                Ok(ExprValue::Float(implicit_int_to_float(*i)?))
             }
             (ExprValue::Float(f), TypeCode::Int) => {
                 let v = f.value();

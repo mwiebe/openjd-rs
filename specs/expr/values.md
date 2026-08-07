@@ -97,7 +97,7 @@ ExprValue::Bool(true)
 
 // Lists — make_list(elements, hint_type) handles type promotion
 ExprValue::make_list(vec![ExprValue::Int(1), ExprValue::Int(2)], ExprType::NULLTYPE)  // → ListInt
-ExprValue::make_list(vec![ExprValue::Int(1), ExprValue::Float(..)], ExprType::NULLTYPE)  // → ListFloat (int→float)
+ExprValue::make_list(vec![ExprValue::Int(1), ExprValue::Float(..)], ExprType::NULLTYPE)  // → ListFloat (exact int→float)
 ExprValue::make_list(vec![ExprValue::Path{..}, ExprValue::String(..)], ExprType::NULLTYPE)  // → ListString (path→string)
 ExprValue::make_list(vec![], ExprType::INT)  // → ListInt (empty, hint selects variant)
 
@@ -167,8 +167,8 @@ the list is non-empty, the element type is inferred from the elements themselves
 Promotion rules are applied in priority order — the first matching rule wins:
 
 1. All same type → use that typed variant directly
-2. Mix of INT and FLOAT → promote all to FLOAT (`ListFloat`)
-3. Nested `list[int]` + `list[float]` → promote inner `ListInt` elements to `ListFloat`
+2. Mix of INT and FLOAT → promote exactly representable integers to FLOAT (`ListFloat`)
+3. Nested `list[int]` + `list[float]` → promote exactly representable inner `ListInt` elements to `ListFloat`
 4. Nested `list[path]` + `list[string]` → promote inner `ListPath` elements to `ListString`
 5. Mix of PATH and STRING → promote all to STRING (`ListString`)
 6. First element determines variant (homogeneous case)
@@ -178,6 +178,10 @@ The nested list promotion rules (3, 4) mirror the scalar rules (2, 5) but operat
 the inner element types. For example, `[ListInt([1,2]), ListFloat([3.0])]` promotes the
 `ListInt` to `ListFloat` before wrapping in `ListList`. This matches the Python
 `_from_list` logic.
+Integer-to-float promotion fails when an integer is not exactly representable as an
+IEEE 754 binary64 value. This preserves the non-destructive coercion contract for
+values above the consecutive-integer range around 2^53.
+
 
 Per the specification (section 1.2.6), incompatible element types are always an error —
 there is no silent fallback to string conversion.
@@ -355,7 +359,7 @@ Applied when the evaluation result needs to match an expected type:
 - FLOAT → INT (only if exact, e.g., `3.0` → `3`)
 - STRING → INT (parse)
 - STRING → FLOAT (parse)
-- INT → FLOAT
+- INT → FLOAT (only when exactly representable)
 - RANGE_EXPR → STRING
 - RANGE_EXPR → LIST[INT]
 - LIST[T] → LIST[U] (element-wise coercion)

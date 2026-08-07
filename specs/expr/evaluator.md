@@ -373,7 +373,7 @@ Rejects:
 
 ### List (`eval_list`)
 Evaluates list literals. Validates max 2 nesting levels. Coerces elements when mixed
-types are present (int→float, path→string). Empty lists use the target type context
+types are present (exact int→float, path→string). Empty lists use the target type context
 to determine element type.
 
 ### ListComp (`eval_listcomp`)

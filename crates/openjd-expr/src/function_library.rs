@@ -251,7 +251,7 @@ impl FunctionLibrary {
                 skip_receiver_coercion,
             ) {
                 if let Some(bindings) = entry.signature.match_call(&coerced_types) {
-                    let coerced = coerce_values(args, &coerced_types);
+                    let coerced = coerce_values(args, &coerced_types)?;
                     if any_unresolved {
                         let ret = entry.signature.sig_return().substitute(&bindings);
                         return Ok(ExprValue::unresolved(ret));
@@ -473,7 +473,7 @@ impl FunctionLibrary {
     }
 }
 
-/// Implicit coercion rules: int→float, path→string.
+/// Candidate implicit coercion rules: int→float, path→string.
 fn can_coerce(from: &ExprType, to: &ExprType) -> bool {
     (from.code() == crate::types::TypeCode::Int && to.code() == crate::types::TypeCode::Float)
         || (from.code() == crate::types::TypeCode::Path
@@ -524,7 +524,7 @@ fn try_coerce_args(
             match (&args[i], pt.code()) {
                 (ExprValue::Int(v), crate::types::TypeCode::Float) => {
                     coerced.push(ExprValue::Float(
-                        crate::value::Float64::new(*v as f64).unwrap(),
+                        crate::value::implicit_int_to_float(*v).ok()?,
                     ));
                 }
                 (ExprValue::Path { value, .. }, crate::types::TypeCode::String) => {
@@ -544,15 +544,18 @@ fn try_coerce_args(
 }
 
 /// Coerce values to match target types (for generic dispatch after type matching).
-fn coerce_values(args: &[ExprValue], target_types: &[ExprType]) -> Vec<ExprValue> {
+fn coerce_values(
+    args: &[ExprValue],
+    target_types: &[ExprType],
+) -> Result<Vec<ExprValue>, ExpressionError> {
     args.iter()
         .zip(target_types.iter())
-        .map(|(a, t)| {
-            if can_coerce(&a.expr_type(), t) {
+        .map(|(a, t)| -> Result<ExprValue, ExpressionError> {
+            let value = if can_coerce(&a.expr_type(), t) {
                 match (a, t.code()) {
-                    (ExprValue::Int(v), crate::types::TypeCode::Float) => {
-                        ExprValue::Float(crate::value::Float64::new(*v as f64).unwrap())
-                    }
+                    (ExprValue::Int(v), crate::types::TypeCode::Float) => ExprValue::Float(
+                        crate::value::implicit_int_to_float(*v).map_err(ExpressionError::new)?,
+                    ),
                     (ExprValue::Path { value, .. }, crate::types::TypeCode::String) => {
                         ExprValue::String(value.clone())
                     }
@@ -560,7 +563,8 @@ fn coerce_values(args: &[ExprValue], target_types: &[ExprType]) -> Vec<ExprValue
                 }
             } else {
                 a.clone()
-            }
+            };
+            Ok(value)
         })
         .collect()
 }
@@ -706,6 +710,50 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(r, ExprValue::Float(_)));
+    }
+
+    #[test]
+    fn dispatch_rejects_inexact_int_to_float_coercion() {
+        let mut lib = FunctionLibrary::new();
+        lib.register_sig("__add__", "(float, float) -> float", add_float)
+            .unwrap();
+        let mut ctx = MockCtx;
+        let error = lib
+            .call(
+                "__add__",
+                &[
+                    ExprValue::Int(9_007_199_254_740_993),
+                    ExprValue::Float(crate::value::Float64::new(1.0).unwrap()),
+                ],
+                &mut ctx,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "Cannot use '+' operator with int and float"
+        );
+    }
+
+    #[test]
+    fn dispatch_generic_rejects_inexact_int_to_float_coercion() {
+        let mut lib = FunctionLibrary::new();
+        lib.register_sig("same", "(float, T1) -> T1", add_float)
+            .unwrap();
+        let mut ctx = MockCtx;
+        let error = lib
+            .call(
+                "same",
+                &[
+                    ExprValue::Int(9_007_199_254_740_993),
+                    ExprValue::Float(crate::value::Float64::new(1.0).unwrap()),
+                ],
+                &mut ctx,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.message(),
+            "Cannot coerce int to float: 9007199254740993 is not exactly representable"
+        );
     }
 
     #[test]
