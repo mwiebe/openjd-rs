@@ -702,6 +702,8 @@ impl ExprValue {
 
     /// Coerce `self` toward `target`. Consuming call; errors pass the
     /// value back on failure via the error message, not as a type.
+    /// This context-free API does not apply evaluator resource budgets;
+    /// evaluation-time target coercion wraps it with budget preflights.
     pub fn coerce(
         self, target: &ExprType, path_format: PathFormat,
     ) -> Result<Self, String>;

@@ -83,9 +83,11 @@ create value → _track(value)     → current_memory += value.memory_size()
 consume value → _release(value)  → current_memory -= value.memory_size()
 ```
 
-The `dispatch` method centralizes this: it releases input values, calls the function
-implementation, and tracks the output value. This keeps function implementations pure
-(values in, value out) with memory tracking handled by the evaluator.
+The `dispatch` method centralizes this for function calls: it releases input values,
+calls the function implementation, and tracks the output value. Target coercion uses
+the same replacement model. Before coercing, the evaluator checks a conservative bound
+for all temporary and output allocations while the source remains tracked; after a
+successful coercion it subtracts the source size and tracks the replacement.
 
 ### Operation Counting
 
@@ -95,6 +97,7 @@ Every function call increments the operation counter:
 |-----------|------|
 | Function/operator call | 1 |
 | List iteration (comprehension, sorted, etc.) | +N (element count) |
+| Target coercion of a list or materialized range | +N (element count, recursive for nested lists) |
 | String processing | +ceil(len / 256) |
 
 The proportional costs prevent DoS via large strings or lists — a million-element list
@@ -131,10 +134,10 @@ The optional `target_type` set via `EvalBuilder::with_target_type` shapes
 1. **Per-node hints** — selected nodes use the live target type to choose
    between equally-valid behaviors (e.g., `eval_list` infers the element
    type for an empty list literal `[]` from a `list[T]` target).
-2. **Final-result coercion** — after the root node evaluates, the
-   `evaluate()` wrapper coerces the value toward the target type via
-   [`ExprValue::coerce`](values.md#coerce). With no target type set, this
-   step is a no-op.
+2. **Result coercion** — after each node with a propagated target evaluates,
+   `eval_node` coerces its value toward that target through a resource-budgeted
+   wrapper around [`ExprValue::coerce`](values.md#coerce). With no target type
+   set, this step is a no-op.
 
 The propagation rules below come from [RFC 0005 §"Target Type Propagation
 Rules"](https://github.com/OpenJobDescription/openjd-specifications/blob/main/rfcs/0005-expression-language.md#expression-evaluation):
@@ -166,8 +169,9 @@ subscript's *result* rather than its `list[int]` receiver, and why
 
 This is realized structurally: recursion goes through
 `Evaluator::eval_node(node, target)`, which takes the target as an
-explicit parameter, applies it to that node's result only (via
-`ExprValue::coerce`), and passes `None` to all children by default.
+explicit parameter, applies it to that node's result only through the
+resource-budgeted coercion wrapper, and passes `None` to all children by
+default.
 Only the slots the table marks as inheriting or deriving a target
 (`IfExp.body`/`orelse`, `List`/`ListComp` elements, `Call` arguments)
 forward a non-`None` value. The `target_type` configured on the

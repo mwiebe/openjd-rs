@@ -242,7 +242,8 @@ impl<'a> Evaluator<'a> {
     /// This is the per-node target-type propagation primitive defined by
     /// RFC 0005 §"Target Type Propagation Rules". The target applies to
     /// **this node's result only**: after `evaluate_inner` returns, the
-    /// value is coerced toward `target` via [`ExprValue::coerce`].
+    /// value is coerced toward `target` through a resource-budgeted wrapper
+    /// around [`ExprValue::coerce`].
     ///
     /// Children are evaluated with `target = None` (unconstrained) by
     /// default — a caller's `target_type=string` request must not leak
@@ -295,13 +296,13 @@ impl<'a> Evaluator<'a> {
             }
             Ok(val) => {
                 if let Some(tt) = target {
-                    val.coerce(tt, self.path_format).map_err(|msg| {
-                        let e = ExpressionError::new(msg);
-                        if let Some(src) = &self.expr_source {
-                            e.with_node(src, node)
-                        } else {
-                            e
+                    self.coerce_tracked(val, tt).map_err(|e| {
+                        if e.expr().is_none() {
+                            if let Some(src) = &self.expr_source {
+                                return e.with_node(src, node);
+                            }
                         }
+                        e
                     })
                 } else {
                     Ok(val)
@@ -441,6 +442,27 @@ impl<'a> Evaluator<'a> {
     fn release(&mut self, value: &ExprValue) {
         let size = value.memory_size();
         self.current_memory = self.current_memory.saturating_sub(size);
+    }
+
+    fn coerce_tracked(
+        &mut self,
+        value: ExprValue,
+        target: &ExprType,
+    ) -> Result<ExprValue, ExpressionError> {
+        let (operations, allocation) = value.coercion_budget(target);
+        <Self as crate::function_library::EvalContext>::count_ops(self, operations)?;
+        <Self as crate::function_library::EvalContext>::check_memory(self, allocation)?;
+
+        let original_size = value.memory_size();
+        let coerced = value
+            .coerce(target, self.path_format)
+            .map_err(ExpressionError::new)?;
+        if allocation == 0 && coerced.memory_size() == original_size {
+            return Ok(coerced);
+        }
+
+        self.current_memory = self.current_memory.saturating_sub(original_size);
+        self.track(coerced)
     }
 
     fn dispatch_with_node(
@@ -1199,16 +1221,9 @@ impl<'a> Evaluator<'a> {
             };
             return self.track(ExprValue::unresolved(ExprType::list(elem_type)));
         }
-        // If we have a list element target, coerce each element and skip homogeneity check
+        // eval_node already coerced each element toward this target.
         if let Some(ref elem_t) = list_elem_target {
-            let coerced: Result<Vec<ExprValue>, _> = elements
-                .into_iter()
-                .map(|e| {
-                    e.coerce(elem_t, self.path_format)
-                        .map_err(ExpressionError::new)
-                })
-                .collect();
-            let list = ExprValue::make_list_checked(self, coerced?, elem_t.clone())?;
+            let list = ExprValue::make_list_checked(self, elements, elem_t.clone())?;
             return self.track(list);
         }
         // Check type consistency

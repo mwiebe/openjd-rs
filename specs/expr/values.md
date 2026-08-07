@@ -346,9 +346,9 @@ See [type-system.md § Implicit Coercions](type-system.md#implicit-coercions) fo
 full rationale and rules that govern these two coercions across the crate. Method
 calls skip receiver coercion to prevent nonsensical calls like `42.upper()`.
 
-### Target Type Coercion (after evaluation, for format string context)
+### Target Type Coercion (during evaluator target propagation)
 
-Applied when the evaluation result needs to match an expected type:
+Applied when a node result needs to match its propagated target type:
 
 - any → STRING (via `to_string()`)
 - STRING → PATH
@@ -386,6 +386,21 @@ For **union** targets (e.g., `int | string`, `T?` which is sugar for
 Member iteration order is the union's normalized order (alphabetic by
 `TypeCode`), which makes the result deterministic across calls but
 is not guaranteed to follow the order the user wrote the type in.
+
+`ExprValue::coerce` is also a public, context-free API, so direct callers
+receive these conversion semantics without evaluator resource accounting.
+During expression evaluation, `Evaluator::eval_node` wraps it with a
+preflight that:
+
+- charges one operation per list element traversed or range element materialized,
+  including nested-list elements;
+- checks a conservative upper bound for temporary and output allocations before
+  scalar-to-string, range-to-list, or element-wise list coercion allocates; and
+- replaces the already-tracked source value with the coerced value in the memory
+  counter after coercion succeeds.
+
+This keeps target propagation subject to the same configured memory and operation
+limits as ordinary function evaluation while preserving the context-free public API.
 
 ### from_str_coerce
 

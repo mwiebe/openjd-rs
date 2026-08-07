@@ -1002,3 +1002,55 @@ fn repr_json_counts_nested_elements_and_string_work() {
         .concat()
     );
 }
+// === Regression tests: target coercion operation bounds ===
+
+#[test]
+fn target_range_to_list_charges_each_element() {
+    let expr = "range_expr('1-1000')";
+    let target = ExprType::list(ExprType::INT);
+    let err = ParsedExpression::new(expr)
+        .and_then(|p| {
+            p.with_target_type(&target)
+                .with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&SymbolTable::new()])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        [
+            "Expression operation count (1001) exceeded limit (100)\n",
+            "  range_expr('1-1000')\n",
+            "  ^~~~~~~~~~~~~~~~~~~~",
+        ]
+        .concat()
+    );
+}
+
+#[test]
+fn target_list_element_coercion_charges_each_element() {
+    let mut symbols = SymbolTable::new();
+    symbols
+        .set("L", ExprValue::ListInt((0..1000).collect()))
+        .unwrap();
+    let target = ExprType::list(ExprType::STRING);
+    let err = ParsedExpression::new("L")
+        .and_then(|p| {
+            p.with_target_type(&target)
+                .with_memory_limit(usize::MAX)
+                .with_operation_limit(100)
+                .evaluate_with_metrics(&[&symbols])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        [
+            "Expression operation count (1000) exceeded limit (100)\n",
+            "  L\n",
+            "  ^",
+        ]
+        .concat()
+    );
+}

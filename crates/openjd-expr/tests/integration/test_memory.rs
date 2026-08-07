@@ -738,3 +738,84 @@ fn join_preflights_large_separator_output_memory() {
         .concat()
     );
 }
+// === Regression tests: target coercion resource bounds ===
+
+#[test]
+fn target_range_to_list_preflights_memory() {
+    let expr = "range_expr('1-1000')";
+    let target = openjd_expr::ExprType::list(openjd_expr::ExprType::INT);
+    let baseline = ParsedExpression::new(expr)
+        .and_then(|p| {
+            p.with_memory_limit(usize::MAX)
+                .with_operation_limit(DEFAULT_OPERATION_LIMIT)
+                .evaluate_with_metrics(&[&SymbolTable::new()])
+        })
+        .unwrap()
+        .value
+        .memory_size();
+    let err = ParsedExpression::new(expr)
+        .and_then(|p| {
+            p.with_target_type(&target)
+                .with_memory_limit(baseline)
+                .with_operation_limit(DEFAULT_OPERATION_LIMIT)
+                .evaluate_with_metrics(&[&SymbolTable::new()])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "Expression memory usage ({} bytes) exceeded limit ({} bytes)\n  {expr}\n  ^~~~~~~~~~~~~~~~~~~~",
+            baseline + 2 * 1000 * std::mem::size_of::<i64>(),
+            baseline
+        )
+    );
+}
+
+#[test]
+fn target_list_element_coercion_preflights_memory() {
+    let source = ExprValue::ListInt((0..1000).collect());
+    let baseline = source.memory_size();
+    let mut symbols = SymbolTable::new();
+    symbols.set("L", source).unwrap();
+    let target = openjd_expr::ExprType::list(openjd_expr::ExprType::STRING);
+    let slot_bytes = 1000 * std::mem::size_of::<ExprValue>();
+    let output_heap = 1000 * (std::mem::size_of::<String>() + 20);
+    let projected = baseline + 2 * slot_bytes + 2 * output_heap;
+    let err = ParsedExpression::new("L")
+        .and_then(|p| {
+            p.with_target_type(&target)
+                .with_memory_limit(baseline)
+                .with_operation_limit(DEFAULT_OPERATION_LIMIT)
+                .evaluate_with_metrics(&[&symbols])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "Expression memory usage ({projected} bytes) exceeded limit ({baseline} bytes)\n  L\n  ^"
+        )
+    );
+}
+
+#[test]
+fn target_scalar_to_string_preflights_memory() {
+    let baseline = std::mem::size_of::<ExprValue>();
+    let err = ParsedExpression::new("1")
+        .and_then(|p| {
+            p.with_target_type(&openjd_expr::ExprType::STRING)
+                .with_memory_limit(baseline)
+                .with_operation_limit(DEFAULT_OPERATION_LIMIT)
+                .evaluate_with_metrics(&[&SymbolTable::new()])
+        })
+        .unwrap_err()
+        .to_string();
+    assert_eq!(
+        err,
+        format!(
+            "Expression memory usage ({} bytes) exceeded limit ({baseline} bytes)\n  1\n  ^",
+            baseline + 20
+        )
+    );
+}

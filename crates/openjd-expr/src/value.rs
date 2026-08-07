@@ -722,6 +722,212 @@ impl ExprValue {
         }
     }
 
+    /// Return the operation charge and an upper bound on additional heap
+    /// allocation for coercing this value during evaluation.
+    ///
+    /// The public [`Self::coerce`] API is context-free. The evaluator uses
+    /// this preflight so target propagation remains resource-bounded.
+    pub(crate) fn coercion_budget(&self, target: &ExprType) -> (usize, usize) {
+        let value_type = self.expr_type();
+        if target.code() == TypeCode::Any
+            || value_type == *target
+            || (target.code() == TypeCode::Union && target.match_type(&value_type).is_some())
+            || matches!(self, Self::Unresolved(_))
+        {
+            return (0, 0);
+        }
+
+        if target.code() == TypeCode::Union {
+            return target
+                .params()
+                .iter()
+                .filter(|member| {
+                    !matches!(
+                        member.code(),
+                        TypeCode::NullType | TypeCode::List | TypeCode::Union
+                    )
+                })
+                .map(|member| self.coercion_budget(member))
+                .fold(
+                    (0usize, 0usize),
+                    |(ops, bytes), (member_ops, member_bytes)| {
+                        (ops.saturating_add(member_ops), bytes.max(member_bytes))
+                    },
+                );
+        }
+
+        match (self, target.code()) {
+            (Self::RangeExpr(range), TypeCode::List) => {
+                let len = usize::try_from(range.len_u64()).unwrap_or(usize::MAX);
+                // RangeExpr::to_vec collects a flat_map without an exact
+                // size hint, so allow for geometric Vec capacity growth.
+                let capacity_bound = if len == 0 {
+                    0
+                } else {
+                    len.saturating_mul(2).max(4)
+                };
+                (
+                    len,
+                    capacity_bound.saturating_mul(std::mem::size_of::<i64>()),
+                )
+            }
+            (value, TypeCode::List) if value.is_list() && target.params().len() == 1 => {
+                value.list_coercion_budget(&target.params()[0])
+            }
+            (_, TypeCode::String) => (0, self.string_coercion_heap_bound()),
+            (Self::String(value), TypeCode::Float | TypeCode::Path) => (0, value.len()),
+            (Self::String(value), TypeCode::RangeExpr) => {
+                (0, Self::range_parse_heap_bound(value.len()))
+            }
+            _ => (0, 0),
+        }
+    }
+
+    fn list_coercion_budget(&self, elem_target: &ExprType) -> (usize, usize) {
+        let len = self.list_len().unwrap_or(0);
+        let slot_bytes = len.saturating_mul(std::mem::size_of::<ExprValue>());
+        let input_payload = match self {
+            Self::ListFloat(values) => values
+                .iter()
+                .map(|value| value.original.as_ref().map_or(0, |original| original.len()))
+                .sum(),
+            Self::ListString(values, _) | Self::ListPath(values, _, _) => {
+                values.iter().map(String::capacity).sum()
+            }
+            Self::ListList(values, _, _) => values.iter().map(Self::heap_size).sum(),
+            _ => 0,
+        };
+        let output_heap = self.list_output_heap_bound(elem_target);
+
+        // coerce() overlaps an expanded Vec<ExprValue>, the collected
+        // coerced values, and the destination typed-list buffer.
+        let mut allocation = slot_bytes
+            .saturating_add(input_payload)
+            .saturating_add(slot_bytes)
+            .saturating_add(output_heap.saturating_mul(2));
+        let mut operations = len;
+
+        if elem_target.code() == TypeCode::List {
+            if let Self::ListList(values, _, _) = self {
+                let mut largest_inner_temporary = 0usize;
+                for value in values {
+                    let (inner_ops, inner_bytes) = value.coercion_budget(elem_target);
+                    operations = operations.saturating_add(inner_ops);
+                    largest_inner_temporary = largest_inner_temporary.max(inner_bytes);
+                }
+                allocation = allocation.saturating_add(largest_inner_temporary);
+            }
+        }
+        (operations, allocation)
+    }
+
+    fn list_output_heap_bound(&self, elem_target: &ExprType) -> usize {
+        let len = self.list_len().unwrap_or(0);
+        let vector_bytes = match elem_target.code() {
+            TypeCode::Bool => len,
+            TypeCode::Int => len.saturating_mul(std::mem::size_of::<i64>()),
+            TypeCode::Float => len.saturating_mul(std::mem::size_of::<Float64>()),
+            TypeCode::String | TypeCode::Path => len.saturating_mul(std::mem::size_of::<String>()),
+            _ => len.saturating_mul(std::mem::size_of::<ExprValue>()),
+        };
+        let payload = match elem_target.code() {
+            TypeCode::Float | TypeCode::Path => match self {
+                Self::ListString(values, _) => values.iter().map(String::len).sum(),
+                _ => 0,
+            },
+            TypeCode::String => match self {
+                Self::ListBool(values) => values.len().saturating_mul(5),
+                Self::ListInt(values) => values.len().saturating_mul(20),
+                Self::ListFloat(values) => values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .original
+                            .as_ref()
+                            .map_or(32, |original| original.len())
+                    })
+                    .sum(),
+                Self::ListString(values, _) | Self::ListPath(values, _, _) => {
+                    values.iter().map(String::len).sum()
+                }
+                Self::ListList(values, _, _) => {
+                    values.iter().map(Self::string_coercion_heap_bound).sum()
+                }
+                _ => 0,
+            },
+            TypeCode::RangeExpr => match self {
+                Self::ListString(values, _) => values
+                    .iter()
+                    .map(|value| Self::range_parse_heap_bound(value.len()))
+                    .sum(),
+                _ => 0,
+            },
+            TypeCode::List => match self {
+                Self::ListList(values, _, _) => values
+                    .iter()
+                    .map(|value| value.coercion_output_heap_bound(elem_target))
+                    .sum(),
+                _ => 0,
+            },
+            _ => 0,
+        };
+        vector_bytes.saturating_add(payload)
+    }
+
+    fn coercion_output_heap_bound(&self, target: &ExprType) -> usize {
+        if self.expr_type() == *target {
+            return self.heap_size();
+        }
+        if target.code() == TypeCode::List && target.params().len() == 1 && self.is_list() {
+            return self.list_output_heap_bound(&target.params()[0]);
+        }
+        match target.code() {
+            TypeCode::String => self.string_coercion_heap_bound(),
+            TypeCode::Float | TypeCode::Path => match self {
+                Self::String(value) => value.len(),
+                _ => 0,
+            },
+            TypeCode::RangeExpr => match self {
+                Self::String(value) => Self::range_parse_heap_bound(value.len()),
+                _ => 0,
+            },
+            _ => 0,
+        }
+    }
+
+    fn string_coercion_heap_bound(&self) -> usize {
+        match self {
+            Self::Bool(_) => 5,
+            Self::Int(_) => 20,
+            Self::Float(value) => value
+                .original
+                .as_ref()
+                .map_or(32, |original| original.len()),
+            Self::String(value) | Self::Path { value, .. } => value.len(),
+            Self::RangeExpr(range) => {
+                // A rendered chunk is at most 61 bytes; allow 2x for
+                // String's geometric capacity growth.
+                range
+                    .heap_size()
+                    .div_ceil(std::mem::size_of::<crate::range_expr::IntRange>())
+                    .max(1)
+                    .saturating_mul(128)
+            }
+            _ => 0,
+        }
+    }
+
+    fn range_parse_heap_bound(source_len: usize) -> usize {
+        // Parsing may overlap the input, normalized, and merged IntRange
+        // buffers plus the u64 cumulative-index buffer. At 96 bytes per
+        // possible chunk this also covers geometric Vec capacity growth.
+        source_len
+            .saturating_add(1)
+            .div_ceil(2)
+            .min(crate::range_expr::MAX_RANGE_EXPR_CHUNKS)
+            .saturating_mul(96)
+    }
+
     /// Coerce a value to the given type.
     ///
     /// Coercion is non-destructive: only conversions that don't lose
@@ -813,12 +1019,10 @@ impl ExprValue {
             }
             (ExprValue::RangeExpr(r), TypeCode::String) => Ok(ExprValue::String(r.to_string())),
             (ExprValue::RangeExpr(r), TypeCode::List) => {
-                // coerce() runs outside any EvalContext (post-evaluation
-                // target-type hook, public API), so no operation or memory
-                // budget applies here. Cap the materialization at the
-                // evaluator's default operation limit: a range longer than
-                // that could not have been built as a list through any
-                // budgeted path either.
+                // The public API has no EvalContext, so retain a hard cap.
+                // Evaluation-time callers additionally preflight this
+                // materialization against their configured operation and
+                // memory budgets.
                 if r.len_u64() > crate::eval::DEFAULT_OPERATION_LIMIT as u64 {
                     return Err(format!(
                         "Cannot coerce range_expr of {} elements to list[int] \
