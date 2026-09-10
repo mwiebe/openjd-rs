@@ -1,6 +1,12 @@
 # Resolved-Value Constraints and Static Evaluation Gates
 
-**Status: DRAFT — under review. No code implements this yet.**
+**Status: PARTIALLY IMPLEMENTED — the `openjd-expr` mechanism is merged
+(PR [#373](https://github.com/OpenJobDescription/openjd-rs/pull/373),
+released in `openjd-expr` v0.7.0). Gates 1–3, the `CallerLimits`
+additions, and the memory-budget plumbing are not yet implemented.**
+The [Mechanism](#mechanism-openjd-expr-api-change) section below
+describes the API **as shipped**, which evolved from the original draft
+during review; the gate sections are design for the remaining work.
 
 Cross-cutting design spanning `openjd-expr`, `openjd-model`, and
 `openjd-sessions`. When this design is accepted and implemented, the
@@ -224,10 +230,10 @@ can possibly resolve to**:
 | Expression → `Unresolved` | 0 (may resolve to the empty string) |
 
 ```
-min_resolved_len(fs, G) = Σ contribution(segment_i, G)
+min_resolved_string_len(fs, G) = Σ contribution(segment_i, G)
 ```
 
-If `min_resolved_len > limit`, **no** run-time resolution can produce a
+If `min_resolved_string_len > limit`, **no** run-time resolution can produce a
 conforming value — every possible job creation / task execution is
 guaranteed to fail the resolved-value constraint — so the gate fails.
 This is strictly early detection of a certain violation, never a new
@@ -261,7 +267,7 @@ one bound serves both.
 ### Full-constraint checking when fully static
 
 Length is the only constraint a lower bound can check. When a format
-string is **fully** static at a gate (`static_value` present), the
+string is **fully** static at a gate (`resolved_value` present), the
 complete resolved-value constraint check runs — for
 `<AttributeCapabilityValue>` that includes the charset and
 first-character rules, not just ≤ 100. The rule: *whatever check gate 3
@@ -318,22 +324,34 @@ pub struct CallerLimits {
 
 ## Mechanism: openjd-expr API change
 
-`FormatString::validate_expressions` currently evaluates every segment
-and returns `Result<(), FormatStringValidationError>`, discarding the
-values. It changes to return what it already computed:
+**Implemented and merged** (PR #373, `openjd-expr` v0.7.0). The API as
+shipped — field names, an extra parameter, and an extra field evolved
+from the original draft during review:
 
 ```rust
 /// Outcome of statically evaluating a format string against a symbol
 /// table containing `Unresolved` placeholders.
 pub struct StaticResolution {
     /// Lower bound, in characters, on the length of any string this
-    /// format string can resolve to. Exact when `static_value` is `Some`.
-    pub min_resolved_len: usize,
+    /// format string can resolve to under the same `target_type` given
+    /// to `validate_expressions`. Exact when `resolved_value` is `Some`.
+    /// Accumulation saturates rather than wraps (relevant on 32-bit
+    /// targets — saturating is the safe direction for a lower bound).
+    pub min_resolved_string_len: usize,
     /// The fully-resolved value, present iff every segment evaluated to
-    /// a concrete (non-Unresolved) value. For a single-expression format
-    /// string this is the typed value (may be a list or null); otherwise
-    /// the concatenated string.
-    pub static_value: Option<ExprValue>,
+    /// a concrete (non-Unresolved) value AND, in the concatenated
+    /// multi-segment case, the result is at most
+    /// `MAX_STATIC_RESOLVED_VALUE_LEN` (10 MiB) — a defensive cap, since
+    /// the per-segment evaluation memory limit does not compose across
+    /// segments. For a single-expression format string this is the typed
+    /// value (may be a list or null), coerced toward `target_type`;
+    /// otherwise the concatenated string.
+    pub resolved_value: Option<ExprValue>,
+    /// The static type the resolution will eventually produce, available
+    /// even when `resolved_value` is `None` (unresolved placeholders
+    /// read through to their constraint; payload-dependent coercions
+    /// yield unions).
+    pub resolved_type: ExprType,
 }
 
 impl FormatString {
@@ -341,25 +359,41 @@ impl FormatString {
         &self,
         symtab: &SymbolTable,
         lib: &FunctionLibrary,
+        target_type: Option<&ExprType>,
     ) -> Result<StaticResolution, FormatStringValidationError>;
 }
 ```
 
-Design points:
+Design points (updated to the shipped behavior):
 
-- **No second evaluation.** The values are produced by the evaluation
-  pass 8 already runs; this only stops throwing them away. Gate-1 cost
-  is unchanged (the 10 MB example is *already* materialized during
-  `check` today).
-- `min_resolved_len` uses `to_display_string()` character counts,
+- **No second evaluation, no retention.** The values are produced by the
+  evaluation pass 8 already runs. Segments render once into a single
+  buffer; peak memory is one segment's evaluation plus the 10 MiB cap.
+- **`target_type` must match resolution.** Validation coerces the
+  single-expression passthrough root toward `target_type` exactly as
+  `resolve_with` does. Gates must pass the same target type the field's
+  resolution will use, or the bound describes the wrong resolution: a
+  float literal in an INT-typed field resolves to `1` (1 char), not
+  `1.0` (3 chars) — with no target the bound over-estimates, which is
+  the false-rejection direction.
+- `min_resolved_string_len` uses `to_display_string()` character counts,
   matching how values are actually interpolated
   (`resolve_string_with`). A concrete list segment inside a
   multi-segment string contributes its JSON-array display length,
   mirroring resolution behavior.
-- `static_value` follows the `resolve_with` typed-passthrough rule:
-  typed value for exactly-one-expression-zero-literals, string
-  otherwise. Callers use it to apply per-element rules for list results
-  and full charset checks for Group A fields.
+- `resolved_value` follows the `resolve_with` typed-passthrough rule:
+  typed value for exactly-one-expression-zero-literals (exempt from the
+  10 MiB cap — no concatenation occurs), string otherwise. Callers use
+  it to apply per-element rules for list results and full charset
+  checks for Group A fields. **Gates must not rely on `resolved_value`
+  being present for huge static strings** — past the cap it is `None`
+  while the bound keeps counting, which is exactly the lower-bound rule
+  this design is built on.
+- `resolved_type` tells gates whether the field resolves to a string
+  (the bound is a true string-length bound) or a typed value whose
+  display form the bound merely measures — apply length caps only to
+  string-consumed fields. It is available even for fully-unresolved
+  strings.
 - `openjd-expr` supplies mechanism only; which limit applies to which
   field is `openjd-model` / `openjd-sessions` policy.
 
@@ -378,6 +412,15 @@ site (which knows the field):
 | action `command`, `args[*]` | bound vs `caller_limits.max_resolved_arg_len` if set |
 | embedded file `data` | bound vs `caller_limits.max_resolved_data_len` if set |
 | everything else | none (already constrained elsewhere or non-string) |
+
+Each call site must pass the field's **target type** to
+`validate_expressions` (e.g. `nulltype | string | list[string]` for an
+`args` element), so that the bound describes the coerced resolution the
+field actually performs — see the Mechanism section. `resolved_type`
+then tells the gate whether the field resolves to a string (apply the
+length constraint) or a typed list whose display form the bound merely
+measures (apply per-element rules to `resolved_value` when present,
+skip the whole-string length check otherwise).
 
 - Errors are normal `ValidationErrors` entries at the field path, e.g.
   `steps[0] -> script -> actions -> onRun -> args[0]: resolved value is
@@ -484,8 +527,8 @@ To be made alongside the implementation commits (spec/code co-evolution):
 
 | File | Change |
 |---|---|
-| `specs/expr/format-string.md` | § Validation: `validate_expressions` returns `StaticResolution`; document the lower-bound computation |
-| `specs/expr/public-api.md` | New `StaticResolution` type; `validate_expressions` signature |
+| `specs/expr/format-string.md` | ~~§ Validation: `validate_expressions` returns `StaticResolution`; document the lower-bound computation~~ **Done** (PR #373) — including the target-type rule, the resolved-value cap, and the saturation note |
+| `specs/expr/public-api.md` | ~~New `StaticResolution` type; `validate_expressions` signature~~ **Done** (PR #373) |
 | `specs/model/validation.md` | Pass 8: resolved-value lower-bound checks, per-field constraint table |
 | `specs/model/job-creation.md` | `create_job`: new gate-2 evaluation pass over carried-forward format strings |
 | `specs/model/public-api.md` | `CallerLimits` new fields; memory-budget plumbing |
