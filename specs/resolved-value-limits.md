@@ -129,7 +129,7 @@ enforcing them early can never reject a template that could have run.
 
 | Spec § | Field | Constraint on the resolved value | Enforced today |
 |---|---|---|---|
-| [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 2 (resolved name vs `max_job_name_len`) |
+| [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 2 (resolved name vs `max_job_name_len`; the no-Cc-chars rule is **not** re-checked at gate 2 — see the follow-up in [Gate 2](#gate-2--job-creation-openjd-model-create_job)) |
 | [§3.3.2.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#3322-attributecapabilityvalue) | `<AttributeCapabilityValue>` | ≤ 100 chars; latin alphanumeric + `_` + `-`; must start with letter or `_` | Gate 2 (`validate_attribute_capability_value` on resolved value) |
 | [§3.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#342-taskparameterstringvalue) | `<TaskParameterStringValue>` | ≤ 1024 chars | Gate 2 (`ranges.rs` on resolved range elements) |
 | [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | **Nowhere — pre-existing gap** |
@@ -432,11 +432,28 @@ skip the whole-string length check otherwise).
   only matters if a constrained field interpolates it, and then that
   field's own bound catches it (the binding's concrete value is in the
   symtab, so the referencing segment evaluates concrete).
+- **Follow-up (from PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383)
+  review): single-valued `allOf` literal count.** The single-valued
+  attribute check in `structure.rs` fires only when
+  `vals.iter().all(|v| v.is_literal())`, which is stricter than
+  soundness requires. A literal element always contributes exactly one
+  element to the resolved list — only expression elements can null-skip
+  or list-flatten (`resolve_string_list` semantics) — so the resolved
+  count is at least the number of literal elements. An `allOf` of
+  `["linux", "windows", "{{ Param.X }}"]` on `attr.worker.os.family`
+  therefore violates the single-valued rule under *every* possible
+  resolution, but passes `openjd check` today and only fails at gate 2
+  (the `instantiate.rs` re-check) — exactly the deferral this design
+  eliminates elsewhere. Fix: gate on
+  `vals.iter().filter(|v| v.is_literal()).count() > 1` instead of
+  all-literal; identical to the current condition for all-literal
+  lists, so no existing behavior changes.
 
 ## Gate 2 — job creation (openjd-model, create_job)
 
 `create_job` already resolves and checks the Group A template-scope
-fields (job name, attribute values, task param strings) — unchanged. It
+fields (job name, attribute values, task param strings) — unchanged
+except for the job-name follow-up below. It
 gains one pass over the carried-forward session/task-scope format
 strings — action `command`/`args`, environment `variables`,
 embedded-file `data` — evaluating each against the gate-2 symbol table
@@ -453,6 +470,20 @@ table as gate 1.
   adds work proportional to what one worker would do anyway — done once
   at submission instead of per-task-per-worker. Avoidable later with
   constant folding (out of scope, below).
+- **Follow-up (from PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383)
+  review): job-name control characters.** §1.1.1 constrains the
+  *resolved* job name to no Cc characters, but gate 2 only re-applies
+  the length and emptiness checks. Gate 1's
+  `ResolvedConstraint::Text { forbid_control_chars: true }` runs only
+  when the name is fully static, so an interpolated name such as
+  `name: "render-{{ Param.Suffix }}"` with `Suffix = "a\nb"` passes
+  both gates today (`min_resolved_string_len` contributes 0 for the
+  unresolved segment and `resolved_value` is `None`). This is the same
+  asymmetry the emptiness check already fixes at gate 2 — `create_job`
+  must additionally reject a resolved job name containing control
+  characters (`job_name.chars().any(char::is_control)`), with a
+  `ModelError::DecodeValidation` alongside the existing emptiness
+  check.
 
 ## Gate 3 — run time (openjd-sessions)
 
