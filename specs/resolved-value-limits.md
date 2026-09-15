@@ -433,8 +433,10 @@ skip the whole-string length check otherwise).
   field's own bound catches it (the binding's concrete value is in the
   symtab, so the referencing segment evaluates concrete).
 - **Follow-up (from PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383)
-  review): single-valued `allOf` literal count.** The single-valued
-  attribute check in `structure.rs` fires only when
+  review): single-valued `allOf` literal count.** **Resolved** — `structure.rs`
+  now gates on `vals.iter().filter(|v| v.is_literal()).count() > 1`.
+  The single-valued
+  attribute check in `structure.rs` fired only when
   `vals.iter().all(|v| v.is_literal())`, which is stricter than
   soundness requires. A literal element always contributes exactly one
   element to the resolved list — only expression elements can null-skip
@@ -442,7 +444,7 @@ skip the whole-string length check otherwise).
   count is at least the number of literal elements. An `allOf` of
   `["linux", "windows", "{{ Param.X }}"]` on `attr.worker.os.family`
   therefore violates the single-valued rule under *every* possible
-  resolution, but passes `openjd check` today and only fails at gate 2
+  resolution, but passed `openjd check` and only failed at gate 2
   (the `instantiate.rs` re-check) — exactly the deferral this design
   eliminates elsewhere. Fix: gate on
   `vals.iter().filter(|v| v.is_literal()).count() > 1` instead of
@@ -471,16 +473,18 @@ table as gate 1.
   at submission instead of per-task-per-worker. Avoidable later with
   constant folding (out of scope, below).
 - **Follow-up (from PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383)
-  review): job-name control characters.** §1.1.1 constrains the
-  *resolved* job name to no Cc characters, but gate 2 only re-applies
+  review): job-name control characters.** **Resolved** — `create_job`
+  now rejects a resolved job name containing control characters,
+  alongside the emptiness check. §1.1.1 constrains the
+  *resolved* job name to no Cc characters, but gate 2 only re-applied
   the length and emptiness checks. Gate 1's
   `ResolvedConstraint::Text { forbid_control_chars: true }` runs only
   when the name is fully static, so an interpolated name such as
-  `name: "render-{{ Param.Suffix }}"` with `Suffix = "a\nb"` passes
-  both gates today (`min_resolved_string_len` contributes 0 for the
+  `name: "render-{{ Param.Suffix }}"` with `Suffix = "a\nb"` passed
+  both gates (`min_resolved_string_len` contributes 0 for the
   unresolved segment and `resolved_value` is `None`). This is the same
   asymmetry the emptiness check already fixes at gate 2 — `create_job`
-  must additionally reject a resolved job name containing control
+  additionally rejects a resolved job name containing control
   characters (`job_name.chars().any(char::is_control)`), with a
   `ModelError::DecodeValidation` alongside the existing emptiness
   check.
