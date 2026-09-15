@@ -541,20 +541,40 @@ mirroring whatever the submitting service set.
 
 ## Open questions for review
 
-1. **CLI policy for Group B.** Should the `openjd` CLI set
+All three are now decided:
+
+1. **CLI policy for Group B.** ~~Should the `openjd` CLI set
    `max_resolved_arg_len` by default (e.g. 128 KiB, matching Linux
    `MAX_ARG_STRLEN`), while the library default stays `None`? The
    spec-conformance risk sits with `check` conformance tests running
    through the CLI — the suite must pass with whatever default is
-   chosen.
-2. **§4.4.2 reading.** Resolved-value (proposed) vs raw-text
+   chosen.~~ **Decided:** the CLI sets an opinionated default — the
+   maximum the operating system it runs on will accept for a process
+   argument (Linux: 131072, `MAX_ARG_STRLEN`; Windows: 32767, the
+   command-line limit; macOS: derived from `ARG_MAX`). The library
+   default stays `None`. The conformance suite must pass on every
+   platform with these defaults.
+2. **§4.4.2 reading.** ~~Resolved-value (proposed) vs raw-text
    interpretation of the 2048-char env value limit; verify Python
-   behavior and consider an upstream clarification issue.
-3. **Memory-budget plumbing.** Expose the evaluation memory/op budgets
+   behavior and consider an upstream clarification issue.~~
+   **Verified:** `openjd-model-for-python` checks the **raw template
+   text** — `EnvironmentVariableValueString(FormatString)` sets
+   `_max_length = 2048`, applied by `DynamicConstrainedStr._validate`
+   at Pydantic parse time, before resolution — and
+   `openjd-sessions-for-python` never re-checks the resolved value.
+   The divergence is real in both directions: Python rejects a
+   3000-char template value that resolves under 2048 (this
+   implementation accepts it) and accepts a short expression that
+   resolves far past 2048 (this implementation rejects it at gate 3).
+   This design keeps the resolved-value reading; an upstream
+   clarification issue should be filed.
+3. **Memory-budget plumbing.** ~~Expose the evaluation memory/op budgets
    through model `ValidationContext`/`CallerLimits` and the sessions
    config surface in this change, or as a separate change? (This design
    assumes yes, in this change — it is the spec's own lever for
-   Examples 1 and 3.)
+   Examples 1 and 3.)~~ **Decided:** yes — wire the budgets through
+   `ValidationContext`/`CallerLimits` and the sessions configuration
+   surface as part of this design's implementation.
 
 ## Follow-up spec edits
 
