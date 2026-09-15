@@ -584,10 +584,10 @@ To be made alongside the implementation commits (spec/code co-evolution):
 |---|---|
 | `specs/expr/format-string.md` | ~~§ Validation: `validate_expressions` returns `StaticResolution`; document the lower-bound computation~~ **Done** (PR #373) — including the target-type rule, the resolved-value cap, and the saturation note |
 | `specs/expr/public-api.md` | ~~New `StaticResolution` type; `validate_expressions` signature~~ **Done** (PR #373) |
-| `specs/model/validation.md` | Pass 8: resolved-value lower-bound checks, per-field constraint table |
+| `specs/model/validation.md` | ~~Pass 8: resolved-value lower-bound checks, per-field constraint table~~ **Done** (PR #383; opt-in cap rows and budget paragraphs added with the Group B caps) |
 | `specs/model/job-creation.md` | `create_job`: new gate-2 evaluation pass over carried-forward format strings |
-| `specs/model/public-api.md` | `CallerLimits` new fields; memory-budget plumbing |
-| `specs/sessions/runners.md` | `resolve_action_args` length enforcement |
-| `specs/sessions/session.md` / `embedded-files.md` | Env-var 2048 and embedded-file data enforcement |
-| `specs/sessions/public-api.md` | Configuration surface for caps + budgets |
+| `specs/model/public-api.md` | ~~`CallerLimits` new fields; memory-budget plumbing~~ **Done** (with the Group B caps; also `decode_environment_template` now carries `CallerLimits`) |
+| `specs/sessions/runners.md` | ~~`resolve_action_args` length enforcement~~ **Done** (with the Group B caps) |
+| `specs/sessions/session.md` / `embedded-files.md` | ~~Env-var 2048 and embedded-file data enforcement~~ **Done** (env-var 2048 with PR #383's gate 3; `SessionConfig.limits` + `EmbeddedFiles::with_limits` with the Group B caps) |
+| `specs/sessions/public-api.md` | ~~Configuration surface for caps + budgets~~ **Done** (`SessionLimits`, `SessionConfig.limits`) — plus `specs/cli/check.md`/`run.md` documenting the CLI's OS-max `max_resolved_arg_len` default |
 | `specs/architecture.md` | Pointer to this document |
