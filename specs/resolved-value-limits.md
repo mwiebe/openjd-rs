@@ -1,20 +1,21 @@
 # Resolved-Value Constraints and Static Evaluation Gates
 
-**Status: MOSTLY IMPLEMENTED.** Merged so far: the `openjd-expr`
+**Status: IMPLEMENTED.** Merged: the `openjd-expr`
 mechanism (PR [#373](https://github.com/OpenJobDescription/openjd-rs/pull/373),
 released in `openjd-expr` v0.7.0); gate 1 and gate 3 enforcement
 (PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383),
 plus review follow-ups in
-[#397](https://github.com/OpenJobDescription/openjd-rs/pull/397)); and
-the opt-in `CallerLimits` caps, evaluation-budget plumbing, sessions
+[#397](https://github.com/OpenJobDescription/openjd-rs/pull/397)); the
+opt-in `CallerLimits` caps, evaluation-budget plumbing, sessions
 `SessionLimits` surface, and CLI default arg cap
-(PR [#399](https://github.com/OpenJobDescription/openjd-rs/pull/399)).
-**The remaining work is gate 2** — the `create_job` evaluation pass
-over carried-forward session/task-scope format strings described in
-[Gate 2](#gate-2--job-creation-openjd-model-create_job) — and its
-`specs/model/job-creation.md` spec update. The mechanism and gate
-sections below describe the behavior **as shipped**, except the gate-2
-carried-forward pass, which is design for the remaining work.
+(PR [#399](https://github.com/OpenJobDescription/openjd-rs/pull/399));
+and gate 2 — the `create_job` evaluation pass over carried-forward
+session/task-scope format strings, with the budgets applied to every
+job-creation evaluation
+(PR [#404](https://github.com/OpenJobDescription/openjd-rs/pull/404)).
+The gate sections below describe the behavior **as shipped**. What
+remains is the follow-up list at the
+[end of this document](#follow-ups).
 
 Cross-cutting design spanning `openjd-expr`, `openjd-model`, and
 `openjd-sessions`. When this design is accepted and implemented, the
@@ -32,9 +33,9 @@ documents on mainline.
 Before this design, all three of the following templates passed
 `openjd check` and job creation, then degraded the worker host at run
 time. Each is resolvable — and therefore rejectable — earlier than
-that. (As shipped: Examples 1 and 3 now fail `openjd check` under the
-CLI's default arg cap; Example 2 still passes job creation — the
-unimplemented gate 2 — and is caught at run time by gate 3.)
+that. (As shipped: Examples 1 and 3 fail `openjd check` under the
+CLI's default arg cap, and Example 2 fails at `create_job` the moment
+`Count` is bound — with gate 3 still enforcing on the worker.)
 
 **Example 1 — decidable at template validation.** The expression
 references no template variables, so it is fully evaluatable the moment
@@ -143,7 +144,7 @@ enforcing them early can never reject a template that could have run.
 | [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 1 (lower bound; full check incl. Cc chars when fully static) + gate 2 (resolved name vs `max_job_name_len`, emptiness, and control characters) |
 | [§3.3.2.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#3322-attributecapabilityvalue) | `<AttributeCapabilityValue>` | ≤ 100 chars; latin alphanumeric + `_` + `-`; must start with letter or `_` | Gate 1 (lower bound; full §3.3.2.2 check when fully static) + gate 2 (`validate_attribute_capability_value` on resolved value) |
 | [§3.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#342-taskparameterstringvalue) | `<TaskParameterStringValue>` | ≤ 1024 chars | Gate 1 (lower bound) + gate 2 (`ranges.rs` on resolved range elements) |
-| [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | Gate 1 (lower bound) + gate 3 (resolved value); the gate-2 carried-forward check is the remaining work |
+| [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | Gates 1–2 (lower bound; gate 2 with parameters bound, PR #404) + gate 3 (resolved value) |
 
 <a name="reading-note-442"></a>**Reading note on §4.4.2:** the section
 says "A string value subject to … Maximum length: 2048 characters"
@@ -341,9 +342,8 @@ pub struct CallerLimits {
   crate mirrors all four fields in `SessionLimits`
   (`From<&CallerLimits>`), carried on `SessionConfig.limits`. A host
   that sets, say, 1 MB gets gate-1 failure for Example 1 with no
-  conformance concern. One gap remains: `create_job` currently
-  evaluates under the spec defaults — wiring the budgets through gate 2
-  is part of the remaining gate-2 work.
+  conformance concern. `create_job` applies the budgets to every
+  evaluation it performs as of PR #404.
 - The `openjd` CLI default: **shipped** (PR #399) as
   `DEFAULT_MAX_ARG_LEN` = 32 * 1024 characters on every platform — a
   single opinionated cap rather than the per-OS values originally
@@ -484,31 +484,47 @@ skip the whole-string length check otherwise).
 
 ## Gate 2 — job creation (openjd-model, create_job)
 
-**Remaining work — not yet implemented.** The pre-existing Group A
-gate-2 checks and the job-name follow-up below are in place; the new
-pass over carried-forward format strings (and evaluating it under the
-caller's `CallerLimits` budgets rather than the spec defaults) is what
-is left of this design.
+**Implemented** (PR [#404](https://github.com/OpenJobDescription/openjd-rs/pull/404);
+the job-name follow-up below shipped earlier with #383/#397). The
+authoritative spec is the "Resolved-value checks on carried-forward
+fields" section of `specs/model/job-creation.md`; note that the merged
+code and specs use the spec's stage names throughout — "template
+validation", "job creation", "task execution" — not this document's
+gate numbering.
 
 `create_job` already resolves and checks the Group A template-scope
 fields (job name, attribute values, task param strings) — unchanged
-except for the job-name follow-up below. It
-gains one pass over the carried-forward session/task-scope format
+except for the job-name follow-up below. PR #404 added one pass over
+the carried-forward session/task-scope format
 strings — action `command`/`args`, environment `variables`,
 embedded-file `data` — evaluating each against the gate-2 symbol table
 (real `Param.*`/`RawParam.*`; `Unresolved` `Session.*` / `Task.*` /
 `Env.File.*`; concrete `Job.Name` / `Step.Name`) and applying the same
 table as gate 1.
 
-- The symbol-table construction already exists in `instantiate.rs`
-  (`check_symtab`); the pass extends its use rather than building new
-  scaffolding.
-- Failures are `ModelError` with the field path, consistent with the
-  resolved-value re-checks `create_job` already performs.
-- Cost note: gate 2 currently does *not* evaluate these fields, so this
-  adds work proportional to what one worker would do anyway — done once
-  at submission instead of per-task-per-worker. Avoidable later with
-  constant folding (out of scope, below).
+- The symbol-table construction extends `instantiate.rs`'s existing
+  `check_symtab` scaffolding (as shipped:
+  `build_task_check_symtab` / `build_env_check_symtab`); environment
+  script `let` bindings are evaluated into the table, and a binding
+  that fails with the real parameter values fails job creation (a
+  deterministic per-session failure caught early).
+- Failures are `ModelError::ModelValidation` with the field path,
+  consistent with the resolved-value re-checks `create_job` already
+  performs. Violations accumulate within one scope (a step script, one
+  environment); the first failing scope stops instantiation.
+- **Error policy (decided during implementation):** the pass reports
+  resolved-value violations and budget exceedances only. Other
+  evaluation/parse errors are skipped, because `create_job` may
+  deliberately run under a different profile than decode (an existing,
+  tested contract) — a budget exceedance is reported since run time
+  evaluates the same expression with strictly more symbols bound.
+- Cost note: this adds work proportional to what one worker would do
+  anyway — done once at submission instead of per-task-per-worker.
+  Avoidable later with constant folding (out of scope, below).
+- The evaluation budgets (`max_eval_memory_bytes` /
+  `max_eval_operations`) now bound **every** evaluation job creation
+  performs — job name, `let` bindings, host requirements, task ranges,
+  and this pass (also PR #404).
 - **Follow-up (from PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383)
   review): job-name control characters.** **Resolved** — `create_job`
   now rejects a resolved job name containing control characters,
@@ -620,8 +636,8 @@ All three are now decided:
    are `CallerLimits` fields (`max_eval_memory_bytes`,
    `max_eval_operations`) applied throughout template validation, and
    mirrored into the sessions surface as `SessionLimits` on
-   `SessionConfig.limits`. Remaining gap: `create_job` still evaluates
-   under the spec defaults — to be closed with the gate-2 work.
+   `SessionConfig.limits`. The last gap — `create_job` evaluating under
+   the spec defaults — closed with PR #404.
 
 ## Follow-up spec edits
 
@@ -632,9 +648,102 @@ To be made alongside the implementation commits (spec/code co-evolution):
 | `specs/expr/format-string.md` | ~~§ Validation: `validate_expressions` returns `StaticResolution`; document the lower-bound computation~~ **Done** (PR #373) — including the target-type rule, the resolved-value cap, and the saturation note |
 | `specs/expr/public-api.md` | ~~New `StaticResolution` type; `validate_expressions` signature~~ **Done** (PR #373) |
 | `specs/model/validation.md` | ~~Pass 8: resolved-value lower-bound checks, per-field constraint table~~ **Done** (PR #383; opt-in cap rows and budget paragraphs added with the Group B caps) |
-| `specs/model/job-creation.md` | `create_job`: new gate-2 evaluation pass over carried-forward format strings |
+| `specs/model/job-creation.md` | ~~`create_job`: new gate-2 evaluation pass over carried-forward format strings~~ **Done** (PR #404 — "Resolved-value checks on carried-forward fields" section, plus corrected `create_job` / `evaluate_let_bindings` signatures) |
 | `specs/model/public-api.md` | ~~`CallerLimits` new fields; memory-budget plumbing~~ **Done** (with the Group B caps; also `decode_environment_template` now carries `CallerLimits`) |
 | `specs/sessions/runners.md` | ~~`resolve_action_args` length enforcement~~ **Done** (with the Group B caps) |
 | `specs/sessions/session.md` / `embedded-files.md` | ~~Env-var 2048 and embedded-file data enforcement~~ **Done** (env-var 2048 with PR #383's gate 3; `SessionConfig.limits` + `EmbeddedFiles::with_limits` with the Group B caps) |
-| `specs/sessions/public-api.md` | ~~Configuration surface for caps + budgets~~ **Done** (`SessionLimits`, `SessionConfig.limits`) — plus `specs/cli/check.md`/`run.md` documenting the CLI's OS-max `max_resolved_arg_len` default |
+| `specs/sessions/public-api.md` | ~~Configuration surface for caps + budgets~~ **Done** (`SessionLimits`, `SessionConfig.limits`) — plus `specs/cli/check.md`/`run.md` documenting the CLI's uniform 32K-character `max_resolved_arg_len` default |
 | `specs/architecture.md` | Pointer to this document |
+
+## Follow-ups
+
+Recorded after PR #404 (which completed gate 2). Items 1–2 are
+leftovers from earlier rounds; items 3–8 come from the
+[PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
+(approved with findings recorded rather than requested — none is a
+regression, since before #404 job creation applied no resolved-value
+checks and no budgets at all). None blocks the design; each is an
+independent piece of work.
+
+1. **File the §4.4.2 upstream clarification issue.** Open question 2
+   verified the raw-text vs resolved-value divergence against
+   `openjd-model-for-python` in both directions; the issue against
+   [openjd-specifications](https://github.com/OpenJobDescription/openjd-specifications)
+   has not been filed yet.
+2. **`specs/architecture.md` pointer to this document** — the one
+   remaining row in the spec-edits table above. Natural to do when this
+   design doc itself lands on `main`.
+3. **Budget exceedance silently dropped inside unresolved-test
+   conditionals** (review finding, measured for both budget kinds; the
+   most impactful item here). When an `if`/`else` test is unresolved
+   (`Session.*` — idiomatic, not contrived), the evaluator runs both
+   branches and wraps a dual failure in a compound error whose
+   top-level kind is `Other`; the gate-2 budget detection only inspects
+   the top-level kind, so the one error class that stage may report is
+   suppressed. `{{ 'A' * int(Param.N) if Session.HasPathMappingRules
+   else 'B' }}` with huge `N` is accepted at `create_job` under a
+   lowered budget — meaning a caller who lowered
+   `max_eval_memory_bytes` to protect the submitting process gets
+   evaluation against the 100 MB default instead. Fix: check
+   budget kinds recursively through `sub_errors()`. The related (and
+   opposite-direction) coarseness — both branches *charged* against
+   one budget — is documented in `specs/model/job-creation.md`; once
+   the suppression is fixed, document both directions together.
+4. **Desugar divergence between gates 1 and 2** (review finding,
+   measured). Gate 2 checks the *desugared* SimpleAction script
+   (`bash:`/`python:`/…, FEATURE_BUNDLE_1), but pass 8 only validates
+   `step.script` — it never validates the synthesized
+   `command`/`args`/`data`. So for SimpleAction steps the gate-2 check
+   is brand-new rather than a re-check: a 500-char `bash:` body under
+   `max_resolved_data_len: 100` passes `check` and fails `create_job`,
+   and the error path (`steps[0] -> script -> embeddedFiles[0] ->
+   data`) names a node the author never wrote. Preferred fix: extend
+   pass 8 to validate the desugared script so the stages agree; also
+   consider mapping the synthetic path back to the sugar field. Until
+   then the "re-run exactly the checks pass 8 applies" claim does not
+   hold for SimpleAction steps.
+5. **Environment `let` policy asymmetry and parse-profile mismatch**
+   (review finding). Two parts:
+   - An environment `let` that errors under the job-creation context
+     hard-fails `create_job`, while a format string with the identical
+     error is deliberately skipped (`report_eval_errors = false`) two
+     functions away. The behavior change is disclosed, but the
+     `report_eval_errors` doc block should state why `let` is exempt
+     from its reasoning — or the `let` errors should be collected and
+     filtered the same way.
+   - Unambiguous and cheap to fix regardless: the two check-symtab
+     builders disagree on parse profile. `evaluate_let_bindings` (used
+     for environments) parses with `ParsedExpression::new` — the
+     latest profile, every extension — while `build_task_check_symtab`
+     parses with the caller's host profile. An env `let` using syntax
+     the caller's profile does not enable parses at gate 2 but is
+     refused at pass 8.
+6. **Whole-template error aggregation at gate 2** (review finding;
+   was already noted here pre-review). Three separate
+   `ValidationErrors` collections each abort at their own
+   `into_result`, inside the per-step closure — one step-script
+   violation masks that step's environments, every later step, and all
+   `jobEnvironments`. Pass 8 reports everything at once. Mechanical
+   fix: thread one `ValidationErrors` through `instantiate_step` and
+   the `jobEnvironments` loop, `into_result` once.
+7. **Silent-skip observability** (review suggestion). With
+   `report_eval_errors = false`, nothing distinguishes "field checked
+   and passed" from "field errored and was skipped" — the budget
+   suppression above is one reachable route into that state, and
+   `add_unresolved_session_symbols` discarding `symtab.set` failures
+   (`let _ =`) is another (a failed seed degrades the check to a
+   no-op). Tests should assert fields were actually *evaluated*, not
+   merely that `create_job` returned `Ok`; and the `set` results
+   should not be discarded silently. Related unverified note from the
+   review: confirm `CHUNK_INT` binding as `Unresolved(RANGE_EXPR)` in
+   the check symtab matches what the session binds at run time — a
+   mismatch would surface as a type error and be swallowed.
+8. **Re-check deferred numeric constraints at gate 2.** Action
+   `timeout`, `notifyPeriodInSeconds`, and the deferred cancelation
+   `mode` validate at gate 1 against the template-scope symtab (params
+   unresolved) and resolve on the worker. Gate 2 does not re-evaluate
+   them with the bound parameters, so `timeout: "{{ Param.T }}"`
+   submitted with `T = 0` passes `create_job` and fails only at run
+   time. The gate-2 pass has all the machinery to close this — extend
+   its constraint table to the `Int`/`CancelationMode` constraints with
+   the gate-2 symtab.
