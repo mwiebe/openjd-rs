@@ -1,12 +1,20 @@
 # Resolved-Value Constraints and Static Evaluation Gates
 
-**Status: PARTIALLY IMPLEMENTED — the `openjd-expr` mechanism is merged
-(PR [#373](https://github.com/OpenJobDescription/openjd-rs/pull/373),
-released in `openjd-expr` v0.7.0). Gates 1–3, the `CallerLimits`
-additions, and the memory-budget plumbing are not yet implemented.**
-The [Mechanism](#mechanism-openjd-expr-api-change) section below
-describes the API **as shipped**, which evolved from the original draft
-during review; the gate sections are design for the remaining work.
+**Status: MOSTLY IMPLEMENTED.** Merged so far: the `openjd-expr`
+mechanism (PR [#373](https://github.com/OpenJobDescription/openjd-rs/pull/373),
+released in `openjd-expr` v0.7.0); gate 1 and gate 3 enforcement
+(PR [#383](https://github.com/OpenJobDescription/openjd-rs/pull/383),
+plus review follow-ups in
+[#397](https://github.com/OpenJobDescription/openjd-rs/pull/397)); and
+the opt-in `CallerLimits` caps, evaluation-budget plumbing, sessions
+`SessionLimits` surface, and CLI default arg cap
+(PR [#399](https://github.com/OpenJobDescription/openjd-rs/pull/399)).
+**The remaining work is gate 2** — the `create_job` evaluation pass
+over carried-forward session/task-scope format strings described in
+[Gate 2](#gate-2--job-creation-openjd-model-create_job) — and its
+`specs/model/job-creation.md` spec update. The mechanism and gate
+sections below describe the behavior **as shipped**, except the gate-2
+carried-forward pass, which is design for the remaining work.
 
 Cross-cutting design spanning `openjd-expr`, `openjd-model`, and
 `openjd-sessions`. When this design is accepted and implemented, the
@@ -21,9 +29,12 @@ documents on mainline.
 
 ## Motivation
 
-All three of the following templates pass `openjd check` and job
-creation today, then degrade the worker host at run time. Each is
-resolvable — and therefore rejectable — earlier than that.
+Before this design, all three of the following templates passed
+`openjd check` and job creation, then degraded the worker host at run
+time. Each is resolvable — and therefore rejectable — earlier than
+that. (As shipped: Examples 1 and 3 now fail `openjd check` under the
+CLI's default arg cap; Example 2 still passes job creation — the
+unimplemented gate 2 — and is caught at run time by gate 3.)
 
 **Example 1 — decidable at template validation.** The expression
 references no template variables, so it is fully evaluatable the moment
@@ -44,10 +55,10 @@ steps:
             - "{{ 'A' * 10000000 }}"
 ```
 
-Template validation (pass 8) in fact **does** evaluate it —
-`validate_fs` → `FormatString::validate_expressions` computes the entire
-10 MB string at `check` time — but then discards the value and reports
-success.
+Template validation (pass 8) evaluates it — `validate_fs` →
+`FormatString::validate_expressions` computes the entire 10 MB string
+at `check` time — and before this design it then discarded the value
+and reported success.
 
 **Example 2 — decidable at job submission.** The expression depends only
 on a job parameter, so it becomes fully evaluatable at job creation,
@@ -129,10 +140,10 @@ enforcing them early can never reject a template that could have run.
 
 | Spec § | Field | Constraint on the resolved value | Enforced today |
 |---|---|---|---|
-| [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 2 (resolved name vs `max_job_name_len`; the no-Cc-chars rule is **not** re-checked at gate 2 — see the follow-up in [Gate 2](#gate-2--job-creation-openjd-model-create_job)) |
-| [§3.3.2.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#3322-attributecapabilityvalue) | `<AttributeCapabilityValue>` | ≤ 100 chars; latin alphanumeric + `_` + `-`; must start with letter or `_` | Gate 2 (`validate_attribute_capability_value` on resolved value) |
-| [§3.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#342-taskparameterstringvalue) | `<TaskParameterStringValue>` | ≤ 1024 chars | Gate 2 (`ranges.rs` on resolved range elements) |
-| [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | **Nowhere — pre-existing gap** |
+| [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 1 (lower bound; full check incl. Cc chars when fully static) + gate 2 (resolved name vs `max_job_name_len`, emptiness, and control characters) |
+| [§3.3.2.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#3322-attributecapabilityvalue) | `<AttributeCapabilityValue>` | ≤ 100 chars; latin alphanumeric + `_` + `-`; must start with letter or `_` | Gate 1 (lower bound; full §3.3.2.2 check when fully static) + gate 2 (`validate_attribute_capability_value` on resolved value) |
+| [§3.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#342-taskparameterstringvalue) | `<TaskParameterStringValue>` | ≤ 1024 chars | Gate 1 (lower bound) + gate 2 (`ranges.rs` on resolved range elements) |
+| [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | Gate 1 (lower bound) + gate 3 (resolved value); the gate-2 carried-forward check is the remaining work |
 
 <a name="reading-note-442"></a>**Reading note on §4.4.2:** the section
 says "A string value subject to … Maximum length: 2048 characters"
@@ -143,8 +154,10 @@ design adopts the resolved-value reading: enforce 2048 on the resolved
 value at gate 3, with lower-bound early failure at gates 1–2. A raw-text
 check would be incorrect in both directions (a 3000-char template can
 resolve under 2048; a 100-char template can resolve over it).
-**Action item:** check what `openjd-model-for-python` does here and file
-an upstream clarification issue.
+**Action item:** ~~check what `openjd-model-for-python` does here~~
+(verified — see [open question 2](#open-questions-for-review): Python
+checks the raw template text) and file an upstream clarification issue
+(**still to do**).
 
 ### Group B — fields the spec deliberately leaves uncapped
 
@@ -185,11 +198,12 @@ fields beyond serde/type checks — the baseline this design extends:
 | model decode | `command` raw text | ≤ 1024 (`max_command_len`) | Implementation-added (spec §5.1 sets no max); Python-compat carryover. Unchanged by this design. |
 | model decode | `args` raw text | control-character check only | §5.2 charset |
 | model decode | env var name | 1–256 chars, charset, no leading digit | §4.4.1 (raw — the name is not a format string) |
-| model decode | env var value | **none** | gap vs §4.4.2, fixed by this design |
+| model decode | env var value | ≤ 2048 lower bound (was **none** — gap vs §4.4.2, fixed by PR #383) | §4.4.2, resolved-value reading |
 | model decode | any format string | ≤ 1 MB text, ≤ 1000 segments (`MAX_FORMAT_STRING_LEN`, expr defensive caps) | implementation defense-in-depth |
-| model decode | expression evaluation | 100 MB memory / 10 M op budgets | Expression Language spec, defaults |
+| model decode | expression evaluation | 100 MB memory / 10 M op budgets, now caller-configurable via `CallerLimits` (PR #399) | Expression Language spec, defaults |
 | sessions | resolved `notifyPeriodInSeconds` | ≤ 600 | §5.3.2, resolved-value check (the precedent this design generalizes) |
-| sessions | resolved command/args/env values/data | **none** | — |
+| sessions | resolved env values | ≤ 2048 (was **none**, fixed by PR #383) | §4.4.2 |
+| sessions | resolved command/args/data | `SessionLimits` opt-in caps (was **none**, added by PR #399) | Group B, caller policy |
 
 ## Why this needs no new evaluation machinery
 
@@ -291,36 +305,50 @@ size lattice); noted as possible future work, not part of this design.
 Group A constraints are spec-mandated: always on, not configurable.
 
 Group B caps join `CallerLimits`, keeping its all-`None` convention
-("None means no additional restriction beyond the spec"):
+("None means no additional restriction beyond the spec"). **Shipped in
+PR #399** — as merged, the evaluation budgets landed as `CallerLimits`
+fields too:
 
 ```rust
-// openjd-model: crate::types
+// openjd-model: crate::types (as shipped, PR #399)
 pub struct CallerLimits {
     // ... existing fields ...
     /// Maximum character length of any resolved string destined for a
-    /// process argument (action `command`, each element of `args` after
-    /// null-skip / list-flatten). `None` (default) imposes no limit
-    /// beyond the spec. Spec §5.1/§5.2 set no maximum but note the OS
-    /// imposes one; callers targeting Linux may want 131072
-    /// (MAX_ARG_STRLEN), Windows 32767 (command-line limit).
+    /// process argument (action `command`, each argv entry an `args`
+    /// element produces after null-skip / list-flatten). `None`
+    /// (default) imposes no limit beyond the spec (§5.1/§5.2 set no
+    /// maximum; the OS imposes its own, in units other than
+    /// characters).
     pub max_resolved_arg_len: Option<usize>,
     /// Maximum character length of any resolved embedded-file `data`
-    /// value. `None` (default) imposes no limit beyond the spec (§6.1.2
-    /// sets none).
+    /// value. `None` (default) imposes no limit beyond the spec
+    /// (§6.1.2 sets none).
     pub max_resolved_data_len: Option<usize>,
+    /// Memory budget, in bytes, per format-string expression
+    /// evaluation. `None` uses the spec-recommended default
+    /// (`openjd_expr::DEFAULT_MEMORY_LIMIT`, 100 MB).
+    pub max_eval_memory_bytes: Option<usize>,
+    /// Operation budget per format-string expression evaluation.
+    /// `None` uses `openjd_expr::DEFAULT_OPERATION_LIMIT` (10 million).
+    pub max_eval_operations: Option<usize>,
 }
 ```
 
 - No separate env-var knob: §4.4.2's 2048 is spec-mandated (Group A).
 - The evaluation **memory budget** is the spec's primary lever against
-  expression-generated blowups and is already configurable in
-  `openjd-expr`. The model/sessions configuration surfaces should expose
-  it (today the defaults are hard-wired at the call sites); a host that
-  sets, say, 1 MB gets gate-1 failure for Example 1 with no
-  conformance concern. This design makes that plumbing part of the work.
-- Whether the `openjd` CLI sets an opinionated default for
-  `max_resolved_arg_len` (e.g. 128 KiB) is a CLI policy decision, listed
-  as an open question. The library defaults stay `None`.
+  expression-generated blowups. **Shipped:** `CallerLimits` exposes
+  `max_eval_memory_bytes` / `max_eval_operations`, and the sessions
+  crate mirrors all four fields in `SessionLimits`
+  (`From<&CallerLimits>`), carried on `SessionConfig.limits`. A host
+  that sets, say, 1 MB gets gate-1 failure for Example 1 with no
+  conformance concern. One gap remains: `create_job` currently
+  evaluates under the spec defaults — wiring the budgets through gate 2
+  is part of the remaining gate-2 work.
+- The `openjd` CLI default: **shipped** (PR #399) as
+  `DEFAULT_MAX_ARG_LEN` = 32 * 1024 characters on every platform — a
+  single opinionated cap rather than the per-OS values originally
+  floated (see [open question 1](#open-questions-for-review)). The
+  library defaults stay `None`.
 
 ## Mechanism: openjd-expr API change
 
@@ -399,6 +427,9 @@ Design points (updated to the shipped behavior):
 
 ## Gate 1 — template validation (openjd-model, pass 8)
 
+**Implemented** (PR #383; the opt-in Group B caps and configurable
+budgets landed with PR #399).
+
 `validate_fs` (in `template/validate_v2023_09/format_strings.rs`) gains
 an optional resolved-value constraint parameter supplied by each call
 site (which knows the field):
@@ -453,6 +484,12 @@ skip the whole-string length check otherwise).
 
 ## Gate 2 — job creation (openjd-model, create_job)
 
+**Remaining work — not yet implemented.** The pre-existing Group A
+gate-2 checks and the job-name follow-up below are in place; the new
+pass over carried-forward format strings (and evaluating it under the
+caller's `CallerLimits` budgets rather than the spec defaults) is what
+is left of this design.
+
 `create_job` already resolves and checks the Group A template-scope
 fields (job name, attribute values, task param strings) — unchanged
 except for the job-name follow-up below. It
@@ -491,6 +528,9 @@ table as gate 1.
 
 ## Gate 3 — run time (openjd-sessions)
 
+**Implemented** (PR #383 for the always-on §4.4.2 check; PR #399 for
+the `SessionLimits` caps and budgets on `SessionConfig.limits`).
+
 The enforcement boundary. After format-string resolution produces final
 strings:
 
@@ -502,8 +542,8 @@ strings:
 - Embedded-file materialization (`embedded_files.rs`): each resolved
   `data` vs `max_resolved_data_len` if set.
 
-Failures are `SessionError::FormatString { context, reason }` (or a
-dedicated variant — implementer's choice), following the existing
+Failures are `SessionError::FormatString { context, reason }` (as
+shipped — no dedicated variant was added), following the existing
 `notifyPeriodInSeconds ≤ 600` precedent. The sessions configuration
 surface gains the two optional caps and the memory-budget override,
 mirroring whatever the submitting service set.
@@ -548,12 +588,16 @@ All three are now decided:
    `MAX_ARG_STRLEN`), while the library default stays `None`? The
    spec-conformance risk sits with `check` conformance tests running
    through the CLI — the suite must pass with whatever default is
-   chosen.~~ **Decided:** the CLI sets an opinionated default — the
-   maximum the operating system it runs on will accept for a process
-   argument (Linux: 131072, `MAX_ARG_STRLEN`; Windows: 32767, the
-   command-line limit; macOS: derived from `ARG_MAX`). The library
-   default stays `None`. The conformance suite must pass on every
-   platform with these defaults.
+   chosen.~~ **Decided and shipped (PR #399):** the CLI sets an
+   opinionated default of **32 * 1024 characters on every platform**
+   (`DEFAULT_MAX_ARG_LEN` in `openjd-cli`). Per-OS values were
+   considered and rejected because the OS limits are measured in
+   different units (Linux `MAX_ARG_STRLEN` is bytes, the Windows
+   command line is UTF-16 code units), so no character count maps
+   exactly; 32K characters is at most 128 KiB of UTF-8 (within Linux's
+   per-string limit) and approximately the Windows command-line
+   capacity. The library default stays `None`. The conformance suite
+   passes on every platform with this default.
 2. **§4.4.2 reading.** ~~Resolved-value (proposed) vs raw-text
    interpretation of the 2048-char env value limit; verify Python
    behavior and consider an upstream clarification issue.~~
@@ -567,14 +611,17 @@ All three are now decided:
    implementation accepts it) and accepts a short expression that
    resolves far past 2048 (this implementation rejects it at gate 3).
    This design keeps the resolved-value reading; an upstream
-   clarification issue should be filed.
+   clarification issue should be filed (**still to do**).
 3. **Memory-budget plumbing.** ~~Expose the evaluation memory/op budgets
    through model `ValidationContext`/`CallerLimits` and the sessions
    config surface in this change, or as a separate change? (This design
    assumes yes, in this change — it is the spec's own lever for
-   Examples 1 and 3.)~~ **Decided:** yes — wire the budgets through
-   `ValidationContext`/`CallerLimits` and the sessions configuration
-   surface as part of this design's implementation.
+   Examples 1 and 3.)~~ **Decided and shipped (PR #399):** the budgets
+   are `CallerLimits` fields (`max_eval_memory_bytes`,
+   `max_eval_operations`) applied throughout template validation, and
+   mirrored into the sessions surface as `SessionLimits` on
+   `SessionConfig.limits`. Remaining gap: `create_job` still evaluates
+   under the spec defaults — to be closed with the gate-2 work.
 
 ## Follow-up spec edits
 
