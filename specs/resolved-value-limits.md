@@ -747,3 +747,27 @@ independent piece of work.
    time. The gate-2 pass has all the machinery to close this — extend
    its constraint table to the `Int`/`CancelationMode` constraints with
    the gate-2 symtab.
+9. **TODO: tighten the `create_job` profile contract — leniency
+   justified by "the caller might strip EXPR" is a bug.** `create_job`
+   currently documents that passing a `ValidationContext` whose
+   extensions differ from the ones the template was decoded with is
+   supported "application-level policy" (introduced in `848f92a`,
+   pinned by `test_model_profile`'s strip-EXPR tests). That contract is
+   what forces gate 2's lenient error policy
+   (`report_eval_errors = false`): an evaluation error must be treated
+   as a possible context artifact, so real errors are skipped — which
+   in turn created the budget-kind special-casing, the `let`-binding
+   policy exemption, and the silent-skip observability class in item 7.
+   No production caller diverges (the CLI derives its profile from the
+   template's own declared extensions), and the middle ground is
+   incoherent: an application that does not support an extension
+   already rejects the template at decode via `supported_extensions`.
+   Fix: require the gate-2 context's extensions to match decode's
+   (documented as unspecified behavior at minimum; better, enforce with
+   an error), then make the gate-2 error policy uniformly strict —
+   every surfaced evaluation error is either a defect pass 8 missed or
+   a deterministic value-dependent run-time failure, so report them
+   all. That deletes the leniency machinery and the exemption
+   paragraphs outright and closes item 7's silent-skip gap by
+   construction. Rework or remove the strip-EXPR pinning tests
+   accordingly.
