@@ -1462,6 +1462,12 @@ impl ExpressionError {
     pub fn kind(&self) -> &ExpressionErrorKind;
     pub fn message(&self) -> String;
     pub fn sub_errors(&self) -> &[ExpressionError];
+    /// True when this error is — or transitively contains, through
+    /// `sub_errors` — a `MemoryLimitExceeded`/`OperationLimitExceeded`.
+    /// Budget exhaustion is a property of the whole evaluation (shared
+    /// counters), so callers that treat some evaluation errors as
+    /// recoverable use this to recognize the unrecoverable case.
+    pub fn is_budget_exceeded(&self) -> bool;
     pub fn expr(&self) -> Option<&str>;
     pub fn col_offset(&self) -> Option<usize>;
     pub fn end_col_offset(&self) -> Option<usize>;

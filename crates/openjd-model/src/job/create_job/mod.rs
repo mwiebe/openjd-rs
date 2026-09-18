@@ -169,14 +169,55 @@ pub fn create_job(
         })
         .collect();
 
+    // Resolved-value violations from the carried-forward checks (step
+    // scripts, step environments, job environments) accumulate here and
+    // report together, mirroring pass 8's whole-template aggregation —
+    // one submission round-trip surfaces every violation. All other
+    // failure modes still abort at the first error.
+    let mut check_errors = crate::error::ValidationErrors::default();
+
     let steps = job_template
         .steps
         .iter()
         .enumerate()
         .map(|(step_index, st)| {
-            instantiate::instantiate_step(st, &symtab, has_expr, &limits, ctx, step_index, budgets)
+            instantiate::instantiate_step(
+                st,
+                &symtab,
+                has_expr,
+                &limits,
+                ctx,
+                step_index,
+                budgets,
+                &mut check_errors,
+            )
         })
         .collect::<Result<Vec<_>, _>>()?;
+
+    // Re-run the carried-forward format-string resolved-value checks on
+    // each job environment against a session-scope check symbol table,
+    // where job parameters are bound to real values. A violation
+    // template validation could only lower-bound is decidable here —
+    // fail at submission, not on the worker.
+    if let Some(envs) = &job_template.job_environments {
+        for (i, env) in envs.iter().enumerate() {
+            let env_symtab =
+                instantiate::build_env_check_symtab(env, &symtab, has_expr, ctx, budgets)?;
+            let env_path = [
+                crate::error::PathElement::Field("jobEnvironments".to_string()),
+                crate::error::PathElement::Index(i),
+            ];
+            crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
+                env,
+                &env_symtab,
+                ctx,
+                limits.max_env_var_value_len,
+                &env_path,
+                &mut check_errors,
+            );
+        }
+    }
+    check_errors.into_result("JobTemplate")?;
 
     // Caller-imposed total task count limit across all steps
     if let Some(max_task_count) = ctx.caller_limits.max_task_count {
@@ -200,32 +241,6 @@ pub fn create_job(
                 )),
             ));
         }
-    }
-
-    // Re-run the carried-forward format-string resolved-value checks on
-    // each job environment against a session-scope check symbol table,
-    // where job parameters are bound to real values. A violation
-    // template validation could only lower-bound is decidable here —
-    // fail at submission, not on the worker.
-    if let Some(envs) = &job_template.job_environments {
-        let mut check_errors = crate::error::ValidationErrors::default();
-        for (i, env) in envs.iter().enumerate() {
-            let env_symtab =
-                instantiate::build_env_check_symtab(env, &symtab, has_expr, ctx, budgets)?;
-            let env_path = [
-                crate::error::PathElement::Field("jobEnvironments".to_string()),
-                crate::error::PathElement::Index(i),
-            ];
-            crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
-                env,
-                &env_symtab,
-                ctx,
-                limits.max_env_var_value_len,
-                &env_path,
-                &mut check_errors,
-            );
-        }
-        check_errors.into_result("JobTemplate")?;
     }
 
     let job_environments = job_template.job_environments.as_ref().map(|envs| {

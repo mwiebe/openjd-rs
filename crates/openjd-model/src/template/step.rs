@@ -52,6 +52,21 @@ pub struct StepTemplate {
 }
 
 impl StepTemplate {
+    /// The step's SimpleAction sugar field, if any, with its template
+    /// keyword — in the same precedence order `resolve_syntax_sugar`
+    /// uses, so the field returned here is the one that desugars.
+    pub fn simple_action(&self) -> Option<(&'static str, &SimpleAction)> {
+        [
+            ("python", self.python.as_ref()),
+            ("bash", self.bash.as_ref()),
+            ("cmd", self.cmd.as_ref()),
+            ("powershell", self.powershell.as_ref()),
+            ("node", self.node.as_ref()),
+        ]
+        .into_iter()
+        .find_map(|(kw, sa)| sa.map(|sa| (kw, sa)))
+    }
+
     /// De-sugar SimpleAction syntax into equivalent StepScript.
     /// If the step already has a `script` field, returns `Ok(Some(clone))`.
     /// If it uses a SimpleAction (bash/python/cmd/powershell/node), transforms

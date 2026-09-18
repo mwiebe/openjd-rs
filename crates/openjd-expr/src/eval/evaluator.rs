@@ -743,6 +743,9 @@ impl<'a> Evaluator<'a> {
                 // After an unresolved operand, suppress errors in subsequent operands
                 // (the unresolved value might short-circuit at runtime).
                 // But if a subsequent operand determines the result, return it.
+                // Budget exceedances propagate: the counters are shared
+                // across the whole evaluation, so exhaustion in one
+                // operand is not a condition short-circuiting can avoid.
                 match self.eval_node(node, None) {
                     Ok(val) => match b.op {
                         ast::BoolOp::And => {
@@ -756,6 +759,7 @@ impl<'a> Evaluator<'a> {
                             }
                         }
                     },
+                    Err(e) if e.is_budget_exceeded() => return Err(e),
                     Err(_) => { /* suppressed — unresolved might short-circuit */ }
                 }
                 continue;
@@ -880,7 +884,14 @@ impl<'a> Evaluator<'a> {
                 });
             }
             self.release(&test);
-            // Try both branches, catching errors (e.g. fail() in one branch)
+            // Try both branches, catching errors (e.g. fail() in one branch):
+            // an unresolved test means either branch might be the one taken
+            // at runtime, so a single branch's failure is not this
+            // evaluation's failure. Budget exceedances are the exception —
+            // the counters are shared across the whole evaluation, so a
+            // branch exhausting them is not a branch-local condition that
+            // could short-circuit away at runtime, and swallowing it would
+            // let the evaluation continue past its configured limits.
             let body = self.eval_node(&i.body, target);
             let orelse = self.eval_node(&i.orelse, target);
             match (body, orelse) {
@@ -901,6 +912,7 @@ impl<'a> Evaluator<'a> {
                     }
                     Err(err)
                 }
+                (Ok(_), Err(e)) | (Err(e), Ok(_)) if e.is_budget_exceeded() => Err(e),
                 (Ok(b), Err(_)) => {
                     let t = unwrap_unresolved(&b.expr_type());
                     self.track(ExprValue::unresolved(t))

@@ -38,7 +38,7 @@ fn create_with_limits(
     let v = yaml_val(template_json);
     let jt = decode_job_template(
         v,
-        Some(&["EXPR", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"]),
+        Some(&["EXPR", "FEATURE_BUNDLE_1", "WRAP_ACTIONS", "TASK_CHUNKING"]),
         &CallerLimits::default(),
     )
     .expect("template must pass validation under default limits");
@@ -487,6 +487,231 @@ fn wrap_hook_arg_over_cap_fails_at_create_job() {
         &[
             "jobEnvironments[0] -> script -> actions -> onWrapTaskRun -> args[0]:",
             "resolves to at least 206 characters, exceeding the maximum of 100.",
+        ],
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Compound errors: a budget exceedance nested inside an if/else whose
+// test is unresolved must still be reported (kind is checked
+// recursively through sub_errors)
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn budget_exceedance_inside_unresolved_conditional_is_reported() {
+    // Both branches evaluate (the test is a Session.* placeholder) and
+    // both blow the shared memory counter, producing a compound error
+    // whose top-level kind is Other with the budget kinds nested in
+    // sub_errors. The check must find them there.
+    assert_err_contains(
+        create_with_limits(
+            &arg_template("{{ 'A' * Param.N if Session.HasPathMappingRules else 'B' }}"),
+            &[("X", "x"), ("N", "10000000")],
+            CallerLimits {
+                max_eval_memory_bytes: Some(1024 * 1024),
+                ..Default::default()
+            },
+        ),
+        &[
+            "steps[0] -> script -> actions -> onRun -> args[0]:",
+            "exceeded limit",
+        ],
+    );
+}
+
+#[test]
+fn operation_budget_inside_unresolved_conditional_is_reported() {
+    assert_err_contains(
+        create_with_limits(
+            &arg_template("{{ sum([1] * int(Param.N)) if Session.HasPathMappingRules else 'B' }}"),
+            &[("X", "x"), ("N", "1000")],
+            CallerLimits {
+                max_eval_operations: Some(50),
+                ..Default::default()
+            },
+        ),
+        &[
+            "steps[0] -> script -> actions -> onRun -> args[0]:",
+            "exceeded limit",
+        ],
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// SimpleAction sugar (§3.5, FEATURE_BUNDLE_1): the body is an
+// embedded-file data value, the user args are argv entries — checked
+// at the paths the author wrote, at both stages
+// ══════════════════════════════════════════════════════════════
+
+fn bash_template(body: &str, arg: &str) -> String {
+    format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "FEATURE_BUNDLE_1"],
+        "name": "Test",
+        "parameterDefinitions": [{{"name": "X", "type": "STRING"}}],
+        "steps": [{{"name": "S", "bash": {{"script": "{body}", "args": ["{arg}"]}}}}]
+    }}"#
+    )
+}
+
+#[test]
+fn simple_action_body_over_data_cap_fails_at_create_job_at_the_sugar_path() {
+    assert_err_contains(
+        create_with_limits(
+            &bash_template("echo {{Param.X}}", "ok"),
+            &[("X", &"A".repeat(200))],
+            data_cap(100),
+        ),
+        &[
+            "steps[0] -> bash -> script:",
+            "resolves to at least 205 characters, exceeding the maximum of 100.",
+        ],
+    );
+}
+
+#[test]
+fn simple_action_arg_over_arg_cap_fails_at_create_job_at_the_sugar_path() {
+    assert_err_contains(
+        create_with_limits(
+            &bash_template("echo ok", "{{Param.X}}"),
+            &[("X", &"A".repeat(200))],
+            arg_cap(100),
+        ),
+        &[
+            "steps[0] -> bash -> args[0]:",
+            "resolves to at least 200 characters, exceeding the maximum of 100.",
+        ],
+    );
+}
+
+#[test]
+fn simple_action_under_caps_passes() {
+    create_with_limits(
+        &bash_template("echo {{Param.X}}", "{{Param.X}}"),
+        &[("X", "short")],
+        CallerLimits {
+            max_resolved_arg_len: Some(100),
+            max_resolved_data_len: Some(100),
+            ..Default::default()
+        },
+    )
+    .expect("under-cap SimpleAction must pass");
+}
+
+#[test]
+fn simple_action_body_over_data_cap_fails_at_template_validation() {
+    // Pass 8 validates the same sugar fields the job-creation check
+    // does — a fully static violation fails `check`, not just
+    // submission.
+    let v = yaml_val(&bash_template("{{ 'A' * 200 }}", "ok"));
+    let err = decode_job_template(
+        v,
+        Some(&["EXPR", "FEATURE_BUNDLE_1"]),
+        &CallerLimits {
+            max_resolved_data_len: Some(100),
+            ..Default::default()
+        },
+    )
+    .expect_err("static over-cap body must fail validation");
+    let msg = err.to_string();
+    for line in [
+        "steps[0] -> bash -> script:",
+        "resolves to at least 200 characters, exceeding the maximum of 100.",
+    ] {
+        assert!(msg.contains(line), "Missing: {line:?}\nGot:\n{msg}");
+    }
+}
+
+#[test]
+fn simple_action_undefined_reference_fails_at_template_validation() {
+    // Previously the sugar fields were never reference-checked at
+    // template validation at all.
+    let v = yaml_val(&bash_template("echo {{Param.Undefined}}", "ok"));
+    let err = decode_job_template(
+        v,
+        Some(&["EXPR", "FEATURE_BUNDLE_1"]),
+        &CallerLimits::default(),
+    )
+    .expect_err("undefined variable in a SimpleAction body must fail validation");
+    let msg = err.to_string();
+    for line in ["steps[0] -> bash -> script:", "Undefined variable"] {
+        assert!(msg.contains(line), "Missing: {line:?}\nGot:\n{msg}");
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Aggregation: violations report together for the whole template,
+// mirroring template validation
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn violations_across_steps_and_job_environments_report_together() {
+    let template = format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR"],
+        "name": "Test",
+        "parameterDefinitions": [{{"name": "X", "type": "STRING"}}],
+        "jobEnvironments": [{{"name": "Env", "variables": {{"FOO": "{p}"}}}}],
+        "steps": [
+            {{"name": "A", "script": {{"actions": {{"onRun": {{"command": "echo", "args": ["{p}"]}}}}}}}},
+            {{"name": "B", "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}}},
+            {{"name": "C", "script": {{"actions": {{"onRun": {{"command": "echo", "args": ["{p}"]}}}}}}}}
+        ]
+    }}"#,
+        p = "{{Param.X}}"
+    );
+    let msg = create_with_limits(&template, &[("X", &"A".repeat(3000))], arg_cap(100))
+        .expect_err("expected violations");
+    // One error message carries every violation: both steps' args and
+    // the job environment's variable — no fix-one-resubmit round trips.
+    for line in [
+        "steps[0] -> script -> actions -> onRun -> args[0]:",
+        "steps[2] -> script -> actions -> onRun -> args[0]:",
+        "jobEnvironments[0] -> variables -> FOO:",
+    ] {
+        assert!(msg.contains(line), "Missing: {line:?}\nGot:\n{msg}");
+    }
+}
+
+// ══════════════════════════════════════════════════════════════
+// CHUNK[INT] task parameters bind as RangeExpr in the check symtab,
+// matching what the session binds at run time — so a field referencing
+// one is genuinely evaluated (not silently skipped as a type error)
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn chunk_int_task_parameter_reference_is_evaluated_not_skipped() {
+    let template = format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "TASK_CHUNKING"],
+        "name": "Test",
+        "parameterDefinitions": [{{"name": "X", "type": "STRING"}}],
+        "steps": [{{
+            "name": "S",
+            "parameterSpace": {{"taskParameterDefinitions": [
+                {{"name": "Frames", "type": "CHUNK[INT]", "range": "1-100",
+                  "chunks": {{"defaultTaskCount": 10, "rangeConstraint": "CONTIGUOUS"}}}}
+            ]}},
+            "script": {{"actions": {{"onRun": {{
+                "command": "echo",
+                "args": ["--frames={f}", "{p}"]
+            }}}}}}
+        }}]
+    }}"#,
+        f = "{{Task.Param.Frames}}",
+        p = "{{Param.X}}"
+    );
+    // The unresolved CHUNK[INT] reference contributes 0; the concrete
+    // parameter still trips the cap — proof the arg was evaluated
+    // rather than skipped on a type error.
+    assert_err_contains(
+        create_with_limits(&template, &[("X", &"A".repeat(200))], arg_cap(100)),
+        &[
+            "steps[0] -> script -> actions -> onRun -> args[1]:",
+            "resolves to at least 200 characters, exceeding the maximum of 100.",
         ],
     );
 }

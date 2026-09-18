@@ -796,16 +796,28 @@ struct FsEval<'a> {
     /// error there can be a context artifact rather than a template
     /// defect, and the carried-forward strings resolve — and hard-fail —
     /// on the worker anyway. The exception is a budget exceedance
-    /// (`MemoryLimitExceeded` / `OperationLimitExceeded`): the same
-    /// expression evaluates under the same budgets at run time with
-    /// strictly more symbols bound, so exceeding the budget here means
-    /// run-time resolution would too — the early failure these checks
-    /// exist for. (One coarseness caveat: for an unresolved-test
-    /// conditional the evaluator charges both branches against the
-    /// budget, while a run-time evaluation with the test resolved
-    /// charges one, so a budget within a branch-cost of the limit can
-    /// fail here and pass there. Callers lowering the budgets accept
-    /// that granularity.)
+    /// (`MemoryLimitExceeded` / `OperationLimitExceeded`, matched
+    /// recursively through `sub_errors()` — see [`has_budget_kind`]):
+    /// the same expression evaluates under the same budgets at run time
+    /// with strictly more symbols bound, so exceeding the budget here
+    /// means run-time resolution would too. (One coarseness caveat in
+    /// the other direction: for an unresolved-test conditional the
+    /// evaluator charges both branches against the budget, while a
+    /// run-time evaluation with the test resolved charges one, so a
+    /// budget within a branch-cost of the limit can fail here and pass
+    /// there. Callers lowering the budgets accept that granularity.)
+    ///
+    /// `let` bindings are deliberately exempt from this leniency: a
+    /// binding that fails to evaluate at job creation hard-fails
+    /// `create_job` (see `build_task_check_symtab` /
+    /// `build_env_check_symtab` in `create_job/instantiate.rs`).
+    /// Bindings only evaluate when the context profile enables EXPR and
+    /// they parse under that same profile, so the different-profile
+    /// artifact above cannot arise from a stripped extension; what
+    /// remains are value-dependent failures from the real parameter
+    /// values, which recur deterministically in every session — and,
+    /// unlike a format string, an unevaluated binding would poison
+    /// every field that references it into the silently-skipped state.
     report_eval_errors: bool,
 }
 
@@ -924,14 +936,13 @@ fn validate_fs_with(
             if !ev.report_eval_errors {
                 // Job creation: only a budget exceedance is a defect
                 // this stage may report — see
-                // `FsEval::report_eval_errors`.
-                let budget_exceeded = e.expression_error.as_ref().is_some_and(|ee| {
-                    matches!(
-                        ee.kind(),
-                        openjd_expr::ExpressionErrorKind::MemoryLimitExceeded { .. }
-                            | openjd_expr::ExpressionErrorKind::OperationLimitExceeded { .. }
-                    )
-                });
+                // `FsEval::report_eval_errors`. Budget kinds may be
+                // nested (a both-branches-fail compound error carries
+                // them in `sub_errors()`), so the check is recursive.
+                let budget_exceeded = e
+                    .expression_error
+                    .as_ref()
+                    .is_some_and(|ee| ee.is_budget_exceeded());
                 if !budget_exceeded {
                     return;
                 }
@@ -1080,6 +1091,73 @@ pub(crate) fn check_carried_forward_step_script(
         script_path,
         errors,
     );
+}
+
+/// Job-creation resolved-value checks for a SimpleAction step
+/// (`bash:`/`python:`/`cmd:`/`powershell:`/`node:` sugar, §3.5,
+/// FEATURE_BUNDLE_1). The step desugars to a script whose `onRun` runs
+/// the interpreter with the body as a runnable embedded file — so the
+/// body is an embedded-file `data` value (checked against
+/// `CallerLimits::max_resolved_data_len`) and each user arg is an argv
+/// entry (checked against `CallerLimits::max_resolved_arg_len`).
+///
+/// The sugar fields are checked directly, at the paths the author
+/// wrote (`steps[i] -> bash -> script`), rather than on the desugared
+/// script at synthetic paths naming nodes the template does not
+/// contain. The synthesized parts — the interpreter `command` literal
+/// and the `{{Task.File.*}}` reference — are library-generated and
+/// carry nothing to check. Pass 8 validates the same fields the same
+/// way, so this remains a re-check with parameters bound.
+///
+/// `symtab` is the task-scope check table built from the desugared
+/// script (its `Task.File.*` entry included).
+pub(crate) fn check_carried_forward_simple_action(
+    keyword: &str,
+    sa: &SimpleAction,
+    symtab: &SymbolTable,
+    ctx: &ValidationContext,
+    step_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let host_profile = ctx
+        .profile
+        .to_expr_profile(openjd_expr::HostContext::Unresolved);
+    let host_lib = FunctionLibrary::for_profile(&host_profile);
+    let ev = FsEval::for_job_creation(&host_lib, &ctx.caller_limits);
+    let sugar_path = path_field(step_path, keyword);
+    // The body parsed during desugaring (a parse failure aborted job
+    // creation before this check), so `Ok` is the only reachable arm.
+    if let Ok(body) = FormatString::new(&sa.script) {
+        let data_constraint = ctx
+            .caller_limits
+            .max_resolved_data_len
+            .map(|max_len| ResolvedConstraint::ResolvedString { max_len });
+        validate_fs_with(
+            &body,
+            symtab,
+            &ev,
+            &path_field(&sugar_path, "script"),
+            data_constraint.as_ref(),
+            errors,
+        );
+    }
+    if let Some(args) = &sa.args {
+        let args_path = path_field(&sugar_path, "args");
+        let arg_constraint = ctx
+            .caller_limits
+            .max_resolved_arg_len
+            .map(|max_len| ResolvedConstraint::ArgListItem { max_len });
+        for (j, arg) in args.iter().enumerate() {
+            validate_fs_with(
+                arg,
+                symtab,
+                &ev,
+                &path_index(&args_path, j),
+                arg_constraint.as_ref(),
+                errors,
+            );
+        }
+    }
 }
 
 /// Job-creation resolved-value checks for an environment (job-level or
@@ -1946,6 +2024,121 @@ pub fn validate_format_strings(
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // SimpleAction sugar fields (§3.5, FEATURE_BUNDLE_1). The step
+        // desugars to a script whose `onRun` runs the interpreter with
+        // the body as a runnable embedded file — the body is an
+        // embedded-file `data` value and each user arg is an argv
+        // entry. Validate the sugar fields directly, at the paths the
+        // author wrote, with exactly the validation the explicit form
+        // gets: reference/type checks in task scope, the opt-in
+        // data/arg caps, and `timeout`/`cancelation` in template
+        // scope. The synthesized parts (the interpreter `command`
+        // literal, the `{{Task.File.*}}` reference) are
+        // library-generated and carry nothing to check. Runs after the
+        // let-binding block above so the body and args can reference
+        // the SimpleAction's `let` names; job creation re-checks the
+        // same fields at the same paths with parameters bound
+        // (`check_carried_forward_simple_action`).
+        if ctx.profile.has_extension(ModelExtension::FeatureBundle1) {
+            if let Some((keyword, sa)) = step.simple_action() {
+                let sugar_path = path_field(&step_path, keyword);
+                // `let` requires EXPR, exactly as on the explicit form
+                // (whose actions are still validated afterwards, so an
+                // undefined reference to a `let` name also reports).
+                if !expr_active && sa.let_bindings.is_some() {
+                    errors.add(
+                        &path_field(&sugar_path, "let"),
+                        "'let' requires the EXPR extension.",
+                    );
+                }
+                match FormatString::new(&sa.script) {
+                    Ok(body) => {
+                        let data_constraint = ctx
+                            .caller_limits
+                            .max_resolved_data_len
+                            .map(|max_len| ResolvedConstraint::ResolvedString { max_len });
+                        validate_fs_with(
+                            &body,
+                            &task_symtab,
+                            &host_ev,
+                            &path_field(&sugar_path, "script"),
+                            data_constraint.as_ref(),
+                            errors,
+                        );
+                    }
+                    Err(e) => {
+                        errors.add(
+                            &path_field(&sugar_path, "script"),
+                            format!("SimpleAction script: {e}"),
+                        );
+                    }
+                }
+                if let Some(args) = &sa.args {
+                    let args_path = path_field(&sugar_path, "args");
+                    let arg_constraint = ctx
+                        .caller_limits
+                        .max_resolved_arg_len
+                        .map(|max_len| ResolvedConstraint::ArgListItem { max_len });
+                    for (j, arg) in args.iter().enumerate() {
+                        if !expr_active && arg.has_complex_expressions() {
+                            errors.add(
+                                &path_index(&args_path, j),
+                                "complex expressions require the EXPR extension.",
+                            );
+                        }
+                        validate_fs_with(
+                            arg,
+                            &task_symtab,
+                            &host_ev,
+                            &path_index(&args_path, j),
+                            arg_constraint.as_ref(),
+                            errors,
+                        );
+                    }
+                }
+                if let Some(timeout) = &sa.timeout {
+                    validate_fs_with(
+                        timeout,
+                        &step_template_symtab,
+                        &template_ev,
+                        &path_field(&sugar_path, "timeout"),
+                        Some(&TIMEOUT_CONSTRAINT),
+                        errors,
+                    );
+                }
+                let (mode_fs, notify_fs) = match &sa.cancelation {
+                    Some(CancelationMode::NotifyThenTerminate {
+                        notify_period_in_seconds,
+                    }) => (None, notify_period_in_seconds.as_ref()),
+                    Some(CancelationMode::DeferredMode {
+                        mode,
+                        notify_period_in_seconds,
+                    }) => (Some(mode), notify_period_in_seconds.as_ref()),
+                    _ => (None, None),
+                };
+                if let Some(mode) = mode_fs {
+                    validate_fs_with(
+                        mode,
+                        &step_template_symtab,
+                        &template_ev,
+                        &path_field(&sugar_path, "cancelation"),
+                        Some(&ResolvedConstraint::CancelationMode),
+                        errors,
+                    );
+                }
+                if let Some(notify) = notify_fs {
+                    validate_fs_with(
+                        notify,
+                        &step_template_symtab,
+                        &template_ev,
+                        &path_field(&sugar_path, "cancelation"),
+                        Some(&NOTIFY_PERIOD_CONSTRAINT),
+                        errors,
+                    );
                 }
             }
         }

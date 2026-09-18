@@ -262,6 +262,24 @@ impl EnvironmentTemplate {
 }
 ```
 
+Methods on `template::StepTemplate`:
+
+```rust
+impl StepTemplate {
+    /// The step's SimpleAction sugar field (§3.5, FEATURE_BUNDLE_1), if
+    /// any, with its template keyword ("bash", "python", …) — in the
+    /// same precedence order `resolve_syntax_sugar` uses, so the field
+    /// returned is the one that desugars. Validation and job creation
+    /// use it to check the sugar fields at the paths the author wrote.
+    pub fn simple_action(&self) -> Option<(&'static str, &SimpleAction)>;
+
+    /// De-sugar a SimpleAction step into the equivalent StepScript
+    /// (`Ok(Some(clone))` for an explicit `script`, `Ok(None)` for
+    /// neither; `Err` for a malformed body format string).
+    pub fn resolve_syntax_sugar(&self) -> Result<Option<StepScript>, ModelError>;
+}
+```
+
 `ExtensionName` and `Description` are constrained string newtypes
 defined in the `template::constrained_strings` submodule (which is
 crate-private as a path) but re-exported as `template::ExtensionName`

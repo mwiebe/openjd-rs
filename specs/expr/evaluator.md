@@ -354,14 +354,25 @@ When an earlier operand is unresolved, subsequent operands are still evaluated (
 catch type errors in them), but the final result is `Unresolved(BOOL)` unless a
 subsequent concrete operand proves the result by short-circuiting (e.g.,
 `Unresolved and false` returns `false`). Errors in operands past the unresolved one
-are suppressed, since a runtime short-circuit could make them unreachable.
+are suppressed, since a runtime short-circuit could make them unreachable —
+**except budget exceedances** (`MemoryLimitExceeded` /
+`OperationLimitExceeded`), which always propagate: the counters are
+shared across the whole evaluation, so exhaustion in one operand is not
+a condition short-circuiting can avoid.
 
 ### IfExp (`eval_ifexp`)
 Ternary: `x if condition else y`. Evaluates the condition unconstrained
 (see [Target Type Propagation](#target-type-propagation)) and asserts it
 is bool-compatible, then evaluates only the selected branch with the
 parent target type. When the condition is unresolved, both branches are
-evaluated and the result type is the union.
+evaluated and the result type is the union. A single branch's failure is
+suppressed (either branch might be the one taken at runtime); both
+branches failing produces a compound error carrying the branch errors in
+`sub_errors()`. Budget exceedances are the exception to the
+single-branch suppression: they propagate immediately
+(`ExpressionError::is_budget_exceeded`), because a branch exhausting the
+shared budget is not a branch-local condition, and swallowing it would
+let the evaluation continue past its configured limits.
 
 ### Call (`eval_call`)
 Handles both function calls (`len(x)`) and method calls (`x.upper()`).

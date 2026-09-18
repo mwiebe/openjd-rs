@@ -181,6 +181,27 @@ impl ExpressionError {
         &self.inner.kind
     }
 
+    /// Whether this error is — or (transitively) contains — a
+    /// memory/operation budget exceedance.
+    ///
+    /// Budget exhaustion is a property of the whole evaluation, not of
+    /// the failing subexpression: the counters are shared, so wherever
+    /// the exceedance surfaced, no sibling evaluation can proceed
+    /// within the same budget. Callers that treat some evaluation
+    /// errors as recoverable (both-branches-fail compound errors carry
+    /// the real kinds in [`sub_errors`](Self::sub_errors), with `Other`
+    /// at the top) use this to recognize the unrecoverable case.
+    pub fn is_budget_exceeded(&self) -> bool {
+        matches!(
+            self.kind(),
+            ExpressionErrorKind::MemoryLimitExceeded { .. }
+                | ExpressionErrorKind::OperationLimitExceeded { .. }
+        ) || self
+            .sub_errors()
+            .iter()
+            .any(ExpressionError::is_budget_exceeded)
+    }
+
     /// The human-readable error message (the Display output of the kind).
     pub fn message(&self) -> String {
         self.inner.kind.to_string()

@@ -198,6 +198,25 @@ session/task scope.
    `Task.File.*`. With EXPR: adds `Job.Name`, `Step.Name`, `Env.File.*` from
    step and job environments.
 
+### SimpleAction sugar fields
+
+A SimpleAction step (`bash:`/`python:`/`cmd:`/`powershell:`/`node:`,
+§3.5, FEATURE_BUNDLE_1) desugars to a script whose `onRun` runs the
+interpreter with the body as a runnable embedded file — the body is an
+embedded-file `data` value and each user arg is an argv entry. Pass 8
+validates the sugar fields directly, at the paths the author wrote
+(`steps[i] -> bash -> script`, `-> args[j]`, `-> timeout`,
+`-> cancelation`), with exactly the validation the explicit form gets:
+reference/type checks in task scope, the opt-in
+`max_resolved_data_len`/`max_resolved_arg_len` caps, `timeout` and
+`cancelation` in template scope, complex-expression gating without
+EXPR, and `'let' requires the EXPR extension.` The synthesized parts —
+the interpreter `command` literal and the `{{Task.File.*}}` reference —
+are library-generated and carry nothing to check. Job creation re-runs
+the same checks on the same fields at the same paths
+(`check_carried_forward_simple_action`), so the two stages agree for
+sugar and explicit forms alike.
+
 ### Let Binding Validation
 
 Let bindings are validated with these rules:

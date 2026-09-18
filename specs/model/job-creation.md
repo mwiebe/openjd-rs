@@ -223,7 +223,13 @@ decidable and fails at submission instead of on every worker (task
 execution remains the enforcement boundary). The
 walk covers step scripts (`onRun` + embedded files), step environments,
 and job environments — including the RFC 0008 wrap hooks, with their
-`WrappedAction.*` scopes seeded unresolved, exactly as in pass 8.
+`WrappedAction.*` scopes seeded unresolved, exactly as in pass 8. A
+SimpleAction step is checked through its **sugar fields** — the body as
+an embedded-file `data` value at `steps[i] -> bash -> script`, each
+user arg at `steps[i] -> bash -> args[j]` — the same fields pass 8
+validates (see the SimpleAction section of
+[validation.md](validation.md)), never through the desugared script,
+whose synthetic paths would name nodes the template does not contain.
 
 The check symbol tables mirror what the session runtime binds at run
 time, with everything only a session can know left `Unresolved`:
@@ -237,22 +243,31 @@ time, with everything only a session can know left `Unresolved`:
   here, deterministically, rather than in every session).
 - **Session scope** (job and step environments): as above minus
   `Task.*`, plus this environment's `Env.File.*` (`Unresolved`) and its
-  script-level `let` bindings evaluated in via `evaluate_let_bindings`.
-  An environment `let` binding that fails to evaluate fails job
-  creation (like the step-script `let` check above): the bindings only
-  evaluate when the context profile enables EXPR, their expressions
-  already type-checked at pass 8 with everything unresolved, so a
-  failure here comes from the real parameter values and would
-  deterministically recur in every session that enters the environment.
+  script-level `let` bindings evaluated in. Both scopes evaluate `let`
+  bindings through one shared helper that parses under the **caller's
+  profile** (the same profile the checks evaluate format strings
+  with), so the two builders cannot drift apart on parse profile. An
+  environment `let` binding that fails to evaluate fails job creation
+  (like the step-script `let` check above): the bindings only evaluate
+  when the context profile enables EXPR, their expressions already
+  type-checked at pass 8 with everything unresolved, so a failure here
+  comes from the real parameter values and would deterministically
+  recur in every session that enters the environment.
+
+A failed placeholder `set` while building a check table also
+propagates: a silently missing symbol would surface as an "undefined
+variable" evaluation error, which the error policy below deliberately
+skips — degrading that field's check to a no-op with no signal.
 
 Failures are `ModelError::ModelValidation` at the same field paths
 pass 8 uses, e.g.
 `steps[0] -> script -> actions -> onRun -> args[0]:` /
 `resolves to at least 100000 characters, exceeding the maximum of 1024.`
-Violations accumulate within one scope (a step script, one
-environment's fields), but the first failing scope stops instantiation
-— consistent with the fail-fast resolved-value re-checks `create_job`
-already performs, and unlike pass 8's whole-template aggregation.
+Violations **accumulate across the whole template** — every step's
+script and environments plus the job environments — into one
+collection, reported together exactly as pass 8 reports, so one
+submission round-trip surfaces every violation. Every other
+job-creation failure mode still aborts at the first error.
 
 **Error policy.** Unlike pass 8, evaluation/parse errors are *not*
 reported by this pass: `create_job` may deliberately run with a
@@ -260,15 +275,21 @@ different profile than the template was decoded with (see `ctx` above),
 so an evaluation error here can be a context artifact rather than a
 template defect — and the carried-forward strings hard-fail on the
 worker anyway. The exception is a budget exceedance
-(`MemoryLimitExceeded` / `OperationLimitExceeded`): the same expression
-evaluates under the same budgets at run time with strictly more symbols
-bound, so exceeding the budget here means run-time resolution would
-too, and it is reported. (One coarseness caveat: for an unresolved-test
-conditional the evaluator charges both branches against the budget,
-while a run-time evaluation with the test resolved charges one — a
-budget within a branch-cost of the limit can fail here and pass there;
-callers lowering the budgets accept that granularity.) Resolved-value
-constraint violations (the table above) are always reported.
+(`ExpressionError::is_budget_exceeded`, which matches
+`MemoryLimitExceeded` / `OperationLimitExceeded` recursively through
+compound errors' `sub_errors()`): the same expression evaluates under
+the same budgets at run time with strictly more symbols bound, so
+exceeding the budget here means run-time resolution would too, and it
+is reported. The evaluator guarantees such errors are visible: budget
+exceedances propagate out of the branch-error suppression for
+unresolved-test conditionals and boolean operators (see the evaluator
+spec) instead of being swallowed as branch-local failures. (One
+coarseness caveat: for an unresolved-test conditional the evaluator
+charges both branches against the budget, while a run-time evaluation
+with the test resolved charges one — a budget within a branch-cost of
+the limit can fail here and pass there; callers lowering the budgets
+accept that granularity.) Resolved-value constraint violations (the
+table above) are always reported.
 
 Cost note: job creation previously did not evaluate these fields, so the pass
 adds work proportional to what a single worker would do anyway — done
