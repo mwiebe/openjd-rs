@@ -653,7 +653,7 @@ To be made alongside the implementation commits (spec/code co-evolution):
 | `specs/sessions/runners.md` | ~~`resolve_action_args` length enforcement~~ **Done** (with the Group B caps) |
 | `specs/sessions/session.md` / `embedded-files.md` | ~~Env-var 2048 and embedded-file data enforcement~~ **Done** (env-var 2048 with PR #383's gate 3; `SessionConfig.limits` + `EmbeddedFiles::with_limits` with the Group B caps) |
 | `specs/sessions/public-api.md` | ~~Configuration surface for caps + budgets~~ **Done** (`SessionLimits`, `SessionConfig.limits`) — plus `specs/cli/check.md`/`run.md` documenting the CLI's uniform 32K-character `max_resolved_arg_len` default |
-| `specs/architecture.md` | Pointer to this document |
+| `specs/architecture.md` | ~~Pointer to this document~~ **Dropped** — this design doc intentionally stays on its working branch and will not be merged upstream, so no in-repo pointer will exist |
 
 ## Follow-ups
 
@@ -670,9 +670,12 @@ independent piece of work.
    `openjd-model-for-python` in both directions; the issue against
    [openjd-specifications](https://github.com/OpenJobDescription/openjd-specifications)
    has not been filed yet.
-2. **`specs/architecture.md` pointer to this document** — the one
+2. ~~**`specs/architecture.md` pointer to this document** — the one
    remaining row in the spec-edits table above. Natural to do when this
-   design doc itself lands on `main`.
+   design doc itself lands on `main`.~~ **Dropped** — this design doc
+   intentionally stays on its working branch (it guided PRs #373–#404
+   and is retained as history); it will not be merged upstream, so
+   there is no in-repo document to point to.
 3. **Budget exceedance silently dropped inside unresolved-test
    conditionals** (review finding, measured for both budget kinds; the
    most impactful item here). When an `if`/`else` test is unresolved
