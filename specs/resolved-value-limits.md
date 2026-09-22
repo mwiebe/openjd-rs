@@ -676,22 +676,19 @@ independent piece of work.
    intentionally stays on its working branch (it guided PRs #373–#404
    and is retained as history); it will not be merged upstream, so
    there is no in-repo document to point to.
-3. **Budget exceedance silently dropped inside unresolved-test
-   conditionals** (review finding, measured for both budget kinds; the
-   most impactful item here). When an `if`/`else` test is unresolved
-   (`Session.*` — idiomatic, not contrived), the evaluator runs both
-   branches and wraps a dual failure in a compound error whose
-   top-level kind is `Other`; the gate-2 budget detection only inspects
-   the top-level kind, so the one error class that stage may report is
-   suppressed. `{{ 'A' * int(Param.N) if Session.HasPathMappingRules
-   else 'B' }}` with huge `N` is accepted at `create_job` under a
-   lowered budget — meaning a caller who lowered
-   `max_eval_memory_bytes` to protect the submitting process gets
-   evaluation against the 100 MB default instead. Fix: check
-   budget kinds recursively through `sub_errors()`. The related (and
-   opposite-direction) coarseness — both branches *charged* against
-   one budget — is documented in `specs/model/job-creation.md`; once
-   the suppression is fixed, document both directions together.
+3. ~~**Budget exceedance silently dropped inside unresolved-test
+   conditionals**~~ **Resolved** (with item 9) — fixed in the evaluator
+   itself, which was the real swallow site: `eval_ifexp` absorbed a
+   single failing branch under an unresolved test into an `Unresolved`
+   success even when the failure was a budget exceedance. Budget errors
+   now propagate out of the absorption (value errors are still
+   absorbed — run time may select the healthy branch, but the budget
+   was spent in this evaluation either way); the gate-2 top-level-kind
+   filtering is gone entirely with item 9's uniformly strict policy.
+   Both budget directions are documented in `specs/expr/evaluator.md`
+   (IfExp) and `specs/model/job-creation.md` (error policy). Pinned at
+   the expr level (`test_memory.rs`) and through `create_job`
+   (`test_job_creation_resolved_values.rs`).
 4. **Desugar divergence between gates 1 and 2** (review finding,
    measured). Gate 2 checks the *desugared* SimpleAction script
    (`bash:`/`python:`/…, FEATURE_BUNDLE_1), but pass 8 only validates
@@ -706,21 +703,20 @@ independent piece of work.
    then the "re-run exactly the checks pass 8 applies" claim does not
    hold for SimpleAction steps.
 5. **Environment `let` policy asymmetry and parse-profile mismatch**
-   (review finding). Two parts:
-   - An environment `let` that errors under the job-creation context
+   (review finding). Two parts, the first resolved:
+   - ~~An environment `let` that errors under the job-creation context
      hard-fails `create_job`, while a format string with the identical
      error is deliberately skipped (`report_eval_errors = false`) two
-     functions away. The behavior change is disclosed, but the
-     `report_eval_errors` doc block should state why `let` is exempt
-     from its reasoning — or the `let` errors should be collected and
-     filtered the same way.
+     functions away.~~ **Resolved** (with item 9) — the asymmetry is
+     gone: format-string evaluation errors hard-fail `create_job` too,
+     under one uniform strict policy.
    - Unambiguous and cheap to fix regardless: the two check-symtab
      builders disagree on parse profile. `evaluate_let_bindings` (used
      for environments) parses with `ParsedExpression::new` — the
      latest profile, every extension — while `build_task_check_symtab`
      parses with the caller's host profile. An env `let` using syntax
      the caller's profile does not enable parses at gate 2 but is
-     refused at pass 8.
+     refused at pass 8. **Still open.**
 6. **Whole-template error aggregation at gate 2** (review finding;
    was already noted here pre-review). Three separate
    `ValidationErrors` collections each abort at their own
@@ -729,18 +725,20 @@ independent piece of work.
    `jobEnvironments`. Pass 8 reports everything at once. Mechanical
    fix: thread one `ValidationErrors` through `instantiate_step` and
    the `jobEnvironments` loop, `into_result` once.
-7. **Silent-skip observability** (review suggestion). With
-   `report_eval_errors = false`, nothing distinguishes "field checked
-   and passed" from "field errored and was skipped" — the budget
-   suppression above is one reachable route into that state, and
-   `add_unresolved_session_symbols` discarding `symtab.set` failures
-   (`let _ =`) is another (a failed seed degrades the check to a
-   no-op). Tests should assert fields were actually *evaluated*, not
-   merely that `create_job` returned `Ok`; and the `set` results
-   should not be discarded silently. Related unverified note from the
-   review: confirm `CHUNK_INT` binding as `Unresolved(RANGE_EXPR)` in
-   the check symtab matches what the session binds at run time — a
-   mismatch would surface as a type error and be swallowed.
+7. ~~**Silent-skip observability** (review suggestion).~~ **Resolved**
+   (with item 9, by construction) — with the uniformly strict error
+   policy there is no skip path left: every evaluation error surfaces,
+   so "field errored" can no longer masquerade as "field passed". The
+   `symtab.set` seed results are no longer discarded either (`expect`
+   with a diagnostic; the fixed uppercase-rooted seed keys cannot
+   collide with `let` bindings, which must start lowercase). The
+   review's related `CHUNK_INT` note no longer needs separate
+   verification: if that binding's type mismatched what the session
+   binds, the resulting type error would now surface at `create_job`
+   rather than being swallowed. The strictness immediately proved
+   itself by exposing a masked path-format divergence (gate-2 checks
+   evaluated under host format against Posix-valued symtabs, an error
+   on Windows) — fixed with item 9.
 8. **Re-check deferred numeric constraints at gate 2.** Action
    `timeout`, `notifyPeriodInSeconds`, and the deferred cancelation
    `mode` validate at gate 1 against the template-scope symtab (params
@@ -750,27 +748,18 @@ independent piece of work.
    time. The gate-2 pass has all the machinery to close this — extend
    its constraint table to the `Int`/`CancelationMode` constraints with
    the gate-2 symtab.
-9. **TODO: tighten the `create_job` profile contract — leniency
-   justified by "the caller might strip EXPR" is a bug.** `create_job`
-   currently documents that passing a `ValidationContext` whose
-   extensions differ from the ones the template was decoded with is
-   supported "application-level policy" (introduced in `848f92a`,
-   pinned by `test_model_profile`'s strip-EXPR tests). That contract is
-   what forces gate 2's lenient error policy
-   (`report_eval_errors = false`): an evaluation error must be treated
-   as a possible context artifact, so real errors are skipped — which
-   in turn created the budget-kind special-casing, the `let`-binding
-   policy exemption, and the silent-skip observability class in item 7.
-   No production caller diverges (the CLI derives its profile from the
-   template's own declared extensions), and the middle ground is
-   incoherent: an application that does not support an extension
-   already rejects the template at decode via `supported_extensions`.
-   Fix: require the gate-2 context's extensions to match decode's
-   (documented as unspecified behavior at minimum; better, enforce with
-   an error), then make the gate-2 error policy uniformly strict —
-   every surfaced evaluation error is either a defect pass 8 missed or
-   a deterministic value-dependent run-time failure, so report them
-   all. That deletes the leniency machinery and the exemption
-   paragraphs outright and closes item 7's silent-skip gap by
-   construction. Rework or remove the strip-EXPR pinning tests
-   accordingly.
+9. ~~**TODO: tighten the `create_job` profile contract — leniency
+   justified by "the caller might strip EXPR" is a bug.**~~
+   **Resolved** — implemented as proposed, with the stronger option
+   (enforced with an error): `create_job` requires the context's
+   revision to match the template's and its extensions to cover every
+   extension the template declares (enabling more is allowed),
+   returning a `Compatibility` error otherwise. The gate-2 error
+   policy is uniformly strict, deleting `report_eval_errors`, the
+   budget-kind special-casing, and the exemption paragraphs; the
+   strip-EXPR pinning test now pins the rejection instead. Items 3, 5
+   (first half), and 7 closed with it, including the two latent
+   defects the strictness surfaced (budget absorption in
+   unresolved-test conditionals, fixed in the evaluator; gate-2
+   path-format mismatch with the Posix-valued check symtabs, fixed by
+   evaluating under Posix).
