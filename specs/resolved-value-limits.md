@@ -764,3 +764,44 @@ independent piece of work.
    unresolved-test conditionals, fixed in the evaluator; gate-2
    path-format mismatch with the Posix-valued check symtabs, fixed by
    evaluating under Posix).
+
+Items 10–12 come from the review of the item-9 PR
+([#407](https://github.com/OpenJobDescription/openjd-rs/pull/407)),
+whose two code findings — the `eval_listcomp` unresolved-filter
+regression on concrete iterables and the `eval_boolop` budget-error
+suppression — were fixed on that branch (with the reviewer's probe
+matrix pinned as tests). These are what remains:
+
+10. **`eval_listcomp` discards a failing child's counters** (review
+    finding, out of that PR's scope). The comprehension loop returns
+    `child.eval_node(..)?` / `child.evaluate(..)?` before
+    `self.absorb_counters(&child)`, so a failing comprehension's
+    child-evaluator spend (memory high-water, op count) is discarded —
+    the same "cost already spent" leak the budget exemptions close,
+    seen from the accounting side. Consequence: an absorbing
+    construct upstream (an unresolved-test conditional absorbing a
+    value error) resumes with the parent's counters missing the
+    failed branch's comprehension spend, so repeated absorbed-failure
+    comprehensions evaluate under-metered. Fix shape: absorb the
+    child's counters on the error paths too before propagating
+    (`match` instead of `?` at the child-evaluation sites in
+    `eval_listcomp` and `eval_listcomp_unresolved`).
+11. **Audit the remaining operators for incomplete `Unresolved`
+    propagation.** The listcomp filter was one instance of a class:
+    job creation evaluates under a symbol state no other stage sees
+    (`Param.*` concrete, `Task.*`/`Session.*` unresolved), so any
+    operator that hard-errors on a partially-resolved input rejects a
+    template at submission that both validates and runs.
+    `specs/model/job-creation.md`'s error-policy section now states
+    this dependency explicitly. A systematic pass over the evaluator's
+    concrete-input paths (subscript indices, slice bounds, method
+    receivers, function-argument dispatch, comparison chains) checking
+    each against an "unresolved here?" probe would close the class
+    rather than the instance.
+12. **Mirror the budget-exemption rule wherever errors are absorbed.**
+    `eval_ifexp` and `eval_boolop` now share it
+    (`contains_budget_error`); any future absorption site (item 11
+    may add some) must propagate budget exceedances — the
+    memory/operations are spent regardless of what run time would
+    skip. Candidate for a shared helper on the absorption pattern
+    itself if a third site appears.
