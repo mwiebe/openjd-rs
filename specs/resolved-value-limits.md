@@ -729,8 +729,9 @@ independent piece of work.
    (with item 9, by construction) — with the uniformly strict error
    policy there is no skip path left: every evaluation error surfaces,
    so "field errored" can no longer masquerade as "field passed". The
-   `symtab.set` seed results are no longer discarded either (`expect`
-   with a diagnostic; the fixed uppercase-rooted seed keys cannot
+   `symtab.set` seed results are no longer discarded either
+   (propagated as `ModelError` — never a panic, so bindings surface it
+   as an exception; the fixed uppercase-rooted seed keys cannot
    collide with `let` bindings, which must start lowercase). The
    review's related `CHUNK_INT` note no longer needs separate
    verification: if that binding's type mismatched what the session
