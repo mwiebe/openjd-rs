@@ -681,8 +681,8 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 4, 5 (second half), 6, 8, 10, 11, 12, 13, 14.
-**Closed:** 2 (dropped), 3, 5 (first half), 7, 9.
+**Open:** 1, 4, 6, 8, 11, 12.
+**Closed:** 2 (dropped), 3, 5, 7, 9, 10, 13, 14.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -729,13 +729,20 @@ None blocks the design; each is an independent piece of work.
      functions away.~~ **Resolved** (with item 9) — the asymmetry is
      gone: format-string evaluation errors hard-fail `create_job` too,
      under one uniform strict policy.
-   - Unambiguous and cheap to fix regardless: the two check-symtab
+   - ~~Unambiguous and cheap to fix regardless: the two check-symtab
      builders disagree on parse profile. `evaluate_let_bindings` (used
      for environments) parses with `ParsedExpression::new` — the
      latest profile, every extension — while `build_task_check_symtab`
      parses with the caller's host profile. An env `let` using syntax
      the caller's profile does not enable parses at gate 2 but is
-     refused at pass 8. **Still open.**
+     refused at pass 8.~~ **Resolved** (quick-follow-ups branch) —
+     both builders call one private `evaluate_check_let_bindings`
+     that parses under the caller's host profile, evaluates under
+     Posix with the budgets, and reports one message format; the
+     public `evaluate_let_bindings` is unchanged as the run-time entry
+     point for sessions/for-js. Pinned by a test asserting env and
+     step-script `let` failures produce byte-identical diagnostics
+     through `create_job`.
 6. **Whole-template error aggregation at gate 2** (review finding;
    was already noted here pre-review). Three separate
    `ValidationErrors` collections each abort at their own
@@ -805,7 +812,7 @@ in the PR itself (with the reviewer's probe matrix pinned as tests).
 Items 13–14 come from an independent agent review of the final
 changeset. These are what remains:
 
-10. **`eval_listcomp` discards a failing child's counters** (review
+10. ~~**`eval_listcomp` discards a failing child's counters** (review
     finding, out of that PR's scope). The comprehension loop returns
     `child.eval_node(..)?` / `child.evaluate(..)?` before
     `self.absorb_counters(&child)`, so a failing comprehension's
@@ -815,10 +822,14 @@ changeset. These are what remains:
     construct upstream (an unresolved-test conditional absorbing a
     value error) resumes with the parent's counters missing the
     failed branch's comprehension spend, so repeated absorbed-failure
-    comprehensions evaluate under-metered. Fix shape: absorb the
-    child's counters on the error paths too before propagating
-    (`match` instead of `?` at the child-evaluation sites in
-    `eval_listcomp` and `eval_listcomp_unresolved`).
+    comprehensions evaluate under-metered.~~ **Resolved**
+    (quick-follow-ups branch) — counters are absorbed on every exit
+    path (filter error, non-bool filter, body error), via an
+    `absorb_and_pass` helper on the unresolved path and explicit match
+    arms on the concrete loop (which also hand the moved regex cache
+    back). Measured before/after: `[int('A' * 1000000) for x in [1]] if
+    Session.Flag else []` reported `peak_memory` 512 → now ≥ 1 MB.
+    Documented in the ListComp section of `specs/expr/evaluator.md`.
 11. **Audit the remaining operators for incomplete `Unresolved`
     propagation.** The listcomp filter was one instance of a class:
     job creation evaluates under a symbol state no other stage sees
@@ -840,15 +851,18 @@ changeset. These are what remains:
     itself if a third site appears. The independent review also
     flagged `eval_attribute` as a marginal budget-error laundering
     site in the item-11 class — check it during that audit.
-13. **`contains_budget_error`'s sub-error recursion is untested.**
+13. ~~**`contains_budget_error`'s sub-error recursion is untested.**
     The `|| err.sub_errors().iter().any(contains_budget_error)` arm
     is mutation-survivable: no test drives a *compound* error (both
     branches of an unresolved-test conditional failing, one with a
     budget exceedance) through a suppression site, e.g.
     `Session.Flag or (('A' * 10000000 if Session.Flag2 else int('nope')) == 'x')`.
-    Deleting the recursion leaves the suite green. One test in
-    `test_memory.rs` closes it.
-14. **Small cleanups from the independent review.** (a) `FsEval`'s
+    Deleting the recursion leaves the suite green.~~ **Resolved**
+    (quick-follow-ups branch) — two tests in `test_memory.rs`: the
+    compound propagates through a boolop (verified: deleting the
+    recursion fails it), and the control — a compound of two value
+    errors — is still suppressed.
+14. ~~**Small cleanups from the independent review.** (a) `FsEval`'s
     struct docs and `specs/model/validation.md` cite a "Path
     Parameters section" of `specs/model/job-creation.md` that has no
     such heading — point at the actual section. (b)
@@ -861,4 +875,6 @@ changeset. These are what remains:
     missing-extension check in `create_job` iterates
     `ModelExtension::ALL`; iterating the template profile's own
     extension set would be exhaustive by construction if a future
-    variant were ever omitted from `ALL`.
+    variant were ever omitted from `ALL`.~~ **Resolved**
+    (quick-follow-ups branch) — all four; (d) sorts the missing set for
+    a deterministic message, pinned by a two-extension test.
