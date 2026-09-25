@@ -12,7 +12,13 @@ opt-in `CallerLimits` caps, evaluation-budget plumbing, sessions
 and gate 2 — the `create_job` evaluation pass over carried-forward
 session/task-scope format strings, with the budgets applied to every
 job-creation evaluation
-(PR [#404](https://github.com/OpenJobDescription/openjd-rs/pull/404)).
+(PR [#404](https://github.com/OpenJobDescription/openjd-rs/pull/404));
+then the `create_job` context contract that made gate 2's error policy
+uniformly strict, with the evaluator fixes that strictness surfaced
+(PR [#407](https://github.com/OpenJobDescription/openjd-rs/pull/407)).
+Host requirement capability *names* joined the Group A table as format
+strings under the same gate-1-lower-bound / gate-2-full-check pattern
+(PR [#409](https://github.com/OpenJobDescription/openjd-rs/pull/409)).
 The gate sections below describe the behavior **as shipped**. What
 remains is the follow-up list at the
 [end of this document](#follow-ups).
@@ -143,6 +149,7 @@ enforcing them early can never reject a template that could have run.
 |---|---|---|---|
 | [§1.1.1](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#111-jobname) | `<JobName>` | ≤ 128 chars (≤ 512 with FEATURE_BUNDLE_1); no Cc chars | Gate 1 (lower bound; full check incl. Cc chars when fully static) + gate 2 (resolved name vs `max_job_name_len`, emptiness, and control characters) |
 | [§3.3.2.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#3322-attributecapabilityvalue) | `<AttributeCapabilityValue>` | ≤ 100 chars; latin alphanumeric + `_` + `-`; must start with letter or `_` | Gate 1 (lower bound; full §3.3.2.2 check when fully static) + gate 2 (`validate_attribute_capability_value` on resolved value) |
+| §3.3 | `<AmountCapabilityName>` / `<AttributeCapabilityName>` | ≤ 100 chars; capability-name pattern; reserved-scope rules; unique (case-insensitive) within amounts / within attributes | Gate 1 (full check for literal or fully-static names, 100-char lower bound otherwise) + gate 2 (full check on every resolved name). Added by PR #409 after [openjd-specifications#189](https://github.com/OpenJobDescription/openjd-specifications/issues/189) annotated the names `@fmtstring`. |
 | [§3.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#342-taskparameterstringvalue) | `<TaskParameterStringValue>` | ≤ 1024 chars | Gate 1 (lower bound) + gate 2 (`ranges.rs` on resolved range elements) |
 | [§4.4.2](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/wiki/2023-09-Template-Schemas.md#442-environmentvariablevaluestring) | `<EnvironmentVariableValueString>` | ≤ 2048 chars (see [reading note](#reading-note-442)) | Gates 1–2 (lower bound; gate 2 with parameters bound, PR #404) + gate 3 (resolved value) |
 
@@ -512,12 +519,19 @@ table as gate 1.
   consistent with the resolved-value re-checks `create_job` already
   performs. Violations accumulate within one scope (a step script, one
   environment); the first failing scope stops instantiation.
-- **Error policy (decided during implementation):** the pass reports
+- **Error policy:** ~~(decided during implementation) the pass reports
   resolved-value violations and budget exceedances only. Other
   evaluation/parse errors are skipped, because `create_job` may
   deliberately run under a different profile than decode (an existing,
-  tested contract) — a budget exceedance is reported since run time
-  evaluates the same expression with strictly more symbols bound.
+  tested contract).~~ **Superseded by PR #407** (follow-up item 9):
+  `create_job` now requires a context whose revision matches the
+  template's and whose extensions cover the template's declared ones,
+  so an evaluation error at this stage cannot be a context artifact —
+  the pass reports every evaluation/parse error exactly as pass 8
+  does. The one remaining dependency is that the evaluator propagates
+  `Unresolved` without error through every operator, since this stage
+  evaluates under a symbol state no other stage sees (`Param.*`
+  concrete, `Task.*`/`Session.*` unresolved) — see follow-up item 11.
 - Cost note: this adds work proportional to what one worker would do
   anyway — done once at submission instead of per-task-per-worker.
   Avoidable later with constant folding (out of scope, below).
@@ -657,13 +671,18 @@ To be made alongside the implementation commits (spec/code co-evolution):
 
 ## Follow-ups
 
-Recorded after PR #404 (which completed gate 2). Items 1–2 are
-leftovers from earlier rounds; items 3–8 come from the
+Recorded after PR #404 (which completed gate 2) and extended after
+PR #407 (which closed item 9). Items 1–2 are leftovers from earlier
+rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
 (approved with findings recorded rather than requested — none is a
 regression, since before #404 job creation applied no resolved-value
-checks and no budgets at all). None blocks the design; each is an
-independent piece of work.
+checks and no budgets at all); items 10–14 come from the
+[PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
+None blocks the design; each is an independent piece of work.
+
+**Open:** 1, 4, 5 (second half), 6, 8, 10, 11, 12, 13, 14.
+**Closed:** 2 (dropped), 3, 5 (first half), 7, 9.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -751,7 +770,9 @@ independent piece of work.
    the gate-2 symtab.
 9. ~~**TODO: tighten the `create_job` profile contract — leniency
    justified by "the caller might strip EXPR" is a bug.**~~
-   **Resolved** — implemented as proposed, with the stronger option
+   **Resolved** — merged as
+   PR [#407](https://github.com/OpenJobDescription/openjd-rs/pull/407),
+   implemented as proposed with the stronger option
    (enforced with an error): `create_job` requires the context's
    revision to match the template's and its extensions to cover every
    extension the template declares (enabling more is allowed),
@@ -763,14 +784,26 @@ independent piece of work.
    defects the strictness surfaced (budget absorption in
    unresolved-test conditionals, fixed in the evaluator; gate-2
    path-format mismatch with the Posix-valued check symtabs, fixed by
-   evaluating under Posix).
+   evaluating under Posix). Review rounds on the PR added: the CLI
+   and `openjd-for-js` derive their `create_job` context from
+   `JobTemplate::default_validation_context()` (the CLI now carries
+   its caller limits into `create_job`, closing a gap where decode ran
+   capped but job creation did not); **all** template validation
+   evaluates under `PathFormat::Posix` — the rule being that only
+   host-context code in `openjd-sessions` uses the host format — which
+   also fixed a pre-existing range-scope mismatch and made `check`
+   outcomes OS-independent; the `eval_listcomp` regression and the
+   `eval_boolop` budget suppression (see items 10–12 below).
 
-Items 10–12 come from the review of the item-9 PR
-([#407](https://github.com/OpenJobDescription/openjd-rs/pull/407)),
-whose two code findings — the `eval_listcomp` unresolved-filter
-regression on concrete iterables and the `eval_boolop` budget-error
-suppression — were fixed on that branch (with the reviewer's probe
-matrix pinned as tests). These are what remains:
+Items 10–12 come from the review of PR #407, whose two code findings
+— the `eval_listcomp` unresolved-filter regression on concrete
+iterables (a template that passed `check` and ran cleanly was rejected
+at `create_job`, because job creation evaluates under a symbol state
+no other stage sees: `Param.*` concrete, `Task.*`/`Session.*`
+unresolved) and the `eval_boolop` budget-error suppression — were fixed
+in the PR itself (with the reviewer's probe matrix pinned as tests).
+Items 13–14 come from an independent agent review of the final
+changeset. These are what remains:
 
 10. **`eval_listcomp` discards a failing child's counters** (review
     finding, out of that PR's scope). The comprehension loop returns
@@ -804,4 +837,28 @@ matrix pinned as tests). These are what remains:
     may add some) must propagate budget exceedances — the
     memory/operations are spent regardless of what run time would
     skip. Candidate for a shared helper on the absorption pattern
-    itself if a third site appears.
+    itself if a third site appears. The independent review also
+    flagged `eval_attribute` as a marginal budget-error laundering
+    site in the item-11 class — check it during that audit.
+13. **`contains_budget_error`'s sub-error recursion is untested.**
+    The `|| err.sub_errors().iter().any(contains_budget_error)` arm
+    is mutation-survivable: no test drives a *compound* error (both
+    branches of an unresolved-test conditional failing, one with a
+    budget exceedance) through a suppression site, e.g.
+    `Session.Flag or (('A' * 10000000 if Session.Flag2 else int('nope')) == 'x')`.
+    Deleting the recursion leaves the suite green. One test in
+    `test_memory.rs` closes it.
+14. **Small cleanups from the independent review.** (a) `FsEval`'s
+    struct docs and `specs/model/validation.md` cite a "Path
+    Parameters section" of `specs/model/job-creation.md` that has no
+    such heading — point at the actual section. (b)
+    `specs/cli/summary.md` does not mention that `summary` now carries
+    the CLI caller limits and a template-derived context into
+    `create_job` (`run.md` does). (c) The sessions integration test
+    `test_session_scenarios.rs` still hand-rolls its `create_job`
+    context the pre-#407 way; works, but should use
+    `default_validation_context()` like every other caller. (d) The
+    missing-extension check in `create_job` iterates
+    `ModelExtension::ALL`; iterating the template profile's own
+    extension set would be exhaustive by construction if a future
+    variant were ever omitted from `ALL`.
