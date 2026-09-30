@@ -686,8 +686,9 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 4, 6, 8, 11, 18, 20, 21, 22.
-**Closed:** 2 (dropped), 3, 5, 7, 9, 10, 12, 13, 14, 15, 16, 17, 19.
+**Open:** 1, 4, 6, 8, 11, 18.
+**Closed:** 2 (dropped), 3, 5, 7, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20,
+21, 22, 23.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -991,7 +992,7 @@ PR [#417](https://github.com/OpenJobDescription/openjd-rs/pull/417).
 The audit approved the branch with no
 regressions and independently re-derived every claimed figure; these are
 what it found beyond the branch's scope. Item 19 was fixed in the PR
-itself; items 20–22 were not touched by it and remain open.
+itself; items 20–22 followed in PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418).
 
 19. ~~**`eval_compare` released each operand twice.** It passed
     *clones* of its operands to dispatch — which releases what it is
@@ -1016,7 +1017,7 @@ itself; items 20–22 were not touched by it and remain open.
     fails on the pre-fix code, which wrongly fit. Item 17's fix is what
     surfaced it: with dispatch releasing on both paths, the manual
     releases became visibly redundant.
-20. **`eval_node`'s coercion changes a value's size without
+20. ~~**`eval_node`'s coercion changes a value's size without
     re-accounting.** `eval_node` coerces a child's result toward the
     target type after `evaluate_inner` returns, but the tracked size is
     the *pre*-coercion value's while every later `release` uses the
@@ -1029,8 +1030,18 @@ itself; items 20–22 were not touched by it and remain open.
     existed in `eval_call`'s argument release. Fix at the root: in
     `eval_node`, release the un-coerced value and track the coerced
     one. Small in magnitude, but it is the last place the two sides of
-    the ledger can disagree about a value's size.
-21. **`eval_attribute` launders budget errors into value errors.** Its
+    the ledger can disagree about a value's size.~~ **Resolved** (PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)) — fixed at the root as
+    proposed: `eval_node` releases the value as the child tracked it,
+    coerces, and tracks the coerced value. This also turned out to be
+    where a materialized `range_expr` meets the memory limit: coerced
+    toward `list[int]`, the few-dozen-byte range was the only thing ever
+    charged, and the materialized list was not. Pinned both ways —
+    `range_expr('1-100000')` under a `list[int]` target now fails at
+    800064 (the list alone), and a `join` over a coerced
+    `range(2000)` with a 1 MB string held fails at 1509153 where the
+    under-count let it fit. `eval_call` needed no change: its release
+    uses the coerced size, which now matches what was tracked.
+21. ~~**`eval_attribute` launders budget errors into value errors.** Its
     two fallback arms (`Err(_) =>` on the base lookup and on the
     property dispatch) turn *any* error — including an
     `OperationLimitExceeded` from dispatch's `count_op` or a
@@ -1040,11 +1051,68 @@ itself; items 20–22 were not touched by it and remain open.
     swallowed. Pre-existing; flagged by the #410 audit and deferred to
     item 11's operator pass, and item 12's "resolved" text explicitly
     excludes it. Fix shape: match `contains_budget_error` in both arms
-    and propagate; or route the fallbacks through `eval_speculative`.
-22. **`eval_subscript`'s slice path releases untracked placeholders.**
+    and propagate; or route the fallbacks through `eval_speculative`.~~
+    **Resolved** (PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)) — the
+    first fix shape: both arms gain an
+    `Err(e) if contains_budget_error(&e) => Err(e)` guard ahead of the
+    rewrite, so the diagnostics are unchanged for value errors and a
+    budget exceedance propagates as itself. Five tests: each arm
+    propagates a memory error at the top level with the caret where the
+    rewritten error would have put it, each is *not* absorbed by an
+    enclosing `or` past an unresolved operand, and a control that a
+    genuine value error is still rewritten and still absorbable.
+    `specs/expr/evaluator.md` documents the exemption in the Attribute
+    section and cross-references it from Speculative evaluation as the
+    dependency it is. The independent audit of the branch then found
+    the "only remaining way" framing — repeated in the first commit and
+    its spec text — was wrong: `eval_call`'s "is a property, not a
+    method" rewrite of a failed method call laundered budget errors
+    the same way. Unreachable with the default library (no method
+    shares a name with a property), reproduced with a custom one. Fixed
+    in a second commit with the same guard, pinned by a custom-library
+    test, and the spec now names both rewrite sites.
+22. ~~**`eval_subscript`'s slice path releases untracked placeholders.**
     Missing slice bounds are passed to dispatch as `ExprValue::Null`
     placeholders that were never tracked; dispatch releases 64 bytes
     for each. A small under-count per slice with omitted bounds,
     pre-existing, now on the error path too. Fix: track the
     placeholders when they are created, or exclude them from the
-    dispatch's input-size sum.
+    dispatch's input-size sum.~~ **Resolved** (PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)) — tracked when created. One
+    pinned figure moved by exactly the two placeholders in `[::-1]`
+    (128000160 → 128000288). Fixing it exposed a sibling not in the
+    write-up: the slice's two unresolved early exits (unresolved
+    receiver, or any unresolved bound) tracked a type-only result and
+    left the receiver and bounds charged — on a success path, where no
+    absorbing construct resets the footprint — so
+    `len(('A' * 1000000)[Session.Start:]) + len('B' * 600000)` failed a
+    1.5 MB limit with the discarded 1 MB string still on the books.
+    Both exits now release the four operands before tracking the
+    result. Pinned by two tests, one per direction.
+
+Item 23 comes from the independent audit of PR
+[#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)
+(items 20–22), which approved the change and noted this as pre-existing
+and out of its original scope; it was folded into the same PR.
+
+23. ~~**`slice_string` allocates outside the budget.** The string slice
+    implementation (`functions/comparison.rs`) collected the input into
+    a `Vec<char>` (4 bytes per character) and an index `Vec<usize>`
+    (8 per selected element), neither tracked nor pre-checked, then
+    built the result from a filter iterator whose capacity doubled past
+    the actual length (a 1,000,000-character result was tracked at
+    1,048,576). `title()` and `capitalize()` already pre-check their
+    `Vec<char>`; the slice did not.~~ **Resolved** (PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)) — the selected count is now
+    computed arithmetically (`slice_len`, cross-checked against the
+    index walk over a grid of bounds and steps), `min(input bytes,
+    4 × count)` is checked before anything is allocated, the characters
+    are walked straight out of the input with no intermediate vectors,
+    and the buffer is trimmed so the tracked size is exact. `slice_list`
+    gets the same pre-check ahead of its index and element vectors. The
+    grid test also caught `collect_indices` overflowing on a step near
+    `i64::MAX` — a debug-mode panic from
+    `'hello'[1::9223372036854775807]`, pre-existing — which now
+    saturates. Pinned by `string_slice_budgets_result_before_allocating`
+    (2000256: the 1 MB input, three placeholders, and the projected
+    result, coexisting during the call) and the slicing tests for
+    multi-byte and extreme-step cases. Documented under Preflighting
+    Output Budgets in `specs/expr/function-library.md`.
