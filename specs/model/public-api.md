@@ -53,8 +53,8 @@ the flat re-exports of `error::*` and `types::*`.
 
 The structural template types — `template::JobTemplate`,
 `template::EnvironmentTemplate`, `template::StepTemplate`,
-`template::Environment`, `template::EnvironmentScript`,
-`template::EnvironmentActions`, `template::Action`,
+`template::Environment`, `template::RunScope`, `template::EnvironmentScript`,
+`template::EnvironmentActions`, `template::WrapHookScope`, `template::Action`,
 `template::EmbeddedFile`, `template::StepScript`,
 `template::Service`, `template::ServicePort`,
 `template::ServiceReadinessCheck`, `template::ServiceRestartPolicy`,
@@ -263,13 +263,106 @@ impl JobTemplate {
 ```rust
 pub struct EnvironmentTemplate {
     pub specification_version: String,
+    /// `$schema` — ignored, as on the Job Template.
+    pub schema: Option<String>,
     pub extensions: Option<Vec<ExtensionName>>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
-    pub environment: template::Environment,
+    /// Optional since RFC 0009: at least one of `environment` or
+    /// `services` must be present (enforced by validation).
+    pub environment: Option<template::Environment>,
+    /// RFC 0009 — requires the `SERVICE` extension; same list
+    /// constraints as `jobServices`.
+    pub services: Option<Vec<template::Service>>,
 }
 
 impl EnvironmentTemplate {
-    pub fn environment(&self) -> &template::Environment;
+    pub fn environment(&self) -> Option<&template::Environment>;
+    /// Empty when `services` is absent.
+    pub fn services(&self) -> &[template::Service];
+}
+```
+
+### Environments
+
+```rust
+pub struct template::Environment {
+    pub name: String,
+    pub description: Option<Description>,
+    /// RFC 0009 `runScope` — requires the `SERVICE` extension. Plain
+    /// strings so an unrecognized `<RunScopeName>` is a path-annotated
+    /// validation error; query through `runs_in`.
+    pub run_scope: Option<Vec<String>>,
+    pub script: Option<template::EnvironmentScript>,
+    pub variables: Option<HashMap<String, FormatString>>,
+}
+
+impl template::Environment {
+    /// Entered in Sessions of `kind`? Every kind when `runScope` is
+    /// absent, else exactly the kinds named; unknown names never match.
+    pub fn runs_in(&self, kind: RunScope) -> bool;
+    /// The kinds this Environment is entered in, in `RunScope::ALL` order.
+    pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_;
+}
+
+/// §4 item 3 `<RunScopeName>`: a kind of Session (RFC 0009).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum template::RunScope {
+    Task,     // "TASK"
+    Service,  // "SERVICE"
+}
+
+impl template::RunScope {
+    pub const ALL: [RunScope; 2];   // [Task, Service]
+    pub fn as_str(&self) -> &'static str;
+}
+impl Display for template::RunScope;
+impl FromStr for template::RunScope { type Err = String; }
+
+pub struct template::EnvironmentScript {
+    pub let_bindings: Option<Vec<String>>,
+    pub actions: template::EnvironmentActions,
+    pub embedded_files: Option<Vec<template::EmbeddedFile>>,
+}
+
+pub struct template::EnvironmentActions {
+    pub on_enter: Option<template::Action>,
+    /// RFC 0008 — require `WRAP_ACTIONS`.
+    pub on_wrap_env_enter: Option<template::Action>,
+    pub on_wrap_task_run: Option<template::Action>,
+    pub on_wrap_env_exit: Option<template::Action>,
+    /// RFC 0009 — require both `WRAP_ACTIONS` and `SERVICE`.
+    pub on_wrap_service_enter: Option<template::Action>,
+    pub on_wrap_service_run: Option<template::Action>,
+    pub on_wrap_service_readiness_check: Option<template::Action>,
+    pub on_wrap_service_exit: Option<template::Action>,
+    pub on_exit: Option<template::Action>,
+}
+
+impl template::EnvironmentActions {
+    pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    /// onExit/onWrapEnvExit/onWrapServiceExit → Some(300);
+    /// onWrapServiceReadinessCheck → Some(30); anything else → None.
+    pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
+    /// The four RFC 0009 hooks, in lifecycle order.
+    pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<template::Action>); 4];
+    pub fn has_any_service_wrap_hook(&self) -> bool;
+    // Shared helpers (also on job::EnvironmentActions, with 5 slots / 3 hooks there):
+    pub fn named_slots(&self) -> [(&'static str, &Option<template::Action>); 9];
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &template::Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &template::Action>;
+    pub fn wrap_hooks(&self) -> [(&'static str, &Option<template::Action>, WrapHookScope); 7];
+    pub fn has_any_action(&self) -> bool;
+    pub fn has_any_wrap_hook(&self) -> bool;
+}
+
+/// The companion template variables a wrap hook exposes beside `WrappedAction.*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum template::WrapHookScope {
+    EnvName,   // `WrappedEnv.Name`  — onWrapEnvEnter, onWrapEnvExit
+    StepName,  // `WrappedStep.Name` — onWrapTaskRun
+    Service,   // `WrappedService.*` — the onWrapService* hooks (RFC 0009)
 }
 ```
 
@@ -376,7 +469,8 @@ impl template::ServiceActions {
 
 All derive `Debug, Clone, Deserialize` with `#[serde(rename_all = "camelCase",
 deny_unknown_fields)]`. There are no `job::*` counterparts yet: job creation does not
-instantiate Services in this milestone.
+instantiate Services, and `job::Environment` / `job::EnvironmentActions` do not yet carry
+`runScope` or the `onWrapService*` hooks (`convert_environment` drops them).
 
 ### Job Parameter Definitions
 

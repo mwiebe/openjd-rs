@@ -10,7 +10,7 @@
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
-//! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
+//! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008; RFC 0009 Service hooks)
 //! - Pass 11: SERVICE (validate or reject, RFC 0009)
 
 mod feature_bundle_1;
@@ -247,16 +247,25 @@ pub fn validate_environment_template(
         }
     }
 
-    // Validate the environment
-    let env = &et.environment;
-    let env_path = vec![crate::error::PathElement::Field("environment".into())];
-    if env.script.is_none() && env.variables.is_none() {
+    // §1.2: at least one of `environment` or `services` must be provided.
+    if et.environment.is_none() && et.services.is_none() {
         errors.add(
-            &env_path,
-            "must have at least one of 'script' or 'variables'.".to_string(),
+            &[],
+            "must define at least one of 'environment' or 'services'.",
         );
     }
-    structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
+
+    // Validate the environment
+    if let Some(env) = &et.environment {
+        let env_path = vec![crate::error::PathElement::Field("environment".into())];
+        if env.script.is_none() && env.variables.is_none() {
+            errors.add(
+                &env_path,
+                "must have at least one of 'script' or 'variables'.".to_string(),
+            );
+        }
+        structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
+    }
 
     // Pass 7: FEATURE_BUNDLE_1 (validate or reject)
     feature_bundle_1::validate_feature_bundle_1_environment_template(et, ctx, &mut errors);
@@ -264,13 +273,13 @@ pub fn validate_environment_template(
     // Pass 8: Format strings (base or EXPR profile)
     format_strings::validate_format_strings_environment_template(et, ctx, &mut errors);
 
-    // WRAP_ACTIONS gating (RFC 0008)
+    // WRAP_ACTIONS gating (RFC 0008), including the RFC 0009 Service hooks
+    // and the hooks-follow-runScope rule.
     wrap_actions::validate_wrap_actions_environment_template(et, ctx, &mut errors);
 
-    // SERVICE's EXPR prerequisite (RFC 0009). The Environment Template's
-    // `services` list is not modeled yet; declaring the extension alone is
-    // still subject to the prerequisite.
-    service::check_expr_prerequisite(ctx, &mut errors);
+    // SERVICE (validate or reject, RFC 0009): the `services` list, the
+    // Environment's `runScope`, and the EXPR prerequisite.
+    service::validate_services_environment_template(et, &limits, &rules, ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

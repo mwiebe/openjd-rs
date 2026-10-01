@@ -47,7 +47,7 @@ pub use expr_parameters::{
 // step
 pub use step::{SimpleAction, StepDependency, StepScript, StepTemplate};
 // environment
-pub use environment::{EmbeddedFile, Environment, EnvironmentScript};
+pub use environment::{EmbeddedFile, Environment, EnvironmentScript, RunScope};
 // service (SERVICE extension, RFC 0009)
 pub use service::{
     CompletedTasksPolicy, Service, ServiceActions, ServicePort, ServiceReadinessCheck,

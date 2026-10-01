@@ -198,7 +198,24 @@ pub struct EnvironmentActions {
     pub on_exit: Option<Action>,
 }
 
-crate::template::impl_environment_actions_helpers!(EnvironmentActions, Action);
+// The job-side struct carries the RFC 0008 hooks only: the RFC 0009
+// `onWrapService*` hooks and `runScope` are template-side until job creation
+// of Services lands.
+crate::template::impl_environment_actions_helpers!(
+    EnvironmentActions, Action,
+    slots: [
+        ("onEnter", on_enter),
+        ("onWrapEnvEnter", on_wrap_env_enter),
+        ("onWrapTaskRun", on_wrap_task_run),
+        ("onWrapEnvExit", on_wrap_env_exit),
+        ("onExit", on_exit),
+    ],
+    wrap_hooks: [
+        ("onWrapEnvEnter", on_wrap_env_enter, EnvName),
+        ("onWrapTaskRun", on_wrap_task_run, StepName),
+        ("onWrapEnvExit", on_wrap_env_exit, EnvName),
+    ]
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

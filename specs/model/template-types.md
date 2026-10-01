@@ -47,11 +47,24 @@ an empty slice when `parameter_definitions` is `None`.
 ```rust
 pub struct EnvironmentTemplate {
     pub specification_version: String,
+    pub schema: Option<String>,                              // $schema, ignored
     pub extensions: Option<Vec<ExtensionName>>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
-    pub environment: Environment,
+    pub environment: Option<Environment>,                    // optional since RFC 0009
+    pub services: Option<Vec<Service>>,                      // SERVICE extension (RFC 0009)
+}
+
+impl EnvironmentTemplate {
+    pub fn environment(&self) -> Option<&Environment>;
+    pub fn services(&self) -> &[Service];   // empty when `services` is absent
 }
 ```
+
+An Environment Template defines an Environment, a list of Services (§1.2 item 6, §1.2.2
+"external Services"), or both; validation rejects a document that defines neither. `services`
+has the same list constraints as a Job Template's `jobServices` and is validated by the same
+code (pass 11). `environment` is `Option` on the wire too: an explicit `environment: null` is
+"not provided". The `$schema` property is accepted and ignored, as on the Job Template.
 
 ## StepTemplate (§3)
 
@@ -110,10 +123,46 @@ pub struct StepDependency {
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
+    pub run_scope: Option<Vec<String>>,       // runScope; SERVICE extension (RFC 0009)
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
+
+impl Environment {
+    /// §4 item 3: entered in Sessions of `kind`? Every kind when `runScope` is
+    /// absent; else exactly the kinds the list names (unknown names never match).
+    pub fn runs_in(&self, kind: RunScope) -> bool;
+    /// The kinds this Environment is entered in, in `RunScope::ALL` order.
+    pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_;
+}
 ```
+
+### RunScope (§4 item 3 `<RunScopeName>`, `SERVICE` extension, RFC 0009)
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RunScope {
+    Task,     // "TASK" — Sessions that run Tasks
+    Service,  // "SERVICE" — Service Sessions
+}
+
+impl RunScope {
+    pub const ALL: [RunScope; 2];          // schema order: Task, Service
+    pub fn as_str(&self) -> &'static str;
+}
+impl Display for RunScope;                 // the schema spelling
+impl FromStr for RunScope;                 // Err(String) names the unknown value
+```
+
+`runScope` is held on `Environment` as `Option<Vec<String>>` rather than `Option<Vec<RunScope>>`
+for the same reason `Service::name` is a plain `String`: the spec requires an unrecognized
+`<RunScopeName>` to be rejected, and holding the raw text lets pass 11 report it with the
+element's path (`runScope[i]`) instead of as a serde `unknown variant` error with no path.
+Consumers query the effective scope through `runs_in`, so later milestones (Session kind
+dispatch in the sessions runtime, the `Service.*` scope exclusion in pass 8) never re-derive
+the "absent means every kind" rule. `RunScope` itself derives serde with the schema spelling so
+the job-side types can carry it when job creation of Services lands.
 
 ### EnvironmentScript (§4.1)
 
@@ -143,8 +192,8 @@ pub struct EmbeddedFile {
 A Service is a long-lived process with named TCP ports that a scheduler starts before any
 Task in its scope is scheduled and keeps running for the lifetime of its scope: the Job for a
 `jobServices` entry, the declaring Step for a `stepServices` entry. The types below are the
-unresolved template shapes. The `Service.*` format-string scope, `<Environment>.runScope`,
-the Environment Template `services` list, and job creation of Services are not modeled yet.
+unresolved template shapes. The `Service.*` format-string scope, the `WrappedService.*`
+wrap-hook variables, and job creation of Services are not modeled yet.
 
 ```rust
 pub struct Service {
@@ -289,9 +338,54 @@ pub struct StepActions {
 
 pub struct EnvironmentActions {
     pub on_enter: Option<Action>,
+    pub on_wrap_env_enter: Option<Action>,             // WRAP_ACTIONS (RFC 0008)
+    pub on_wrap_task_run: Option<Action>,              // WRAP_ACTIONS (RFC 0008)
+    pub on_wrap_env_exit: Option<Action>,              // WRAP_ACTIONS (RFC 0008)
+    pub on_wrap_service_enter: Option<Action>,         // WRAP_ACTIONS + SERVICE (RFC 0009)
+    pub on_wrap_service_run: Option<Action>,           // WRAP_ACTIONS + SERVICE (RFC 0009)
+    pub on_wrap_service_readiness_check: Option<Action>, // WRAP_ACTIONS + SERVICE (RFC 0009)
+    pub on_wrap_service_exit: Option<Action>,          // WRAP_ACTIONS + SERVICE (RFC 0009)
     pub on_exit: Option<Action>,
 }
+
+impl EnvironmentActions {
+    pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    /// §5 timeout table: onExit/onWrapEnvExit/onWrapServiceExit → Some(300),
+    /// onWrapServiceReadinessCheck → Some(30), every other slot → None.
+    pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
+    /// The four RFC 0009 hooks, in lifecycle order.
+    pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<Action>); 4];
+    pub fn has_any_service_wrap_hook(&self) -> bool;
+
+    // Generated by `impl_environment_actions_helpers!` (shared with job::EnvironmentActions):
+    pub fn named_slots(&self) -> [(&'static str, &Option<Action>); 9];   // declaration order
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &Action>;
+    pub fn wrap_hooks(&self) -> [(&'static str, &Option<Action>, WrapHookScope); 7];
+    pub fn has_any_action(&self) -> bool;
+    pub fn has_any_wrap_hook(&self) -> bool;   // the definition of a *wrapping* Environment
+}
+
+pub enum WrapHookScope {
+    EnvName,   // `WrappedEnv.Name`  — onWrapEnvEnter, onWrapEnvExit
+    StepName,  // `WrappedStep.Name` — onWrapTaskRun
+    Service,   // `WrappedService.*` — the four onWrapService* hooks (not yet modeled in pass 8)
+}
 ```
+
+The slots are enumerated once per struct in the `impl_environment_actions_helpers!` invocation
+(`slots: [...]`, `wrap_hooks: [...]`); the array lengths above are derived from those lists.
+The job-side `job::EnvironmentActions` is invoked with the five RFC 0008-era slots only — the
+RFC 0009 hooks and `runScope` are template-side until job creation of Services lands, and
+`convert_environment` does not carry them across.
+
+The wrap-hook default timeouts follow the wrapped action: `onWrapEnvExit` takes `onExit`'s 300
+seconds (sessions `env_script.rs`), and by the same rule `onWrapServiceExit` takes
+`<ServiceActions>.onExit`'s 300 seconds and `onWrapServiceReadinessCheck` takes
+`onReadinessCheck`'s 30 seconds. The spec's §5 table lists the `<ServiceActions>` defaults but
+has no rows for the `onWrapService*` hooks; the values here are the analogy, recorded as
+constants for the runtime to consume.
 
 ### CancelationMode
 

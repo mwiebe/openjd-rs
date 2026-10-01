@@ -71,11 +71,15 @@ Currently implements `2023-09` with extensions:
   Re-materialization of the wrap environment's embedded files on each task
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
-- `SERVICE` (RFC 0009) — in progress. The `<Service>` schema (`jobServices`,
-  `stepServices`, and the §9 sub-objects), the extension gating and EXPR
-  prerequisite, and the §9.7 structural checks (items 3–5, 7 as far as they
-  concern Services) are implemented; see [template-types.md](template-types.md)
-  and pass 11 in [validation.md](validation.md). The `Service.*` format-string
-  scope, `<Environment>.runScope`, the `onWrapService*` hooks, Environment
-  Template `services`, and job creation and execution of Services are not
-  yet implemented.
+- `SERVICE` (RFC 0009) — in progress. Implemented: the `<Service>` schema
+  (`jobServices`, `stepServices`, Environment Template `services`, and the
+  §9 sub-objects), the extension gating and EXPR prerequisite, the §9.7
+  structural checks (items 3–7 as far as they concern schema), `<Environment>.runScope`
+  with the `Environment::runs_in` accessor, the four `onWrapService*` hooks and
+  the hooks-follow-`runScope` rule, and the Environment Template root changes
+  (`$schema`, optional `environment`, "at least one of"); see
+  [template-types.md](template-types.md) and passes 10–11 in
+  [validation.md](validation.md). Not yet implemented: the `Service.*`
+  format-string scope and its `runScope` exclusion rule, the `WrappedService.*`
+  wrap-hook variables, format strings inside Services, job-side carriage of
+  `runScope` / the Service hooks, and job creation and execution of Services.

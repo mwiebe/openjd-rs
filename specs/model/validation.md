@@ -40,8 +40,8 @@ short-circuiting), so users see all problems at once.
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
-| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
-| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`) and validate every `<Service>` structurally (RFC 0009, Template Schemas §9) |
+| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule, and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
+| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally, and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
 
 ### Environment template pipeline
 
@@ -49,8 +49,12 @@ short-circuiting), so users see all problems at once.
 omitted (there are no steps, so passes 9's ChunkInt checks and pass 6's step/dependency
 checks have nothing to walk):
 
+- **Root shape (§1.2)** — `EnvironmentTemplate: must define at least one of 'environment' or
+  'services'.` when both are absent (RFC 0009 made `environment` optional). `$schema` is
+  accepted and ignored.
 - **Limits + structure** — parameter-definition count/uniqueness (its own cap,
-  `max_env_template_param_count`), then `validate_single_environment` for the env body.
+  `max_env_template_param_count`), then `validate_single_environment` for the env body when
+  there is one.
 - **Pass 7** — `validate_feature_bundle_1_environment_template`: `endOfLine` on the
   environment's embedded files requires FEATURE_BUNDLE_1.
 - **Pass 8** — `validate_format_strings_environment_template`: the environment body
@@ -67,7 +71,13 @@ checks have nothing to walk):
   variables, action commands/args, and embedded-file data. Embedded-file
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
-- **Pass 10** — WRAP_ACTIONS gating (see below).
+  A services-only document has no environment body, so pass 8 has nothing to walk; format
+  strings inside `services` are not yet validated (see pass 11).
+- **Pass 10** — WRAP_ACTIONS gating (see below), on the environment when there is one.
+- **Pass 11** — SERVICE: the EXPR prerequisite; the `services` list, gated
+  (`services requires the SERVICE extension.`) and otherwise validated by the same
+  `validate_service_list` as `jobServices`, with paths rooted at `services[i]`; and the
+  environment's `runScope`.
 
 ## Pass 5: Limits Enforcement
 
@@ -409,15 +419,47 @@ Validates or rejects features gated behind `TASK_CHUNKING`:
 
 ## Pass 10: WRAP_ACTIONS Gating
 
-Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
+Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008), including the RFC 0009
+Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
 
 - **Wrap hooks** (`onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`): Rejected on any
-  environment when the extension is not declared.
+  environment when the extension is not declared: `<hook> requires the WRAP_ACTIONS
+  extension.` on the hook's path.
+- **Service hooks** (`onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceReadinessCheck`,
+  `onWrapServiceExit`; RFC 0009): require both `WRAP_ACTIONS` and `SERVICE`. The message on
+  the hook's path names what is missing: `<hook> requires the WRAP_ACTIONS extension.`,
+  `<hook> requires the SERVICE extension.`, or `<hook> requires the WRAP_ACTIONS and SERVICE
+  extensions.`
 - **EXPR prerequisite**: `WRAP_ACTIONS` requires `EXPR` to also be declared (the wrap
   mechanism forwards inner-action bytes through the EXPR function library). Declaring
   `WRAP_ACTIONS` without `EXPR` is an error.
-- **All-or-nothing rule**: an environment that defines any one wrap hook must define all
-  three. Defining a partial set is an error.
+- **All-or-nothing rule** (constraint 1; `WRAP_ACTIONS` without `SERVICE`): an environment that
+  defines any one of the three RFC 0008 wrap hooks must define all three. Defining a partial
+  set is an error at the `actions` path: `an environment that defines any of onWrapEnvEnter,
+  onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).` The Service hooks do not
+  take part in this count (each has already been rejected for lacking `SERVICE`).
+- **Hooks follow `runScope`** (constraint 6, §9.7 item 6; `WRAP_ACTIONS` with `SERVICE`,
+  replacing the all-or-nothing rule): a *wrapping* environment — one that defines any wrap hook
+  (`has_any_wrap_hook`) — must define `onWrapEnvEnter` and `onWrapEnvExit`; must define
+  `onWrapTaskRun` iff `runs_in(Task)`; and must define all four `onWrapService*` hooks iff
+  `runs_in(Service)`. The default (absent) `runScope` includes both kinds, so RFC 0008's three
+  hooks alone are incomplete once `SERVICE` is declared; `runScope: [TASK]` is exactly the RFC
+  0008 rule. Each group with missing hooks is one error at the `actions` path naming the
+  required hooks, the `runScope` as written (or `default runScope: every kind of Session`), and
+  the missing ones:
+  - `a wrapping environment must define onWrapEnvEnter and onWrapEnvExit whatever its runScope;
+    missing: <hooks> (RFC 0009).`
+  - `a wrapping environment whose runScope includes TASK (<runScope>) must define onWrapTaskRun;
+    missing: onWrapTaskRun (RFC 0009).`
+  - `a wrapping environment whose runScope includes SERVICE (<runScope>) must define
+    onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit;
+    missing: <hooks> (RFC 0009).`
+
+  Each hook the `runScope` does not call for is one error on the hook's own path: `<hook> must
+  not be defined: this environment's runScope (<runScope>) excludes TASK|SERVICE (RFC 0009).`
+  Unrecognized `runScope` names (rejected by pass 11) never match a kind, so the rule is
+  evaluated over the recognized names only. A non-wrapping environment is not subject to the
+  rule whatever its `runScope`.
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
   wrap hooks. A session's environment stack is the job's `jobEnvironments` plus exactly
   one step's `stepEnvironments`, so this is enforced per step: for every step, the count
@@ -427,27 +469,40 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   on top is reported at that step's `stepEnvironments` path.
 
 The single-layer rule runs only in the job-template path. An environment template defines
-one environment, so the rule is trivially satisfied for an isolated env template; if
+at most one environment, so the rule is trivially satisfied for an isolated env template; if
 separately-validated env templates are composed into a session at assembly time
-(worker-side), the cross-layer constraint must be enforced there.
+(worker-side), the cross-layer constraint must be enforced there. Likewise the §1.2.2 item 3
+rule — a wrapping environment from a document that does not declare `SERVICE` may not have a
+Service placed in its scope — relates documents only the scheduler sees together and is not a
+template-validation check.
 
 ## Pass 11: SERVICE Gating and Structure
 
 Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas §1.1 item 8,
-§3 item 6, §9–§9.7). Error paths are `jobServices[i] -> …` and
-`steps[i] -> stepServices[j] -> …`.
+§1.2 item 6, §3 item 6, §4 item 3, §9–§9.7). Error paths are `jobServices[i] -> …`,
+`steps[i] -> stepServices[j] -> …`, and, in an environment template, `services[i] -> …`.
 
 **Gating (extension not declared):**
 - `jobServices` → `jobServices requires the SERVICE extension.`; `stepServices` →
-  `stepServices requires the SERVICE extension.` The list's contents are not examined.
+  `stepServices requires the SERVICE extension.`; environment-template `services` →
+  `services requires the SERVICE extension.` The list's contents are not examined.
+- `runScope` on any `<Environment>` (`jobEnvironments[i]`, `steps[i] -> stepEnvironments[j]`,
+  or the environment template's `environment`) → `runScope requires the SERVICE extension.`
+  on the `runScope` path. The list's contents are not examined.
 
 **EXPR prerequisite (§9.7 item 7):** declaring `SERVICE` without `EXPR` is an error at
 `extensions`, in both job and environment templates, whether or not any Service is defined:
 ``SERVICE requires EXPR; both must be listed in the template's `extensions` (RFC 0009).``
 
 **With the extension declared:**
-- **Lists** (§1.1 item 8, §3 item 6): each `jobServices`/`stepServices` list `must not be
-  empty.` and `must not contain more than 10 elements.`
+- **Lists** (§1.1 item 8, §1.2 item 6, §3 item 6): each `jobServices`/`stepServices`/`services`
+  list `must not be empty.` and `must not contain more than 10 elements.`
+- **`runScope`** (§4 item 3, §9.7 item 3): `must not be empty.` on the `runScope` path; on each
+  offending element's path (`runScope[i]`), `unknown run scope name '<name>'; expected one of
+  TASK, SERVICE.` (names are case-sensitive) or `duplicate run scope name '<name>'.` The
+  companion rule that an Environment whose `runScope` includes `SERVICE` must not reference
+  `Service.*` (§4 item 3.2, §9.7 item 2) belongs to the format-string pass and is not yet
+  implemented.
 - **Name uniqueness** (§9.7 item 5): `duplicate service name: '<name>'` on the offending
   element, for a repeat within a list and for a Step Service that shares a name with a Job
   Service. Different Steps may reuse a Step Service name.
@@ -478,9 +533,10 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 The discriminator of `readinessCheck` and the `completedTasks` enum are enforced by serde
 (`unknown variant`), as is the presence of `ports`, `script`, and `onRun`.
 
-Not in this pass: `Service.*` scope rules (§9.7 items 1–2), `runScope` (item 3), the wrap
-hooks an Environment's `runScope` calls for (item 6), `let` bindings and format strings inside
-a Service (pass 8 does not yet walk Services), and job creation of Services.
+Not in this pass: `Service.*` scope rules (§9.7 items 1–2; pass 8, not yet implemented), the
+wrap hooks an Environment's `runScope` calls for (item 6; pass 10), `let` bindings and format
+strings inside a Service (pass 8 does not yet walk Services, in either template), and job
+creation of Services.
 
 ## Error Infrastructure
 

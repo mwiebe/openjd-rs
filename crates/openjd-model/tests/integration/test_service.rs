@@ -22,9 +22,11 @@
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
 //!    into `tests/fixtures/rfc0009/`.
 //!
-//! The `Service.*` format-string scope, `runScope`, and Environment Template
-//! `services` are later milestones; the tests that need them are `#[ignore]`d
-//! with the reason, rather than loosening validation.
+//! The `Service.*` format-string scope is a later milestone; the tests that
+//! need it are `#[ignore]`d with the reason, rather than loosening
+//! validation. `<Environment>.runScope`, the `onWrapService*` hooks, and the
+//! Environment Template root changes are covered in
+//! `test_service_environments.rs`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
@@ -1580,11 +1582,14 @@ fn rfc_example_per_step_coordinator_verbatim() {
     );
 }
 
-// TODO(RFC 0009, Environment Template milestone): the Environment Template
-// `services:` list and `<Environment>.runScope` are not modeled yet, so this
-// document fails to deserialize (`unknown field `runScope``).
+// TODO(RFC 0009, `Service.*` scope milestone): the Environment Template's
+// `services:` list and `<Environment>.runScope` now decode and validate, but
+// the Environment's `variables` reference `{{ Service.Cache.main.connectAddress }}`
+// and `{{ Service.Cache.main.port }}`, which the format-string pass rejects
+// as undefined variables until the `Service.*` scope exists. Un-ignore once
+// the scope is implemented; do not loosen validation to make this pass.
 #[test]
-#[ignore = "RFC 0009 Environment Template services/runScope are a later milestone"]
+#[ignore = "RFC 0009 Service.* format-string scope is a later milestone"]
 fn rfc_example_queue_cache_environment_verbatim() {
     decode_environment_template(
         yaml_val(RFC_QUEUE_CACHE_ENV),
@@ -1592,6 +1597,23 @@ fn rfc_example_queue_cache_environment_verbatim() {
         &CallerLimits::default(),
     )
     .expect("expected successful decode");
+}
+
+/// Pins the reason the verbatim fixture above is still ignored: the only
+/// remaining errors are the two `Service.*` references in the Environment's
+/// `variables`. Everything else in the document — `services`, `runScope`,
+/// `$schema`-less root, FEATURE_BUNDLE_1 `min` — validates.
+#[test]
+fn rfc_example_queue_cache_environment_blocked_only_by_service_scope() {
+    expect_env_err(
+        RFC_QUEUE_CACHE_ENV,
+        SERVICE_EXTS,
+        &[
+            "2 validation errors for EnvironmentTemplate\n",
+            "environment -> variables -> VALKEY_HOST:\n\tFailed to parse interpolation expression at [0, 39]. Undefined variable: 'Service.Cache.main.connectAddress'.",
+            "environment -> variables -> VALKEY_PORT:\n\tFailed to parse interpolation expression at [0, 29]. Undefined variable: 'Service.Cache.main.port'.",
+        ],
+    );
 }
 
 #[test]
