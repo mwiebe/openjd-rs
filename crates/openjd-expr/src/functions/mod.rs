@@ -7,6 +7,7 @@
 pub mod arithmetic;
 pub mod comparison;
 pub mod conversion;
+pub mod host_port;
 pub mod list;
 pub mod math;
 pub mod misc;

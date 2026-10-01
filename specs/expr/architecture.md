@@ -57,6 +57,7 @@ src/
     ├── mod.rs              Sub-library re-exports
     ├── arithmetic.rs       +, -, *, /, //, %, **, unary +/-
     ├── string.rs           String methods and operations
+    ├── host_port.rs        join_host_port, split_host_port, is_ipv4, is_ipv6
     ├── path.rs             Path properties and methods
     ├── path_parse.rs       Format-aware path parsing (sep, split, parts, etc.)
     ├── regex.rs            re_match, re_search, re_findall, re_sub, re_escape, re_split

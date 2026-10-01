@@ -1489,9 +1489,9 @@ impl std::error::Error for ExpressionError;   // source() returns &kind
 ## Function Implementations (`functions::*`)
 
 Accessible via module paths like `openjd_expr::functions::arithmetic::add_int`.
-Every submodule (`arithmetic`, `comparison`, `conversion`, `list`,
-`math`, `misc`, `path`, `path_parse`, `regex`, `repr`, `string`) is
-public. The implementations have the shape required by `FunctionImpl`:
+Every submodule (`arithmetic`, `comparison`, `conversion`, `host_port`,
+`list`, `math`, `misc`, `path`, `path_parse`, `regex`, `repr`, `string`)
+is public. The implementations have the shape required by `FunctionImpl`:
 
 ```rust
 pub fn <name>(

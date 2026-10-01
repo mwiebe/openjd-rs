@@ -521,11 +521,15 @@ the default library category modules (see `default_library.rs`).
 
 ## Function Coverage
 
-200 Rust signatures registered in `default_library.rs`. All function names from the
-specification are present. Some per-type overloads use generic `T1` signatures where
-the specification spells out per concrete type (e.g., `repr_pwsh` has separate
-signatures for string, int, float, bool, path, range_expr, list in the spec but uses
-generic `T1` in Rust).
+228 Rust signatures registered in `default_library.rs` (counted over
+`FunctionLibrary::for_profile(&ExprProfile::current())`). All function names from the
+specification are present, including the `join_host_port` / `split_host_port` /
+`is_ipv4` / `is_ipv6` family that the `SERVICE` extension (RFC 0009) adds to §2.2.4;
+those four are registered alongside the other string functions in
+`string_functions()` and implemented in `functions/host_port.rs`. Some per-type
+overloads use generic `T1` signatures where the specification spells out per concrete
+type (e.g., `repr_pwsh` has separate signatures for string, int, float, bool, path,
+range_expr, list in the spec but uses generic `T1` in Rust).
 
 ## Function Semantics
 
@@ -590,6 +594,31 @@ sections 2.1 (Operators) and 2.2 (Built-in Functions). Key implementation choice
   ≥ 3.8 semantics) and lowercases the rest. Both apply the Final_Sigma
   context rule when lowering U+03A3 (via the `CASED` and `CASE_IGNORABLE`
   tables), which Rust's context-free `char::to_lowercase` cannot express.
+- **Host and port functions** (`join_host_port`, `split_host_port`, `is_ipv4`,
+  `is_ipv6`, §2.2.4; added by RFC 0009) follow Go's `net.JoinHostPort` and
+  `net.SplitHostPort` with the two deviations the spec requires. `join_host_port`
+  brackets the host when it contains a colon and is not already wrapped in a
+  matching `[`…`]` pair, so `"[2001:db8::5]"` is not bracketed again; the port is
+  formatted from its `int` value without range validation; a `%zone` suffix is
+  carried through verbatim. `split_host_port` finds the port after the *last*
+  colon. It returns `null` (not an error) when there is no port: no colon at all,
+  a `[host]` with nothing after `]`, or an unbracketed host containing more than
+  one colon (a bare IPv6 literal). Malformed brackets are an evaluation error whose
+  message quotes the input: a `[` with no `]` (`missing ']'`), characters between
+  `]` and the port's `:` (`unexpected characters after ']'`), a `]:` followed by a
+  further colon (`too many colons`), or a `[`/`]` anywhere else
+  (`unexpected '[' or ']'`). Brackets are stripped from the returned host, the
+  port element is returned as an unvalidated string (so `"host:"` splits to
+  `["host", ""]` as in Go), and the result list is `list[string]`; the signature's
+  `list[string]?` return type makes `split_host_port(S)` with an unresolved `S`
+  evaluate to `unresolved[list[string]?]`. `is_ipv4` is `std::net::Ipv4Addr`
+  parsing (dotted quad only; leading-zero octets are rejected). `is_ipv6` strips
+  one matching pair of brackets and a non-empty `%zone` suffix, then uses
+  `std::net::Ipv6Addr` parsing, so `"::1"`, `"[::1]"`, `"fe80::1%eth0"` and
+  `"[fe80::1%eth0]"` are all `true` while `"[::1]:80"` and `"fe80::1%"` are
+  `false`. All four count string operations proportional to the input length;
+  `join_host_port` reserves its output budget before formatting and
+  `split_host_port` builds its list through `make_list_checked`.
 - **Regex functions** reject lookahead, lookbehind, backreferences, and `\Z` (§2.2.5).
   Validation parses the pattern with `regex_syntax`, rather than a substring
   scan. This correctly ignores lookaround-shaped syntax that appears inside

@@ -500,6 +500,26 @@ fn string_functions() -> FunctionLibrary {
         .expect("bad builtin signature");
     lib.register_sig("rjust", "(string, int) -> string", rjust_fn)
         .expect("bad builtin signature");
+    // Host/port functions (§2.2.4, added by the SERVICE extension).
+    {
+        use crate::functions::host_port::*;
+        lib.register_sig(
+            "join_host_port",
+            "(string, int) -> string",
+            join_host_port_fn,
+        )
+        .expect("bad builtin signature");
+        lib.register_sig(
+            "split_host_port",
+            "(string) -> list[string]?",
+            split_host_port_fn,
+        )
+        .expect("bad builtin signature");
+        lib.register_sig("is_ipv4", "(string) -> bool", is_ipv4_fn)
+            .expect("bad builtin signature");
+        lib.register_sig("is_ipv6", "(string) -> bool", is_ipv6_fn)
+            .expect("bad builtin signature");
+    }
     lib
 }
 
@@ -1094,8 +1114,11 @@ mod tests {
             "isdigit",
             "islower",
             "isspace",
+            "is_ipv4",
+            "is_ipv6",
             "isupper",
             "join",
+            "join_host_port",
             "len",
             "list",
             "ljust",
@@ -1130,6 +1153,7 @@ mod tests {
             "rstrip",
             "sorted",
             "split",
+            "split_host_port",
             "startswith",
             "string",
             "strip",
