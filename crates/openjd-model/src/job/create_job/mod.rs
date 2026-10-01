@@ -25,6 +25,7 @@ use crate::types::{JobParameterValues, ValidationContext};
 pub use external::{
     apply_environment_templates, AppliedEnvironmentTemplates, AttachedEnvironmentTemplate,
 };
+pub(crate) use instantiate::collect_env_accessed_symbols;
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
 };

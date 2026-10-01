@@ -75,6 +75,8 @@ mod test_service;
 mod test_service_early_validation;
 #[path = "integration/test_service_environments.rs"]
 mod test_service_environments;
+#[path = "integration/test_service_environments_list.rs"]
+mod test_service_environments_list;
 #[path = "integration/test_service_external.rs"]
 mod test_service_external;
 #[path = "integration/test_service_job_creation.rs"]

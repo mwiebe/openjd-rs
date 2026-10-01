@@ -13,7 +13,7 @@
 
 use super::actions::Action;
 use super::constrained_strings::Description;
-use super::environment::EmbeddedFile;
+use super::environment::{EmbeddedFile, Environment};
 use super::host_requirements::HostRequirements;
 use crate::format_string::FormatString;
 use serde::Deserialize;
@@ -41,6 +41,15 @@ pub struct Service {
     /// Requirements the service host must satisfy. Independent of the
     /// `hostRequirements` of any Step whose Tasks use the Service.
     pub host_requirements: Option<HostRequirements>,
+    /// §9 item 5 Environments entered only in this Service's Session — the
+    /// analogue of a Step's `stepEnvironments` — in order, after the
+    /// Environments of the Service's scope and before `onEnter`, and exited
+    /// in reverse after `onExit`. Their format strings have the declaring
+    /// Service's own `Service.*` scope (including `bindAddress`). Names are
+    /// unique within the list and distinct from the Job Environments and,
+    /// for a Step Service, the Step's Step Environments; `runScope` must not
+    /// be provided (the effective scope is `[SERVICE]`).
+    pub service_environments: Option<Vec<Environment>>,
     /// §9.2 The named TCP ports the Service exposes: 1–10 entries with
     /// unique names.
     pub ports: Vec<ServicePort>,
@@ -477,6 +486,24 @@ script:
         assert_eq!(ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS, 300);
         assert_eq!(ServiceReadinessCheck::DEFAULT_COMMAND_INTERVAL_SECONDS, 5);
         assert_eq!(ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS, 0);
+    }
+
+    #[test]
+    fn service_environments_parse_in_order() {
+        let svc = parse(&format!(
+            "{MINIMAL}serviceEnvironments:\n  - name: Conda\n    variables: {{ A: b }}\n  - name: Wrap\n    runScope: [SERVICE]\n    script:\n      actions:\n        onEnter: {{ command: x }}\n"
+        ));
+        let envs = svc.service_environments.as_ref().unwrap();
+        assert_eq!(envs.len(), 2);
+        assert_eq!(envs[0].name, "Conda");
+        assert!(envs[0].run_scope.is_none());
+        assert_eq!(envs[1].name, "Wrap");
+        // Parsed as any <Environment>; validation rejects runScope here.
+        assert_eq!(
+            envs[1].run_scope.as_deref(),
+            Some(&["SERVICE".to_string()][..])
+        );
+        assert!(parse(MINIMAL).service_environments.is_none());
     }
 
     #[test]
