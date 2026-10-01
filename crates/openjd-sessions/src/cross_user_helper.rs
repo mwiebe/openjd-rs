@@ -21,7 +21,6 @@ use crate::logging::LogContent;
 /// Maximum bytes for a single JSON response line from the helper's stdout.
 /// Matches the helper binary's own `MAX_LINE_LENGTH` (128 KB).
 pub(crate) const MAX_RESPONSE_LINE_LENGTH: usize = 128 * 1024;
-use crate::session_log;
 use crate::session_user::SessionUser;
 
 /// Length of the shared auth token in characters.
@@ -569,6 +568,10 @@ pub(crate) async fn run_via_helper(
     // Resolution failures come back over the protocol as an error response
     // and are mapped to SessionError::SubprocessStart below.
     let args = &config.args;
+    // Attribute every record about this action to it when it runs
+    // concurrently with another action (RFC 0009 rule 3); `None` otherwise.
+    let action_tag: Option<String> = filter.action_tag().map(str::to_string);
+    let tag = action_tag.as_deref();
 
     // Build the env map (only set values; unsets are excluded).
     let env: serde_json::Map<String, serde_json::Value> = config
@@ -590,9 +593,10 @@ pub(crate) async fn run_via_helper(
     helper.send_command(&cmd)?;
 
     // Log the actual command (not the helper protocol)
-    session_log!(
+    crate::session_action_log!(
         info,
         session_id,
+        tag,
         LogContent::FILE_PATH | LogContent::PROCESS_CONTROL,
         "Running command {}",
         crate::subprocess::format_command_for_log(args)
@@ -627,9 +631,7 @@ pub(crate) async fn run_via_helper(
                 };
 
                 if let Some(pid) = resp.get("pid").and_then(|v| v.as_i64()) {
-                    session_log!(
-                        info,
-                        session_id,
+                    crate::session_action_log!(info, session_id, tag,
                         LogContent::PROCESS_CONTROL,
                         "Command started as pid: {}",
                         pid
@@ -647,7 +649,7 @@ pub(crate) async fn run_via_helper(
                         &mut saw_fail,
                     );
                     if pass_through && filter.min_log_level() <= 20 {
-                        session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
+                        crate::session_action_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
                     }
                     if config.debug_collect_stdout {
                         stdout_collected.push_str(&display);
@@ -658,9 +660,7 @@ pub(crate) async fn run_via_helper(
 
                 if let Some(code) = resp.get("exited").and_then(|v| v.as_i64()) {
                     let exit_code = code as i32;
-                    session_log!(
-                        info,
-                        session_id,
+                    crate::session_action_log!(info, session_id, tag,
                         LogContent::PROCESS_CONTROL,
                         "Process exit code: {}",
                         exit_code

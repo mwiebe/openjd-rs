@@ -33,7 +33,7 @@ composes a `Session`:
 
 1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
 2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
-3. `svc.launch().await?` — launch `onRun` in the background and start the readiness check.
+3. `svc.launch().await?` — launch `onRun` in the background and start the readiness check (for `COMMAND`, the concurrent `onReadinessCheck` invocations).
 4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, or `ExitedBeforeReady`.
 5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
 6. `svc.end().await` — cancel a running `onRun`, run `onExit`, exit the Environments, delete the working directory.
@@ -49,7 +49,7 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── embedded_files              — EmbeddedFiles, EndOfLine re-export
 ├── error                       — SessionError
 ├── let_bindings                — re-exports openjd_model::evaluate_let_bindings
-├── logging                     — LogContent, session_log!, banner helpers
+├── logging                     — LogContent, session_log!, session_action_log!, banner helpers
 ├── limits                      — SessionLimits (caps + evaluation budgets)
 ├── path_mapping                — re-exported from openjd_expr
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
@@ -89,6 +89,10 @@ pub const session::DEFAULT_CANCEL_NOTIFY_PERIOD_SECS: u64 = 5;
 /// Default `timeout` of a Service's `onExit` (Template Schemas §5 defaults
 /// table: 300 seconds). RFC 0009.
 pub const service_session::SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default `timeout` of one `onReadinessCheck` invocation (RFC 0009
+/// `<ServiceActions>` defaults table: 30 seconds).
+pub const service_session::SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
 ## Entry Points
@@ -607,8 +611,9 @@ pub struct ServiceSession { /* private */ }
 
 impl ServiceSession {
     /// Validate the endpoint assignment (every declared/probed port assigned,
-    /// `endpoints.name == service.name`, readiness type not COMMAND) and
-    /// create the underlying Session (working directory, cross-user helper).
+    /// `endpoints.name == service.name`, a COMMAND check has an
+    /// onReadinessCheck), order the assignment's ports in declaration order,
+    /// and create the underlying Session (working directory, cross-user helper).
     pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError>;
 
     // Accessors
@@ -624,8 +629,10 @@ impl ServiceSession {
     pub fn run_exit(&self) -> Option<ServiceRunExit>;               // None until the instance exits
     pub fn readiness_watch(&self) -> Option<tokio::sync::watch::Receiver<ServiceReadiness>>;
     pub fn exit_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<ServiceRunExit>>>;
-    /// Cancels whichever action of this Session is running (Service or
-    /// Environment) with its own cancelation method.
+    /// Cancels whichever action of this Session is running in its main slot
+    /// (onEnter, onRun, onExit, or an Environment action) with its own
+    /// cancelation method. A concurrent onReadinessCheck invocation runs in
+    /// its own slot and is canceled only by the runtime.
     pub fn cancel_handle(&self) -> SessionCancelHandle;
 
     // Lifecycle
@@ -634,9 +641,13 @@ impl ServiceSession {
     /// <ServiceScript>.let), path mapping, embedded files, `variables`; run
     /// onEnter. Any error → StartFailed (a start failure).
     pub async fn enter(&mut self) -> Result<(), SessionError>;
-    /// Entered | Exited → Running. Launch onRun in the background and start
-    /// the readiness check. In Exited this is a relaunch in the same Session
-    /// (onEnter not re-run, its env vars retained).
+    /// Entered | Exited → Running. Launch onRun (or onWrapServiceRun) in the
+    /// background and start the readiness check; for COMMAND, also start the
+    /// onReadinessCheck driver (sequential invocations, intervalSeconds
+    /// apart, each bounded by the action's timeout, default 30 s). In Exited
+    /// this is a relaunch in the same Session (onEnter not re-run, its env
+    /// vars retained). Err (state unchanged) when a wrap hook's scope cannot
+    /// be built or the check's cross-user helper cannot be spawned.
     pub async fn launch(&mut self) -> Result<(), SessionError>;
     /// enter() → launch() → wait_ready().
     pub async fn start(&mut self) -> Result<ServiceReadiness, SessionError>;
@@ -647,18 +658,31 @@ impl ServiceSession {
     /// Cancel the running onRun with its `cancelation` method (grace capped at
     /// `time_limit`; `Some(0)` = terminate now). `false` if none is running.
     pub fn cancel_run(&self, time_limit: Option<Duration>) -> bool;
-    /// Constraint 7: cancel a running onRun and await it; run onExit (300 s
+    /// Constraint 7: cancel a running onRun and await it (which cancels any
+    /// onReadinessCheck invocation in flight first); run onExit (300 s
     /// default timeout) if defined and any Service action ran; exit the
     /// Environments in reverse; delete the working directory. Every step
     /// runs; the first error is returned. → Ended.
     pub async fn end(&mut self) -> Result<(), SessionError>;
 }
 
-impl Drop for ServiceSession;  // warns when end() was not called; aborts the driver task
+impl Drop for ServiceSession;  // warns when end() was not called; stops the check driver; aborts the onRun driver task
 ```
 
-Not implemented in this milestone: the `COMMAND` readiness type /
-`onReadinessCheck` (rejected by `with_config`) and the `onWrapService*` hooks.
+`ServiceReadiness::Ready { message: None }` is the READY value of a
+`TCP_CONNECT` or `COMMAND` check; only `STDOUT` carries a message.
+
+When the entered Environments include a wrapping Environment (`WRAP_ACTIONS`)
+whose `runScope` includes `SERVICE`, its `onWrapServiceEnter` /
+`onWrapServiceRun` / `onWrapServiceReadinessCheck` / `onWrapServiceExit` run
+in place of the Service's actions (each only when the Service defines the
+corresponding action), with `WrappedAction.*` and `WrappedService.*` in
+scope. See [service-session.md](service-session.md) "Wrap hooks".
+
+Log attribution (RFC 0009 "Concurrency with `onRun`" rule 3): every record
+about `onReadinessCheck` carries the structured field `openjd_action` and the
+message prefix `[onReadinessCheck] ` (or the hook's name when wrapped);
+`onRun`'s records are untagged. See [logging.md](logging.md).
 
 ## Subprocess Results
 
@@ -1080,7 +1104,22 @@ pub fn logging::log_subsection_banner(session_id: &str, title: &str);
 ///   session_log!(info, session_id, LogContent::HOST_INFO, "message {}", arg);
 #[macro_export]
 macro_rules! session_log { /* ... */ }
+
+/// Like `session_log!`, attributing the record to one action of the Session
+/// when `$action: Option<&str>` is `Some`: adds the structured field
+/// `openjd_action = <name>` and prefixes the message with `[<name>] `.
+/// With `None` it is exactly `session_log!`. Used for the Service Session's
+/// `onReadinessCheck`, which runs concurrently with `onRun` (RFC 0009 log
+/// attribution). See logging.md.
+///
+/// Usage:
+///   session_action_log!(info, session_id, Some("onReadinessCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
+#[macro_export]
+macro_rules! session_action_log { /* ... */ }
 ```
+
+Structured fields on every record: `session_id`, `openjd_log_content`,
+`openjd_timestamp_usec`; plus `openjd_action` on attributed records.
 
 ## Error Type
 

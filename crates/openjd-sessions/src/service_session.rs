@@ -6,17 +6,23 @@
 //! A [`ServiceSession`] runs the actions of one `<Service>` on the service
 //! host: it enters the Environments of the Service's scope whose `runScope`
 //! includes `SERVICE`, runs the Service's `onEnter`, launches `onRun` in the
-//! background, applies the readiness check, reports `onRun`'s exit, allows
-//! `onRun` to be relaunched within the same Session, and ends per *How Jobs
-//! Are Run* "Service lifecycle" constraint 7 (cancel the running action, run
-//! `onExit`, exit the Environments in reverse, delete the working
-//! directory).
+//! background, applies the readiness check (`TCP_CONNECT`, `STDOUT`, or
+//! `COMMAND` — the latter running `onReadinessCheck` concurrently with
+//! `onRun` under the rules of RFC 0009 "Concurrency with `onRun`"), reports
+//! `onRun`'s exit, allows `onRun` to be relaunched within the same Session,
+//! and ends per *How Jobs Are Run* "Service lifecycle" constraint 7 (cancel
+//! the running action, run `onExit`, exit the Environments in reverse,
+//! delete the working directory). When the entered stack contains a
+//! wrapping Environment (`WRAP_ACTIONS`) whose `runScope` includes
+//! `SERVICE`, its `onWrapService*` hooks run in place of the Service's
+//! actions.
 //!
 //! It composes a [`Session`] — which owns the working directory, the
 //! Environment stack, cumulative environment variables, path mapping, the
 //! cross-user helper, and cleanup — and adds the Service-specific pieces: the
 //! `Service.*` symbol scope, Service `variables`, `onEnter`'s retained
-//! `openjd_env` changes, the background `onRun` driver, and readiness.
+//! `openjd_env` changes, the background `onRun` driver, readiness, and the
+//! second action slot `onReadinessCheck` runs in.
 //!
 //! See `specs/sessions/service-session.md`.
 
@@ -31,23 +37,29 @@ use openjd_model::job::service_symbols::{build_service_symbol_table, ServiceEndp
 use openjd_model::job::{Action, Environment, RunScope, Service, ServiceReadinessCheck};
 use openjd_model::symbol_table::SymbolTable;
 use tokio::sync::{mpsc, watch};
+use tokio_util::sync::CancellationToken;
 
 use crate::action::{ActionMessage, ActionState};
 use crate::action_status::ActionStatus;
-use crate::embedded_files::EmbeddedFilesScope;
+use crate::embedded_files::{EmbeddedFiles, EmbeddedFilesScope};
 use crate::error::SessionError;
 use crate::logging::{log_section_banner, LogContent};
 use crate::runner::ScriptRunnerBase;
 use crate::session::{
-    declared_terminate_delay, normalize_env_key, ActionStatusFields, EnvVarChanges, Session,
-    SessionCancelHandle, SessionConfig, SharedCallback,
+    declared_terminate_delay, normalize_env_key, seed_wrapped_action_symbols, ActionCancelSlot,
+    ActionStatusFields, EnvVarChanges, Session, SessionCancelHandle, SessionConfig, SharedCallback,
+    WrappedContext,
 };
-use crate::session_log;
 use crate::subprocess::SubprocessResult;
+use crate::{session_action_log, session_log};
 
 /// Default `timeout` of a Service's `onExit` (Template Schemas §5 defaults
 /// table: 300 seconds, like an Environment's `onExit`).
 pub const SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Default `timeout` of a Service's `onReadinessCheck` — one invocation
+/// (RFC 0009 `<ServiceActions>` defaults table: 30 seconds).
+pub const SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default `notifyPeriodInSeconds` for every Service action (Template
 /// Schemas §5.3.2: 120 for a `<StepActions>` `onRun`, 30 otherwise).
@@ -197,14 +209,77 @@ enum ReadinessPlan {
     Stdout {
         timeout: Duration,
     },
+    Command {
+        /// `intervalSeconds`: the pause between the end of one
+        /// `onReadinessCheck` invocation and the start of the next.
+        interval: Duration,
+        timeout: Duration,
+    },
 }
 
 impl ReadinessPlan {
     fn timeout(&self) -> Duration {
         match self {
-            Self::TcpConnect { timeout, .. } | Self::Stdout { timeout } => *timeout,
+            Self::TcpConnect { timeout, .. }
+            | Self::Stdout { timeout }
+            | Self::Command { timeout, .. } => *timeout,
         }
     }
+
+    fn type_name(&self) -> &'static str {
+        match self {
+            Self::TcpConnect { .. } => "TCP_CONNECT",
+            Self::Stdout { .. } => "STDOUT",
+            Self::Command { .. } => "COMMAND",
+        }
+    }
+}
+
+/// The four actions of a Service, as the runtime dispatches them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServiceActionKind {
+    Enter,
+    Run,
+    ReadinessCheck,
+    Exit,
+}
+
+impl ServiceActionKind {
+    /// The `<ServiceActions>` property name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Enter => "onEnter",
+            Self::Run => "onRun",
+            Self::ReadinessCheck => "onReadinessCheck",
+            Self::Exit => "onExit",
+        }
+    }
+
+    /// The `<EnvironmentActions>` hook that runs in its place in a wrapped
+    /// Service Session (RFC 0009 `<EnvironmentActions>`).
+    fn hook_name(self) -> &'static str {
+        match self {
+            Self::Enter => "onWrapServiceEnter",
+            Self::Run => "onWrapServiceRun",
+            Self::ReadinessCheck => "onWrapServiceReadinessCheck",
+            Self::Exit => "onWrapServiceExit",
+        }
+    }
+}
+
+/// A Service action resolved for one run: either the Service's own action
+/// with the Service's symbol table, or — when the entered stack contains a
+/// wrapping Environment whose `runScope` includes `SERVICE` and which
+/// defines the corresponding hook — that hook with the hook's own scope
+/// (`WrappedAction.*`, `WrappedService.*`, the wrapping Environment's
+/// symbols).
+struct ResolvedAction {
+    /// The name of the action that actually runs: the `<ServiceActions>`
+    /// name, or the hook's name when wrapped. Used in log lines and as the
+    /// log attribution tag of `onReadinessCheck`.
+    name: &'static str,
+    action: Action,
+    symtab: Box<SymbolTable>,
 }
 
 /// Everything the background `onRun` driver owns.
@@ -212,6 +287,9 @@ struct RunDriverInputs {
     session_id: String,
     service_name: String,
     runner: ScriptRunnerBase,
+    /// The name of the action that runs as `onRun` (`onRun`, or
+    /// `onWrapServiceRun` when wrapped).
+    action_name: &'static str,
     action: Action,
     symtab: Box<SymbolTable>,
     library: Arc<FunctionLibrary>,
@@ -224,6 +302,48 @@ struct RunDriverInputs {
     message_tx: mpsc::UnboundedSender<ActionMessage>,
     message_rx: mpsc::UnboundedReceiver<ActionMessage>,
     cancel_requested: Arc<AtomicBool>,
+    /// The `onReadinessCheck` driver's inputs, for a `COMMAND` readiness
+    /// check. The `onRun` driver spawns it, decides READY from its reports,
+    /// and stops it (`check_stop`) on READY, on the readiness timeout, and
+    /// when `onRun` exits.
+    check: Option<CheckDriverInputs>,
+    check_stop: CancellationToken,
+}
+
+/// Everything the `onReadinessCheck` driver owns — the second action slot
+/// of a Service Session (RFC 0009 "Concurrency with `onRun`").
+struct CheckDriverInputs {
+    session_id: String,
+    service_name: String,
+    /// A runner with its own cross-user helper (when the Session is
+    /// cross-user) and `action_tag` set to `action_name`, so every log
+    /// record of the check is attributed to it (rule 3).
+    runner: ScriptRunnerBase,
+    /// `onReadinessCheck`, or `onWrapServiceReadinessCheck` when wrapped.
+    action_name: &'static str,
+    action: Action,
+    symtab: Box<SymbolTable>,
+    library: Arc<FunctionLibrary>,
+    env_vars: HashMap<String, Option<String>>,
+    /// `intervalSeconds`.
+    interval: Duration,
+    /// The check's own cancel slot: the invocation in flight is canceled
+    /// through it with the action's own cancelation method.
+    slot: ActionCancelSlot,
+    /// The cancel-pipe writer and auth token of the check's own cross-user
+    /// helper, for the slot's cancel handle.
+    handle_route: Option<(std::fs::File, String)>,
+    /// Parent of each invocation's cancel token (a child of the caller's
+    /// external token, when one was given).
+    parent_token: CancellationToken,
+}
+
+/// What the `onReadinessCheck` driver hands back when it stops.
+struct CheckDriverOutput {
+    /// Values from `openjd_redacted_env` lines on the check's stdout: the
+    /// directive is ignored (rule 2) but the value is still redacted from
+    /// every later line of the Session.
+    redacted_values: Vec<String>,
 }
 
 /// What the driver hands back when `onRun` has exited.
@@ -241,6 +361,10 @@ struct RunInstance {
     exit_rx: watch::Receiver<Option<ServiceRunExit>>,
     join: Option<tokio::task::JoinHandle<RunDriverOutput>>,
     cancel_requested: Arc<AtomicBool>,
+    /// Stops the `onReadinessCheck` driver (if any); canceled by the `onRun`
+    /// driver itself in normal operation, and by `Drop` if the Service
+    /// Session is dropped without `end()`.
+    check_stop: CancellationToken,
 }
 
 /// A Session that runs one Service (RFC 0009).
@@ -251,7 +375,8 @@ struct RunInstance {
 /// 2. [`ServiceSession::enter`] — enter the scope's `SERVICE` Environments
 ///    and run `onEnter`. An error is a *start failure*.
 /// 3. [`ServiceSession::launch`] — launch `onRun` in the background and start
-///    the readiness check.
+///    the readiness check (for `COMMAND`, the concurrent `onReadinessCheck`
+///    invocations).
 /// 4. [`ServiceSession::wait_ready`] — await READY, or an instance failure.
 /// 5. Observe the instance with [`ServiceSession::wait_exit`] /
 ///    [`ServiceSession::exit_watch`]; stop it with
@@ -261,6 +386,15 @@ struct RunInstance {
 ///    every state except `Ended`.
 ///
 /// [`ServiceSession::start`] bundles steps 2–4.
+///
+/// When the entered Environments include a wrapping Environment
+/// (`WRAP_ACTIONS`) whose `runScope` includes `SERVICE`, its
+/// `onWrapServiceEnter` / `onWrapServiceRun` / `onWrapServiceReadinessCheck`
+/// / `onWrapServiceExit` run in place of the Service's actions, each only
+/// when the Service defines the corresponding action (RFC 0009
+/// `<EnvironmentActions>`). The hooks see `WrappedAction.*` as RFC 0008
+/// defines them, plus `WrappedService.Name` / `.PortNames` / `.Ports` /
+/// `.BindAddresses`.
 pub struct ServiceSession {
     session: Session,
     service: Service,
@@ -287,6 +421,13 @@ pub struct ServiceSession {
     run: Option<RunInstance>,
     /// Number of `onRun` launches so far in this Session.
     launch_count: u32,
+    /// The wrapping Environment's embedded files (`Env.File.*` in its
+    /// `onWrapService*` hooks), allocated and written once per Service
+    /// Session on the first hook that runs and re-registered for every later
+    /// hook — never rewritten, so a hook running concurrently with
+    /// `onWrapServiceRun` cannot modify a file it was given (RFC 0009
+    /// "Concurrency with `onRun`" rule 1).
+    wrap_hook_files: Option<EmbeddedFiles>,
 }
 
 impl ServiceSession {
@@ -299,13 +440,14 @@ impl ServiceSession {
     /// Any [`Session::with_config`] error; [`SessionError::ServicePortUnassigned`]
     /// when a declared or probed port has no endpoint; [`SessionError::Runtime`]
     /// when the endpoint assignment names a different Service, or the
-    /// readiness check type is `COMMAND` (not yet supported by this runtime).
+    /// readiness check type is `COMMAND` and the Service defines no
+    /// `onReadinessCheck` (model validation forbids this combination).
     pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError> {
         let ServiceSessionConfig {
             session,
             service,
             environments,
-            endpoints,
+            mut endpoints,
             in_scope_endpoints,
         } = config;
 
@@ -336,12 +478,24 @@ impl ServiceSession {
         if matches!(
             service.readiness_check,
             ServiceReadinessCheck::Command { .. }
-        ) {
+        ) && service.script.actions.on_readiness_check.is_none()
+        {
             return Err(SessionError::Runtime(format!(
-                "Service '{}': the COMMAND readiness check type is not supported by this runtime yet",
+                "Service '{}': readiness check type is COMMAND but onReadinessCheck is not defined",
                 service.name
             )));
         }
+        // `WrappedService.PortNames` / `.Ports` / `.BindAddresses` are parallel
+        // lists in *declaration* order (Template Schemas §4.3.1): order the
+        // assignment by the Service's `ports` once, here.
+        let mut ordered = Vec::with_capacity(endpoints.ports.len());
+        for port in &service.ports {
+            if let Some(i) = endpoints.ports.iter().position(|(n, _)| *n == port.name) {
+                ordered.push(endpoints.ports.remove(i));
+            }
+        }
+        ordered.append(&mut endpoints.ports);
+        endpoints.ports = ordered;
 
         let session = Session::with_config(session)?;
         Ok(Self {
@@ -358,6 +512,7 @@ impl ServiceSession {
             status: Arc::new(Mutex::new(ActionStatusFields::new())),
             run: None,
             launch_count: 0,
+            wrap_hook_files: None,
         })
     }
 
@@ -423,8 +578,11 @@ impl ServiceSession {
     }
 
     /// A thread-safe handle that cancels whichever action of this Session is
-    /// running — a Service action or an Environment action — with its own
-    /// cancelation method. See [`SessionCancelHandle`].
+    /// running in its main slot — `onEnter`, `onRun`, `onExit`, or an
+    /// Environment action — with its own cancelation method. See
+    /// [`SessionCancelHandle`]. A concurrent `onReadinessCheck` invocation
+    /// runs in its own slot and is canceled only by the runtime (when
+    /// `onRun` exits, the readiness check ends, or the Session ends).
     pub fn cancel_handle(&self) -> SessionCancelHandle {
         self.session.cancel_handle()
     }
@@ -554,12 +712,10 @@ impl ServiceSession {
         self.service_vars = service_vars;
         self.symtab = Some(Box::new(symtab));
 
-        if let Some(on_enter) = self.service.script.actions.on_enter.clone() {
+        if let Some(on_enter) = self.resolve_action(ServiceActionKind::Enter)? {
             self.any_action_ran = true;
             log_section_banner(&sid, &format!("Service onEnter: {}", self.service.name));
-            let result = self
-                .run_foreground_action(&on_enter, "onEnter", None, true)
-                .await?;
+            let result = self.run_foreground_action(&on_enter, None, true).await?;
             if result.state != ActionState::Success {
                 return Err(SessionError::ServiceScriptFailed {
                     name: self.service.name.clone(),
@@ -576,6 +732,13 @@ impl ServiceSession {
     /// driver; observe it with [`wait_ready`](Self::wait_ready),
     /// [`wait_exit`](Self::wait_exit), and the watch receivers.
     ///
+    /// For a `COMMAND` readiness check this also starts the
+    /// `onReadinessCheck` driver: sequential invocations, the first as soon
+    /// as `onRun` is launched and each later one `intervalSeconds` after the
+    /// previous ends, each bounded by the action's `timeout` (default 30 s),
+    /// until one exits 0 while `onRun` is running (READY), `timeoutSeconds`
+    /// elapses, or `onRun` exits (RFC 0009 `<ServiceReadinessCheck>`).
+    ///
     /// Allowed in [`Entered`](ServiceSessionState::Entered) (first launch)
     /// and [`Exited`](ServiceSessionState::Exited) (relaunch within the same
     /// Session: same working directory and ports, `onEnter` not re-run, its
@@ -584,21 +747,30 @@ impl ServiceSession {
     ///
     /// # Errors
     ///
-    /// [`SessionError::InvalidServiceState`] in any other state.
+    /// [`SessionError::InvalidServiceState`] in any other state. A failure
+    /// to build a wrap hook's scope (`WrappedAction.*` resolution, the
+    /// wrapping Environment's `let` bindings or embedded files), or to spawn
+    /// the readiness check's cross-user helper, is returned without changing
+    /// the state.
     pub async fn launch(&mut self) -> Result<(), SessionError> {
         self.require_state(&[ServiceSessionState::Entered, ServiceSessionState::Exited])?;
         // Reclaim the previous instance's runner (and cross-user helper).
         self.reclaim_run().await;
 
         let sid = self.session.session_id().to_string();
-        let action = self.service.script.actions.on_run.clone();
-        let symtab = self
-            .symtab
-            .clone()
-            .expect("symtab is built in enter() before the state allows launch");
+        let run = self
+            .resolve_action(ServiceActionKind::Run)?
+            .expect("every Service defines onRun");
         let library = self.session.library_arc();
         let env_vars = self.service_env_vars();
         let plan = self.readiness_plan()?;
+        let check_stop = CancellationToken::new();
+        let check = match &plan {
+            ReadinessPlan::Command { interval, .. } => {
+                Some(self.prepare_readiness_check(*interval, &env_vars)?)
+            }
+            _ => None,
+        };
 
         self.launch_count += 1;
         self.any_action_ran = true;
@@ -614,7 +786,7 @@ impl ServiceSession {
             &sid,
             LogContent::PROCESS_CONTROL,
             "Readiness check: {} (timeout {}s)",
-            self.service.readiness_check.type_name(),
+            plan.type_name(),
             plan.timeout().as_secs()
         );
 
@@ -626,8 +798,8 @@ impl ServiceSession {
         self.session
             .cancel_fields()
             .set_terminate_delay(declared_terminate_delay(
-                &action.cancelation,
-                &symtab,
+                &run.action.cancelation,
+                &run.symtab,
                 Some(&library),
                 self.session.limits(),
                 SERVICE_DEFAULT_NOTIFY_PERIOD,
@@ -649,8 +821,9 @@ impl ServiceSession {
             session_id: sid,
             service_name: self.service.name.clone(),
             runner,
-            action,
-            symtab,
+            action_name: run.name,
+            action: run.action,
+            symtab: run.symtab,
             library,
             env_vars,
             plan,
@@ -661,6 +834,8 @@ impl ServiceSession {
             message_tx,
             message_rx,
             cancel_requested: cancel_requested.clone(),
+            check,
+            check_stop: check_stop.clone(),
         };
         let join = tokio::spawn(drive_run(inputs));
         self.run = Some(RunInstance {
@@ -668,9 +843,52 @@ impl ServiceSession {
             exit_rx,
             join: Some(join),
             cancel_requested,
+            check_stop,
         });
         self.state = ServiceSessionState::Running;
         Ok(())
+    }
+
+    /// Resolve `onReadinessCheck` (or `onWrapServiceReadinessCheck`) and
+    /// build its runner: the second action slot, with its own cancel slot,
+    /// its own cross-user helper when the Session is cross-user, and its log
+    /// attribution tag.
+    fn prepare_readiness_check(
+        &mut self,
+        interval: Duration,
+        env_vars: &HashMap<String, Option<String>>,
+    ) -> Result<CheckDriverInputs, SessionError> {
+        let check = self
+            .resolve_action(ServiceActionKind::ReadinessCheck)?
+            .ok_or_else(|| {
+                SessionError::Runtime(format!(
+                    "Service '{}': readiness check type is COMMAND but onReadinessCheck is not defined",
+                    self.service.name
+                ))
+            })?;
+        let helper = self.session.spawn_detached_helper()?;
+        let parent_token = self.session.action_cancel_token();
+        let (_placeholder_tx, placeholder_rx) = watch::channel(None);
+        let (mut runner, handle_route) = self.session.new_detached_runner_base(
+            parent_token.child_token(),
+            placeholder_rx,
+            helper,
+        );
+        runner.action_tag = Some(check.name.to_string());
+        Ok(CheckDriverInputs {
+            session_id: self.session.session_id().to_string(),
+            service_name: self.service.name.clone(),
+            runner,
+            action_name: check.name,
+            action: check.action,
+            symtab: check.symtab,
+            library: self.session.library_arc(),
+            env_vars: env_vars.clone(),
+            interval,
+            slot: ActionCancelSlot::new(),
+            handle_route,
+            parent_token,
+        })
     }
 
     /// [`enter`](Self::enter), [`launch`](Self::launch), then
@@ -799,28 +1017,29 @@ impl ServiceSession {
         self.reclaim_run().await;
 
         if self.any_action_ran {
-            if let Some(on_exit) = self.service.script.actions.on_exit.clone() {
-                log_section_banner(&sid, &format!("Service onExit: {}", self.service.name));
-                match self
-                    .run_foreground_action(
-                        &on_exit,
-                        "onExit",
-                        Some(SERVICE_EXIT_DEFAULT_TIMEOUT),
-                        false,
-                    )
-                    .await
-                {
-                    Ok(result) if result.state == ActionState::Success => {}
-                    Ok(result) => {
-                        first_error.get_or_insert(SessionError::ServiceScriptFailed {
-                            name: self.service.name.clone(),
-                            action: "onExit".into(),
-                            reason: failure_reason(&result),
-                        });
+            match self.resolve_action(ServiceActionKind::Exit) {
+                Ok(Some(on_exit)) => {
+                    log_section_banner(&sid, &format!("Service onExit: {}", self.service.name));
+                    match self
+                        .run_foreground_action(&on_exit, Some(SERVICE_EXIT_DEFAULT_TIMEOUT), false)
+                        .await
+                    {
+                        Ok(result) if result.state == ActionState::Success => {}
+                        Ok(result) => {
+                            first_error.get_or_insert(SessionError::ServiceScriptFailed {
+                                name: self.service.name.clone(),
+                                action: "onExit".into(),
+                                reason: failure_reason(&result),
+                            });
+                        }
+                        Err(e) => {
+                            first_error.get_or_insert(e);
+                        }
                     }
-                    Err(e) => {
-                        first_error.get_or_insert(e);
-                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    first_error.get_or_insert(e);
                 }
             }
         }
@@ -938,9 +1157,9 @@ impl ServiceSession {
                         .iter()
                         .find(|(n, _)| n == port_name)
                         .ok_or_else(|| SessionError::ServicePortUnassigned {
-                            name: self.service.name.clone(),
-                            port: port_name.clone(),
-                        })?;
+                        name: self.service.name.clone(),
+                        port: port_name.clone(),
+                    })?;
                     targets.push((
                         port_name.clone(),
                         probe_address(&endpoint.bind_address),
@@ -955,28 +1174,153 @@ impl ServiceSession {
             ServiceReadinessCheck::Stdout { timeout_seconds } => Ok(ReadinessPlan::Stdout {
                 timeout: Duration::from_secs(*timeout_seconds),
             }),
-            ServiceReadinessCheck::Command { .. } => Err(SessionError::Runtime(format!(
-                "Service '{}': the COMMAND readiness check type is not supported by this runtime yet",
-                self.service.name
-            ))),
+            ServiceReadinessCheck::Command {
+                interval_seconds,
+                timeout_seconds,
+            } => Ok(ReadinessPlan::Command {
+                interval: Duration::from_secs(*interval_seconds),
+                timeout: Duration::from_secs(*timeout_seconds),
+            }),
         }
     }
 
-    /// Run `onEnter` or `onExit` to completion in the foreground, processing
-    /// its `openjd_*` messages as they arrive. `honor_env_messages` is true
-    /// for `onEnter` only (RFC 0009 "Environment variables within a
-    /// Service"); from `onExit` they are ignored.
-    async fn run_foreground_action(
+    /// The Service action to run for `kind`: `None` when the Service does
+    /// not define it (`onEnter`, `onReadinessCheck`, `onExit` are optional;
+    /// `onRun` always resolves). When the entered stack contains a wrapping
+    /// Environment whose `runScope` includes `SERVICE` and which defines the
+    /// corresponding `onWrapService*` hook, the hook is returned instead,
+    /// with its scope built as for RFC 0008's hooks: the Session's base
+    /// scope, the wrapping Environment's `Env.File.*`, its frozen symbol
+    /// table and `let` bindings, then `WrappedAction.*` (resolved against
+    /// the Service's own scope) and `WrappedService.*`. A hook never runs
+    /// for an action the Service does not define ("nothing to replace").
+    fn resolve_action(
         &mut self,
-        action: &Action,
-        phase: &str,
-        default_timeout: Option<Duration>,
-        honor_env_messages: bool,
-    ) -> Result<SubprocessResult, SessionError> {
-        let symtab = self
+        kind: ServiceActionKind,
+    ) -> Result<Option<ResolvedAction>, SessionError> {
+        let actions = &self.service.script.actions;
+        let inner = match kind {
+            ServiceActionKind::Enter => actions.on_enter.as_ref(),
+            ServiceActionKind::Run => Some(&actions.on_run),
+            ServiceActionKind::ReadinessCheck => actions.on_readiness_check.as_ref(),
+            ServiceActionKind::Exit => actions.on_exit.as_ref(),
+        };
+        let Some(inner) = inner.cloned() else {
+            return Ok(None);
+        };
+        let inner_symtab = self
             .symtab
             .clone()
             .expect("symtab is built before any Service action runs");
+
+        let hooks = self.session.service_wrap_hooks();
+        let hook = hooks.as_ref().and_then(|h| match kind {
+            ServiceActionKind::Enter => h.on_enter.clone(),
+            ServiceActionKind::Run => h.on_run.clone(),
+            ServiceActionKind::ReadinessCheck => h.on_readiness_check.clone(),
+            ServiceActionKind::Exit => h.on_exit.clone(),
+        });
+        let (Some(hooks), Some(hook)) = (hooks, hook) else {
+            return Ok(Some(ResolvedAction {
+                name: kind.name(),
+                action: inner,
+                symtab: inner_symtab,
+            }));
+        };
+
+        let sid = self.session.session_id().to_string();
+        session_log!(
+            info,
+            &sid,
+            LogContent::PROCESS_CONTROL,
+            "Service '{}' {}: running {} of wrapping Environment '{}' in its place",
+            self.service.name,
+            kind.name(),
+            kind.hook_name(),
+            hooks.scope.name
+        );
+        let library = self.session.library_arc();
+        let mut hook_symtab = self.session.wrap_hook_base_symtab()?;
+
+        // The wrapping Environment's embedded files: paths registered before
+        // the seed so its `let` bindings can reference `Env.File.*`; contents
+        // written once per Service Session (rule 1 — see `wrap_hook_files`).
+        let mut first_use = false;
+        match &self.wrap_hook_files {
+            Some(cached) => cached.register_file_paths(&mut hook_symtab)?,
+            None => {
+                if let Some(files) = hooks.embedded_files.as_deref().filter(|f| !f.is_empty()) {
+                    let mut ef = self.session.embedded_files(EmbeddedFilesScope::Env);
+                    ef.allocate_file_paths(files, &mut hook_symtab)?;
+                    self.wrap_hook_files = Some(ef);
+                    first_use = true;
+                }
+            }
+        }
+        seed_wrapped_action_symbols(
+            &mut hook_symtab,
+            &hooks.scope,
+            &inner_symtab,
+            &inner,
+            WrappedContext::Service(&self.endpoints),
+            &self.wrapped_env_vars(),
+            Some(&library),
+            self.session.limits(),
+            &format!("Service {}", kind.name()),
+        )?;
+        if first_use {
+            if let Some(ef) = &self.wrap_hook_files {
+                ef.write_file_contents(&hook_symtab, Some(&library))?;
+            }
+        }
+        Ok(Some(ResolvedAction {
+            name: kind.hook_name(),
+            action: hook,
+            symtab: Box::new(hook_symtab),
+        }))
+    }
+
+    /// The session-defined variables a Service's wrapped action would have
+    /// run with, for `WrappedAction.Environment`: the entered Environments'
+    /// `variables` and `openjd_env` exports (as for every RFC 0008 hook),
+    /// then the Service's `variables`, then `onEnter`'s `openjd_env` /
+    /// `openjd_unset_env` changes — the same layering as the process
+    /// environment of the action itself. Host-inherited variables are
+    /// excluded, as RFC 0008 requires.
+    fn wrapped_env_vars(&self) -> HashMap<String, String> {
+        let mut env = self.session.live_session_env_vars();
+        for (k, v) in &self.service_vars {
+            env.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &self.on_enter_changes {
+            match v {
+                Some(v) => {
+                    env.insert(k.clone(), v.clone());
+                }
+                None => {
+                    env.remove(k);
+                }
+            }
+        }
+        env
+    }
+
+    /// Run `onEnter` or `onExit` (or the hook wrapping it) to completion in
+    /// the foreground, processing its `openjd_*` messages as they arrive.
+    /// `honor_env_messages` is true for `onEnter` only (RFC 0009
+    /// "Environment variables within a Service"); from `onExit` they are
+    /// ignored.
+    async fn run_foreground_action(
+        &mut self,
+        resolved: &ResolvedAction,
+        default_timeout: Option<Duration>,
+        honor_env_messages: bool,
+    ) -> Result<SubprocessResult, SessionError> {
+        let ResolvedAction {
+            name: phase,
+            action,
+            symtab,
+        } = resolved;
         let library = self.session.library_arc();
         let env_vars = self.service_env_vars();
 
@@ -989,7 +1333,7 @@ impl ServiceSession {
             .cancel_fields()
             .set_terminate_delay(declared_terminate_delay(
                 &action.cancelation,
-                &symtab,
+                symtab,
                 Some(&library),
                 self.session.limits(),
                 SERVICE_DEFAULT_NOTIFY_PERIOD,
@@ -1003,7 +1347,7 @@ impl ServiceSession {
         let result = {
             let run_fut = Box::pin(runner.run_action(
                 action,
-                &symtab,
+                symtab,
                 Some(&library),
                 &env_vars,
                 tx,
@@ -1144,6 +1488,9 @@ impl Drop for ServiceSession {
                 self.service.name
             );
             if let Some(run) = self.run.as_ref() {
+                // Stop the onReadinessCheck driver (it is owned by the onRun
+                // driver task, which is aborted next).
+                run.check_stop.cancel();
                 if let Some(join) = run.join.as_ref() {
                     join.abort();
                 }
@@ -1207,6 +1554,11 @@ async fn tcp_probe(targets: &[(String, String, u16)]) -> bool {
 struct RunMessageSink<'a> {
     session_id: &'a str,
     service_name: &'a str,
+    /// The name of the action running as `onRun` (`onRun`, or
+    /// `onWrapServiceRun` when wrapped), for log lines.
+    action_name: &'a str,
+    /// The readiness check type, for log lines.
+    check_type: &'static str,
     /// Whether `openjd_service_ready` is honored (readiness type `STDOUT`).
     stdout_readiness: bool,
     status: &'a Arc<Mutex<ActionStatusFields>>,
@@ -1260,8 +1612,10 @@ impl RunMessageSink<'_> {
                         info,
                         self.session_id,
                         LogContent::PROCESS_CONTROL,
-                        "Ignoring openjd_service_ready from Service '{}' onRun: its readiness check type is TCP_CONNECT",
-                        self.service_name
+                        "Ignoring openjd_service_ready from Service '{}' {}: its readiness check type is {}",
+                        self.service_name,
+                        self.action_name,
+                        self.check_type
                     );
                 } else if self.pending && running {
                     self.set_ready(Some(message));
@@ -1269,13 +1623,18 @@ impl RunMessageSink<'_> {
                 // Emitting it again has no additional effect.
             }
             ActionMessage::SetEnv { .. } => {
-                log_env_message_ignored(self.session_id, self.service_name, "onRun", "openjd_env");
+                log_env_message_ignored(
+                    self.session_id,
+                    self.service_name,
+                    self.action_name,
+                    "openjd_env",
+                );
             }
             ActionMessage::UnsetEnv { .. } => {
                 log_env_message_ignored(
                     self.session_id,
                     self.service_name,
-                    "onRun",
+                    self.action_name,
                     "openjd_unset_env",
                 );
             }
@@ -1283,7 +1642,7 @@ impl RunMessageSink<'_> {
                 log_env_message_ignored(
                     self.session_id,
                     self.service_name,
-                    "onRun",
+                    self.action_name,
                     "openjd_redacted_env",
                 );
                 self.redacted_values.push(value);
@@ -1292,7 +1651,7 @@ impl RunMessageSink<'_> {
                 log_env_message_ignored(
                     self.session_id,
                     self.service_name,
-                    "onRun",
+                    self.action_name,
                     "malformed openjd env",
                 );
             }
@@ -1302,13 +1661,15 @@ impl RunMessageSink<'_> {
 }
 
 /// The background driver of one `onRun` instance: runs the action, applies
-/// its `openjd_*` messages, runs the readiness check against it, and
+/// its `openjd_*` messages, runs the readiness check against it (spawning
+/// and stopping the `onReadinessCheck` driver for a `COMMAND` check), and
 /// publishes readiness and exit.
 async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     let RunDriverInputs {
         session_id,
         service_name,
         mut runner,
+        action_name,
         action,
         symtab,
         library,
@@ -1321,6 +1682,8 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         message_tx,
         mut message_rx,
         cancel_requested,
+        check,
+        check_stop,
     } = inputs;
     let lock_status = || status.lock().unwrap_or_else(|p| p.into_inner());
     let notify = || {
@@ -1331,22 +1694,39 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         }
     };
 
-    // The readiness timeout is measured from launch (RFC 0009 §9.3 item 4).
+    // The readiness timeout is measured from launch (RFC 0009 §9.3 item 4)
+    // and runs continuously, including while a check invocation is in
+    // progress.
     let deadline = tokio::time::sleep(plan.timeout());
     tokio::pin!(deadline);
     let is_tcp = matches!(plan, ReadinessPlan::TcpConnect { .. });
     let targets: Vec<(String, String, u16)> = match &plan {
         ReadinessPlan::TcpConnect { targets, .. } => targets.clone(),
-        ReadinessPlan::Stdout { .. } => Vec::new(),
+        ReadinessPlan::Stdout { .. } | ReadinessPlan::Command { .. } => Vec::new(),
     };
     let mut probe: std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> = {
         let t = targets.clone();
         Box::pin(async move { tcp_probe(&t).await })
     };
+
+    // COMMAND: the onReadinessCheck driver runs in its own task and reports
+    // each successful invocation on `check_rx`; it stops when `check_stop`
+    // fires (READY observed, readiness timed out, or onRun exited — rules 4
+    // and 5) or after reporting a success. The first invocation begins as
+    // soon as onRun is launched, i.e. now.
+    let (check_tx, mut check_rx) = mpsc::unbounded_channel::<()>();
+    let mut check_active = check.is_some();
+    let check_join = check.map(|inputs| {
+        let stop = check_stop.clone();
+        tokio::spawn(drive_readiness_check(inputs, stop, check_tx))
+    });
+
     let mut sink = RunMessageSink {
         session_id: &session_id,
         service_name: &service_name,
-        stdout_readiness: !is_tcp,
+        action_name,
+        check_type: plan.type_name(),
+        stdout_readiness: matches!(plan, ReadinessPlan::Stdout { .. }),
         status: &status,
         callback: callback.as_ref(),
         readiness_tx: &readiness_tx,
@@ -1373,6 +1753,15 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                     let Some(msg) = msg else { continue };
                     sink.apply(msg, true);
                 }
+                report = check_rx.recv(), if check_active && result.is_none() => {
+                    // A successful invocation observed while onRun is still
+                    // running (this arm is disabled once the exit is seen).
+                    check_active = false;
+                    if report.is_some() && sink.pending {
+                        sink.set_ready(None);
+                        check_stop.cancel();
+                    }
+                }
                 r = &mut run_fut, if result.is_none() => {
                     result = Some(r);
                 }
@@ -1396,16 +1785,22 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                         "Service '{}' did not become READY within {}s ({} readiness check)",
                         service_name,
                         plan.timeout().as_secs(),
-                        if is_tcp { "TCP_CONNECT" } else { "STDOUT" }
+                        plan.type_name()
                     );
                     let _ = readiness_tx.send(ServiceReadiness::TimedOut);
+                    // An invocation in flight is canceled: the decision is
+                    // terminal and the check never runs again.
+                    check_stop.cancel();
                 }
                 else => break,
             }
             if result.is_some() {
-                // Messages that raced the exit are still applied, but a
-                // readiness line can no longer make the instance READY:
-                // onRun is not running ("onRun exit wins").
+                // "onRun exit wins" (rule 5): the check is stopped — an
+                // invocation in flight is canceled with its own cancelation
+                // method and its result discarded — and messages that raced
+                // the exit are still applied, but neither a readiness line
+                // nor a check success can make the instance READY now.
+                check_stop.cancel();
                 while let Ok(msg) = message_rx.try_recv() {
                     sink.apply(msg, false);
                 }
@@ -1433,7 +1828,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 error,
                 &session_id,
                 LogContent::EXCEPTION_INFO,
-                "Service '{}' onRun failed to run: {e}",
+                "Service '{}' {action_name} failed to run: {e}",
                 service_name
             );
             lock_status().fail_message = Some(e.to_string());
@@ -1448,15 +1843,31 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     };
     let RunMessageSink {
         pending,
-        redacted_values,
+        mut redacted_values,
         ..
     } = sink;
+
+    // The check driver stops before the exit is published (and so before
+    // `end()` can run onExit — rule 5): await it here.
+    if let Some(join) = check_join {
+        match join.await {
+            Ok(out) => redacted_values.extend(out.redacted_values),
+            Err(e) => session_log!(
+                error,
+                &session_id,
+                LogContent::EXCEPTION_INFO,
+                "Service '{}' onReadinessCheck driver task failed: {e}",
+                service_name
+            ),
+        }
+    }
+
     if pending {
         session_log!(
             error,
             &session_id,
             LogContent::PROCESS_CONTROL,
-            "Service '{}' onRun exited before becoming READY",
+            "Service '{}' {action_name} exited before becoming READY",
             service_name
         );
         let _ = readiness_tx.send(ServiceReadiness::ExitedBeforeReady);
@@ -1465,7 +1876,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         info,
         &session_id,
         LogContent::PROCESS_CONTROL,
-        "Service '{}' onRun exited: {} ({}){}",
+        "Service '{}' {action_name} exited: {} ({}){}",
         service_name,
         exit.state,
         format_exit_code(exit.exit_code),
@@ -1483,6 +1894,224 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         runner,
         redacted_values,
     }
+}
+
+/// The driver of the `onReadinessCheck` invocations of one `onRun` instance
+/// (RFC 0009 `<ServiceReadinessCheck>` `COMMAND`, "Concurrency with
+/// `onRun`"): sequential invocations `interval` apart, each bounded by the
+/// action's `timeout` (default 30 s, canceled on overrun, counted as not
+/// ready), until one exits 0 — reported once on `report_tx`, after which the
+/// driver returns — or `stop` fires. An invocation in flight when `stop`
+/// fires is canceled through the check's own cancel slot with its own
+/// cancelation method, and its result is discarded. No `openjd_*` message on
+/// the check's stdout is honored (rule 2): each is logged and ignored. Every
+/// log record of the check is tagged with the action name (rule 3) through
+/// the runner's `action_tag`.
+async fn drive_readiness_check(
+    inputs: CheckDriverInputs,
+    stop: CancellationToken,
+    report_tx: mpsc::UnboundedSender<()>,
+) -> CheckDriverOutput {
+    let CheckDriverInputs {
+        session_id,
+        service_name,
+        mut runner,
+        action_name,
+        action,
+        symtab,
+        library,
+        env_vars,
+        interval,
+        slot,
+        handle_route,
+        parent_token,
+    } = inputs;
+    let tag = Some(action_name);
+    let (route_writer, route_token) = match handle_route {
+        Some((w, t)) => (Some(w), Some(t)),
+        None => (None, None),
+    };
+    let mut redacted_values = Vec::new();
+    let mut invocation: u32 = 0;
+
+    while !stop.is_cancelled() {
+        invocation += 1;
+        session_action_log!(
+            info,
+            &session_id,
+            tag,
+            LogContent::PROCESS_CONTROL,
+            "Service '{service_name}' readiness check invocation {invocation}"
+        );
+
+        // Each invocation gets a fresh cancel token in the check's own slot.
+        let token = parent_token.child_token();
+        let (cancel_tx, cancel_rx) = watch::channel(None);
+        slot.set_action(token.clone(), cancel_tx);
+        slot.set_terminate_delay(declared_terminate_delay(
+            &action.cancelation,
+            &symtab,
+            Some(&library),
+            &runner.limits,
+            SERVICE_DEFAULT_NOTIFY_PERIOD,
+        ));
+        runner.cancel_token = token;
+        runner.cancel_request_rx = Some(cancel_rx);
+        let handle = slot.handle(
+            route_writer.as_ref().and_then(|w| w.try_clone().ok()),
+            route_token.clone(),
+        );
+
+        let (message_tx, mut message_rx) = mpsc::unbounded_channel();
+        let result = {
+            let run_fut = runner.run_action(
+                &action,
+                &symtab,
+                Some(&library),
+                &env_vars,
+                message_tx,
+                Some(SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT),
+                SERVICE_DEFAULT_NOTIFY_PERIOD,
+            );
+            tokio::pin!(run_fut);
+            let mut result = None;
+            let mut cancel_sent = false;
+            loop {
+                tokio::select! {
+                    biased;
+                    msg = message_rx.recv(), if result.is_none() => {
+                        let Some(msg) = msg else { continue };
+                        log_check_message_ignored(&session_id, &service_name, action_name, &msg, &mut redacted_values);
+                    }
+                    _ = stop.cancelled(), if !cancel_sent && result.is_none() => {
+                        cancel_sent = true;
+                        session_action_log!(
+                            info,
+                            &session_id,
+                            tag,
+                            LogContent::PROCESS_CONTROL,
+                            "Canceling readiness check invocation {invocation}: its result will be discarded"
+                        );
+                        handle.cancel(None, false);
+                    }
+                    r = &mut run_fut, if result.is_none() => {
+                        result = Some(r);
+                    }
+                    else => break,
+                }
+                if result.is_some() {
+                    while let Ok(msg) = message_rx.try_recv() {
+                        log_check_message_ignored(
+                            &session_id,
+                            &service_name,
+                            action_name,
+                            &msg,
+                            &mut redacted_values,
+                        );
+                    }
+                    break;
+                }
+            }
+            result.expect("loop guarantees result is Some")
+        };
+        slot.reset();
+
+        if stop.is_cancelled() {
+            // Rule 5: canceled by the runtime (onRun exited, the readiness
+            // check reached a decision, or the Session is ending).
+            break;
+        }
+        match result {
+            Ok(r) if r.state == ActionState::Timeout => {
+                session_action_log!(
+                    info,
+                    &session_id,
+                    tag,
+                    LogContent::PROCESS_CONTROL,
+                    "Readiness check invocation {invocation}: not ready (exceeded its timeout)"
+                );
+            }
+            Ok(r) if r.state != ActionState::Canceled && r.exit_code == Some(0) => {
+                // Its result is its exit status (rule 2): exit 0 is READY
+                // even if the output carried an openjd_fail line.
+                session_action_log!(
+                    info,
+                    &session_id,
+                    tag,
+                    LogContent::PROCESS_CONTROL,
+                    "Readiness check invocation {invocation}: ready (exit code: 0)"
+                );
+                let _ = report_tx.send(());
+                break;
+            }
+            Ok(r) => {
+                session_action_log!(
+                    info,
+                    &session_id,
+                    tag,
+                    LogContent::PROCESS_CONTROL,
+                    "Readiness check invocation {invocation}: not ready ({})",
+                    format_exit_code(r.exit_code)
+                );
+            }
+            Err(e) => {
+                session_action_log!(
+                    info,
+                    &session_id,
+                    tag,
+                    LogContent::PROCESS_CONTROL,
+                    "Readiness check invocation {invocation}: not ready (failed to run: {e})"
+                );
+            }
+        }
+
+        // intervalSeconds between the end of one invocation and the start of
+        // the next.
+        tokio::select! {
+            _ = stop.cancelled() => break,
+            _ = tokio::time::sleep(interval) => {}
+        }
+    }
+
+    // The check's own cross-user helper (if any) is done: shut it down
+    // cleanly rather than leaving it to `Drop`'s kill.
+    if let Some(helper) = runner.helper.as_mut() {
+        helper.shutdown();
+    }
+    CheckDriverOutput { redacted_values }
+}
+
+/// Rule 2: log one line for an `openjd_*` message on `onReadinessCheck`'s
+/// stdout and ignore it. The value of an `openjd_redacted_env` is still
+/// collected for redaction — the directive's effect is ignored, not its
+/// secrecy.
+fn log_check_message_ignored(
+    session_id: &str,
+    service_name: &str,
+    action_name: &str,
+    msg: &ActionMessage,
+    redacted_values: &mut Vec<String>,
+) {
+    let what = match msg {
+        ActionMessage::Progress(_) => "openjd_progress",
+        ActionMessage::Status(_) => "openjd_status",
+        ActionMessage::Fail(_) => "openjd_fail",
+        ActionMessage::SetEnv { .. } => "openjd_env",
+        ActionMessage::UnsetEnv { .. } => "openjd_unset_env",
+        ActionMessage::RedactedEnv { value, .. } => {
+            redacted_values.push(value.clone());
+            "openjd_redacted_env"
+        }
+        ActionMessage::ServiceReady(_) => "openjd_service_ready",
+        ActionMessage::CancelMarkFailed { .. } => "malformed openjd env",
+    };
+    session_action_log!(
+        info,
+        session_id,
+        Some(action_name),
+        LogContent::PROCESS_CONTROL,
+        "Ignoring {what} from Service '{service_name}' {action_name}: messages on the readiness check's stdout are not honored"
+    );
 }
 
 #[cfg(test)]
@@ -1510,6 +2139,49 @@ mod tests {
         assert!(ServiceReadiness::TimedOut.is_terminal());
         assert!(!ServiceReadiness::TimedOut.is_ready());
         assert!(ServiceReadiness::ExitedBeforeReady.is_terminal());
+    }
+
+    #[test]
+    fn readiness_plan_names_and_timeouts() {
+        let cmd = ReadinessPlan::Command {
+            interval: Duration::from_secs(5),
+            timeout: Duration::from_secs(7),
+        };
+        assert_eq!(cmd.type_name(), "COMMAND");
+        assert_eq!(cmd.timeout(), Duration::from_secs(7));
+        let out = ReadinessPlan::Stdout {
+            timeout: Duration::from_secs(9),
+        };
+        assert_eq!(out.type_name(), "STDOUT");
+        assert_eq!(out.timeout(), Duration::from_secs(9));
+        let tcp = ReadinessPlan::TcpConnect {
+            targets: vec![],
+            timeout: Duration::from_secs(11),
+        };
+        assert_eq!(tcp.type_name(), "TCP_CONNECT");
+        assert_eq!(tcp.timeout(), Duration::from_secs(11));
+    }
+
+    #[test]
+    fn service_action_kind_names() {
+        let kinds = [
+            (ServiceActionKind::Enter, "onEnter", "onWrapServiceEnter"),
+            (ServiceActionKind::Run, "onRun", "onWrapServiceRun"),
+            (
+                ServiceActionKind::ReadinessCheck,
+                "onReadinessCheck",
+                "onWrapServiceReadinessCheck",
+            ),
+            (ServiceActionKind::Exit, "onExit", "onWrapServiceExit"),
+        ];
+        for (kind, name, hook) in kinds {
+            assert_eq!(kind.name(), name);
+            assert_eq!(kind.hook_name(), hook);
+        }
+        assert_eq!(
+            SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT,
+            Duration::from_secs(30)
+        );
     }
 
     #[test]

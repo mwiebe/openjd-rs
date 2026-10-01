@@ -9,13 +9,18 @@ owns the working directory, the Environment stack, cumulative environment
 variables, path mapping, redaction, the cross-user helper, and cleanup; the
 `ServiceSession` adds the `Service.*` symbol scope, Service `variables`,
 `onEnter`'s retained `openjd_env` changes, the background `onRun` driver with
-its readiness check, and the constraint-7 teardown.
+its readiness check, the second action slot in which `onReadinessCheck` runs
+concurrently with `onRun` (`COMMAND` readiness), the `onWrapService*` hook
+dispatch, and the constraint-7 teardown.
 
 Normative references: RFC 0009 "Modifications to How Jobs Are Run" (Service
 lifecycle constraints, "Services run inside Environments", "Failure and
-restart"), `<ServiceActions>`, `<ServiceReadinessCheck>`, "Environment
-variables within a Service", and the `openjd_service_ready` message; wiki
-*How-Jobs-Are-Run* § Services.
+restart"), `<ServiceActions>` incl. "Concurrency with `onRun`" (rules 1–6),
+`<ServiceReadinessCheck>`, the `<EnvironmentActions>` modification
+(`onWrapService*`, "RFC 0008's rules extend to the new hooks" 1–6,
+`WrappedService.*`), "Environment variables within a Service", and the
+`openjd_service_ready` message; wiki *Template Schemas* §4.3 rule 6, §4.3.1,
+§9.6, §9.6.1; wiki *How-Jobs-Are-Run* § Services.
 
 ### What this runtime decides, and what it leaves to the caller
 
@@ -28,11 +33,7 @@ agent):
 | Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
 | Detect instance failures: readiness timeout, `onRun` exit before READY, `onRun` exit at any time | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
 | Cancel `onRun` with its own `cancelation` method on request and at `end()` | When to cancel (scope complete, readiness timed out, …) |
-
-Not yet implemented (deferred to a later milestone): the `COMMAND` readiness
-type and `onReadinessCheck` (RFC 0009 "Concurrency with `onRun`"), and the
-`onWrapService*` wrap hooks. `ServiceSession::with_config` rejects a Service
-whose readiness check type is `COMMAND`.
+| Run `onReadinessCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
 
 ## Why a sibling type, not a mode of `Session`
 
@@ -47,11 +48,37 @@ small, explicit lifecycle.
 
 The crate-internal seams `ServiceSession` uses on `Session` are `pub(crate)`:
 `build_symbol_table`, `materialize_path_mapping`, `resolve_env_var_value`,
-`evaluate_env_vars`, `embedded_files`, `new_runner_base` /
-`restore_runner_base` (a fully configured `ScriptRunnerBase`, carrying the
-cross-user helper), `cancel_fields` (the shared per-action cancel slot, so one
-`SessionCancelHandle` cancels whichever action — Environment or Service — is
-running), `callback_arc`, `library_arc`, `limits`, `add_redacted_values`.
+`evaluate_env_vars`, `live_session_env_vars`, `embedded_files`,
+`new_runner_base` / `restore_runner_base` (a fully configured
+`ScriptRunnerBase`, carrying the cross-user helper), `cancel_fields` (the
+Session's *main* cancel slot, so one `SessionCancelHandle` cancels whichever
+action — Environment or Service — is running in it), `spawn_detached_helper`
+/ `new_detached_runner_base` (a runner for the *second* slot, with its own
+cross-user helper), `wrap_hook_base_symtab` / `service_wrap_hooks` and the
+shared `seed_wrapped_action_symbols` (wrap hook dispatch), `callback_arc`,
+`library_arc`, `limits`, `add_redacted_values`.
+
+### Two action slots
+
+`Session` runs one action at a time, and its cancel state is one slot
+(`ActionCancelSlot`, wrapped by `CancelFields`): a token, a time-limit
+channel, and the running action's declared NOTIFY_THEN_TERMINATE grace, which
+a `SessionCancelHandle` delivers a cancel to. A Service Session's `onEnter`,
+`onRun`, `onExit`, and Environment actions all run in that **main slot** —
+`ServiceSession::cancel_handle()` / `cancel_run()` target it.
+
+`onReadinessCheck` is the one action that runs *while* another runs, so it
+gets a **second slot** of its own: its own `ActionCancelSlot`, its own
+`ScriptRunnerBase` (built by `Session::new_detached_runner_base`, which does
+not take the Session's cross-user helper), its own cross-user helper when the
+Session is cross-user (`Session::spawn_detached_helper` — the helper protocol
+runs one command at a time, so each concurrent action needs its own helper
+process, spawned from the same helper binary and shut down with the runner),
+and its own log attribution tag. The runtime alone cancels through the second
+slot (when `onRun` exits, the readiness decision is made, or the Session
+ends); the caller's handle never reaches it. The shared slot stays shared for
+everything that runs one at a time, and only the concurrent action gets a
+separate one.
 
 ## ServiceSessionState
 
@@ -103,9 +130,14 @@ Checks, before any directory is created:
 - Every declared port, and every port a `TCP_CONNECT` check names, has an
   endpoint: else `SessionError::ServicePortUnassigned { name, port }` —
   `Service 'svc' port 'metrics' has no endpoint assignment`.
-- The readiness type is not `COMMAND`: else `SessionError::Runtime("Service
-  'svc': the COMMAND readiness check type is not supported by this runtime
-  yet")`.
+- A `COMMAND` readiness check comes with an `onReadinessCheck`: else
+  `SessionError::Runtime("Service 'svc': readiness check type is COMMAND but
+  onReadinessCheck is not defined")` (model validation already forbids this
+  combination, §9.7 item 4).
+
+The endpoint assignment's ports are then re-ordered into the Service's
+`ports` declaration order, so `WrappedService.PortNames` / `.Ports` /
+`.BindAddresses` are parallel lists in declaration order (§4.3.1).
 
 Then `Session::with_config(config.session)` runs — same working directory,
 sticky-bit, cross-user helper, and host-info logging as any Session.
@@ -137,20 +169,24 @@ returns it; `end()` is still required.
    `EmbeddedFilesScope::Service`), then `<ServiceScript>.let` evaluated, then
    the embedded files' contents written.
 
-   Embedded files are written **once**. A Service Session's format-string
-   values are constant for its lifetime, so the content never changes; RFC
-   0009 "Concurrency with `onRun`" rule 1 explicitly allows not rewriting an
-   unchanged file, and writing once also means a later concurrent action
-   (milestone 7's `onReadinessCheck`) can never rewrite a script `onRun` is
-   reading.
+   Embedded files are written **once**, here, and never again in the
+   Session — not before `onRun`, not before any `onReadinessCheck`
+   invocation, not on relaunch, not before `onExit`. This is how rule 1 of
+   "Concurrency with `onRun`" (§9.6.1 item 1) is satisfied: a Service
+   Session's format-string values are constant for its lifetime, so the
+   content never changes, and the rule explicitly allows leaving an
+   unchanged file in place; since nothing is ever rewritten, no action can
+   modify a file a still-running action was given. `Service.File.<name>`
+   therefore resolves to the same path in every action.
 3. **Service `variables`**, resolved once against that table with
    `Session::resolve_env_var_value` — the same `string` target type, NUL
    rejection, and 2048-character cap (§4.4.2) as an Environment's.
-4. **`onEnter`**, if defined: an ordinary foreground action (no default
-   timeout; its `timeout` and `cancelation` apply; cancelable through
-   `cancel_handle()`). Banner `Service onEnter: <name>`. A non-`Success`
-   result is `SessionError::ServiceScriptFailed { name, action: "onEnter",
-   reason }` with reason `exit code: N` / `canceled` / `timed out`.
+4. **`onEnter`**, if defined (or `onWrapServiceEnter` in its place — see
+   "Wrap hooks"): an ordinary foreground action (no default timeout; its
+   `timeout` and `cancelation` apply; cancelable through `cancel_handle()`).
+   Banner `Service onEnter: <name>`. A non-`Success` result is
+   `SessionError::ServiceScriptFailed { name, action: "onEnter", reason }`
+   with reason `exit code: N` / `canceled` / `timed out`.
 
 ## Environment variables of a Service action
 
@@ -169,22 +205,32 @@ action, so every `onRun` instance (including relaunches) and `onExit` see
 `onEnter`'s changes — they are retained across relaunches because `onEnter`
 is not re-run (constraint 5 / "Failure and restart" step 3.2).
 
-Messages honored per action ("Environment variables within a Service" and
-the wiki's message table):
+The same map is given to `onReadinessCheck`, which therefore sees
+`onEnter`'s variables too (RFC 0009: "every instance of *onRun*,
+*onReadinessCheck*, and *onExit*").
 
-| Message | `onEnter` | `onRun` | `onExit` |
-|---|---|---|---|
-| `openjd_status` / `openjd_progress` / `openjd_fail` | honored | honored | honored |
-| `openjd_env` / `openjd_redacted_env` / `openjd_unset_env` | honored | ignored (logged) | ignored (logged) |
-| malformed env command (`CancelMarkFailed`) | cancels + fails the action | ignored (logged) | ignored (logged) |
-| `openjd_service_ready` | ignored (logged) | honored iff type is `STDOUT` | ignored (logged) |
+Messages honored per action ("Environment variables within a Service", the
+wiki's message table, and §9.6.1 rule 2):
+
+| Message | `onEnter` | `onRun` | `onReadinessCheck` | `onExit` |
+|---|---|---|---|---|
+| `openjd_status` / `openjd_progress` / `openjd_fail` | honored | honored | ignored (logged) | honored |
+| `openjd_env` / `openjd_redacted_env` / `openjd_unset_env` | honored | ignored (logged) | ignored (logged) | ignored (logged) |
+| malformed env command (`CancelMarkFailed`) | cancels + fails the action | ignored (logged) | ignored (logged) | ignored (logged) |
+| `openjd_service_ready` | ignored (logged) | honored iff type is `STDOUT` | ignored (logged) | ignored (logged) |
 
 "Ignored (logged)" is one `info` line, e.g. `Ignoring openjd_env from Service
-'svc' onRun: environment variable messages are honored only from onEnter`. The
-value of an ignored `openjd_redacted_env` is still added to the Session's
+'svc' onRun: environment variable messages are honored only from onEnter`, or
+for the check `[onReadinessCheck] Ignoring openjd_fail from Service 'svc'
+onReadinessCheck: messages on the readiness check's stdout are not honored`.
+The value of an ignored `openjd_redacted_env` is still added to the Session's
 redaction set — the directive's effect is ignored, not its secrecy. Nothing a
 Service sets is ever propagated to the entities in its scope: the `Session`'s
-own `created_env_vars` are untouched by Service actions.
+own `created_env_vars` are untouched by Service actions. The check's
+`openjd_fail` does not even affect the check's own result: its result is its
+exit status (rule 2), so an invocation that prints `openjd_fail` and exits 0
+is READY. Under wrapping, the action name in these lines is the hook's
+(`onWrapServiceRun`, …).
 
 ## `launch()` — the background `onRun` driver
 
@@ -192,8 +238,16 @@ Allowed in `Entered` and `Exited`. Banner `Service onRun: <name> (launch N)`
 and `Readiness check: <TYPE> (timeout Ns)`. Steps:
 
 1. Reclaim the previous driver, if any (restores the cross-user helper).
-2. Resolve the readiness plan (below).
-3. Register a fresh cancel token in the Session's shared cancel slot and
+2. Resolve the action to run as `onRun` (the Service's, or
+   `onWrapServiceRun`) and the readiness plan (below). For `COMMAND`,
+   resolve the check action (the Service's `onReadinessCheck`, or
+   `onWrapServiceReadinessCheck`) and build its second-slot runner
+   (`prepare_readiness_check`: detached helper, detached runner base with
+   `action_tag` = the check action's name, a fresh `ActionCancelSlot`). A
+   failure here — a wrap hook's scope not resolving, or the detached
+   helper not spawning — is returned from `launch()` with the state
+   unchanged.
+3. Register a fresh cancel token in the Session's main cancel slot and
    record the action's declared NOTIFY_THEN_TERMINATE grace (default 30 s —
    Template Schemas §5.3.2 "30 otherwise"), so `cancel_handle()` /
    `cancel_run()` deliver the right cancel, including over the cross-user
@@ -207,23 +261,30 @@ and `Readiness check: <TYPE> (timeout Ns)`. Steps:
    `Send` on every platform (the vestigial Windows `HANDLE` it used to hold
    was removed), which is what makes spawning possible.
 
-`drive_run` is one `tokio::select!` loop, `biased` toward messages:
+`drive_run` is one `tokio::select!` loop, `biased` toward messages. For a
+`COMMAND` check it first spawns the check driver (`drive_readiness_check`, a
+second task) with a `check_stop` token and a one-shot report channel:
 
 ```
 loop select! {
-    msg  = message_rx.recv()                           → apply (status/progress/fail; service_ready; env lines ignored)
-    r    = onRun future                                → exit observed
-    ok   = TCP probe future,  if pending && TCP_CONNECT → READY, or re-arm the probe after 1 s
-    _    = readiness deadline, if pending              → TimedOut
+    msg    = message_rx.recv()                            → apply (status/progress/fail; service_ready; env lines ignored)
+    report = check_rx.recv(),  if check active            → READY if pending (onRun still running); stop the check
+    r      = onRun future                                 → exit observed; stop the check
+    ok     = TCP probe future, if pending && TCP_CONNECT  → READY, or re-arm the probe after 1 s
+    _      = readiness deadline, if pending               → TimedOut; stop the check
 }
 ```
 
 After the exit, remaining messages are drained with the same handler, except
 that an `openjd_service_ready` drained after the exit cannot make the instance
-READY ("`onRun` exit wins"). If readiness is still pending at exit it becomes
-`ExitedBeforeReady`. The driver then logs `Service '<name>' onRun exited:
-<state> (exit code: N)[, canceled by the runtime]`, finishes the status,
-notifies the callback, publishes the `ServiceRunExit`, and returns the runner.
+READY ("`onRun` exit wins"), and a check report is no longer received. The
+driver awaits the check driver (so an invocation in flight is canceled and
+reaped before the exit is published — and so before `end()` can run
+`onExit`, rule 5), merges its redacted values, then: if readiness is still
+pending it becomes `ExitedBeforeReady`; it logs `Service '<name>' onRun
+exited: <state> (exit code: N)[, canceled by the runtime]`, finishes the
+status, notifies the callback, publishes the `ServiceRunExit`, and returns
+the runner.
 
 `onRun` runs with **no default timeout**; a declared `timeout` is measured
 from launch and its expiry is reported as `state: Timeout` (Template Schemas
@@ -255,7 +316,30 @@ The timeout (`timeoutSeconds`, model default 300) is measured from launch.
   `onRun`'s stdout (same `openjd_<kind>: <payload>` syntax as every message;
   `ActionFilter` parses it to `ActionMessage::ServiceReady`). Later lines have
   no effect; the line is still echoed/logged like any directive. Under
-  `TCP_CONNECT` the line is logged as ignored.
+  `TCP_CONNECT` and `COMMAND` the line is logged as ignored (`Ignoring
+  openjd_service_ready from Service 'svc' onRun: its readiness check type is
+  COMMAND`).
+- **`COMMAND`** — `onReadinessCheck` is run by the check driver, in the
+  second slot, concurrently with `onRun`. The first invocation begins as soon
+  as `onRun` is launched (the driver is spawned together with the `onRun`
+  future); each later one begins `intervalSeconds` (model default 5) after
+  the previous one ends. One invocation is bounded by the action's own
+  `timeout`, default `SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT` (30 s): on
+  overrun the process is terminated and the invocation counts as not ready.
+  Any exit status other than 0, a timeout, or a command that cannot be run
+  (`not ready (failed to run: …)`) is "not yet ready" — never a Service
+  failure. Exit status 0 is reported to the `onRun` driver, which makes the
+  instance READY iff `onRun` is still running and readiness is still pending
+  (`Ready { message: None }`); the check driver then returns, so the action
+  never runs again (rule 4). The readiness `timeoutSeconds` (default 300)
+  is the `onRun` driver's deadline and runs continuously, including while an
+  invocation is in progress. Readiness is not a liveness check.
+
+  Per-invocation log lines (all tagged, see "Logging"): `Service 'svc'
+  readiness check invocation N`, then one of `Readiness check invocation N:
+  ready (exit code: 0)` / `not ready (exit code: 1)` / `not ready (exceeded
+  its timeout)` / `not ready (failed to run: <error>)`, or `Canceling
+  readiness check invocation N: its result will be discarded`.
 
 READY is logged as `Service '<name>' is READY[: <message>]`; a timeout as
 `Service '<name>' did not become READY within Ns (<TYPE> readiness check)`
@@ -264,7 +348,49 @@ becoming READY`.
 
 On `TimedOut` the runtime does **not** cancel `onRun`: the RFC's restart
 decision ("cancels `onRun` if it is still running … and waits for it to exit")
-belongs to the scheduler, which calls `cancel_run` then `wait_exit`.
+belongs to the scheduler, which calls `cancel_run` then `wait_exit`. It does
+stop the check driver: a `COMMAND` invocation in flight at the deadline is
+canceled, and no further invocation starts.
+
+### Concurrency with `onRun` (RFC 0009 §9.6.1), rule by rule
+
+1. **Embedded files** — written once at `enter()`, never rewritten (see
+   `enter()` step 2). A wrapping Environment's embedded files (`Env.File.*`
+   in its hooks) are likewise allocated and written once per Service
+   Session, on the first `onWrapService*` hook that runs, and only
+   re-registered for later hooks (`ServiceSession::wrap_hook_files`); their
+   `data` may reference the wrapping Environment's `Param.*`, `let`s,
+   `Session.*`, and `WrappedService.*` (constant for the Session), but not
+   `WrappedAction.*`, which differs per hook — a file is never rewritten
+   while `onWrapServiceRun` may be reading it.
+2. **Stdout** — every `ActionMessage` from the check is logged and ignored
+   (`log_check_message_ignored`); the check's result is `exit_code == 0`,
+   not `SubprocessResult::state`, so an `openjd_fail` line cannot turn an
+   exit-0 invocation into "not ready". The Service's `ActionStatus` is
+   written by `onEnter`, `onRun`, `onExit` only.
+3. **Log attribution** — see "Logging".
+4. **At most one invocation at a time** — structural: the check driver is one
+   sequential loop; it exists only between `launch()` and the `onRun` exit
+   (so never while `onEnter` or `onExit` runs, which happen outside that
+   window and in the main slot); it returns after reporting success, so
+   nothing runs after READY.
+5. **`onRun` exit wins** — a success report is only honored while the
+   `onRun` future is still pending (the `check_rx` arm is disabled once the
+   exit is observed, and the report channel is not drained afterwards); on
+   exit the `onRun` driver cancels `check_stop`, the check driver cancels the
+   in-flight invocation through its own slot (`SessionCancelHandle::cancel(None,
+   false)` — the action's own cancelation method, full declared grace) and
+   discards the result; the `onRun` driver awaits the check driver before
+   publishing the exit. `end()` cancels `onRun`, awaits that exit (and thus
+   the check), then runs `onExit`.
+6. **Wrap hooks** — `onWrapServiceReadinessCheck` runs in the second slot
+   while `onWrapServiceRun` runs in the main slot, exactly as the unwrapped
+   pair does. Wrap scripts must tolerate this (RFC); nothing in the runtime
+   serializes them.
+
+The check SHOULD be read-only with respect to the working directory it shares
+with `onRun` (RFC `<ServiceActions>` item 3). This is advice to template
+authors; the runtime cannot enforce it.
 
 ### Exit
 
@@ -301,11 +427,73 @@ immediately — through `Session::cancel_handle()`, and marks the pending exit
 `cancel_handle()` returns the same `SessionCancelHandle`, which also cancels a
 running `onEnter`, `onExit`, or Environment action from another task.
 
+## Wrap hooks (`WRAP_ACTIONS` + `SERVICE`)
+
+`Session::service_wrap_hooks()` returns the innermost entered Environment
+that defines any wrap hook (`Session::active_wrap_env`, RFC 0008's single
+layer), provided its `runScope` includes `SERVICE` — an Environment whose
+`runScope` excludes `SERVICE` (e.g. a `[TASK]` wrapper) is never entered in
+a Service Session in the first place (`enter()` step 1), so it is skipped
+entirely. When such an Environment is present, `ServiceSession::resolve_action(kind)`
+substitutes the hook for the Service's action:
+
+| Service action | Hook | Runs when |
+|---|---|---|
+| `onEnter` | `onWrapServiceEnter` | the Service defines `onEnter` |
+| `onRun` | `onWrapServiceRun` | always (every Service defines `onRun`) |
+| `onReadinessCheck` | `onWrapServiceReadinessCheck` | readiness type is `COMMAND` (so the Service defines `onReadinessCheck`) |
+| `onExit` | `onWrapServiceExit` | the Service defines `onExit` and any Service action ran |
+
+("Nothing to replace", RFC rule 2 / §4.3 rule 6.) A hook that is defined but
+whose Service action is not never runs; a Service action whose hook the
+wrapping Environment does not define runs unwrapped (the CLI's validation
+ensures a `SERVICE`-scoped wrapper defines all four). The log line `Service
+'svc' onRun: running onWrapServiceRun of wrapping Environment 'W' in its
+place` records each substitution.
+
+The hook's scope is built as for RFC 0008's hooks, through the shared
+`seed_wrapped_action_symbols`: `Session::wrap_hook_base_symtab()` (the
+Session's base table with path mapping materialized), the wrapping
+Environment's `Env.File.*` (see rule 1 above), its frozen `resolved_symtab`
+and script `let` bindings, then `WrappedAction.Command` / `.Args` /
+`.Environment` / `.Timeout` / `.Cancelation.Mode` /
+`.Cancelation.NotifyPeriodInSeconds` — resolved against the **Service's**
+own symbol table (`Param.*`, `Service.*`, `Service.File.*`, its `let`s), so
+a wrapper-defined name never leaks into the wrapped command — and
+`WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses`
+(`openjd_model::job::service_symbols::add_wrapped_service_symbols`, parallel
+lists in port declaration order). `WrappedAction.Environment` is the
+session-defined environment the wrapped action would have run with: the
+entered Environments' `variables` and `openjd_env` exports (RFC 0008), then
+the Service's `variables`, then `onEnter`'s `openjd_env` / `openjd_unset_env`
+changes (`ServiceSession::wrapped_env_vars`) — host-inherited variables
+excluded. `WrappedAction.Cancelation.NotifyPeriodInSeconds` applies the
+30-second default (§5.3.2 "30 otherwise"). The hook runs in the Service
+action's process environment (`service_env_vars()`), with the Service
+action's default timeout (none for `onEnter`/`onRun`, 30 s for the check,
+300 s for `onExit`) unless it declares its own, and with its own
+`cancelation`.
+
+Stdout scanning is on the wrap script (RFC rule 4): `openjd_env` from a
+wrapped `onEnter` and `openjd_service_ready` from a wrapped `onRun` are
+honored when the wrapper forwards the wrapped process's stdout; the wrapped
+check's exit status is the hook's exit status. Failure mapping is the
+wrapped action's (rule 5): a failed `onWrapServiceEnter` is a start failure
+(`ServiceScriptFailed { action: "onEnter" }`), an `onWrapServiceRun` exit is
+an instance exit, a failed `onWrapServiceExit` is an `onExit` failure, and
+an `onWrapServiceReadinessCheck` invocation's status has the check's
+meaning. The wrapping Environment's own `onEnter` / `onExit` are never
+wrapped, and inner Environments entered in the Service Session are wrapped by
+its `onWrapEnvEnter` / `onWrapEnvExit` exactly as in a Task Session — that is
+`Session::enter_environment` / `exit_environment`'s existing behavior, which
+`enter()` and `end()` call unchanged.
+
 ## Relaunch (constraint 5, "Failure and restart" 3.2)
 
 `launch()` in `Exited` relaunches `onRun` in the same Session: same working
 directory and endpoints, `onEnter` not re-run, its environment-variable changes
-retained, embedded files already in place, a fresh readiness check. Constraint
+retained, embedded files already in place, a fresh readiness check (for
+`COMMAND`, a fresh check driver and invocation count). Constraint
 5 is enforced structurally: `launch()` in `Running` is
 `InvalidServiceState`. Whether to relaunch here or open a new Session (new
 ports) is the caller's decision.
@@ -317,10 +505,12 @@ step runs regardless of earlier failures and the first error is returned once
 teardown is complete:
 
 1. If `Running`: `cancel_run(None)` (the action's own method, full declared
-   grace), then await the exit.
+   grace), then await the exit — which includes the cancelation of any
+   `onReadinessCheck` invocation in flight (rule 5: canceled before `onExit`).
 2. If any action of the Service has run (`onEnter` ran, or `onRun` was ever
-   launched) and `onExit` is defined: run it in the foreground with the 300 s
-   default timeout (banner `Service onExit: <name>`). A non-`Success` result
+   launched) and `onExit` is defined: run it (or `onWrapServiceExit`) in the
+   foreground with the 300 s default timeout (banner `Service onExit:
+   <name>`). A non-`Success` result
    is `SessionError::ServiceScriptFailed { action: "onExit", .. }` —
    reported, but per RFC 0009 it does not change the outcome of the scope.
    `onExit` does not run after an Environment `onEnter` start failure, since
@@ -331,31 +521,59 @@ teardown is complete:
    `retain_working_dir`); the cross-user helper is shut down.
 
 State becomes `Ended`. Dropping a `ServiceSession` without `end()` logs a
-warning, aborts the driver task (which detaches but does not stop the
-`onRun` process beyond what the `Session`'s `Drop` does), and relies on
-`Session`'s `Drop` for the working directory.
+warning, cancels the check driver's stop token, aborts the `onRun` driver
+task (which detaches but does not stop the `onRun` process beyond what the
+`Session`'s `Drop` does), and relies on `Session`'s `Drop` for the working
+directory.
 
 `start()` is `enter()` → `launch()` → `wait_ready()`, returning the terminal
 readiness.
 
-## Logging
+## Logging and attribution (rule 3)
 
 Service Sessions use the same `session_log!` records (session id,
-`LogContent`) and the same per-action banners as Task Sessions. In this
-milestone exactly one Service action runs at a time, so banners suffice for
-attribution; the log-attribution rule of "Concurrency with `onRun`" (rule 3)
-applies once `onReadinessCheck` is implemented.
+`LogContent`, timestamp) and the same per-action banners as Task Sessions.
+`onEnter`, `onRun`, and `onExit` run one at a time in the main slot, so their
+banners delimit their output as in any Session, and `onRun`'s lines stay
+**untagged** — it is the Service's main stream and the only one present once
+the instance is READY.
 
-## Not covered by this runtime (by design or deferred)
+`onReadinessCheck` interleaves with `onRun`, so every record about it is
+attributed to it in both forms RFC 0009 describes:
+
+- **structured**: the record carries the key-value field `openjd_action =
+  "<action name>"` next to `session_id` / `openjd_log_content` /
+  `openjd_timestamp_usec`;
+- **plain text**: the message is prefixed with `[<action name>] `, e.g.
+  `[onReadinessCheck] connection refused`.
+
+Both come from the `session_action_log!` macro (`logging.rs`), the tagged
+sibling of `session_log!`. The tag is carried by `ScriptRunnerBase::action_tag`
+→ `ActionFilter::action_tag`, and `run_subprocess` / `run_via_helper` use it
+for every record they emit about the action: `Running command …`, `Command
+started as pid: …`, `Output:`, each `COMMAND_OUTPUT` line, cancel/timeout
+notices, `Process exit code: …`. The runner's `Phase: Running action`
+subsection banner is replaced by one tagged line for a tagged action (banners
+would interleave). The check driver's own lines (invocation start/outcome,
+ignored messages, cancelation) are tagged the same way. The tag is the name
+of the action that actually ran: `onReadinessCheck`, or
+`onWrapServiceReadinessCheck` when wrapped (RFC rule 3 applies to the wrap
+script's output too). The tag is added by the runtime; the Service's
+processes do not prefix their own output. Redaction applies to the line
+before the prefix is added.
+
+Not implemented (RFC MAY): collapsing the output of invocations that
+succeed. Lines are logged as they stream, before the exit status is known;
+buffering them per invocation would be a separate change.
+
+## Not covered by this runtime (by design)
 
 - Port allocation, `bindAddress`/`connectAddress` selection, and the restart
   policy are inputs/decisions of the caller.
-- `COMMAND` readiness / `onReadinessCheck` and the concurrency rules of RFC
-  0009 §9.6.1 — deferred; `with_config` rejects `COMMAND`.
-- `onWrapService*` hooks (`WRAP_ACTIONS` + `SERVICE`) — deferred. A wrapping
-  Environment entered in a Service Session has its `onWrapEnvEnter` /
-  `onWrapEnvExit` applied to the *inner Environments* as in any Session (that
-  is `Session`'s existing behavior), but the Service's own actions run
-  unwrapped.
+- Validation of the Environment stack given to the Service Session — the
+  single-layer rule (checked by `Session::enter_environment` as in any
+  Session), and that a `SERVICE`-scoped wrapping Environment defines all four
+  `onWrapService*` hooks (§9.7 item 6) — is the CLI's / scheduler's.
+- Collapsing successful `onReadinessCheck` output (RFC MAY) — see "Logging".
 - Host loss (constraint 8) is a scheduler concern; nothing here waits on a
   lost host because nothing here runs there.

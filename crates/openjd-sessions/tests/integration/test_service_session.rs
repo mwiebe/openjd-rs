@@ -73,6 +73,21 @@ fn stdout_check(timeout_seconds: u64) -> ServiceReadinessCheck {
     ServiceReadinessCheck::Stdout { timeout_seconds }
 }
 
+fn command_check(interval_seconds: u64, timeout_seconds: u64) -> ServiceReadinessCheck {
+    ServiceReadinessCheck::Command {
+        interval_seconds,
+        timeout_seconds,
+    }
+}
+
+/// `sh -c` with an explicit `timeout`.
+fn sh_timeout(script: &str, timeout_secs: u64) -> Action {
+    Action {
+        timeout: Some(fs(&timeout_secs.to_string())),
+        ..sh(script)
+    }
+}
+
 struct ServiceBuilder {
     service: Service,
 }
@@ -121,6 +136,10 @@ impl ServiceBuilder {
     }
     fn on_exit(mut self, a: Action) -> Self {
         self.service.script.actions.on_exit = Some(a);
+        self
+    }
+    fn on_readiness_check(mut self, a: Action) -> Self {
+        self.service.script.actions.on_readiness_check = Some(a);
         self
     }
     fn variables(mut self, vars: &[(&str, &str)]) -> Self {
@@ -1392,7 +1411,7 @@ async fn with_config_rejects_incomplete_endpoint_assignment() {
 }
 
 #[tokio::test]
-async fn with_config_rejects_mismatched_service_name_and_command_readiness() {
+async fn with_config_rejects_mismatched_service_name_and_command_without_check() {
     let root = TempDir::new().unwrap();
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 1")).build();
     let err = ServiceSession::with_config(ServiceSessionConfig {
@@ -1426,6 +1445,760 @@ async fn with_config_rejects_mismatched_service_name_and_command_readiness() {
     .unwrap();
     assert_eq!(
         err.to_string(),
-        "Service 'svc': the COMMAND readiness check type is not supported by this runtime yet"
+        "Service 'svc': readiness check type is COMMAND but onReadinessCheck is not defined"
     );
+}
+
+// ────────────────────────────────────────────────────────────────────
+// COMMAND readiness (onReadinessCheck) and its concurrency rules
+// ────────────────────────────────────────────────────────────────────
+
+/// A check script that counts its invocations in `counter` and exits 0 on
+/// the `ready_on`th. Each invocation prints `attempt N`.
+fn counting_check(counter: &str, ready_on: u32) -> String {
+    format!(
+        "n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}; \
+         echo \"attempt $n\"; [ $n -ge {ready_on} ]"
+    )
+}
+
+fn read_counter(path: &PathBuf) -> u32 {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
+        .readiness(command_check(1, 300))
+        .on_readiness_check(sh(&counting_check(&c, 3)))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    let ready = ss.start().await.unwrap();
+    assert_eq!(ready, ServiceReadiness::Ready { message: None });
+    // Two 1 s intervals separate the three invocations.
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(read_counter(&counter), 3);
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+
+    // Rule 4: once READY the action is not run again.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(read_counter(&counter), 3);
+
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Canceled);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Readiness check: COMMAND (timeout 300s)"));
+        // Rule 3: the check's output is tagged, onRun's is not.
+        assert!(
+            bodies.contains(&"[onReadinessCheck] attempt 1"),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"[onReadinessCheck] attempt 2"));
+        assert!(bodies.contains(&"[onReadinessCheck] attempt 3"));
+        assert!(bodies.contains(&"service line"));
+        assert!(!bodies.iter().any(|b| b.contains("] service line")));
+        // Process-control lines of the check are tagged too.
+        assert!(bodies.contains(&"[onReadinessCheck] Service 'svc' readiness check invocation 1"));
+        assert!(bodies.contains(
+            &"[onReadinessCheck] Readiness check invocation 1: not ready (exit code: 1)"
+        ));
+        assert!(bodies
+            .contains(&"[onReadinessCheck] Readiness check invocation 3: ready (exit code: 0)"));
+        assert!(bodies.contains(&"Service 'svc' is READY"));
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|b| b
+                    .starts_with("[onReadinessCheck] Service 'svc' readiness check invocation"))
+                .count(),
+            3
+        );
+    });
+}
+
+#[tokio::test]
+async fn command_readiness_waits_interval_between_invocations() {
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let times = root.path().join("times.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .readiness(command_check(2, 300))
+        .on_readiness_check(sh(&format!(
+            "date +%s%N >> {}; {}",
+            times.display(),
+            counting_check(&c, 2)
+        )))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let stamps: Vec<u128> = read_trace(&times)
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(stamps.len(), 2);
+    // The second invocation starts intervalSeconds (2 s) after the first ends.
+    let gap = Duration::from_nanos((stamps[1] - stamps[0]) as u64);
+    assert!(gap >= Duration::from_secs(2), "gap {gap:?}");
+    assert!(gap < Duration::from_secs(5), "gap {gap:?}");
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+#[tokio::test]
+async fn command_readiness_invocation_timeout_counts_as_not_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    // The first invocation hangs past its 1 s timeout; the second exits 0.
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .readiness(command_check(1, 300))
+        .on_readiness_check(sh_timeout(
+            &format!(
+                "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+                 if [ $n -eq 1 ]; then sleep 30; fi; exit 0"
+            ),
+            1,
+        ))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert!(ss.start().await.unwrap().is_ready());
+    // 1 s timeout + 1 s interval, well under the 30 s the first check slept.
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(read_counter(&counter), 2);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(
+                &"[onReadinessCheck] Readiness check invocation 1: not ready (exceeded its timeout)"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies
+            .contains(&"[onReadinessCheck] Readiness check invocation 2: ready (exit code: 0)"));
+    });
+}
+
+#[tokio::test]
+async fn command_readiness_timeout_is_not_a_service_failure_and_stops_the_check() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .readiness(command_check(1, 2))
+        .on_readiness_check(sh(&counting_check(&c, 1000)))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(ss.start().await.unwrap(), ServiceReadiness::TimedOut);
+    // onRun is still running: the restart decision is the caller's.
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    let n = read_counter(&counter);
+    assert!((1..=3).contains(&n), "{n}");
+    // The check does not run again after the decision.
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(read_counter(&counter), n);
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies
+            .contains(&"Service 'svc' did not become READY within 2s (COMMAND readiness check)"));
+    });
+}
+
+#[tokio::test]
+async fn on_run_exit_during_check_invocation_cancels_it_with_its_method() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // The check hangs; its TERM trap records the cancel. onRun exits after
+    // 1 s, while the first invocation is in flight.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!("sleep 1; echo run-exit >> {t}; exit 0")),
+    )
+    .readiness(command_check(1, 300))
+    .on_readiness_check(sh_ntt(
+        &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
+        5,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceReadiness::ExitedBeforeReady
+    );
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.state, ActionState::Success);
+    assert!(!exit.canceled);
+    // The in-flight check was SIGTERMed (NOTIFY_THEN_TERMINATE), not left
+    // to its 30 s default timeout.
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(
+        read_trace(&trace),
+        vec!["check-start", "run-exit", "check-term"]
+    );
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(
+                &"[onReadinessCheck] Canceling readiness check invocation 1: its result will be discarded"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"Service 'svc' onRun exited before becoming READY"));
+        // The discarded invocation reports no readiness outcome.
+        assert!(!bodies
+            .iter()
+            .any(|b| b.starts_with("[onReadinessCheck] Readiness check invocation 1:")));
+    });
+}
+
+#[tokio::test]
+async fn messages_on_check_stdout_are_logged_and_ignored() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    // Invocation 1 emits every message kind and exits 1: none is honored,
+    // including openjd_service_ready. Invocation 2 emits openjd_fail and
+    // exits 0: the exit status wins — READY.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_status: from onRun; sleep 60"),
+    )
+    .readiness(command_check(1, 300))
+    .on_readiness_check(sh(&format!(
+        "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+         if [ $n -eq 1 ]; then \
+           echo openjd_service_ready: not really; \
+           echo openjd_status: from check; \
+           echo openjd_progress: 50; \
+           echo openjd_env: FROM_CHECK=1; \
+           echo openjd_unset_env: HOME; \
+           echo openjd_redacted_env: SECRET=hunter2; \
+           echo openjd_fail: not yet; \
+           exit 1; \
+         fi; \
+         echo openjd_fail: ignored on exit 0; exit 0"
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    let ready = ss.wait_ready().await.unwrap();
+    assert_eq!(ready, ServiceReadiness::Ready { message: None });
+    assert_eq!(read_counter(&counter), 2);
+    // The Service's status comes from onRun only.
+    let status = ss.action_status().unwrap();
+    assert_eq!(status.state, ActionState::Running);
+    assert_eq!(status.status_message.as_deref(), Some("from onRun"));
+    assert_eq!(status.progress, None);
+    assert_eq!(status.fail_message, None);
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.fail_message, None);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        for what in [
+            "openjd_service_ready",
+            "openjd_status",
+            "openjd_progress",
+            "openjd_env",
+            "openjd_unset_env",
+            "openjd_redacted_env",
+            "openjd_fail",
+        ] {
+            let expected = format!(
+                "[onReadinessCheck] Ignoring {what} from Service 'svc' onReadinessCheck: \
+                 messages on the readiness check's stdout are not honored"
+            );
+            assert!(
+                bodies.contains(&expected.as_str()),
+                "missing {expected:?}: {bodies:?}"
+            );
+        }
+        // The redacted value never reaches the log.
+        assert!(!bodies.iter().any(|b| b.contains("hunter2")));
+        assert!(bodies.contains(&"[onReadinessCheck] openjd_redacted_env: SECRET=********"));
+    });
+}
+
+#[tokio::test]
+async fn end_during_check_invocation_cancels_check_before_on_exit() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!("trap 'echo run-term >> {t}; exit 0' TERM; while true; do sleep 0.1; done"),
+            5,
+        ),
+    )
+    .readiness(command_check(1, 300))
+    .on_readiness_check(sh_ntt(
+        &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
+        5,
+    ))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    // Let the first invocation start.
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(ss.readiness(), Some(ServiceReadiness::Pending));
+    let started = std::time::Instant::now();
+    ss.end().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(8));
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+    let got = read_trace(&trace);
+    assert_eq!(got[0], "check-start");
+    assert_eq!(got.last().unwrap(), "svc-exit");
+    assert!(got.contains(&"run-term".to_string()));
+    assert!(got.contains(&"check-term".to_string()));
+    assert_eq!(got.len(), 4);
+    assert_eq!(ss.readiness(), Some(ServiceReadiness::ExitedBeforeReady));
+}
+
+#[tokio::test]
+async fn service_file_usable_from_check_and_never_rewritten() {
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        Action {
+            command: fs("{{Service.File.serve}}"),
+            args: None,
+            timeout: None,
+            cancelation: None,
+        },
+    )
+    .readiness(command_check(1, 300))
+    .on_readiness_check(Action {
+        command: fs("{{Service.File.probe}}"),
+        args: Some(vec![fs("{{Service.File.config}}")]),
+        timeout: None,
+        cancelation: None,
+    })
+    .embedded_file("serve", "#!/bin/sh\nsleep 60\n", true)
+    .embedded_file(
+        "probe",
+        &format!(
+            "#!/bin/sh\necho \"config=$(cat \\\"$1\\\")\"\n{}\n",
+            counting_check(&c, 2)
+        ),
+        true,
+    )
+    .embedded_file("config", "port={{Service.svc.main.port}}", false)
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 4242)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    // Rule 1: embedded files are written once, at enter(); no later action
+    // (check invocations, relaunch) rewrites a file onRun was given.
+    let files_dir = ss.session().files_directory().to_path_buf();
+    let snapshot = || -> Vec<(PathBuf, std::time::SystemTime, Vec<u8>)> {
+        let mut v: Vec<_> = std::fs::read_dir(&files_dir)
+            .unwrap()
+            .map(|e| {
+                let p = e.unwrap().path();
+                let m = std::fs::metadata(&p).unwrap().modified().unwrap();
+                let d = std::fs::read(&p).unwrap();
+                (p, m, d)
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = snapshot();
+    assert_eq!(before.len(), 3);
+    ss.launch().await.unwrap();
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    assert_eq!(read_counter(&counter), 2);
+    assert_eq!(snapshot(), before);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    // Relaunch: a fresh readiness check against unchanged files.
+    std::fs::remove_file(&counter).unwrap();
+    ss.launch().await.unwrap();
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    assert_eq!(snapshot(), before);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// onWrapService* hooks (WRAP_ACTIONS + SERVICE)
+// ────────────────────────────────────────────────────────────────────
+
+/// A wrap hook: a bash wrapper that records `<tag>` and the
+/// `WrappedService.*` values to `trace`, then execs the wrapped command with
+/// its args.
+fn forwarding_hook(tag: &str, trace: &str) -> Action {
+    let script = format!(
+        "echo \"[{tag}] name={{{{WrappedService.Name}}}} \
+         ports={{{{len(WrappedService.Ports)}}}} \
+         p0={{{{WrappedService.PortNames[0]}}}}:{{{{WrappedService.Ports[0]}}}}@{{{{WrappedService.BindAddresses[0]}}}} \
+         p1={{{{WrappedService.PortNames[1]}}}}:{{{{WrappedService.Ports[1]}}}}@{{{{WrappedService.BindAddresses[1]}}}} \
+         cmd={{{{WrappedAction.Command}}}} nargs=$#\" >> '{trace}'\n\
+         exec {{{{WrappedAction.Command}}}} \"$@\""
+    );
+    Action {
+        command: fs("bash"),
+        args: Some(vec![
+            fs("-c"),
+            fs(&script),
+            fs("--"),
+            fs("{{WrappedAction.Args}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    }
+}
+
+fn service_wrap_env(
+    name: &str,
+    run_scope: Option<Vec<RunScope>>,
+    hooks: [Option<Action>; 4],
+) -> Environment {
+    let [enter, run, check, exit] = hooks;
+    Environment {
+        name: name.into(),
+        description: None,
+        run_scope,
+        script: Some(EnvironmentScript {
+            let_bindings: None,
+            actions: EnvironmentActions {
+                on_enter: Some(sh("true")),
+                on_wrap_env_enter: Some(sh("true")),
+                on_wrap_task_run: None,
+                on_wrap_env_exit: Some(sh("true")),
+                on_wrap_service_enter: enter,
+                on_wrap_service_run: run,
+                on_wrap_service_readiness_check: check,
+                on_wrap_service_exit: exit,
+                on_exit: None,
+            },
+            embedded_files: None,
+        }),
+        variables: None,
+        resolved_symtab: None,
+    }
+}
+
+#[tokio::test]
+async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        None,
+        [
+            Some(forwarding_hook("onWrapServiceEnter", &t)),
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            Some(forwarding_hook("onWrapServiceExit", &t)),
+        ],
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo from-enter=$FROM_ENTER; echo openjd_service_ready: up on {{{{Service.svc.main.port}}}}; \
+             echo run >> {t}; sleep 60"
+        )),
+    )
+    .readiness(stdout_check(300))
+    .on_enter(sh("echo openjd_env: FROM_ENTER=yes"))
+    .on_exit(sh(&format!("echo exit >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", 4100), ("metrics", 4101)]),
+        vec![],
+    );
+    let ready = ss.start().await.unwrap();
+    // openjd_service_ready is honored through the wrapper's forwarded stdout.
+    assert_eq!(
+        ready,
+        ServiceReadiness::Ready {
+            message: Some("up on 4100".into())
+        }
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    // openjd_env from the wrapped onEnter reached onRun.
+    assert_eq!(lines(&exit.stdout)[0], "from-enter=yes");
+    ss.end().await.unwrap();
+
+    let values = "name=svc ports=2 p0=main:4100@127.0.0.1 p1=metrics:4101@127.0.0.1 cmd=sh nargs=2";
+    assert_eq!(
+        read_trace(&trace),
+        vec![
+            format!("[onWrapServiceEnter] {values}"),
+            format!("[onWrapServiceRun] {values}"),
+            "run".to_string(),
+            format!("[onWrapServiceExit] {values}"),
+            "exit".to_string(),
+        ]
+    );
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Service 'svc' onEnter: running onWrapServiceEnter of wrapping Environment 'Wrapper' in its place"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' onRun: running onWrapServiceRun of wrapping Environment 'Wrapper' in its place"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' onExit: running onWrapServiceExit of wrapping Environment 'Wrapper' in its place"
+        ));
+        // STDOUT readiness: onWrapServiceReadinessCheck never runs.
+        assert!(!bodies
+            .iter()
+            .any(|b| b.contains("onWrapServiceReadinessCheck")));
+        assert!(bodies.contains(&"from-enter=yes"));
+    });
+}
+
+#[tokio::test]
+async fn wrap_hooks_run_only_for_actions_the_service_defines() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        Some(vec![RunScope::Service]),
+        [
+            Some(forwarding_hook("onWrapServiceEnter", &t)),
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            Some(forwarding_hook("onWrapServiceExit", &t)),
+        ],
+    );
+    // No onEnter, no onExit, TCP_CONNECT readiness: only onRun exists to wrap.
+    let service = ServiceBuilder::new("svc", &["main", "metrics"], python_listener("svc", "x"))
+        .readiness(tcp_check(&["main"], 300))
+        .build();
+    let port = free_port();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", port), ("metrics", 7)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.end().await.unwrap();
+    assert_eq!(
+        read_trace(&trace),
+        vec![format!(
+            "[onWrapServiceRun] name=svc ports=2 p0=main:{port}@127.0.0.1 p1=metrics:7@127.0.0.1 cmd=python3 nargs=5"
+        )]
+    );
+}
+
+#[tokio::test]
+async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let counter = root.path().join("counter.txt");
+    let t = trace.display().to_string();
+    let c = counter.display().to_string();
+    let wrapper = service_wrap_env(
+        "Wrapper",
+        None,
+        [
+            None,
+            Some(forwarding_hook("onWrapServiceRun", &t)),
+            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            None,
+        ],
+    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo run-start >> {t}; echo service line; while true; do sleep 0.1; done"
+        )),
+    )
+    .readiness(command_check(1, 300))
+    // READY on the 2nd attempt, but only once onRun has started.
+    .on_readiness_check(sh(&format!(
+        "grep -q run-start {t} || exit 1; {}",
+        counting_check(&c, 2)
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", 4200), ("metrics", 4201)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceReadiness::Ready { message: None }
+    );
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    let got = read_trace(&trace);
+    let hooks: Vec<&String> = got.iter().filter(|l| l.starts_with('[')).collect();
+    let values = "name=svc ports=2 p0=main:4200@127.0.0.1 p1=metrics:4201@127.0.0.1 cmd=sh nargs=2";
+    assert_eq!(hooks[0], &format!("[onWrapServiceRun] {values}"));
+    // Every check invocation went through the hook, while onRun ran.
+    assert!(hooks.len() >= 3, "{got:?}");
+    assert!(hooks[1..]
+        .iter()
+        .all(|h| **h == format!("[onWrapServiceReadinessCheck] {values}")));
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        // The wrapped check's output is attributed to the hook that ran.
+        assert!(
+            bodies.contains(&"[onWrapServiceReadinessCheck] attempt 1"),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(&"[onWrapServiceReadinessCheck] attempt 2"));
+        assert!(bodies.contains(&"service line"));
+        assert!(bodies.contains(
+            &"Service 'svc' onReadinessCheck: running onWrapServiceReadinessCheck of wrapping Environment 'Wrapper' in its place"
+        ));
+    });
+}
+
+#[tokio::test]
+async fn task_only_wrapper_is_skipped_entirely() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // A `[TASK]` wrapping Environment: RFC 0008's three hooks, no Service
+    // hooks. It is not entered in a Service Session at all.
+    let mut wrapper = service_wrap_env(
+        "TaskWrapper",
+        Some(vec![RunScope::Task]),
+        [None, None, None, None],
+    );
+    wrapper.script.as_mut().unwrap().actions.on_wrap_task_run = Some(sh("true"));
+    wrapper.script.as_mut().unwrap().actions.on_enter =
+        Some(sh(&format!("echo wrapper-enter >> {t}")));
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: ok; sleep 60"),
+    )
+    .readiness(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}")))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![wrapper],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    assert!(ss.session().environments_entered().is_empty());
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["svc-enter"]);
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"Skipping Environment 'TaskWrapper': its runScope does not include SERVICE"
+        ));
+        assert!(!bodies.iter().any(|b| b.contains("in its place")));
+    });
 }

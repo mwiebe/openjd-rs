@@ -57,6 +57,55 @@ of the actual call site. A macro preserves the correct source location.
 The `kv` feature syntax (`key = value;`) is only available in the `log` macros, not
 through a programmatic API, which further necessitates a macro wrapper.
 
+## session_action_log! Macro — per-action attribution (RFC 0009)
+
+```rust
+macro_rules! session_action_log {
+    ($level:ident, $session_id:expr, $action:expr, $content:expr, $($arg:tt)+) => {
+        match ($action as Option<&str>) {
+            Some(action) => log::$level!(
+                target: "openjd.sessions",
+                session_id = $session_id,
+                openjd_log_content = $content.bits(),
+                openjd_timestamp_usec = timestamp_usec(),
+                openjd_action = action;
+                "[{}] {}", action, format_args!($($arg)+)
+            ),
+            None => session_log!($level, $session_id, $content, $($arg)+),
+        }
+    };
+}
+```
+
+A Service Session's `onReadinessCheck` runs *while* `onRun` runs, so banners
+no longer attribute output lines to the action that produced them. RFC 0009
+"Concurrency with `onRun`" rule 3 requires every captured stdout/stderr line
+of a Service Session to be attributable to its action, and describes two
+implementation forms: a structured field, or a `[<action>] ` text prefix.
+`session_action_log!` emits both at once when `$action` is `Some`:
+
+- the structured field `openjd_action = "<action name>"` (alongside
+  `session_id`, `openjd_log_content`, `openjd_timestamp_usec`), for
+  consumers that read the record's key-values;
+- the prefix `[<action name>] ` on the message, for the single plain-text
+  log.
+
+With `$action == None` it is exactly `session_log!`, so the untagged path is
+unchanged.
+
+Who sets the tag: `ScriptRunnerBase::action_tag` (set by the Service Session
+to `"onReadinessCheck"`, or `"onWrapServiceReadinessCheck"` when wrapped) is
+copied into `ActionFilter::action_tag` for the action's run, and
+`subprocess::run_subprocess` / `cross_user_helper::run_via_helper` emit every
+record about the action — `Running command …`, `Command started as pid`,
+`Output:`, each `COMMAND_OUTPUT` line, cancel and timeout notices, `Process
+exit code` — through `session_action_log!` with that tag. The runner's
+`Phase: Running action` subsection banner becomes a single tagged
+`PROCESS_CONTROL` line for a tagged action. `onRun`, `onEnter`, `onExit`,
+Environment actions and Tasks have no tag and log exactly as before.
+Redaction is applied to the line before the prefix is added, so the prefix
+never hides or splits a redacted value.
+
 ## Banner Helpers
 
 ```rust

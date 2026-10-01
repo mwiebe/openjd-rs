@@ -31,10 +31,17 @@ pub struct ActionFilter {
     redacted_values: HashSet<String>,
     redacted_lines: HashSet<String>,
     log_level: u32,
+    /// Log attribution tag for an action that runs concurrently with
+    /// another (RFC 0009 rule 3); `None` for every other action.
+    action_tag: Option<String>,
 }
 
 impl ActionFilter {
     pub fn new(session_id: &str, echo_openjd_directives: bool, redactions_enabled: bool) -> Self;
+
+    /// Set / read the attribution tag; see logging.md (`session_action_log!`).
+    pub fn set_action_tag(&mut self, tag: Option<String>);
+    pub fn action_tag(&self) -> Option<&str>;
 
     pub fn filter_message(&mut self, line: &str, session_id: &str)
         -> (Vec<FilterCallback>, bool, String);
