@@ -78,6 +78,13 @@ impl EnvironmentScriptRunner {
         self
     }
 
+    /// The Session-wide log tag every record of this runner's actions
+    /// carries. See [`crate::session::SessionConfig::log_tag`].
+    pub fn with_session_tag(mut self, tag: Option<String>) -> Self {
+        self.base.session_tag = tag;
+        self
+    }
+
     pub fn with_cancel_token(mut self, token: CancellationToken) -> Self {
         self.base.cancel_token = token;
         self

@@ -38,7 +38,7 @@ short-circuiting), so users see all problems at once.
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
 | 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009) |
+| 8 | `format_strings.rs`, then `service_scope.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009). `service_scope.rs` then rewrites the generic undefined-variable message of each out-of-scope `Service.*` / `Task.*` reference whose Service the document declares into the scope rule it breaks |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule (with the effective `[SERVICE]` for a Service's `serviceEnvironments`), and the single-wrap-layer-per-session rule for Task and Service Sessions (RFC 0008, RFC 0009) |
 | 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally — including its `serviceEnvironments` — and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
@@ -239,12 +239,49 @@ places the Service — so pass 8 seeds the `Service.*` keys as `Unresolved` plac
 `Service.File.<name>` as `unresolved[path]`) through the `pub(crate)` seeders in
 `job::service_symbols`, which spell the keys exactly as the runtime-facing
 `build_service_symbol_table` does. Scope — *which* Services and which values a given field
-may see — is decided per call site, and a reference outside its scope surfaces as the crate's
-ordinary undefined-variable error (`Failed to parse interpolation expression at [s, e].
-Undefined variable: 'Service.X.p.port'.`), exactly as an out-of-scope `WrappedStep.Name` does
+may see — is decided per call site, and a reference outside its scope is detected as the
+crate's ordinary undefined-variable error, exactly as an out-of-scope `WrappedStep.Name` is
 under RFC 0008. The same mechanism rejects a reference to a Service or port name that is not
 declared (§9.7 item 1). Nothing about `Service.*` is examined unless the template declares
 `SERVICE`; without it pass 11 rejects the lists and pass 8 never walks them.
+
+#### Scope-rule diagnostics (`service_scope.rs`)
+
+The symbol-table mechanism finds every violation but explains none of them: the author sees
+`Undefined variable: 'Service.Counter.api.connectAddress'.` — and, when another Service's name
+is one edit away, a `Did you mean: Service.Cache.main.port` pointing at the wrong Service
+(exploratory report stumbles S2–S4, S7, `w05`). After pass 8 has walked a document,
+`service_scope::refine_job_template` / `refine_environment_template` revisit the errors it
+added (those from the index `errors.errors` had before the pass) whose message contains
+`Undefined variable: '<name>'.` and, when `<name>` is `Service.<svc>.…` with `<svc>` **declared
+somewhere in the document** (or `Task.*` inside a Service), replace that sentence — and the
+`Did you mean` suggestion on the same line — with the rule the reference breaks. The path, the
+`Failed to parse interpolation expression at [s, e]. ` / `Invalid expression in let binding
+'x': ` prefix, and the expression-source and caret lines that follow are untouched, and the
+structured `ErrorDetail` summary and span summaries are updated in step. The reference site is
+classified from the error path (`Site`: a Step's `script`, a Service body or its
+`serviceEnvironments`, a Job Environment, a Step Environment, an Environment Template's
+`environment`, or a job-creation field — `hostRequirements`, any `let`, a `parameterSpace`
+range, `timeout` / `notifyPeriodInSeconds`, a Service's `port` / `timeoutSeconds` /
+`intervalSeconds` / `maxAttempts`); the declarations are every `jobServices` /
+`stepServices` entry (or an Environment Template's `services`). Rules, in the order tried:
+
+| Condition | Message |
+|---|---|
+| `Task.*` at a Service site | `Task.* is not available within a Service.` |
+| job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `timeoutSeconds`, `intervalSeconds`, or `maxAttempts`) |
+| the site is an Environment with `SERVICE` in its (effective) `runScope` | `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` |
+| `<svc>` is declared later in the referencing Service's own list | `Service 'Backend' is declared later in jobServices than 'Proxy'; a Service may reference only itself and earlier Services.` (`stepServices` / `services` for the other lists) |
+| `<svc>` is a Step Service not in scope here | `Service 'Counter' is a Step Service of step 'Count' and is not in scope in step 'After'.` (`in Job Environment 'E'` / `in Service 'B'` for those sites) |
+| the port is not declared on the in-scope Service | `Service 'Store' has no port 'mian'; declared ports: main.` |
+| `bindAddress` outside the declaring Service | `Service.Proxy.main.bindAddress is available only within the Service 'Proxy' itself; use connectAddress to reach it from elsewhere.` |
+
+Everything else keeps the generic message with its suggestion: a Service name declared nowhere
+(a typo is then the likeliest cause — `Undefined variable: 'Service.Cash.main.connectAddress'.
+Did you mean: Service.Cache.main.connectAddress`), an unknown value name after a declared port,
+`Service.File.*`, or a reference with too few components. The conformance `.invalid` fixtures
+check only pass/fail and are unaffected; `tests/integration/test_service_scope.rs` and
+`test_service_environments_list.rs` pin the exact messages.
 
 Who sees which Services (the `in_scope` iterator at each site):
 

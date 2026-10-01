@@ -102,6 +102,10 @@ pub struct ActionFilter {
     /// action is attributed to in the log, when the action runs concurrently
     /// with another action of the Session. See `session_action_log!`.
     action_tag: Option<String>,
+    /// The Session-wide tag every record of this action carries, when the
+    /// Session's log is merged with others' (see
+    /// [`LogTag::session`](crate::logging::LogTag::session)).
+    session_tag: Option<String>,
 }
 
 impl ActionFilter {
@@ -114,6 +118,7 @@ impl ActionFilter {
             redacted_lines: HashSet::new(),
             log_level: 20, // INFO
             action_tag: None,
+            session_tag: None,
         }
     }
 
@@ -126,6 +131,18 @@ impl ActionFilter {
     /// The action tag set with [`set_action_tag`](Self::set_action_tag).
     pub fn action_tag(&self) -> Option<&str> {
         self.action_tag.as_deref()
+    }
+
+    /// Prefix every record of this action with the Session-wide `tag` (see
+    /// [`SessionConfig::log_tag`](crate::session::SessionConfig::log_tag)).
+    /// `None` (the default) adds no session tag.
+    pub fn set_session_tag(&mut self, tag: Option<String>) {
+        self.session_tag = tag;
+    }
+
+    /// The session tag set with [`set_session_tag`](Self::set_session_tag).
+    pub fn session_tag(&self) -> Option<&str> {
+        self.session_tag.as_deref()
     }
 
     /// Current minimum log level for command output (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR).

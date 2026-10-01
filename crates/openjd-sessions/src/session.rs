@@ -57,7 +57,7 @@ use crate::cross_user_helper::CrossUserHelper;
 #[cfg(windows)]
 use crate::cross_user_helper::CrossUserHelperWin;
 use crate::error::SessionError;
-use crate::logging::{log_section_banner, LogContent};
+use crate::logging::LogContent;
 use crate::runner::env_script::EnvironmentScriptRunner;
 use crate::runner::step_script::StepScriptRunner;
 use crate::session_log;
@@ -156,6 +156,18 @@ pub struct SessionConfig {
     /// redacted. Setting this flag to `false` does not improve security —
     /// it just removes the directive lines from operator-facing output.
     pub echo_openjd_directives: bool,
+    /// A label prefixed to every log record of this session — `[<tag>] ` on
+    /// the message and an `openjd_session_tag` structured field — for a
+    /// runner that merges several Sessions' logs into one stream, as
+    /// `openjd run` does for a Job's Service Sessions (`Service <name>`).
+    /// With it, a Service's `onRun` output interleaved with Task output
+    /// stays attributable, and each section banner of the session
+    /// (`Entering Environment: …`, `Running Task`, …) becomes one tagged
+    /// line instead of four. A concurrently running action's own tag
+    /// follows it: `[Service Files] [onReadinessCheck] …`. `None` (the
+    /// default) leaves records exactly as before. See
+    /// [`LogTag`](crate::logging::LogTag).
+    pub log_tag: Option<String>,
     /// Caller-policy caps and evaluation budgets enforced by this session
     /// — the enforcement boundary for resolved-value limits, since a
     /// worker can run a job that never passed through this client's
@@ -566,6 +578,28 @@ fn derive_library(
     openjd_expr::FunctionLibrary::for_profile(&expr_profile)
 }
 
+/// Whether `openjd_redacted_env` is honored under `profile`, mirroring
+/// Python's `_redactions_enabled()`: true when the spec revision is newer
+/// than 2023-09 or the `REDACTED_ENV_VARS` extension is declared. `None`
+/// (no profile) disables redacted env vars.
+fn redactions_enabled_for(profile: Option<&openjd_model::ModelProfile>) -> bool {
+    match profile {
+        Some(p) => {
+            p.revision() > openjd_model::types::SpecificationRevision::V2023_09
+                || p.has_extension(openjd_model::types::ModelExtension::RedactedEnvVars)
+        }
+        None => false,
+    }
+}
+
+/// The profile of the document an entered Environment came from, with the
+/// function library derived from it under the session's current
+/// path-mapping rules (see [`Session::enter_environment_with_profile`]).
+struct DocumentProfile {
+    profile: openjd_model::ModelProfile,
+    library: Arc<FunctionLibrary>,
+}
+
 pub struct Session {
     session_id: String,
     state: SessionState,
@@ -593,11 +627,20 @@ pub struct Session {
     // Expression evaluation
     //
     // `library` is the cached derived library, built from the session's
-    // `library` is the cached derived library, built from the session's
     // `profile` (an optional `ModelProfile`) plus the current
     // `path_mapping_rules`. Whenever either input changes, the library
     // must be rebuilt via `derive_library`.
     library: Arc<FunctionLibrary>,
+    /// The document profile of each entered Environment that came with one
+    /// (`enter_environment_with_profile`), keyed by environment identifier.
+    /// An extension applies to the document that lists it (Template
+    /// Schemas §1.2 item 3), so an Environment from another document — an
+    /// Environment Template a scheduler attached — has its format strings
+    /// evaluated with a library derived from *its* profile, not the
+    /// session's. Environments entered without a profile are absent here
+    /// and use the session's `library` and `profile`. Rebuilt alongside
+    /// `library` when the path-mapping rules change.
+    environment_profiles: HashMap<EnvironmentIdentifier, DocumentProfile>,
     path_mapping_rules: Arc<Vec<PathMappingRule>>,
     job_parameter_values: JobParameterValues,
     // Grouped fields
@@ -617,6 +660,8 @@ pub struct Session {
     /// Caller-policy caps and evaluation budgets (see
     /// [`SessionConfig::limits`]).
     limits: crate::limits::SessionLimits,
+    /// See [`SessionConfig::log_tag`].
+    log_tag: Option<String>,
 }
 
 impl Session {
@@ -642,6 +687,7 @@ impl Session {
             process_env: HashMap::new(),
             created_env_vars: HashMap::new(),
             library: derive_library(None, &Arc::new(Vec::new())),
+            environment_profiles: HashMap::new(),
             path_mapping_rules: Arc::new(Vec::new()),
             job_parameter_values: HashMap::new(),
             action: ActionStatusFields::new(),
@@ -660,6 +706,7 @@ impl Session {
             debug_collect_stdout: true, // test constructor — tests need captured stdout
             limits: crate::limits::SessionLimits::default(),
             echo_openjd_directives: true, // matches default in production config
+            log_tag: None,
         }
     }
 
@@ -876,6 +923,7 @@ impl Session {
             process_env,
             created_env_vars: HashMap::new(),
             library,
+            environment_profiles: HashMap::new(),
             path_mapping_rules,
             job_parameter_values: config.job_parameter_values,
             action: ActionStatusFields::new(),
@@ -894,13 +942,14 @@ impl Session {
             debug_collect_stdout: config.debug_collect_stdout,
             echo_openjd_directives: config.echo_openjd_directives,
             limits: config.limits,
+            log_tag: config.log_tag,
         })
     }
 
     pub fn with_path_mapping(mut self, mut rules: Vec<PathMappingRule>) -> Self {
         rules.sort_by_key(|r| std::cmp::Reverse(r.source_path.len()));
         self.path_mapping_rules = Arc::new(rules);
-        self.library = derive_library(self.profile.as_ref(), &self.path_mapping_rules);
+        self.rebuild_libraries();
         self
     }
 
@@ -911,7 +960,17 @@ impl Session {
         rules.extend(additional);
         rules.sort_by_key(|r| std::cmp::Reverse(r.source_path.len()));
         self.path_mapping_rules = Arc::new(rules);
+        self.rebuild_libraries();
+    }
+
+    /// Rebuild the session's library and every entered Environment's
+    /// document library against the current path-mapping rules, so
+    /// `apply_path_mapping` reflects them everywhere.
+    fn rebuild_libraries(&mut self) {
         self.library = derive_library(self.profile.as_ref(), &self.path_mapping_rules);
+        for dp in self.environment_profiles.values_mut() {
+            dp.library = derive_library(Some(&dp.profile), &self.path_mapping_rules);
+        }
     }
 
     /// Get the current path mapping rules.
@@ -930,20 +989,53 @@ impl Session {
         self
     }
 
-    /// Check whether redacted env vars are enabled, mirroring Python's `_redactions_enabled()`.
-    /// True if spec revision > v2023_09 OR "REDACTED_ENV_VARS" extension is present.
+    /// The session-wide log tag (see [`SessionConfig::log_tag`]).
+    pub fn log_tag(&self) -> Option<&str> {
+        self.log_tag.as_deref()
+    }
+
+    /// Log a section banner for this session: four lines, or one tagged
+    /// line when the session has a log tag
+    /// ([`log_section_banner_tagged`](crate::logging::log_section_banner_tagged)).
+    pub(crate) fn log_banner(&self, title: &str) {
+        crate::logging::log_section_banner_tagged(&self.session_id, self.log_tag(), title);
+    }
+
+    /// Check whether redacted env vars are enabled under the session's own
+    /// profile, mirroring Python's `_redactions_enabled()`. True if spec
+    /// revision > v2023_09 OR "REDACTED_ENV_VARS" extension is present.
     fn redactions_enabled(&self) -> bool {
-        match &self.profile {
-            Some(p) => {
-                p.revision() > openjd_model::types::SpecificationRevision::V2023_09
-                    || p.has_extension(openjd_model::types::ModelExtension::RedactedEnvVars)
-            }
-            None => false,
+        redactions_enabled_for(self.profile.as_ref())
+    }
+
+    /// Whether redacted env vars are enabled for the actions of the entered
+    /// Environment `identifier`: under its own document's profile when it
+    /// was entered with one, else the session's.
+    fn env_redactions_enabled(&self, identifier: &str) -> bool {
+        match self.environment_profiles.get(identifier) {
+            Some(dp) => redactions_enabled_for(Some(&dp.profile)),
+            None => self.redactions_enabled(),
         }
     }
 
-    fn lib(&self) -> Option<&FunctionLibrary> {
-        Some(&self.library)
+    /// The function library the entered Environment `identifier`'s format
+    /// strings are evaluated with: derived from its own document's profile
+    /// when it was entered with one, else the session's library.
+    fn env_library(&self, identifier: &str) -> Arc<FunctionLibrary> {
+        match self.environment_profiles.get(identifier) {
+            Some(dp) => dp.library.clone(),
+            None => self.library.clone(),
+        }
+    }
+
+    /// The library of the wrapping Environment `wrap_env_id` (its own
+    /// document's), for the hook's own scope — its `let` bindings, embedded
+    /// files, command and args — or the session's library when `None`.
+    fn wrap_library(&self, wrap_env_id: Option<&EnvironmentIdentifier>) -> Arc<FunctionLibrary> {
+        match wrap_env_id {
+            Some(id) => self.env_library(id),
+            None => self.library.clone(),
+        }
     }
 
     /// Fire the callback with the current action status.
@@ -1151,7 +1243,7 @@ impl Session {
         self.cleanup_called = true;
 
         if !self.retain_working_dir {
-            log_section_banner(&self.session_id, "Session Cleanup");
+            self.log_banner("Session Cleanup");
 
             // Shut down the cross-user helper before deleting the working directory
             if let Some(ref mut helper) = self.cross_user.helper {
@@ -1232,12 +1324,51 @@ impl Session {
     }
 
     /// Enter an environment, returning both the identifier and the stdout from the onEnter script.
+    ///
+    /// The environment's format strings are evaluated with the session's
+    /// own library and profile; see
+    /// [`enter_environment_with_profile`](Self::enter_environment_with_profile)
+    /// for an environment from another document.
     pub async fn enter_environment_with_output(
         &mut self,
         env: &Environment,
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<(String, String), SessionError> {
+        self.enter_environment_with_profile(env, resolved_symtab, identifier, os_env_vars, None)
+            .await
+    }
+
+    /// Enter an environment that comes from a document with its own
+    /// extension profile, returning the identifier and the stdout from the
+    /// onEnter script.
+    ///
+    /// An extension applies to the document that lists it (Template Schemas
+    /// §1.2 item 3; RFC 0009 "Environment Template"): an Environment
+    /// Template a scheduler attaches to a Job may use `SERVICE` or `EXPR`
+    /// functions the Job Template does not declare, and vice versa. When
+    /// `profile` is `Some`, every format string of this environment — its
+    /// `variables`, `onEnter` / `onExit` (and the hook that wraps them),
+    /// its `let` bindings and embedded files, and its own `onWrap*` hooks
+    /// when it is the wrapping environment — is evaluated with a function
+    /// library derived from that profile (under the session's path-mapping
+    /// rules, exactly like the session's own library), and
+    /// `openjd_redacted_env` from its actions is honored according to that
+    /// profile's `REDACTED_ENV_VARS` extension. With `None` the session's
+    /// profile and library apply, as for
+    /// [`enter_environment_with_output`](Self::enter_environment_with_output).
+    ///
+    /// The profile is remembered for the lifetime of the environment (its
+    /// `onExit` and wrap hooks use it after this call returns) and is
+    /// forgotten when the environment is exited.
+    pub async fn enter_environment_with_profile(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+        profile: Option<&openjd_model::ModelProfile>,
     ) -> Result<(String, String), SessionError> {
         if self.state != SessionState::Ready {
             return Err(SessionError::InvalidState {
@@ -1294,11 +1425,24 @@ impl Session {
         self.environments_entered.push(identifier.clone());
         self.created_env_vars
             .insert(identifier.clone(), HashMap::new());
+        // The document profile, when the environment comes with one: its
+        // library is derived once here and reused by every later evaluation
+        // of this environment's strings (onExit, wrap hooks).
+        if let Some(p) = profile {
+            self.environment_profiles.insert(
+                identifier.clone(),
+                DocumentProfile {
+                    library: derive_library(Some(p), &self.path_mapping_rules),
+                    profile: p.clone(),
+                },
+            );
+        }
+        let lib = self.env_library(&identifier);
 
         // Set static variables
         if let Some(vars) = &env.variables {
             for (key, fmt_str) in vars {
-                let value = self.resolve_env_var_value(key, fmt_str, &symtab)?;
+                let value = self.resolve_env_var_value(key, fmt_str, &symtab, Some(&lib))?;
                 let norm_key = normalize_env_key(key);
                 self.env_vars.insert(norm_key.clone(), value.clone());
                 if let Some(changes) = self.created_env_vars.get_mut(&identifier) {
@@ -1317,10 +1461,7 @@ impl Session {
             self.state = SessionState::Running;
             self.notify_callback();
 
-            log_section_banner(
-                &self.session_id,
-                &format!("Entering Environment: {}", env.name),
-            );
+            self.log_banner(&format!("Entering Environment: {}", env.name));
 
             let cancel_token = self.new_action_cancel_token();
             let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
@@ -1350,7 +1491,12 @@ impl Session {
                     .map(|action| (WrapEnvironmentScope::from(outer), action))
             });
 
-            let lib = self.library.clone();
+            // The wrapping environment's own document library, for the
+            // hook's scope; `lib` (this environment's) resolves the inner
+            // onEnter. They coincide unless one of the two came from
+            // another document.
+            let wrap_env_id = self.wrap_env_id_excluding(&identifier).cloned();
+            let hook_lib = self.wrap_library(wrap_env_id.as_ref());
             if let Some((wrap_env, _)) = wrap_action.as_ref() {
                 // Build inner_symtab BEFORE registering wrap env files so the
                 // inner scope is derived from a symtab that does NOT contain
@@ -1369,7 +1515,6 @@ impl Session {
 
                 // Register wrap env's embedded file paths BEFORE seed so the
                 // wrap env's let bindings can reference Env.File.*.
-                let wrap_env_id = self.wrap_env_id_excluding(&identifier).cloned();
                 if let Some(ref wid) = wrap_env_id {
                     let files = self
                         .environments
@@ -1386,7 +1531,10 @@ impl Session {
                     inner_on_enter,
                     WrappedContext::Env(&env.name),
                     &self.live_session_env_vars(),
-                    Some(&lib),
+                    WrapLibraries {
+                        inner: Some(&lib),
+                        hook: Some(&hook_lib),
+                    },
                     &self.limits,
                     "onEnter",
                 )
@@ -1395,15 +1543,21 @@ impl Session {
                 // Write wrap env file contents AFTER seed (so data resolves
                 // against the post-lets symbol table).
                 if let Some(ref wid) = wrap_env_id {
-                    self.write_wrap_env_file_contents(wid, &action_symtab, Some(&lib))
+                    self.write_wrap_env_file_contents(wid, &action_symtab, Some(&hook_lib))
                         .map_err(|e| self.fail_action_setup(e))?;
                 }
             }
 
             // The effective action is now resolved (wrap hook or the env's
-            // own onEnter); record its declared cancel grace so helper-pipe
-            // cancel delivery can cap the notify period at it. The default
-            // matches EnvironmentScriptRunner's default_cancel_period.
+            // own onEnter), and so is the library it resolves with; record
+            // its declared cancel grace so helper-pipe cancel delivery can
+            // cap the notify period at it. The default matches
+            // EnvironmentScriptRunner's default_cancel_period.
+            let effective_lib: &FunctionLibrary = if wrap_action.is_some() {
+                &hook_lib
+            } else {
+                &lib
+            };
             self.cancel.set_terminate_delay(declared_terminate_delay(
                 &wrap_action
                     .as_ref()
@@ -1411,7 +1565,7 @@ impl Session {
                     .unwrap_or(inner_on_enter)
                     .cancelation,
                 &action_symtab,
-                Some(&lib),
+                Some(effective_lib),
                 &self.limits,
                 Duration::from_secs(30),
             ));
@@ -1426,11 +1580,12 @@ impl Session {
                 self.files_directory.clone(),
                 self.cross_user.user.clone(),
             )
-            .with_redactions(self.redactions_enabled())
+            .with_redactions(self.env_redactions_enabled(&identifier))
             .with_debug_collect_stdout(self.debug_collect_stdout)
             .with_echo_openjd_directives(self.echo_openjd_directives)
             .with_limits(self.limits)
             .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+            .with_session_tag(self.log_tag.clone())
             .with_cancel_token(cancel_token)
             .with_cancel_request_rx(cancel_rx);
             if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -1468,7 +1623,7 @@ impl Session {
                     Some((_, action)) => Box::pin(runner.run_wrap_action(
                         action,
                         &action_symtab,
-                        Some(&lib),
+                        Some(&hook_lib),
                         &env_vars,
                         tx,
                         None,
@@ -1496,10 +1651,7 @@ impl Session {
             self.action.fail_message = None;
             self.action.exit_code = None;
 
-            log_section_banner(
-                &self.session_id,
-                &format!("Entering Environment: {}", env.name),
-            );
+            self.log_banner(&format!("Entering Environment: {}", env.name));
 
             self.action.ended_at = Some(std::time::SystemTime::now());
 
@@ -1577,6 +1729,11 @@ impl Session {
             }
         })?;
         self.environments_entered.pop();
+        // This environment's document library and redaction setting outlive
+        // its removal from the stack only for the duration of its onExit.
+        let lib = self.env_library(identifier);
+        let redactions_enabled = self.env_redactions_enabled(identifier);
+        self.environment_profiles.remove(identifier);
 
         // Evict the wrap-env file cache unconditionally alongside other
         // environment teardown. This runs before the exit script so the
@@ -1596,10 +1753,7 @@ impl Session {
             self.state = SessionState::Running;
             self.notify_callback();
 
-            log_section_banner(
-                &self.session_id,
-                &format!("Exiting Environment: {}", env.name),
-            );
+            self.log_banner(&format!("Exiting Environment: {}", env.name));
 
             let cancel_token = self.new_action_cancel_token();
             let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
@@ -1627,7 +1781,10 @@ impl Session {
                     .map(|action| (WrapEnvironmentScope::from(outer), action))
             });
 
-            let lib = self.library.clone();
+            // See the onEnter path: the hook resolves with the wrapping
+            // environment's document library, the inner onExit with `lib`.
+            let wrap_env_id = self.active_wrap_env_id().cloned();
+            let hook_lib = self.wrap_library(wrap_env_id.as_ref());
             if let Some((wrap_env, _)) = wrap_action.as_ref() {
                 // Build inner_symtab BEFORE registering wrap env files so the
                 // inner scope is derived from a symtab that does NOT contain
@@ -1646,7 +1803,6 @@ impl Session {
 
                 // Register wrap env's embedded file paths BEFORE seed so the
                 // wrap env's let bindings can reference Env.File.*.
-                let wrap_env_id = self.active_wrap_env_id().cloned();
                 if let Some(ref wid) = wrap_env_id {
                     let files = self
                         .environments
@@ -1663,7 +1819,10 @@ impl Session {
                     inner_on_exit,
                     WrappedContext::Env(&env.name),
                     &self.live_session_env_vars(),
-                    Some(&lib),
+                    WrapLibraries {
+                        inner: Some(&lib),
+                        hook: Some(&hook_lib),
+                    },
                     &self.limits,
                     "onExit",
                 )
@@ -1672,13 +1831,18 @@ impl Session {
                 // Write wrap env file contents AFTER seed (so data resolves
                 // against the post-lets symbol table).
                 if let Some(ref wid) = wrap_env_id {
-                    self.write_wrap_env_file_contents(wid, &action_symtab, Some(&lib))
+                    self.write_wrap_env_file_contents(wid, &action_symtab, Some(&hook_lib))
                         .map_err(|e| self.fail_action_setup(e))?;
                 }
             }
 
             // See the onEnter path: record the effective action's declared
             // cancel grace once the wrap decision is made.
+            let effective_lib: &FunctionLibrary = if wrap_action.is_some() {
+                &hook_lib
+            } else {
+                &lib
+            };
             self.cancel.set_terminate_delay(declared_terminate_delay(
                 &wrap_action
                     .as_ref()
@@ -1686,7 +1850,7 @@ impl Session {
                     .unwrap_or(inner_on_exit)
                     .cancelation,
                 &action_symtab,
-                Some(&lib),
+                Some(effective_lib),
                 &self.limits,
                 Duration::from_secs(30),
             ));
@@ -1700,11 +1864,12 @@ impl Session {
                 self.files_directory.clone(),
                 self.cross_user.user.clone(),
             )
-            .with_redactions(self.redactions_enabled())
+            .with_redactions(redactions_enabled)
             .with_debug_collect_stdout(self.debug_collect_stdout)
             .with_echo_openjd_directives(self.echo_openjd_directives)
             .with_limits(self.limits)
             .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+            .with_session_tag(self.log_tag.clone())
             .with_cancel_token(cancel_token)
             .with_cancel_request_rx(cancel_rx);
             if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -1742,7 +1907,7 @@ impl Session {
                     Some((_, action)) => Box::pin(runner.run_wrap_action(
                         action,
                         &action_symtab,
-                        Some(&lib),
+                        Some(&hook_lib),
                         &env_vars,
                         tx,
                         Some(crate::runner::env_script::ENV_EXIT_DEFAULT_TIMEOUT),
@@ -1777,10 +1942,7 @@ impl Session {
                 SessionState::Ready
             };
 
-            log_section_banner(
-                &self.session_id,
-                &format!("Exiting Environment: {}", env.name),
-            );
+            self.log_banner(&format!("Exiting Environment: {}", env.name));
 
             self.action.ended_at = Some(std::time::SystemTime::now());
 
@@ -1822,7 +1984,7 @@ impl Session {
         self.state = SessionState::Running;
         self.notify_callback();
 
-        log_section_banner(&self.session_id, "Running Task");
+        self.log_banner("Running Task");
 
         let cancel_token = self.new_action_cancel_token();
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(None);
@@ -1851,6 +2013,8 @@ impl Session {
         // Registration happens BEFORE seed_wrapped_action_symbols so the wrap
         // env's let bindings can reference `{{Env.File.*}}`; writing happens
         // AFTER so file data resolves against the post-lets symbol table.
+        // A Task belongs to the Job Template, the session's own document:
+        // its onRun resolves with the session's library.
         let lib = self.library.clone();
 
         // Hoist wrap-env identity and embedded files BEFORE the closure that
@@ -1868,6 +2032,9 @@ impl Session {
                 None
             }
         });
+        // The wrapping environment's own document library resolves the
+        // onWrapTaskRun hook (its lets, embedded files, command and args).
+        let hook_lib = self.wrap_library(wrap_env_id_and_files.as_ref().map(|(id, _)| id));
 
         // Snapshot the symtab BEFORE registering wrap env files so that the
         // inner scope (WrappedAction.* resolution) does not see the wrapper's
@@ -1915,7 +2082,10 @@ impl Session {
                     &script.actions.on_run,
                     WrappedContext::Step(step_name),
                     &self.live_session_env_vars(),
-                    Some(&lib),
+                    WrapLibraries {
+                        inner: Some(&lib),
+                        hook: Some(&hook_lib),
+                    },
                     &self.limits,
                     "task",
                 )?;
@@ -1926,7 +2096,7 @@ impl Session {
 
         // Write wrap env file contents AFTER seed (so data resolves against post-lets symtab).
         if let Some((ref wrap_id, _)) = wrap_env_id_and_files {
-            self.write_wrap_env_file_contents(wrap_id, &action_symtab, Some(&lib))
+            self.write_wrap_env_file_contents(wrap_id, &action_symtab, Some(&hook_lib))
                 .map_err(|e| self.fail_action_setup(e))?;
         }
 
@@ -1948,6 +2118,7 @@ impl Session {
         .with_echo_openjd_directives(self.echo_openjd_directives)
         .with_limits(self.limits)
         .with_initial_redacted_values(self.redacted_values.iter().cloned().collect())
+        .with_session_tag(self.log_tag.clone())
         .with_cancel_token(cancel_token)
         .with_cancel_request_rx(cancel_rx);
         if let Some(ref hdir) = self.cross_user.helpers_dir {
@@ -1981,23 +2152,30 @@ impl Session {
         // wrap environment's own let bindings in the hook's scope — a
         // same-named binding would make the hook see the step's value
         // while WrappedAction.* carried the wrapper's (or vice versa).
-        let effective_script: std::borrow::Cow<'_, StepScript> = match wrap_action {
-            Some(action) => std::borrow::Cow::Owned(StepScript {
-                let_bindings: None,
-                actions: openjd_model::job::StepActions { on_run: action },
-                embedded_files: None,
-            }),
-            None => std::borrow::Cow::Borrowed(script),
+        let (effective_script, effective_lib): (
+            std::borrow::Cow<'_, StepScript>,
+            &FunctionLibrary,
+        ) = match wrap_action {
+            Some(action) => (
+                std::borrow::Cow::Owned(StepScript {
+                    let_bindings: None,
+                    actions: openjd_model::job::StepActions { on_run: action },
+                    embedded_files: None,
+                }),
+                &hook_lib,
+            ),
+            None => (std::borrow::Cow::Borrowed(script), &lib),
         };
 
         // The effective action is now resolved (wrap hook or the step's own
-        // onRun); record its declared cancel grace so helper-pipe cancel
-        // delivery can cap the notify period at it. The default matches
-        // StepScriptRunner's default_cancel_period.
+        // onRun), with the library of the document it belongs to; record
+        // its declared cancel grace so helper-pipe cancel delivery can cap
+        // the notify period at it. The default matches StepScriptRunner's
+        // default_cancel_period.
         self.cancel.set_terminate_delay(declared_terminate_delay(
             &effective_script.actions.on_run.cancelation,
             &action_symtab,
-            Some(&lib),
+            Some(effective_lib),
             &self.limits,
             Duration::from_secs(120),
         ));
@@ -2007,7 +2185,7 @@ impl Session {
         let runner_fut = Box::pin(runner.run(
             effective_script.as_ref(),
             &action_symtab,
-            Some(&lib),
+            Some(effective_lib),
             &env_vars,
             tx,
         ));
@@ -2056,7 +2234,7 @@ impl Session {
         }
 
         if let Some(msg) = log_banner_message {
-            log_section_banner(&self.session_id, msg);
+            self.log_banner(msg);
         }
 
         self.action.reset();
@@ -2110,6 +2288,7 @@ impl Session {
             self.echo_openjd_directives,
             false,
         );
+        filter.set_session_tag(self.log_tag.clone());
         let subprocess_identifier = format!(
             "{}:subprocess:{}",
             self.session_id,
@@ -2160,6 +2339,7 @@ impl Session {
             self.echo_openjd_directives,
             false,
         );
+        filter.set_session_tag(self.log_tag.clone());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let subprocess_identifier = format!(
             "{}:subprocess:{}",
@@ -2246,11 +2426,12 @@ impl Session {
         key: &str,
         fmt_str: &openjd_model::FormatString,
         symtab: &SymbolTable,
+        lib: Option<&FunctionLibrary>,
     ) -> Result<String, SessionError> {
         let value = fmt_str
             .resolve_with(
                 symtab,
-                &crate::limits::fs_options(self.lib(), &self.limits)
+                &crate::limits::fs_options(lib, &self.limits)
                     .with_target_type(&openjd_expr::ExprType::STRING),
             )
             .map(|v| match v {
@@ -2345,6 +2526,7 @@ impl Session {
         base.echo_openjd_directives = self.echo_openjd_directives;
         base.limits = self.limits;
         base.initial_redacted_values = self.redacted_values.iter().cloned().collect();
+        base.session_tag = self.log_tag.clone();
         base.cancel_token = cancel_token;
         base.cancel_request_rx = Some(cancel_rx);
         base.helpers_directory = self.cross_user.helpers_dir.clone();
@@ -2421,6 +2603,7 @@ impl Session {
         base.echo_openjd_directives = self.echo_openjd_directives;
         base.limits = self.limits;
         base.initial_redacted_values = self.redacted_values.iter().cloned().collect();
+        base.session_tag = self.log_tag.clone();
         base.cancel_token = cancel_token;
         base.cancel_request_rx = Some(cancel_rx);
         base.helpers_directory = self.cross_user.helpers_dir.clone();
@@ -2469,13 +2652,15 @@ impl Session {
     /// entered or its `runScope` excludes `SERVICE` (such an Environment is
     /// not entered in a Service Session, so this is a defensive check).
     pub(crate) fn service_wrap_hooks(&self) -> Option<ServiceWrapHooks> {
-        let env = self.active_wrap_env()?;
+        let id = self.active_wrap_env_id()?;
+        let env = self.environments.get(id)?;
         if !env.runs_in(openjd_model::job::RunScope::Service) {
             return None;
         }
         let script = env.script.as_ref()?;
         Some(ServiceWrapHooks {
             scope: WrapEnvironmentScope::from(env),
+            library: self.env_library(id),
             embedded_files: script.embedded_files.clone(),
             on_enter: script.actions.on_wrap_service_enter.clone(),
             on_run: script.actions.on_wrap_service_run.clone(),
@@ -2609,7 +2794,10 @@ impl Session {
                 }
             }
             ActionMessage::RedactedEnv { name, value } => {
-                if self.redactions_enabled() {
+                // Honored under the profile of the document the running
+                // action belongs to: the entered Environment's own when it
+                // came with one, else the session's.
+                if self.env_redactions_enabled(identifier) {
                     let key = normalize_env_key(&name);
                     self.env_vars.insert(key.clone(), value.clone());
                     if let Some(changes) = self.created_env_vars.get_mut(identifier) {
@@ -3198,6 +3386,21 @@ fn env_has_any_wrap_hook(env: &Environment) -> bool {
         .unwrap_or(false)
 }
 
+/// The two function libraries a wrap-hook invocation resolves with: the
+/// wrapped (inner) entity's strings with the library of *its* document, the
+/// wrapping Environment's own scope — its `let` bindings and the hook's
+/// command and args — with the library of the wrapping Environment's
+/// document. They are the same library unless one of the two came from
+/// another document (an attached Environment Template; see
+/// [`Session::enter_environment_with_profile`]).
+#[derive(Clone, Copy)]
+pub(crate) struct WrapLibraries<'a> {
+    /// Resolves the wrapped action (`WrappedAction.*`).
+    pub(crate) inner: Option<&'a FunctionLibrary>,
+    /// Resolves the wrapping Environment's scope and the hook itself.
+    pub(crate) hook: Option<&'a FunctionLibrary>,
+}
+
 /// The wrapper-owned data needed after wrap dispatch releases its borrow of
 /// the Session environment stack. Deliberately excludes embedded files and
 /// other potentially large Environment fields.
@@ -3224,6 +3427,9 @@ pub(crate) struct DetachedHelper {
 /// [`Session::service_wrap_hooks`].
 pub(crate) struct ServiceWrapHooks {
     pub(crate) scope: WrapEnvironmentScope,
+    /// The library of the wrapping Environment's document, for the hooks'
+    /// own scope (see [`WrapLibraries::hook`]).
+    pub(crate) library: Arc<FunctionLibrary>,
     /// The wrapping Environment's embedded files (`Env.File.*` in the hooks).
     pub(crate) embedded_files: Option<Vec<openjd_model::job::EmbeddedFile>>,
     pub(crate) on_enter: Option<openjd_model::job::Action>,
@@ -3301,10 +3507,14 @@ pub(crate) fn seed_wrapped_action_symbols(
     wrapped_action: &openjd_model::job::Action,
     context: WrappedContext<'_>,
     session_env_vars: &HashMap<String, String>,
-    lib: Option<&FunctionLibrary>,
+    libs: WrapLibraries<'_>,
     limits: &crate::limits::SessionLimits,
     phase: &str,
 ) -> Result<(), SessionError> {
+    let WrapLibraries {
+        inner: lib,
+        hook: hook_lib,
+    } = libs;
     // Layer the wrap env's frozen symtab on top of the hook's table so the
     // wrap action can reference symbols only it knows about (its own
     // `Param.*`). A deserialize failure is logged and skipped rather than
@@ -3333,7 +3543,7 @@ pub(crate) fn seed_wrapped_action_symbols(
         let with_lets = crate::let_bindings::evaluate_let_bindings(
             bindings,
             action_symtab,
-            lib,
+            hook_lib,
             openjd_expr::PathFormat::host(),
             limits.max_eval_memory_bytes,
             limits.max_eval_operations,

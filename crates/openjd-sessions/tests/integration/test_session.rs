@@ -134,6 +134,7 @@ async fn test_relative_session_root_is_absolutized() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).expect("relative root should be accepted");
@@ -164,6 +165,7 @@ async fn test_root_dir_permissions_posix() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -207,6 +209,7 @@ async fn test_sticky_bit_policy_strict_rejects_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let result = Session::with_config(config);
@@ -241,6 +244,7 @@ async fn test_sticky_bit_policy_strict_allows_safe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Strict,
     };
     let session = Session::with_config(config).unwrap();
@@ -274,6 +278,7 @@ async fn test_sticky_bit_policy_warn_allows_unsafe_dir() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Warn,
     };
     let session = Session::with_config(config).unwrap();
@@ -317,6 +322,7 @@ async fn test_sticky_bit_policy_disabled_skips_check() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let session = Session::with_config(config).unwrap();
@@ -613,6 +619,7 @@ async fn test_enter_environment_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(session_config).unwrap();
@@ -1258,6 +1265,7 @@ async fn test_run_subprocess_basic() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1294,6 +1302,7 @@ async fn test_run_subprocess_ignores_entered_environments() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1336,6 +1345,7 @@ async fn test_run_subprocess_with_os_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1375,6 +1385,7 @@ async fn test_run_subprocess_includes_constructor_env_vars() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1409,6 +1420,7 @@ async fn test_run_subprocess_empty_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1435,6 +1447,7 @@ async fn test_run_subprocess_whitespace_command_fails() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -1573,6 +1586,7 @@ fn realtime_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -1824,6 +1838,7 @@ async fn test_cancel_action_mark_failed() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -2176,6 +2191,7 @@ fn cb_test_config(tmp: &TempDir, id: &str, log: Arc<Mutex<CbLog>>) -> SessionCon
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -2608,6 +2624,7 @@ async fn test_parent_cancel_token_cancels_running_action() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -2670,6 +2687,7 @@ async fn test_cancel_action_with_mark_failed() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3252,6 +3270,7 @@ async fn test_parent_token_cancel_with_external_kill_reports_canceled() {
         cancel_token: Some(parent_token.clone()),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3311,6 +3330,7 @@ async fn test_callback_reports_intermediate_progress() {
         cancel_token: None,
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3395,6 +3415,7 @@ fn echo_directives_test_config(
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: echo,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     }
 }
@@ -3511,6 +3532,7 @@ async fn test_echo_openjd_directives_true_redacts_redacted_env_in_log() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();
@@ -3722,6 +3744,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut s = Session::with_config(config).unwrap();

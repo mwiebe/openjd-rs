@@ -898,7 +898,11 @@ pub async fn run_subprocess(
     // Attribute every record about this action to it when it runs
     // concurrently with another action (RFC 0009 rule 3); `None` otherwise.
     let action_tag: Option<String> = filter.action_tag().map(str::to_string);
-    let tag = action_tag.as_deref();
+    let session_tag: Option<String> = filter.session_tag().map(str::to_string);
+    let tag = crate::logging::LogTag {
+        session: session_tag.as_deref(),
+        action: action_tag.as_deref(),
+    };
 
     // Cross-user execution must go through the helper binary.
     if config.user.as_deref().is_some_and(|u| !u.is_process_user()) {
@@ -922,7 +926,7 @@ pub async fn run_subprocess(
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         crate::win32_locate::locate_windows_executable(args, Some(&config.env_vars), &wd).map_err(
             |msg| {
-                crate::session_action_log!(
+                crate::session_tagged_log!(
                     info,
                     session_id,
                     tag,
@@ -952,7 +956,7 @@ pub async fn run_subprocess(
     }
 
     // Log the command line (redacting any openjd_redacted_env tokens)
-    crate::session_action_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
         tag,
@@ -987,7 +991,7 @@ pub async fn run_subprocess(
             cmd.stdout(std::process::Stdio::piped());
         }
         let mut c = cmd.spawn().map_err(|e| {
-            crate::session_action_log!(
+            crate::session_tagged_log!(
                 info,
                 session_id,
                 tag,
@@ -1010,7 +1014,7 @@ pub async fn run_subprocess(
         (Some(c), p, stdout)
     };
 
-    crate::session_action_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
         tag,
@@ -1018,7 +1022,7 @@ pub async fn run_subprocess(
         "Command started as pid: {}",
         pid
     );
-    crate::session_action_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
         tag,
@@ -1069,7 +1073,7 @@ pub async fn run_subprocess(
                 biased;
 
                 _ = &mut drain_deadline, if cancel_requested => {
-                    crate::session_action_log!(info, session_id, tag, LogContent::PROCESS_CONTROL,
+                    crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL,
                         "Stdout drain grace period expired, stopping read loop");
                     break;
                 }
@@ -1082,12 +1086,12 @@ pub async fn run_subprocess(
 
                     match (&config.cancel_method, time_limit) {
                         (_, Some(limit)) if limit.is_zero() => {
-                            crate::session_action_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Urgent cancel (time_limit=0), sending SIGKILL to process group {}", pid);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Urgent cancel (time_limit=0), sending SIGKILL to process group {}", pid);
                             send_terminate(pid);
                             terminate_sent = true;
                         }
                         (CancelMethod::Terminate, _) => {
-                            crate::session_action_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGKILL to process group {}", pid);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGKILL to process group {}", pid);
                             send_terminate(pid);
                             terminate_sent = true;
                         }
@@ -1099,7 +1103,7 @@ pub async fn run_subprocess(
                             if let Some(dir) = &config.working_dir {
                                 write_cancel_info(dir, delay);
                             }
-                            crate::session_action_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGTERM to process group {} (grace period: {:?})", pid, delay);
+                            crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Sending SIGTERM to process group {} (grace period: {:?})", pid, delay);
                             send_notify(pid);
                             spawn_delayed_terminate(pid, delay);
                             // Deliberately do NOT set terminate_sent here —
@@ -1117,7 +1121,7 @@ pub async fn run_subprocess(
                     timed_out = true;
                     cancel_requested = true;
                     drain_deadline.as_mut().reset(tokio::time::Instant::now() + STDOUT_DRAIN_AFTER_KILL);
-                    crate::session_action_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Action timed out, sending SIGKILL to process group");
+                    crate::session_tagged_log!(info, session_id, tag, LogContent::PROCESS_CONTROL, "Action timed out, sending SIGKILL to process group");
                     send_terminate(pid);
                     terminate_sent = true;
                 }
@@ -1138,7 +1142,7 @@ pub async fn run_subprocess(
                             line_buf.clear();
                             let (display, pass_through) = process_line(&line, filter, session_id, &message_tx, &mut saw_fail);
                             if pass_through && filter.min_log_level() <= 20 {
-                                crate::session_action_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
+                                crate::session_tagged_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
                             }
                             if config.debug_collect_stdout {
                                 stdout_collected.push_str(&display);
@@ -1182,7 +1186,7 @@ pub async fn run_subprocess(
     };
 
     let exit_code = exit_status.and_then(|s| s.code());
-    crate::session_action_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
         tag,

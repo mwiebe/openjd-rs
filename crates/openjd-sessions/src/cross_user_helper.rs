@@ -571,7 +571,11 @@ pub(crate) async fn run_via_helper(
     // Attribute every record about this action to it when it runs
     // concurrently with another action (RFC 0009 rule 3); `None` otherwise.
     let action_tag: Option<String> = filter.action_tag().map(str::to_string);
-    let tag = action_tag.as_deref();
+    let session_tag: Option<String> = filter.session_tag().map(str::to_string);
+    let tag = crate::logging::LogTag {
+        session: session_tag.as_deref(),
+        action: action_tag.as_deref(),
+    };
 
     // Build the env map (only set values; unsets are excluded).
     let env: serde_json::Map<String, serde_json::Value> = config
@@ -593,7 +597,7 @@ pub(crate) async fn run_via_helper(
     helper.send_command(&cmd)?;
 
     // Log the actual command (not the helper protocol)
-    crate::session_action_log!(
+    crate::session_tagged_log!(
         info,
         session_id,
         tag,
@@ -631,7 +635,7 @@ pub(crate) async fn run_via_helper(
                 };
 
                 if let Some(pid) = resp.get("pid").and_then(|v| v.as_i64()) {
-                    crate::session_action_log!(info, session_id, tag,
+                    crate::session_tagged_log!(info, session_id, tag,
                         LogContent::PROCESS_CONTROL,
                         "Command started as pid: {}",
                         pid
@@ -649,7 +653,7 @@ pub(crate) async fn run_via_helper(
                         &mut saw_fail,
                     );
                     if pass_through && filter.min_log_level() <= 20 {
-                        crate::session_action_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
+                        crate::session_tagged_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", display);
                     }
                     if config.debug_collect_stdout {
                         stdout_collected.push_str(&display);
@@ -660,7 +664,7 @@ pub(crate) async fn run_via_helper(
 
                 if let Some(code) = resp.get("exited").and_then(|v| v.as_i64()) {
                     let exit_code = code as i32;
-                    crate::session_action_log!(info, session_id, tag,
+                    crate::session_tagged_log!(info, session_id, tag,
                         LogContent::PROCESS_CONTROL,
                         "Process exit code: {}",
                         exit_code

@@ -115,13 +115,33 @@ RUNNING` (same shape as `InvalidState`).
 
 ```rust
 pub struct ServiceSessionConfig {
-    pub session: SessionConfig,                 // as for a Task Session
+    pub session: SessionConfig,                 // as for a Task Session; `profile` is the Service's document's
     pub service: job::Service,
     pub environments: Vec<job::Environment>,    // the scope's Environments, in entry order
+    pub environment_profiles: Vec<Option<ModelProfile>>, // per entry of `environments`: its document's profile when not the Service's
     pub endpoints: ServiceEndpoints,            // own ports: port, bindAddress, connectAddress
     pub in_scope_endpoints: Vec<ServiceEndpoints>, // earlier Services (no bindAddress)
 }
 ```
+
+**Documents and profiles.** `session.profile` is the profile of the Service's
+*own* document (Template Schemas §1.2 item 3: an extension applies to the
+document that lists it): the Job Template's for a `jobServices` /
+`stepServices` entry, the attached Environment Template's for an external
+Service. It governs the Service's actions, `variables`, `<ServiceScript>.let`,
+embedded files, and its `serviceEnvironments` (which share its document).
+The scope's Environments may come from other documents — an external
+Service's Session enters the Job Template's `jobEnvironments`; a Job Template
+Service's Session enters the attached Environments — so
+`environment_profiles[i]` carries `Some(profile)` for `environments[i]` when
+its document is not the Service's, and `enter()` enters it through
+`Session::enter_environment_with_profile`. `None`, or an index past the end
+of the list, enters with the Session's profile. The CLI fills this from each
+Job Environment's document (`PreparedRun::environment_documents`) and the
+profiles of the Job Template and the `--environment` templates. A wrapping
+scope Environment from another document resolves its `onWrapService*` hooks
+with its own document's library (`ServiceWrapHooks::library`) while
+`WrappedAction.*` is resolved with the Service's (see "Wrap hooks").
 
 Checks, before any directory is created:
 
@@ -152,9 +172,11 @@ returns it; `end()` is still required.
    Environments"). For each configured Environment in order: if
    `!env.runs_in(RunScope::Service)`, log `Skipping Environment '<name>': its
    runScope does not include SERVICE` and continue; otherwise
-   `Session::enter_environment(env, env.resolved_symtab, None, None)`. Job and
-   Step Environments cannot reference `Service.*` (model validation), so they
-   resolve against the plain Session scope. An Environment `onEnter` failure
+   `Session::enter_environment_with_profile(env, env.resolved_symtab, None,
+   None, environment_profiles[i])` — its own document's library when it has
+   one, else the Session's. Job and Step Environments cannot reference
+   `Service.*` (model validation), so they resolve against the plain Session
+   scope. An Environment `onEnter` failure
    returns `SessionError::EnvironmentScriptFailed`; the Environment counts as
    entered and is exited by `end()`, exactly as in a Task Session.
 1a. **The Service's `serviceEnvironments`** (§9 item 5), after all of the
@@ -492,8 +514,11 @@ Environment's `Env.File.*` (see rule 1 above), its frozen `resolved_symtab`
 and script `let` bindings, then `WrappedAction.Command` / `.Args` /
 `.Environment` / `.Timeout` / `.Cancelation.Mode` /
 `.Cancelation.NotifyPeriodInSeconds` — resolved against the **Service's**
-own symbol table (`Param.*`, `Service.*`, `Service.File.*`, its `let`s), so
-a wrapper-defined name never leaks into the wrapped command — and
+own symbol table (`Param.*`, `Service.*`, `Service.File.*`, its `let`s) and
+with the Service's document library, so a wrapper-defined name never leaks
+into the wrapped command, while the wrapping Environment's `let`s, embedded
+files, and the hook's own command/args/timeout/cancelation resolve with
+*its* document's library (`WrapLibraries { inner, hook }`) — and
 `WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses`
 (`openjd_model::job::service_symbols::add_wrapped_service_symbols`, parallel
 lists in port declaration order). `WrappedAction.Environment` is the
@@ -604,6 +629,21 @@ before the prefix is added.
 Not implemented (RFC MAY): collapsing the output of invocations that
 succeed. Lines are logged as they stream, before the exit status is known;
 buffering them per invocation would be a separate change.
+
+**Session tag (merged logs).** The above assumes one log stream per Session.
+A single-host runner that merges every Session's log into one — `openjd run`
+— sets `SessionConfig::log_tag` (the CLI: `Service <name>`, with `(from
+<document>)` for an external Service), and then *every* record of the Service
+Session carries it ahead of any action tag: `[Service Files] line` for
+`onRun`, `onEnter`, `onExit` and the entered Environments' actions, `[Service
+Files] [onReadinessCheck] line` for the check (the action tag's rule-3
+meaning is unchanged), and the Session's section banners — `Starting Service:
+…`, `Entering Environment: …`, `Service onEnter: …`, `Service onRun: … (launch
+N)`, `Ending Service: …`, `Service onExit: …`, `Exiting Environment: …` —
+collapse to one tagged `BANNER` line each (`Session::log_banner`). The check
+driver passes the Session's tag into its `LogTag` alongside the action name.
+See `specs/sessions/logging.md` "LogTag and session_tagged_log!". Without a
+tag nothing changes.
 
 ## Not covered by this runtime (by design)
 

@@ -12,6 +12,7 @@ mod summary;
 
 use clap::{Parser, Subcommand};
 use log::{LevelFilter, Log, Metadata, Record};
+use openjd_sessions::LogContent;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -43,7 +44,12 @@ fn format_log_timestamp() -> String {
     }
 }
 
-/// Logger that prints subprocess COMMAND_OUTPUT lines to stdout with timestamps.
+/// Logger that prints subprocess COMMAND_OUTPUT lines to stdout with
+/// timestamps, plus the section banners of a Session that carries a log
+/// tag (`openjd_session_tag`) — a Service Session, whose banners the CLI
+/// cannot print itself since the sessions runtime enters its Environments
+/// and runs its actions internally. The Task Session has no tag; the CLI
+/// prints its banners directly, so its BANNER records stay filtered.
 struct SessionLogger;
 
 impl Log for SessionLogger {
@@ -54,6 +60,7 @@ impl Log for SessionLogger {
     fn log(&self, record: &Record) {
         struct Visitor {
             bits: Option<u64>,
+            session_tagged: bool,
         }
         impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
             fn visit_pair(
@@ -61,16 +68,24 @@ impl Log for SessionLogger {
                 key: log::kv::Key<'kvs>,
                 value: log::kv::Value<'kvs>,
             ) -> Result<(), log::kv::Error> {
-                if key.as_str() == "openjd_log_content" {
-                    self.bits = value.to_u64();
+                match key.as_str() {
+                    "openjd_log_content" => self.bits = value.to_u64(),
+                    "openjd_session_tag" => self.session_tagged = true,
+                    _ => {}
                 }
                 Ok(())
             }
         }
-        let mut v = Visitor { bits: None };
+        let mut v = Visitor {
+            bits: None,
+            session_tagged: false,
+        };
         let _ = record.key_values().visit(&mut v);
         if let Some(bits) = v.bits {
-            if bits & 8 != 0 {
+            let command_output = bits & u64::from(LogContent::COMMAND_OUTPUT.bits()) != 0;
+            let tagged_banner =
+                v.session_tagged && bits & u64::from(LogContent::BANNER.bits()) != 0;
+            if command_output || tagged_banner {
                 let ts = format_log_timestamp();
                 println!("{ts}\t{}", record.args());
             }

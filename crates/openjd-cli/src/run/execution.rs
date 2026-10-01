@@ -6,6 +6,7 @@
 
 use super::*;
 use openjd_model::job::Service;
+use openjd_model::template::EnvironmentTemplate;
 use openjd_model::AttachedEnvironmentTemplate;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
@@ -30,6 +31,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         path_mapping_rules: (!prepared.path_rules.is_empty()).then(|| prepared.path_rules.clone()),
         retain_working_dir: args.preserve,
         profile: prepared.revision_profile.clone(),
+        attached_profiles: prepared.attached_profiles.clone(),
         cancel_token: cancel_token.clone(),
         limits: openjd_sessions::SessionLimits::from(&crate::common::caller_limits()),
     });
@@ -169,6 +171,15 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
     let environment_documents = applied.combined_environment_documents(&job);
     let job = applied.into_combined_job(job);
+    // Each attached template keeps its own profile: its Environment and
+    // Services are evaluated at run time under the extensions *it* declares
+    // (RFC 0009 "Environment Template": a Job Template need not list the
+    // extensions the Environment Templates applied to it use, and vice
+    // versa).
+    let attached_profiles = env_templates
+        .iter()
+        .map(EnvironmentTemplate::profile)
+        .collect();
 
     Ok(PreparedRun {
         job,
@@ -176,6 +187,7 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         param_values,
         path_rules,
         revision_profile,
+        attached_profiles,
     })
 }
 
@@ -388,6 +400,7 @@ fn create_session(
         sticky_bit_policy: Default::default(),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: None,
         // Run-time mirror of the CLI's caller-limits policy: derived from
         // the same `common::caller_limits()` value the decode/creation
         // stages use, so the two cannot drift.
@@ -483,7 +496,8 @@ async fn run_workload(
         .any(|&idx| step_runs_tasks(idx, selection));
     let job_service_count = job.job_services.as_ref().map_or(0, Vec::len);
     if job_runs_tasks {
-        ctx.services.set_job_services(job);
+        ctx.services
+            .set_job_services(job, &prepared.environment_documents);
     } else if job_service_count > 0 {
         println!(
             "{}\tNot starting the {job_service_count} Job Service(s): no Task of this Job will run",
@@ -509,7 +523,11 @@ async fn run_workload(
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, None, document.clone()).await;
+            // An attached Environment is evaluated under its own template's
+            // profile; the Job Template's own under the Session's.
+            let profile = (!document.is_job_template()).then(|| prepared.profile_for(document));
+            ctx.enter_environment(env, None, document.clone(), profile)
+                .await;
         }
 
         let mut rerun: Option<(RerunScope, usize)> = None;
@@ -517,7 +535,16 @@ async fn run_workload(
             if pos < resume_from || ctx.is_stopping() {
                 continue;
             }
-            match execute_step(ctx, args, job, &job.steps[step_idx], step_idx, selection).await? {
+            match execute_step(
+                ctx,
+                args,
+                prepared,
+                &job.steps[step_idx],
+                step_idx,
+                selection,
+            )
+            .await?
+            {
                 StepOutcome::Done => {}
                 StepOutcome::Rerun(scope) => {
                     rerun = Some((scope, pos));
@@ -529,6 +556,15 @@ async fn run_workload(
         let Some((scope, pos)) = rerun.filter(|_| !ctx.is_stopping()) else {
             return Ok(());
         };
+        // The requeue happens only if the Service is actually relaunched:
+        // await the restart decision (and the relaunch) first. A Service
+        // whose attempts are exhausted is FAILED instead, the gate records
+        // the failure, and the Job fails without pretending to requeue
+        // anything.
+        ctx.gate_services().await?;
+        if ctx.is_stopping() {
+            return Ok(());
+        }
         // The requeued Tasks run in a new Task Session: a canceled action
         // leaves a Session ending-only (see specs/sessions/session.md
         // "Brittle Sessions"), and a scheduler would form new Sessions for
@@ -564,11 +600,12 @@ async fn run_workload(
 async fn execute_step(
     ctx: &mut RunContext,
     args: &RunArgs,
-    job: &Job,
+    prepared: &PreparedRun,
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
 ) -> Result<StepOutcome, RunError> {
+    let job = &prepared.job;
     println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
     let runs_tasks = step_runs_tasks(step_idx, selection);
     let step_service_count = step.step_services.as_ref().map_or(0, Vec::len);
@@ -586,7 +623,8 @@ async fn execute_step(
     // enters the Step's Environments. A Step re-running its Tasks after a
     // RERUN finds its Services still registered.
     if runs_tasks && !ctx.is_stopping() {
-        ctx.services.set_step_services(job, step);
+        ctx.services
+            .set_step_services(job, &prepared.environment_documents, step);
         ctx.gate_services().await?;
     }
     let environment_baseline = ctx.entered_envs.len();
@@ -595,8 +633,13 @@ async fn execute_step(
         if ctx.is_stopping() {
             break;
         }
-        ctx.enter_environment(env, step.resolved_symtab.clone(), Document::JobTemplate)
-            .await;
+        ctx.enter_environment(
+            env,
+            step.resolved_symtab.clone(),
+            Document::JobTemplate,
+            None,
+        )
+        .await;
     }
 
     let result = if ctx.session_failed {

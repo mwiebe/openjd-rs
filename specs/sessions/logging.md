@@ -91,7 +91,8 @@ implementation forms: a structured field, or a `[<action>] ` text prefix.
   log.
 
 With `$action == None` it is exactly `session_log!`, so the untagged path is
-unchanged.
+unchanged. `session_action_log!` is shorthand for `session_tagged_log!` (below)
+with no session tag.
 
 Who sets the tag: `ScriptRunnerBase::action_tag` (set by the Service Session
 to `"onReadinessCheck"`, or `"onWrapServiceReadinessCheck"` when wrapped) is
@@ -99,10 +100,66 @@ copied into `ActionFilter::action_tag` for the action's run, and
 `subprocess::run_subprocess` / `cross_user_helper::run_via_helper` emit every
 record about the action — `Running command …`, `Command started as pid`,
 `Output:`, each `COMMAND_OUTPUT` line, cancel and timeout notices, `Process
-exit code` — through `session_action_log!` with that tag. The runner's
+exit code` — through `session_tagged_log!` with that tag. The runner's
 `Phase: Running action` subsection banner becomes a single tagged
 `PROCESS_CONTROL` line for a tagged action. `onRun`, `onEnter`, `onExit`,
-Environment actions and Tasks have no tag and log exactly as before.
+Environment actions and Tasks have no action tag and log exactly as before
+(unless the Session has a session tag, next).
+
+## LogTag and session_tagged_log! — session-wide attribution
+
+```rust
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogTag<'a> {
+    pub session: Option<&'a str>,   // SessionConfig::log_tag
+    pub action: Option<&'a str>,    // the concurrently running action (rule 3)
+}
+impl LogTag<'_> {
+    pub fn prefix(&self) -> String;   // "[<session>] [<action>] ", absent parts omitted
+    pub fn is_empty(&self) -> bool;
+}
+
+macro_rules! session_tagged_log {
+    ($level:ident, $session_id:expr, $tag:expr, $content:expr, $($arg:tt)+) => { … };
+}
+```
+
+A single-host runner that merges several Sessions' logs into one stream —
+`openjd run`, whose Job's Service Sessions log alongside the Task Session —
+loses attribution once a Service's `onRun` output interleaves with Task
+output (the RFC's rule-3 assumption, "`onRun` is the only stream present",
+does not hold there). `SessionConfig::log_tag: Option<String>` is the
+Session-wide answer: the runner sets it (the CLI to `Service <name>`, with
+`(from <document>)` for an external Service), the Session stores it and
+copies it onto every runner it builds (`EnvironmentScriptRunner`,
+`StepScriptRunner`, `new_runner_base`, `new_detached_runner_base`:
+`ScriptRunnerBase::session_tag`) and onto the `ActionFilter` of each action
+(`set_session_tag`), and `session_tagged_log!` emits, for the tags that are
+set:
+
+- the structured fields `openjd_session_tag = "<tag>"` and/or
+  `openjd_action = "<action>"`;
+- the message prefix `[<session>] [<action>] ` in that order — the session
+  tag first, so a Service's concurrent check reads `[Service Files]
+  [onReadinessCheck] CHECK_OK` and its `onRun` `[Service Files] line`. The
+  action tag's meaning (rule 3) is unchanged; the session tag is purely
+  additive.
+
+With both `None` it is exactly `session_log!`. The `log_tag` also changes the
+shape of the Session's **section banners**: `Session::log_banner(title)` calls
+`log_section_banner_tagged(session_id, log_tag, title)`, which with a tag
+emits one `BANNER` line, `[<tag>] --------- <title>`, instead of the four
+lines below — separator lines interleaved with another Session's output
+would be noise, and this is the same reduction the runner applies to its
+`Phase: Running action` subsection banner for a tagged action. All of the
+Session's section banners go through it (`Entering Environment: …`,
+`Exiting Environment: …`, `Running Task`, `Session Cleanup`, and the Service
+Session's `Starting Service: …`, `Service onEnter: …`, `Service onRun: …
+(launch N)`, `Ending Service: …`, `Service onExit: …`). A consumer that merges
+streams can therefore show a tagged Session's banners (the CLI does, for the
+Service Sessions) while still printing its own for the untagged Session.
+Redaction is applied to a line before any prefix is added. `log_tag: None`
+(the default) leaves every record exactly as before.
 Redaction is applied to the line before the prefix is added, so the prefix
 never hides or splits a redacted value.
 
@@ -110,8 +167,12 @@ never hides or splits a redacted value.
 
 ```rust
 pub fn log_section_banner(session_id: &str, title: &str);
+pub fn log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
 pub fn log_subsection_banner(session_id: &str, title: &str);
 ```
+
+`log_section_banner_tagged` with `Some(tag)` emits the single tagged line
+described above; with `None` it is `log_section_banner`.
 
 Emit formatted banner lines matching the Python library's output:
 

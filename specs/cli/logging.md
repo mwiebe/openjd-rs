@@ -17,9 +17,11 @@ openjd-sessions subprocess loop
   └── log::info!(openjd_log_content = LogContent::COMMAND_OUTPUT.bits(); "{line}")
       │
       └── SessionLogger::log(&record)
-          ├── Extract openjd_log_content from record's key-value pairs
-          ├── Check if COMMAND_OUTPUT bit (0x08) is set
-          └── If set: println!("{timestamp}\t{message}")
+          ├── Extract openjd_log_content (and whether openjd_session_tag is present)
+          │   from record's key-value pairs
+          ├── Check if COMMAND_OUTPUT bit (0x08) is set, or BANNER (0x01) on a
+          │   session-tagged record
+          └── If so: println!("{timestamp}\t{message}")
 ```
 
 ## LogContent Filtering
@@ -28,9 +30,19 @@ The sessions crate uses `log`'s key-value feature to attach structured metadata 
 records. The `openjd_log_content` key carries a `LogContent` bitflag value that classifies
 the log line's content type.
 
-The CLI's `SessionLogger` only displays lines with the `COMMAND_OUTPUT` bit set (bit 3,
+The CLI's `SessionLogger` displays lines with the `COMMAND_OUTPUT` bit set (bit 3,
 value 8). This filters out internal session lifecycle messages, action status updates, and
 other metadata that would clutter the user's terminal output.
+
+One exception: a record that carries the `openjd_session_tag` key-value — one logged by a
+Session created with `SessionConfig::log_tag`, which `openjd run` does for every Service
+Session (`Service <name>`) — is also displayed when its `BANNER` bit is set. The sessions
+runtime enters a Service Session's Environments and runs its actions internally, so the
+CLI cannot print `Entering Environment: …` / `Service onEnter: …` banners for it the way it
+does for the Task Session; a tagged Session's section banners are single tagged `BANNER`
+lines (`[Service Files] --------- Entering Environment: Shared`), and the logger lets them
+through. The Task Session has no tag, so its four-line `BANNER` records stay filtered and
+the CLI's own banners are not duplicated. See [run.md § Output](run.md#output).
 
 ### Visitor Pattern
 
@@ -38,7 +50,7 @@ The `log::Log::log()` method receives a `&Record` whose key-value pairs must be 
 via the visitor pattern:
 
 ```rust
-struct Visitor { bits: Option<u64> }
+struct Visitor { bits: Option<u64>, session_tagged: bool }
 
 impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
     fn visit_pair(
@@ -46,8 +58,10 @@ impl<'kvs> log::kv::VisitSource<'kvs> for Visitor {
         key: log::kv::Key<'kvs>,
         value: log::kv::Value<'kvs>,
     ) -> Result<(), log::kv::Error> {
-        if key.as_str() == "openjd_log_content" {
-            self.bits = value.to_u64();
+        match key.as_str() {
+            "openjd_log_content" => self.bits = value.to_u64(),
+            "openjd_session_tag" => self.session_tagged = true,
+            _ => {}
         }
         Ok(())
     }

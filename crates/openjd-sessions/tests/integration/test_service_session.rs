@@ -257,6 +257,7 @@ fn session_config(root: &TempDir, id: &str) -> SessionConfig {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: StickyBitPolicy::Strict,
     }
 }
@@ -272,6 +273,7 @@ fn service_session(
         session: session_config(root, &format!("svc-test:{}", service.name)),
         service,
         environments,
+        environment_profiles: vec![],
         endpoints,
         in_scope_endpoints: in_scope,
     })
@@ -592,6 +594,7 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
         session: config,
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -739,6 +742,7 @@ async fn on_enter_env_vars_reach_on_run_and_precedence_holds() {
         session: config,
         service,
         environments: vec![environment],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", port)]),
         in_scope_endpoints: vec![],
     })
@@ -1106,6 +1110,7 @@ async fn on_exit_failure_is_reported_after_full_teardown() {
         session: config,
         service,
         environments: vec![environment],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -1244,6 +1249,7 @@ async fn service_symbols_resolve_in_on_run_args() {
         session: config,
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", port)]),
         in_scope_endpoints: vec![db],
     })
@@ -1388,6 +1394,7 @@ async fn path_mapping_rules_are_materialized_and_applied() {
         session: config,
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -1422,6 +1429,7 @@ async fn with_config_rejects_incomplete_endpoint_assignment() {
         session: session_config(&root, "svc-test:ports"),
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -1441,6 +1449,7 @@ async fn with_config_rejects_mismatched_service_name_and_command_without_check()
         session: session_config(&root, "svc-test:name"),
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("other", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -1461,6 +1470,7 @@ async fn with_config_rejects_mismatched_service_name_and_command_without_check()
         session: session_config(&root, "svc-test:command"),
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", 5)]),
         in_scope_endpoints: vec![],
     })
@@ -1559,6 +1569,75 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
                 .count(),
             3
         );
+    });
+}
+
+/// `SessionConfig::log_tag`: every record of the Service Session — the
+/// scope Environment's output, `onEnter`'s, `onRun`'s, the check's — is
+/// prefixed with the session tag, the concurrent check's lines with its
+/// action tag after it, and each section banner becomes one tagged line.
+#[tokio::test]
+async fn session_log_tag_prefixes_every_record_and_collapses_banners() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
+        .readiness(command_check(1, 300))
+        .on_readiness_check(sh(&counting_check(&c, 1)))
+        .on_enter(sh("echo enter line"))
+        .build();
+    let environment = env("Scope", None, Some(sh("echo env line")), None);
+    let mut config = session_config(&root, "svc-test:tag");
+    config.log_tag = Some("Service svc".into());
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![environment],
+        environment_profiles: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceReadiness::Ready { message: None }
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let _ = ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        for expected in [
+            "[Service svc] --------- Starting Service: svc",
+            "[Service svc] --------- Entering Environment: Scope",
+            "[Service svc] env line",
+            "[Service svc] --------- Service onEnter: svc",
+            "[Service svc] enter line",
+            "[Service svc] --------- Service onRun: svc (launch 1)",
+            "[Service svc] service line",
+            "[Service svc] [onReadinessCheck] attempt 1",
+            "[Service svc] [onReadinessCheck] Service 'svc' readiness check invocation 1",
+            "[Service svc] --------- Ending Service: svc",
+            "[Service svc] --------- Exiting Environment: Scope",
+        ] {
+            assert!(
+                bodies.contains(&expected),
+                "missing {expected:?} in {bodies:?}"
+            );
+        }
+        // No four-line banner separators from this Session.
+        assert!(
+            !bodies.contains(&"=============================================="),
+            "{bodies:?}"
+        );
+        // Every COMMAND_OUTPUT line carries the tag.
+        for log in logs {
+            if log.body.ends_with(" line") || log.body.ends_with("attempt 1") {
+                assert!(log.body.starts_with("[Service svc] "), "{}", log.body);
+            }
+        }
     });
 }
 
@@ -2466,6 +2545,7 @@ async fn service_environment_resolves_own_bind_address_and_env_file() {
         session: config,
         service,
         environments: vec![],
+        environment_profiles: vec![],
         endpoints: endpoints("svc", &[("main", port)]),
         in_scope_endpoints: vec![endpoints("db", &[("main", db_port)])],
     })

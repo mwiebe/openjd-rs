@@ -50,7 +50,7 @@ pub use action::{ActionMessage, ActionResult, ActionState};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
 pub use limits::SessionLimits;
-pub use logging::LogContent;
+pub use logging::{LogContent, LogTag};
 pub use openjd_expr::path_mapping::{PathFormat, PathMappingRule};
 pub use runner::{CancelMethod, ScriptRunnerState};
 pub use service_session::{

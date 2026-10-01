@@ -499,6 +499,7 @@ async fn test_env_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut session = Session::with_config(session_config).unwrap();

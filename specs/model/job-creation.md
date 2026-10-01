@@ -480,6 +480,17 @@ Template with no `extensions` at all. The symbol table for a template is
 `RawParam.*`), plus `Job.Name` when that template declares `EXPR` — the
 same table pass 8 validated the document against, now with real values.
 
+The profile does not travel on the converted `job::Environment` (`ModelProfile`
+is not serializable and a `job::Environment` is a plain data record a scheduler
+ships to a worker); it stays a property of the template, and a runtime that
+evaluates the attached Environment's `@fmtstring[host]` fields at session time
+must obtain it from `EnvironmentTemplate::profile()` alongside
+`environment_documents` — the CLI keeps the attachments' profiles by attachment
+index and hands each Environment's to `Session::enter_environment_with_profile`
+(and each external Service's to its Service Session) so that `join_host_port`
+and the other `SERVICE`-gated functions in an attachment resolve under the
+attachment's extensions rather than the Job Template's.
+
 **Order of work.** The submission-time check runs first, against the
 combined Job, and every violation is reported in one `ModelValidation`
 error for the model name `Submission` (no single template is "the"

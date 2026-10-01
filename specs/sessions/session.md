@@ -188,6 +188,45 @@ where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
 8. On success: state → `Ready` (or `ReadyEnding` if `ending_only`)
 9. On failure: state → `ReadyEnding`
 
+#### Per-document extension profile
+
+`enter_environment_with_profile(env, resolved_symtab, identifier, os_env_vars, profile)`
+is the same entry with one more input: the `ModelProfile` of the document the
+environment comes from. An extension applies to the document that lists it
+(Template Schemas §1.2 item 3; RFC 0009 "Environment Template": "a Job Template does
+not need to list the extensions used by the Environment Templates a scheduler applies
+to it, and vice versa"). A session has one `profile` — the Job Template's — and one
+library derived from it, so without this an attached Environment Template declaring
+`SERVICE` could not call `join_host_port` under a Job Template that declares nothing
+(the exploratory report's bug B1: `Failed to resolve env var 'KV_ADDR': Unknown
+function: 'join_host_port'`).
+
+With `profile: Some(p)` the session records a `DocumentProfile { profile, library }`
+for the environment's identifier, the library derived exactly as the session's own —
+`p.to_expr_profile(HostContext::WithRules(path_mapping_rules))` — and rebuilt with it
+whenever the path-mapping rules change (`with_path_mapping`,
+`extend_path_mapping_rules`). For the lifetime of the environment that library
+resolves:
+
+- its `variables` (step 3) and its `onEnter` / `onExit` command, args, timeout and
+  cancelation (the `EnvironmentScriptRunner` is handed it instead of the session's);
+- its own `let` bindings and embedded files when it is the *wrapped* environment of a
+  wrap hook (`build_wrapped_inner_scope`, `WrappedAction.*`);
+- its own `let` bindings, embedded files, and hook command/args when it is the
+  *wrapping* environment (`onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit` and the
+  `onWrapService*` hooks a Service Session dispatches). `seed_wrapped_action_symbols`
+  therefore takes two libraries (`WrapLibraries { inner, hook }`): the wrapped entity's
+  document's for `WrappedAction.*`, the wrapping environment's document's for the
+  wrapper's scope. They coincide unless one of the two came from another document.
+
+The redaction gate follows the same rule: `openjd_redacted_env` from this environment's
+actions is honored iff `p` enables it (`REDACTED_ENV_VARS`, or a revision newer than
+2023-09), not iff the session's profile does — both for the runner's own redaction and
+for `apply_message`'s env-var effect. The record is dropped when the environment is
+exited (its `onExit` still uses it). `profile: None`, and `enter_environment` /
+`enter_environment_with_output`, use the session's profile and library as before; a
+Task's `onRun` always does (a Task belongs to the Job Template).
+
 ### Exit
 
 `exit_environment(identifier, resolved_symtab, keep_session_running, os_env_vars)`:

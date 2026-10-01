@@ -274,6 +274,14 @@ emits about the action is attributed to that name (`[<tag>] ` prefix plus the
 action` subsection banner becomes one tagged line. It is set only by the Service
 Session for the action that runs concurrently with `onRun` (RFC 0009 §9.6.1 rule 3).
 
+Alongside it, `session_tag: Option<String>` carries the Session's `SessionConfig::log_tag`
+— copied onto every runner the Session builds (the `with_session_tag` builder on
+`EnvironmentScriptRunner` / `StepScriptRunner`; set directly by `new_runner_base` /
+`new_detached_runner_base`) and into `ActionFilter::session_tag` at `run_action`. The two
+combine as a `LogTag { session, action }` (`ScriptRunnerBase::log_tag()`), whose message
+prefix is `[<session>] [<action>] `; the `Phase: Running action` banner becomes one tagged
+line when either is set.
+
 A Service Session's concurrent action cannot share the Session's helper (the helper
 protocol runs one command at a time), so `Session::spawn_detached_helper` spawns a
 second helper process from the same helper binary and `Session::new_detached_runner_base`

@@ -1,0 +1,53 @@
+# The RFC 0009 queue example as the exploratory report's bug B1 reproduces
+# it: an Environment Template declaring [SERVICE, EXPR] whose TASK-scoped
+# client Environment composes the Service's address with `join_host_port`
+# — a SERVICE-gated function — in `variables`, in `onEnter`, and in
+# `onExit`. Attached to a Job Template that declares no extensions at all
+# (service_external_kv_consumer.yaml), every one of those format strings
+# must still be evaluated under *this* document's extensions (Template
+# Schemas §1.2 item 3; RFC 0009 "Environment Template").
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: Kv
+    description: "A tiny TCP key-value store the queue supplies to every Job."
+    ports:
+      - name: main
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Kv.main.bindAddress }}", "{{ Service.Kv.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("KV_LISTENING", flush=True)
+            while True:
+                c, _ = s.accept()
+                data = c.recv(64)
+                if data:  # a TCP_CONNECT readiness probe sends nothing
+                    c.sendall(b"KV_SAYS " + data)
+                c.close()
+environment:
+  name: KvClient
+  description: "Tells every Task where the Job's key-value store is."
+  runScope: [TASK]
+  variables:
+    KV_ADDR: "{{ join_host_port(Service.Kv.main.connectAddress, Service.Kv.main.port) }}"
+  script:
+    actions:
+      onEnter:
+        command: sh
+        args: ["-c", "echo KVCLIENT_ENTER {{ join_host_port(Service.Kv.main.connectAddress, Service.Kv.main.port) }}"]
+      onExit:
+        command: sh
+        args: ["-c", "echo KVCLIENT_EXIT {{ join_host_port(Service.Kv.main.connectAddress, Service.Kv.main.port) }}"]

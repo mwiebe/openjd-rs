@@ -89,6 +89,40 @@ fn undefined(name: &str) -> String {
     format!("Undefined variable: '{name}'.")
 }
 
+/// The scope-rule messages of `validate_v2023_09::service_scope` (see
+/// `test_service_scope.rs` for the full set).
+fn step_service_out_of_scope(svc: &str, step: &str, here: &str) -> String {
+    format!("Service '{svc}' is a Step Service of step '{step}' and is not in scope in {here}.")
+}
+
+fn later_in_list(svc: &str, list: &str, from: &str) -> String {
+    format!(
+        "Service '{svc}' is declared later in {list} than '{from}'; a Service may reference only \
+         itself and earlier Services."
+    )
+}
+
+fn bind_address_outside(svc: &str, port: &str) -> String {
+    format!(
+        "Service.{svc}.{port}.bindAddress is available only within the Service '{svc}' itself; use \
+         connectAddress to reach it from elsewhere."
+    )
+}
+
+fn env_in_service_sessions(env: &str) -> String {
+    format!(
+        "Environment '{env}' is entered in Service Sessions (its runScope includes SERVICE) and \
+         may not reference Service.*; declare runScope: [TASK] if it configures Tasks."
+    )
+}
+
+fn job_creation_field(field: &str) -> String {
+    format!(
+        "Service.* is not available in {field}: it is resolved at job creation, before any \
+         Service has an endpoint."
+    )
+}
+
 fn indent(body: &str, n: usize) -> String {
     let pad = " ".repeat(n);
     body.lines()
@@ -586,7 +620,7 @@ fn service_environment_sees_earlier_services_but_not_their_bind_address() {
         &[
             "1 validation error for JobTemplate\n",
             "jobServices[1] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.A.p.bindAddress"),
+            &bind_address_outside("A", "p"),
         ],
     );
 }
@@ -601,9 +635,9 @@ fn service_environment_cannot_see_a_later_service_or_another_steps_service() {
         &[
             "2 validation errors for JobTemplate\n",
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.B.q.port"),
+            &later_in_list("B", "jobServices", "A"),
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.C.r.port"),
+            &step_service_out_of_scope("C", "S", "Service 'A'"),
         ],
     );
     // A Step Service's Service Environment cannot see another Step's Service.
@@ -628,7 +662,7 @@ fn service_environment_cannot_see_a_later_service_or_another_steps_service() {
         &[
             "1 validation error for JobTemplate\n",
             "steps[0] -> stepServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.D.s.port"),
+            &step_service_out_of_scope("D", "Other", "Service 'C'"),
         ],
     );
 }
@@ -688,7 +722,7 @@ fn service_environment_never_sees_task_or_service_file_names() {
         &[
             "2 validation errors for JobTemplate\n",
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Task.Param.Frame"),
+            "Task.* is not available within a Service.",
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\tFailed to parse interpolation expression at [",
             &undefined("Service.File.Conf"),
         ],
@@ -840,7 +874,7 @@ fn service_environment_timing_fields_resolve_at_job_creation() {
         &[
             "1 validation error for JobTemplate\n",
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> timeout:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.A.p.port"),
+            &job_creation_field("timeout"),
         ],
     );
 }
@@ -902,7 +936,7 @@ fn job_environment_in_service_sessions_still_cannot_reference_services() {
         &[
             "1 validation error for JobTemplate\n",
             "jobEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.A.p.port"),
+            &env_in_service_sessions("JobEnv"),
         ],
     );
 }
@@ -972,7 +1006,7 @@ fn environment_template_service_environments_have_the_documents_scope() {
         &[
             "2 validation errors for EnvironmentTemplate\n",
             "services[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &undefined("Service.Second.main.port"),
+            &later_in_list("Second", "services", "First"),
             "services[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\tFailed to parse interpolation expression at [",
             &undefined("Step.Name"),
         ],
