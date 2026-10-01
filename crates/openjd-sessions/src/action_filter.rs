@@ -145,6 +145,15 @@ impl ActionFilter {
         self.session_tag.as_deref()
     }
 
+    /// The attribution of this action's records: its session and action
+    /// tags together, as the subprocess loop applies them to every line.
+    pub fn log_tag(&self) -> crate::logging::LogTag<'_> {
+        crate::logging::LogTag {
+            session: self.session_tag(),
+            action: self.action_tag(),
+        }
+    }
+
     /// Current minimum log level for command output (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR).
     pub fn min_log_level(&self) -> u32 {
         self.log_level
@@ -462,6 +471,27 @@ impl ActionFilter {
                 }
 
                 if !self.redactions_enabled {
+                    // The directive is dropped (the Session sets no variable
+                    // under this document's profile), but the line is still
+                    // redacted below, so without a notice the author sees
+                    // `NAME=********` and believes the variable was set. Say
+                    // so in the action's own output stream — a WARN
+                    // `COMMAND_OUTPUT` record, as Python's `_action_filter.py`
+                    // does — naming the variable only, never its value. It
+                    // carries the action's tags like every other line of the
+                    // action, and honors `openjd_session_runtime_loglevel`
+                    // like the command output it accompanies.
+                    if self.log_level <= 30 {
+                        crate::session_tagged_log!(
+                            warn,
+                            &self.session_id,
+                            self.log_tag(),
+                            crate::logging::LogContent::COMMAND_OUTPUT,
+                            "Received openjd_redacted_env for '{}' but the REDACTED_ENV_VARS \
+                             extension is not declared; the variable is not set.",
+                            name
+                        );
+                    }
                     // Still notify session about the redacted value for log redaction,
                     // but don't set the env var (handled by session based on extension flag)
                     callbacks.push(FilterCallback {
@@ -1007,14 +1037,92 @@ mod tests {
 
     #[test]
     fn test_redacted_env_with_warning_no_extension() {
+        testing_logger::setup();
         let mut f = make_filter(true, false);
         let (cbs, _, msg) = f.filter_message("openjd_redacted_env: SECRET_VAR=secret_value", "foo");
         // RedactedEnv callback returned so session can track value for redaction
         assert_eq!(cbs.len(), 1);
         assert_eq!(cbs[0].kind, ActionMessageKind::RedactedEnv);
+        assert_eq!(
+            cbs[0].value,
+            ActionMessageValue::EnvVar {
+                name: "SECRET_VAR".into(),
+                value: "secret_value".into(),
+            }
+        );
+        assert!(!cbs[0].cancel);
         // Message should still be redacted
         assert!(msg.contains("SECRET_VAR=********"));
         assert!(!msg.contains("secret_value"));
+        // The dropped directive is announced in the action's output stream
+        // (a WARN COMMAND_OUTPUT record, like Python), naming the variable
+        // but never its value.
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            assert_eq!(
+                warns[0].body,
+                "Received openjd_redacted_env for 'SECRET_VAR' but the REDACTED_ENV_VARS \
+                 extension is not declared; the variable is not set."
+            );
+            assert_eq!(warns[0].target, "openjd.sessions");
+            assert!(!warns[0].body.contains("secret_value"));
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_without_extension_warning_carries_the_actions_tags() {
+        testing_logger::setup();
+        let mut f = make_filter(true, false);
+        f.set_session_tag(Some("Service Vault".into()));
+        f.set_action_tag(Some("onReadinessCheck".into()));
+        f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            assert_eq!(
+                warns[0].body,
+                "[Service Vault] [onReadinessCheck] Received openjd_redacted_env for 'TOKEN' but \
+                 the REDACTED_ENV_VARS extension is not declared; the variable is not set."
+            );
+            assert!(!warns[0].body.contains("hunter2"));
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_without_extension_warning_honors_runtime_loglevel() {
+        testing_logger::setup();
+        let mut f = make_filter(true, false);
+        f.filter_message("openjd_session_runtime_loglevel: ERROR", "foo");
+        f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        testing_logger::validate(|logs| {
+            assert!(
+                !logs.iter().any(|l| l.level == log::Level::Warn),
+                "no warning at ERROR level"
+            );
+        });
+    }
+
+    #[test]
+    fn test_redacted_env_with_extension_does_not_warn() {
+        testing_logger::setup();
+        let mut f = make_filter(true, true);
+        let (cbs, _, msg) = f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
+        assert_eq!(cbs.len(), 1);
+        assert_eq!(cbs[0].kind, ActionMessageKind::RedactedEnv);
+        assert_eq!(msg, "openjd_redacted_env: TOKEN=********");
+        testing_logger::validate(|logs| {
+            assert!(
+                !logs.iter().any(|l| l.level == log::Level::Warn),
+                "no warning when the extension is declared"
+            );
+        });
     }
 
     // === test_redacted_env_uses_fixed_length_redaction ===

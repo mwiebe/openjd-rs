@@ -531,7 +531,7 @@ Handles each `ActionMessage` variant:
 | `Fail(s)` | Updates `action_status.fail_message` |
 | `SetEnv { name, value }` | Adds to current environment's change set |
 | `UnsetEnv { name }` | Adds unset to current environment's change set |
-| `RedactedEnv { name, value }` | Same as SetEnv + adds value to redaction set |
+| `RedactedEnv { name, value }` | Adds value to redaction set; same as SetEnv iff `env_redactions_enabled(identifier)` (the running action's document declares `REDACTED_ENV_VARS`), else dropped silently here — the `ActionFilter` has already logged the WARN that announces the drop ([action-filter.md](action-filter.md#when-the-document-does-not-declare-redacted_env_vars)) |
 | `CancelMarkFailed` | Sets `action_fail_message`, triggers cancelation with `mark_action_failed = true` |
 
 After each message, the user callback is invoked with the updated `ActionStatus`.

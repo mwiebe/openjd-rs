@@ -34,6 +34,14 @@ The CLI's `SessionLogger` displays lines with the `COMMAND_OUTPUT` bit set (bit 
 value 8). This filters out internal session lifecycle messages, action status updates, and
 other metadata that would clutter the user's terminal output.
 
+The logger routes by content, not by level: a `warn`-level record with the
+`COMMAND_OUTPUT` bit is printed exactly like an `info` output line (same timestamp,
+no level marker), because it is addressed to the template author about their action's
+output — today the sessions runtime's `Received openjd_redacted_env for 'NAME' but the
+REDACTED_ENV_VARS extension is not declared; the variable is not set.` — while the
+runtime's operational `log::warn!` records, which carry no `openjd_log_content`, are
+dropped. See `specs/sessions/logging.md` § Log levels and classification.
+
 One exception: a record that carries the `openjd_session_tag` key-value — one logged by a
 Session created with `SessionConfig::log_tag`, which `openjd run` does for every Service
 Session (`Service <name>`) — is also displayed when its `BANNER` bit is set. The sessions
