@@ -436,7 +436,7 @@ pub fn apply_environment_templates(
 Applies the Environment Templates of a submission to the Job that
 `create_job` built from the Job Template alone (Template Schemas §1.2.2
 "Services from Environment Templates", RFC 0009 "Environment Template" and
-the "Validation" section's two submission-time checks). `create_job` stays
+the "Validation" section's submission-time check). `create_job` stays
 a function of the Job Template only; this is the second stage of a
 submission, and the only place the crate sees several documents together.
 
@@ -449,11 +449,15 @@ same submission (every template's `parameterDefinitions` merged per
 §1.2.1); and the caller's limits, applied to every template as they were
 to the Job Template.
 
-Output: `AppliedEnvironmentTemplates { external_services, environments }`
-— the external Services instantiated in start order (attachment order,
-then each template's `services` order) and the attached Environments
-converted in attachment order (a services-only template contributes
-none). `into_combined_job(job)` folds them into the Job: `job_services`
+Output: `AppliedEnvironmentTemplates { external_services, environments,
+environment_documents }` — the external Services instantiated in start
+order (attachment order, then each template's `services` order), each
+stamped with its attachment as `job::Service::document`; the attached
+Environments converted in attachment order (a services-only template
+contributes none); and, index for index with `environments`, the
+`job::Document` each came from (`combined_environment_documents(&job)`
+extends the list with `JobTemplate` for the Job's own, matching the
+folded `job_environments`). `into_combined_job(job)` folds them into the Job: `job_services`
 becomes external Services followed by the Job Template's own, and
 `job_environments` the attached Environments followed by the Job
 Template's own (merge rule 1: "placed before every Service in the Job
@@ -476,34 +480,28 @@ Template with no `extensions` at all. The symbol table for a template is
 `RawParam.*`), plus `Job.Name` when that template declares `EXPR` — the
 same table pass 8 validated the document against, now with real values.
 
-**Order of work.** The two submission-time checks run first, against the
+**Order of work.** The submission-time check runs first, against the
 combined Job, and every violation is reported in one `ModelValidation`
 error for the model name `Submission` (no single template is "the"
-model). Only if both pass are the Services instantiated and the
+model). Only if it passes are the Services instantiated and the
 Environments converted:
 
-1. **Merge rule 2 — name collisions.** The combined Service list is
-   assembled with provenance: every external Service (attachment order,
-   `services` order), then the Job's `jobServices`, then each Step's
-   `stepServices`. Each external Service is compared with every external
-   Service before it and with every Service the Job Template declares; a
-   hit is reported at the external Service's path
-   (`EnvironmentTemplate[i] -> services[k]`, or `<label> -> services[k]`)
-   naming both sources:
-
-   ```
-   external Service 'Cache' (EnvironmentTemplate[0] -> services[0]) has the same name as
-   Service 'Cache' (JobTemplate -> jobServices[0]); the name of an external Service must
-   not equal the name of any other external Service, nor of any Service in the Job
-   Template's jobServices or any Step's stepServices (RFC 0009, Template Schemas §1.2.2
-   item 2).
-   ```
-
-   The other source reads `Service '<name>' (JobTemplate -> steps[i] ->
-   stepServices[k])` or `external Service '<name>' (EnvironmentTemplate[j]
-   -> services[k])`. A repeat within one document is a template-validation
-   error (§9.7 item 5), so a hit here is always across documents. Every
-   collision is reported, not just the first.
+1. **Merge rule 2 — Service names are scoped to their document.** Nothing
+   is rejected: an external Service may have the same `name` as a Service
+   in another attachment or in the Job Template's `jobServices` or any
+   Step's `stepServices`. Every `Service.*` reference resolves within its
+   own document (template validation, pass 8, enforces that per document),
+   so no name is ever looked up across documents; what the merge must do
+   is keep same-named Services distinct. Each external Service is stamped
+   with `document = Document::EnvironmentTemplate { index, label }` (its
+   0-based attachment index and the caller's label, if any) after
+   `instantiate_service`, while `create_job`'s own Services keep the
+   default `Document::JobTemplate`; a scheduler keys Services on
+   `(document, name)`. A repeat within one document remains a
+   template-validation error (§9.7 item 5). The combined Service list is
+   still assembled with provenance (every external Service, then the Job's
+   `jobServices`, then each Step's `stepServices`) — the wrapper check
+   below names a witness from it.
 
 2. **Merge rule 3 — wrapping Environments from SERVICE-less documents.**
    A document that does not declare `SERVICE` cannot write `runScope` or
@@ -560,7 +558,9 @@ Environments converted:
    with the document's own Services, only when the Environment's
    `runScope` excludes `SERVICE`, exactly the pass 8 scope), then
    `convert_environment_with_symtab` freezes the attachment's table into
-   `resolved_symtab`.
+   `resolved_symtab`, and the attachment's `Document` is pushed onto
+   `environment_documents` so a runtime seeding `Service.*` for the
+   Environment seeds that document's Services only.
 
 Errors raised inside one document in steps 3–4 are attributed to it:
 validation errors get the document prefixed to every path and report for
@@ -579,8 +579,7 @@ wants it on attached Environments measures the returned `environments`.
 declares no `SERVICE` has exactly the pre-RFC-0009 behavior: its
 Environment is converted with the merged parameter table (what the CLI
 did by hand with `build_symbol_table` + `convert_environment_with_symtab`),
-the collision rule has nothing to compare, and the wrapper rule has no
-Service in scope.
+and the wrapper rule has no Service in scope.
 
 ### convert_environment
 

@@ -18,6 +18,11 @@ pub(crate) struct RunResult {
 /// One FAILED Service in the result output.
 pub(crate) struct FailedService {
     pub name: String,
+    /// The attached Environment Template that declares an external Service
+    /// (its path as given on the command line); `None` for a Service of the
+    /// Job Template. Service names are scoped to their document, so this is
+    /// what tells two same-named Services apart.
+    pub document: Option<String>,
     /// `Job` or `Step '<name>'`.
     pub scope: String,
     pub reason: String,
@@ -38,11 +43,15 @@ impl crate::common::CliResult for RunResult {
                 .failed_services
                 .iter()
                 .map(|f| {
-                    serde_json::json!({
+                    let mut entry = serde_json::json!({
                         "name": f.name,
                         "scope": f.scope,
                         "reason": f.reason,
-                    })
+                    });
+                    if let Some(document) = &f.document {
+                        entry["document"] = serde_json::Value::String(document.clone());
+                    }
+                    entry
                 })
                 .collect();
         }
@@ -64,12 +73,69 @@ impl std::fmt::Display for RunResult {
         writeln!(f, "Duration: {:.3} seconds", self.duration)?;
         write!(f, "Chunks run: {}", self.chunks_run)?;
         for failed in &self.failed_services {
+            let origin = failed
+                .document
+                .as_deref()
+                .map(|d| format!(" (from {d})"))
+                .unwrap_or_default();
             write!(
                 f,
-                "\nFailed Service: {} ({} scope): {}",
+                "\nFailed Service: {}{origin} ({} scope): {}",
                 failed.name, failed.scope, failed.reason
             )?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::CliResult;
+
+    fn result(failed_services: Vec<FailedService>) -> RunResult {
+        RunResult {
+            status: "error".into(),
+            message: "m".into(),
+            job_name: "J".into(),
+            step_name: None,
+            duration: 1.0,
+            chunks_run: 0,
+            failed_services,
+        }
+    }
+
+    #[test]
+    fn failed_service_names_its_document_only_when_external() {
+        let own = FailedService {
+            name: "Cache".into(),
+            document: None,
+            scope: "Job".into(),
+            reason: "boom".into(),
+        };
+        let external = FailedService {
+            name: "Cache".into(),
+            document: Some("queue-cache.yaml".into()),
+            scope: "Job".into(),
+            reason: "bang".into(),
+        };
+        let r = result(vec![own, external]);
+        let text = r.to_string();
+        assert!(
+            text.contains("\nFailed Service: Cache (Job scope): boom\n"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("\nFailed Service: Cache (from queue-cache.yaml) (Job scope): bang"),
+            "{text}"
+        );
+        let json = r.to_json_value();
+        assert_eq!(
+            json["failed_services"],
+            serde_json::json!([
+                {"name": "Cache", "scope": "Job", "reason": "boom"},
+                {"name": "Cache", "scope": "Job", "reason": "bang", "document": "queue-cache.yaml"},
+            ])
+        );
     }
 }

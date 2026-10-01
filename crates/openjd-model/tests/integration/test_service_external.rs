@@ -4,7 +4,7 @@
 
 //! Integration tests for applying Environment Templates to a Job under RFC
 //! 0009 (Template Schemas §1.2.2 "Services from Environment Templates" and
-//! §9.7's two submission-time checks) via `apply_environment_templates`:
+//! §9.7's submission-time check) via `apply_environment_templates`:
 //!
 //! 1. **Merge rule 1** — the RFC's queue-cache example: the external
 //!    `Cache` Service is instantiated first, before the Job Template's own
@@ -12,8 +12,11 @@
 //!    scope; attached Environments precede the Job's own; a submission with
 //!    several attachments orders Services by attachment then `services`
 //!    order; Environment-only attachments behave as before RFC 0009.
-//! 2. **Merge rule 2** — name collisions with a Job Service, a Step Service,
-//!    and another attachment, each naming both sources.
+//! 2. **Merge rule 2** — Service names are scoped to their document: an
+//!    external Service named like a Job Service, a Step Service, or another
+//!    attachment's Service is accepted and kept distinct through
+//!    `job::Service::document`; the documents of the combined Environments
+//!    are reported alongside.
 //! 3. **Merge rule 3** — the wrapping-Environment rule in both directions
 //!    (a SERVICE-less wrapper attachment with a Job that declares Services;
 //!    a SERVICE-less Job Template wrapper, job- and step-level, with an
@@ -493,112 +496,107 @@ services:
 }
 
 // ════════════════════════════════════════════════════════════════════
-// 2. Merge rule 2 — name collisions
+// 2. Merge rule 2 — Service names are scoped to their document
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn external_service_colliding_with_a_job_service_is_rejected() {
+fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
     // The Valkey example's Job Service is named `Cache`, as is the RFC's
-    // queue-cache attachment's — the collision the spec warns about.
-    let msg = submit_err(RFC_VALKEY, &[RFC_QUEUE_CACHE], &[]);
+    // queue-cache attachment's: two distinct Services, the external one
+    // first, each known by (document, name).
+    let (job, applied) = submit_ok(RFC_VALKEY, &[RFC_QUEUE_CACHE], &[]);
+    assert_eq!(service_names(&applied.external_services), ["Cache"]);
     assert_eq!(
-        msg,
-        "Model validation error: 1 validation error for Submission\n\
-         EnvironmentTemplate[0] -> services[0]:\n\
-         \texternal Service 'Cache' (EnvironmentTemplate[0] -> services[0]) has the same name as \
-         Service 'Cache' (JobTemplate -> jobServices[0]); the name of an external Service must \
-         not equal the name of any other external Service, nor of any Service in the Job \
-         Template's jobServices or any Step's stepServices (RFC 0009, Template Schemas §1.2.2 \
-         item 2)."
+        applied.external_services[0].document,
+        job::Document::environment_template(0, None)
     );
+    assert_eq!(
+        applied.external_services[0].document.to_string(),
+        "EnvironmentTemplate[0]"
+    );
+    assert_eq!(
+        applied.environment_documents,
+        [job::Document::environment_template(0, None)]
+    );
+
+    let combined = applied.into_combined_job(job);
+    let services = combined.job_services.as_deref().unwrap();
+    assert_eq!(service_names(services), ["Cache", "Cache"]);
+    assert_eq!(
+        services[0].document,
+        job::Document::environment_template(0, None)
+    );
+    assert_eq!(services[1].document, job::Document::JobTemplate);
+    assert_ne!(
+        services[0], services[1],
+        "distinct Services, not a duplicate"
+    );
+    // Each resolves `Service.Cache.*` within its own document: the external
+    // one is the RFC's valkey-server with `--maxmemory`, the Job Template's
+    // has `--save`.
+    let args = |svc: &job::Service| -> Vec<String> {
+        svc.script
+            .actions
+            .on_run
+            .args
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|a| a.to_string())
+            .collect()
+    };
+    assert!(args(&services[0]).iter().any(|a| a == "--maxmemory"));
+    assert!(args(&services[1]).iter().any(|a| a == "--save"));
 }
 
 #[test]
-fn external_service_colliding_with_a_step_service_is_rejected() {
-    // The coordinator example's Step Service is `Coordinator` on steps[0].
-    let msg = submit_err(
+fn external_service_named_like_a_step_service_is_accepted() {
+    // The coordinator example's Step Service is `Coordinator` on steps[0];
+    // an external `Coordinator` is a different Service.
+    let (job, applied) = submit_ok(
         RFC_COORDINATOR,
         &[&service_only_template("Coordinator")],
         &[],
     );
+    assert_eq!(service_names(&applied.external_services), ["Coordinator"]);
+    let combined = applied.into_combined_job(job);
     assert_eq!(
-        msg,
-        "Model validation error: 1 validation error for Submission\n\
-         EnvironmentTemplate[0] -> services[0]:\n\
-         \texternal Service 'Coordinator' (EnvironmentTemplate[0] -> services[0]) has the same \
-         name as Service 'Coordinator' (JobTemplate -> steps[0] -> stepServices[0]); the name of \
-         an external Service must not equal the name of any other external Service, nor of any \
-         Service in the Job Template's jobServices or any Step's stepServices (RFC 0009, Template \
-         Schemas §1.2.2 item 2)."
+        service_names(combined.job_services.as_deref().unwrap()),
+        ["Coordinator"]
     );
+    let step_services = combined.steps[0].step_services.as_deref().unwrap();
+    assert_eq!(service_names(step_services), ["Coordinator"]);
+    assert_eq!(step_services[0].document, job::Document::JobTemplate);
 }
 
 #[test]
-fn external_services_colliding_across_attachments_are_rejected() {
-    // Two attachments each define `Cache`; the second is the one reported,
-    // against the first.
-    let msg = submit_err(
+fn external_services_named_alike_across_attachments_are_accepted() {
+    // Two attachments each define `Cache`: both are kept, in attachment
+    // order, each stamped with its own document.
+    let (_, applied) = submit_ok(
         RFC_CONSUMER,
         &[RFC_QUEUE_CACHE, &service_only_template("Cache")],
         &[],
     );
     assert_eq!(
-        msg,
-        "Model validation error: 1 validation error for Submission\n\
-         EnvironmentTemplate[1] -> services[0]:\n\
-         \texternal Service 'Cache' (EnvironmentTemplate[1] -> services[0]) has the same name as \
-         external Service 'Cache' (EnvironmentTemplate[0] -> services[0]); the name of an \
-         external Service must not equal the name of any other external Service, nor of any \
-         Service in the Job Template's jobServices or any Step's stepServices (RFC 0009, Template \
-         Schemas §1.2.2 item 2)."
+        service_names(&applied.external_services),
+        ["Cache", "Cache"]
+    );
+    assert_eq!(
+        applied
+            .external_services
+            .iter()
+            .map(|s| s.document.clone())
+            .collect::<Vec<_>>(),
+        [
+            job::Document::environment_template(0, None),
+            job::Document::environment_template(1, None),
+        ]
     );
 }
 
 #[test]
-fn every_collision_is_reported_at_once() {
-    // `Cache` collides with the Valkey Job Service, and the two attachments
-    // collide with each other on `Dup0`: two errors in one result.
-    let first = many_services_template("Dup", 1); // Dup0
-    const SECOND: &str = r#"
-specificationVersion: "environment-2023-09"
-extensions: [SERVICE, EXPR]
-services:
-  - name: Cache
-    ports: [{ name: main }]
-    script:
-      actions:
-        onRun: { command: serve }
-  - name: Dup0
-    ports: [{ name: main }]
-    script:
-      actions:
-        onRun: { command: serve }
-"#;
-    let msg = submit_err(RFC_VALKEY, &[&first, SECOND], &[]);
-    assert!(
-        msg.starts_with("Model validation error: 2 validation errors for Submission\n"),
-        "{msg}"
-    );
-    assert!(
-        msg.contains(
-            "EnvironmentTemplate[1] -> services[0]:\n\texternal Service 'Cache' \
-             (EnvironmentTemplate[1] -> services[0]) has the same name as Service 'Cache' \
-             (JobTemplate -> jobServices[0]);"
-        ),
-        "{msg}"
-    );
-    assert!(
-        msg.contains(
-            "EnvironmentTemplate[1] -> services[1]:\n\texternal Service 'Dup0' \
-             (EnvironmentTemplate[1] -> services[1]) has the same name as external Service 'Dup0' \
-             (EnvironmentTemplate[0] -> services[0]);"
-        ),
-        "{msg}"
-    );
-}
-
-#[test]
-fn labels_name_the_documents_in_collision_messages() {
+fn labels_name_the_documents_on_external_services() {
     let jt = decode_job(RFC_VALKEY);
     let et = decode_env(&service_only_template("Cache"));
     let td = tempfile::TempDir::new().unwrap();
@@ -613,19 +611,144 @@ fn labels_name_the_documents_in_collision_messages() {
     let job = create_job(&jt, &processed, &jt.default_validation_context()).unwrap();
     let attached =
         [AttachedEnvironmentTemplate::new(&et).with_label("queue/cache.environment.yaml")];
-    let msg = apply_environment_templates(&job, &attached, &processed, &CallerLimits::default())
-        .expect_err("collision")
-        .to_string();
+    let applied =
+        apply_environment_templates(&job, &attached, &processed, &CallerLimits::default())
+            .expect("same-named Services in different documents are accepted");
+    let doc = &applied.external_services[0].document;
     assert_eq!(
-        msg,
-        "Model validation error: 1 validation error for Submission\n\
-         queue/cache.environment.yaml -> services[0]:\n\
-         \texternal Service 'Cache' (queue/cache.environment.yaml -> services[0]) has the same \
-         name as Service 'Cache' (JobTemplate -> jobServices[0]); the name of an external Service \
-         must not equal the name of any other external Service, nor of any Service in the Job \
-         Template's jobServices or any Step's stepServices (RFC 0009, Template Schemas §1.2.2 \
-         item 2)."
+        *doc,
+        job::Document::environment_template(0, Some("queue/cache.environment.yaml"))
     );
+    assert_eq!(doc.to_string(), "queue/cache.environment.yaml");
+    assert!(applied.environment_documents.is_empty(), "services-only");
+}
+
+#[test]
+fn documents_of_the_combined_environments_follow_the_fold() {
+    // Two attachments (the first services-only, the second with an
+    // Environment) on a Job with a Job Environment of its own.
+    const JOB_WITH_ENV: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+name: WithEnv
+jobEnvironments:
+  - name: JobEnv
+    variables: { FROM_JOB: "1" }
+steps:
+  - name: Render
+    script:
+      actions:
+        onRun:
+          command: echo
+"#;
+    let (job, applied) = submit_ok(
+        JOB_WITH_ENV,
+        &[&service_only_template("Cache"), RFC_QUEUE_CACHE],
+        &[],
+    );
+    assert_eq!(
+        applied.environment_documents,
+        [job::Document::environment_template(1, None)]
+    );
+    assert_eq!(
+        applied.combined_environment_documents(&job),
+        [
+            job::Document::environment_template(1, None),
+            job::Document::JobTemplate,
+        ]
+    );
+    let combined = applied.into_combined_job(job);
+    assert_eq!(
+        combined
+            .job_environments
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CacheClient", "JobEnv"]
+    );
+}
+
+#[test]
+fn duplicates_within_one_document_are_still_rejected() {
+    // The per-document rule is unchanged: a repeat within an attachment's
+    // `services` list is a template-validation error, as is a Step Service
+    // named like a Job Service of the same Job Template.
+    let err = decode_environment_template(
+        yaml_val(
+            r#"
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: Cache
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: serve } } }
+  - name: Cache
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: serve } } }
+"#,
+        ),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("duplicate within one list")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for EnvironmentTemplate\n\
+         services[1]:\n\tduplicate service name: 'Cache'"
+    );
+
+    let err = decode_job_template(
+        yaml_val(
+            r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Dup
+jobServices:
+  - name: Cache
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: serve } } }
+steps:
+  - name: Render
+    stepServices:
+      - name: Cache
+        ports: [{ name: main }]
+        script: { actions: { onRun: { command: serve } } }
+    script: { actions: { onRun: { command: echo } } }
+"#,
+        ),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("Step Service named like a Job Service")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> stepServices[0]:\n\tduplicate service name: 'Cache'"
+    );
+}
+
+#[test]
+fn document_serializes_only_for_external_services() {
+    let (job, applied) = submit_ok(RFC_VALKEY, &[RFC_QUEUE_CACHE], &[]);
+    let combined = applied.into_combined_job(job);
+    let value = serde_json::to_value(&combined).unwrap();
+    let services = value["jobServices"].as_array().unwrap();
+    assert_eq!(
+        services[0]["document"],
+        serde_json::json!({"kind": "EnvironmentTemplate", "index": 0})
+    );
+    assert!(
+        services[1].get("document").is_none(),
+        "the Job Template's own Service omits the default"
+    );
+    let combined_services = combined.job_services.as_deref().unwrap();
+    for (value, expected) in services.iter().zip(combined_services) {
+        let round_trip: job::Service = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(&round_trip, expected);
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -810,20 +933,17 @@ steps:
 }
 
 #[test]
-fn collision_and_wrapper_violations_are_reported_together() {
-    // One result, both checks: the wrapper attachment and a colliding
-    // `Cache` attachment on the Valkey Job.
+fn same_named_service_does_not_mask_a_wrapper_violation() {
+    // The wrapper attachment is still rejected when the other attachment's
+    // `Cache` is named like the Valkey Job's: exactly one error, the
+    // wrapper's; the name is not one.
     let msg = submit_err(
         RFC_VALKEY,
         &[WRAPPER_ENV_TEMPLATE, &service_only_template("Cache")],
         &[],
     );
     assert!(
-        msg.starts_with("Model validation error: 2 validation errors for Submission\n"),
-        "{msg}"
-    );
-    assert!(
-        msg.contains("EnvironmentTemplate[1] -> services[0]:\n\texternal Service 'Cache'"),
+        msg.starts_with("Model validation error: 1 validation error for Submission\n"),
         "{msg}"
     );
     assert!(
@@ -832,6 +952,7 @@ fn collision_and_wrapper_violations_are_reported_together() {
         ),
         "{msg}"
     );
+    assert!(!msg.contains("has the same name"), "{msg}");
 }
 
 // ════════════════════════════════════════════════════════════════════

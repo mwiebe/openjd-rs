@@ -157,6 +157,7 @@ mod tests {
         Service {
             name: name.into(),
             description: None,
+            document: Default::default(),
             host_requirements: None,
             service_environments: None,
             ports: ports

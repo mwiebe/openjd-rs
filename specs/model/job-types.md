@@ -340,6 +340,7 @@ pub struct StepDependency {
 pub struct Service {
     pub name: String,
     pub description: Option<String>,
+    pub document: Document,                                // §1.2.2 item 2; omitted from JSON when JobTemplate
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
     pub service_environments: Option<Vec<Environment>>,    // §9 item 5; omitted from JSON when None
     pub ports: Vec<ServicePort>,                           // Declaration order
@@ -353,6 +354,18 @@ pub struct Service {
 impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
 }
+
+#[serde(tag = "kind")]
+pub enum Document {
+    JobTemplate,                                           // the default
+    EnvironmentTemplate { index: usize, label: Option<String> },  // 0-based attachment index; label omitted when None
+}
+
+impl Document {
+    pub fn environment_template(index: usize, label: Option<&str>) -> Self;
+    pub fn is_job_template(&self) -> bool;
+}
+impl Display for Document;   // "JobTemplate" | <label> | "EnvironmentTemplate[i]"
 
 pub struct ServicePort {
     pub name: String,
@@ -406,6 +419,19 @@ as an Environment's do: they reference `Session.*`, `Service.File.*`, and in-sco
 and cancelation fields travel unresolved too, restricted to job-creation-stage symbols as on a
 Step. `<Service>.let` itself is not carried (its values are), while `<ServiceScript>.let` is,
 for the host to evaluate.
+
+`document` is the document of the submission that declares the Service (Template Schemas
+§1.2.2 item 2, RFC 0009 "Service names are scoped to their document"): `Document::JobTemplate`
+for every `jobServices` / `stepServices` entry `create_job` produces, and the attached
+Environment Template (by 0-based attachment index, with the caller's label when it gave one)
+for an external Service, stamped by `apply_environment_templates`. Service names are unique
+within the list that declares them and nothing more — an external Service may be named like a
+Service of the Job Template or of another attachment — so two Services of a combined Job are
+the same Service iff `(document, name)` agree; a scheduler keys on that pair, and every
+`Service.*` reference resolves within the referencing entity's own document. `Document` is
+`Ord` so it can key a `BTreeMap`/`BTreeSet`; `Display` names the document as the
+submission-time error paths do. The field is omitted from JSON for the Job Template's own
+Services (the default on deserialization), so a Job without attachments serializes as before.
 
 `service_environments` is the instantiated `serviceEnvironments` list (RFC 0009, Template
 Schemas §9 item 5), in order: the Environments a Service Session enters after the scope's

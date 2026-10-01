@@ -15,7 +15,7 @@ pub use params::parse_cli_parameters;
 use clap::Args;
 use openjd_expr::SerializedSymbolTable;
 use openjd_model::job::service_symbols::build_service_symbol_table;
-use openjd_model::job::{Environment, Job, RunScope, Step};
+use openjd_model::job::{Document, Environment, Job, RunScope, Step};
 use openjd_model::template::parse;
 use openjd_model::types::{JobParameterValues, ModelProfile, TaskParameterSet};
 use openjd_model::StepDependencyGraph;
@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use params::*;
 use result::RunResult;
-use services::{RerunScope, ServiceFailure, ServiceManager};
+use services::{service_label, RerunScope, ServiceFailure, ServiceManager};
 
 type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<SerializedSymbolTable>;
@@ -41,6 +41,11 @@ struct PreparedRun {
     /// `--environment` templates' Services before the Job Template's
     /// `jobServices` and their Environments before its `jobEnvironments`.
     job: Job,
+    /// The document of each entry of `job.job_environments`, index for
+    /// index: the attached Environments carry their template, the Job
+    /// Template's own `Document::JobTemplate`. Decides which document's
+    /// `Service.*` symbols each Job Environment sees.
+    environment_documents: Vec<Document>,
     param_values: JobParameterValues,
     path_rules: Vec<PathMappingRule>,
     revision_profile: ModelProfile,
@@ -57,6 +62,9 @@ struct EnteredEnvironment {
     /// The Environment as entered, so it can be re-entered when the
     /// `Service.*` endpoints it may reference change.
     env: Environment,
+    /// The document that declares the Environment: the only document whose
+    /// Services it may reference.
+    document: Document,
     /// The symbol table the caller supplied (before `Service.*` symbols were
     /// layered on).
     symtab: EnvSymtab,
@@ -127,15 +135,19 @@ impl RunContext {
     /// The symbol table a Task Session action resolves against: `base` (or
     /// `fallback`, or the submission's `Param.*` table) with the
     /// `Service.<name>.<port>.port` / `.connectAddress` of every READY Job
-    /// Service and Step Service layered on (RFC 0009 "The `Service.*`
-    /// scope" items 3–4). Without Services in scope, `base` unchanged — the
+    /// Service and Step Service **declared by `document`** layered on (RFC
+    /// 0009 "The `Service.*` scope" items 3–4; Template Schemas §1.2.2
+    /// item 2 — a Task and the Job Template's Environments see the Job
+    /// Template's Services only, an attached Environment its own
+    /// document's). Without Services in scope, `base` unchanged — the
     /// pre-RFC-0009 behavior.
     fn task_symtab(
         &self,
         base: Option<&SerializedSymbolTable>,
         fallback: Option<&SerializedSymbolTable>,
+        document: &Document,
     ) -> Result<EnvSymtab, RunError> {
-        let in_scope = self.services.task_scope_endpoints();
+        let in_scope = self.services.task_scope_endpoints(document);
         if in_scope.is_empty() {
             return Ok(base.cloned());
         }
@@ -159,10 +171,16 @@ impl RunContext {
         )))
     }
 
-    /// Enter `env` in the Task Session unless its `runScope` excludes
-    /// `TASK` (RFC 0009 `<Environment>`), layering the in-scope `Service.*`
-    /// symbols onto `symtab` (or the Environment's own `resolved_symtab`).
-    async fn enter_environment(&mut self, env: &Environment, symtab: EnvSymtab) {
+    /// Enter `env`, declared by `document`, in the Task Session unless its
+    /// `runScope` excludes `TASK` (RFC 0009 `<Environment>`), layering the
+    /// `Service.*` symbols of that document's READY Services onto `symtab`
+    /// (or the Environment's own `resolved_symtab`).
+    async fn enter_environment(
+        &mut self,
+        env: &Environment,
+        symtab: EnvSymtab,
+        document: Document,
+    ) {
         if !env.runs_in(RunScope::Task) {
             println!(
                 "{}\tSkipping Environment '{}': its runScope does not include TASK",
@@ -171,14 +189,15 @@ impl RunContext {
             );
             return;
         }
-        let resolved = match self.task_symtab(symtab.as_ref(), env.resolved_symtab.as_ref()) {
-            Ok(resolved) => resolved,
-            Err(e) => {
-                eprintln!("ERROR: Environment setup failed: {e}");
-                self.session_failed = true;
-                return;
-            }
-        };
+        let resolved =
+            match self.task_symtab(symtab.as_ref(), env.resolved_symtab.as_ref(), &document) {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    eprintln!("ERROR: Environment setup failed: {e}");
+                    self.session_failed = true;
+                    return;
+                }
+            };
         self.print_action_banner(&format!("Entering Environment: {}", env.name));
         match self
             .session
@@ -188,6 +207,7 @@ impl RunContext {
             Ok(identifier) => self.entered_envs.push(EnteredEnvironment {
                 identifier,
                 env: env.clone(),
+                document,
                 symtab,
             }),
             Err(e) => {
@@ -207,6 +227,7 @@ impl RunContext {
                         self.entered_envs.push(EnteredEnvironment {
                             identifier: identifier.clone(),
                             env: env.clone(),
+                            document,
                             symtab,
                         });
                     }
@@ -246,16 +267,16 @@ impl RunContext {
             self.timestamp(),
             self.entered_envs.len() - baseline
         );
-        let to_reenter: Vec<(Environment, EnvSymtab)> = self.entered_envs[baseline..]
+        let to_reenter: Vec<(Environment, EnvSymtab, Document)> = self.entered_envs[baseline..]
             .iter()
-            .map(|e| (e.env.clone(), e.symtab.clone()))
+            .map(|e| (e.env.clone(), e.symtab.clone(), e.document.clone()))
             .collect();
         self.exit_environments_down_to(baseline).await;
-        for (env, symtab) in to_reenter {
+        for (env, symtab, document) in to_reenter {
             if self.is_stopping() {
                 break;
             }
-            self.enter_environment(&env, symtab).await;
+            self.enter_environment(&env, symtab, document).await;
         }
     }
 
@@ -325,7 +346,10 @@ impl RunContext {
         if self.is_stopping() {
             return Ok(TaskRun::Aborted);
         }
-        let symtab = self.task_symtab(step.resolved_symtab.as_ref(), None)?;
+        // A Task belongs to the Job Template: it sees that document's
+        // Services only, never an external Service's endpoint.
+        let symtab =
+            self.task_symtab(step.resolved_symtab.as_ref(), None, &Document::JobTemplate)?;
         self.print_banner("Running Task");
         if !param_lines.is_empty() {
             println!("{}\tParameter values:", self.timestamp());

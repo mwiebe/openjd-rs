@@ -10,21 +10,26 @@
 //! RFC 0009 an Environment Template contributed only an Environment, placed
 //! in the Job's `jobEnvironments` ahead of the Job Template's own; with the
 //! `SERVICE` extension it may also define `services`, which become
-//! **external Services** of every Job submitted through it. Two checks
-//! relate documents that only the scheduler sees together and are therefore
-//! performed here, at submission, rather than at template validation:
+//! **external Services** of every Job submitted through it. One check
+//! relates documents that only the scheduler sees together and is therefore
+//! performed here, at submission, rather than at template validation: the
+//! wrapping-Environment rule (§1.2.2 item 3) — a wrapping Environment from a
+//! document that does not declare `SERVICE` may not have a Service placed in
+//! its scope.
 //!
-//! 1. the external-Service name collision rule (§1.2.2 item 2), and
-//! 2. the wrapping-Environment rule (§1.2.2 item 3): a wrapping Environment
-//!    from a document that does not declare `SERVICE` may not have a
-//!    Service placed in its scope.
+//! Service names are scoped to the document that declares them (§1.2.2 item
+//! 2): an external Service may share its `name` with a Service in the Job
+//! Template or in another attachment, and nothing here rejects that. Every
+//! `Service.*` reference resolves within its own document, so each
+//! instantiated Service is stamped with its [`job::Document`] for a
+//! scheduler to keep same-named Services distinct.
 //!
-//! [`apply_environment_templates`] runs both checks against the combined
-//! Job, instantiates the external Services with each template's own
-//! profile and the merged job parameters, re-runs the carried-forward
-//! checks on each attached Environment, and returns the pieces the caller
-//! merges into the Job (or [`AppliedEnvironmentTemplates::into_combined_job`]
-//! merges for it).
+//! [`apply_environment_templates`] runs the check against the combined Job,
+//! instantiates the external Services with each template's own profile and
+//! the merged job parameters, re-runs the carried-forward checks on each
+//! attached Environment, and returns the pieces the caller merges into the
+//! Job (or [`AppliedEnvironmentTemplates::into_combined_job`] merges for
+//! it).
 
 use openjd_expr::ExprValue;
 
@@ -103,16 +108,41 @@ pub struct AppliedEnvironmentTemplates {
     /// services-only template contributes none. These precede the Job
     /// Template's own `jobEnvironments`.
     pub environments: Vec<job::Environment>,
+    /// The document each entry of `environments` comes from, index for
+    /// index. A runtime that seeds `Service.*` for an attached Environment
+    /// uses this to seed that document's Services only (§1.2.2 item 2: a
+    /// `Service.*` reference resolves within its own document), while the
+    /// Job Template's own Environments and Tasks see the Job Template's
+    /// Services alone.
+    pub environment_documents: Vec<job::Document>,
 }
 
 impl AppliedEnvironmentTemplates {
+    /// The document of every entry of the combined `job_environments` that
+    /// [`into_combined_job`](Self::into_combined_job) builds for `job`:
+    /// `environment_documents`, then [`job::Document::JobTemplate`] for each
+    /// of the Job's own `job_environments`. A runtime that folds the lists
+    /// keeps this alongside the combined Job to know which document's
+    /// Services each Job Environment may reference.
+    #[must_use]
+    pub fn combined_environment_documents(&self, job: &job::Job) -> Vec<job::Document> {
+        let own = job.job_environments.as_ref().map_or(0, Vec::len);
+        self.environment_documents
+            .iter()
+            .cloned()
+            .chain(std::iter::repeat_n(job::Document::JobTemplate, own))
+            .collect()
+    }
+
     /// Fold the attachments into `job`: `job_services` becomes the external
     /// Services followed by the Job's own, and `job_environments` the
     /// attached Environments followed by the Job's own. Lists that would be
     /// empty stay `None`. `job.extensions` is left as the Job Template
     /// declared it — an extension applies to the document that lists it
     /// (§1.2 item 3), and each external Service and attached Environment
-    /// carries its own `resolved_symtab`.
+    /// carries its own `resolved_symtab`. Which document each Service came
+    /// from survives the fold in [`job::Service::document`]; for the
+    /// Environments, keep [`combined_environment_documents`](Self::combined_environment_documents).
     #[must_use]
     pub fn into_combined_job(self, mut job: job::Job) -> job::Job {
         if !self.external_services.is_empty() {
@@ -226,14 +256,10 @@ impl Documents<'_> {
 ///
 /// The function:
 ///
-/// 1. Runs the two submission-time checks against the **combined** Job and
+/// 1. Runs the one submission-time check against the **combined** Job and
 ///    reports every violation at once, as a `ModelValidation` error for
 ///    `Submission` whose paths start with the document (`JobTemplate`,
 ///    `EnvironmentTemplate[i]`, or the attachment's label):
-///    - §1.2.2 item 2 — the name of an external Service must not equal the
-///      name of any other external Service, nor of any Service in the Job
-///      Template's `jobServices` or any Step's `stepServices`; each
-///      collision is reported at the external Service, naming both sources.
 ///    - §1.2.2 item 3 — a wrapping Environment (one defining any
 ///      `WRAP_ACTIONS` hook) in a document that does not declare `SERVICE`
 ///      has the default `runScope` and no `onWrapService*` hooks, so no
@@ -243,6 +269,13 @@ impl Documents<'_> {
 ///      Environment, the combined `jobServices` and that Step's
 ///      `stepServices`. Reported at the Environment, naming its document as
 ///      the cause, with the spec's remedy.
+///
+///    Service names are **not** compared across documents (§1.2.2 item 2):
+///    an external Service may be named like a Service of the Job Template
+///    or of another attachment. Each instantiated external Service carries
+///    its attachment as its [`job::Service::document`], and the Job
+///    Template's own keep [`job::Document::JobTemplate`], so a scheduler
+///    keys Services on `(document, name)`.
 /// 2. Instantiates each external Service through the same code path as a
 ///    `jobServices` entry — `<Service>.let`, `hostRequirements`, the numeric
 ///    `@fmtstring` fields, the carried-forward re-checks, its
@@ -250,15 +283,17 @@ impl Documents<'_> {
 ///    its own document (a `Service.*` reference to another document's Service
 ///    is a template-validation error, so none can reach here). Errors carry
 ///    the document in their path or message. A Service's `serviceEnvironments`
-///    are not subject to rule 3 above: they share their Service's document,
-///    which declares `SERVICE`, and have the effective `runScope: [SERVICE]`.
+///    are not subject to the wrapper rule above: they share their Service's
+///    document, which declares `SERVICE`, and have the effective
+///    `runScope: [SERVICE]`.
 /// 3. Re-runs the carried-forward resolved-value checks on each attached
 ///    Environment against a check table holding its own document's Services
 ///    (when its `runScope` excludes `SERVICE`), then converts it with
-///    [`convert_environment_with_symtab`](super::convert_environment_with_symtab).
+///    [`convert_environment_with_symtab`](super::convert_environment_with_symtab)
+///    and records its document in `environment_documents`.
 ///
 /// Attachments that define no Services behave exactly as before RFC 0009:
-/// their Environments are converted and the Service checks have nothing to
+/// their Environments are converted and the Service check has nothing to
 /// examine. The 10-element cap on `services` is per document (enforced at
 /// template validation); the combined list is not capped here.
 pub fn apply_environment_templates(
@@ -302,32 +337,6 @@ pub fn apply_environment_templates(
     }
 
     let mut errors = ValidationErrors::default();
-
-    // ── §1.2.2 item 2: external-Service name collisions ──
-    for i in 0..external_count {
-        let ext = &combined[i];
-        // Earlier external Services (a repeat within one document is a
-        // template-validation error, so a hit here is always across
-        // documents), then every Service the Job Template declares.
-        let others = combined[..i]
-            .iter()
-            .chain(combined[external_count..].iter());
-        for other in others {
-            if other.name == ext.name {
-                errors.add(
-                    &docs.service_path(ext.source),
-                    format!(
-                        "{} has the same name as {}; the name of an external Service must not \
-                         equal the name of any other external Service, nor of any Service in the \
-                         Job Template's jobServices or any Step's stepServices (RFC 0009, \
-                         Template Schemas §1.2.2 item 2).",
-                        docs.describe_service(ext),
-                        docs.describe_service(other),
-                    ),
-                );
-            }
-        }
-    }
 
     // ── §1.2.2 item 3: wrapping Environments from SERVICE-less documents ──
     //
@@ -414,8 +423,10 @@ pub fn apply_environment_templates(
     let base_symtab = build_symbol_table(job_parameter_values)?;
     let mut external_services = Vec::with_capacity(external_count);
     let mut environments = Vec::new();
+    let mut environment_documents = Vec::new();
     for (doc, att) in attached.iter().enumerate() {
         let doc_path = docs.path(Some(doc));
+        let document = job::Document::environment_template(doc, att.label);
         let ctx = att
             .template
             .default_validation_context()
@@ -438,7 +449,7 @@ pub fn apply_environment_templates(
 
         let services_path = path_field(&[], "services");
         for (k, svc) in services.iter().enumerate() {
-            let instantiated = instantiate::instantiate_service(
+            let mut instantiated = instantiate::instantiate_service(
                 svc,
                 &symtab,
                 icx,
@@ -446,6 +457,8 @@ pub fn apply_environment_templates(
                 services[..k].iter(),
             )
             .map_err(|e| in_document(e, &doc_path))?;
+            // §1.2.2 item 2: the Service is known by (document, name).
+            instantiated.document = document.clone();
             external_services.push(instantiated);
         }
 
@@ -478,12 +491,14 @@ pub fn apply_environment_templates(
                 env,
                 Some(&symtab),
             ));
+            environment_documents.push(document);
         }
     }
 
     Ok(AppliedEnvironmentTemplates {
         external_services,
         environments,
+        environment_documents,
     })
 }
 
@@ -671,6 +686,7 @@ environment:
         let applied = AppliedEnvironmentTemplates {
             external_services: Vec::new(),
             environments: Vec::new(),
+            environment_documents: Vec::new(),
         };
         let combined = applied.into_combined_job(job.clone());
         assert_eq!(combined, job);

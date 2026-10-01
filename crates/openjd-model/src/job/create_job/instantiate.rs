@@ -485,6 +485,9 @@ pub(super) fn instantiate_service<'a>(
     let converted = job::Service {
         name: svc.name.clone(),
         description: svc.description.as_ref().map(|d| d.0.clone()),
+        // A Service of the Job Template until `apply_environment_templates`
+        // stamps an external Service with its attachment.
+        document: job::Document::JobTemplate,
         host_requirements,
         service_environments,
         ports,

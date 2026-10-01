@@ -297,9 +297,78 @@ impl EnvironmentActions {
     }
 }
 
+/// The document of a submission that declares an entity: the Job Template,
+/// or one of the Environment Templates the scheduler attached to it
+/// (Template Schemas §1.2.2 "Services from Environment Templates", RFC 0009
+/// "Service names are scoped to their document").
+///
+/// Service names are unique within the list that declares them, and
+/// nothing more: an external Service from an attached Environment Template
+/// may share its `name` with a Service in the Job Template or in another
+/// attachment, and a scheduler must keep same-named Services from
+/// different documents distinct. A [`Service`] therefore carries the
+/// document that declares it ([`Service::document`]), so a consumer keys
+/// Services on `(document, name)`; every `Service.*` reference resolves
+/// within its own document, so no name is ever looked up across documents.
+///
+/// `Display` names the document the way the submission-time error paths
+/// do: `JobTemplate`, the attachment's label when it has one (typically
+/// the file path the template was read from), else `EnvironmentTemplate[i]`
+/// with its 0-based attachment index.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum Document {
+    /// The Job Template of the submission.
+    #[default]
+    JobTemplate,
+    /// The Environment Template attached at 0-based position `index` in
+    /// the scheduler's order.
+    EnvironmentTemplate {
+        /// Attachment index, the same indexing error paths use.
+        index: usize,
+        /// The label the caller gave the attachment, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+    },
+}
+
+impl Document {
+    /// The attached Environment Template at `index`, named `label` when
+    /// given.
+    #[must_use]
+    pub fn environment_template(index: usize, label: Option<&str>) -> Self {
+        Self::EnvironmentTemplate {
+            index,
+            label: label.map(str::to_string),
+        }
+    }
+
+    /// True for the Job Template — the default, and the case omitted from
+    /// a serialized [`Service`].
+    #[must_use]
+    pub fn is_job_template(&self) -> bool {
+        matches!(self, Self::JobTemplate)
+    }
+}
+
+impl std::fmt::Display for Document {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::JobTemplate => f.write_str("JobTemplate"),
+            Self::EnvironmentTemplate {
+                label: Some(label), ..
+            } => f.write_str(label),
+            Self::EnvironmentTemplate { index, label: None } => {
+                write!(f, "EnvironmentTemplate[{index}]")
+            }
+        }
+    }
+}
+
 /// An instantiated Service (RFC 0009 `<Service>`, Template Schemas §9) —
 /// the result of job creation for one `jobServices` or `stepServices`
-/// entry.
+/// entry, or for a `services` entry of an attached Environment Template
+/// (an external Service).
 ///
 /// Job-creation-stage fields are resolved: the `<Service>.let` bindings
 /// (into [`resolved_symtab`](Self::resolved_symtab)), the numeric
@@ -310,11 +379,23 @@ impl EnvironmentActions {
 /// resolve, exactly like an [`Environment`]'s. The Service's own
 /// [`service_environments`](Self::service_environments) are converted like
 /// `stepEnvironments`, each with its own `resolved_symtab`.
+///
+/// Two Services of a combined Job are the same Service iff their
+/// [`document`](Self::document) and `name` agree: names are unique within
+/// one document's list only (Template Schemas §1.2.2 item 2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Service {
     pub name: String,
     pub description: Option<String>,
+    /// The document that declares this Service: [`Document::JobTemplate`]
+    /// for a `jobServices` / `stepServices` entry (the default, omitted
+    /// from JSON), or the attached Environment Template whose `services`
+    /// list it came from. Set by `apply_environment_templates` for
+    /// external Services. The Service's `Service.*` references, and those
+    /// made to it, resolve within this document only.
+    #[serde(default, skip_serializing_if = "Document::is_job_template")]
+    pub document: Document,
     /// Resolved host requirements the service host must satisfy.
     pub host_requirements: Option<HostRequirements>,
     /// The Environments entered only in this Service's Session (RFC 0009
@@ -354,6 +435,7 @@ impl Hash for Service {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.description.hash(state);
+        self.document.hash(state);
         self.host_requirements.hash(state);
         self.service_environments.hash(state);
         self.ports.hash(state);

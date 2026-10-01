@@ -271,18 +271,20 @@ into hook scope — a wrap hook resolved against a step's symbol table could not
 otherwise see the environment template's own parameters — and
 `into_combined_job()` places them ahead of the Job Template's own
 `jobEnvironments`. The same call instantiates the templates' `services` as
-external Services (see [Services](#services-rfc-0009)) and runs the two
-submission-time checks of RFC 0009 (external-Service name collisions; a
-wrapping Environment from a document that does not declare `SERVICE` with a
-Service in its scope), reporting them like any other job-creation error with the
-template's path as the document label. The CLI enters nothing itself from the
-template objects.
+external Services (see [Services](#services-rfc-0009)), each stamped with its
+document, and runs the one submission-time check of RFC 0009 (a wrapping
+Environment from a document that does not declare `SERVICE` with a Service in its
+scope), reporting it like any other job-creation error with the template's path
+as the document label. `PreparedRun::environment_documents`
+(`AppliedEnvironmentTemplates::combined_environment_documents`) records, index
+for index with the combined `job_environments`, which document each Environment
+came from. The CLI enters nothing itself from the template objects.
 
 Step environments receive the step's symbol table (`step_symtab`) for format string
 resolution. Job and template environments receive `None` for the step symbol table.
-When Services are in scope, `RunContext::task_symtab` layers their endpoints onto
-whichever table an Environment or Task resolves against (see
-[Task Sessions see the endpoints](#task-sessions-see-the-endpoints)).
+When Services are in scope, `RunContext::task_symtab` layers the endpoints of the
+Environment's **own document's** Services onto whichever table it resolves against
+(see [Task Sessions see the endpoints](#task-sessions-see-the-endpoints)).
 
 An Environment whose `runScope` excludes `TASK` (RFC 0009 `<Environment>`) is not
 entered in the Task Session: the run logs `Skipping Environment '<name>': its runScope
@@ -329,7 +331,40 @@ After `create_job`, `apply_environment_templates` folds the `--environment` temp
 into the Job: `job.job_services` is the external Services (attachment order, then
 each template's `services` order) followed by the Job Template's `jobServices`, and
 `job.job_environments` the attached Environments followed by the template's own. The
-combined `job_services` list is one start order and one stop order. Template
+combined `job_services` list is one start order and one stop order.
+
+**Service names are scoped to their document** (Template Schemas §1.2.2 item 2).
+An external Service may be named like a Service of the Job Template or of another
+attachment; the submission is not rejected for it. The manager identifies every
+Service by `ServiceKey { document, name }` — `job::Service::document` is
+`Document::JobTemplate` for the Job Template's own Services and the attachment (by
+index, labeled with its path) for an external one — so two `Cache`s are two
+Services with two Sessions, two sets of ports, and two readiness verdicts. Nothing
+in the run looks a Service up by name alone:
+
+- A `Service.*` reference made *inside* a Service (the edges `referenced_service_names`
+  yields) names a Service of the same document — template validation seeds only the
+  document's own Services — so each referenced name is keyed with the referencing
+  Service's document for the start-ordering waves and for restarting dependents.
+- A Service Session's in-scope endpoints (constraint 2) are the READY Services
+  earlier in the start order **of its own document**: a Step Service of the Job
+  Template sees the Job Template's Job Services and the Step Services before it; an
+  external Service sees the external Services before it in the same attachment. A
+  same-named Service from another document is never seeded, so its symbols cannot
+  collide.
+- The Task Session sees, for a Task and for the Job Template's own Environments,
+  the Job Template's Services only; for an attached Environment, that attachment's
+  Services only (`RunContext::task_symtab(…, document)` with
+  `ServiceManager::task_scope_endpoints(document)`). The RFC's queue-cache
+  Environment therefore publishes the queue's `Cache` through `VALKEY_HOST` /
+  `VALKEY_PORT` while the Job Template's Tasks resolve `Service.Cache.*` to their
+  own.
+- Log lines, the failure summary, and `failed_services` name an external Service
+  with its document: `Service 'Cache' (from queue-cache.yaml)` (the path as given
+  to `--environment`); the Job Template's own stay `Service 'Cache'`. See
+  [Output](#output).
+
+Template
 validation (per document) and `apply_environment_templates` (across documents) between
 them enforce §9.7 item 6 — a wrapping Environment whose `runScope` includes `SERVICE`
 defines all four `onWrapService*` hooks — so the CLI's wrap preflight only re-checks
@@ -359,11 +394,13 @@ launched in *waves*: a Service may start when every Service it references throug
 `Service.*` is READY; the references are computed from its format strings by
 `openjd_model::job::service_symbols::referenced_service_names` (variables, every
 action's command/args/timeout/cancelation, embedded-file data, and `<ServiceScript>.let`),
-not from list position — Services that do not reference one another start
-concurrently, each on its own tokio task. Job Services start first, then the Step's;
-a Step Service's Session is seeded with the endpoints of every READY Job Service and
-of the Step Services before it in the list (the "in scope" set of RFC 0009 "The
-`Service.*` scope"); a Job Service's with those of the Job Services before it.
+each keyed with the referencing Service's document, not from list position —
+Services that do not reference one another start concurrently, each on its own tokio
+task. Job Services start first, then the Step's; a Step Service's Session is seeded
+with the endpoints of every READY Job Service and of the Step Services before it in
+the list that share its document (the "in scope" set of RFC 0009 "The `Service.*`
+scope", per document); a Job Service's with those of the same document's Job Services
+before it.
 
 Job Services are started eagerly, at job start, but only if some selected Step will
 run at least one Task; a Step's Services only if that Step will (constraint 10 — a
@@ -407,10 +444,14 @@ Environment, an Environment's own `resolved_symtab` for a job Environment, or th
 submission's `Param.*` table when neither exists) with
 `openjd_model::job::service_symbols::build_service_symbol_table(in_scope, None)`
 appended — the `Service.<name>.<port>.port` and `.connectAddress` of every READY Job
-Service and Step Service of the current Step, never `bindAddress` (§7.3.1 scope
-rows 3–4). The two serialized tables are concatenated entry-for-entry, so no path
-value is re-interpreted. Without Services in scope the caller's table is passed
-unchanged (the pre-RFC-0009 behavior, including `None` for job Environments).
+Service and Step Service of the current Step **declared by the resolving entity's
+document** (`Document::JobTemplate` for a Task, a step Environment, or the Job
+Template's own job Environments; the attachment for an `--environment` template's
+Environment, recorded in `EnteredEnvironment::document` so a re-entry uses the same
+scope), never `bindAddress` (§7.3.1 scope rows 3–4). The two serialized tables are
+concatenated entry-for-entry, so no path value is re-interpreted. Without Services
+in scope the caller's table is passed unchanged (the pre-RFC-0009 behavior,
+including `None` for job Environments).
 
 ### Failure and restart
 
@@ -504,6 +545,17 @@ the summary (`Failed Service: <name> (<scope> scope): <reason>`; the result mess
 becomes `Service '<name>' (<scope> scope) failed: <reason>`), and as `failed_services`
 (`name`, `scope`, `reason`) in the JSON/YAML result. The exit code is 1.
 
+An **external Service** (one from an `--environment` template) is named with its
+document everywhere a Service of the Job Template is named alone, so two
+same-named Services are told apart: the banners read `Starting Service: Cache (from
+queue-cache.yaml)` / `Stopping Service: Cache (from queue-cache.yaml)`, every event
+line `Service 'Cache' (from queue-cache.yaml) …`, the stderr and summary lines
+`Service 'Cache' (from queue-cache.yaml) (Job scope) failed: …` and `Failed Service:
+Cache (from queue-cache.yaml) (Job scope): …`, and the `failed_services` entry gains
+a `document` key holding the template's path as given on the command line (absent
+for the Job Template's own Services). The document is the label the CLI passes to
+`apply_environment_templates`, so it matches the submission-time error paths.
+
 ## Script Runtime Delegation
 
 The CLI passes the instantiated `StepScript`, task parameter values, and the step's
@@ -577,9 +629,11 @@ Tasks run: 100
 
 When a Service failed its scope (RFC 0009) the result additionally carries
 `"failed_services": [{"name": "Cache", "scope": "Job", "reason": "..."}]` (the
-`scope` is `Job` or `Step '<name>'`), the `status` is `error`, and the `message`
-names the first failed Service; the human-readable output appends a `Failed
-Service: <name> (<scope> scope): <reason>` line per Service.
+`scope` is `Job` or `Step '<name>'`; an external Service's entry also carries
+`"document": "<path given to --environment>"`, since Service names are scoped to
+their document), the `status` is `error`, and the `message` names the first failed
+Service; the human-readable output appends a `Failed Service: <name>[ (from
+<document>)] (<scope> scope): <reason>` line per Service.
 
 ### YAML
 

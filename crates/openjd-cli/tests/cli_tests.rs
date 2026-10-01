@@ -3849,19 +3849,24 @@ mod services {
     #[test]
     fn test_external_service_from_environment_template() {
         let tdir = templates_dir();
+        let env_path = tdir.join("service_external_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
         let (code, stdout, stderr) = run_service_template(
             "service_external_consumer.yaml",
             &[
                 "--environment",
-                tdir.join("service_external_cache.yaml").to_str().unwrap(),
+                env_path,
                 "-p",
                 "CachePayload=from-the-queue",
             ],
         );
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // An external Service is logged with its document.
         assert!(
-            pos(&stdout, "Service 'Cache' is READY")
-                < pos(&stdout, "Entering Environment: CacheClient"),
+            pos(
+                &stdout,
+                &format!("Service 'Cache' (from {env_path}) is READY")
+            ) < pos(&stdout, "Entering Environment: CacheClient"),
             "{stdout}"
         );
         assert!(
@@ -3874,7 +3879,169 @@ mod services {
         );
         assert!(
             pos(&stdout, "Exiting Environment: CacheClient")
-                < pos(&stdout, "Stopping Service: Cache"),
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
+            "{stdout}"
+        );
+    }
+
+    /// Template Schemas §1.2.2 item 2: Service names are scoped to their
+    /// document. The RFC's Valkey Job Template (Job Service `Cache`) is
+    /// submitted with the RFC's queue-cache attachment (external Service
+    /// `Cache`): both start, on different ports, and each consumer reaches
+    /// its own document's Service — the Task through `Service.Cache.*`
+    /// (the Job Template's), the attached client Environment's
+    /// `VALKEY_HOST` / `VALKEY_PORT` through the external one.
+    #[test]
+    fn test_same_named_services_in_two_documents_stay_distinct() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_same_name_queue_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) =
+            run_service_template("service_same_name_job.yaml", &["--environment", env_path]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+
+        // Two Services named Cache: the external one first (merge rule 1),
+        // each labeled by its document in the log.
+        let external = format!("Service 'Cache' (from {env_path})");
+        assert!(
+            pos(
+                &stdout,
+                &format!("{external} (Job scope) endpoints: main -> 127.0.0.1:")
+            ) < pos(
+                &stdout,
+                "Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains(&format!("{external} is READY")), "{stdout}");
+        assert!(stdout.contains("\tService 'Cache' is READY"), "{stdout}");
+        assert_eq!(
+            stdout.matches("is READY").count(),
+            2,
+            "exactly two Services became READY: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("Starting Service: Cache (from {env_path})")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Starting Service: Cache\n"), "{stdout}");
+
+        // Each listener announced its own port; the Task reached each one
+        // through its own document's Service and the ports differ.
+        let port_after = |marker: &str| -> u16 {
+            let at = pos(&stdout, marker);
+            stdout[at + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let job_port = port_after("JOB_CACHE_LISTENING ");
+        let queue_port = port_after("QUEUE_CACHE_LISTENING ");
+        assert_ne!(job_port, queue_port, "{stdout}");
+        for frame in 1..=2 {
+            assert!(
+                stdout.contains(&format!(
+                    "FRAME {frame} JOB_TEMPLATE_CACHE {job_port} SAYS JOB_CACHE"
+                )),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(&format!(
+                    "FRAME {frame} QUEUE_CACHE {queue_port} SAYS QUEUE_CACHE"
+                )),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(&format!("FRAME {frame} PORTS_DIFFER True")),
+                "{stdout}"
+            );
+        }
+        // The client Environment resolved the external Cache's port, not
+        // the Job Template's.
+        assert!(
+            pos(&stdout, &format!("{external} is READY"))
+                < pos(&stdout, "Entering Environment: CacheClient"),
+            "{stdout}"
+        );
+        // Both stopped, in reverse start order: the Job Template's first.
+        assert!(
+            pos(&stdout, "Stopping Service: Cache\n")
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("All actions completed successfully!"),
+            "{stdout}"
+        );
+    }
+
+    /// As above, with the Job Template's same-named Service a Step Service:
+    /// the Task's `Service.Cache.*` is its Step's `Cache`, and the attached
+    /// Environment's variables the queue's.
+    #[test]
+    fn test_step_service_named_like_an_external_service() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_same_name_queue_cache.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_name_step_service.yaml",
+            &[
+                "--environment",
+                env_path,
+                "-p",
+                "QueueCachePayload=FROM_QUEUE",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let external = format!("Service 'Cache' (from {env_path})");
+        assert!(
+            stdout.contains(&format!("{external} (Job scope) endpoints:")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Cache' (Step 'Work' scope) endpoints:"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Cache' is READY: step cache on"),
+            "{stdout}"
+        );
+        let port_after = |marker: &str| -> u16 {
+            let at = pos(&stdout, marker);
+            stdout[at + marker.len()..]
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .parse()
+                .unwrap()
+        };
+        let step_port = port_after("Service 'Cache' is READY: step cache on ");
+        let queue_port = port_after("QUEUE_CACHE_LISTENING ");
+        assert_ne!(step_port, queue_port, "{stdout}");
+        assert!(
+            stdout.contains(&format!("STEP_CACHE {step_port} SAYS STEP_CACHE")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("QUEUE_CACHE {queue_port} SAYS FROM_QUEUE")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("PORTS_DIFFER True"), "{stdout}");
+        // The Step's Cache stops with its Step, before the Job-scoped one.
+        assert!(
+            pos(&stdout, "Stopping Service: Cache\n")
+                < pos(
+                    &stdout,
+                    &format!("Stopping Service: Cache (from {env_path})")
+                ),
             "{stdout}"
         );
     }

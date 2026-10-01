@@ -142,11 +142,14 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
 
     // The second stage of the submission (RFC 0009, Template Schemas
     // §1.2.2): the --environment templates' Services become external
-    // Services placed before the Job Template's jobServices, their
-    // Environments are placed before its jobEnvironments, and the two
-    // submission-time checks (external-Service name collisions, wrapping
-    // Environments from SERVICE-less documents) run against the combined
-    // Job. Each template is labeled with its path in error messages.
+    // Services placed before the Job Template's jobServices (each stamped
+    // with its document — names are scoped to their document, so an
+    // external `Cache` and the Job Template's `Cache` are two Services),
+    // their Environments are placed before its jobEnvironments, and the
+    // submission-time check (a wrapping Environment from a SERVICE-less
+    // document with a Service in its scope) runs against the combined Job.
+    // Each template is labeled with its path in error messages and in the
+    // run log.
     let labels: Vec<String> = args
         .environments
         .iter()
@@ -157,17 +160,19 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         .zip(&labels)
         .map(|(template, label)| AttachedEnvironmentTemplate::new(template).with_label(label))
         .collect();
-    let job = openjd_model::apply_environment_templates(
+    let applied = openjd_model::apply_environment_templates(
         &job,
         &attached,
         &param_values,
         &crate::common::caller_limits(),
     )
-    .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?
-    .into_combined_job(job);
+    .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    let environment_documents = applied.combined_environment_documents(&job);
+    let job = applied.into_combined_job(job);
 
     Ok(PreparedRun {
         job,
+        environment_documents,
         param_values,
         path_rules,
         revision_profile,
@@ -334,7 +339,7 @@ fn check_service_session_stack(svc: &Service, scope_wrap_envs: &[&str]) -> Resul
             .filter(|env| env_has_wrap_hook(env))
             .map(|env| env.name.as_str()),
     );
-    reject_multiple_service_wrap_environments(&svc.name, &stack)
+    reject_multiple_service_wrap_environments(&service_label(svc), &stack)
 }
 
 fn env_has_wrap_hook(env: &Environment) -> bool {
@@ -343,8 +348,9 @@ fn env_has_wrap_hook(env: &Environment) -> bool {
         .is_some_and(|script| script.actions.has_any_wrap_hook())
 }
 
-/// The single-wrap-layer rule for the Service Session of `service`, whose
-/// stack is the scope's `SERVICE`-scoped Environments followed by its
+/// The single-wrap-layer rule for the Service Session of `service` (its
+/// label, `Service 'X'` or `Service 'X' (from <doc>)`), whose stack is the
+/// scope's `SERVICE`-scoped Environments followed by its
 /// `serviceEnvironments` (RFC 0009).
 fn reject_multiple_service_wrap_environments(
     service: &str,
@@ -354,7 +360,7 @@ fn reject_multiple_service_wrap_environments(
         return Ok(());
     }
     Err(format!(
-        "RFC 0008 / RFC 0009: the Service Session of Service '{service}' may have at most one \
+        "RFC 0008 / RFC 0009: the Service Session of {service} may have at most one \
          Environment defining wrap hooks (the scope's Environments whose runScope includes \
          SERVICE, then its serviceEnvironments). Found {}: {}.",
         names.len(),
@@ -494,11 +500,16 @@ async fn run_workload(
         if !ctx.is_stopping() {
             ctx.gate_services().await?;
         }
-        for env in job.job_environments.iter().flatten() {
+        for (env, document) in job
+            .job_environments
+            .iter()
+            .flatten()
+            .zip(&prepared.environment_documents)
+        {
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, None).await;
+            ctx.enter_environment(env, None, document.clone()).await;
         }
 
         let mut rerun: Option<(RerunScope, usize)> = None;
@@ -584,7 +595,7 @@ async fn execute_step(
         if ctx.is_stopping() {
             break;
         }
-        ctx.enter_environment(env, step.resolved_symtab.clone())
+        ctx.enter_environment(env, step.resolved_symtab.clone(), Document::JobTemplate)
             .await;
     }
 
@@ -854,6 +865,7 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
             .iter()
             .map(|f| result::FailedService {
                 name: f.name.clone(),
+                document: (!f.document.is_job_template()).then(|| f.document.to_string()),
                 scope: f.scope.to_string(),
                 reason: f.reason.clone(),
             })

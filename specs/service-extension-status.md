@@ -56,10 +56,10 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 | S32 | `attr.worker.preemptible` is a standard attribute capability, not gated by `SERVICE` (§3.3.2.1) | Implemented | `model/capabilities.rs` `STANDARD_ATTRIBUTE_CAPABILITIES` |
 | S33 | Workers SHOULD advertise `attr.worker.preemptible` | N/A locally | — (no worker fleet) |
 | S34 | Submission: external Services ordered by attachment then `services` order, before the Job Template's `jobServices`; one combined start/stop list; the 10 cap is per document (§1.2.2 item 1) | Implemented | `model/job/create_job/external.rs` `apply_environment_templates`; `cli/services.rs` |
-| S35 | Submission: an external Service's name must not equal any other external Service's or any Job/Step Service's; reject on collision (§1.2.2 item 2) | Implemented | `external.rs` (`Submission` validation error) |
-| S36 | Submission: a wrapping Environment from a document without `SERVICE` with any Service in its scope must be rejected, naming the document (§1.2.2 item 3, §4.3 rule 6) | Implemented | `external.rs` |
-| S37 | A Job Template never references an external Service; `Service.*` in an Environment Template resolves within the same document (§1.2.2) | Implemented | per-document validation; test `job_template_cannot_reference_an_external_service` |
-| S38 | Queue operators SHOULD give external Services unlikely-to-collide names | N/A locally | template author advice |
+| S35 | Submission: Service names are scoped to their document — an external Service MAY share its name with a Service of the Job Template or of another attachment, the submission is not rejected for it, and a scheduler MUST keep same-named Services from different documents distinct (§1.2.2 item 2; spec commit 044d692, replacing the former cross-document collision rule) | Implemented | `model/job/mod.rs` `job::Document`, `job::Service::document` (stamped by `external.rs`; `JobTemplate` for `create_job`'s own); `cli/services.rs` keys every Service on `(document, name)` (`ServiceKey`), seeds a Service Session's in-scope `Service.*` from its own document only, and labels external Services `Service 'X' (from <doc>)` in the log and in `failed_services`; `cli/mod.rs` `task_symtab` seeds a Task or Job Template Environment with the Job Template's Services only and an attached Environment with its own document's (via `AppliedEnvironmentTemplates::environment_documents`). Tests: `test_service_external.rs` §2, CLI `test_same_named_services_in_two_documents_stay_distinct`, `test_step_service_named_like_an_external_service`; conformance `jobs/service-external-same-name-*` |
+| S36 | Submission: a wrapping Environment from a document without `SERVICE` with any Service in its scope must be rejected, naming the document (§1.2.2 item 3, §4.3 rule 6) — the only submission-time check | Implemented | `external.rs` |
+| S37 | A Job Template never references an external Service; `Service.*` in an Environment Template resolves within the same document (§1.2.2) | Implemented | per-document validation; test `job_template_cannot_reference_an_external_service`; at run time the per-document seeding above makes a cross-document lookup impossible as well |
+| S38 | ~~Queue operators SHOULD give external Services unlikely-to-collide names~~ — withdrawn by 044d692 (names cannot make a Job Template unsubmittable) | N/A | — |
 | S39 | Authors SHOULD omit `port` | N/A locally | template author advice |
 | S40 | `<Service>.serviceEnvironments`: an ordered list of `<Environment>`s; names unique within the list and distinct from the Job Environments and, for a Step Service, the declaring Step's Step Environments (§9 item 5.1, §9.7 item 5); each entry an ordinary `<Environment>` structurally | Implemented | `model/template/service.rs` (`service_environments`); `validate_v2023_09/service.rs` `validate_service_environments` (also: if provided, non-empty — mirrors `stepEnvironments`, not stated by the RFC); `tests/integration/test_service_environments_list.rs` |
 | S41 | `runScope` MUST NOT be provided on a Service Environment; its scope is fixed to the declaring Service's Session (§9 item 5.2, §9.7 item 3) | Implemented | `service.rs` (`... -> serviceEnvironments[j] -> runScope`) |
@@ -262,13 +262,16 @@ these. The implementation's choice and where it is recorded:
   `stepEnvironments`". openjd-rs seeds them into a Service Environment's pass 8 scope, its
   job-creation check table, and (through the Service's job-creation table) its
   `resolved_symtab`; a Service Environment's `<EnvironmentScript>.let` may not shadow them.
-- **Q11 — Cross-document Service Environment names.** §9 item 5.1 forbids a Service
-  Environment's name from equaling a Job Environment's. For an Environment Template on its
-  own, openjd-rs checks the document's own `environment` (which becomes a Job Environment of
-  every Job it is attached to); a collision between an external Service's Service Environment
-  and another document's Environment, or the Job Template's `jobEnvironments`, is not
-  checked at submission (§1.2.2 lists two submission-time rules, neither about Environment
-  names). If the RFC intends the rule across documents, it belongs in §1.2.2.
+- **Q11 — Cross-document Service Environment names. Resolved** (by 044d692's direction).
+  §9 item 5.1 forbids a Service Environment's name from equaling a Job Environment's. For an
+  Environment Template on its own, openjd-rs checks the document's own `environment` (which
+  becomes a Job Environment of every Job it is attached to); a name shared between an
+  external Service's Service Environment and another document's Environment, or the Job
+  Template's `jobEnvironments`, is not checked at submission — consistently with §1.2.2
+  item 2, which now scopes Service names to their document and makes the wrapper rule the
+  only cross-document check. A Service Environment is entered only in its own Service's
+  Session, whose Environment stack it shares with no other document's Service Environments,
+  so the same-Session uniqueness the rule protects holds without a cross-document check.
 - **Q9 — `repr_sh` / `repr_py` of `WrappedService.Ports`.** `WrappedService.Ports` is
   `list[int]`; `repr_sh(list[int])` has no signature in the Expression Language, so
   the RFC's docker example must convert with `string(p)` first (as its `flatten` idiom

@@ -1,0 +1,51 @@
+# RFC 0009 "Service names are scoped to their document" (Template Schemas
+# §1.2.2 item 2): the RFC's queue-cache Environment Template, with a python
+# TCP listener standing in for valkey-server. Its Service is named `Cache`,
+# as is the Job Service of service_same_name_job.yaml (the RFC's Valkey
+# example) — two distinct Services once the two documents are combined. The
+# TASK-scoped client Environment publishes *this* document's `Cache` through
+# VALKEY_HOST / VALKEY_PORT; the Job Template's own `Service.Cache.*` never
+# resolves to it.
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+parameterDefinitions:
+  - name: QueueCachePayload
+    type: STRING
+    default: "QUEUE_CACHE"
+services:
+  - name: Cache
+    description: "A per-Job store the queue supplies to every Job."
+    ports:
+      - name: main
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Cache.main.bindAddress }}", "{{ Service.Cache.main.port }}", "{{ Param.QueueCachePayload }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, payload = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("QUEUE_CACHE_LISTENING", port, flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(payload.encode())
+                c.close()
+environment:
+  name: CacheClient
+  description: "Tells every Task where the queue's store is."
+  runScope: [TASK]
+  variables:
+    VALKEY_HOST: "{{ Service.Cache.main.connectAddress }}"
+    VALKEY_PORT: "{{ Service.Cache.main.port }}"

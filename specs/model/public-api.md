@@ -22,7 +22,7 @@ worker-host-agnostic way. An `openjd-model` caller's typical flow is:
 6. When the submission attaches Environment Templates, call
    [`apply_environment_templates`] with the Job, the templates in the
    scheduler's order, and the same preprocessed values; it runs the
-   submission-time checks (RFC 0009 §1.2.2) and returns the external
+   submission-time check (RFC 0009 §1.2.2) and returns the external
    Services and attached Environments to fold into the Job.
 
 Beyond that core flow, the crate exposes low-level building blocks —
@@ -202,13 +202,19 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedEnvironmentTemplates {
-    /// Attachment order, then each template's `services` order.
+    /// Attachment order, then each template's `services` order; each stamped
+    /// with its attachment as `document`.
     pub external_services: Vec<job::Service>,
     /// Attachment order; services-only templates contribute none.
     pub environments: Vec<job::Environment>,
+    /// The document of each `environments` entry, index for index.
+    pub environment_documents: Vec<job::Document>,
 }
 
 impl AppliedEnvironmentTemplates {
+    /// `environment_documents`, then `JobTemplate` for each of the Job's own
+    /// `job_environments`: the documents of the combined list, index for index.
+    pub fn combined_environment_documents(&self, job: &job::Job) -> Vec<job::Document>;
     /// `job_services` = external then the Job's own; `job_environments` =
     /// attached then the Job's own. Empty lists stay `None`.
     pub fn into_combined_job(self, job: job::Job) -> job::Job;
@@ -266,16 +272,19 @@ inside its actions and RFC 0008 wrap hooks. Also available via the
 [`apply_environment_templates`] is the second stage of a submission
 (RFC 0009, Template Schemas §1.2.2 "Services from Environment Templates"):
 given the Job that `create_job` built from the Job Template alone and the
-scheduler-ordered Environment Templates, it runs the two submission-time
-checks that relate documents only the scheduler sees together — the
-external-Service name collision rule (merge rule 2) and the
+scheduler-ordered Environment Templates, it runs the one submission-time
+check that relates documents only the scheduler sees together — the
 wrapping-Environment rule (merge rule 3) — reporting every violation as a
 `ModelValidation` error for the model name `Submission` with paths rooted
 at the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
 attachment's label); then instantiates each template's `services` as
 **external Services** under that template's own
-[`EnvironmentTemplate::profile`] and converts its Environment with the
-merged parameter table. [`AppliedEnvironmentTemplates::into_combined_job`]
+[`EnvironmentTemplate::profile`], each stamped with its attachment as
+[`job::Service::document`] (merge rule 2: Service names are scoped to
+their document, so an external Service may be named like a Service of the
+Job Template or of another attachment and the pair `(document, name)`
+identifies it), and converts its Environment with the merged parameter
+table. [`AppliedEnvironmentTemplates::into_combined_job`]
 places the external Services before the Job Template's `jobServices` and
 the attached Environments before its `jobEnvironments` (merge rule 1). A
 caller that enters the attached Environments itself (the CLI's `run`)
@@ -971,6 +980,11 @@ The instantiated form of a `jobServices` / `stepServices` entry (see
 pub struct job::Service {
     pub name: String,
     pub description: Option<String>,
+    /// The document that declares this Service (Template Schemas §1.2.2 item
+    /// 2): `JobTemplate` (the default; omitted from JSON) or the attached
+    /// Environment Template, set by `apply_environment_templates`. Two
+    /// Services are the same Service iff `(document, name)` agree.
+    pub document: Document,
     pub host_requirements: Option<HostRequirements>,
     /// RFC 0009 `serviceEnvironments`, in order, each with its own
     /// `resolved_symtab`; `run_scope` is always `None` (effective `[SERVICE]`).
@@ -989,6 +1003,28 @@ pub struct job::Service {
 impl job::Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
 }
+
+/// The document of a submission that declares an entity. `Ord`, so it can
+/// key a `BTreeMap`; `Default` is `JobTemplate`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum job::Document {
+    #[default]
+    JobTemplate,
+    EnvironmentTemplate {
+        /// 0-based attachment index, as in error paths.
+        index: usize,
+        /// The caller's label (omitted from JSON when `None`).
+        label: Option<String>,
+    },
+}
+
+impl job::Document {
+    pub fn environment_template(index: usize, label: Option<&str>) -> Self;
+    pub fn is_job_template(&self) -> bool;
+}
+/// `JobTemplate`, the label, or `EnvironmentTemplate[i]`.
+impl Display for job::Document;
 
 pub struct job::ServicePort {
     pub name: String,
@@ -1564,10 +1600,10 @@ Instantiation](#job-instantiation)) and also available via the
 `create_job::` module path: `apply_environment_templates`,
 `AttachedEnvironmentTemplate`, `AppliedEnvironmentTemplates`. Error
 contract: a `ModelValidation` error for `Submission` collecting every
-merge-rule-2 collision (at `<doc> -> services[k]`) and merge-rule-3
-wrapper violation (at `<doc> -> environment`, `JobTemplate ->
+merge-rule-3 wrapper violation (at `<doc> -> environment`, `JobTemplate ->
 jobEnvironments[i]`, or `JobTemplate -> steps[i] -> stepEnvironments[j]`)
-before any Service is instantiated; thereafter a per-document error from
+before any Service is instantiated (merge rule 2 — Service names scoped to
+their document — rejects nothing); thereafter a per-document error from
 `instantiate_service` or the Environment re-checks, with the document
 prefixed to its paths (validation errors, also reported for `Submission`)
 or to its message (format-string and expression errors). Full messages
