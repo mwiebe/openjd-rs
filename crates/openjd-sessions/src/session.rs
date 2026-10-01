@@ -3248,6 +3248,7 @@ mod wrap_actions_tests {
         Environment {
             name: name.to_string(),
             description: None,
+            run_scope: None,
             script: Some(EnvironmentScript {
                 let_bindings: None,
                 actions,
@@ -3264,6 +3265,10 @@ mod wrap_actions_tests {
             on_wrap_env_enter: None,
             on_wrap_task_run: None,
             on_wrap_env_exit: None,
+            on_wrap_service_enter: None,
+            on_wrap_service_run: None,
+            on_wrap_service_readiness_check: None,
+            on_wrap_service_exit: None,
             on_exit: None,
         }
     }
@@ -3307,6 +3312,7 @@ mod wrap_actions_tests {
         let env = Environment {
             name: "NoScript".into(),
             description: None,
+            run_scope: None,
             script: None,
             variables: None,
             resolved_symtab: None,

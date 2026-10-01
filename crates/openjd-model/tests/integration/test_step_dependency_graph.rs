@@ -16,6 +16,7 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
         description: None,
         extensions: None,
         parameters: IndexMap::new(),
+        job_services: None,
         steps: steps
             .into_iter()
             .map(|(name, deps)| Step {
@@ -47,6 +48,7 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
                             .collect(),
                     )
                 },
+                step_services: None,
                 resolved_symtab: None,
             })
             .collect(),

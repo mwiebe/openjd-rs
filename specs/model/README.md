@@ -77,9 +77,17 @@ Currently implements `2023-09` with extensions:
   structural checks (items 3–7 as far as they concern schema), `<Environment>.runScope`
   with the `Environment::runs_in` accessor, the four `onWrapService*` hooks and
   the hooks-follow-`runScope` rule, and the Environment Template root changes
-  (`$schema`, optional `environment`, "at least one of"); see
-  [template-types.md](template-types.md) and passes 10–11 in
-  [validation.md](validation.md). Not yet implemented: the `Service.*`
-  format-string scope and its `runScope` exclusion rule, the `WrappedService.*`
-  wrap-hook variables, format strings inside Services, job-side carriage of
-  `runScope` / the Service hooks, and job creation and execution of Services.
+  (`$schema`, optional `environment`, "at least one of"); the `Service.*` /
+  `Service.File.*` format-string scope with the §9 scope rules (forward-only
+  references, the `runScope` exclusion, no `Service.*` in `hostRequirements` or
+  `<Service>.let`, §9.7 items 1–2), the `WrappedService.*` wrap-hook variables,
+  pass-8 validation of every format string and `let` inside a Service, job
+  creation of Services (`job::Service`, `Job::job_services`,
+  `Step::step_services`, resolved `<Service>.let` and numeric fields, job-side
+  `runScope` / Service hooks), and the runtime-facing `job::service_symbols`
+  builders; see [template-types.md](template-types.md), pass 8 "Service scopes"
+  and passes 10–11 in [validation.md](validation.md), "Services" in
+  [job-creation.md](job-creation.md), and [job-types.md](job-types.md). Not yet
+  implemented: merging an Environment Template's `services` into a job at
+  submission (§1.2.2 external Services) and execution of Services in
+  `openjd-sessions` / the CLI.

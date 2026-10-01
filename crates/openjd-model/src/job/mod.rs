@@ -23,6 +23,7 @@
 //! `Eq`.
 
 pub mod create_job;
+pub mod service_symbols;
 pub mod step_dependency_graph;
 pub mod step_param_space;
 
@@ -40,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{EndOfLine, FileType};
 
 use crate::template::RangeConstraint;
+pub use crate::template::{CompletedTasksPolicy, RunScope};
 use crate::types::JobParameterType;
 
 /// Hash the entries of a string-keyed map sorted by key, so that maps
@@ -75,6 +77,11 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    /// The Job's Services (RFC 0009 `jobServices`), in start order. Each is
+    /// started before any Task of the Job is scheduled and stopped once no
+    /// Task remains. `None` when the template declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_services: Option<Vec<Service>>,
 }
 
 /// Manual because `IndexMap` has no `Hash`; parameters hash as
@@ -87,6 +94,7 @@ impl Hash for Job {
         hash_map_entries(self.parameters.iter(), state);
         self.steps.hash(state);
         self.job_environments.hash(state);
+        self.job_services.hash(state);
     }
 }
 
@@ -110,6 +118,11 @@ pub struct Step {
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
+    /// The Step's Services (RFC 0009 `stepServices`), in start order. Each
+    /// is started once the Step's dependencies are satisfied and before any
+    /// of its Tasks is scheduled, and is available only to this Step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_services: Option<Vec<Service>>,
     /// Complete symbol table at step scope in JSON transport format.
     /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level let bindings.
     /// The session deserializes this with PathFormat::host() and layers
@@ -147,6 +160,13 @@ pub struct Action {
 pub struct Environment {
     pub name: String,
     pub description: Option<String>,
+    /// RFC 0009 `runScope` (Template Schemas §4 item 3): the kinds of
+    /// Session this Environment is entered in. `None` means every kind;
+    /// query the effective scope with [`runs_in`](Self::runs_in). Typed
+    /// here (unlike the template side) because validation has already
+    /// rejected unrecognized names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_scope: Option<Vec<RunScope>>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
     /// Filtered symbol table containing only symbols referenced by this
@@ -155,12 +175,27 @@ pub struct Environment {
     pub resolved_symtab: Option<SerializedSymbolTable>,
 }
 
+impl Environment {
+    /// True iff this Environment is entered in Sessions of kind `kind`
+    /// (Template Schemas §4 item 3, RFC 0009): every kind when `runScope` is
+    /// absent, else exactly the kinds the list names. The job-side
+    /// counterpart of [`crate::template::Environment::runs_in`].
+    #[must_use]
+    pub fn runs_in(&self, kind: RunScope) -> bool {
+        match &self.run_scope {
+            None => true,
+            Some(kinds) => kinds.contains(&kind),
+        }
+    }
+}
+
 /// Manual because `HashMap` has no `Hash`; `variables` hashes as
 /// key-sorted entries to match `HashMap`'s order-insensitive equality.
 impl Hash for Environment {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.description.hash(state);
+        self.run_scope.hash(state);
         self.script.hash(state);
         match &self.variables {
             None => false.hash(state),
@@ -195,12 +230,25 @@ pub struct EnvironmentActions {
     /// RFC 0008 — wraps inner environments' `onExit` actions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wrap_env_exit: Option<Action>,
+    /// RFC 0009 — in a Service Session, wraps the Service's `onEnter`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_wrap_service_enter: Option<Action>,
+    /// RFC 0009 — in a Service Session, wraps the Service's `onRun`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_wrap_service_run: Option<Action>,
+    /// RFC 0009 — in a Service Session, wraps the Service's
+    /// `onReadinessCheck`, concurrently with `onWrapServiceRun`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_wrap_service_readiness_check: Option<Action>,
+    /// RFC 0009 — in a Service Session, wraps the Service's `onExit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_wrap_service_exit: Option<Action>,
     pub on_exit: Option<Action>,
 }
 
-// The job-side struct carries the RFC 0008 hooks only: the RFC 0009
-// `onWrapService*` hooks and `runScope` are template-side until job creation
-// of Services lands.
+// The job-side struct mirrors the template side's slots exactly, including
+// the RFC 0009 `onWrapService*` hooks, so a Session runtime can dispatch a
+// Service Session's wrap hooks from the created job.
 crate::template::impl_environment_actions_helpers!(
     EnvironmentActions, Action,
     slots: [
@@ -208,14 +256,232 @@ crate::template::impl_environment_actions_helpers!(
         ("onWrapEnvEnter", on_wrap_env_enter),
         ("onWrapTaskRun", on_wrap_task_run),
         ("onWrapEnvExit", on_wrap_env_exit),
+        ("onWrapServiceEnter", on_wrap_service_enter),
+        ("onWrapServiceRun", on_wrap_service_run),
+        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check),
+        ("onWrapServiceExit", on_wrap_service_exit),
         ("onExit", on_exit),
     ],
     wrap_hooks: [
         ("onWrapEnvEnter", on_wrap_env_enter, EnvName),
         ("onWrapTaskRun", on_wrap_task_run, StepName),
         ("onWrapEnvExit", on_wrap_env_exit, EnvName),
+        ("onWrapServiceEnter", on_wrap_service_enter, Service),
+        ("onWrapServiceRun", on_wrap_service_run, Service),
+        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check, Service),
+        ("onWrapServiceExit", on_wrap_service_exit, Service),
     ]
 );
+
+impl EnvironmentActions {
+    /// The four RFC 0009 `onWrapService*` hooks, each paired with its schema
+    /// name, in lifecycle order (the job-side counterpart of
+    /// [`crate::template::EnvironmentActions::service_wrap_hooks`]).
+    pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<Action>); 4] {
+        [
+            ("onWrapServiceEnter", &self.on_wrap_service_enter),
+            ("onWrapServiceRun", &self.on_wrap_service_run),
+            (
+                "onWrapServiceReadinessCheck",
+                &self.on_wrap_service_readiness_check,
+            ),
+            ("onWrapServiceExit", &self.on_wrap_service_exit),
+        ]
+    }
+
+    /// True iff any of the four RFC 0009 `onWrapService*` hooks is defined.
+    pub fn has_any_service_wrap_hook(&self) -> bool {
+        self.service_wrap_hooks()
+            .iter()
+            .any(|(_, slot)| slot.is_some())
+    }
+}
+
+/// An instantiated Service (RFC 0009 `<Service>`, Template Schemas §9) —
+/// the result of job creation for one `jobServices` or `stepServices`
+/// entry.
+///
+/// Job-creation-stage fields are resolved: the `<Service>.let` bindings
+/// (into [`resolved_symtab`](Self::resolved_symtab)), the numeric
+/// `@fmtstring` fields (`port`, `timeoutSeconds`, `intervalSeconds`,
+/// `maxAttempts`, with the §9 defaults applied where the template gave
+/// none), and `hostRequirements`. `variables` and `script` are
+/// `@fmtstring[host]` and remain `FormatString`s for the Service Session to
+/// resolve, exactly like an [`Environment`]'s.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Service {
+    pub name: String,
+    pub description: Option<String>,
+    /// Resolved host requirements the service host must satisfy.
+    pub host_requirements: Option<HostRequirements>,
+    /// The declared ports, in declaration order.
+    pub ports: Vec<ServicePort>,
+    /// The effective readiness check, with the §9.3 defaults applied.
+    pub readiness_check: ServiceReadinessCheck,
+    /// The effective restart policy, with the §9.4 defaults applied.
+    pub restart_policy: ServiceRestartPolicy,
+    /// Environment variables set for every action of the Service's script
+    /// (session scope — resolved on the service host). Not propagated to
+    /// the entities in the Service's scope.
+    pub variables: Option<HashMap<String, FormatString>>,
+    pub script: ServiceScript,
+    /// Filtered symbol table containing only the symbols referenced by this
+    /// Service's host-resolved format strings (variables, actions,
+    /// embedded files, `<ServiceScript>.let`), including the `<Service>.let`
+    /// bindings they use. The Service Session layers `Session.*`,
+    /// `Service.File.*` and the in-scope `Service.*` endpoints on top.
+    #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
+    pub resolved_symtab: Option<SerializedSymbolTable>,
+}
+
+/// Manual because `HashMap` has no `Hash`; `variables` hashes as
+/// key-sorted entries to match `HashMap`'s order-insensitive equality.
+impl Hash for Service {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.description.hash(state);
+        self.host_requirements.hash(state);
+        self.ports.hash(state);
+        self.readiness_check.hash(state);
+        self.restart_policy.hash(state);
+        match &self.variables {
+            None => false.hash(state),
+            Some(vars) => {
+                true.hash(state);
+                hash_map_entries(vars.iter(), state);
+            }
+        }
+        self.script.hash(state);
+        self.resolved_symtab.hash(state);
+    }
+}
+
+impl Service {
+    /// The names of the declared ports, in declaration order.
+    pub fn port_names(&self) -> impl Iterator<Item = &str> {
+        self.ports.iter().map(|p| p.name.as_str())
+    }
+}
+
+/// An instantiated `<ServicePort>` (§9.2).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicePort {
+    /// The second component of `Service.<service>.<port>.*` references.
+    pub name: String,
+    /// The specific TCP port the Service requires on its host, or `None`
+    /// when the runtime allocates one. Resolved from the template's
+    /// `@fmtstring`; a whole-field `null` resolution is `None`.
+    pub port: Option<u16>,
+}
+
+/// An instantiated `<ServiceReadinessCheck>` (§9.3), with the defaults
+/// applied: `timeoutSeconds` 300, `intervalSeconds` 5, and a `TCP_CONNECT`
+/// check without `ports` probing every declared port.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all_fields = "camelCase")]
+pub enum ServiceReadinessCheck {
+    /// READY once a TCP connection to each of `ports` succeeds.
+    #[serde(rename = "TCP_CONNECT")]
+    TcpConnect {
+        /// The port names to probe — every declared port when the template
+        /// named none.
+        ports: Vec<String>,
+        timeout_seconds: u64,
+    },
+    /// READY once `onReadinessCheck` exits 0 while `onRun` is running.
+    #[serde(rename = "COMMAND")]
+    Command {
+        interval_seconds: u64,
+        timeout_seconds: u64,
+    },
+    /// READY once `onRun` writes `openjd_service_ready: <message>`.
+    #[serde(rename = "STDOUT")]
+    Stdout { timeout_seconds: u64 },
+}
+
+impl ServiceReadinessCheck {
+    /// The schema value of the `type` discriminator.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::TcpConnect { .. } => "TCP_CONNECT",
+            Self::Command { .. } => "COMMAND",
+            Self::Stdout { .. } => "STDOUT",
+        }
+    }
+
+    /// The effective `timeoutSeconds`, whichever variant this is.
+    pub fn timeout_seconds(&self) -> u64 {
+        match self {
+            Self::TcpConnect {
+                timeout_seconds, ..
+            }
+            | Self::Command {
+                timeout_seconds, ..
+            }
+            | Self::Stdout { timeout_seconds } => *timeout_seconds,
+        }
+    }
+}
+
+/// An instantiated `<ServiceRestartPolicy>` (§9.4), with the defaults
+/// applied: `maxAttempts` 0, `completedTasks` `RERUN`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceRestartPolicy {
+    /// How many times the scheduler relaunches the Service after a failure;
+    /// the initial launch is not counted.
+    pub max_attempts: u64,
+    pub completed_tasks: CompletedTasksPolicy,
+}
+
+/// An instantiated `<ServiceScript>` (§9.5). `let_bindings` are the
+/// `<ServiceScript>.let` bindings, evaluated on the service host.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceScript {
+    #[serde(rename = "let", alias = "letBindings")]
+    pub let_bindings: Option<Vec<String>>,
+    pub actions: ServiceActions,
+    pub embedded_files: Option<Vec<EmbeddedFile>>,
+}
+
+/// An instantiated `<ServiceActions>` (§9.6).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceActions {
+    pub on_enter: Option<Action>,
+    pub on_run: Action,
+    pub on_readiness_check: Option<Action>,
+    pub on_exit: Option<Action>,
+}
+
+impl ServiceActions {
+    /// All four action slots paired with their camelCase schema name, in
+    /// lifecycle order.
+    pub fn named_slots(&self) -> [(&'static str, Option<&Action>); 4] {
+        [
+            ("onEnter", self.on_enter.as_ref()),
+            ("onRun", Some(&self.on_run)),
+            ("onReadinessCheck", self.on_readiness_check.as_ref()),
+            ("onExit", self.on_exit.as_ref()),
+        ]
+    }
+
+    /// The defined actions, each paired with its schema name, in lifecycle
+    /// order.
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)> {
+        self.named_slots()
+            .into_iter()
+            .filter_map(|(name, slot)| slot.map(|a| (name, a)))
+    }
+
+    /// The defined actions, in lifecycle order, without names.
+    pub fn iter_actions(&self) -> impl Iterator<Item = &Action> {
+        self.iter_named().map(|(_, action)| action)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

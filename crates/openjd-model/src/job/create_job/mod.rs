@@ -221,6 +221,40 @@ pub fn create_job(
         })
         .collect();
 
+    let job_services_t: &[crate::template::Service] =
+        job_template.job_services.as_deref().unwrap_or(&[]);
+    let icx = instantiate::InstantiateCtx {
+        has_expr,
+        limits: &limits,
+        ctx,
+        budgets,
+        job_services: job_services_t,
+    };
+
+    // RFC 0009 `jobServices`: instantiated in job scope before the steps,
+    // since every Step's Task Sessions may reference them. Each Service
+    // sees the Services before it in the list (forward-only references).
+    let job_services = job_template
+        .job_services
+        .as_ref()
+        .map(|services| {
+            let list_path = [crate::error::PathElement::Field("jobServices".to_string())];
+            services
+                .iter()
+                .enumerate()
+                .map(|(k, svc)| {
+                    instantiate::instantiate_service(
+                        svc,
+                        &symtab,
+                        icx,
+                        &crate::error::path_index(&list_path, k),
+                        services[..k].iter(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
     // Re-run the carried-forward resolved-value checks (and evaluate the
     // `let` bindings feeding them) against check symbol tables where job
     // parameters are bound to real values. A violation template
@@ -233,7 +267,9 @@ pub fn create_job(
     // first, then each step in turn (step `let`, script, step
     // environments). Resolution failures that leave a step
     // uninstantiable (host requirements, parameter space) are not
-    // checks: they abort immediately, reported alone.
+    // checks: they abort immediately, reported alone. A job environment
+    // whose `runScope` excludes SERVICE also sees every Job Service's
+    // `Service.*` endpoints (RFC 0009).
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
@@ -248,6 +284,7 @@ pub fn create_job(
                 ctx,
                 &env_path,
                 &mut check_errors,
+                job_services_t.iter(),
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
@@ -266,11 +303,8 @@ pub fn create_job(
         steps.push(instantiate::instantiate_step(
             st,
             &symtab,
-            has_expr,
-            &limits,
-            ctx,
+            icx,
             step_index,
-            budgets,
             &mut check_errors,
         )?);
     }
@@ -369,5 +403,6 @@ pub fn create_job(
         parameters,
         steps,
         job_environments,
+        job_services,
     })
 }

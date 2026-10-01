@@ -44,6 +44,7 @@ fn plain_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> E
     Environment {
         name: name.to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -51,6 +52,10 @@ fn plain_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> E
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit,
             },
             embedded_files: None,
@@ -78,6 +83,7 @@ fn wrap_env(
     Environment {
         name: name.to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -85,6 +91,10 @@ fn wrap_env(
                 on_wrap_env_enter,
                 on_wrap_task_run,
                 on_wrap_env_exit,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -1381,6 +1391,7 @@ fn wrap_env_with_files(
     Environment {
         name: name.to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -1388,6 +1399,10 @@ fn wrap_env_with_files(
                 on_wrap_env_enter,
                 on_wrap_task_run,
                 on_wrap_env_exit,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: Some(embedded_files),
@@ -2100,6 +2115,7 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2112,6 +2128,10 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: Some(vec![inner_embedded]),
@@ -2189,6 +2209,7 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2201,6 +2222,10 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -2495,6 +2520,7 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2502,6 +2528,10 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(Action {
                     command: fs("bash"),
                     args: Some(vec![fs("-c"), fs("cat {{Env.File.wrapper_only}}")]),
