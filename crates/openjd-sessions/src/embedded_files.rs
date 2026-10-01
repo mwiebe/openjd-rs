@@ -26,6 +26,9 @@ use crate::session_user::SessionUser;
 pub enum EmbeddedFilesScope {
     Step,
     Env,
+    /// A Service's `<ServiceScript>.embeddedFiles` (RFC 0009): symbols are
+    /// `Service.File.<name>`.
+    Service,
 }
 
 impl EmbeddedFilesScope {
@@ -33,6 +36,16 @@ impl EmbeddedFilesScope {
         match self {
             EmbeddedFilesScope::Step => "Task.File",
             EmbeddedFilesScope::Env => "Env.File",
+            EmbeddedFilesScope::Service => openjd_model::job::service_symbols::SERVICE_FILE_PREFIX,
+        }
+    }
+
+    /// Human-readable name of the owning entity, for log messages.
+    fn scope_name(&self) -> &'static str {
+        match self {
+            EmbeddedFilesScope::Step => "Task",
+            EmbeddedFilesScope::Env => "Environment",
+            EmbeddedFilesScope::Service => "Service",
         }
     }
 }
@@ -390,10 +403,7 @@ impl EmbeddedFiles {
         files: &[EmbeddedFile],
         symtab: &mut SymbolTable,
     ) -> Result<(), SessionError> {
-        let scope_name = match self.scope {
-            EmbeddedFilesScope::Step => "Task",
-            EmbeddedFilesScope::Env => "Environment",
-        };
+        let scope_name = self.scope.scope_name();
         session_log!(
             info,
             &self.session_id,
@@ -473,10 +483,7 @@ impl EmbeddedFiles {
     /// creating files on disk. Contents are NOT written — call
     /// `write_file_contents` separately after the scope is fully built.
     pub(crate) fn register_file_paths(&self, symtab: &mut SymbolTable) -> Result<(), SessionError> {
-        let scope_name = match self.scope {
-            EmbeddedFilesScope::Step => "Task",
-            EmbeddedFilesScope::Env => "Environment",
-        };
+        let scope_name = self.scope.scope_name();
         session_log!(
             info,
             &self.session_id,

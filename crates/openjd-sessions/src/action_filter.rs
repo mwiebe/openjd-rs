@@ -20,6 +20,8 @@ pub enum ActionMessageKind {
     RedactedEnv,
     UnsetEnv,
     SessionRuntimeLoglevel,
+    /// `openjd_service_ready: <message>` (RFC 0009).
+    ServiceReady,
 }
 
 /// The value associated with a directive callback.
@@ -58,6 +60,7 @@ fn parse_directive(line: &str) -> Option<(ActionMessageKind, &str)> {
         "redacted_env" => ActionMessageKind::RedactedEnv,
         "unset_env" => ActionMessageKind::UnsetEnv,
         "session_runtime_loglevel" => ActionMessageKind::SessionRuntimeLoglevel,
+        "service_ready" => ActionMessageKind::ServiceReady,
         _ => return None,
     };
     Some((kind, payload))
@@ -206,6 +209,16 @@ impl ActionFilter {
                     if let Some(cb) = self.handle_loglevel(payload) {
                         callbacks.push(cb);
                     }
+                }
+                ActionMessageKind::ServiceReady => {
+                    // RFC 0009: the message is informational; whether it is
+                    // honored (STDOUT readiness of a Service's onRun) is the
+                    // consumer's decision, like `Status`.
+                    callbacks.push(FilterCallback {
+                        kind: ActionMessageKind::ServiceReady,
+                        value: ActionMessageValue::String(payload.to_string()),
+                        cancel: false,
+                    });
                 }
             }
             pass_through = self.echo_openjd_directives;
@@ -701,6 +714,45 @@ mod tests {
         assert_eq!(cbs.len(), 1);
         assert!(pass);
         assert_eq!(msg, "openjd_env: foo=bar");
+    }
+
+    // === openjd_service_ready (RFC 0009) ===
+
+    #[test]
+    fn test_service_ready_parsed() {
+        let mut f = make_filter(true, false);
+        let (cbs, pass, msg) = f.filter_message("openjd_service_ready: listening on 8080", "foo");
+        assert_eq!(
+            cbs,
+            vec![FilterCallback {
+                kind: ActionMessageKind::ServiceReady,
+                value: ActionMessageValue::String("listening on 8080".into()),
+                cancel: false,
+            }]
+        );
+        assert!(pass);
+        assert_eq!(msg, "openjd_service_ready: listening on 8080");
+    }
+
+    #[test]
+    fn test_service_ready_suppressed_when_echo_false() {
+        let mut f = make_filter(false, false);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready: up", "foo");
+        assert_eq!(cbs.len(), 1);
+        assert!(!pass);
+    }
+
+    #[test]
+    fn test_service_ready_requires_space_and_payload() {
+        // Same syntax as every other `openjd_*` message: `: ` then a
+        // non-empty payload. Near misses are ordinary output.
+        let mut f = make_filter(true, false);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready:up", "foo");
+        assert!(cbs.is_empty());
+        assert!(pass);
+        let (cbs, pass, _) = f.filter_message("openjd_service_ready: ", "foo");
+        assert!(cbs.is_empty());
+        assert!(pass);
     }
 
     // === test_malformed_does_not_match_no_callback ===

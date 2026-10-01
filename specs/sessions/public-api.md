@@ -27,6 +27,17 @@ Real-time progress, status, and env-var updates surface through the
 directive emitted to stdout by a running action and on every action state
 transition.
 
+A **Service Session** (RFC 0009, `SERVICE` extension) runs one `<Service>`
+instead of Tasks. Its entry point is [`ServiceSession`] (below), which
+composes a `Session`:
+
+1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
+2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
+3. `svc.launch().await?` — launch `onRun` in the background and start the readiness check.
+4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, or `ExitedBeforeReady`.
+5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
+6. `svc.end().await` — cancel a running `onRun`, run `onExit`, exit the Environments, delete the working directory.
+
 [spec-how-run]: https://github.com/OpenJobDescription/openjd-specifications/wiki/How-Jobs-Are-Run
 
 ## Module Structure
@@ -44,6 +55,8 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
 │   ├── env_script              — EnvironmentScriptRunner
 │   └── step_script             — StepScriptRunner
+├── service_session             — ServiceSession, ServiceSessionConfig, ServiceSessionState,
+│                                 ServiceReadiness, ServiceRunExit (RFC 0009)
 ├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier
 ├── session_user                — SessionUser trait, PosixSessionUser, WindowsSessionUser
 ├── tempdir                     — TempDir, StickyBitPolicy, openjd_temp_dir
@@ -72,6 +85,10 @@ calling subprocess primitives directly.
 /// the action itself does not specify a `notifyPeriodInSeconds`.
 /// Matches the OpenJD spec default.
 pub const session::DEFAULT_CANCEL_NOTIFY_PERIOD_SECS: u64 = 5;
+
+/// Default `timeout` of a Service's `onExit` (Template Schemas §5 defaults
+/// table: 300 seconds). RFC 0009.
+pub const service_session::SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 ```
 
 ## Entry Points
@@ -489,6 +506,10 @@ pub enum ActionMessage {
     /// `openjd_redacted_env: <var>=<value>` — value added to the
     /// redaction set, env var set. REDACTED_ENV_VARS extension.
     RedactedEnv { name: String, value: String },
+    /// `openjd_service_ready: <message>` — RFC 0009 (`SERVICE`). Honored
+    /// only from a Service's `onRun` under a `STDOUT` readiness check;
+    /// `Session` ignores it from every other action.
+    ServiceReady(String),
     /// Internal signal (emitted from ActionFilter when a malformed
     /// env-directive is detected): cancel this action and mark it
     /// failed.
@@ -519,6 +540,125 @@ pub struct ActionStatus {
 
 All of `ActionState`, `ActionMessage`, and `ActionStatus` implement
 `Display` / `Debug`. `ActionStatus` also implements `Default`.
+
+## Service Session (RFC 0009)
+
+Everything here lives in `service_session` and is re-exported at the crate
+root. Design and lifecycle: [service-session.md](service-session.md).
+
+```rust
+pub struct ServiceSessionConfig {
+    /// As for a Task Session: session id, job parameter values, path mapping
+    /// rules, user, callback, os_env_vars, limits, …
+    pub session: SessionConfig,
+    /// The Service whose actions this Session runs.
+    pub service: openjd_model::job::Service,
+    /// The scope's Environments in entry order (Job's, then the Step's for a
+    /// Step Service). Only those with `runs_in(RunScope::Service)` are entered.
+    pub environments: Vec<openjd_model::job::Environment>,
+    /// The caller's assignment for every declared port (`port`, `bindAddress`,
+    /// `connectAddress`). Port allocation is the caller's policy.
+    pub endpoints: openjd_model::job::service_symbols::ServiceEndpoints,
+    /// Endpoints of the Services this Service may reference (earlier in the
+    /// start order); seeded without `bindAddress`.
+    pub in_scope_endpoints: Vec<openjd_model::job::service_symbols::ServiceEndpoints>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceSessionState {
+    Created,      // constructed; `enter()` next
+    Entered,      // Environments entered, onEnter succeeded; `launch()` allowed
+    Running,      // an onRun instance is running
+    Exited,       // the most recent onRun has exited; `launch()` (relaunch) or `end()`
+    StartFailed,  // an Environment onEnter or the Service onEnter failed; only `end()`
+    Ended,        // `end()` completed
+}
+impl Display for ServiceSessionState;  // CREATED, ENTERED, RUNNING, EXITED, START_FAILED, ENDED
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceReadiness {
+    Pending,
+    /// READY. `message` is the `openjd_service_ready` text for a STDOUT check.
+    Ready { message: Option<String> },
+    /// `timeoutSeconds` elapsed since launch; onRun may still be running.
+    TimedOut,
+    /// onRun exited before the check passed.
+    ExitedBeforeReady,
+}
+impl ServiceReadiness {
+    pub fn is_terminal(&self) -> bool;   // !Pending
+    pub fn is_ready(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRunExit {
+    pub state: ActionState,            // Success | Failed | Canceled | Timeout
+    pub exit_code: Option<i32>,
+    /// Requested through `cancel_run` / `end` / the cancel handle — not an
+    /// instance failure.
+    pub canceled: bool,
+    /// `openjd_fail` text, or why the action could not run.
+    pub fail_message: Option<String>,
+    /// Captured onRun output when `SessionConfig.debug_collect_stdout`.
+    pub stdout: String,
+}
+
+pub struct ServiceSession { /* private */ }
+
+impl ServiceSession {
+    /// Validate the endpoint assignment (every declared/probed port assigned,
+    /// `endpoints.name == service.name`, readiness type not COMMAND) and
+    /// create the underlying Session (working directory, cross-user helper).
+    pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError>;
+
+    // Accessors
+    pub fn session(&self) -> &Session;
+    pub fn service(&self) -> &openjd_model::job::Service;
+    pub fn endpoints(&self) -> &ServiceEndpoints;
+    pub fn state(&self) -> ServiceSessionState;
+    /// Status of the Service's own current/most recent action (onEnter,
+    /// onRun, onExit). Environment actions report via `session().action_status()`.
+    pub fn action_status(&self) -> Option<ActionStatus>;
+    pub fn launch_count(&self) -> u32;
+    pub fn readiness(&self) -> Option<ServiceReadiness>;            // None before first launch
+    pub fn run_exit(&self) -> Option<ServiceRunExit>;               // None until the instance exits
+    pub fn readiness_watch(&self) -> Option<tokio::sync::watch::Receiver<ServiceReadiness>>;
+    pub fn exit_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<ServiceRunExit>>>;
+    /// Cancels whichever action of this Session is running (Service or
+    /// Environment) with its own cancelation method.
+    pub fn cancel_handle(&self) -> SessionCancelHandle;
+
+    // Lifecycle
+    /// Created → Entered. Enter the SERVICE-scoped Environments; build the
+    /// Service symbol table (Param.*, Session.*, Service.*, Service.File.*,
+    /// <ServiceScript>.let), path mapping, embedded files, `variables`; run
+    /// onEnter. Any error → StartFailed (a start failure).
+    pub async fn enter(&mut self) -> Result<(), SessionError>;
+    /// Entered | Exited → Running. Launch onRun in the background and start
+    /// the readiness check. In Exited this is a relaunch in the same Session
+    /// (onEnter not re-run, its env vars retained).
+    pub async fn launch(&mut self) -> Result<(), SessionError>;
+    /// enter() → launch() → wait_ready().
+    pub async fn start(&mut self) -> Result<ServiceReadiness, SessionError>;
+    /// Await the terminal readiness of the current instance.
+    pub async fn wait_ready(&self) -> Result<ServiceReadiness, SessionError>;
+    /// Await the current instance's exit. Running → Exited.
+    pub async fn wait_exit(&mut self) -> Result<ServiceRunExit, SessionError>;
+    /// Cancel the running onRun with its `cancelation` method (grace capped at
+    /// `time_limit`; `Some(0)` = terminate now). `false` if none is running.
+    pub fn cancel_run(&self, time_limit: Option<Duration>) -> bool;
+    /// Constraint 7: cancel a running onRun and await it; run onExit (300 s
+    /// default timeout) if defined and any Service action ran; exit the
+    /// Environments in reverse; delete the working directory. Every step
+    /// runs; the first error is returned. → Ended.
+    pub async fn end(&mut self) -> Result<(), SessionError>;
+}
+
+impl Drop for ServiceSession;  // warns when end() was not called; aborts the driver task
+```
+
+Not implemented in this milestone: the `COMMAND` readiness type /
+`onReadinessCheck` (rejected by `with_config`) and the `onWrapService*` hooks.
 
 ## Subprocess Results
 
@@ -745,12 +885,12 @@ argument.
 ```rust
 pub mod embedded_files {
     /// Scope for embedded file symbol table entries — controls the
-    /// variable prefix (`Task.File.*` vs `Env.File.*`).
+    /// variable prefix (`Task.File.*`, `Env.File.*`, or `Service.File.*`).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum EmbeddedFilesScope { Step, Env }
+    pub enum EmbeddedFilesScope { Step, Env, Service }
 
     impl EmbeddedFilesScope {
-        pub fn prefix(&self) -> &'static str;  // "Task.File" or "Env.File"
+        pub fn prefix(&self) -> &'static str;  // "Task.File", "Env.File", or "Service.File"
     }
 
     /// Re-exported from openjd_model::types::EndOfLine.
@@ -1000,6 +1140,19 @@ pub enum SessionError {
     /// environment is already active. Raised before any state is
     /// recorded for the rejected environment; the session stays Ready.
     MultipleWrapEnvironments { existing: String, entering: String },
+
+    /// RFC 0009: a `ServiceSession` operation called in the wrong phase.
+    /// "Service Session must be in ENTERED or EXITED state, current: RUNNING"
+    InvalidServiceState { expected: Vec<ServiceSessionState>, current: ServiceSessionState },
+
+    /// RFC 0009: a Service's onEnter (start failure) or onExit (onExit
+    /// failure) did not succeed. "Service 'svc' onEnter failed: exit code: 2"
+    /// (reason is `exit code: N`, `canceled`, or `timed out`).
+    ServiceScriptFailed { name: String, action: String, reason: String },
+
+    /// RFC 0009: a declared or probed port has no endpoint in the
+    /// `ServiceSessionConfig`. "Service 'svc' port 'metrics' has no endpoint assignment"
+    ServicePortUnassigned { name: String, port: String },
 }
 ```
 

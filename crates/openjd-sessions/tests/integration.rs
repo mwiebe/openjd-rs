@@ -26,6 +26,8 @@ mod test_helper;
 mod test_path_mapping;
 #[path = "integration/test_path_mapping_materialize.rs"]
 mod test_path_mapping_materialize;
+#[path = "integration/test_service_session.rs"]
+mod test_service_session;
 #[path = "integration/test_session.rs"]
 mod test_session;
 #[path = "integration/test_session_env_step.rs"]
