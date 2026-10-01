@@ -1,0 +1,24 @@
+specificationVersion: "jobtemplate-2023-09"
+name: "Frame Processing With Queue Cache"
+
+steps:
+  - name: ProcessFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-100"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args: ["{{ Task.File.Run }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            # VALKEY_HOST and VALKEY_PORT are set by the queue's CacheClient environment.
+            process-frame --frame {{ Task.Param.Frame }} \
+              --valkey-host "$VALKEY_HOST" --valkey-port "$VALKEY_PORT"

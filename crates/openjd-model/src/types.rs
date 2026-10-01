@@ -361,6 +361,10 @@ pub enum ModelExtension {
     /// `WRAP_ACTIONS` — enables `onWrapEnvEnter`, `onWrapTaskRun`, and
     /// `onWrapEnvExit` on `<EnvironmentActions>`. See RFC 0008.
     WrapActions,
+    /// `SERVICE` — enables `jobServices` on the job template and
+    /// `stepServices` on `<StepTemplate>`, and the `<Service>` entity.
+    /// Requires `EXPR`. See RFC 0009.
+    Service,
 }
 
 impl ModelExtension {
@@ -372,6 +376,7 @@ impl ModelExtension {
         Self::FeatureBundle1,
         Self::Expr,
         Self::WrapActions,
+        Self::Service,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -381,6 +386,7 @@ impl ModelExtension {
             Self::FeatureBundle1 => "FEATURE_BUNDLE_1",
             Self::Expr => "EXPR",
             Self::WrapActions => "WRAP_ACTIONS",
+            Self::Service => "SERVICE",
         }
     }
 }
@@ -394,6 +400,7 @@ impl std::str::FromStr for ModelExtension {
             "FEATURE_BUNDLE_1" => Ok(Self::FeatureBundle1),
             "EXPR" => Ok(Self::Expr),
             "WRAP_ACTIONS" => Ok(Self::WrapActions),
+            "SERVICE" => Ok(Self::Service),
             _ => Err(format!("Unknown extension: {s}")),
         }
     }

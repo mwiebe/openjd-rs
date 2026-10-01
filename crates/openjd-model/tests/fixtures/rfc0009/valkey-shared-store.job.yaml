@@ -1,0 +1,65 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "Frame Processing With Shared Valkey Store"
+parameterDefinitions:
+  - name: FrameEnd
+    type: INT
+    default: 100
+
+jobServices:
+  - name: Cache
+    description: "A Valkey store the Job's Tasks share to cache and coordinate."
+    hostRequirements:
+      attributes:
+        # Keep the service off capacity that could be reclaimed mid-Job.
+        - name: attr.worker.preemptible
+          anyOf: ["false"]
+      amounts:
+        - name: amount.worker.memory
+          min: 8192
+    ports:
+      - name: main
+    readinessCheck:
+      type: TCP_CONNECT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        # onRun is the long-lived action: its process IS the service.
+        onRun:
+          command: valkey-server
+          args:
+            - "--port"
+            - "{{ Service.Cache.main.port }}"
+            - "--bind"
+            - "{{ Service.Cache.main.bindAddress }}"
+            - "--save"
+            - ""
+          cancelation:
+            mode: NOTIFY_THEN_TERMINATE
+            notifyPeriodInSeconds: 30
+
+steps:
+  - name: ProcessFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-{{ Param.FrameEnd }}"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args: ["{{ Task.File.Run }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            #!/usr/bin/env bash
+            set -euo pipefail
+            process-frame \
+              --frame {{ Task.Param.Frame }} \
+              --valkey-host '{{ Service.Cache.main.connectAddress }}' \
+              --valkey-port {{ Service.Cache.main.port }}

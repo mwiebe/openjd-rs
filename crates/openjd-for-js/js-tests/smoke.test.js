@@ -868,12 +868,13 @@ describe("SymbolTable dotted-key surface (F6)", () => {
 describe("getSupportedExtensions (F8)", () => {
   it("returns the full default allowlist", () => {
     const exts = mod.getSupportedExtensions();
-    expect(exts.length).toBe(5);
+    expect(exts.length).toBe(6);
     expect(exts).toContain("TASK_CHUNKING");
     expect(exts).toContain("REDACTED_ENV_VARS");
     expect(exts).toContain("FEATURE_BUNDLE_1");
     expect(exts).toContain("EXPR");
     expect(exts).toContain("WRAP_ACTIONS");
+    expect(exts).toContain("SERVICE");
   });
 });
 

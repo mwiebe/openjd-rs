@@ -1,0 +1,51 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "Tiled Render With Per-Step Coordinator"
+
+steps:
+  - name: RenderTiles
+    stepServices:
+      - name: Coordinator
+        ports:
+          - name: api
+          - name: metrics
+        readinessCheck:
+          type: STDOUT
+          timeoutSeconds: 120
+        restartPolicy:
+          maxAttempts: 1
+          completedTasks: RERUN
+        script:
+          actions:
+            onEnter:
+              command: coordinator
+              args: ["init-db", "--data-dir", "{{ Session.WorkingDirectory }}/db"]
+            onRun:
+              command: coordinator
+              args:
+                - "serve"
+                - "--data-dir"
+                - "{{ Session.WorkingDirectory }}/db"
+                - "--listen"
+                - "{{ join_host_port(Service.Coordinator.api.bindAddress, Service.Coordinator.api.port) }}"
+                - "--metrics"
+                - "{{ join_host_port(Service.Coordinator.metrics.bindAddress, Service.Coordinator.metrics.port) }}"
+                # The coordinator prints "openjd_service_ready: listening" to stdout
+                # once its listeners are accepting connections.
+            onExit:
+              command: coordinator
+              args: ["export-report", "--data-dir", "{{ Session.WorkingDirectory }}/db"]
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Tile
+          type: INT
+          range: "1-64"
+    script:
+      actions:
+        onRun:
+          command: render-tile
+          args:
+            - "--coordinator"
+            - "http://{{ join_host_port(Service.Coordinator.api.connectAddress, Service.Coordinator.api.port) }}"
+            - "--tile"
+            - "{{ Task.Param.Tile }}"

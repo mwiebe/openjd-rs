@@ -47,8 +47,8 @@ pub enum DecodedTemplate {
 
 ## Decode Pipeline
 
-The `decode_*` functions run passes 1–9 of the template processing pipeline. Passes 1–4
-live in the `parse` module; passes 5–9 live in the `validate_v2023_09` module (see
+The `decode_*` functions run passes 1–11 of the template processing pipeline. Passes 1–4
+live in the `parse` module; passes 5–11 live in the `validate_v2023_09` module (see
 [validation.md](validation.md)).
 
 ### Pass 1: Raw Parsing
@@ -102,7 +102,7 @@ An empty `extensions: []` list is rejected for both job and environment template
 pass 4 with a `DecodeValidation` error. If a template does not use any extensions, the
 `extensions` field should be omitted entirely.
 
-### Passes 5–9: Validation
+### Passes 5–11: Validation
 
 The deserialized template is passed through the multi-pass validation pipeline
 (see [validation.md](validation.md)). Validation errors are accumulated and returned
