@@ -98,6 +98,10 @@ pub struct ActionFilter {
     redacted_values: HashSet<String>,
     redacted_lines: HashSet<String>,
     log_level: u32,
+    /// The action name every output line (and process-control line) of this
+    /// action is attributed to in the log, when the action runs concurrently
+    /// with another action of the Session. See `session_action_log!`.
+    action_tag: Option<String>,
 }
 
 impl ActionFilter {
@@ -109,7 +113,19 @@ impl ActionFilter {
             redacted_values: HashSet::new(),
             redacted_lines: HashSet::new(),
             log_level: 20, // INFO
+            action_tag: None,
         }
+    }
+
+    /// Attribute this action's log records to `tag` (RFC 0009 "Concurrency
+    /// with `onRun`" rule 3). `None` (the default) leaves them untagged.
+    pub fn set_action_tag(&mut self, tag: Option<String>) {
+        self.action_tag = tag;
+    }
+
+    /// The action tag set with [`set_action_tag`](Self::set_action_tag).
+    pub fn action_tag(&self) -> Option<&str> {
+        self.action_tag.as_deref()
     }
 
     /// Current minimum log level for command output (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR).
@@ -521,6 +537,16 @@ pub fn redact_openjd_redacted_env_requests(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn action_tag_defaults_to_none_and_round_trips() {
+        let mut f = ActionFilter::new("sid", true, false);
+        assert_eq!(f.action_tag(), None);
+        f.set_action_tag(Some("onReadinessCheck".into()));
+        assert_eq!(f.action_tag(), Some("onReadinessCheck"));
+        f.set_action_tag(None);
+        assert_eq!(f.action_tag(), None);
+    }
 
     fn make_filter(echo: bool, redactions_enabled: bool) -> ActionFilter {
         ActionFilter::new("foo", echo, redactions_enabled)

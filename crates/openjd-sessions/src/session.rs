@@ -267,16 +267,18 @@ pub(crate) struct CancelShared {
     pub(crate) mark_failed: bool,
 }
 
-/// Cancellation state for the current action and external cancellation support.
-pub(crate) struct CancelFields {
-    /// Per-action cancellation state, shared with `SessionCancelHandle`s.
+/// One cancelation target: the state a [`SessionCancelHandle`] delivers a
+/// cancel to. A `Session` has one — its running action — and a Service
+/// Session (RFC 0009) adds a second for the `onReadinessCheck` invocation
+/// that runs concurrently with `onRun`, so each concurrent action is
+/// canceled through its own slot with its own cancelation method.
+#[derive(Clone)]
+pub(crate) struct ActionCancelSlot {
     shared: Arc<StdMutex<CancelShared>>,
-    /// External cancellation token from the caller; action tokens are children of this.
-    parent_token: Option<CancellationToken>,
 }
 
-impl CancelFields {
-    fn new(parent_token: Option<CancellationToken>) -> Self {
+impl ActionCancelSlot {
+    pub(crate) fn new() -> Self {
         Self {
             shared: Arc::new(StdMutex::new(CancelShared {
                 token: None,
@@ -284,7 +286,6 @@ impl CancelFields {
                 terminate_delay: None,
                 mark_failed: false,
             })),
-            parent_token,
         }
     }
 
@@ -324,6 +325,62 @@ impl CancelFields {
         shared.request_tx = None;
         shared.terminate_delay = None;
         shared.mark_failed = false;
+    }
+
+    /// A handle that cancels whatever action is registered in this slot.
+    /// `cancel_writer` / `helper_auth_token` route the cancel to the
+    /// cross-user helper that runs the slot's actions, when there is one.
+    pub(crate) fn handle(
+        &self,
+        cancel_writer: Option<std::fs::File>,
+        helper_auth_token: Option<String>,
+    ) -> SessionCancelHandle {
+        SessionCancelHandle {
+            shared: self.shared.clone(),
+            cancel_writer,
+            helper_auth_token,
+        }
+    }
+}
+
+/// Cancellation state for the current action and external cancellation support.
+pub(crate) struct CancelFields {
+    /// Per-action cancellation state, shared with `SessionCancelHandle`s.
+    slot: ActionCancelSlot,
+    /// External cancellation token from the caller; action tokens are children of this.
+    parent_token: Option<CancellationToken>,
+}
+
+impl CancelFields {
+    fn new(parent_token: Option<CancellationToken>) -> Self {
+        Self {
+            slot: ActionCancelSlot::new(),
+            parent_token,
+        }
+    }
+
+    /// See [`ActionCancelSlot::lock`].
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, CancelShared> {
+        self.slot.lock()
+    }
+
+    /// See [`ActionCancelSlot::set_action`].
+    pub(crate) fn set_action(
+        &self,
+        token: CancellationToken,
+        request_tx: tokio::sync::watch::Sender<Option<Duration>>,
+    ) {
+        self.slot.set_action(token, request_tx);
+    }
+
+    /// See [`ActionCancelSlot::set_terminate_delay`].
+    pub(crate) fn set_terminate_delay(&self, delay: Option<Duration>) {
+        self.slot.set_terminate_delay(delay);
+    }
+
+    /// See [`ActionCancelSlot::reset`].
+    pub(crate) fn reset(&self) {
+        self.slot.reset();
     }
 }
 
@@ -474,6 +531,10 @@ struct CrossUserFields {
     user: Option<Arc<dyn SessionUser>>,
     /// Process-user-only directory for helper binary and wrapper scripts.
     helpers_dir: Option<PathBuf>,
+    /// The helper binary written into `helpers_dir`, kept so a Service
+    /// Session can spawn a second helper for the action it runs concurrently
+    /// with `onRun` (see [`Session::spawn_detached_helper`]).
+    helper_path: Option<PathBuf>,
     #[cfg(unix)]
     helper: Option<CrossUserHelper>,
     #[cfg(windows)]
@@ -588,6 +649,7 @@ impl Session {
             cross_user: CrossUserFields {
                 user: None,
                 helpers_dir: None,
+                helper_path: None,
                 helper: None,
                 cancel_writer: None,
                 helper_auth_token: None,
@@ -713,6 +775,7 @@ impl Session {
         // The helpers directory is 0o750 (owner rwx, group r-x) so the job user
         // can traverse and execute but cannot create or modify files.
         let mut helpers_dir = None;
+        let mut helper_path = None;
 
         #[cfg(unix)]
         let (helper, cancel_writer, helper_auth_token) = if let Some(ref user) = config.user {
@@ -721,10 +784,11 @@ impl Session {
                     &working_directory,
                     Some(user.as_ref()),
                 )?;
-                let helper_path = crate::helper_binary::write_helper(&hdir, user.as_ref())?;
-                let (h, cw) = CrossUserHelper::spawn(&helper_path, user.as_ref())?;
+                let hpath = crate::helper_binary::write_helper(&hdir, user.as_ref())?;
+                let (h, cw) = CrossUserHelper::spawn(&hpath, user.as_ref())?;
                 let token = h.auth_token().to_string();
                 helpers_dir = Some(hdir);
+                helper_path = Some(hpath);
                 (Some(h), Some(cw), Some(token))
             } else {
                 (None, None, None)
@@ -740,10 +804,11 @@ impl Session {
                     &working_directory,
                     Some(user.as_ref()),
                 )?;
-                let helper_path = crate::helper_binary::write_helper(&hdir, user.as_ref())?;
-                let (h, cw) = CrossUserHelperWin::spawn(&helper_path, user.as_ref())?;
+                let hpath = crate::helper_binary::write_helper(&hdir, user.as_ref())?;
+                let (h, cw) = CrossUserHelperWin::spawn(&hpath, user.as_ref())?;
                 let token = h.auth_token().to_string();
                 helpers_dir = Some(hdir);
+                helper_path = Some(hpath);
                 (Some(h), Some(cw), Some(token))
             } else {
                 (None, None, None)
@@ -818,6 +883,7 @@ impl Session {
             cross_user: CrossUserFields {
                 user: config.user,
                 helpers_dir,
+                helper_path,
                 helper,
                 cancel_writer,
                 helper_auth_token,
@@ -1043,11 +1109,9 @@ impl Session {
                  processes"
             );
         }
-        SessionCancelHandle {
-            shared: self.cancel.shared.clone(),
-            cancel_writer,
-            helper_auth_token: self.cross_user.helper_auth_token.clone(),
-        }
+        self.cancel
+            .slot
+            .handle(cancel_writer, self.cross_user.helper_auth_token.clone())
     }
 
     /// Record a failure that occurred while setting up an action that has
@@ -2300,6 +2364,121 @@ impl Session {
         }
     }
 
+    /// Spawn a second cross-user helper process for an action that runs
+    /// *concurrently* with the one holding the Session's helper (a Service
+    /// Session's `onReadinessCheck`, RFC 0009). The helper protocol runs one
+    /// command at a time, so each concurrent action needs its own helper.
+    /// `Ok(None)` for a same-user Session.
+    ///
+    /// The returned helper is owned by the caller: hand it to
+    /// [`new_detached_runner_base`](Self::new_detached_runner_base) and drop
+    /// the runner when the action is over, which shuts the helper down.
+    pub(crate) fn spawn_detached_helper(&self) -> Result<Option<DetachedHelper>, SessionError> {
+        let (Some(user), Some(path)) = (&self.cross_user.user, &self.cross_user.helper_path) else {
+            return Ok(None);
+        };
+        if user.is_process_user() {
+            return Ok(None);
+        }
+        #[cfg(unix)]
+        let (helper, cancel_writer) = CrossUserHelper::spawn(path, user.as_ref())?;
+        #[cfg(windows)]
+        let (helper, cancel_writer) = CrossUserHelperWin::spawn(path, user.as_ref())?;
+        let auth_token = helper.auth_token().to_string();
+        Ok(Some(DetachedHelper {
+            helper,
+            cancel_writer,
+            auth_token,
+        }))
+    }
+
+    /// Like [`new_runner_base`](Self::new_runner_base), but for an action that
+    /// runs concurrently with the Session's current action: it does not take
+    /// the Session's cross-user helper, using `helper` (from
+    /// [`spawn_detached_helper`](Self::spawn_detached_helper)) instead.
+    /// Nothing needs to be handed back to the Session afterwards. Also
+    /// returns the cancel-pipe writer and auth token a cancel handle for the
+    /// action's own cancel slot needs to reach the detached helper.
+    pub(crate) fn new_detached_runner_base(
+        &self,
+        cancel_token: CancellationToken,
+        cancel_rx: tokio::sync::watch::Receiver<Option<Duration>>,
+        helper: Option<DetachedHelper>,
+    ) -> (
+        crate::runner::ScriptRunnerBase,
+        Option<(std::fs::File, String)>,
+    ) {
+        let mut base = crate::runner::ScriptRunnerBase::new(
+            &self.session_id,
+            self.working_directory.clone(),
+            self.files_directory.clone(),
+            self.cross_user.user.clone(),
+        );
+        base.redactions_enabled = self.redactions_enabled();
+        base.debug_collect_stdout = self.debug_collect_stdout;
+        base.echo_openjd_directives = self.echo_openjd_directives;
+        base.limits = self.limits;
+        base.initial_redacted_values = self.redacted_values.iter().cloned().collect();
+        base.cancel_token = cancel_token;
+        base.cancel_request_rx = Some(cancel_rx);
+        base.helpers_directory = self.cross_user.helpers_dir.clone();
+        let mut handle_route = None;
+        if let Some(h) = helper {
+            let DetachedHelper {
+                helper,
+                cancel_writer,
+                auth_token,
+            } = h;
+            base.helper = Some(helper);
+            if let Ok(dup) = cancel_writer.try_clone() {
+                handle_route = Some((dup, auth_token));
+            } else {
+                session_log!(
+                    warn,
+                    &self.session_id,
+                    LogContent::PROCESS_CONTROL,
+                    "Failed to duplicate the detached cross-user helper's cancel pipe; \
+                     cancels of the concurrent action will not reach helper-run processes"
+                );
+            }
+            base.cancel_writer = Some(cancel_writer);
+        }
+        (base, handle_route)
+    }
+
+    /// The scope a wrap hook resolves against before the wrapping
+    /// Environment's own symbols are layered on: the Session's base symbol
+    /// table (`Session.WorkingDirectory`, …) with path mapping materialized.
+    /// Used by the Service Session for the `onWrapService*` hooks (RFC 0009),
+    /// mirroring what [`run_task`](Self::run_task) builds for `onWrapTaskRun`.
+    pub(crate) fn wrap_hook_base_symtab(&self) -> Result<SymbolTable, SessionError> {
+        let mut symtab = self.build_symbol_table(None, None)?;
+        self.materialize_path_mapping(&mut symtab)?;
+        Ok(symtab)
+    }
+
+    /// The active wrapping Environment's `onWrapService*` hooks, when the
+    /// entered stack contains a wrapping Environment whose `runScope`
+    /// includes `SERVICE` (RFC 0009 "`<EnvironmentActions>`"). `None` when
+    /// no wrapping Environment is entered or its `runScope` excludes
+    /// `SERVICE` (such an Environment is not entered in a Service Session,
+    /// so this is a defensive check).
+    pub(crate) fn service_wrap_hooks(&self) -> Option<ServiceWrapHooks> {
+        let env = self.active_wrap_env()?;
+        if !env.runs_in(openjd_model::job::RunScope::Service) {
+            return None;
+        }
+        let script = env.script.as_ref()?;
+        Some(ServiceWrapHooks {
+            scope: WrapEnvironmentScope::from(env),
+            embedded_files: script.embedded_files.clone(),
+            on_enter: script.actions.on_wrap_service_enter.clone(),
+            on_run: script.actions.on_wrap_service_run.clone(),
+            on_readiness_check: script.actions.on_wrap_service_readiness_check.clone(),
+            on_exit: script.actions.on_wrap_service_exit.clone(),
+        })
+    }
+
     /// Run an action future while concurrently processing messages from the channel
     /// in real-time. This ensures callbacks fire as stdout lines are parsed, not
     /// after the action completes.
@@ -2550,7 +2729,7 @@ impl Session {
     /// and `extra` (caller-supplied overrides), producing only the session's own
     /// `openjd_env` exports and declarative `variables:` maps. This is the
     /// correct input for `WrappedAction.Environment` per RFC 0008.
-    fn live_session_env_vars(&self) -> HashMap<String, String> {
+    pub(crate) fn live_session_env_vars(&self) -> HashMap<String, String> {
         let mut result = HashMap::new();
         for id in &self.environments_entered {
             if let Some(changes) = self.created_env_vars.get(id) {
@@ -3017,10 +3196,35 @@ fn env_has_any_wrap_hook(env: &Environment) -> bool {
 /// The wrapper-owned data needed after wrap dispatch releases its borrow of
 /// the Session environment stack. Deliberately excludes embedded files and
 /// other potentially large Environment fields.
-struct WrapEnvironmentScope {
-    name: String,
+pub(crate) struct WrapEnvironmentScope {
+    pub(crate) name: String,
     resolved_symtab: Option<openjd_expr::SerializedSymbolTable>,
     let_bindings: Option<Vec<String>>,
+}
+
+/// A second cross-user helper process, spawned by
+/// [`Session::spawn_detached_helper`] for an action that runs concurrently
+/// with the one using the Session's own helper.
+pub(crate) struct DetachedHelper {
+    #[cfg(unix)]
+    helper: CrossUserHelper,
+    #[cfg(windows)]
+    helper: CrossUserHelperWin,
+    cancel_writer: std::fs::File,
+    auth_token: String,
+}
+
+/// The `onWrapService*` hooks of the active wrapping Environment in a
+/// Service Session, with the scope the hooks resolve against. See
+/// [`Session::service_wrap_hooks`].
+pub(crate) struct ServiceWrapHooks {
+    pub(crate) scope: WrapEnvironmentScope,
+    /// The wrapping Environment's embedded files (`Env.File.*` in the hooks).
+    pub(crate) embedded_files: Option<Vec<openjd_model::job::EmbeddedFile>>,
+    pub(crate) on_enter: Option<openjd_model::job::Action>,
+    pub(crate) on_run: Option<openjd_model::job::Action>,
+    pub(crate) on_readiness_check: Option<openjd_model::job::Action>,
+    pub(crate) on_exit: Option<openjd_model::job::Action>,
 }
 
 impl From<&Environment> for WrapEnvironmentScope {
@@ -3043,6 +3247,10 @@ pub(crate) enum WrappedContext<'a> {
     Env(&'a str),
     /// Within `onWrapTaskRun`: sets `WrappedStep.Name`.
     Step(&'a str),
+    /// Within the four `onWrapService*` hooks (RFC 0009): sets
+    /// `WrappedService.Name`, `.PortNames`, `.Ports`, `.BindAddresses` from
+    /// the Service's endpoint assignment, in port declaration order.
+    Service(&'a openjd_model::job::service_symbols::ServiceEndpoints),
 }
 
 /// Build the wrap hook's resolution scope on `action_symtab` and resolve
@@ -3066,11 +3274,13 @@ pub(crate) enum WrappedContext<'a> {
 ///   `WrappedAction.*` overlay. The hook action resolves against this
 ///   table only; the inner entity's `let` bindings are NOT applied to it.
 ///
-/// This is the single implementation shared by the three wrap-hook call
-/// sites (`onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`), guaranteeing
-/// the hooks see identical `WrappedAction.*` semantics as the RFC requires.
-/// `phase` names the wrapped lifecycle action for error messages
-/// ("onEnter", "onExit", or "task").
+/// This is the single implementation shared by every wrap-hook call site —
+/// `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, and the Service
+/// Session's four `onWrapService*` hooks (RFC 0009) — guaranteeing the hooks
+/// see identical `WrappedAction.*` semantics as the RFC requires. `phase`
+/// names the wrapped lifecycle action for error messages ("onEnter",
+/// "onExit", "task", or "Service onRun" etc.); only "task" selects the
+/// 120-second default notify period.
 ///
 /// `session_env_vars` MUST be the session's **live** session-defined variables
 /// — only `openjd_env` exports and declarative `variables:` maps from
@@ -3079,7 +3289,7 @@ pub(crate) enum WrappedContext<'a> {
 /// intentionally excluded per RFC 0008. Use `live_session_env_vars()`
 /// rather than the cumulative `self.env_vars`.
 #[allow(clippy::too_many_arguments)]
-fn seed_wrapped_action_symbols(
+pub(crate) fn seed_wrapped_action_symbols(
     action_symtab: &mut SymbolTable,
     wrap_env: &WrapEnvironmentScope,
     inner_symtab: &SymbolTable,
@@ -3207,7 +3417,7 @@ fn seed_wrapped_action_symbols(
 }
 
 /// Overlay the `WrappedAction.*` variables defined in RFC 0008 onto a
-/// symbol table in place. Used by all three wrap hooks:
+/// symbol table in place. Used by every wrap hook:
 ///
 /// - `WrappedAction.Command` — the wrapped action's resolved command string.
 /// - `WrappedAction.Args` — the wrapped action's resolved argument list.
@@ -3224,8 +3434,9 @@ fn seed_wrapped_action_symbols(
 ///   `NOTIFY_THEN_TERMINATE` (with schema defaults applied when the
 ///   wrapped action omits the field), or `null` otherwise.
 ///
-/// `wrapped` selects the per-hook companion variable: `WrappedEnv.Name`
-/// for env hooks, `WrappedStep.Name` for `onWrapTaskRun`. `None` is used
+/// `wrapped` selects the per-hook companion variable(s): `WrappedEnv.Name`
+/// for env hooks, `WrappedStep.Name` for `onWrapTaskRun`, the
+/// `WrappedService.*` group for the `onWrapService*` hooks. `None` is used
 /// only by tests that exercise the `WrappedAction.*` portion in isolation.
 ///
 /// Errors from `SymbolTable::set` are reported as `SessionError::Runtime`.
@@ -3246,6 +3457,12 @@ fn overlay_wrapped_action_symbols(
         }
         Some(WrappedContext::Step(name)) => {
             set_string_symbol(symtab, "WrappedStep.Name", name)?;
+        }
+        Some(WrappedContext::Service(endpoints)) => {
+            openjd_model::job::service_symbols::add_wrapped_service_symbols(symtab, endpoints)
+                .map_err(|e| {
+                    SessionError::Runtime(format!("Failed to set WrappedService.*: {e}"))
+                })?;
         }
         None => {}
     }
@@ -3502,6 +3719,71 @@ mod wrap_actions_tests {
             symtab.get_value("WrappedEnv.Name"),
             Some(&ExprValue::String("InnerEnv".into()))
         );
+        assert!(symtab.get_value("WrappedStep.Name").is_none());
+    }
+
+    #[test]
+    fn overlay_sets_wrapped_service_group_when_provided() {
+        use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
+        let endpoints = ServiceEndpoints::new(
+            "svc",
+            vec![
+                (
+                    "main".to_string(),
+                    ServiceEndpoint {
+                        port: 4100,
+                        bind_address: "0.0.0.0".into(),
+                        connect_address: "10.0.0.5".into(),
+                    },
+                ),
+                (
+                    "metrics".to_string(),
+                    ServiceEndpoint {
+                        port: 4101,
+                        bind_address: "127.0.0.1".into(),
+                        connect_address: "127.0.0.1".into(),
+                    },
+                ),
+            ],
+        );
+        let mut symtab = SymbolTable::default();
+        overlay_wrapped_action_symbols(
+            &mut symtab,
+            Some(WrappedContext::Service(&endpoints)),
+            "sh",
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            symtab.get_value("WrappedService.Name"),
+            Some(&ExprValue::String("svc".into()))
+        );
+        let names = symtab.get_value("WrappedService.PortNames").unwrap();
+        assert_eq!(
+            names.list_elements().unwrap(),
+            vec![
+                ExprValue::String("main".into()),
+                ExprValue::String("metrics".into())
+            ]
+        );
+        let ports = symtab.get_value("WrappedService.Ports").unwrap();
+        assert_eq!(
+            ports.list_elements().unwrap(),
+            vec![ExprValue::Int(4100), ExprValue::Int(4101)]
+        );
+        let binds = symtab.get_value("WrappedService.BindAddresses").unwrap();
+        assert_eq!(
+            binds.list_elements().unwrap(),
+            vec![
+                ExprValue::String("0.0.0.0".into()),
+                ExprValue::String("127.0.0.1".into())
+            ]
+        );
+        assert!(symtab.get_value("WrappedEnv.Name").is_none());
         assert!(symtab.get_value("WrappedStep.Name").is_none());
     }
 

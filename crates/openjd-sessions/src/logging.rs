@@ -67,6 +67,36 @@ pub fn timestamp_usec() -> u64 {
         .as_micros() as u64
 }
 
+/// Like [`session_log!`], attributing the record to one action of the
+/// Session when `$action` (an `Option<&str>`) is `Some`: the record then
+/// carries the structured field `openjd_action = <name>` and its message is
+/// prefixed with `[<name>] `. With `None` the record is exactly a
+/// `session_log!` record.
+///
+/// This is how a Service Session satisfies RFC 0009 "Concurrency with
+/// `onRun`" rule 3 (log attribution): `onReadinessCheck` runs while `onRun`
+/// runs, so every line of its output — and every process-control line about
+/// it — is tagged, while `onRun`'s lines stay untagged.
+///
+/// Usage:
+///   session_action_log!(info, session_id, Some("onReadinessCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
+#[macro_export]
+macro_rules! session_action_log {
+    ($level:ident, $session_id:expr, $action:expr, $content:expr, $($arg:tt)+) => {
+        match ($action as Option<&str>) {
+            Some(action) => log::$level!(
+                target: "openjd.sessions",
+                session_id = $session_id,
+                openjd_log_content = $crate::logging::LogContent::bits(&$content),
+                openjd_timestamp_usec = $crate::logging::timestamp_usec(),
+                openjd_action = action;
+                "[{}] {}", action, format_args!($($arg)+)
+            ),
+            None => $crate::session_log!($level, $session_id, $content, $($arg)+),
+        }
+    };
+}
+
 /// Log a section banner (major section separator).
 pub fn log_section_banner(session_id: &str, title: &str) {
     session_log!(info, session_id, LogContent::BANNER, "");
@@ -100,4 +130,29 @@ pub fn log_subsection_banner(session_id: &str, title: &str) {
         LogContent::BANNER,
         "----------------------------------------------"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_action_log_tags_and_prefixes_only_when_an_action_is_given() {
+        testing_logger::setup();
+        crate::session_action_log!(
+            info,
+            "sid",
+            Some("onReadinessCheck"),
+            LogContent::COMMAND_OUTPUT,
+            "line {}",
+            1
+        );
+        crate::session_action_log!(info, "sid", None, LogContent::COMMAND_OUTPUT, "line {}", 2);
+        testing_logger::validate(|logs| {
+            assert_eq!(logs.len(), 2);
+            assert_eq!(logs[0].body, "[onReadinessCheck] line 1");
+            assert_eq!(logs[1].body, "line 2");
+            assert_eq!(logs[0].target, "openjd.sessions");
+        });
+    }
 }

@@ -499,6 +499,19 @@ let result = self.drive_action(runner.enter(...), &mut rx, &id).await?;
 self.helper = runner.take_helper();
 ```
 
+### A second helper for a concurrent action (RFC 0009)
+
+The protocol runs one command at a time, so a Service Session's
+`onReadinessCheck` — which runs while `onRun` holds the Session's helper —
+cannot share it. `Session::spawn_detached_helper()` spawns another helper
+process from the same helper binary (`CrossUserFields::helper_path`, kept
+from construction) with its own auth token and dup'd cancel-pipe writer, and
+`Session::new_detached_runner_base(..)` builds the runner around it without
+touching the Session's helper. The second helper lives as long as that
+runner and is shut down by `Drop` when the readiness-check driver finishes.
+Cancels to it go through the check's own `SessionCancelHandle`, routed with
+the second helper's writer and token.
+
 ### Async helper I/O
 
 Helper stdout is read asynchronously so that `drive_action`'s `select!` loop

@@ -406,6 +406,14 @@ Every action installs fresh cancel state, so a cancel never poisons later action
 (contrast with `SessionConfig::cancel_token`, whose cancellation is permanent) and
 the same handle works for the life of the session.
 
+The per-action cancel state is one `ActionCancelSlot` (crate-internal), owned by the
+Session's `CancelFields` alongside the optional parent token. A `Session` has exactly
+one slot because it runs one action at a time. The slot type exists on its own so a
+Service Session (RFC 0009) can own a *second* slot for the `onReadinessCheck`
+invocation that runs concurrently with `onRun`; `ActionCancelSlot::handle(..)` builds a
+`SessionCancelHandle` for any slot, routed to whichever cross-user helper runs that
+slot's actions. See [service-session.md](service-session.md) "Two action slots".
+
 ## Cleanup
 
 See [Session Lifecycle Contract](#session-lifecycle-contract) for the full cleanup
