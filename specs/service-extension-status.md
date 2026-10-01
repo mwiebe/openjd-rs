@@ -66,6 +66,7 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 
 | # | Normative statement | Status | Where |
 |---|---|---|---|
+| E0 | The host and port functions are added by the SERVICE extension and are absent from a profile that enables EXPR alone | Implemented | `ExprExtension::Service` in `expr/profile.rs`; `register_service_functions` in `expr/default_library.rs`; `ModelProfile::to_expr_profile` maps `ModelExtension::Service`; conformance `expr2.2.4--*-requires-service-extension.invalid.yaml` |
 | E1 | `join_host_port(host, port) -> string` brackets an IPv6 literal, not an already-bracketed host; zone identifiers carried verbatim | Implemented | `expr/functions/host_port.rs`, `expr/default_library.rs`; `specs/expr/function-library.md` |
 | E2 | `split_host_port(s) -> list[string]?`: `[host, port]`, brackets removed, `null` for no port incl. bare IPv6, error on malformed brackets | Implemented | same |
 | E3 | `is_ipv4`, `is_ipv6` (bracketed or not, with or without zone) | Implemented | same |

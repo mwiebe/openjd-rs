@@ -65,8 +65,18 @@ fn create_err(template: &str, params: &[(&str, &str)]) -> String {
 }
 
 fn resolve(fs: &FormatString, st: &SymbolTable) -> Result<String, String> {
-    fs.resolve_string_with(st, &openjd_expr::FormatStringOptions::new())
-        .map_err(|e| e.to_string())
+    // Resolve with the library a SERVICE template's profile yields, since
+    // the host and port functions exist only under that extension.
+    let lib = openjd_expr::FunctionLibrary::for_profile(
+        &openjd_expr::ExprProfile::current().with_extensions(std::collections::HashSet::from([
+            openjd_expr::ExprExtension::Service,
+        ])),
+    );
+    fs.resolve_string_with(
+        st,
+        &openjd_expr::FormatStringOptions::new().with_library(&*lib),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn symtab_of(st: &openjd_expr::SerializedSymbolTable) -> SymbolTable {

@@ -6,12 +6,39 @@
 //! extension (Expression Language §2.2.4): `join_host_port`,
 //! `split_host_port`, `is_ipv4`, `is_ipv6`.
 
-use openjd_expr::{ExprType, ExprValue, ParsedExpression, SymbolTable};
+use openjd_expr::{
+    ExprExtension, ExprProfile, ExprType, ExprValue, FunctionLibrary, ParsedExpression, SymbolTable,
+};
+use std::collections::HashSet;
+use std::sync::Arc;
+
+/// A function library for a profile that enables the `SERVICE` extension,
+/// which is what adds the host and port functions (Expression Language
+/// §2.2.4). Every positive test in this file evaluates against it.
+fn service_lib() -> Arc<FunctionLibrary> {
+    FunctionLibrary::for_profile(
+        &ExprProfile::current().with_extensions(HashSet::from([ExprExtension::Service])),
+    )
+}
+
+/// A function library for the current revision with no extensions: the
+/// host and port functions must be absent from it.
+fn base_lib() -> Arc<FunctionLibrary> {
+    FunctionLibrary::for_profile(&ExprProfile::current())
+}
+
+fn eval_with(expr: &str, lib: &FunctionLibrary, st: &SymbolTable) -> Result<ExprValue, String> {
+    ParsedExpression::new(expr)
+        .map_err(|e| e.to_string())
+        .and_then(|p| {
+            p.with_library(lib)
+                .evaluate(&[st])
+                .map_err(|e| e.to_string())
+        })
+}
 
 fn eval(expr: &str) -> ExprValue {
-    ParsedExpression::new(expr)
-        .and_then(|p| p.evaluate(&SymbolTable::new()))
-        .unwrap()
+    eval_with(expr, &service_lib(), &SymbolTable::new()).unwrap()
 }
 
 fn eval_str(expr: &str) -> String {
@@ -26,10 +53,7 @@ fn eval_bool(expr: &str) -> bool {
 }
 
 fn assert_err(expr: &str, expected: &[&str]) {
-    let e = ParsedExpression::new(expr)
-        .and_then(|p| p.evaluate(&SymbolTable::new()))
-        .unwrap_err()
-        .to_string();
+    let e = eval_with(expr, &service_lib(), &SymbolTable::new()).unwrap_err();
     let joined = expected.concat();
     assert!(e.contains(&joined), "got:\n{e}\nexpected:\n{joined}");
 }
@@ -44,10 +68,81 @@ fn st_unresolved(pairs: &[(&str, &str)]) -> SymbolTable {
 }
 
 fn eval_type(expr: &str, st: &SymbolTable) -> ExprType {
-    ParsedExpression::new(expr)
-        .and_then(|p| p.evaluate(st))
-        .unwrap()
-        .expr_type()
+    eval_with(expr, &service_lib(), st).unwrap().expr_type()
+}
+
+// ── Extension gating ───────────────────────────────────────────────────
+//
+// The host and port functions are added by the SERVICE extension. A
+// profile that enables EXPR alone (the base library) must not have them,
+// so a template that declares EXPR without SERVICE cannot call them.
+
+const HOST_PORT_FUNCTIONS: [&str; 4] = ["join_host_port", "split_host_port", "is_ipv4", "is_ipv6"];
+
+#[test]
+fn host_port_functions_absent_without_service_extension() {
+    let lib = base_lib();
+    for name in HOST_PORT_FUNCTIONS {
+        assert!(
+            lib.get_signatures(name).is_empty(),
+            "{name} must not be registered in the base library"
+        );
+    }
+}
+
+#[test]
+fn host_port_functions_present_with_service_extension() {
+    let lib = service_lib();
+    for name in HOST_PORT_FUNCTIONS {
+        assert!(
+            !lib.get_signatures(name).is_empty(),
+            "{name} must be registered when SERVICE is enabled"
+        );
+    }
+}
+
+#[test]
+fn host_port_functions_present_in_latest_profile() {
+    // ExprProfile::latest enables every expression-level extension.
+    let lib = FunctionLibrary::for_profile(&ExprProfile::latest());
+    for name in HOST_PORT_FUNCTIONS {
+        assert!(
+            !lib.get_signatures(name).is_empty(),
+            "{name} missing from latest"
+        );
+    }
+}
+
+#[test]
+fn calling_host_port_functions_without_service_is_an_unknown_function_error() {
+    let lib = base_lib();
+    let st = SymbolTable::new();
+    for (expr, name) in [
+        ("join_host_port('h', 80)", "join_host_port"),
+        ("split_host_port('h:80')", "split_host_port"),
+        ("is_ipv4('10.0.0.1')", "is_ipv4"),
+        ("is_ipv6('::1')", "is_ipv6"),
+        ("'h'.join_host_port(80)", "join_host_port"),
+    ] {
+        let e = eval_with(expr, &lib, &st).unwrap_err();
+        assert!(
+            e.contains(name),
+            "{expr}: error should name the function; got:\n{e}"
+        );
+        assert!(
+            !e.contains("requires a string argument") && !e.contains("port must be int"),
+            "{expr}: must fail as an unknown function, not reach the implementation; got:\n{e}"
+        );
+    }
+}
+
+#[test]
+fn static_typing_without_service_does_not_know_host_port_functions() {
+    // Static type checking with unresolved inputs must also reject the
+    // call, so a template validated without SERVICE never passes.
+    let lib = base_lib();
+    let st = st_unresolved(&[("Host", "string")]);
+    assert!(eval_with("join_host_port(Host, 80)", &lib, &st).is_err());
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -554,10 +649,7 @@ fn unresolved_ip_predicate_types() {
 #[test]
 fn unresolved_join_with_wrong_port_type_is_static_error() {
     let st = st_unresolved(&[("S", "string")]);
-    let e = ParsedExpression::new("join_host_port(S, '80')")
-        .and_then(|p| p.evaluate(&st))
-        .unwrap_err()
-        .to_string();
+    let e = eval_with("join_host_port(S, '80')", &service_lib(), &st).unwrap_err();
     let expected = concat!(
         "No matching signature for join_host_port(string, string)\n",
         "  join_host_port(S, '80')\n",

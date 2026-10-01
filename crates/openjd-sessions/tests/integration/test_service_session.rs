@@ -1229,7 +1229,14 @@ async fn service_symbols_resolve_in_on_run_args() {
     let mut config = session_config(&root, "svc-test:symbols");
     config.profile = Some(
         openjd_model::ModelProfile::new(openjd_model::SpecificationRevision::V2023_09)
-            .with_extensions([openjd_model::ModelExtension::Expr].into_iter().collect()),
+            .with_extensions(
+                [
+                    openjd_model::ModelExtension::Expr,
+                    openjd_model::ModelExtension::Service,
+                ]
+                .into_iter()
+                .collect(),
+            ),
     );
     let mut ss = ServiceSession::with_config(ServiceSessionConfig {
         session: config,

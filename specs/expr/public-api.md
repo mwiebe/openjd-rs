@@ -257,12 +257,16 @@ impl ExprRevision {
     pub const CURRENT: ExprRevision = ExprRevision::V2026_02;
 }
 
-/// Expression-language extensions. Defined as empty-but-`#[non_exhaustive]`
-/// — no expr-level extensions exist today, the API shape is reserved for
-/// the first.
+/// Expression-language extensions: which additional functions a profile
+/// registers once EXPR is available. `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum ExprExtension {}
+pub enum ExprExtension {
+    /// SERVICE (RFC 0009): adds join_host_port, split_host_port, is_ipv4,
+    /// is_ipv6 (Expression Language §2.2.4). A profile without it does not
+    /// have these functions; `ExprExtension::ALL == &[Service]`.
+    Service,
+}
 
 /// Host-context state available to expression evaluation. Today this gates
 /// `apply_path_mapping`.
