@@ -158,6 +158,7 @@ mod tests {
             name: name.into(),
             description: None,
             host_requirements: None,
+            service_environments: None,
             ports: ports
                 .iter()
                 .map(|(n, p)| ServicePort {

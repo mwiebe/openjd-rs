@@ -245,11 +245,13 @@ impl Documents<'_> {
 ///      the cause, with the spec's remedy.
 /// 2. Instantiates each external Service through the same code path as a
 ///    `jobServices` entry — `<Service>.let`, `hostRequirements`, the numeric
-///    `@fmtstring` fields, the carried-forward re-checks — in Job scope,
-///    seeing the Services before it in its own document (a `Service.*`
-///    reference to another document's Service is a template-validation
-///    error, so none can reach here). Errors carry the document in their
-///    path or message.
+///    `@fmtstring` fields, the carried-forward re-checks, its
+///    `serviceEnvironments` — in Job scope, seeing the Services before it in
+///    its own document (a `Service.*` reference to another document's Service
+///    is a template-validation error, so none can reach here). Errors carry
+///    the document in their path or message. A Service's `serviceEnvironments`
+///    are not subject to rule 3 above: they share their Service's document,
+///    which declares `SERVICE`, and have the effective `runScope: [SERVICE]`.
 /// 3. Re-runs the carried-forward resolved-value checks on each attached
 ///    Environment against a check table holding its own document's Services
 ///    (when its `runScope` excludes `SERVICE`), then converts it with

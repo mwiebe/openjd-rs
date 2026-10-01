@@ -241,8 +241,10 @@ pub fn add_wrapped_service_symbols(
 /// The names of the Services that `service` references through
 /// `Service.<name>.<port>.*` in its host-resolved fields — `variables`,
 /// every action's `command` / `args` / `timeout` / `cancelation`, embedded
-/// files' `data`, and the `<ServiceScript>.let` bindings — excluding its own
-/// name and `Service.File.*`.
+/// files' `data`, the `<ServiceScript>.let` bindings, and every field of its
+/// `serviceEnvironments` (which have the Service's own scope, so a reference
+/// made only there still orders the start) — excluding its own name and
+/// `Service.File.*`.
 ///
 /// RFC 0009 ordering constraint 2: no action of a Service Session begins
 /// until every Service it references is READY, and Services that do not
@@ -320,6 +322,9 @@ pub fn referenced_service_names(service: &super::Service) -> std::collections::B
                 symbols.extend(parsed.accessed_symbols().iter().cloned());
             }
         }
+    }
+    for env in service.service_environments.iter().flatten() {
+        symbols.extend(crate::job::create_job::collect_env_accessed_symbols(env));
     }
 
     let file_prefix = format!("{SERVICE_FILE_PREFIX}.");
@@ -545,6 +550,34 @@ mod tests {
             name: "Self".into(),
             description: None,
             host_requirements: None,
+            service_environments: Some(vec![job::Environment {
+                name: "E".into(),
+                description: None,
+                run_scope: None,
+                script: Some(job::EnvironmentScript {
+                    let_bindings: None,
+                    actions: job::EnvironmentActions {
+                        on_enter: Some(action(
+                            "setup",
+                            &[
+                                "{{ Service.FromEnv.p.port }}",
+                                "{{ Service.Self.p.bindAddress }}",
+                            ],
+                        )),
+                        on_wrap_env_enter: None,
+                        on_wrap_task_run: None,
+                        on_wrap_env_exit: None,
+                        on_wrap_service_enter: None,
+                        on_wrap_service_run: None,
+                        on_wrap_service_readiness_check: None,
+                        on_wrap_service_exit: None,
+                        on_exit: None,
+                    },
+                    embedded_files: None,
+                }),
+                variables: None,
+                resolved_symtab: None,
+            }]),
             ports: vec![job::ServicePort {
                 name: "p".into(),
                 port: None,
@@ -590,12 +623,13 @@ mod tests {
         let names: Vec<String> = referenced_service_names(&svc).into_iter().collect();
         assert_eq!(
             names,
-            vec!["FromArg", "FromCmd", "FromFile", "FromLet", "FromVar"]
+            vec!["FromArg", "FromCmd", "FromEnv", "FromFile", "FromLet", "FromVar"]
         );
 
         // No references at all — including the Service's own name and
         // Service.File.* — is an empty set.
         svc.variables = None;
+        svc.service_environments = None;
         svc.script.let_bindings = None;
         svc.script.actions.on_enter = None;
         svc.script.actions.on_run = action("run", &["{{ Service.Self.p.port }}"]);

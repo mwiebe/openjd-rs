@@ -40,8 +40,8 @@ short-circuiting), so users see all problems at once.
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009) |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
-| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule, and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
-| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally, and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
+| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule (with the effective `[SERVICE]` for a Service's `serviceEnvironments`), and the single-wrap-layer-per-session rule for Task and Service Sessions (RFC 0008, RFC 0009) |
+| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally — including its `serviceEnvironments` — and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
 
 ### Environment template pipeline
 
@@ -256,14 +256,20 @@ Who sees which Services (the `in_scope` iterator at each site):
 | `jobServices[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | `jobServices[..k]` (earlier in the list) plus itself | its own only |
 | `steps[i].stepServices[k]` body | every `jobServices` entry, `stepServices[..k]`, plus itself | its own only |
 | environment template `services[k]` body | `services[..k]` plus itself | its own only |
+| `<service path> -> serviceEnvironments[j]` (variables, actions incl. wrap hooks, embedded files, `<EnvironmentScript>.let`) — `build_service_env_scope_symtab` | the same Services as the declaring Service's body, **unconditionally** (a Service Environment carries no `runScope`; it is entered only in the declaring Service's Session, after its ports are allocated) | the declaring Service's only |
 | environment template `environment` | every `services` entry, under the `runScope` condition | never |
 | any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, action `timeout` / cancelation fields, numeric Service fields | **none** — job-creation stage | never |
 
 Consequences the tests pin: a Service cannot reference a Service later in its own list, a Job
 Service cannot reference any Step Service, a Step cannot reference another Step's Service, a
-wrapping environment entered in Service Sessions (any `runScope` including `SERVICE`, so also
-the default) sees no `Service.*` even in its `onWrapService*` hooks, and `Task.*` is never
-seeded for a Service (§9: "`Task.*` values are never available within a Service").
+wrapping Job or Step environment entered in Service Sessions (any `runScope` including
+`SERVICE`, so also the default) sees no `Service.*` even in its `onWrapService*` hooks, and
+`Task.*` is never seeded for a Service (§9: "`Task.*` values are never available within a
+Service"). A Service Environment is the one exception to the `runScope` rule (§4 item 3.2,
+§7.3.1 scope rule 1): it sees the declaring Service's own scope, `bindAddress` included, in
+every field including its `onWrapService*` hooks (alongside `WrappedService.*`); other
+Services see a Service's Service Environments only through that Service's ports (scope rule
+2), so `Env.File.*` of one is undefined everywhere else.
 
 `Service.File.<name>` is seeded for the declaring Service only, from its script's
 `embeddedFiles`, into the service-execution scope (and so into `<ServiceScript>.let`, like
@@ -292,6 +298,20 @@ seeded for a Service (§9: "`Task.*` values are never available within a Service
   rejected with `complex expressions require the EXPR extension.`; `let` in either position
   is rejected with `'let' requires the EXPR extension.`; comprehension loop variables may not
   shadow any `let` name in scope.
+
+**Within a Service Environment** (`serviceEnvironments[j]`, §9 item 5), the symbol table is
+the session scope a `stepEnvironments` entry gets — `Param.*` including PATH, `RawParam.*`,
+`Session.*`, the owner's job-creation-stage symbols (`Job.Name`; for a Step Service `Step.Name`
+and the step-level `let` values; for an environment template's Service `Job.Name` only), the
+Environment's own `Env.File.*`, and its `<EnvironmentScript>.let` (host library; the
+step-level names are the enclosing scope) — plus the declaring Service's three endpoint values
+and the `port` / `connectAddress` of every in-scope Service. Not in scope: `Task.*`,
+`Service.File.*` (the Service's script's files), and the `<Service>.let` / `<ServiceScript>.let`
+names (§9 item 3 scopes `<Service>.let` to `hostRequirements`, `variables`, and `script`). The
+body is validated through `validate_env_format_strings` exactly like a `stepEnvironments`
+entry, so the wrap hooks get `WrappedAction.*` and their companion group, and the actions'
+`timeout` / cancelation fields validate against the owner's job-creation scope (no `Session.*`,
+no `Service.*`). Comprehension loop variables are checked as for any environment.
 
 **The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the
 four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_scope`):
@@ -547,6 +567,15 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
   Unrecognized `runScope` names (rejected by pass 11) never match a kind, so the rule is
   evaluated over the recognized names only. A non-wrapping environment is not subject to the
   rule whatever its `runScope`.
+
+  A Service's `serviceEnvironments` (RFC 0009 §9 item 5.2) are checked with the effective
+  `runScope: [SERVICE]` whatever they declare (pass 11 rejects a `runScope` written on one),
+  under `<service path> -> serviceEnvironments[j] -> script -> actions`. The `runScope` text
+  in their messages is `effective runScope: [SERVICE], a Service Environment`: a wrapping
+  Service Environment must define `onWrapEnvEnter`, `onWrapEnvExit`, and the four
+  `onWrapService*` hooks, and `onWrapTaskRun must not be defined: this environment's runScope
+  (effective runScope: [SERVICE], a Service Environment) excludes TASK (RFC 0009).` This is the
+  way to wrap one Service in a container without wrapping anything else.
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
   wrap hooks. A session's environment stack is the job's `jobEnvironments` plus exactly
   one step's `stepEnvironments`, so this is enforced per step: for every step, the count
@@ -555,8 +584,21 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
   `jobEnvironments` path (reachable from every session); a step that adds its own wrap env
   on top is reported at that step's `stepEnvironments` path.
 
-The single-layer rule runs only in the job-template path. An environment template defines
-at most one environment, so the rule is trivially satisfied for an isolated env template; if
+- **Single-wrap-layer rule for Service Sessions** (RFC 0009; with `SERVICE`): a Service
+  Session's stack is the scope's environments entered in Service Sessions — `jobEnvironments`
+  whose `runScope` includes `SERVICE`, plus the Step's such `stepEnvironments` for a Step
+  Service — followed by the Service's own `serviceEnvironments`. For every Service (`jobServices`,
+  each Step's `stepServices`, and an environment template's `services`, where the document's own
+  `environment` is the outer layer), when its `serviceEnvironments` contribute at least one wrap
+  layer and the stack holds more than one, one error is reported at `<service path> ->
+  serviceEnvironments`: `only one environment in a Service Session's stack (the scope's
+  environments whose runScope includes SERVICE, then this Service's serviceEnvironments) may
+  define any wrap hook (RFC 0008, RFC 0009).` Two layers in `jobEnvironments` alone are reported
+  there once, not again under every Service; a wrapping `runScope: [TASK]` environment is never
+  in a Service Session and does not count.
+
+The Task-Session single-layer rule runs only in the job-template path. An environment template
+defines at most one environment, so the rule is trivially satisfied for an isolated env template; if
 separately-validated env templates are composed into a session at assembly time
 (worker-side), the cross-layer constraint must be enforced there. Likewise the §1.2.2 item 3
 rule — a wrapping environment from a document that does not declare `SERVICE` may not have a
@@ -594,6 +636,22 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 - **Name uniqueness** (§9.7 item 5): `duplicate service name: '<name>'` on the offending
   element, for a repeat within a list and for a Step Service that shares a name with a Job
   Service. Different Steps may reuse a Step Service name.
+- **`serviceEnvironments`** (§9 item 5, `validate_service_environments`), at `<service path> ->
+  serviceEnvironments`: if provided, `must not be empty.` (as `stepEnvironments`). Each entry
+  `[j]` gets pass 6's `validate_single_environment` (so `must have at least one of 'script' or
+  'variables'.`, the `name` checks, action and embedded-file validation), pass 5's embedded-file
+  `name` / `filename` length limits, and pass 7's `endOfLine` → `requires the FEATURE_BUNDLE_1
+  extension.` gating, on the same paths a `stepEnvironments` entry reports them. Then (item 5.1)
+  `serviceEnvironments[j] -> name`: `duplicate environment name: '<name>'` — the Environment
+  collision message — for a repeat within the list, for the name of any `jobEnvironments`
+  entry, and, for a Step Service, for the name of the declaring Step's `stepEnvironments`; in an
+  environment template, for the name of the document's own `environment` (a Job Environment of
+  every Job it is attached to). Different Services may reuse a Service Environment name, a Job
+  Service's may reuse a Step Environment's name, and a Step Service's may reuse another Step's
+  Step Environment's name. And (item 5.2, §9.7 item 3) `serviceEnvironments[j] -> runScope`:
+  `must not be provided on a Service Environment: its scope is fixed to the declaring Service's
+  Session (RFC 0009).` — the list is not examined. The hooks-follow-`runScope` rule for these
+  Environments (pass 10) and their format strings (pass 8, "Service scopes") are elsewhere.
 - **`<ServiceName>` and port names** (§9.1, §9.2 item 1, §9.7 item 5): on the `name` field,
   `'<name>' is not a valid identifier.`, `exceeds <max_identifier_len> characters.` (64, or
   512 with FEATURE_BUNDLE_1), and `must not be 'File'; it is reserved for Service.File.*

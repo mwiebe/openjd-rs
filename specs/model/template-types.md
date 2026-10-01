@@ -205,6 +205,7 @@ pub struct Service {
     pub description: Option<Description>,
     pub let_bindings: Option<Vec<String>>,               // "let" field in YAML (EXPR)
     pub host_requirements: Option<HostRequirements>,     // same type as StepTemplate's
+    pub service_environments: Option<Vec<Environment>>,  // §9 item 5: entered only in this Service's Session
     pub ports: Vec<ServicePort>,                         // 1–10, unique names
     pub readiness_check: Option<ServiceReadinessCheck>,  // None = { type: TCP_CONNECT } on all ports
     pub restart_policy: Option<ServiceRestartPolicy>,    // None = { maxAttempts: 0, completedTasks: RERUN }
@@ -222,6 +223,23 @@ impl Service {
 `name` (and `ServicePort::name`) is a plain `String` rather than `Identifier` so that the
 identifier, length, and `File` constraints are reported with a field path by the validation
 pipeline instead of as a serde error.
+
+### serviceEnvironments (§9 item 5)
+
+`service_environments` is the analogue of a Step's `stepEnvironments`: an ordered list of
+ordinary `Environment`s entered only in this Service's Session — after the Environments of the
+Service's scope whose `runScope` includes `SERVICE` and before `onEnter`, exited in reverse
+after `onExit`. The entries reuse the `<Environment>` type unchanged; what differs is enforced
+by validation and job creation rather than the type: `runScope` must not be provided (the
+effective scope is `[SERVICE]`, which is what pass 10's hooks-follow-`runScope` rule uses, so a
+wrapping Service Environment defines `onWrapEnvEnter`, `onWrapEnvExit`, and the four
+`onWrapService*` hooks and wraps that one Service alone); names are unique within the list and
+distinct from the Job Environments and, for a Step Service, the declaring Step's Step
+Environments; and — unlike a Job or Step Environment entered in Service Sessions — a Service
+Environment's format strings have the declaring Service's own `Service.*` scope, `bindAddress`
+included (see [validation.md](validation.md), "Service scopes"). Job creation converts each
+entry like a Job Environment, with its own `resolved_symtab` (see
+[job-creation.md](job-creation.md), "Services").
 
 ### ServicePort (§9.2)
 

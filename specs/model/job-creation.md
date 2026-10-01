@@ -270,10 +270,28 @@ each seeing every Job Service and the Step Services before it. Per Service
    8 constraints on `variables` (§4.4.2 length), every action's
    `command` / `args`, and embedded-file `data` — the Service counterpart
    of `check_carried_forward_environment`.
-5. **Conversion** — `variables` and `script` are carried as
+5. **`serviceEnvironments` re-checks** (§9 item 5) — for each entry,
+   `build_service_env_check_symtab` builds the Service Environment's check
+   table: the Service's *owner's* job-creation table (`Param.*`,
+   `RawParam.*`, `Job.Name`; for a Step Service `Step.Name` and the
+   step-level `let` values — not the `<Service>.let` values, which §9 item
+   3 scopes to `hostRequirements`, `variables`, and `script`) plus the
+   `Unresolved` placeholders for `Session.*`, PATH `Param.*`, the declaring
+   Service's own `Service.<name>.<port>.*` with `bindAddress`, the `port` /
+   `connectAddress` of every in-scope Service, and the Environment's own
+   `Env.File.*`, with its `<EnvironmentScript>.let` evaluated in. Unlike
+   `build_env_check_symtab` the `Service.*` seeding is unconditional and
+   includes the declaring Service (a Service Environment is entered only in
+   that Service's Session). `check_carried_forward_environment` then re-runs
+   the pass 8 constraints at `<service path> -> serviceEnvironments[j]`.
+6. **Conversion** — `variables` and `script` are carried as
    `FormatString`s; `resolved_symtab` is `filter_symtab_for_service`
    (the symbols those fields and `<ServiceScript>.let` reference, with the
-   `RawParam.*` fallback).
+   `RawParam.*` fallback). Each `serviceEnvironments` entry is converted
+   with `convert_environment_with_symtab` against the Service's
+   job-creation table — the path a Job Environment takes — so each carries
+   its own filtered `resolved_symtab` into
+   `job::Service::service_environments`.
 
 The check symbol tables of the entities *around* a Service also change:
 `build_task_check_symtab` seeds the `port` / `connectAddress` of every Job
@@ -285,6 +303,12 @@ that validated resolves here and at run time.
 
 Environment conversion carries `runScope` (parsed to `Vec<RunScope>`) and
 the four `onWrapService*` hooks into `job::Environment`.
+
+`job::service_symbols::referenced_service_names` walks a Service's
+`service_environments` too (`collect_env_accessed_symbols`, the same walk
+`filter_symtab_for_environment` uses), so a Service that references another
+only from a Service Environment still starts after it (RFC 0009 ordering
+constraint 2).
 
 #### Resolved-value checks on carried-forward fields
 

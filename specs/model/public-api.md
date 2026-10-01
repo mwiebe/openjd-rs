@@ -456,6 +456,9 @@ pub struct template::Service {
     pub description: Option<Description>,
     pub let_bindings: Option<Vec<String>>,
     pub host_requirements: Option<template::HostRequirements>,
+    /// RFC 0009 `serviceEnvironments` (§9 item 5): Environments entered only in
+    /// this Service's Session; `runScope` must not be provided on them.
+    pub service_environments: Option<Vec<template::Environment>>,
     pub ports: Vec<template::ServicePort>,
     pub readiness_check: Option<template::ServiceReadinessCheck>,
     pub restart_policy: Option<template::ServiceRestartPolicy>,
@@ -969,6 +972,10 @@ pub struct job::Service {
     pub name: String,
     pub description: Option<String>,
     pub host_requirements: Option<HostRequirements>,
+    /// RFC 0009 `serviceEnvironments`, in order, each with its own
+    /// `resolved_symtab`; `run_scope` is always `None` (effective `[SERVICE]`).
+    /// Omitted from JSON when `None`.
+    pub service_environments: Option<Vec<Environment>>,
     pub ports: Vec<ServicePort>,
     pub readiness_check: ServiceReadinessCheck,
     pub restart_policy: ServiceRestartPolicy,
@@ -1516,8 +1523,9 @@ pub fn add_wrapped_service_symbols(
 
 /// The names of the Services `service` references through
 /// `Service.<name>.<port>.*` in its `variables`, every action's
-/// command/args/timeout/cancelation, embedded-file `data`, and
-/// `<ServiceScript>.let` — excluding its own name and `Service.File.*`.
+/// command/args/timeout/cancelation, embedded-file `data`,
+/// `<ServiceScript>.let`, and every field of its `service_environments` —
+/// excluding its own name and `Service.File.*`.
 /// The start-ordering edges of RFC 0009 constraint 2: a scheduler starts a
 /// Service once every name here is READY, and Services with disjoint sets
 /// concurrently. Pass 8 guarantees the graph is acyclic.

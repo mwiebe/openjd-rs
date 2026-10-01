@@ -61,6 +61,12 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 | S37 | A Job Template never references an external Service; `Service.*` in an Environment Template resolves within the same document (§1.2.2) | Implemented | per-document validation; test `job_template_cannot_reference_an_external_service` |
 | S38 | Queue operators SHOULD give external Services unlikely-to-collide names | N/A locally | template author advice |
 | S39 | Authors SHOULD omit `port` | N/A locally | template author advice |
+| S40 | `<Service>.serviceEnvironments`: an ordered list of `<Environment>`s; names unique within the list and distinct from the Job Environments and, for a Step Service, the declaring Step's Step Environments (§9 item 5.1, §9.7 item 5); each entry an ordinary `<Environment>` structurally | Implemented | `model/template/service.rs` (`service_environments`); `validate_v2023_09/service.rs` `validate_service_environments` (also: if provided, non-empty — mirrors `stepEnvironments`, not stated by the RFC); `tests/integration/test_service_environments_list.rs` |
+| S41 | `runScope` MUST NOT be provided on a Service Environment; its scope is fixed to the declaring Service's Session (§9 item 5.2, §9.7 item 3) | Implemented | `service.rs` (`... -> serviceEnvironments[j] -> runScope`) |
+| S42 | A Service Environment has an effective `runScope` of `[SERVICE]` for the hooks-follow-`runScope` rule: a wrapping one defines `onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks, not `onWrapTaskRun` (§4.3 rule 6, §9 item 5.2, §9.7 item 6) | Implemented | `wrap_actions.rs` `EffectiveRunScope::service_environment`; the single-wrap-layer rule is also applied per Service Session stack (scope environments with `SERVICE` in `runScope`, then `serviceEnvironments`) |
+| S43 | A Service Environment's format strings have the declaring Service's own scope — its ports including `bindAddress`, earlier Services' `port` / `connectAddress` — unlike a Job or Step Environment with `SERVICE` in `runScope` (§9 item 5, §7.3.1 scope rule 1, §4 item 3.2 exception, §9.7 items 1–2) | Implemented | `format_strings.rs` `build_service_env_scope_symtab`; job creation `instantiate.rs` `build_service_env_check_symtab`. Choice: `<Service>.let` names are *not* in scope there (§9 item 3 lists `hostRequirements`, `variables`, `script`); see open question Q10 |
+| S44 | Other Services see a Service's `serviceEnvironments` only through that Service's ports (§7.3.1 scope rule 2) | Implemented | structural: `Env.File.*` and the Environment's `let` are seeded for that Environment only; test `other_services_see_a_service_environment_only_through_its_service` |
+| S45 | External Services' `serviceEnvironments` are carried through submission unchanged; the §1.2.2 item 3 wrapper check does not apply to them (they share their Service's document, which declares `SERVICE`) | Implemented | `external.rs` (through `instantiate_service`); test `external_services_carry_their_service_environments_through_submission` |
 
 ## Expression Language (RFC "Modifications to the Expression Language")
 
@@ -106,6 +112,7 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 | L26 | Authors SHOULD prefer COMMAND / STDOUT when TCP connect is insufficient | N/A locally | template author advice |
 | L27 | Placement: single-host runner on loopback with `bindAddress` = `connectAddress` = loopback; `connectAddress`:`port` from any host MUST reach the process | Implemented | `cli/service_ports.rs` (`127.0.0.1`) |
 | L28 | Schedulers SHOULD provide a hostname for `connectAddress` when one resolves from every host | N/A locally | loopback IP is what the RFC's Placement paragraph prescribes for a single-host runner |
+| L29 | A Service Session enters the Service's `serviceEnvironments`, in order, after the scope's Environments and before `onEnter`, and exits them in reverse after `onExit`; later Environments take precedence for environment variables, the Service's `variables` over all (§9 item 5, "Services run inside Environments", *How Jobs Are Run* § Services) | Not implemented (runtime) | the model side is complete: `job::Service::service_environments` is the list a Service Session must enter (each entry a `job::Environment` with its own `resolved_symtab`, resolving `Service.*` against the declaring Service's own endpoints, `bindAddress` included); `sessions/service_session.rs` `enter()` step 1 and `cli/services.rs` do not yet enter it, and `referenced_service_names` (L2) already includes references made from these Environments |
 
 ## Service actions, readiness, concurrency (RFC `<ServiceActions>`, `<ServiceReadinessCheck>`, wiki §9.3, §9.6, §9.6.1)
 
@@ -183,6 +190,9 @@ Larger gaps (not implemented; listed for the record):
   is what relocation and resumption would use.
 - **A13 (MAY) collapsing the output of successful `onReadinessCheck` invocations.**
   Lines stream as they arrive; collapsing would need per-invocation buffering.
+- **L29 (`serviceEnvironments` at run time).** openjd-model validates, instantiates, and
+  carries `job::Service::service_environments`; the sessions runtime and the CLI do not enter
+  them yet. `CallerLimits::max_env_count` also does not count Service Environments.
 
 ## Choices the specification leaves open
 
@@ -246,6 +256,20 @@ these. The implementation's choice and where it is recorded:
 - **Q8 — Wrapper embedded files and `WrappedAction.*` (C9).** Rule 1 plus
   RFC 0008's `Env.File.*` in hooks leaves open whether a wrapper's embedded file may
   reference `WrappedAction.*` (which differs per hook) in a Service Session.
+- **Q10 — `<Service>.let` names in `serviceEnvironments` (S43).** §9 item 3 says the
+  `<Service>.let` names "are available in *hostRequirements*, *variables*, and *script*"; the
+  `serviceEnvironments` commit did not add them to that list, while a `<StepTemplate>.let` is
+  explicitly available in `stepEnvironments` (§3.6.2). openjd-rs keeps `<Service>.let` out of
+  a Service Environment's scope (a reference is the ordinary undefined-variable error) and
+  lets a Step Service's Service Environment see the step-level `let`, as `stepEnvironments`
+  do. Widening later is backward compatible; the RFC should say which is intended.
+- **Q11 — Cross-document Service Environment names.** §9 item 5.1 forbids a Service
+  Environment's name from equaling a Job Environment's. For an Environment Template on its
+  own, openjd-rs checks the document's own `environment` (which becomes a Job Environment of
+  every Job it is attached to); a collision between an external Service's Service Environment
+  and another document's Environment, or the Job Template's `jobEnvironments`, is not
+  checked at submission (§1.2.2 lists two submission-time rules, neither about Environment
+  names). If the RFC intends the rule across documents, it belongs in §1.2.2.
 - **Q9 — `repr_sh` / `repr_py` of `WrappedService.Ports`.** `WrappedService.Ports` is
   `list[int]`; `repr_sh(list[int])` has no signature in the Expression Language, so
   the RFC's docker example must convert with `string(p)` first (as its `flatten` idiom
