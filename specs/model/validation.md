@@ -38,7 +38,7 @@ short-circuiting), so users see all problems at once.
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
 | 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
+| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009) |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule, and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
 | 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally, and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
@@ -71,8 +71,11 @@ checks have nothing to walk):
   variables, action commands/args, and embedded-file data. Embedded-file
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
-  A services-only document has no environment body, so pass 8 has nothing to walk; format
-  strings inside `services` are not yet validated (see pass 11).
+  With SERVICE (RFC 0009 §1.2.2), the document's `services` are walked first — each in Job
+  scope, seeing the Services before it in the list — and the environment, when its `runScope`
+  excludes `SERVICE`, sees the `port` / `connectAddress` of every Service in the document (see
+  "Service scopes" under pass 8). A services-only document has no environment body, so only
+  the Services are walked.
 - **Pass 10** — WRAP_ACTIONS gating (see below), on the environment when there is one.
 - **Pass 11** — SERVICE: the EXPR prerequisite; the `services` list, gated
   (`services requires the SERVICE extension.`) and otherwise validated by the same
@@ -224,6 +227,87 @@ session/task scope.
    `Task.File.*`. With EXPR: adds `Job.Name`, `Step.Name`, `Env.File.*` from
    step and job environments.
 
+With `SERVICE` (RFC 0009), the session and task scopes additionally carry the
+`Service.<name>.<port>.*` endpoints in scope where the field is defined, and a
+`<Service>` has two scopes of its own; see "Service scopes" below.
+
+### Service scopes (RFC 0009; Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.7 items 1–2, §3.6.2, §4 item 3.2, §4.3.1)
+
+Everything a Service endpoint resolves to is `@fmtstring[host]` — unknown until the scheduler
+places the Service — so pass 8 seeds the `Service.*` keys as `Unresolved` placeholders
+(`port` as `unresolved[int]`, `bindAddress` and `connectAddress` as `unresolved[string]`,
+`Service.File.<name>` as `unresolved[path]`) through the `pub(crate)` seeders in
+`job::service_symbols`, which spell the keys exactly as the runtime-facing
+`build_service_symbol_table` does. Scope — *which* Services and which values a given field
+may see — is decided per call site, and a reference outside its scope surfaces as the crate's
+ordinary undefined-variable error (`Failed to parse interpolation expression at [s, e].
+Undefined variable: 'Service.X.p.port'.`), exactly as an out-of-scope `WrappedStep.Name` does
+under RFC 0008. The same mechanism rejects a reference to a Service or port name that is not
+declared (§9.7 item 1). Nothing about `Service.*` is examined unless the template declares
+`SERVICE`; without it pass 11 rejects the lists and pass 8 never walks them.
+
+Who sees which Services (the `in_scope` iterator at each site):
+
+| Field | Services whose `port` / `connectAddress` are in scope | `bindAddress` |
+|---|---|---|
+| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | every `jobServices` entry and the Step's own `stepServices` | never |
+| `jobEnvironments[i]` (variables, actions, embedded files, `<EnvironmentScript>.let`) — `build_session_scope_symtab` | every `jobServices` entry, **only when the environment's `runScope` excludes `SERVICE`** (`!env.runs_in(RunScope::Service)`; the default `runScope` includes it) | never |
+| `steps[i].stepEnvironments[j]` | every `jobServices` entry plus that Step's `stepServices`, under the same `runScope` condition | never |
+| `jobServices[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | `jobServices[..k]` (earlier in the list) plus itself | its own only |
+| `steps[i].stepServices[k]` body | every `jobServices` entry, `stepServices[..k]`, plus itself | its own only |
+| environment template `services[k]` body | `services[..k]` plus itself | its own only |
+| environment template `environment` | every `services` entry, under the `runScope` condition | never |
+| any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, action `timeout` / cancelation fields, numeric Service fields | **none** — job-creation stage | never |
+
+Consequences the tests pin: a Service cannot reference a Service later in its own list, a Job
+Service cannot reference any Step Service, a Step cannot reference another Step's Service, a
+wrapping environment entered in Service Sessions (any `runScope` including `SERVICE`, so also
+the default) sees no `Service.*` even in its `onWrapService*` hooks, and `Task.*` is never
+seeded for a Service (§9: "`Task.*` values are never available within a Service").
+
+`Service.File.<name>` is seeded for the declaring Service only, from its script's
+`embeddedFiles`, into the service-execution scope (and so into `<ServiceScript>.let`, like
+`Task.File.*` for `<StepScript>.let`).
+
+**Within a `<Service>`** (`validate_service_format_strings`), two scopes follow the
+`@fmtstring` stage annotations:
+
+- *Job-creation scope* — the owner's template-scope table (`Param.*` without PATH,
+  `RawParam.*`, `Job.Name`; for a Step Service also `Step.Name` and the step-level `let`
+  values; for an environment template's Service, `Job.Name` only) plus the `<Service>.let`
+  bindings, validated with `validate_let_bindings` against the template library (no host
+  functions) and the step-level names as the enclosing (non-shadowable) scope. Used for
+  `<Service>.let` itself, `hostRequirements` (through the shared
+  `validate_host_requirements_fs`, so the Step and Service checks are one code path with the
+  owner's path prefixed), the numeric `@fmtstring` fields, and every action's `timeout` /
+  cancelation `mode` / `notifyPeriodInSeconds` (`validate_action_timing_fs`). Never
+  `Session.*`, `Service.*`, PATH `Param.*`, or `Task.*` (§9 item 3, §9.7 item 2).
+- *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
+  job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
+  `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
+  in-scope Service, and the `<ServiceScript>.let` bindings (host library; the step- and
+  service-level names are the enclosing scope). Used for `variables` (with the §4.4.2
+  `max_env_var_value_len` constraint, as for an Environment), every action's `command` /
+  `args`, and embedded-file `data`. Without EXPR, complex expressions in any of these are
+  rejected with `complex expressions require the EXPR extension.`; `let` in either position
+  is rejected with `'let' requires the EXPR extension.`; comprehension loop variables may not
+  shadow any `let` name in scope.
+
+**The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the
+four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_scope`):
+`WrappedService.Name` (`string`), `WrappedService.PortNames` (`list[string]`),
+`WrappedService.Ports` (`list[int]`), `WrappedService.BindAddresses` (`list[string]`). It is
+not available in `onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit`, and `WrappedEnv.Name` /
+`WrappedStep.Name` are not available in the Service hooks.
+
+**Numeric `@fmtstring` fields** (§9.2 note; `SERVICE_PORT_CONSTRAINT`,
+`SERVICE_SECONDS_CONSTRAINT`, `SERVICE_MAX_ATTEMPTS_CONSTRAINT`) join the resolved-value
+constraint table below with target type `int?`: `port` 1–65535 (`must be between 1 and
+65535.`), `timeoutSeconds` / `intervalSeconds` > 0 (`must be > 0.`), `maxAttempts` ≥ 0 (`must
+be >= 0.`), non-integers `must be an integer.`, a whole-field `null` accepted as "not
+provided". The messages match pass 11's checks on the literal forms and job creation's on the
+resolved values.
+
 ### Let Binding Validation
 
 Let bindings are validated with these rules:
@@ -298,6 +382,9 @@ deferring it to job submission or the worker. Two stages of checking:
 | action `timeout` (FB1 `<posintstring>`, Template Schemas §5) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = unset |
 | `notifyPeriodInSeconds` (Template Schemas §5.3.2, FB1) | `int?` | soft cap: 100 chars | coerced integer > 0, ≤ 600; `null` = unset |
 | cancelation `mode` (FB1 deferred, Template Schemas §5.3) | `string?` | ≤ 21 chars (longest valid value) | `TERMINATE` / `NOTIFY_THEN_TERMINATE`; `null` = cancelation unset |
+| Service `port` (SERVICE, Template Schemas §9.2) | `int?` | soft cap: 100 chars | coerced integer in 1–65535; `null` = runtime allocates |
+| Service `timeoutSeconds` / `intervalSeconds` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default |
+| Service `maxAttempts` (SERVICE, §9.4) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = 0 |
 | chunks `defaultTaskCount` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int` | soft cap: 100 chars | coerced integer ≥ 1 |
 | chunks `targetRuntimeSeconds` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = unset |
 | amount `min` / `max` (FB1 float strings, Template Schemas §3.3.1) | `float?` | soft cap: 100 chars | finite float, ≥ 0 / > 0; `null` = unset |
@@ -501,8 +588,7 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
   offending element's path (`runScope[i]`), `unknown run scope name '<name>'; expected one of
   TASK, SERVICE.` (names are case-sensitive) or `duplicate run scope name '<name>'.` The
   companion rule that an Environment whose `runScope` includes `SERVICE` must not reference
-  `Service.*` (§4 item 3.2, §9.7 item 2) belongs to the format-string pass and is not yet
-  implemented.
+  `Service.*` (§4 item 3.2, §9.7 item 2) is enforced by pass 8 (see "Service scopes").
 - **Name uniqueness** (§9.7 item 5): `duplicate service name: '<name>'` on the offending
   element, for a repeat within a list and for a Step Service that shares a name with a Job
   Service. Different Steps may reuse a Step Service name.
@@ -513,7 +599,8 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 - **Ports** (§9 item 5): `ports` `must not be empty.` / `must not contain more than 10
   elements.`; `duplicate port name '<name>'.` on the element.
 - **Numeric `@fmtstring` fields**, checked on the field path when the value carries no
-  expression (a format string is deferred to job creation, like `<Action>.timeout`):
+  expression (a format string is type-checked and, when static, range-checked by pass 8, and
+  resolved and range-checked at job creation, like `<Action>.timeout`):
   `port` `must be between 1 and 65535.`; `readinessCheck.timeoutSeconds` and
   `readinessCheck.intervalSeconds` `must be > 0.`; `restartPolicy.maxAttempts` `must be >=
   0.`; any of them `must be an integer.` when the text does not parse.
@@ -533,10 +620,10 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 The discriminator of `readinessCheck` and the `completedTasks` enum are enforced by serde
 (`unknown variant`), as is the presence of `ports`, `script`, and `onRun`.
 
-Not in this pass: `Service.*` scope rules (§9.7 items 1–2; pass 8, not yet implemented), the
+Not in this pass: `Service.*` scope rules (§9.7 items 1–2; pass 8, "Service scopes"), the
 wrap hooks an Environment's `runScope` calls for (item 6; pass 10), `let` bindings and format
-strings inside a Service (pass 8 does not yet walk Services, in either template), and job
-creation of Services.
+strings inside a Service (pass 8), and job creation of Services (see
+[job-creation.md](job-creation.md)).
 
 ## Error Infrastructure
 

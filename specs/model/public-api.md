@@ -37,6 +37,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
+│   ├── service_symbols   — Service.* / WrappedService.* symbol-table builders (RFC 0009)
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -174,11 +175,13 @@ pub fn convert_environment_with_symtab(
 ```
 
 [`create_job`] is the high-level entry point: it resolves the job name
-(template scope), instantiates every step, runs the resolved-value
+(template scope), instantiates every Service (RFC 0009: `<Service>.let`,
+the numeric `@fmtstring` fields, `hostRequirements` — see "Services" in
+[job-creation.md](job-creation.md)) and every step, runs the resolved-value
 checks on the carried-forward session/task-scope fields
-(action `command`/`args`, environment `variables`, embedded-file `data`
-— see the Resolved-Value Checks on Carried-Forward Fields section of
-[job-creation.md](job-creation.md)), runs the final task-count
+(action `command`/`args`, environment and Service `variables`,
+embedded-file `data` — see the Resolved-Value Checks on Carried-Forward
+Fields section of [job-creation.md](job-creation.md)), runs the final task-count
 limit from [`CallerLimits`], and returns the complete [`job::Job`]. The
 `ctx` it takes is a full [`ValidationContext`] — i.e. revision +
 extensions + caller limits — and callers commonly get one from
@@ -700,9 +703,10 @@ format preserves original float literals, jobs created from `1.0` vs
 `HashMap`) compare order-insensitively and hash as key-sorted entries.
 `f64` fields hash via `to_bits()` after normalizing `-0.0` to `0.0`,
 consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
-`f64` — `Job`, `Step`, `StepParameterSpace`, `TaskParameter`,
+`f64` — `Job`, `Step`, `Service`, `StepParameterSpace`, `TaskParameter`,
 `HostRequirements`, `AmountRequirement` — implement `PartialEq` but
-not `Eq`; the rest also implement `Eq`.
+not `Eq`; the rest also implement `Eq`. `Job` implements `Serialize`;
+every other type here implements `Serialize` and `Deserialize`.
 
 ```rust
 pub struct job::Job {
@@ -712,6 +716,8 @@ pub struct job::Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    /// RFC 0009 `jobServices`, in start order. Omitted from JSON when `None`.
+    pub job_services: Option<Vec<Service>>,
 }
 
 pub struct job::JobParameter {
@@ -728,6 +734,8 @@ pub struct job::Step {
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
+    /// RFC 0009 `stepServices`, in start order. Omitted from JSON when `None`.
+    pub step_services: Option<Vec<Service>>,
     /// Complete symbol table at step scope in JSON transport format.
     /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level
     /// let bindings. The session deserializes this with `PathFormat::host()`
@@ -755,11 +763,22 @@ pub struct job::Action {
 pub struct job::Environment {
     pub name: String,
     pub description: Option<String>,
+    /// RFC 0009 `runScope`: the kinds of Session this Environment is entered
+    /// in; `None` = every kind. Omitted from JSON when `None`.
+    pub run_scope: Option<Vec<RunScope>>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
     /// Filtered symbol table with only the symbols this environment references.
     pub resolved_symtab: Option<SerializedSymbolTable>,
 }
+
+impl job::Environment {
+    /// True iff this Environment is entered in Sessions of kind `kind`.
+    pub fn runs_in(&self, kind: RunScope) -> bool;
+}
+
+// Re-exported from `template` for the job-side types:
+pub use template::{CompletedTasksPolicy, RunScope};
 
 pub struct job::EnvironmentScript {
     pub let_bindings: Option<Vec<String>>,
@@ -778,7 +797,26 @@ pub struct job::EnvironmentActions {
     /// RFC 0008 — wraps inner environments' `onExit` actions. Requires
     /// the `WRAP_ACTIONS` extension at template-validation time.
     pub on_wrap_env_exit: Option<Action>,
+    /// RFC 0009 — in a Service Session, wrap the Service's `onEnter`,
+    /// `onRun`, `onReadinessCheck`, and `onExit`. Require `WRAP_ACTIONS` and
+    /// `SERVICE` at template-validation time. Omitted from JSON when `None`.
+    pub on_wrap_service_enter: Option<Action>,
+    pub on_wrap_service_run: Option<Action>,
+    pub on_wrap_service_readiness_check: Option<Action>,
+    pub on_wrap_service_exit: Option<Action>,
     pub on_exit: Option<Action>,
+}
+
+impl job::EnvironmentActions {
+    // Same shape as template::EnvironmentActions (9 slots, 7 wrap hooks):
+    pub fn named_slots(&self) -> [(&'static str, &Option<Action>); 9];
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &Action>;
+    pub fn wrap_hooks(&self) -> [(&'static str, &Option<Action>, template::WrapHookScope); 7];
+    pub fn has_any_action(&self) -> bool;
+    pub fn has_any_wrap_hook(&self) -> bool;
+    pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<Action>); 4];
+    pub fn has_any_service_wrap_hook(&self) -> bool;
 }
 
 pub struct job::EmbeddedFile {
@@ -849,6 +887,76 @@ pub struct job::AttributeRequirement {
 
 pub struct job::StepDependency {
     pub depends_on: String,
+}
+```
+
+### Services (Resolved; `SERVICE` extension, RFC 0009)
+
+The instantiated form of a `jobServices` / `stepServices` entry (see
+`specs/model/job-types.md` for the resolution rules):
+
+```rust
+pub struct job::Service {
+    pub name: String,
+    pub description: Option<String>,
+    pub host_requirements: Option<HostRequirements>,
+    pub ports: Vec<ServicePort>,
+    pub readiness_check: ServiceReadinessCheck,
+    pub restart_policy: ServiceRestartPolicy,
+    pub variables: Option<HashMap<String, FormatString>>,
+    pub script: ServiceScript,
+    /// Filtered symbol table with only the symbols this Service's
+    /// host-resolved format strings reference (incl. `<Service>.let` values).
+    pub resolved_symtab: Option<SerializedSymbolTable>,
+}
+
+impl job::Service {
+    pub fn port_names(&self) -> impl Iterator<Item = &str>;
+}
+
+pub struct job::ServicePort {
+    pub name: String,
+    /// `None` when the runtime allocates the port.
+    pub port: Option<u16>,
+}
+
+#[serde(tag = "type")]
+pub enum job::ServiceReadinessCheck {
+    #[serde(rename = "TCP_CONNECT")]
+    TcpConnect { ports: Vec<String>, timeout_seconds: u64 },
+    #[serde(rename = "COMMAND")]
+    Command { interval_seconds: u64, timeout_seconds: u64 },
+    #[serde(rename = "STDOUT")]
+    Stdout { timeout_seconds: u64 },
+}
+
+impl job::ServiceReadinessCheck {
+    pub fn type_name(&self) -> &'static str;
+    pub fn timeout_seconds(&self) -> u64;
+}
+
+pub struct job::ServiceRestartPolicy {
+    pub max_attempts: u64,
+    pub completed_tasks: CompletedTasksPolicy,
+}
+
+pub struct job::ServiceScript {
+    pub let_bindings: Option<Vec<String>>,   // "let" wire key, alias "letBindings"
+    pub actions: ServiceActions,
+    pub embedded_files: Option<Vec<EmbeddedFile>>,
+}
+
+pub struct job::ServiceActions {
+    pub on_enter: Option<Action>,
+    pub on_run: Action,
+    pub on_readiness_check: Option<Action>,
+    pub on_exit: Option<Action>,
+}
+
+impl job::ServiceActions {
+    pub fn named_slots(&self) -> [(&'static str, Option<&Action>); 4];
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &Action>;
 }
 ```
 
@@ -1276,6 +1384,73 @@ impl MergedParameterDefinition {
     pub fn allowed_values_str(&self) -> Option<&[String]>;
 }
 ```
+
+### `job::service_symbols` (RFC 0009)
+
+The runtime-facing side of the `Service.*` scope: how a Session runtime
+(`openjd-sessions`, a scheduler) seeds the concrete endpoint values a
+Service Session or Task Session needs, with the same key spellings and
+types pass 8 and job creation type-checked against. The counterpart of
+[`build_symbol_table`] for `Env.File.*`/`Param.*`.
+
+```rust
+pub const SERVICE_SCOPE: &str = "Service";
+pub const SERVICE_FILE_PREFIX: &str = "Service.File";
+pub const WRAPPED_SERVICE_SCOPE: &str = "WrappedService";
+
+pub fn service_port_key(service: &str, port: &str) -> String;            // Service.<s>.<p>.port
+pub fn service_bind_address_key(service: &str, port: &str) -> String;    // Service.<s>.<p>.bindAddress
+pub fn service_connect_address_key(service: &str, port: &str) -> String; // Service.<s>.<p>.connectAddress
+pub fn service_file_key(file_name: &str) -> String;                      // Service.File.<name>
+
+/// The allocated endpoint of one port (Template Schemas §7.3.1; RFC 0009
+/// "Address forms": addresses are bare hostnames / IPv4 / unbracketed IPv6).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ServiceEndpoint {
+    pub port: u16,
+    pub bind_address: String,
+    pub connect_address: String,
+}
+
+/// One Service's endpoints, in port declaration order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ServiceEndpoints {
+    pub name: String,
+    pub ports: Vec<(String, ServiceEndpoint)>,
+}
+
+impl ServiceEndpoints {
+    pub fn new(name: impl Into<String>, ports: Vec<(String, ServiceEndpoint)>) -> Self;
+}
+
+/// Seed `.port` (int) and `.connectAddress` (string), plus `.bindAddress`
+/// when `include_bind_address` (the declaring Service's own Session only).
+pub fn add_service_symbols(
+    symtab: &mut SymbolTable,
+    endpoints: &ServiceEndpoints,
+    include_bind_address: bool,
+) -> Result<(), ModelError>;
+
+/// The `Service.*` table for one Session: every `in_scope` Service without
+/// `bindAddress`, and `declaring` (a Service Session's own Service) with it.
+pub fn build_service_symbol_table(
+    in_scope: &[ServiceEndpoints],
+    declaring: Option<&ServiceEndpoints>,
+) -> Result<SymbolTable, ModelError>;
+
+/// `WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses`
+/// (Template Schemas §4.3.1) for the four `onWrapService*` hooks.
+pub fn add_wrapped_service_symbols(
+    symtab: &mut SymbolTable,
+    endpoints: &ServiceEndpoints,
+) -> Result<(), ModelError>;
+```
+
+Scope — which Services a Session may see — is the caller's decision (RFC
+0009 "The `Service.*` scope"): a Task Session sees the Job Services and
+its Step's Services; a Service Session sees the Services earlier in the
+start order plus its own. `Service.File.*` is seeded by the runtime's
+embedded-file materialization using `service_file_key`.
 
 ### `convert_environment_with_symtab`
 

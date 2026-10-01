@@ -203,6 +203,8 @@ budgets template validation and the session runtime apply.
      treatment in `instantiate`. String-backed FLOAT range elements are trimmed
      and must resolve to finite `f64` values.
    - Step-level let bindings
+   - With SERVICE (RFC 0009): every Service's `<Service>.let`, numeric
+     `@fmtstring` fields, and `hostRequirements` (see "Services" below)
 3. With EXPR extension: inject `Job.Name` (before step instantiation)
    and `Step.Name` (per step) into the symbol table
 4. Carry forward session/task-scope fields as FormatString (plus action
@@ -213,6 +215,76 @@ budgets template validation and the session runtime apply.
 6. Convert environments from template to job types
 7. Build step dependency list
 8. Attach resolved symbol table to each step
+
+`instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
+extension flags, limits, budgets, and the template's `jobServices` slice,
+which every Step's scope needs) and the template-scope `let` evaluator
+`evaluate_template_let_bindings`, which `<StepTemplate>.let` and
+`<Service>.let` both use. `resolve_host_requirements` takes the owner's
+path (`steps[i]`, `jobServices[k]`, `steps[i] -> stepServices[k]`) so the
+same code — and the same messages — serve a Step's and a Service's
+`hostRequirements`; every path it reports is built from that prefix.
+
+#### Services (RFC 0009, Template Schemas §9)
+
+`jobServices` are instantiated in job scope before the steps (every Step's
+Task Sessions may reference them), each seeing the Services before it in the
+list; `stepServices` are instantiated inside `instantiate_step` in the
+Step's scope (`Step.Name` and the step-level `let` values are available),
+each seeing every Job Service and the Step Services before it. Per Service
+(`instantiate_service`, path `jobServices[k]` or
+`steps[i] -> stepServices[k]`):
+
+1. **`<Service>.let`** — evaluated with `evaluate_template_let_bindings`
+   into a clone of the scope's symbol table (template library, no PATH
+   `Param.*`, no host context). A binding that fails reports
+   `service let binding '<name>': <error>` (an `Expression` error); pass 8
+   already type-checked it with everything unresolved, so a failure comes
+   from the real parameter values.
+2. **`hostRequirements`** — `resolve_host_requirements` against that table,
+   with every check decode and pass 8 could not finish on a non-literal
+   value (name pattern and uniqueness, bounds, attribute values) re-applied
+   on the resolved values, reported at the Service's path.
+3. **Numeric `@fmtstring` fields** (§9.2 note) — `resolve_service_int`
+   resolves `port`, `readinessCheck.timeoutSeconds` / `intervalSeconds`,
+   and `restartPolicy.maxAttempts` with target type `int?`, the same target
+   pass 8 validated them with: a whole-field `null` is "not provided"
+   (`port: None`, or the §9 default — 300 s timeout, 5 s interval, 0
+   attempts); a multi-segment string concatenates and parses with
+   surrounding whitespace tolerated (`must be an integer.` otherwise); the
+   result must lie in the field's range (`must be between 1 and 65535.`,
+   `must be > 0.`, `must be >= 0.`), reported as a `ModelValidation` error
+   at the field path with pass 11's wording. A resolution failure (a
+   whole-field value the `int?` target rejects) is a `FormatStringError`
+   whose message carries the field path. The §9 defaults also fill the
+   `readinessCheck` / `restartPolicy` objects when the template omits
+   them, and a `TCP_CONNECT` check without `ports` is expanded to every
+   declared port, so `job::Service` never needs the template defaults.
+4. **Carried-forward re-checks** — `build_service_check_symtab` extends the
+   Service's table with the `Unresolved` placeholders the Service Session
+   binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
+   files, its own `Service.<name>.<port>.*` including `bindAddress`, and
+   the `port` / `connectAddress` of every in-scope Service), evaluates the
+   `<ServiceScript>.let` bindings into it (`script let binding '<name>':
+   ...` on failure), and `check_carried_forward_service` re-runs the pass
+   8 constraints on `variables` (§4.4.2 length), every action's
+   `command` / `args`, and embedded-file `data` — the Service counterpart
+   of `check_carried_forward_environment`.
+5. **Conversion** — `variables` and `script` are carried as
+   `FormatString`s; `resolved_symtab` is `filter_symtab_for_service`
+   (the symbols those fields and `<ServiceScript>.let` reference, with the
+   `RawParam.*` fallback).
+
+The check symbol tables of the entities *around* a Service also change:
+`build_task_check_symtab` seeds the `port` / `connectAddress` of every Job
+Service and the Step's own Services, and `build_env_check_symtab` seeds the
+environment's in-scope Services (Job Services for a job environment, plus
+the Step's for a step environment) only when the environment's `runScope`
+excludes `SERVICE` — the same scope rules pass 8 applied, so a reference
+that validated resolves here and at run time.
+
+Environment conversion carries `runScope` (parsed to `Vec<RunScope>`) and
+the four `onWrapService*` hooks into `job::Environment`.
 
 #### Resolved-value checks on carried-forward fields
 
@@ -228,6 +300,8 @@ on the result:
 | Field | Constraint |
 |---|---|
 | environment `variables` values | resolved-length bound vs 2048 (§4.4.2, spec-mandated, always on) |
+| Service `variables` values (RFC 0009) | the same §4.4.2 bound |
+| Service action `command`/`args`, embedded-file `data` (RFC 0009) | the same opt-in caps as a Step's / Environment's |
 | action `command`, each `args[*]` entry | bound vs `CallerLimits::max_resolved_arg_len`, if set |
 | embedded file `data` | bound vs `CallerLimits::max_resolved_data_len`, if set |
 

@@ -159,10 +159,11 @@ impl FromStr for RunScope;                 // Err(String) names the unknown valu
 for the same reason `Service::name` is a plain `String`: the spec requires an unrecognized
 `<RunScopeName>` to be rejected, and holding the raw text lets pass 11 report it with the
 element's path (`runScope[i]`) instead of as a serde `unknown variant` error with no path.
-Consumers query the effective scope through `runs_in`, so later milestones (Session kind
-dispatch in the sessions runtime, the `Service.*` scope exclusion in pass 8) never re-derive
-the "absent means every kind" rule. `RunScope` itself derives serde with the schema spelling so
-the job-side types can carry it when job creation of Services lands.
+Consumers query the effective scope through `runs_in`, so pass 8's `Service.*` scope
+exclusion and the sessions runtime's Session-kind dispatch never re-derive
+the "absent means every kind" rule. `RunScope` itself derives serde with the schema spelling,
+and `job::Environment::run_scope` carries it as `Option<Vec<RunScope>>` (re-exported from
+`job`), since validation has already rejected unrecognized names by then.
 
 ### EnvironmentScript (§4.1)
 
@@ -192,8 +193,11 @@ pub struct EmbeddedFile {
 A Service is a long-lived process with named TCP ports that a scheduler starts before any
 Task in its scope is scheduled and keeps running for the lifetime of its scope: the Job for a
 `jobServices` entry, the declaring Step for a `stepServices` entry. The types below are the
-unresolved template shapes. The `Service.*` format-string scope, the `WrappedService.*`
-wrap-hook variables, and job creation of Services are not modeled yet.
+unresolved template shapes; the `Service.*` format-string scope and the `WrappedService.*`
+wrap-hook variables are validated by pass 8 (see [validation.md](validation.md), "Service
+scopes"), the runtime-facing symbol builders live in `job::service_symbols`, and job creation
+produces `job::Service` (see [job-types.md](job-types.md) and
+[job-creation.md](job-creation.md)).
 
 ```rust
 pub struct Service {
@@ -237,8 +241,10 @@ is an `Option<FormatString>`, a YAML integer is accepted and held as its decimal
 format string is kept unevaluated. Unlike `<Action>.timeout`, a format string here is admitted
 by `SERVICE` itself (the spec marks the fields `@fmtstring`), not by `FEATURE_BUNDLE_1`.
 Validation range-checks a value that carries no expression (see [validation.md](validation.md),
-pass 11); a value with an expression is resolved at job creation in the `<Service>.let` scope,
-which is a later milestone.
+pass 11) and statically checks one that does (pass 8, target type `int?`); job creation
+resolves every value in the `<Service>.let` scope with the same target — a `null` result means
+the field was not provided and the §9 default applies — and range-checks the result (see
+[job-creation.md](job-creation.md), "Services").
 
 ### ServiceReadinessCheck (§9.3)
 
@@ -370,15 +376,15 @@ impl EnvironmentActions {
 pub enum WrapHookScope {
     EnvName,   // `WrappedEnv.Name`  — onWrapEnvEnter, onWrapEnvExit
     StepName,  // `WrappedStep.Name` — onWrapTaskRun
-    Service,   // `WrappedService.*` — the four onWrapService* hooks (not yet modeled in pass 8)
+    Service,   // `WrappedService.*` — the four onWrapService* hooks
 }
 ```
 
 The slots are enumerated once per struct in the `impl_environment_actions_helpers!` invocation
 (`slots: [...]`, `wrap_hooks: [...]`); the array lengths above are derived from those lists.
-The job-side `job::EnvironmentActions` is invoked with the five RFC 0008-era slots only — the
-RFC 0009 hooks and `runScope` are template-side until job creation of Services lands, and
-`convert_environment` does not carry them across.
+The job-side `job::EnvironmentActions` is invoked with the same nine slots and seven hooks, and
+`convert_environment` carries the RFC 0009 hooks and `runScope` across (typed as
+`Vec<RunScope>` on the job side — see [job-types.md](job-types.md)).
 
 The wrap-hook default timeouts follow the wrapped action: `onWrapEnvExit` takes `onExit`'s 300
 seconds (sessions `env_script.rs`), and by the same rule `onWrapServiceExit` takes

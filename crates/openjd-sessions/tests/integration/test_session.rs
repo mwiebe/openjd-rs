@@ -42,6 +42,7 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
     Environment {
         name: name.into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -49,6 +50,10 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -62,6 +67,7 @@ fn env_with_vars(name: &str, vars: HashMap<String, FormatString>) -> Environment
     Environment {
         name: name.into(),
         description: None,
+        run_scope: None,
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
@@ -475,6 +481,7 @@ async fn test_enter_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -482,6 +489,10 @@ async fn test_enter_environment_with_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -554,6 +565,7 @@ async fn test_enter_no_action() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -561,6 +573,10 @@ async fn test_enter_no_action() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -605,6 +621,7 @@ async fn test_enter_environment_with_resolved_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -612,6 +629,10 @@ async fn test_enter_environment_with_resolved_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -666,6 +687,7 @@ async fn test_exit_environment_basic() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -673,6 +695,10 @@ async fn test_exit_environment_basic() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo exited"])),
             },
             embedded_files: None,
@@ -694,6 +720,7 @@ async fn test_exit_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -701,6 +728,10 @@ async fn test_exit_environment_with_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo EXIT_VAR=$EXIT_VAR"])),
             },
             embedded_files: None,
@@ -744,6 +775,7 @@ async fn test_exit_environment_fail_run() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -751,6 +783,10 @@ async fn test_exit_environment_fail_run() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "exit 1"])),
             },
             embedded_files: None,
@@ -869,6 +905,7 @@ async fn test_def_via_stdout_overrides_direct() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -879,6 +916,10 @@ async fn test_def_via_stdout_overrides_direct() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -1117,6 +1158,7 @@ async fn test_def_via_redacted_env_with_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(openjd_model::job::EnvironmentScript {
             let_bindings: None,
             actions: openjd_model::job::EnvironmentActions {
@@ -1127,6 +1169,10 @@ async fn test_def_via_redacted_env_with_variables() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -1664,6 +1710,7 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -1671,6 +1718,10 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo EXIT_VAR=$EXIT_VAR"])),
             },
             embedded_files: None,
@@ -1998,6 +2049,7 @@ async fn test_enter_environment_action_timeout_enforced() {
     let env = Environment {
         name: "timeout_env".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2009,6 +2061,10 @@ async fn test_enter_environment_action_timeout_enforced() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: None,
             },
             embedded_files: None,
@@ -2040,6 +2096,7 @@ async fn test_exit_environment_action_timeout_enforced() {
     let env = Environment {
         name: "exit_timeout_env".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2047,6 +2104,10 @@ async fn test_exit_environment_action_timeout_enforced() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action_with_timeout(
                     "sh",
                     vec!["-c", "echo exiting; sleep 30"],
@@ -2162,6 +2223,7 @@ async fn test_callback_enter_env_no_script_no_vars() {
     let env = Environment {
         name: "empty".into(),
         description: None,
+        run_scope: None,
         script: None,
         variables: None,
         resolved_symtab: None,
@@ -2183,6 +2245,7 @@ async fn test_callback_exit_env_with_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2190,6 +2253,10 @@ async fn test_callback_exit_env_with_script() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo bye"])),
             },
             embedded_files: None,
@@ -2221,6 +2288,7 @@ async fn test_callback_exit_env_no_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        run_scope: None,
         script: None,
         variables: None,
         resolved_symtab: None,
@@ -2417,6 +2485,7 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
     let env2 = Environment {
         name: "env2".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2424,6 +2493,10 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "exit 1"])),
             },
             embedded_files: None,
@@ -2708,6 +2781,7 @@ async fn test_redacted_env_sets_var_with_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2718,6 +2792,10 @@ async fn test_redacted_env_sets_var_with_extension() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -2748,6 +2826,7 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2758,6 +2837,10 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -2782,6 +2865,7 @@ async fn test_redactions_disabled_with_no_profile() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -2792,6 +2876,10 @@ async fn test_redactions_disabled_with_no_profile() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
                 on_exit: Some(action("sh", vec!["-c", "echo SECRET=${SECRET:-unset}"])),
             },
             embedded_files: None,
@@ -3549,6 +3637,7 @@ async fn test_cancel_handle_reusable_across_actions() {
     let e1 = Environment {
         name: "E1".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3557,6 +3646,10 @@ async fn test_cancel_handle_reusable_across_actions() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),
@@ -3637,6 +3730,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let wrap_env = Environment {
         name: "WrapEnv".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3645,6 +3739,10 @@ async fn test_wrap_seed_failure_reports_failed_action() {
                 on_wrap_env_enter: Some(action("sh", vec!["-c", "echo wrapped"])),
                 on_wrap_task_run: Some(action("sh", vec!["-c", "echo wrapped"])),
                 on_wrap_env_exit: Some(action("sh", vec!["-c", "echo wrapped"])),
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),
@@ -3660,6 +3758,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let inner = Environment {
         name: "Inner".into(),
         description: None,
+        run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
             actions: EnvironmentActions {
@@ -3673,6 +3772,10 @@ async fn test_wrap_seed_failure_reports_failed_action() {
                 on_wrap_env_enter: None,
                 on_wrap_task_run: None,
                 on_wrap_env_exit: None,
+                on_wrap_service_enter: None,
+                on_wrap_service_run: None,
+                on_wrap_service_readiness_check: None,
+                on_wrap_service_exit: None,
             },
             embedded_files: None,
         }),

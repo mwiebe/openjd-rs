@@ -20,6 +20,10 @@ use openjd_expr::value::ExprValue;
 use openjd_expr::FormatString;
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::job::service_symbols::{
+    add_unresolved_service_file_symbols, add_unresolved_service_symbols,
+    add_unresolved_wrapped_service_symbols,
+};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
@@ -109,13 +113,27 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// When `is_step_env` is true, also includes Step.Name (EXPR only).
 /// Takes a parameter slice so it works for both job templates and standalone
 /// environment templates.
-fn build_session_scope_symtab(
+///
+/// `in_scope_services` are the Services in scope where the environment is
+/// defined (RFC 0009: every Job Service — or, in an environment template,
+/// every Service of the document — plus the Step's own for a step
+/// environment). Their `Service.<name>.<port>.port` / `.connectAddress` are
+/// added only when the environment's `runScope` excludes `SERVICE`
+/// (Template Schemas §4 item 3.2, §9.7 item 2): an environment entered in
+/// Service Sessions never sees any `Service.*` value, so a reference there
+/// surfaces as an undefined variable. `bindAddress` is never in scope in an
+/// environment.
+fn build_session_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
     env: &Environment,
     is_step_env: bool,
     expr_active: bool,
+    in_scope_services: impl Iterator<Item = &'a Service>,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(params);
+    if !env.runs_in(RunScope::Service) {
+        add_unresolved_service_symbols(&mut symtab, in_scope_services, None).expect("symtab");
+    }
     symtab
         .set(
             "Session.WorkingDirectory",
@@ -166,12 +184,28 @@ fn build_session_scope_symtab(
 /// Contains: Param.*, RawParam.*, Session.*, Task.Param.*, Task.RawParam.*,
 ///           Task.File.*, Job.Name, Step.Name, Env.File.* from step envs,
 ///           plus let bindings.
+///
+/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of every Job
+/// Service and of the Step's own `stepServices` are in scope (Template
+/// Schemas §9 scope items 3–4); `bindAddress` never is.
 fn build_task_scope_symtab(
     jt: &JobTemplate,
     step: &StepTemplate,
     expr_active: bool,
+    service_active: bool,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(jt.parameter_definitions.as_deref());
+    if service_active {
+        add_unresolved_service_symbols(
+            &mut symtab,
+            jt.job_services
+                .iter()
+                .flatten()
+                .chain(step.step_services.iter().flatten()),
+            None,
+        )
+        .expect("symtab");
+    }
 
     // Session scope
     symtab
@@ -1201,9 +1235,11 @@ pub(crate) fn check_carried_forward_step_script(
 /// `symtab` is the session-scope check table: concrete `Param.*` /
 /// `RawParam.*` / `Job.Name` (and `Step.Name` for step environments) /
 /// `let` bindings, with `Unresolved` placeholders for `Session.*`,
-/// `Env.File.*`, and PATH `Param.*`. The RFC 0008 wrap hooks
-/// additionally see their `WrappedAction.*` / `WrappedEnv.Name` /
-/// `WrappedStep.Name` scopes, unresolved, exactly as in pass 8.
+/// `Env.File.*`, PATH `Param.*`, and (RFC 0009) the in-scope `Service.*`
+/// endpoints when the environment's `runScope` excludes SERVICE. The wrap
+/// hooks additionally see their `WrappedAction.*` / `WrappedEnv.Name` /
+/// `WrappedStep.Name` / `WrappedService.*` scopes, unresolved, exactly as
+/// in pass 8.
 pub(crate) fn check_carried_forward_environment(
     env: &Environment,
     symtab: &SymbolTable,
@@ -1254,9 +1290,7 @@ pub(crate) fn check_carried_forward_environment(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
-                    // RFC 0009: the `WrappedService.*` group is not modeled
-                    // yet; the Service hooks see `WrappedAction.*` only.
-                    WrapHookScope::Service => {}
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
                 }
                 validate_action_fs(
                     action,
@@ -1319,6 +1353,204 @@ fn check_embedded_files_data(
     }
 }
 
+/// Shared state of one pass-8 run: the per-scope evaluators (template
+/// scope for job-creation-stage fields, host scope for session/task-stage
+/// fields), the extension flags, the limits, and the standard capability
+/// tables for `hostRequirements` checks.
+struct Pass8<'a> {
+    expr_active: bool,
+    service_active: bool,
+    template_profile: &'a openjd_expr::ExprProfile,
+    host_profile: &'a openjd_expr::ExprProfile,
+    template_ev: FsEval<'a>,
+    host_ev: FsEval<'a>,
+    limits: super::EffectiveLimits,
+    caller_limits: &'a crate::types::CallerLimits,
+    standard_attrs: &'static [(&'static str, &'static [&'static str])],
+    standard_attr_names: Vec<&'static str>,
+    standard_amounts: &'static [&'static str],
+}
+
+impl<'a> Pass8<'a> {
+    fn new(
+        ctx: &'a ValidationContext,
+        template_profile: &'a openjd_expr::ExprProfile,
+        host_profile: &'a openjd_expr::ExprProfile,
+        template_lib: &'a FunctionLibrary,
+        host_lib: &'a FunctionLibrary,
+    ) -> Self {
+        // Standard attribute capability table for resolved-value checks
+        // (§3.3.2.2). Only errs for an unsupported revision, which cannot
+        // reach v2023-09 validation.
+        let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
+            crate::capabilities::standard_attribute_capabilities(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            )
+            .unwrap_or(&[]);
+        let standard_attr_names: Vec<&'static str> =
+            standard_attrs.iter().map(|(name, _)| *name).collect();
+        let standard_amounts: &'static [&'static str] =
+            crate::capabilities::standard_amount_capability_names(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            )
+            .unwrap_or(&[]);
+        Self {
+            expr_active: ctx.profile.has_extension(ModelExtension::Expr),
+            service_active: ctx.profile.has_extension(ModelExtension::Service),
+            template_profile,
+            host_profile,
+            template_ev: FsEval::new(template_lib, &ctx.caller_limits),
+            host_ev: FsEval::new(host_lib, &ctx.caller_limits),
+            limits: super::EffectiveLimits::from_context(ctx),
+            caller_limits: &ctx.caller_limits,
+            standard_attrs,
+            standard_attr_names,
+            standard_amounts,
+        }
+    }
+}
+
+/// Validate a `hostRequirements` object (a Step's, or a Service's under RFC
+/// 0009) at `hr_path` against `symtab` — the job-creation scope of the
+/// owner: `Param.*` (non-PATH), `RawParam.*`, `Job.Name`, `Step.Name` and
+/// the owner's `let` bindings. Never `Session.*`, `Task.*`, or `Service.*`
+/// (Template Schemas §9: host requirements are resolved when the scheduler
+/// chooses a host, before any Service endpoint is known).
+///
+/// §3.3.1.1 / §3.3.2.1: a capability name is `@fmtstring`, and its
+/// constraints apply to the resolved name. The name's expressions are
+/// checked against the symbols available when it is resolved at job
+/// creation, and the `CapabilityName` constraint runs the full name check
+/// when the name is fully static. Structure checks literal names, and job
+/// creation checks the resolved name.
+fn validate_host_requirements_fs(
+    hr: &HostRequirements,
+    hr_symtab: &SymbolTable,
+    hr_path: &[PathElement],
+    p8: &Pass8<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let template_ev = &p8.template_ev;
+    let standard_attrs = p8.standard_attrs;
+    let standard_amounts = p8.standard_amounts;
+    if let Some(amounts) = &hr.amounts {
+        let amounts_path = path_field(hr_path, "amounts");
+        let name_constraint = ResolvedConstraint::CapabilityName {
+            kind: helpers::CapabilityKind::Amount,
+            standard: standard_amounts,
+        };
+        let mut known_names = Vec::with_capacity(amounts.len());
+        for (j, amt) in amounts.iter().enumerate() {
+            let amt_path = path_index(&amounts_path, j);
+            let sr = validate_fs_with(
+                &amt.name,
+                hr_symtab,
+                template_ev,
+                &path_field(&amt_path, "name"),
+                Some(&name_constraint),
+                errors,
+            );
+            known_names.push(known_capability_name(&amt.name, sr.as_ref()));
+            if let Some(min) = &amt.min {
+                validate_fs_with(
+                    min,
+                    hr_symtab,
+                    template_ev,
+                    &path_field(&amt_path, "min"),
+                    Some(&ResolvedConstraint::Float {
+                        positive: false,
+                        msg: "must be non-negative.",
+                    }),
+                    errors,
+                );
+            }
+            if let Some(max) = &amt.max {
+                validate_fs_with(
+                    max,
+                    hr_symtab,
+                    template_ev,
+                    &path_field(&amt_path, "max"),
+                    Some(&ResolvedConstraint::Float {
+                        positive: true,
+                        msg: "must be positive.",
+                    }),
+                    errors,
+                );
+            }
+        }
+        check_known_names_unique(
+            &known_names,
+            helpers::CapabilityKind::Amount,
+            &amounts_path,
+            errors,
+        );
+    }
+    if let Some(attrs) = &hr.attributes {
+        let attrs_path = path_field(hr_path, "attributes");
+        let name_constraint = ResolvedConstraint::CapabilityName {
+            kind: helpers::CapabilityKind::Attribute,
+            standard: &p8.standard_attr_names,
+        };
+        let mut known_names = Vec::with_capacity(attrs.len());
+        for (j, attr) in attrs.iter().enumerate() {
+            let attr_path = path_index(&attrs_path, j);
+            let sr = validate_fs_with(
+                &attr.name,
+                hr_symtab,
+                template_ev,
+                &path_field(&attr_path, "name"),
+                Some(&name_constraint),
+                errors,
+            );
+            let known = known_capability_name(&attr.name, sr.as_ref());
+            // The values are checked against the name when it is
+            // known here, and against the resolved name at job
+            // creation otherwise.
+            let capability_name = known.as_ref().map_or("", |k| k.name.as_str());
+            if let Some(k) = known.as_ref().filter(|k| !k.literal) {
+                check_values_for_static_name(&k.name, attr, standard_attrs, &attr_path, errors);
+            }
+            let attr_constraint = ResolvedConstraint::AttributeValue {
+                capability_name,
+                standard: standard_attrs,
+            };
+            if let Some(any_of) = &attr.any_of {
+                for (k, v) in any_of.iter().enumerate() {
+                    validate_fs_with(
+                        v,
+                        hr_symtab,
+                        template_ev,
+                        &path_index(&path_field(&attr_path, "anyOf"), k),
+                        Some(&attr_constraint),
+                        errors,
+                    );
+                }
+            }
+            if let Some(all_of) = &attr.all_of {
+                for (k, v) in all_of.iter().enumerate() {
+                    validate_fs_with(
+                        v,
+                        hr_symtab,
+                        template_ev,
+                        &path_index(&path_field(&attr_path, "allOf"), k),
+                        Some(&attr_constraint),
+                        errors,
+                    );
+                }
+            }
+            known_names.push(known);
+        }
+        check_known_names_unique(
+            &known_names,
+            helpers::CapabilityKind::Attribute,
+            &attrs_path,
+            errors,
+        );
+    }
+}
+
 pub fn validate_format_strings(
     jt: &JobTemplate,
     ctx: &ValidationContext,
@@ -1334,24 +1566,25 @@ pub fn validate_format_strings(
         .to_expr_profile(openjd_expr::HostContext::Unresolved);
     let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
     let host_lib = openjd_expr::FunctionLibrary::for_profile(&host_profile);
+    let p8 = Pass8::new(
+        ctx,
+        &template_profile,
+        &host_profile,
+        &template_lib,
+        &host_lib,
+    );
     let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
     let host_ev = FsEval::new(&host_lib, &ctx.caller_limits);
     let limits = super::EffectiveLimits::from_context(ctx);
-    // Standard attribute capability table for resolved-value checks
-    // (§3.3.2.2). Only errs for an unsupported revision, which cannot
-    // reach v2023-09 validation.
-    let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
-        crate::capabilities::standard_attribute_capabilities(
-            ctx.profile.revision(),
-            ctx.profile.extensions(),
-        )
-        .unwrap_or(&[]);
-    let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
-    let standard_amounts: &[&str] = crate::capabilities::standard_amount_capability_names(
-        ctx.profile.revision(),
-        ctx.profile.extensions(),
-    )
-    .unwrap_or(&[]);
+    // RFC 0009: Services are walked only when the extension is declared;
+    // without it pass 11 rejects the lists outright and nothing inside them
+    // is examined.
+    let service_active = p8.service_active;
+    let job_services: &[Service] = if service_active {
+        jt.job_services.as_deref().unwrap_or(&[])
+    } else {
+        &[]
+    };
 
     // ── Job name: template scope (Param/RawParam only) ──
     let template_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
@@ -1396,134 +1629,13 @@ pub fn validate_format_strings(
                     );
                 }
             }
-            let hr_path = path_field(&step_path, "hostRequirements");
-            // §3.3.1.1 / §3.3.2.1: a capability name is `@fmtstring`, and its
-            // constraints apply to the resolved name. The name's
-            // expressions are checked against the symbols available when it
-            // is resolved at job creation, and the `CapabilityName`
-            // constraint runs the full name check when the name is fully
-            // static. Structure checks literal names, and job creation
-            // checks the resolved name.
-            if let Some(amounts) = &hr.amounts {
-                let amounts_path = path_field(&hr_path, "amounts");
-                let name_constraint = ResolvedConstraint::CapabilityName {
-                    kind: helpers::CapabilityKind::Amount,
-                    standard: standard_amounts,
-                };
-                let mut known_names = Vec::with_capacity(amounts.len());
-                for (j, amt) in amounts.iter().enumerate() {
-                    let amt_path = path_index(&amounts_path, j);
-                    let sr = validate_fs_with(
-                        &amt.name,
-                        &hr_symtab,
-                        &template_ev,
-                        &path_field(&amt_path, "name"),
-                        Some(&name_constraint),
-                        errors,
-                    );
-                    known_names.push(known_capability_name(&amt.name, sr.as_ref()));
-                    if let Some(min) = &amt.min {
-                        validate_fs_with(
-                            min,
-                            &hr_symtab,
-                            &template_ev,
-                            &path_field(&amt_path, "min"),
-                            Some(&ResolvedConstraint::Float {
-                                positive: false,
-                                msg: "must be non-negative.",
-                            }),
-                            errors,
-                        );
-                    }
-                    if let Some(max) = &amt.max {
-                        validate_fs_with(
-                            max,
-                            &hr_symtab,
-                            &template_ev,
-                            &path_field(&amt_path, "max"),
-                            Some(&ResolvedConstraint::Float {
-                                positive: true,
-                                msg: "must be positive.",
-                            }),
-                            errors,
-                        );
-                    }
-                }
-                check_known_names_unique(
-                    &known_names,
-                    helpers::CapabilityKind::Amount,
-                    &amounts_path,
-                    errors,
-                );
-            }
-            if let Some(attrs) = &hr.attributes {
-                let attrs_path = path_field(&hr_path, "attributes");
-                let name_constraint = ResolvedConstraint::CapabilityName {
-                    kind: helpers::CapabilityKind::Attribute,
-                    standard: &standard_attr_names,
-                };
-                let mut known_names = Vec::with_capacity(attrs.len());
-                for (j, attr) in attrs.iter().enumerate() {
-                    let attr_path = path_index(&attrs_path, j);
-                    let sr = validate_fs_with(
-                        &attr.name,
-                        &hr_symtab,
-                        &template_ev,
-                        &path_field(&attr_path, "name"),
-                        Some(&name_constraint),
-                        errors,
-                    );
-                    let known = known_capability_name(&attr.name, sr.as_ref());
-                    // The values are checked against the name when it is
-                    // known here, and against the resolved name at job
-                    // creation otherwise.
-                    let capability_name = known.as_ref().map_or("", |k| k.name.as_str());
-                    if let Some(k) = known.as_ref().filter(|k| !k.literal) {
-                        check_values_for_static_name(
-                            &k.name,
-                            attr,
-                            standard_attrs,
-                            &attr_path,
-                            errors,
-                        );
-                    }
-                    let attr_constraint = ResolvedConstraint::AttributeValue {
-                        capability_name,
-                        standard: standard_attrs,
-                    };
-                    if let Some(any_of) = &attr.any_of {
-                        for (k, v) in any_of.iter().enumerate() {
-                            validate_fs_with(
-                                v,
-                                &hr_symtab,
-                                &template_ev,
-                                &path_index(&path_field(&attr_path, "anyOf"), k),
-                                Some(&attr_constraint),
-                                errors,
-                            );
-                        }
-                    }
-                    if let Some(all_of) = &attr.all_of {
-                        for (k, v) in all_of.iter().enumerate() {
-                            validate_fs_with(
-                                v,
-                                &hr_symtab,
-                                &template_ev,
-                                &path_index(&path_field(&attr_path, "allOf"), k),
-                                Some(&attr_constraint),
-                                errors,
-                            );
-                        }
-                    }
-                    known_names.push(known);
-                }
-                check_known_names_unique(
-                    &known_names,
-                    helpers::CapabilityKind::Attribute,
-                    &attrs_path,
-                    errors,
-                );
-            }
+            validate_host_requirements_fs(
+                hr,
+                &hr_symtab,
+                &path_field(&step_path, "hostRequirements"),
+                &p8,
+                errors,
+            );
         }
     }
 
@@ -1542,11 +1654,14 @@ pub fn validate_format_strings(
                 .expect("symtab");
         }
         for (i, env) in envs.iter().enumerate() {
+            // RFC 0009: a job environment whose runScope excludes SERVICE
+            // sees every Job Service's endpoint.
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
                 false,
                 expr_active,
+                job_services.iter(),
             );
             // Env script let bindings: validate and evaluate into the symtab
             // if EXPR, reject if not.
@@ -1587,9 +1702,36 @@ pub fn validate_format_strings(
         }
     }
 
+    // ── Job services (RFC 0009): job scope, forward-only references ──
+    if service_active {
+        let list_path = path_field(&[], "jobServices");
+        let mut base = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+        if expr_active {
+            base.set("Job.Name", ExprValue::unresolved(ExprType::STRING))
+                .expect("symtab");
+        }
+        for (k, svc) in job_services.iter().enumerate() {
+            validate_service_format_strings(
+                svc,
+                jt.parameter_definitions.as_deref(),
+                &base,
+                &HashSet::new(),
+                job_services[..k].iter(),
+                &path_index(&list_path, k),
+                &p8,
+                errors,
+            );
+        }
+    }
+
     // ── Steps ──
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+        let step_services: &[Service] = if service_active {
+            step.step_services.as_deref().unwrap_or(&[])
+        } else {
+            &[]
+        };
 
         // Task parameter ranges use TEMPLATE scope (no PATH Param.*)
         if let Some(ps) = &step.parameter_space {
@@ -1754,7 +1896,7 @@ pub fn validate_format_strings(
             }
         }
 
-        let mut task_symtab = build_task_scope_symtab(jt, step, expr_active);
+        let mut task_symtab = build_task_scope_symtab(jt, step, expr_active, service_active);
 
         // Template-scope symtab for the step's job-creation-stage fields:
         // Param.* (non-PATH), RawParam.*, and with EXPR Job.Name, Step.Name,
@@ -1981,11 +2123,14 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
+                // RFC 0009: a step environment whose runScope excludes
+                // SERVICE sees every Job Service and this Step's Services.
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,
                     true,
                     expr_active,
+                    job_services.iter().chain(step_services.iter()),
                 );
                 // Copy step-level let binding values (already evaluated with inferred types)
                 if expr_active {
@@ -2053,6 +2198,26 @@ pub fn validate_format_strings(
                     limits.max_env_var_value_len,
                     ctx.caller_limits.max_resolved_arg_len,
                     ctx.caller_limits.max_resolved_data_len,
+                    errors,
+                );
+            }
+        }
+
+        // Step services (RFC 0009): the Step's job-creation scope (Step.Name
+        // and step-level let bindings), seeing every Job Service and the
+        // Step Services before them.
+        if !step_services.is_empty() {
+            let list_path = path_field(&step_path, "stepServices");
+            let step_let_names = let_binding_names(step.let_bindings.as_deref());
+            for (k, svc) in step_services.iter().enumerate() {
+                validate_service_format_strings(
+                    svc,
+                    jt.parameter_definitions.as_deref(),
+                    &step_template_symtab,
+                    &step_let_names,
+                    job_services.iter().chain(step_services[..k].iter()),
+                    &path_index(&list_path, k),
+                    &p8,
                     errors,
                 );
             }
@@ -2155,11 +2320,6 @@ pub fn validate_format_strings_environment_template(
     ctx: &ValidationContext,
     errors: &mut ValidationErrors,
 ) {
-    // A services-only Environment Template (RFC 0009) has no environment body
-    // to walk; format strings inside `services` are a later milestone.
-    let Some(env) = &et.environment else {
-        return;
-    };
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
     let host_profile = ctx
         .profile
@@ -2167,19 +2327,63 @@ pub fn validate_format_strings_environment_template(
     let host_lib = openjd_expr::FunctionLibrary::for_profile(&host_profile);
     let template_profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
     let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
+    let p8 = Pass8::new(
+        ctx,
+        &template_profile,
+        &host_profile,
+        &template_lib,
+        &host_lib,
+    );
     let host_ev = FsEval::new(&host_lib, &ctx.caller_limits);
     let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
 
-    let env_path = vec![PathElement::Field("environment".into())];
-    let mut env_symtab =
-        build_session_scope_symtab(et.parameter_definitions.as_deref(), env, false, expr_active);
-    // Job-creation-scope symtab for `timeout`/`notifyPeriodInSeconds`.
+    // Job-creation-scope symtab for `timeout`/`notifyPeriodInSeconds`, and
+    // the base scope of the document's Services (RFC 0009): an environment
+    // template's Services are Job-scoped, so `Job.Name` is in scope and
+    // `Step.Name` is not.
     let mut env_template_symtab = build_template_scope_symtab(et.parameter_definitions.as_deref());
     if expr_active {
         env_template_symtab
             .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
             .expect("symtab");
     }
+
+    // ── Services (RFC 0009 §1.2.2): each sees the Services before it ──
+    let services: &[Service] = if p8.service_active {
+        et.services.as_deref().unwrap_or(&[])
+    } else {
+        &[]
+    };
+    let list_path = path_field(&[], "services");
+    for (k, svc) in services.iter().enumerate() {
+        validate_service_format_strings(
+            svc,
+            et.parameter_definitions.as_deref(),
+            &env_template_symtab,
+            &HashSet::new(),
+            services[..k].iter(),
+            &path_index(&list_path, k),
+            &p8,
+            errors,
+        );
+    }
+
+    // A services-only Environment Template (RFC 0009) has no environment
+    // body to walk.
+    let Some(env) = &et.environment else {
+        return;
+    };
+
+    let env_path = vec![PathElement::Field("environment".into())];
+    // The environment may reference every Service of the document when its
+    // runScope excludes SERVICE (§1.2.2).
+    let mut env_symtab = build_session_scope_symtab(
+        et.parameter_definitions.as_deref(),
+        env,
+        false,
+        expr_active,
+        services.iter(),
+    );
 
     // Env script let bindings: validate and evaluate into the symtab if EXPR,
     // reject if not. Same treatment as environments in a job template.
@@ -2222,6 +2426,458 @@ pub fn validate_format_strings_environment_template(
     if expr_active {
         validate_single_env_comprehensions(env, errors);
     }
+}
+
+/// §9.2 `<ServicePort>.port` (`<posintstring>`, RFC 0009): the resolved
+/// value must be a TCP port number; whole-field `null` means "runtime
+/// allocates".
+const SERVICE_PORT_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 1,
+    min_msg: "must be between 1 and 65535.",
+    max: Some((65535, "must be between 1 and 65535.")),
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// §9.3 `timeoutSeconds` / `intervalSeconds` (`<posintstring>`): positive;
+/// whole-field `null` means the §9.3 default applies.
+const SERVICE_SECONDS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 1,
+    min_msg: "must be > 0.",
+    max: None,
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// §9.4 `maxAttempts` (`<intstring>`): non-negative; whole-field `null`
+/// means the default of 0.
+const SERVICE_MAX_ATTEMPTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
+    min: 0,
+    min_msg: "must be >= 0.",
+    max: None,
+    parse_msg: "must be an integer.",
+    nullable: true,
+};
+
+/// The names bound by a `let` list (the text before each `=`), for the
+/// shadowing check of a nested `let`.
+fn let_binding_names(bindings: Option<&[String]>) -> HashSet<String> {
+    bindings
+        .map(|bs| {
+            bs.iter()
+                .filter_map(|b| b.find('=').map(|eq| b[..eq].trim().to_string()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pass 8 for one `<Service>` (RFC 0009, Template Schemas §9) at `path`
+/// (`jobServices[k]`, `steps[i] -> stepServices[k]`, or an environment
+/// template's `services[k]`).
+///
+/// Two scopes, following the `@fmtstring` stage annotations:
+///
+/// - **Job-creation scope** — `base_template_symtab` (the owner's
+///   template-scope table: `Param.*` without PATH, `RawParam.*`, `Job.Name`,
+///   and for a Step Service `Step.Name` and the step-level `let` values)
+///   plus the `<Service>.let` bindings. Used for `<Service>.let` itself,
+///   `hostRequirements`, the numeric `@fmtstring` fields (`port`,
+///   `timeoutSeconds`, `intervalSeconds`, `maxAttempts`; target `int?`) and
+///   every action's `timeout` / cancelation fields. Never `Session.*`,
+///   `Service.*`, or `Task.*` (§9 item 3, §9.7 item 2).
+/// - **Service-execution scope** — the above plus PATH `Param.*`,
+///   `Session.*`, this Service's `Service.File.*`, its own
+///   `Service.<name>.<port>.*` (including `bindAddress`), the `port` /
+///   `connectAddress` of every Service in `in_scope` (the Services earlier
+///   in the same list and, for a Step Service, every Job Service), and the
+///   `<ServiceScript>.let` bindings. Used for `variables`, every action's
+///   `command` / `args`, and embedded-file `data`. `Task.*` is never in
+///   scope within a Service.
+///
+/// `enclosing_let_names` are the step-level `let` names (empty for a Job
+/// Service), which neither `let` may shadow.
+#[allow(clippy::too_many_arguments)]
+fn validate_service_format_strings<'a>(
+    svc: &Service,
+    params: Option<&[JobParameterDefinition]>,
+    base_template_symtab: &SymbolTable,
+    enclosing_let_names: &HashSet<String>,
+    in_scope: impl Iterator<Item = &'a Service> + Clone,
+    path: &[PathElement],
+    p8: &Pass8<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let expr_active = p8.expr_active;
+    let template_ev = &p8.template_ev;
+    let host_ev = &p8.host_ev;
+
+    // ── Job-creation scope: <Service>.let ──
+    let mut template_symtab = base_template_symtab.clone();
+    let mut service_let_names = HashSet::new();
+    if let Some(bindings) = &svc.let_bindings {
+        let let_path = path_field(path, "let");
+        if !expr_active {
+            errors.add(&let_path, "'let' requires the EXPR extension.");
+        } else {
+            validate_let_bindings(
+                bindings,
+                &let_path,
+                enclosing_let_names,
+                &mut service_let_names,
+                &mut template_symtab,
+                template_ev,
+                p8.template_profile,
+                errors,
+            );
+        }
+    }
+
+    if let Some(hr) = &svc.host_requirements {
+        validate_host_requirements_fs(
+            hr,
+            &template_symtab,
+            &path_field(path, "hostRequirements"),
+            p8,
+            errors,
+        );
+    }
+
+    // Numeric @fmtstring fields (§9.2–§9.4): job-creation scope, `int?`.
+    let ports_path = path_field(path, "ports");
+    for (i, port) in svc.ports.iter().enumerate() {
+        if let Some(number) = &port.port {
+            validate_fs_with(
+                number,
+                &template_symtab,
+                template_ev,
+                &path_field(&path_index(&ports_path, i), "port"),
+                Some(&SERVICE_PORT_CONSTRAINT),
+                errors,
+            );
+        }
+    }
+    if let Some(declared) = &svc.readiness_check {
+        let rc_path = path_field(path, "readinessCheck");
+        if let Some(timeout) = declared.timeout_seconds() {
+            validate_fs_with(
+                timeout,
+                &template_symtab,
+                template_ev,
+                &path_field(&rc_path, "timeoutSeconds"),
+                Some(&SERVICE_SECONDS_CONSTRAINT),
+                errors,
+            );
+        }
+        if let ServiceReadinessCheck::Command {
+            interval_seconds: Some(interval),
+            ..
+        } = declared
+        {
+            validate_fs_with(
+                interval,
+                &template_symtab,
+                template_ev,
+                &path_field(&rc_path, "intervalSeconds"),
+                Some(&SERVICE_SECONDS_CONSTRAINT),
+                errors,
+            );
+        }
+    }
+    if let Some(attempts) = svc
+        .restart_policy
+        .as_ref()
+        .and_then(|p| p.max_attempts.as_ref())
+    {
+        validate_fs_with(
+            attempts,
+            &template_symtab,
+            template_ev,
+            &path_field(&path_field(path, "restartPolicy"), "maxAttempts"),
+            Some(&SERVICE_MAX_ATTEMPTS_CONSTRAINT),
+            errors,
+        );
+    }
+
+    // ── Service-execution scope ──
+    let mut session_symtab = build_param_symtab(params);
+    for (name, ty) in [
+        ("Session.WorkingDirectory", ExprType::PATH),
+        ("Session.HasPathMappingRules", ExprType::BOOL),
+        ("Session.PathMappingRulesFile", ExprType::PATH),
+    ] {
+        session_symtab
+            .set(name, ExprValue::unresolved(ty))
+            .expect("symtab");
+    }
+    // Job.Name, Step.Name, step-level and service-level let values: every
+    // job-creation-stage symbol is also known at service execution.
+    for key in template_symtab.keys() {
+        if key == "Param" || key == "RawParam" {
+            continue;
+        }
+        match template_symtab.get(key) {
+            Some(openjd_expr::symbol_table::SymbolTableEntry::Value(v)) => {
+                session_symtab.set(key, v.clone()).expect("symtab");
+            }
+            Some(openjd_expr::symbol_table::SymbolTableEntry::Table(t)) => {
+                session_symtab.set_table(key, t.clone());
+            }
+            None => {}
+        }
+    }
+    add_unresolved_service_file_symbols(&mut session_symtab, svc).expect("symtab");
+    add_unresolved_service_symbols(&mut session_symtab, in_scope, Some(svc)).expect("symtab");
+
+    let script_path = path_field(path, "script");
+    let mut script_let_names = HashSet::new();
+    if let Some(bindings) = &svc.script.let_bindings {
+        let let_path = path_field(&script_path, "let");
+        if !expr_active {
+            errors.add(&let_path, "'let' requires the EXPR extension.");
+        } else {
+            let enclosing: HashSet<String> = enclosing_let_names
+                .union(&service_let_names)
+                .cloned()
+                .collect();
+            validate_let_bindings(
+                bindings,
+                &let_path,
+                &enclosing,
+                &mut script_let_names,
+                &mut session_symtab,
+                host_ev,
+                p8.host_profile,
+                errors,
+            );
+        }
+    }
+
+    if let Some(vars) = &svc.variables {
+        let vars_path = path_field(path, "variables");
+        for (name, value) in vars {
+            let var_path = path_field(&vars_path, name);
+            if !expr_active && value.has_complex_expressions() {
+                errors.add(&var_path, "complex expressions require the EXPR extension.");
+            }
+            // §4.4.2 applies through §9 item 8 (same schema as
+            // `<Environment>.variables`).
+            validate_fs_with(
+                value,
+                &session_symtab,
+                host_ev,
+                &var_path,
+                Some(&ResolvedConstraint::Text {
+                    max_len: p8.limits.max_env_var_value_len,
+                    forbid_control_chars: false,
+                    forbid_empty: false,
+                }),
+                errors,
+            );
+        }
+    }
+
+    let actions_path = path_field(&script_path, "actions");
+    for (name, action) in svc.script.actions.iter_named() {
+        let action_path = path_field(&actions_path, name);
+        if !expr_active {
+            if action.command.has_complex_expressions() {
+                errors.add(
+                    &path_field(&action_path, "command"),
+                    "complex expressions require the EXPR extension.",
+                );
+            }
+            for (j, arg) in action.args.iter().flatten().enumerate() {
+                if arg.has_complex_expressions() {
+                    errors.add(
+                        &path_index(&path_field(&action_path, "args"), j),
+                        "complex expressions require the EXPR extension.",
+                    );
+                }
+            }
+        }
+        validate_action_fs(
+            action,
+            &session_symtab,
+            host_ev,
+            &action_path,
+            p8.caller_limits.max_resolved_arg_len,
+            errors,
+        );
+        // `timeout` and the cancelation fields are plain @fmtstring:
+        // resolved at job creation in the <Service>.let scope.
+        validate_action_timing_fs(action, &template_symtab, template_ev, &action_path, errors);
+    }
+
+    if let Some(files) = &svc.script.embedded_files {
+        let files_path = path_field(&script_path, "embeddedFiles");
+        let data_constraint = p8
+            .caller_limits
+            .max_resolved_data_len
+            .map(|max_len| ResolvedConstraint::ResolvedString { max_len });
+        for (j, f) in files.iter().enumerate() {
+            if let Some(data) = &f.data {
+                let data_path = path_field(&path_index(&files_path, j), "data");
+                if !expr_active && data.has_complex_expressions() {
+                    errors.add(
+                        &data_path,
+                        "complex expressions require the EXPR extension.",
+                    );
+                }
+                validate_fs_with(
+                    data,
+                    &session_symtab,
+                    host_ev,
+                    &data_path,
+                    data_constraint.as_ref(),
+                    errors,
+                );
+            }
+            // `filename` is a plain string per the 2023-09 schema.
+        }
+    }
+
+    // Comprehension loop variables may not shadow any `let` name in scope.
+    if expr_active {
+        let all_let_names: HashSet<String> = enclosing_let_names
+            .iter()
+            .chain(&service_let_names)
+            .chain(&script_let_names)
+            .cloned()
+            .collect();
+        if !all_let_names.is_empty() {
+            for (name, action) in svc.script.actions.iter_named() {
+                let action_path = path_field(&actions_path, name);
+                if let Err(e) = action.command.validate_comprehension_vars(&all_let_names) {
+                    errors.add(&path_field(&action_path, "command"), e.to_string());
+                }
+                for (j, arg) in action.args.iter().flatten().enumerate() {
+                    if let Err(e) = arg.validate_comprehension_vars(&all_let_names) {
+                        errors.add(
+                            &path_index(&path_field(&action_path, "args"), j),
+                            e.to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Validate an action's `timeout` and cancelation `mode` /
+/// `notifyPeriodInSeconds` — plain `@fmtstring` fields resolved at job
+/// creation — against the owner's job-creation-scope `symtab`.
+fn validate_action_timing_fs(
+    action: &Action,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    action_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if let Some(timeout) = &action.timeout {
+        validate_fs_with(
+            timeout,
+            symtab,
+            ev,
+            &path_field(action_path, "timeout"),
+            Some(&TIMEOUT_CONSTRAINT),
+            errors,
+        );
+    }
+    let (mode_fs, notify_fs) = match &action.cancelation {
+        Some(CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds,
+        }) => (None, notify_period_in_seconds.as_ref()),
+        Some(CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => (Some(mode), notify_period_in_seconds.as_ref()),
+        _ => (None, None),
+    };
+    if let Some(mode) = mode_fs {
+        validate_fs_with(
+            mode,
+            symtab,
+            ev,
+            &path_field(action_path, "cancelation"),
+            Some(&ResolvedConstraint::CancelationMode),
+            errors,
+        );
+    }
+    if let Some(notify) = notify_fs {
+        validate_fs_with(
+            notify,
+            symtab,
+            ev,
+            &path_field(action_path, "cancelation"),
+            Some(&NOTIFY_PERIOD_CONSTRAINT),
+            errors,
+        );
+    }
+}
+
+/// Job-creation resolved-value checks for a Service (RFC 0009): each
+/// `variables` value against §4.4.2's `max_env_var_value_len`, every
+/// action's `command`/`args` against `CallerLimits::max_resolved_arg_len`,
+/// and each embedded file's `data` against
+/// `CallerLimits::max_resolved_data_len` — the Service counterpart of
+/// [`check_carried_forward_environment`].
+///
+/// `symtab` is the service-execution check table: concrete `Param.*` /
+/// `RawParam.*` / `Job.Name` (and `Step.Name` for a Step Service) /
+/// step- and service-level `let` values, with `Unresolved` placeholders
+/// for `Session.*`, PATH `Param.*`, `Service.File.*`, and the in-scope
+/// `Service.<name>.<port>.*` endpoints, and the `<ServiceScript>.let`
+/// bindings evaluated in.
+pub(crate) fn check_carried_forward_service(
+    svc: &Service,
+    symtab: &SymbolTable,
+    ctx: &ValidationContext,
+    max_env_var_value_len: usize,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let host_profile = ctx
+        .profile
+        .to_expr_profile(openjd_expr::HostContext::Unresolved);
+    let host_lib = FunctionLibrary::for_profile(&host_profile);
+    let ev = FsEval::new(&host_lib, &ctx.caller_limits);
+    if let Some(vars) = &svc.variables {
+        let vars_path = path_field(path, "variables");
+        for (name, value) in vars {
+            validate_fs_with(
+                value,
+                symtab,
+                &ev,
+                &path_field(&vars_path, name),
+                Some(&ResolvedConstraint::Text {
+                    max_len: max_env_var_value_len,
+                    forbid_control_chars: false,
+                    forbid_empty: false,
+                }),
+                errors,
+            );
+        }
+    }
+    let script_path = path_field(path, "script");
+    let actions_path = path_field(&script_path, "actions");
+    for (name, action) in svc.script.actions.iter_named() {
+        validate_action_fs(
+            action,
+            symtab,
+            &ev,
+            &path_field(&actions_path, name),
+            ctx.caller_limits.max_resolved_arg_len,
+            errors,
+        );
+    }
+    check_embedded_files_data(
+        svc.script.embedded_files.as_deref(),
+        symtab,
+        &ev,
+        ctx.caller_limits.max_resolved_data_len,
+        &script_path,
+        errors,
+    );
 }
 
 /// Validate format strings within an environment (variables + script actions).
@@ -2313,10 +2969,10 @@ fn validate_env_format_strings(
         }
         // RFC 0008: every wrap hook sees `WrappedAction.*`. `onWrapEnvEnter`
         // and `onWrapEnvExit` additionally see `WrappedEnv.Name`; `onWrapTaskRun`
-        // additionally sees `WrappedStep.Name`. Referencing these outside the
-        // permitted hook surfaces as a normal "Undefined variable" error.
-        // (The RFC 0009 `onWrapService*` hooks will additionally see
-        // `WrappedService.*` once that group is modeled.)
+        // additionally sees `WrappedStep.Name`; the four RFC 0009
+        // `onWrapService*` hooks additionally see `WrappedService.*`.
+        // Referencing these outside the permitted hook surfaces as a normal
+        // "Undefined variable" error.
         for (hook_name, action_opt, extra) in script.actions.wrap_hooks() {
             if let Some(action) = action_opt {
                 let mut st = symtab.clone();
@@ -2324,9 +2980,7 @@ fn validate_env_format_strings(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
-                    // RFC 0009: the `WrappedService.*` group is not modeled
-                    // yet; the Service hooks see `WrappedAction.*` only.
-                    WrapHookScope::Service => {}
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
                 }
                 validate_action_fs(
                     action,
@@ -2500,6 +3154,14 @@ fn add_wrapped_step_name_scope(symtab: &mut SymbolTable) {
     symtab
         .set("WrappedStep.Name", ExprValue::unresolved(ExprType::STRING))
         .expect("symtab");
+}
+
+/// Augment with `WrappedService.*` — `Name` (string), `PortNames`
+/// (list[string]), `Ports` (list[int]), `BindAddresses` (list[string]) —
+/// available only in the four `onWrapService*` hooks (RFC 0009, Template
+/// Schemas §4.3.1).
+fn add_wrapped_service_scope(symtab: &mut SymbolTable) {
+    add_unresolved_wrapped_service_symbols(symtab).expect("symtab");
 }
 
 fn validate_env_comprehensions(envs: &Option<Vec<Environment>>, errors: &mut ValidationErrors) {

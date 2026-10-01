@@ -213,13 +213,45 @@ pub fn create_job(
         })
         .collect();
 
+    let job_services_t: &[crate::template::Service] =
+        job_template.job_services.as_deref().unwrap_or(&[]);
+    let icx = instantiate::InstantiateCtx {
+        has_expr,
+        limits: &limits,
+        ctx,
+        budgets,
+        job_services: job_services_t,
+    };
+
+    // RFC 0009 `jobServices`: instantiated in job scope before the steps,
+    // since every Step's Task Sessions may reference them. Each Service
+    // sees the Services before it in the list (forward-only references).
+    let job_services = job_template
+        .job_services
+        .as_ref()
+        .map(|services| {
+            let list_path = [crate::error::PathElement::Field("jobServices".to_string())];
+            services
+                .iter()
+                .enumerate()
+                .map(|(k, svc)| {
+                    instantiate::instantiate_service(
+                        svc,
+                        &symtab,
+                        icx,
+                        &crate::error::path_index(&list_path, k),
+                        services[..k].iter(),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
     let steps = job_template
         .steps
         .iter()
         .enumerate()
-        .map(|(step_index, st)| {
-            instantiate::instantiate_step(st, &symtab, has_expr, &limits, ctx, step_index, budgets)
-        })
+        .map(|(step_index, st)| instantiate::instantiate_step(st, &symtab, icx, step_index))
         .collect::<Result<Vec<_>, _>>()?;
 
     // Caller-imposed total task count limit across all steps
@@ -250,12 +282,20 @@ pub fn create_job(
     // each job environment against a session-scope check symbol table,
     // where job parameters are bound to real values. A violation
     // template validation could only lower-bound is decidable here —
-    // fail at submission, not on the worker.
+    // fail at submission, not on the worker. A job environment whose
+    // `runScope` excludes SERVICE also sees every Job Service's
+    // `Service.*` endpoints (RFC 0009).
     if let Some(envs) = &job_template.job_environments {
         let mut check_errors = crate::error::ValidationErrors::default();
         for (i, env) in envs.iter().enumerate() {
-            let env_symtab =
-                instantiate::build_env_check_symtab(env, &symtab, has_expr, ctx, budgets)?;
+            let env_symtab = instantiate::build_env_check_symtab(
+                env,
+                &symtab,
+                has_expr,
+                ctx,
+                budgets,
+                job_services_t.iter(),
+            )?;
             let env_path = [
                 crate::error::PathElement::Field("jobEnvironments".to_string()),
                 crate::error::PathElement::Index(i),
@@ -334,5 +374,6 @@ pub fn create_job(
         parameters,
         steps,
         job_environments,
+        job_services,
     })
 }

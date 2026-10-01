@@ -22,10 +22,10 @@
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
 //!    into `tests/fixtures/rfc0009/`.
 //!
-//! The `Service.*` format-string scope is a later milestone; the tests that
-//! need it are `#[ignore]`d with the reason, rather than loosening
-//! validation. `<Environment>.runScope`, the `onWrapService*` hooks, and the
-//! Environment Template root changes are covered in
+//! The `Service.*` format-string scope rules (§9.7 items 1–2) and job
+//! creation of Services are covered in `test_service_scope.rs` and
+//! `test_service_job_creation.rs`; `<Environment>.runScope`, the
+//! `onWrapService*` hooks, and the Environment Template root changes in
 //! `test_service_environments.rs`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
@@ -96,13 +96,23 @@ fn expect_job_ok(template: &str, allowed_exts: &[&str]) -> openjd_model::templat
 }
 
 /// A job template whose `jobServices` holds exactly `services` (a YAML list
-/// body, indented two spaces) plus one trivial step.
+/// body, indented two spaces) plus one trivial step. A handful of INT job
+/// parameters are defined so the numeric `@fmtstring` fields can reference
+/// them.
 fn job_with_services(services: &str) -> String {
     format!(
         r#"
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: Test
+parameterDefinitions:
+  - {{ name: P, type: INT, default: 1 }}
+  - {{ name: T, type: INT, default: 1 }}
+  - {{ name: I, type: INT, default: 1 }}
+  - {{ name: Attempts2, type: INT, default: 1 }}
+  - {{ name: MetricsPort, type: INT, default: 9100 }}
+  - {{ name: Timeout, type: INT, default: 30 }}
+  - {{ name: Attempts, type: INT, default: 2 }}
 jobServices:
 {services}
 steps:
@@ -218,7 +228,7 @@ fn full_service_decodes_every_field() {
   - name: Cache
     description: "A Valkey store"
     let:
-      - MemoryMiB = 8192
+      - memory_mib = 8192
     hostRequirements:
       attributes:
         - name: attr.worker.preemptible
@@ -242,7 +252,7 @@ fn full_service_decodes_every_field() {
       VALKEY_LOG_LEVEL: notice
     script:
       let:
-        - DataDir = Session.WorkingDirectory
+        - data_dir = Session.WorkingDirectory
       actions:
         onEnter:
           command: bash
@@ -297,7 +307,7 @@ fn full_service_decodes_every_field() {
 
     let cache = &services[0];
     assert_eq!(cache.description.as_ref().unwrap().0, "A Valkey store");
-    assert_eq!(cache.let_bindings.as_ref().unwrap(), &["MemoryMiB = 8192"]);
+    assert_eq!(cache.let_bindings.as_ref().unwrap(), &["memory_mib = 8192"]);
     assert!(cache.host_requirements.is_some());
     assert_eq!(cache.ports[0].port.as_ref().unwrap().raw(), "6379");
     assert_eq!(
@@ -323,7 +333,7 @@ fn full_service_decodes_every_field() {
     );
     assert_eq!(
         cache.script.let_bindings.as_ref().unwrap(),
-        &["DataDir = Session.WorkingDirectory"]
+        &["data_dir = Session.WorkingDirectory"]
     );
     let names: Vec<&str> = cache
         .script
@@ -1180,7 +1190,7 @@ fn max_attempts_must_be_non_negative() {
         SERVICE_EXTS,
     );
     expect_job_ok(
-        &service_with_restart_policy("      maxAttempts: \"{{ Param.N }}\"\n"),
+        &service_with_restart_policy("      maxAttempts: \"{{ Param.Attempts2 }}\"\n"),
         SERVICE_EXTS,
     );
 }
@@ -1557,23 +1567,19 @@ fn expect_fixture_job_ok(fixture: &str) -> openjd_model::template::JobTemplate {
     expect_job_ok(fixture, SERVICE_EXTS)
 }
 
-// TODO(RFC 0009, `Service.*` scope milestone): the Step's embedded file
-// references `{{ Service.Cache.main.connectAddress }}` and
-// `{{ Service.Cache.main.port }}`, which the format-string pass rejects as
-// undefined variables until the `Service.*` scope exists. Un-ignore once the
-// scope is implemented; do not loosen validation to make this pass.
+/// The Step's embedded file references `Service.Cache.main.connectAddress`
+/// and `.port`, and the Service's own `onRun` references its `bindAddress`:
+/// every `Service.*` reference in the RFC example resolves.
 #[test]
-#[ignore = "RFC 0009 Service.* format-string scope is a later milestone"]
 fn rfc_example_valkey_shared_store_verbatim() {
     let jt = expect_fixture_job_ok(RFC_VALKEY);
     assert_eq!(jt.job_services.as_ref().unwrap()[0].name, "Cache");
 }
 
-// TODO(RFC 0009, `Service.*` scope milestone): the Step's `onRun` args use
-// `join_host_port(Service.Coordinator.api.connectAddress, ...)`, which the
-// format-string pass rejects until the `Service.*` scope exists.
+/// The Step's `onRun` args use
+/// `join_host_port(Service.Coordinator.api.connectAddress, ...)` on a Step
+/// Service, and the Service's `onRun` uses its own `bindAddress`.
 #[test]
-#[ignore = "RFC 0009 Service.* format-string scope is a later milestone"]
 fn rfc_example_per_step_coordinator_verbatim() {
     let jt = expect_fixture_job_ok(RFC_COORDINATOR);
     assert_eq!(
@@ -1582,38 +1588,19 @@ fn rfc_example_per_step_coordinator_verbatim() {
     );
 }
 
-// TODO(RFC 0009, `Service.*` scope milestone): the Environment Template's
-// `services:` list and `<Environment>.runScope` now decode and validate, but
-// the Environment's `variables` reference `{{ Service.Cache.main.connectAddress }}`
-// and `{{ Service.Cache.main.port }}`, which the format-string pass rejects
-// as undefined variables until the `Service.*` scope exists. Un-ignore once
-// the scope is implemented; do not loosen validation to make this pass.
+/// The Environment Template's `environment` (`runScope: [TASK]`) references
+/// the document's own Service in its `variables`, and the Service's `onRun`
+/// references its `bindAddress` (§1.2.2).
 #[test]
-#[ignore = "RFC 0009 Service.* format-string scope is a later milestone"]
 fn rfc_example_queue_cache_environment_verbatim() {
-    decode_environment_template(
+    let et = decode_environment_template(
         yaml_val(RFC_QUEUE_CACHE_ENV),
         Some(SERVICE_EXTS),
         &CallerLimits::default(),
     )
     .expect("expected successful decode");
-}
-
-/// Pins the reason the verbatim fixture above is still ignored: the only
-/// remaining errors are the two `Service.*` references in the Environment's
-/// `variables`. Everything else in the document — `services`, `runScope`,
-/// `$schema`-less root, FEATURE_BUNDLE_1 `min` — validates.
-#[test]
-fn rfc_example_queue_cache_environment_blocked_only_by_service_scope() {
-    expect_env_err(
-        RFC_QUEUE_CACHE_ENV,
-        SERVICE_EXTS,
-        &[
-            "2 validation errors for EnvironmentTemplate\n",
-            "environment -> variables -> VALKEY_HOST:\n\tFailed to parse interpolation expression at [0, 39]. Undefined variable: 'Service.Cache.main.connectAddress'.",
-            "environment -> variables -> VALKEY_PORT:\n\tFailed to parse interpolation expression at [0, 29]. Undefined variable: 'Service.Cache.main.port'.",
-        ],
-    );
+    assert_eq!(et.services()[0].name, "Cache");
+    assert_eq!(et.environment.as_ref().unwrap().name, "CacheClient");
 }
 
 #[test]
@@ -1626,9 +1613,9 @@ fn rfc_example_queue_cache_consumer_verbatim() {
     expect_job_ok(RFC_QUEUE_CACHE_CONSUMER, NO_SERVICE_EXTS);
 }
 
-/// The RFC job examples with the Step scripts' `Service.*` references (the
-/// only part this milestone cannot validate) replaced by literals, so the
-/// Service declarations themselves are exercised end to end today.
+/// The RFC job examples with the Step scripts' `Service.*` references
+/// replaced by literals: the Service declarations validate on their own,
+/// independent of the scope rules.
 #[test]
 fn rfc_example_valkey_shared_store_services_validate() {
     let template = RFC_VALKEY

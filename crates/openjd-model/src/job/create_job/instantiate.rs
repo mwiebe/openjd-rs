@@ -8,7 +8,9 @@ use openjd_expr::format_string::copy_symbol_value;
 use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::symbol_table::SymbolTable;
 
-use crate::error::{path_field, ModelError, PathElement, ValidationErrors};
+use crate::error::{
+    path_field, path_index, path_to_string, ModelError, PathElement, ValidationErrors,
+};
 use crate::job;
 use crate::template;
 use crate::template::validate_v2023_09::helpers::{check_capability_name, CapabilityKind};
@@ -17,16 +19,80 @@ use openjd_expr::ExpressionError;
 
 use super::ranges;
 
+/// The job-wide inputs every instantiation step shares: the context's
+/// extensions and limits, the caller budgets, and the template's Job
+/// Services (whose `Service.*` symbols are in scope for every Step).
+#[derive(Clone, Copy)]
+pub(super) struct InstantiateCtx<'a> {
+    pub(super) has_expr: bool,
+    pub(super) limits: &'a EffectiveLimits,
+    pub(super) ctx: &'a crate::types::ValidationContext,
+    pub(super) budgets: super::EvalBudgets,
+    /// The template's `jobServices`, in start order (empty when none).
+    pub(super) job_services: &'a [template::Service],
+}
+
+/// Evaluate a `let` list in template scope (no PATH `Param.*`, no host
+/// context) into `symtab`: `<StepTemplate>.let` and, under RFC 0009,
+/// `<Service>.let`. `what` names the owner in error messages.
+fn evaluate_template_let_bindings(
+    bindings: &[String],
+    symtab: &mut SymbolTable,
+    icx: InstantiateCtx<'_>,
+    what: &str,
+) -> Result<(), ModelError> {
+    let template_profile = icx
+        .ctx
+        .profile
+        .to_expr_profile(openjd_expr::HostContext::None);
+    let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
+    for binding in bindings {
+        if let Some(eq_pos) = binding.find('=') {
+            let name = binding[..eq_pos].trim();
+            let expr = binding[eq_pos + 1..].trim();
+            if !name.is_empty() && !expr.is_empty() {
+                let parsed =
+                    openjd_expr::eval::ParsedExpression::with_profile(expr, &template_profile)
+                        .map_err(|e| {
+                            ModelError::Expression(ExpressionError::new(format!(
+                                "{what} '{name}': {e}"
+                            )))
+                        })?;
+                let val = budgeted(
+                    parsed
+                        .with_path_format(PathFormat::Posix)
+                        .with_library(&template_lib),
+                    icx.budgets,
+                )
+                .evaluate(&[symtab as &SymbolTable])
+                .map_err(|e| {
+                    ModelError::Expression(ExpressionError::new(format!("{what} '{name}': {e}")))
+                })?;
+                symtab.set(name, val)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Instantiate a StepTemplate into a Step.
 pub(super) fn instantiate_step(
     st: &template::StepTemplate,
     symtab: &SymbolTable,
-    has_expr: bool,
-    limits: &EffectiveLimits,
-    ctx: &crate::types::ValidationContext,
+    icx: InstantiateCtx<'_>,
     step_index: usize,
-    budgets: super::EvalBudgets,
 ) -> Result<job::Step, ModelError> {
+    let InstantiateCtx {
+        has_expr,
+        limits,
+        ctx,
+        budgets,
+        job_services,
+    } = icx;
+    let step_path = [
+        PathElement::Field("steps".to_string()),
+        PathElement::Index(step_index),
+    ];
     let mut step_symtab = symtab.clone();
 
     let step_name = st.name.clone();
@@ -41,43 +107,17 @@ pub(super) fn instantiate_step(
     // Evaluate step-level let bindings (TEMPLATE scope — no PATH Param.*, no host context)
     if has_expr {
         if let Some(bindings) = &st.let_bindings {
-            let template_profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
-            let template_lib = openjd_expr::FunctionLibrary::for_profile(&template_profile);
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let name = binding[..eq_pos].trim();
-                    let expr = binding[eq_pos + 1..].trim();
-                    if !name.is_empty() && !expr.is_empty() {
-                        let parsed = openjd_expr::eval::ParsedExpression::with_profile(
-                            expr,
-                            &template_profile,
-                        )
-                        .map_err(|e| {
-                            ModelError::Expression(ExpressionError::new(format!(
-                                "let binding '{name}': {e}"
-                            )))
-                        })?;
-                        let val = budgeted(
-                            parsed
-                                .with_path_format(PathFormat::Posix)
-                                .with_library(&template_lib),
-                            budgets,
-                        )
-                        .evaluate(&[&step_symtab as &SymbolTable])
-                        .map_err(|e| {
-                            ModelError::Expression(ExpressionError::new(format!(
-                                "let binding '{name}': {e}"
-                            )))
-                        })?;
-                        step_symtab.set(name, val)?;
-                    }
-                }
-            }
+            evaluate_template_let_bindings(bindings, &mut step_symtab, icx, "let binding")?;
         }
     }
 
     let script_template = st.resolve_syntax_sugar()?.or_else(|| st.script.clone());
     let script = script_template.as_ref().map(convert_step_script);
+
+    // The Services whose `Service.*` endpoints this Step's Task Sessions
+    // may reference (RFC 0009): every Job Service and the Step's own.
+    let step_services_t: &[template::Service] = st.step_services.as_deref().unwrap_or(&[]);
+    let in_scope_services = || job_services.iter().chain(step_services_t.iter());
 
     // Check symbol table for the step script's carried-forward
     // (session/task-scope) format strings: `step_symtab`'s concrete
@@ -87,13 +127,23 @@ pub(super) fn instantiate_step(
     // type check this stage has always performed on them.
     let check_symtab = script_template
         .as_ref()
-        .map(|s| build_task_check_symtab(st, s, &step_symtab, has_expr, ctx, budgets))
+        .map(|s| {
+            build_task_check_symtab(
+                st,
+                s,
+                &step_symtab,
+                has_expr,
+                ctx,
+                budgets,
+                in_scope_services(),
+            )
+        })
         .transpose()?;
 
     let host_requirements = st
         .host_requirements
         .as_ref()
-        .map(|hr| resolve_host_requirements(hr, &step_symtab, ctx, step_index, budgets))
+        .map(|hr| resolve_host_requirements(hr, &step_symtab, ctx, &step_path, budgets))
         .transpose()?;
 
     let parameter_space = st
@@ -115,11 +165,7 @@ pub(super) fn instantiate_step(
     // worker.
     if let (Some(s), Some(cst)) = (&script_template, &check_symtab) {
         let mut check_errors = ValidationErrors::default();
-        let script_path = [
-            PathElement::Field("steps".to_string()),
-            PathElement::Index(step_index),
-            PathElement::Field("script".to_string()),
-        ];
+        let script_path = path_field(&step_path, "script");
         crate::template::validate_v2023_09::format_strings::check_carried_forward_step_script(
             s,
             cst,
@@ -132,23 +178,26 @@ pub(super) fn instantiate_step(
 
     // The same checks for this step's environments (session scope):
     // `variables` values, every action's `command`/`args`, embedded-file
-    // `data`.
+    // `data`. An Environment whose `runScope` excludes SERVICE also sees
+    // the in-scope `Service.*` endpoints (RFC 0009).
     if let Some(envs) = &st.step_environments {
         let mut check_errors = ValidationErrors::default();
+        let envs_path = path_field(&step_path, "stepEnvironments");
         for (j, env) in envs.iter().enumerate() {
-            let env_symtab = build_env_check_symtab(env, &step_symtab, has_expr, ctx, budgets)?;
-            let env_path = [
-                PathElement::Field("steps".to_string()),
-                PathElement::Index(step_index),
-                PathElement::Field("stepEnvironments".to_string()),
-                PathElement::Index(j),
-            ];
+            let env_symtab = build_env_check_symtab(
+                env,
+                &step_symtab,
+                has_expr,
+                ctx,
+                budgets,
+                in_scope_services(),
+            )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
                 &env_symtab,
                 ctx,
                 limits.max_env_var_value_len,
-                &env_path,
+                &path_index(&envs_path, j),
                 &mut check_errors,
             );
         }
@@ -159,6 +208,30 @@ pub(super) fn instantiate_step(
         .step_environments
         .as_ref()
         .map(|envs| envs.iter().map(convert_environment).collect());
+
+    // RFC 0009 `stepServices`: instantiated in the Step's scope (Step.Name
+    // and the step-level `let` bindings are in scope), each seeing every
+    // Job Service and the Step Services before it.
+    let step_services = st
+        .step_services
+        .as_ref()
+        .map(|services| {
+            let list_path = path_field(&step_path, "stepServices");
+            services
+                .iter()
+                .enumerate()
+                .map(|(k, svc)| {
+                    instantiate_service(
+                        svc,
+                        &step_symtab,
+                        icx,
+                        &path_index(&list_path, k),
+                        job_services.iter().chain(services[..k].iter()),
+                    )
+                })
+                .collect::<Result<Vec<_>, ModelError>>()
+        })
+        .transpose()?;
 
     let dependencies = st.dependencies.as_ref().map(|deps| {
         deps.iter()
@@ -186,10 +259,320 @@ pub(super) fn instantiate_step(
         parameter_space,
         host_requirements,
         dependencies,
+        step_services,
         resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(
             &filtered_symtab,
         )),
     })
+}
+
+// ── RFC 0009 Services ─────────────────────────────────────────────────
+
+/// Instantiate one `<Service>` (Template Schemas §9) at `path`
+/// (`jobServices[k]` or `steps[i] -> stepServices[k]`).
+///
+/// `base` is the scope's job-creation symbol table — the job's for a Job
+/// Service; the Step's (with `Step.Name` and the step-level `let`
+/// bindings) for a Step Service. `in_scope` is every Service whose
+/// `Service.<name>.<port>.port` / `.connectAddress` the Service's
+/// host-resolved fields may reference: the Services earlier in its own list
+/// and, for a Step Service, every Job Service. The Service itself is seeded
+/// separately, with `bindAddress`.
+///
+/// Job-creation-stage fields resolve here: `<Service>.let` (template scope,
+/// like `<StepTemplate>.let`), the numeric `@fmtstring` fields with their
+/// §9 ranges and defaults, and `hostRequirements`. `variables` and `script`
+/// are `@fmtstring[host]`: they are carried forward unresolved and re-checked
+/// against a check table where `Param.*` have real values, like an
+/// Environment's.
+pub(super) fn instantiate_service<'a>(
+    svc: &template::Service,
+    base: &SymbolTable,
+    icx: InstantiateCtx<'_>,
+    path: &[PathElement],
+    in_scope: impl Iterator<Item = &'a template::Service>,
+) -> Result<job::Service, ModelError> {
+    let InstantiateCtx {
+        has_expr,
+        limits,
+        ctx,
+        budgets,
+        ..
+    } = icx;
+    let mut service_symtab = base.clone();
+    if has_expr {
+        if let Some(bindings) = &svc.let_bindings {
+            evaluate_template_let_bindings(
+                bindings,
+                &mut service_symtab,
+                icx,
+                "service let binding",
+            )?;
+        }
+    }
+
+    let host_requirements = svc
+        .host_requirements
+        .as_ref()
+        .map(|hr| resolve_host_requirements(hr, &service_symtab, ctx, path, budgets))
+        .transpose()?;
+
+    // §9.2 / §9.3 / §9.4 numeric `@fmtstring` fields: target type `int?`,
+    // a `null` resolution meaning "not provided" (the default applies), and
+    // a non-null value satisfying the field's range.
+    let ports_path = path_field(path, "ports");
+    let ports = svc
+        .ports
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let port = p
+                .port
+                .as_ref()
+                .map(|fs| {
+                    resolve_service_int(
+                        fs,
+                        &service_symtab,
+                        budgets,
+                        &path_field(&path_index(&ports_path, i), "port"),
+                        1..=65535,
+                        "must be between 1 and 65535.",
+                    )
+                })
+                .transpose()?
+                .flatten()
+                // Range-checked above, so the narrowing cannot fail.
+                .map(|v| u16::try_from(v).unwrap_or(u16::MAX));
+            Ok(job::ServicePort {
+                name: p.name.clone(),
+                port,
+            })
+        })
+        .collect::<Result<Vec<_>, ModelError>>()?;
+
+    let rc_path = path_field(path, "readinessCheck");
+    let positive = 1..=i64::MAX;
+    let readiness_check = match svc.readiness_check() {
+        template::ServiceReadinessCheck::TcpConnect {
+            ports: probed,
+            timeout_seconds,
+        } => job::ServiceReadinessCheck::TcpConnect {
+            ports: probed.unwrap_or_else(|| svc.port_names().map(str::to_string).collect()),
+            timeout_seconds: resolve_service_u64(
+                timeout_seconds.as_ref(),
+                &service_symtab,
+                budgets,
+                &path_field(&rc_path, "timeoutSeconds"),
+                positive.clone(),
+                "must be > 0.",
+                template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
+            )?,
+        },
+        template::ServiceReadinessCheck::Command {
+            interval_seconds,
+            timeout_seconds,
+        } => job::ServiceReadinessCheck::Command {
+            interval_seconds: resolve_service_u64(
+                interval_seconds.as_ref(),
+                &service_symtab,
+                budgets,
+                &path_field(&rc_path, "intervalSeconds"),
+                positive.clone(),
+                "must be > 0.",
+                template::ServiceReadinessCheck::DEFAULT_COMMAND_INTERVAL_SECONDS,
+            )?,
+            timeout_seconds: resolve_service_u64(
+                timeout_seconds.as_ref(),
+                &service_symtab,
+                budgets,
+                &path_field(&rc_path, "timeoutSeconds"),
+                positive.clone(),
+                "must be > 0.",
+                template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
+            )?,
+        },
+        template::ServiceReadinessCheck::Stdout { timeout_seconds } => {
+            job::ServiceReadinessCheck::Stdout {
+                timeout_seconds: resolve_service_u64(
+                    timeout_seconds.as_ref(),
+                    &service_symtab,
+                    budgets,
+                    &path_field(&rc_path, "timeoutSeconds"),
+                    positive,
+                    "must be > 0.",
+                    template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
+                )?,
+            }
+        }
+    };
+
+    let policy = svc.restart_policy();
+    let restart_policy = job::ServiceRestartPolicy {
+        max_attempts: resolve_service_u64(
+            policy.max_attempts.as_ref(),
+            &service_symtab,
+            budgets,
+            &path_field(&path_field(path, "restartPolicy"), "maxAttempts"),
+            0..=i64::MAX,
+            "must be >= 0.",
+            // DEFAULT_MAX_ATTEMPTS is 0, which fits every unsigned width.
+            template::ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS.unsigned_abs(),
+        )?,
+        completed_tasks: policy.completed_tasks(),
+    };
+
+    // Re-check the carried-forward (host-resolved) fields with the job
+    // parameters bound: `variables`, every action, embedded-file `data`,
+    // after evaluating `<ServiceScript>.let` into the check table.
+    let check_symtab =
+        build_service_check_symtab(svc, &service_symtab, has_expr, ctx, budgets, in_scope)?;
+    let mut check_errors = ValidationErrors::default();
+    crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
+        svc,
+        &check_symtab,
+        ctx,
+        limits.max_env_var_value_len,
+        path,
+        &mut check_errors,
+    );
+    check_errors.into_result("JobTemplate")?;
+
+    let converted = job::Service {
+        name: svc.name.clone(),
+        description: svc.description.as_ref().map(|d| d.0.clone()),
+        host_requirements,
+        ports,
+        readiness_check,
+        restart_policy,
+        variables: svc.variables.clone(),
+        script: job::ServiceScript {
+            let_bindings: svc.script.let_bindings.clone(),
+            actions: job::ServiceActions {
+                on_enter: svc.script.actions.on_enter.as_ref().map(convert_action),
+                on_run: convert_action(&svc.script.actions.on_run),
+                on_readiness_check: svc
+                    .script
+                    .actions
+                    .on_readiness_check
+                    .as_ref()
+                    .map(convert_action),
+                on_exit: svc.script.actions.on_exit.as_ref().map(convert_action),
+            },
+            embedded_files: svc
+                .script
+                .embedded_files
+                .as_ref()
+                .map(|files| files.iter().map(convert_embedded_file).collect()),
+        },
+        resolved_symtab: None,
+    };
+    let filtered = filter_symtab_for_service(&converted, &service_symtab);
+    Ok(job::Service {
+        resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(&filtered)),
+        ..converted
+    })
+}
+
+/// Resolve one of a Service's numeric `@fmtstring` fields (`port`,
+/// `timeoutSeconds`, `intervalSeconds`, `maxAttempts`) with target type
+/// `int?` (RFC 0009 §9.2): `Ok(None)` when a whole-field expression
+/// resolves to `null` — the field is treated as not provided — otherwise
+/// the integer, which must lie in `range` (else `range_msg`, as a
+/// validation error at `path`, matching the raw-text check for the literal
+/// form of the same field). A multi-segment string concatenates and parses
+/// with surrounding whitespace tolerated, as `<Action>.timeout` does.
+fn resolve_service_int(
+    fs: &openjd_expr::FormatString,
+    symtab: &SymbolTable,
+    budgets: super::EvalBudgets,
+    path: &[PathElement],
+    range: std::ops::RangeInclusive<i64>,
+    range_msg: &str,
+) -> Result<Option<i64>, ModelError> {
+    let target = openjd_expr::ExprType::union(vec![
+        openjd_expr::ExprType::INT,
+        openjd_expr::ExprType::NULLTYPE,
+    ]);
+    let resolved = fs
+        .resolve_with(symtab, &budgets.fs_options().with_target_type(&target))
+        .map_err(|e| ModelError::FormatStringError {
+            message: format!("{}: {e}", path_to_string(path)),
+            input: Some(fs.raw().to_string()),
+            start: None,
+            end: None,
+        })?;
+    let mut errors = ValidationErrors::default();
+    let value = match resolved {
+        openjd_expr::ExprValue::Null => return Ok(None),
+        openjd_expr::ExprValue::Int(v) => v,
+        other => match other.to_display_string().trim().parse::<i64>() {
+            Ok(v) => v,
+            Err(_) => {
+                errors.add(path, "must be an integer.");
+                return errors.into_result("JobTemplate").map(|()| None);
+            }
+        },
+    };
+    if !range.contains(&value) {
+        errors.add(path, range_msg);
+    }
+    errors.into_result("JobTemplate")?;
+    Ok(Some(value))
+}
+
+/// [`resolve_service_int`] for an optional field with a non-negative range
+/// and a spec default: the resolved value, or `default` when the field is
+/// absent or resolves to `null`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_service_u64(
+    fs: Option<&openjd_expr::FormatString>,
+    symtab: &SymbolTable,
+    budgets: super::EvalBudgets,
+    path: &[PathElement],
+    range: std::ops::RangeInclusive<i64>,
+    range_msg: &str,
+    default: u64,
+) -> Result<u64, ModelError> {
+    let Some(fs) = fs else {
+        return Ok(default);
+    };
+    Ok(
+        resolve_service_int(fs, symtab, budgets, path, range, range_msg)?
+            // The range starts at 0 or above, so the value is non-negative.
+            .map_or(default, |v| v.unsigned_abs()),
+    )
+}
+
+/// Build the check symbol table for a Service's carried-forward
+/// (host-resolved) format strings: `base` (the Service's job-creation
+/// table: concrete `Param.*` / `RawParam.*` / `Job.Name` / `Step.Name` /
+/// step- and service-level `let` bindings) plus `Unresolved` placeholders
+/// for `Session.*`, PATH `Param.*`, this Service's `Service.File.*`, its
+/// own `Service.<name>.<port>.*` (with `bindAddress`) and the `port` /
+/// `connectAddress` of every Service in `in_scope`, with the
+/// `<ServiceScript>.let` bindings evaluated in — the scope the Service
+/// Session binds at run time. `Task.*` is never in scope within a Service.
+fn build_service_check_symtab<'a>(
+    svc: &template::Service,
+    base: &SymbolTable,
+    has_expr: bool,
+    ctx: &crate::types::ValidationContext,
+    budgets: super::EvalBudgets,
+    in_scope: impl Iterator<Item = &'a template::Service>,
+) -> Result<SymbolTable, ModelError> {
+    let mut symtab = base.clone();
+    add_unresolved_session_symbols(&mut symtab)?;
+    crate::job::service_symbols::add_unresolved_service_file_symbols(&mut symtab, svc)?;
+    crate::job::service_symbols::add_unresolved_service_symbols(&mut symtab, in_scope, Some(svc))?;
+    if has_expr {
+        if let Some(bindings) = &svc.script.let_bindings {
+            let host_profile = ctx
+                .profile
+                .to_expr_profile(openjd_expr::HostContext::Unresolved);
+            evaluate_check_let_bindings(bindings, &mut symtab, &host_profile, budgets)?;
+        }
+    }
+    Ok(symtab)
 }
 
 /// Apply the caller evaluation budgets to an expression evaluation
@@ -320,16 +703,26 @@ fn evaluate_check_let_bindings(
 /// has always performed on them: a binding that fails with the real
 /// parameter values fails here, deterministically, rather than in every
 /// session.
-fn build_task_check_symtab(
+///
+/// `in_scope_services` are the Services whose `Service.<name>.<port>.port`
+/// / `.connectAddress` a Task of this Step may reference (RFC 0009): every
+/// Job Service and the Step's own `stepServices`.
+fn build_task_check_symtab<'a>(
     st: &template::StepTemplate,
     script: &template::StepScript,
     step_symtab: &SymbolTable,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     budgets: super::EvalBudgets,
+    in_scope_services: impl Iterator<Item = &'a template::Service>,
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
+    crate::job::service_symbols::add_unresolved_service_symbols(
+        &mut check_symtab,
+        in_scope_services,
+        None,
+    )?;
 
     if let Some(ps) = &st.parameter_space {
         for tp in &ps.task_parameter_definitions {
@@ -395,15 +788,29 @@ fn build_task_check_symtab(
 /// type-checked at pass 8 with everything unresolved, so a failure
 /// here comes from the real parameter values and would
 /// deterministically recur in every session entering the environment.
-pub(super) fn build_env_check_symtab(
+///
+/// `in_scope_services` are the Services in scope where the environment is
+/// defined (every Job Service, plus the Step's for a step environment);
+/// their `Service.<name>.<port>.port` / `.connectAddress` are seeded only
+/// when the environment's `runScope` excludes `SERVICE` (Template Schemas
+/// §4 item 3.2, RFC 0009).
+pub(super) fn build_env_check_symtab<'a>(
     env: &template::Environment,
     base: &SymbolTable,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     budgets: super::EvalBudgets,
+    in_scope_services: impl Iterator<Item = &'a template::Service>,
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
+    if !env.runs_in(template::RunScope::Service) {
+        crate::job::service_symbols::add_unresolved_service_symbols(
+            &mut symtab,
+            in_scope_services,
+            None,
+        )?;
+    }
     if let Some(script) = &env.script {
         if let Some(files) = &script.embedded_files {
             for f in files {
@@ -488,6 +895,15 @@ pub fn convert_environment_with_symtab(
     let converted = job::Environment {
         name: env.name.clone(),
         description: env.description.as_ref().map(|d| d.0.clone()),
+        // Validation (pass 11) has rejected unrecognized names, so every
+        // entry parses; one that does not (a directly-constructed template
+        // bypassing decode) is dropped rather than failing conversion.
+        run_scope: env.run_scope.as_ref().map(|names| {
+            names
+                .iter()
+                .filter_map(|n| n.parse::<template::RunScope>().ok())
+                .collect()
+        }),
         script: env.script.as_ref().map(|s| job::EnvironmentScript {
             let_bindings: s.let_bindings.clone(),
             actions: job::EnvironmentActions {
@@ -495,6 +911,14 @@ pub fn convert_environment_with_symtab(
                 on_wrap_env_enter: s.actions.on_wrap_env_enter.as_ref().map(convert_action),
                 on_wrap_task_run: s.actions.on_wrap_task_run.as_ref().map(convert_action),
                 on_wrap_env_exit: s.actions.on_wrap_env_exit.as_ref().map(convert_action),
+                on_wrap_service_enter: s.actions.on_wrap_service_enter.as_ref().map(convert_action),
+                on_wrap_service_run: s.actions.on_wrap_service_run.as_ref().map(convert_action),
+                on_wrap_service_readiness_check: s
+                    .actions
+                    .on_wrap_service_readiness_check
+                    .as_ref()
+                    .map(convert_action),
+                on_wrap_service_exit: s.actions.on_wrap_service_exit.as_ref().map(convert_action),
                 on_exit: s.actions.on_exit.as_ref().map(convert_action),
             },
             embedded_files: s
@@ -517,13 +941,18 @@ pub fn convert_environment_with_symtab(
     }
 }
 
+/// Resolve a `hostRequirements` object (a Step's, or a Service's under RFC
+/// 0009) against `symtab`. `owner_path` is the path of the object that
+/// declares it (`steps[i]`, `jobServices[k]`, `steps[i] -> stepServices[k]`)
+/// and prefixes every error path.
 fn resolve_host_requirements(
     hr: &template::HostRequirements,
     symtab: &SymbolTable,
     ctx: &crate::types::ValidationContext,
-    step_index: usize,
+    owner_path: &[PathElement],
     budgets: super::EvalBudgets,
 ) -> Result<job::HostRequirements, ModelError> {
+    let hr_path = path_field(owner_path, "hostRequirements");
     let amounts = hr
         .amounts
         .as_ref()
@@ -542,12 +971,12 @@ fn resolve_host_requirements(
                         standard,
                         symtab,
                         budgets,
-                        step_index,
+                        &hr_path,
                         amount_index,
                     )
                 })
                 .collect::<Result<Vec<_>, ModelError>>()?;
-            check_resolved_names_unique(&names, CapabilityKind::Amount, step_index)?;
+            check_resolved_names_unique(&names, CapabilityKind::Amount, &hr_path)?;
             amts.iter()
                 .zip(names)
                 .enumerate()
@@ -578,7 +1007,7 @@ fn resolve_host_requirements(
                         })
                         .transpose()?
                         .flatten();
-                    check_resolved_amount_bounds(min, max, step_index, amount_index)?;
+                    check_resolved_amount_bounds(min, max, &hr_path, amount_index)?;
                     Ok(job::AmountRequirement { name, min, max })
                 })
                 .collect::<Result<Vec<_>, ModelError>>()
@@ -604,12 +1033,12 @@ fn resolve_host_requirements(
                         &standard_names,
                         symtab,
                         budgets,
-                        step_index,
+                        &hr_path,
                         attr_index,
                     )
                 })
                 .collect::<Result<Vec<_>, ModelError>>()?;
-            check_resolved_names_unique(&names, CapabilityKind::Attribute, step_index)?;
+            check_resolved_names_unique(&names, CapabilityKind::Attribute, &hr_path)?;
             attrs
                 .iter()
                 .zip(names)
@@ -628,8 +1057,10 @@ fn resolve_host_requirements(
                     let attr_lower = name.to_lowercase();
                     let is_single_valued = attr_lower == "attr.worker.os.family"
                         || attr_lower == "attr.worker.cpu.arch";
+                    let attr_path = path_index(&path_field(&hr_path, "attributes"), attr_index);
                     for (field, values) in [("anyOf", &any_of), ("allOf", &all_of)] {
                         if let Some(values) = values {
+                            let field_path = path_to_string(&path_field(&attr_path, field));
                             // Decode checks these counts on the template's
                             // element list, but a whole-field expression
                             // flattens a list inline (Expression Language
@@ -640,21 +1071,21 @@ fn resolve_host_requirements(
                             // resolve_string_range.
                             if values.is_empty() {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: has no elements after resolution"
+                                    "{field_path}: has no elements after resolution"
                                 )));
                             }
                             if values.len() > 50 {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: exceeds 50 elements after resolution"
+                                    "{field_path}: exceeds 50 elements after resolution"
                                 )));
                             }
                             if is_single_valued && field == "allOf" && values.len() > 1 {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: single-valued attribute cannot have more than 1 element after resolution"
+                                    "{field_path}: single-valued attribute cannot have more than 1 element after resolution"
                                 )));
                             }
                             check_resolved_attribute_values(
-                                &name, field, values, standard, step_index, attr_index,
+                                &name, field, values, standard, &attr_path,
                             )?;
                         }
                     }
@@ -688,7 +1119,7 @@ fn resolve_capability_name(
     standard: &[&str],
     symtab: &SymbolTable,
     budgets: super::EvalBudgets,
-    step_index: usize,
+    hr_path: &[PathElement],
     index: usize,
 ) -> Result<String, ModelError> {
     // Required string field: a single whole-field expression resolves with
@@ -710,13 +1141,7 @@ fn resolve_capability_name(
             start: None,
             end: None,
         })?;
-    let path = vec![
-        PathElement::Field("steps".to_string()),
-        PathElement::Index(step_index),
-        PathElement::Field("hostRequirements".to_string()),
-        PathElement::Field(kind.field().to_string()),
-        PathElement::Index(index),
-    ];
+    let path = path_index(&path_field(hr_path, kind.field()), index);
     let mut errors = ValidationErrors::default();
     check_capability_name(&resolved, kind, standard, &path, &mut errors);
     errors.into_result("JobTemplate")?;
@@ -733,20 +1158,15 @@ fn resolve_capability_name(
 fn check_resolved_names_unique(
     names: &[String],
     kind: CapabilityKind,
-    step_index: usize,
+    hr_path: &[PathElement],
 ) -> Result<(), ModelError> {
     let mut seen = std::collections::HashSet::new();
     let mut errors = ValidationErrors::default();
+    let list_path = path_field(hr_path, kind.field());
     for (index, name) in names.iter().enumerate() {
         if !seen.insert(name.to_lowercase()) {
             errors.add(
-                &[
-                    PathElement::Field("steps".to_string()),
-                    PathElement::Index(step_index),
-                    PathElement::Field("hostRequirements".to_string()),
-                    PathElement::Field(kind.field().to_string()),
-                    PathElement::Index(index),
-                ],
+                &path_index(&list_path, index),
                 format!("duplicate {} name '{name}'.", kind.noun()),
             );
         }
@@ -769,16 +1189,10 @@ fn check_resolved_names_unique(
 fn check_resolved_amount_bounds(
     min: Option<f64>,
     max: Option<f64>,
-    step_index: usize,
+    hr_path: &[PathElement],
     amount_index: usize,
 ) -> Result<(), ModelError> {
-    let amount_path = vec![
-        PathElement::Field("steps".to_string()),
-        PathElement::Index(step_index),
-        PathElement::Field("hostRequirements".to_string()),
-        PathElement::Field("amounts".to_string()),
-        PathElement::Index(amount_index),
-    ];
+    let amount_path = path_index(&path_field(hr_path, "amounts"), amount_index);
     let mut errors = ValidationErrors::default();
     // Decode enforces "at least one of min or max" on field *presence*,
     // but a whole-field expression resolving to null under the `float?`
@@ -835,28 +1249,17 @@ fn check_resolved_attribute_values(
     field: &str,
     values: &[String],
     standard: &[(&str, &[&str])],
-    step_index: usize,
-    attr_index: usize,
+    attr_path: &[PathElement],
 ) -> Result<(), ModelError> {
     let mut errors = ValidationErrors::default();
+    let field_path = path_field(attr_path, field);
     for (value_index, value) in values.iter().enumerate() {
         if let Err(message) = crate::capabilities::validate_attribute_capability_value(
             capability_name,
             value,
             standard,
         ) {
-            errors.add(
-                &[
-                    PathElement::Field("steps".to_string()),
-                    PathElement::Index(step_index),
-                    PathElement::Field("hostRequirements".to_string()),
-                    PathElement::Field("attributes".to_string()),
-                    PathElement::Index(attr_index),
-                    PathElement::Field(field.to_string()),
-                    PathElement::Index(value_index),
-                ],
-                message,
-            );
+            errors.add(&path_index(&field_path, value_index), message);
         }
     }
     errors.into_result("JobTemplate")
@@ -1221,6 +1624,113 @@ fn filter_symtab_for_environment(env: &job::Environment, full: &SymbolTable) -> 
     let symbols = collect_env_accessed_symbols(env);
     include_raw_param_fallbacks(&symbols, full, &mut filtered);
     filtered
+}
+
+/// The Service counterpart of [`filter_symtab_for_environment`]: the
+/// symbols the Service Session's host-resolved format strings reference —
+/// `variables`, every action of the script (command, args, timeout,
+/// cancelation), embedded-file `data`, and the `<ServiceScript>.let`
+/// bindings — copied out of the Service's job-creation table (which holds
+/// the resolved `<Service>.let` values), with the `RawParam.*` fallback for
+/// PATH parameters.
+fn filter_symtab_for_service(svc: &job::Service, full: &SymbolTable) -> SymbolTable {
+    let mut filtered = SymbolTable::new();
+    let mut symbols = std::collections::HashSet::new();
+    if let Some(vars) = &svc.variables {
+        for fs in vars.values() {
+            fs.copy_used_symtab_values(full, &mut filtered);
+            symbols.extend(fs.accessed_symbols());
+        }
+    }
+    for action in svc.script.actions.iter_actions() {
+        copy_action_refs(action, full, &mut filtered);
+        collect_action_symbols(action, &mut symbols);
+    }
+    if let Some(files) = &svc.script.embedded_files {
+        for f in files {
+            if let Some(d) = &f.data {
+                d.copy_used_symtab_values(full, &mut filtered);
+                symbols.extend(d.accessed_symbols());
+            }
+        }
+    }
+    if let Some(bindings) = &svc.script.let_bindings {
+        collect_let_binding_refs(bindings, full, &mut filtered);
+        symbols.extend(let_binding_symbols(bindings));
+    }
+    include_raw_param_fallbacks(&symbols, full, &mut filtered);
+    filtered
+}
+
+/// Copy the symbols one action's worker-resolved fields (command, args,
+/// timeout, cancelation) reference from `full` into `filtered`.
+fn copy_action_refs(action: &job::Action, full: &SymbolTable, filtered: &mut SymbolTable) {
+    action.command.copy_used_symtab_values(full, filtered);
+    if let Some(args) = &action.args {
+        for a in args {
+            a.copy_used_symtab_values(full, filtered);
+        }
+    }
+    if let Some(t) = &action.timeout {
+        t.copy_used_symtab_values(full, filtered);
+    }
+    match &action.cancelation {
+        Some(job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(n),
+        }) => n.copy_used_symtab_values(full, filtered),
+        Some(job::CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => {
+            mode.copy_used_symtab_values(full, filtered);
+            if let Some(n) = notify_period_in_seconds {
+                n.copy_used_symtab_values(full, filtered);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The symbol names one action's worker-resolved fields access.
+fn collect_action_symbols(action: &job::Action, out: &mut std::collections::HashSet<String>) {
+    out.extend(action.command.accessed_symbols());
+    if let Some(args) = &action.args {
+        for fs in args {
+            out.extend(fs.accessed_symbols());
+        }
+    }
+    if let Some(t) = &action.timeout {
+        out.extend(t.accessed_symbols());
+    }
+    match &action.cancelation {
+        Some(job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(n),
+        }) => out.extend(n.accessed_symbols()),
+        Some(job::CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => {
+            out.extend(mode.accessed_symbols());
+            if let Some(n) = notify_period_in_seconds {
+                out.extend(n.accessed_symbols());
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The symbol names a `let` list's expressions access.
+fn let_binding_symbols(bindings: &[String]) -> std::collections::HashSet<String> {
+    let mut symbols = std::collections::HashSet::new();
+    for binding in bindings {
+        if let Some(eq_pos) = binding.find('=') {
+            let expr = binding[eq_pos + 1..].trim();
+            if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
+                symbols.extend(parsed.accessed_symbols().iter().cloned());
+            }
+        }
+    }
+    symbols
 }
 
 /// Collect all symbol names accessed by an environment's worker-resolved

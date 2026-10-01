@@ -253,6 +253,16 @@ pub fn path_index(base: &[PathElement], index: usize) -> Vec<PathElement> {
     p
 }
 
+/// Render a path as `field[index] -> nested -> leaf`, the form
+/// [`ValidationErrors::format`] prints, for messages that carry a path
+/// inline.
+#[must_use]
+pub(crate) fn path_to_string(path: &[PathElement]) -> String {
+    let mut out = String::new();
+    format_path(path, &mut out);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
