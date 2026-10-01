@@ -1,0 +1,50 @@
+# Exploratory report stumble S6: a Service's onEnter hands a generated
+# credential to onRun with openjd_redacted_env, but the template does not
+# declare REDACTED_ENV_VARS, so the directive is dropped. The run log must say
+# so (a warning naming SECRET, never its value), the Service's onRun must see
+# the variable unset, and the plain openjd_env next to it must still be set.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ServiceRedactedEnvWithoutExtension"
+jobServices:
+  - name: Vault
+    ports:
+      - name: http
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 0
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "print('openjd_redacted_env: SECRET=hunter2'); print('openjd_env: NOTE=set-in-onEnter')"]
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Vault.http.bindAddress }}", "{{ Service.Vault.http.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            print("VAULT_SECRET", os.environ.get("SECRET", "UNSET"), flush=True)
+            print("VAULT_NOTE", os.environ.get("NOTE", "UNSET"), flush=True)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: vault up", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.close()
+steps:
+  - name: UseSecret
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; print('TASK_SECRET', os.environ.get('SECRET', 'UNSET'))"]

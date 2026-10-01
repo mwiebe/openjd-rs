@@ -349,6 +349,111 @@ async fn redacted_env_follows_the_environments_profile() {
     );
 }
 
+/// Exploratory report stumble S6: an `openjd_redacted_env` that is dropped
+/// because the document declares no `REDACTED_ENV_VARS` is announced with a
+/// WARN `COMMAND_OUTPUT` record naming the variable (never the value), so
+/// the redacted `TOKEN=********` line in the log is not mistaken for a set
+/// variable. The decision follows the Environment's own profile: under a
+/// Session without the extension, a plain Environment warns and sets
+/// nothing; one entered with a profile that declares it sets the variable
+/// and warns of nothing — and the other way round.
+#[tokio::test]
+async fn redacted_env_without_the_extension_warns_in_the_environments_output() {
+    const WARNING: &str = "Received openjd_redacted_env for 'TOKEN' but the REDACTED_ENV_VARS \
+                           extension is not declared; the variable is not set.";
+    let redacting = ModelProfile::new(SpecificationRevision::V2023_09)
+        .with_extensions([ModelExtension::RedactedEnvVars].into_iter().collect());
+    let secret_env = |name: &str| {
+        env(
+            name,
+            None,
+            &[],
+            Some(sh("echo openjd_redacted_env: TOKEN=s3cret")),
+            None,
+            None,
+        )
+    };
+    let warnings = |logs: &[testing_logger::CapturedLog]| -> Vec<String> {
+        logs.iter()
+            .filter(|l| l.level == log::Level::Warn)
+            .map(|l| l.body.clone())
+            .collect()
+    };
+
+    // Session without the extension; a plain Environment (the Session's
+    // profile) warns, the Session has no TOKEN, and the value is redacted
+    // everywhere — including the warning.
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let mut plain_session = session(&root, Some(expr_profile()));
+    let (_, output) = plain_session
+        .enter_environment_with_output(&secret_env("Plain"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(plain_session.evaluate_env_vars(None).get("TOKEN"), None);
+    assert_eq!(lines(&output), vec!["openjd_redacted_env: TOKEN=********"]);
+    testing_logger::validate(|logs| {
+        assert_eq!(warnings(logs), vec![WARNING.to_string()]);
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(
+            bodies.contains(&"openjd_redacted_env: TOKEN=********"),
+            "{bodies:?}"
+        );
+        assert!(!bodies.iter().any(|b| b.contains("s3cret")), "{bodies:?}");
+    });
+
+    // The same Session; an Environment entered with a profile that declares
+    // the extension sets the variable and no warning is logged.
+    testing_logger::setup();
+    plain_session
+        .enter_environment_with_profile(&secret_env("Declares"), None, None, None, Some(&redacting))
+        .await
+        .unwrap();
+    assert_eq!(
+        plain_session.evaluate_env_vars(None).get("TOKEN"),
+        Some(&Some("s3cret".to_string()))
+    );
+    testing_logger::validate(|logs| {
+        assert!(warnings(logs).is_empty(), "{:?}", warnings(logs));
+    });
+
+    // And vice versa: a Session that declares the extension sets the variable
+    // from its own Environments without a warning, while an Environment
+    // entered with a profile lacking it warns and sets nothing.
+    testing_logger::setup();
+    let root2 = TempDir::new().unwrap();
+    let mut redacting_session = session(&root2, Some(redacting.clone()));
+    redacting_session
+        .enter_environment_with_output(&secret_env("Own"), None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        redacting_session.evaluate_env_vars(None).get("TOKEN"),
+        Some(&Some("s3cret".to_string()))
+    );
+    testing_logger::validate(|logs| {
+        assert!(warnings(logs).is_empty(), "{:?}", warnings(logs));
+    });
+    testing_logger::setup();
+    let other = env(
+        "Attached",
+        None,
+        &[],
+        Some(sh("echo openjd_redacted_env: OTHER=s3cret2")),
+        None,
+        None,
+    );
+    redacting_session
+        .enter_environment_with_profile(&other, None, None, None, Some(&expr_profile()))
+        .await
+        .unwrap();
+    assert_eq!(redacting_session.evaluate_env_vars(None).get("OTHER"), None);
+    testing_logger::validate(|logs| {
+        assert_eq!(warnings(logs), vec![WARNING.replace("'TOKEN'", "'OTHER'")]);
+        assert!(!logs.iter().any(|l| l.body.contains("s3cret2")));
+    });
+}
+
 /// Path-mapping rules added after an Environment is entered reach the
 /// Environment's own library too (`apply_path_mapping` in its `onExit`).
 #[tokio::test]

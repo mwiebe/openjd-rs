@@ -220,6 +220,40 @@ to provide visual structure in log output.
 | `runner/step_script.rs` | `BANNER` | Subsection banner before action execution |
 | `embedded_files.rs` | `FILE_PATH` | File write paths |
 | `embedded_files.rs` | `FILE_CONTENTS` | File data content (debug level only) |
+| `action_filter.rs` | `COMMAND_OUTPUT` (WARN) | `Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is not declared; the variable is not set.` — see below |
+
+## Log levels and classification
+
+The `log` level of a record and its `LogContent` are independent axes, as in Python
+(`LOG.warning(..., extra=LogExtraInfo(openjd_log_content=...))`): the level says how
+serious the record is, the content says *what it is about* and therefore where a
+consumer routes it. Almost every record of the crate is `info`. The exceptions, and
+how they are classified:
+
+- **Operational warnings** about the runtime itself — the sticky-bit warning in
+  `Session::with_config`, a cross-user helper dropped without `shutdown()`, a
+  `CTRL_BREAK` / delayed-terminate fallback in `subprocess.rs`, the
+  `redactions_enabled = true` malformed `openjd_redacted_env` notice — are plain
+  `log::warn!` records with **no** `openjd_log_content`. They are for whoever runs the
+  runtime, not the template author, and a consumer that routes by `LogContent` leaves
+  them out of the action's output (the CLI's `SessionLogger` drops them).
+- **Warnings addressed to the template author** about *their action's output* carry
+  `LogContent::COMMAND_OUTPUT` at level `warn`, through `session_tagged_log!` so they
+  carry the action's `session_id`, `openjd_timestamp_usec` and session / action tags
+  like every other line of the action. Today there is one: the `ActionFilter`'s
+  `Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is not
+  declared; the variable is not set.` (see
+  [action-filter.md](action-filter.md#when-the-document-does-not-declare-redacted_env_vars)),
+  which matches the classification of Python's `Received openjd_redacted_env message but
+  REDACTED_ENV_VARS extension is not enabled` warning. Routing it with the command output
+  puts it next to the redacted `NAME=********` line it explains, in the one stream the
+  author reads. It is subject to the action's `openjd_session_runtime_loglevel` like
+  the output it accompanies (suppressed above `WARNING`); the `info`-level output lines
+  are suppressed above `INFO`.
+
+A consumer must therefore not assume `COMMAND_OUTPUT` implies `info`, nor that `warn`
+implies "not the action's output": route by `openjd_log_content`, and read the level
+for severity.
 
 ## Consumer Integration
 

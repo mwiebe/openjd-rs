@@ -3995,6 +3995,46 @@ mod services {
         assert!(stdout.contains("Chunks run: 3"), "{stdout}");
     }
 
+    /// Exploratory report stumble S6: a Service's `onEnter` prints
+    /// `openjd_redacted_env: SECRET=hunter2` but the Job Template declares no
+    /// `REDACTED_ENV_VARS`. The directive is dropped, and the run log says
+    /// so with one warning in the Service Session's output stream (tagged
+    /// `[Service Vault]`, naming `SECRET` and never `hunter2`), the Service's
+    /// own `onRun` sees `SECRET` unset while the plain `openjd_env` next to
+    /// it is honored, and the Task — which never sees a Service's variables —
+    /// sees it unset too.
+    #[test]
+    fn test_service_on_enter_redacted_env_without_the_extension_warns() {
+        let (code, stdout, stderr) =
+            run_service_template("service_redacted_env_no_extension.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let warning = "[Service Vault] Received openjd_redacted_env for 'SECRET' but the \
+                       REDACTED_ENV_VARS extension is not declared; the variable is not set.";
+        assert_eq!(stdout.matches(warning).count(), 1, "{stdout}");
+        // The warning comes with the redacted directive line, before onRun.
+        assert!(
+            pos(&stdout, warning)
+                < pos(
+                    &stdout,
+                    "[Service Vault] openjd_redacted_env: SECRET=********"
+                )
+                && pos(&stdout, warning) < pos(&stdout, "VAULT_SECRET UNSET"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("hunter2"), "{stdout}");
+        assert!(!stderr.contains("hunter2"), "{stderr}");
+        assert!(
+            stdout.contains("[Service Vault] VAULT_SECRET UNSET"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Vault] VAULT_NOTE set-in-onEnter"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_SECRET UNSET"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
     /// Template Schemas §1.2.2 item 2: Service names are scoped to their
     /// document. The RFC's Valkey Job Template (Job Service `Cache`) is
     /// submitted with the RFC's queue-cache attachment (external Service

@@ -193,6 +193,54 @@ Variable-length replacement (matching the original value's length) would leak in
 about the value's size. Fixed-length replacement is a security best practice for
 credential redaction.
 
+### When the document does not declare `REDACTED_ENV_VARS`
+
+`ActionFilter::new`'s `redactions_enabled` argument is the gate of
+Python's `_redactions_enabled()`: true when the spec revision is newer than
+2023-09 or the running action's *document* declares `REDACTED_ENV_VARS`. The
+runner sets it per action from that document's profile
+(`Session::env_redactions_enabled` for an entered Environment's `onEnter` /
+`onExit`, the Session's own profile for Tasks and for a Service Session's
+actions — see [session.md § Enter](session.md#enter)), so an attached
+Environment Template without the extension is gated by *its* `extensions`, not
+the Job Template's, and vice versa.
+
+With `redactions_enabled = false` a well-formed `openjd_redacted_env: NAME=VALUE`
+is still parsed: the value joins the redaction set, the line is rewritten to
+`NAME=********`, and the `RedactedEnv` callback is still returned (so the
+Session can redact the value from later output) — but no variable is set.
+Since the log then shows exactly what a successful directive shows, the filter
+also emits a **WARN** record in the action's own output stream:
+
+```
+Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is not declared; the variable is not set.
+```
+
+- It names the variable only, never the value.
+- It is a `LogContent::COMMAND_OUTPUT` record (Python logs its
+  `Received openjd_redacted_env message but REDACTED_ENV_VARS extension is not
+  enabled` warning as `COMMAND_OUTPUT` too), so consumers that show an action's
+  output — the CLI's `SessionLogger`, a worker's session log — show it with the
+  redacted line it explains; see [logging.md § Log levels and
+  classification](logging.md#log-levels-and-classification).
+- It is emitted through `session_tagged_log!` with the filter's `log_tag()`
+  (its session and action tags), so in a Service Session it reads
+  `[Service <name>] Received openjd_redacted_env for 'NAME' …` like every other
+  line of that Session, and `[<session>] [onReadinessCheck] …` for the
+  concurrent check.
+- It is emitted at most once per directive line, by the filter alone: the
+  Session's `apply_message` and the Service Session's `apply_foreground_message`
+  drop the variable silently (the latter's `log_env_message_ignored` is the
+  different "env message from `onRun` / `onExit`" case).
+- It honors `openjd_session_runtime_loglevel` like the command output it
+  accompanies: suppressed once the action has raised the level above WARNING.
+- A well-formed directive with the extension declared logs no warning. (The
+  other WARN the filter emits — `Malformed openjd_redacted_env command: invalid
+  format. No environment variable will be set.` — is the `redactions_enabled =
+  true` handling of an unparseable payload, which does not cancel the action;
+  without the extension a malformed payload cancels it instead, see
+  [Malformed Command Detection](#malformed-command-detection).)
+
 ### Redaction ordering and the `echo_openjd_directives` flag
 
 When `openjd_redacted_env: NAME=VALUE` is processed, the secret is added to

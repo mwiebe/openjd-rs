@@ -297,6 +297,29 @@ the Job Template did not itself declare `SERVICE`: the attached Environment's
 `join_host_port` was looked up in the Job Template's library. The same rule applies
 to Service Sessions (see [Services](#services-rfc-0009) "Documents and profiles").
 
+The profile also decides whether `openjd_redacted_env` is honored: an Environment's
+`onEnter` / `onExit` sets a redacted variable iff **its own** document declares
+`REDACTED_ENV_VARS` (or has a revision newer than 2023-09); a Task's `onRun` and a
+Service's actions iff their document does. When it is not, the runtime still redacts
+the value from the log but sets nothing, and — so the redacted `NAME=********` line is
+not mistaken for a set variable — logs a WARN line in the action's output, which the
+run log shows next to that line:
+
+```
+0:00:00.017	Received openjd_redacted_env for 'SECRET' but the REDACTED_ENV_VARS extension is not declared; the variable is not set.
+0:00:00.017	openjd_redacted_env: SECRET=********
+```
+
+The line names the variable only (the value never appears) and is emitted once per
+directive, by the sessions runtime's `ActionFilter`
+(`specs/sessions/action-filter.md`); inside a Service Session it is tagged like the
+rest of that Session's output (`[Service Vault] Received openjd_redacted_env for
+'SECRET' …`). This was stumble S6 of the exploratory report (`08-secret.yaml`, whose
+Service `onEnter` generated a token the `onRun` then could not find; `08c` for a plain
+Environment): the fix is to add `REDACTED_ENV_VARS` to that document's `extensions`.
+Tests: `test_service_on_enter_redacted_env_without_the_extension_warns`,
+sessions `redacted_env_without_the_extension_warns_in_the_environments_output`.
+
 The `EnteredEnvironment` also keeps the symbol table the Environment was actually
 entered with (`resolved`: the caller's table with the document's READY `Service.*`
 endpoints layered on), and `exit_environments_down_to` passes it to
@@ -588,7 +611,10 @@ line per event, each naming the Service and its scope: endpoints
 in its Service Session (relaunch N of M): <reason>` / `… in a new Service Session …`,
 `is FAILED: <reason>; N of M relaunch(es) used (restartPolicy.maxAttempts)`, and
 `stopped`. The Service's subprocess output streams through the session logger like a
-Task's, with the `[onReadinessCheck]` tag the runtime adds.
+Task's, with the `[onReadinessCheck]` tag the runtime adds — including the runtime's
+WARN line when the Service's `onEnter` uses `openjd_redacted_env` without the
+document declaring `REDACTED_ENV_VARS` (see [Environment
+Lifecycle](#environment-lifecycle) "Per-document extension profiles").
 
 **Attribution inside a Service Session.** Once Tasks run, a Service's `onRun` output
 interleaves with Task output in the single run log, and the sessions runtime enters a
