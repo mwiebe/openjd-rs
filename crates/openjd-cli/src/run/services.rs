@@ -15,6 +15,13 @@
 //! scope completes (constraints 4, 6, 7). The Service Sessions themselves
 //! are `openjd_sessions::ServiceSession`s.
 //!
+//! Services are keyed by [`ServiceKey`] — the document that declares a
+//! Service plus its name (Template Schemas §1.2.2 item 2: names are scoped
+//! to their document, so an external Service may be named like one of the
+//! Job Template's). A Service Session is seeded with the `Service.*`
+//! endpoints of its own document only, and a `Service.*` reference inside a
+//! Service resolves to a Service of the same document.
+//!
 //! See `specs/cli/run.md` § Services for the orchestration rules.
 
 use std::collections::BTreeSet;
@@ -24,7 +31,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use openjd_model::job::service_symbols::{referenced_service_names, ServiceEndpoints};
-use openjd_model::job::{CompletedTasksPolicy, Environment, Job, Service, Step};
+use openjd_model::job::{CompletedTasksPolicy, Document, Environment, Job, Service, Step};
 use openjd_model::types::{JobParameterValues, ModelProfile};
 use openjd_sessions::path_mapping::PathMappingRule;
 use openjd_sessions::session::SessionConfig;
@@ -57,20 +64,89 @@ impl std::fmt::Display for ServiceScope {
     }
 }
 
+/// What identifies one Service of the combined Job: the document that
+/// declares it and its name (Template Schemas §1.2.2 item 2). Two Services
+/// with the same name from different documents are different Services.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct ServiceKey {
+    pub document: Document,
+    pub name: String,
+}
+
+impl ServiceKey {
+    pub(super) fn of(service: &Service) -> Self {
+        Self {
+            document: service.document.clone(),
+            name: service.name.clone(),
+        }
+    }
+
+    /// The Service `name` names from inside a Service of `document`: a
+    /// `Service.<name>.*` reference never crosses a document boundary.
+    fn sibling(document: &Document, name: &str) -> Self {
+        Self {
+            document: document.clone(),
+            name: name.to_string(),
+        }
+    }
+
+    /// `(from <doc>)` for an external Service, nothing for the Job
+    /// Template's own — what disambiguates same-named Services in the log.
+    pub(super) fn origin_suffix(&self) -> String {
+        origin_suffix(&self.document)
+    }
+}
+
+/// `Service 'X'`, or `Service 'X' (from <doc>)` for an external Service.
+impl std::fmt::Display for ServiceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Service '{}'{}", self.name, self.origin_suffix())
+    }
+}
+
+/// `" (from <doc>)"` when `document` is an attached Environment Template,
+/// else empty.
+pub(super) fn origin_suffix(document: &Document) -> String {
+    if document.is_job_template() {
+        String::new()
+    } else {
+        format!(" (from {document})")
+    }
+}
+
+/// `Service 'X'` / `Service 'X' (from <doc>)` for `service`.
+pub(super) fn service_label(service: &Service) -> String {
+    ServiceKey::of(service).to_string()
+}
+
 /// A Service that became FAILED: its scope fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServiceFailure {
     pub name: String,
+    /// The document declaring the Service; `JobTemplate` for the Job
+    /// Template's own.
+    pub document: Document,
     pub scope: ServiceScope,
     pub reason: String,
+}
+
+impl ServiceFailure {
+    fn key(&self) -> ServiceKey {
+        ServiceKey {
+            document: self.document.clone(),
+            name: self.name.clone(),
+        }
+    }
 }
 
 impl std::fmt::Display for ServiceFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Service '{}' ({} scope) failed: {}",
-            self.name, self.scope, self.reason
+            "{} ({} scope) failed: {}",
+            self.key(),
+            self.scope,
+            self.reason
         )
     }
 }
@@ -178,11 +254,14 @@ fn describe_exit(exit: &ServiceRunExit) -> String {
 struct Instance {
     service: Service,
     scope: ServiceScope,
+    /// `Service 'X'` or `Service 'X' (from <doc>)`, for every log line.
+    label: String,
     /// The Environments the Service Session enters (those whose `runScope`
     /// includes `SERVICE`), in entry order.
     environments: Vec<Environment>,
-    /// Endpoints of the Services earlier in the start order that were READY
-    /// when this Session was started.
+    /// Endpoints of the Services earlier in the start order, **of this
+    /// Service's own document**, that were READY when this Session was
+    /// started (a `Service.*` reference resolves within its document).
     in_scope: Vec<ServiceEndpoints>,
     endpoints: Option<ServiceEndpoints>,
     session: Option<ServiceSession>,
@@ -221,10 +300,11 @@ enum State {
 }
 
 struct Managed {
-    name: String,
+    key: ServiceKey,
     policy: CompletedTasksPolicy,
-    /// Names of the Services this one references through `Service.*`.
-    references: BTreeSet<String>,
+    /// The Services this one references through `Service.*` — each a
+    /// Service of the same document, by construction of the scope rules.
+    references: BTreeSet<ServiceKey>,
     state: State,
 }
 
@@ -329,13 +409,19 @@ impl ServiceManager {
         !self.job.is_empty() || !self.step.is_empty()
     }
 
-    /// The endpoints every Task Session of the current Step may reference:
-    /// the Job Services' and the Step's Services' (`port` and
-    /// `connectAddress`; `bindAddress` is never seeded here).
-    pub(super) fn task_scope_endpoints(&self) -> Vec<ServiceEndpoints> {
+    /// The endpoints an entity declared by `document` may reference in the
+    /// Task Session: the READY Job Services' and the Step's Services' of
+    /// **that document** (`port` and `connectAddress`; `bindAddress` is
+    /// never seeded here). A Task, or a Job Template Environment, passes
+    /// `Document::JobTemplate` and sees the Job Template's Services alone;
+    /// an attached Environment passes its own document and sees the
+    /// external Services it was declared with (Template Schemas §1.2.2
+    /// item 2).
+    pub(super) fn task_scope_endpoints(&self, document: &Document) -> Vec<ServiceEndpoints> {
         self.job
             .iter()
             .chain(self.step.iter())
+            .filter(|m| m.key.document == *document)
             .filter_map(|m| match &m.state {
                 State::Ready(inst) => inst.endpoints.clone(),
                 _ => None,
@@ -463,8 +549,8 @@ impl ServiceManager {
         if let State::Ready(inst) = std::mem::replace(&mut m.state, State::Failed) {
             let kind = FailureKind::Exited(exit);
             log_line(format!(
-                "Service '{}' ({} scope) is UNREADY: {} (completedTasks: {})",
-                inst.service.name,
+                "{} ({} scope) is UNREADY: {} (completedTasks: {})",
+                inst.label,
                 inst.scope,
                 kind.describe(),
                 policy_name(policy)
@@ -515,9 +601,9 @@ impl ServiceManager {
     }
 
     /// Await every background task. Records FAILED Services on `outcome`
-    /// (the first as its `failure`) and returns the names of the Services
+    /// (the first as its `failure`) and returns the keys of the Services
     /// that became READY in a new Session.
-    async fn await_busy(&mut self, outcome: &mut GateOutcome) -> Result<Vec<String>, RunError> {
+    async fn await_busy(&mut self, outcome: &mut GateOutcome) -> Result<Vec<ServiceKey>, RunError> {
         let mut replaced = Vec::new();
         for (group, list) in [(Group::Job, &mut self.job), (Group::Step, &mut self.step)] {
             for m in list.iter_mut() {
@@ -529,11 +615,11 @@ impl ServiceManager {
                 };
                 let (inst, result) = handle
                     .await
-                    .map_err(|e| format!("Service '{}': background task failed: {e}", m.name))?;
+                    .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
                 match result {
                     Outcome::Ready { replaced: r } => {
                         if r {
-                            replaced.push(m.name.clone());
+                            replaced.push(m.key.clone());
                             match group {
                                 Group::Job => outcome.job_endpoints_changed = true,
                                 Group::Step => outcome.step_endpoints_changed = true,
@@ -543,7 +629,8 @@ impl ServiceManager {
                     }
                     Outcome::Failed(reason) => {
                         let failure = ServiceFailure {
-                            name: m.name.clone(),
+                            name: m.key.name.clone(),
+                            document: m.key.document.clone(),
                             scope: inst.scope.clone(),
                             reason,
                         };
@@ -568,16 +655,16 @@ impl ServiceManager {
     /// guarantees a referenced Service's endpoint at the referencing
     /// Session's start. Not a failure of the dependent: no attempt is
     /// consumed. Stopped in reverse start order (constraint 4).
-    async fn restart_dependents(&mut self, replaced: &[String]) {
+    async fn restart_dependents(&mut self, replaced: &[ServiceKey]) {
         if replaced.is_empty() {
             return;
         }
-        let mut stale: BTreeSet<String> = replaced.iter().cloned().collect();
+        let mut stale: BTreeSet<ServiceKey> = replaced.iter().cloned().collect();
         loop {
             let before = stale.len();
             for m in self.job.iter().chain(self.step.iter()) {
                 if matches!(m.state, State::Ready(_)) && !m.references.is_disjoint(&stale) {
-                    stale.insert(m.name.clone());
+                    stale.insert(m.key.clone());
                 }
             }
             if stale.len() == before {
@@ -586,14 +673,14 @@ impl ServiceManager {
         }
         for list in [&mut self.step, &mut self.job] {
             for m in list.iter_mut().rev() {
-                if replaced.contains(&m.name) || !stale.contains(&m.name) {
+                if replaced.contains(&m.key) || !stale.contains(&m.key) {
                     continue;
                 }
                 if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Failed) {
                     log_line(format!(
-                        "Service '{}' references a Service that began a new Service Session; \
+                        "{} references a Service that began a new Service Session; \
                          restarting it with the new endpoints",
-                        m.name
+                        m.key
                     ));
                     end_instance(&mut inst).await;
                     m.state = State::Pending(inst);
@@ -607,18 +694,18 @@ impl ServiceManager {
     /// starts concurrently; the next begins when the wave has settled.
     async fn start_pending(&mut self, outcome: &mut GateOutcome) -> Result<(), RunError> {
         loop {
-            let ready: BTreeSet<String> = self
+            let ready: BTreeSet<ServiceKey> = self
                 .job
                 .iter()
                 .chain(self.step.iter())
                 .filter(|m| matches!(m.state, State::Ready(_)))
-                .map(|m| m.name.clone())
+                .map(|m| m.key.clone())
                 .collect();
-            let known: BTreeSet<String> = self
+            let known: BTreeSet<ServiceKey> = self
                 .job
                 .iter()
                 .chain(self.step.iter())
-                .map(|m| m.name.clone())
+                .map(|m| m.key.clone())
                 .collect();
             let mut spawned = false;
             let mut blocked = Vec::new();
@@ -626,7 +713,9 @@ impl ServiceManager {
                 (Group::Job, self.job_stop.clone()),
                 (Group::Step, self.step_stop.clone()),
             ] {
-                let job_endpoints: Vec<ServiceEndpoints> = ready_endpoints(&self.job, None);
+                // The READY Job Services' endpoints, with their documents,
+                // for seeding a Step Service's Session.
+                let job_snapshot = ready_snapshot(&self.job);
                 let list = match group {
                     Group::Job => &mut self.job,
                     Group::Step => &mut self.step,
@@ -635,23 +724,27 @@ impl ServiceManager {
                     if !matches!(list[idx].state, State::Pending(_)) {
                         continue;
                     }
-                    let waiting_on: Vec<&String> = list[idx]
+                    let waiting_on: Vec<&ServiceKey> = list[idx]
                         .references
                         .iter()
                         .filter(|r| known.contains(*r) && !ready.contains(*r))
                         .collect();
                     if !waiting_on.is_empty() {
-                        blocked.push(list[idx].name.clone());
+                        blocked.push(list[idx].key.to_string());
                         continue;
                     }
                     // Constraint 2: in scope are the Services earlier in the
                     // start order — every Job Service for a Step Service,
-                    // plus the earlier entries of this list.
+                    // plus the earlier entries of this list — restricted to
+                    // the Service's own document (§1.2.2 item 2: a
+                    // `Service.*` reference resolves within its document,
+                    // and two documents may both declare a `Cache`).
+                    let document = list[idx].key.document.clone();
                     let mut in_scope = match group {
                         Group::Job => Vec::new(),
-                        Group::Step => job_endpoints.clone(),
+                        Group::Step => snapshot_endpoints(&job_snapshot, &document),
                     };
-                    in_scope.extend(ready_endpoints(list, Some(idx)));
+                    in_scope.extend(ready_endpoints(list, Some(idx), &document));
                     let State::Pending(mut inst) =
                         std::mem::replace(&mut list[idx].state, State::Failed)
                     else {
@@ -693,13 +786,22 @@ fn managed(
     environments: Vec<Environment>,
     retain_working_dir: bool,
 ) -> Managed {
+    let key = ServiceKey::of(service);
     Managed {
-        name: service.name.clone(),
+        // A `Service.<name>.*` reference inside this Service names a
+        // Service of the same document (template validation seeds only
+        // the document's own Services), so each referenced name is keyed
+        // with this Service's document.
+        references: referenced_service_names(service)
+            .iter()
+            .map(|name| ServiceKey::sibling(&key.document, name))
+            .collect(),
+        key: key.clone(),
         policy: service.restart_policy.completed_tasks,
-        references: referenced_service_names(service),
         state: State::Pending(Instance {
             service: service.clone(),
             scope,
+            label: key.to_string(),
             environments,
             in_scope: Vec::new(),
             endpoints: None,
@@ -710,16 +812,43 @@ fn managed(
     }
 }
 
-/// Endpoints of the READY Services of `list`, restricted to indices before
-/// `before` when given.
-fn ready_endpoints(list: &[Managed], before: Option<usize>) -> Vec<ServiceEndpoints> {
+/// Endpoints of the READY Services of `list` declared by `document`,
+/// restricted to indices before `before` when given.
+fn ready_endpoints(
+    list: &[Managed],
+    before: Option<usize>,
+    document: &Document,
+) -> Vec<ServiceEndpoints> {
     list.iter()
-        .enumerate()
         .take(before.unwrap_or(list.len()))
-        .filter_map(|(_, m)| match &m.state {
+        .filter(|m| m.key.document == *document)
+        .filter_map(|m| match &m.state {
             State::Ready(inst) => inst.endpoints.clone(),
             _ => None,
         })
+        .collect()
+}
+
+/// The READY Services' endpoints of `list` with their documents — a
+/// snapshot usable while another list is borrowed mutably.
+fn ready_snapshot(list: &[Managed]) -> Vec<(Document, ServiceEndpoints)> {
+    list.iter()
+        .filter_map(|m| match &m.state {
+            State::Ready(inst) => inst.endpoints.clone().map(|e| (m.key.document.clone(), e)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The endpoints of `snapshot` declared by `document`.
+fn snapshot_endpoints(
+    snapshot: &[(Document, ServiceEndpoints)],
+    document: &Document,
+) -> Vec<ServiceEndpoints> {
+    snapshot
+        .iter()
+        .filter(|(d, _)| d == document)
+        .map(|(_, e)| e.clone())
         .collect()
 }
 
@@ -748,7 +877,7 @@ async fn stop_group(list: &mut [Managed]) {
         match std::mem::replace(&mut m.state, State::Stopped) {
             State::Busy(handle) => match handle.await {
                 Ok((mut inst, _)) => end_instance(&mut inst).await,
-                Err(e) => eprintln!("ERROR: Service '{}': background task failed: {e}", m.name),
+                Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
             },
             State::Ready(mut inst) | State::Pending(mut inst) => end_instance(&mut inst).await,
             State::Failed | State::Stopped => {}
@@ -761,15 +890,16 @@ async fn end_instance(inst: &mut Instance) {
     let Some(mut session) = inst.session.take() else {
         return;
     };
-    log_banner(&format!("Stopping Service: {}", inst.service.name));
+    log_banner(&format!(
+        "Stopping Service: {}{}",
+        inst.service.name,
+        origin_suffix(&inst.service.document)
+    ));
     let working_dir = session.session().working_directory().to_path_buf();
     if let Err(e) = session.end().await {
-        eprintln!(
-            "ERROR: Service '{}' teardown reported an error: {e}",
-            inst.service.name
-        );
+        eprintln!("ERROR: {} teardown reported an error: {e}", inst.label);
     }
-    let mut msg = format!("Service '{}' stopped", inst.service.name);
+    let mut msg = format!("{} stopped", inst.label);
     if inst.retain_working_dir {
         msg.push_str(&format!(
             "; working directory preserved at: {}",
@@ -826,8 +956,8 @@ async fn start_or_recover(
                     max_attempts
                 );
                 log_line(format!(
-                    "Service '{}' ({} scope) is FAILED: {reason}",
-                    inst.service.name, inst.scope
+                    "{} ({} scope) is FAILED: {reason}",
+                    inst.label, inst.scope
                 ));
                 end_instance(&mut inst).await;
                 return (inst, Outcome::Failed(reason));
@@ -836,8 +966,8 @@ async fn start_or_recover(
             if k.requires_new_session() {
                 replaced = true;
                 log_line(format!(
-                    "Relaunching Service '{}' in a new Service Session (relaunch {} of {}): {}",
-                    inst.service.name,
+                    "Relaunching {} in a new Service Session (relaunch {} of {}): {}",
+                    inst.label,
                     inst.relaunches,
                     max_attempts,
                     k.describe()
@@ -845,8 +975,8 @@ async fn start_or_recover(
                 end_instance(&mut inst).await;
             } else {
                 log_line(format!(
-                    "Relaunching Service '{}' onRun in its Service Session (relaunch {} of {}): {}",
-                    inst.service.name,
+                    "Relaunching {} onRun in its Service Session (relaunch {} of {}): {}",
+                    inst.label,
                     inst.relaunches,
                     max_attempts,
                     k.describe()
@@ -862,8 +992,8 @@ async fn start_or_recover(
                     return (inst, Outcome::Stopped);
                 }
                 log_line(format!(
-                    "Service '{}' ({} scope) is UNREADY: {}",
-                    inst.service.name,
+                    "{} ({} scope) is UNREADY: {}",
+                    inst.label,
                     inst.scope,
                     k.describe()
                 ));
@@ -888,10 +1018,14 @@ async fn launch_until_ready(
             .unwrap_or_else(|p| p.into_inner())
             .allocate(&inst.service)
             .map_err(FailureKind::Start)?;
-        log_banner(&format!("Starting Service: {}", inst.service.name));
-        log_line(format!(
-            "Service '{}' ({} scope) endpoints: {}",
+        log_banner(&format!(
+            "Starting Service: {}{}",
             inst.service.name,
+            origin_suffix(&inst.service.document)
+        ));
+        log_line(format!(
+            "{} ({} scope) endpoints: {}",
+            inst.label,
             inst.scope,
             describe_endpoints(&endpoints)
         ));
@@ -940,8 +1074,8 @@ async fn launch_until_ready(
         .await
         .map_err(|e| FailureKind::Start(format!("could not launch onRun: {e}")))?;
     log_line(format!(
-        "Service '{}' onRun launched (launch {} in this Session); readiness check: {}",
-        inst.service.name,
+        "{} onRun launched (launch {} in this Session); readiness check: {}",
+        inst.label,
         session.launch_count(),
         inst.service.readiness_check.type_name()
     ));
@@ -952,7 +1086,7 @@ async fn launch_until_ready(
     match readiness {
         Ok(ServiceReadiness::Ready { message }) => {
             let suffix = message.map(|m| format!(": {m}")).unwrap_or_default();
-            log_line(format!("Service '{}' is READY{suffix}", inst.service.name));
+            log_line(format!("{} is READY{suffix}", inst.label));
             Ok(true)
         }
         Ok(ServiceReadiness::TimedOut) => {
@@ -1028,6 +1162,7 @@ mod tests {
     fn service_failure_display_names_scope() {
         let f = ServiceFailure {
             name: "Cache".into(),
+            document: Document::JobTemplate,
             scope: ServiceScope::Step("Render".into()),
             reason: "readiness check timed out; 1 of 1 relaunch(es) used".into(),
         };
@@ -1037,5 +1172,45 @@ mod tests {
              relaunch(es) used"
         );
         assert_eq!(ServiceScope::Job.to_string(), "Job");
+
+        // An external Service names its document.
+        let f = ServiceFailure {
+            document: Document::environment_template(0, Some("queue-cache.yaml")),
+            scope: ServiceScope::Job,
+            ..f
+        };
+        assert_eq!(
+            f.to_string(),
+            "Service 'Cache' (from queue-cache.yaml) (Job scope) failed: readiness check timed \
+             out; 1 of 1 relaunch(es) used"
+        );
+    }
+
+    #[test]
+    fn service_keys_distinguish_documents_not_names() {
+        let own = ServiceKey {
+            document: Document::JobTemplate,
+            name: "Cache".into(),
+        };
+        let external = ServiceKey {
+            document: Document::environment_template(1, None),
+            name: "Cache".into(),
+        };
+        assert_ne!(own, external);
+        assert_eq!(own.to_string(), "Service 'Cache'");
+        assert_eq!(
+            external.to_string(),
+            "Service 'Cache' (from EnvironmentTemplate[1])"
+        );
+        // A reference made from inside the external Service stays in its
+        // document.
+        assert_eq!(
+            ServiceKey::sibling(&external.document, "Store"),
+            ServiceKey {
+                document: external.document.clone(),
+                name: "Store".into()
+            }
+        );
+        assert_eq!(origin_suffix(&Document::JobTemplate), "");
     }
 }

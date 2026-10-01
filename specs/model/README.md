@@ -86,10 +86,10 @@ Currently implements `2023-09` with extensions:
   `Step::step_services`, resolved `<Service>.let` and numeric fields, job-side
   `runScope` / Service hooks), the runtime-facing `job::service_symbols`
   builders, and the submission stage (`apply_environment_templates`: §1.2.2
-  external Services merged before the Job's `jobServices`, the
-  name-collision and wrapping-Environment checks, per-document profiles via
-  `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
-  pass 8 "Service scopes", passes 10–11, and "Submission-time checks" in
+  external Services merged before the Job's `jobServices` and stamped with
+  their `job::Document`, the wrapping-Environment check, per-document
+  profiles via `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
+  pass 8 "Service scopes", passes 10–11, and "Submission-time check" in
   [validation.md](validation.md), "Services" and
   "apply_environment_templates" in [job-creation.md](job-creation.md), and
   [job-types.md](job-types.md), and the scheduler-facing

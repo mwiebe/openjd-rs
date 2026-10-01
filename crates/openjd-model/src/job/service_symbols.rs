@@ -549,6 +549,7 @@ mod tests {
         let mut svc = job::Service {
             name: "Self".into(),
             description: None,
+            document: job::Document::JobTemplate,
             host_requirements: None,
             service_environments: Some(vec![job::Environment {
                 name: "E".into(),
