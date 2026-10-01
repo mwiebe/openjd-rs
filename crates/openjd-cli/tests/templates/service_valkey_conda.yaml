@@ -1,0 +1,115 @@
+# RFC 0009 "A shared Valkey store" adapted: a Job Service whose binary comes
+# from a `serviceEnvironments` entry. The RFC's ValkeyConda Environment creates
+# a Conda environment and puts its bin/ on PATH with openjd_env; here the
+# Service Environment writes a fake `valkey-server` (a python TCP listener)
+# into a directory under the Session's working directory and puts that on
+# PATH the same way, so the Service's bare `valkey-server` onRun resolves only
+# because the Service Environment ran first. The Tasks consume the endpoint
+# through Service.Cache.main.connectAddress / .port, and never see the fake
+# binary: the Service Environment is entered in the Service's Session alone.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "Frame Processing With Shared Valkey Store"
+parameterDefinitions:
+  - name: FrameEnd
+    type: INT
+    default: 3
+  - name: TraceFile
+    type: STRING
+
+jobServices:
+  - name: Cache
+    description: "A Valkey store the Job's Tasks share to cache and coordinate."
+    serviceEnvironments:
+      - name: ValkeyConda
+        script:
+          actions:
+            onEnter:
+              command: python
+              args: ["{{ Env.File.Provision }}", "{{ Session.WorkingDirectory }}"]
+          embeddedFiles:
+            - name: Provision
+              type: TEXT
+              data: |
+                import os, stat, sys
+                bindir = os.path.join(sys.argv[1], "valkey-env", "bin")
+                os.makedirs(bindir, exist_ok=True)
+                exe = os.path.join(bindir, "valkey-server")
+                with open(exe, "w") as f:
+                    f.write("#!/usr/bin/env python3\n")
+                    f.write("import socket, sys\n")
+                    f.write("args = dict(zip(sys.argv[1::2], sys.argv[2::2]))\n")
+                    f.write("host, port = args['--bind'], int(args['--port'])\n")
+                    f.write("s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n")
+                    f.write("s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n")
+                    f.write("s.bind((host, port))\n")
+                    f.write("s.listen(16)\n")
+                    f.write("print('FAKE_VALKEY_LISTENING', host, port, flush=True)\n")
+                    f.write("store = {}\n")
+                    f.write("while True:\n")
+                    f.write("    c, _ = s.accept()\n")
+                    f.write("    cmd = c.recv(1024).decode().split()\n")
+                    f.write("    if not cmd:  # a TCP_CONNECT readiness probe\n")
+                    f.write("        c.close()\n")
+                    f.write("        continue\n")
+                    f.write("    if cmd[0] == 'SET':\n")
+                    f.write("        store[cmd[1]] = cmd[2]\n")
+                    f.write("        c.sendall(b'OK')\n")
+                    f.write("    else:\n")
+                    f.write("        c.sendall(store.get(cmd[1], '(nil)').encode())\n")
+                    f.write("    c.close()\n")
+                os.chmod(exe, os.stat(exe).st_mode | stat.S_IXUSR)
+                print("openjd_env: PATH=" + bindir + os.pathsep + os.environ["PATH"], flush=True)
+    ports:
+      - name: main
+    readinessCheck:
+      type: TCP_CONNECT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        # onRun is the long-lived action: its process IS the service. The
+        # bare command resolves through the PATH the Service Environment set.
+        onRun:
+          command: valkey-server
+          args:
+            - "--port"
+            - "{{ Service.Cache.main.port }}"
+            - "--bind"
+            - "{{ Service.Cache.main.bindAddress }}"
+            - "--save"
+            - ""
+          cancelation:
+            mode: NOTIFY_THEN_TERMINATE
+            notifyPeriodInSeconds: 30
+
+steps:
+  - name: ProcessFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-{{ Param.FrameEnd }}"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.Cache.main.connectAddress }}", "{{ Service.Cache.main.port }}", "{{ Task.Param.Frame }}", "{{ Param.TraceFile }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import shutil, socket, sys
+            host, port, frame, trace = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+            def call(msg):
+                c = socket.create_connection((host, port), timeout=10)
+                c.sendall(msg.encode())
+                reply = c.recv(1024).decode()
+                c.close()
+                return reply
+            assert call(f"SET frame:{frame} done") == "OK"
+            print("FRAME", frame, "CACHED", call(f"GET frame:{frame}"), flush=True)
+            with open(trace, "a") as f:
+                f.write(f"frame {frame} valkey-server-on-task-path={shutil.which('valkey-server') is not None}\n")

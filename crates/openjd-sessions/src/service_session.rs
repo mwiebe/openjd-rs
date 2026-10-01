@@ -5,7 +5,8 @@
 //!
 //! A [`ServiceSession`] runs the actions of one `<Service>` on the service
 //! host: it enters the Environments of the Service's scope whose `runScope`
-//! includes `SERVICE`, runs the Service's `onEnter`, launches `onRun` in the
+//! includes `SERVICE`, then the Service's own `serviceEnvironments` (with the
+//! Service's `Service.*` scope), runs the Service's `onEnter`, launches `onRun` in the
 //! background, applies the readiness check (`TCP_CONNECT`, `STDOUT`, or
 //! `COMMAND` — the latter running `onReadinessCheck` concurrently with
 //! `onRun` under the rules of RFC 0009 "Concurrency with `onRun`"), reports
@@ -79,13 +80,18 @@ pub struct ServiceSessionConfig {
     /// values, path mapping rules, session user, callback, limits, …
     /// exactly as for a Session that runs Tasks.
     pub session: SessionConfig,
-    /// The Service whose actions this Session runs.
+    /// The Service whose actions this Session runs. Its
+    /// [`service_environments`](Service::service_environments) are entered
+    /// after [`environments`](Self::environments), each with the Service's
+    /// own `Service.*` scope (`bindAddress` included).
     pub service: Service,
     /// The Environments of the Service's scope, in the order a Session for a
     /// Task in that scope would enter them (a Job Service: the Job's
     /// `jobEnvironments`; a Step Service: those followed by the Step's
     /// `stepEnvironments`). Only those whose `runScope` includes `SERVICE`
-    /// are entered; the rest are skipped with a log line.
+    /// are entered; the rest are skipped with a log line. The Service's
+    /// `serviceEnvironments` are not listed here; they come from
+    /// [`service`](Self::service).
     pub environments: Vec<Environment>,
     /// The caller's endpoint assignment for every port the Service
     /// declares (`Service.<own>.<port>.*`, including `bindAddress`). Port
@@ -590,8 +596,11 @@ impl ServiceSession {
     // --- Lifecycle ---
 
     /// Enter the scope's Environments whose `runScope` includes `SERVICE`,
-    /// in order; resolve the Service's symbol table, embedded files,
-    /// `<ServiceScript>.let`, and `variables`; then run `onEnter` if defined.
+    /// in order, then the Service's own `serviceEnvironments` in order (RFC
+    /// 0009 §9 item 5; each resolves with the Service's own `Service.*`
+    /// scope, `bindAddress` included); resolve the Service's symbol table,
+    /// embedded files, `<ServiceScript>.let`, and `variables`; then run
+    /// `onEnter` if defined.
     ///
     /// # Errors
     ///
@@ -652,6 +661,32 @@ impl ServiceSession {
         }
         self.environments = environments;
 
+        // The Service.* endpoints in scope: the Service's own ports with
+        // bindAddress, and the port / connectAddress of every Service it may
+        // reference. The same table serves the Service's own actions and its
+        // Service Environments.
+        let service_symbols =
+            build_service_symbol_table(&self.in_scope_endpoints, Some(&self.endpoints)).map_err(
+                |e| SessionError::Runtime(format!("Failed to seed Service.* symbols: {e}")),
+            )?;
+
+        // RFC 0009 §9 item 5: then the Service's own `serviceEnvironments`,
+        // in order. Unlike the scope's Environments these are entered only
+        // in this Service's Session, after its ports are allocated, so their
+        // format strings resolve with the Service's own `Service.*` scope:
+        // fold the endpoint symbols onto each one's resolved symbol table.
+        // They join the same entered stack, so `end()` exits them in reverse
+        // after `onExit`, and a wrapping one is found by
+        // `Session::service_wrap_hooks` like any entered wrapper.
+        if let Some(service_envs) = self.service.service_environments.clone() {
+            for env in &service_envs {
+                let symtab = service_environment_symtab(env, &service_symbols)?;
+                self.session
+                    .enter_environment(env, Some(&symtab), None, None)
+                    .await?;
+            }
+        }
+
         // The Service's symbol table: Param.*/RawParam.*/Job.Name/Step.Name
         // (from its resolved_symtab), Session.WorkingDirectory, the
         // Service.* endpoints in scope (own ports with bindAddress), path
@@ -661,10 +696,6 @@ impl ServiceSession {
         let mut symtab = self
             .session
             .build_symbol_table(None, self.service.resolved_symtab.as_ref())?;
-        let service_symbols =
-            build_service_symbol_table(&self.in_scope_endpoints, Some(&self.endpoints)).map_err(
-                |e| SessionError::Runtime(format!("Failed to seed Service.* symbols: {e}")),
-            )?;
         symtab.merge_from(&service_symbols);
         self.session.materialize_path_mapping(&mut symtab)?;
 
@@ -1506,6 +1537,30 @@ fn format_exit_code(code: Option<i32>) -> String {
         Some(c) => format!("exit code: {c}"),
         None => "exit code: N/A".to_string(),
     }
+}
+
+/// The resolved symbol table a Service Environment is entered with: its own
+/// `resolved_symtab` from job creation (`Param.*`, `RawParam.*`, `Job.Name`,
+/// for a Step Service `Step.Name` and the step-level `let`, the
+/// `<Service>.let` values) with the declaring Service's `Service.*` endpoint
+/// symbols folded in — its own ports including `bindAddress`, and the
+/// `port` / `connectAddress` of the Services it may reference (RFC 0009 §9
+/// item 5: "its format strings have the Service's own scope").
+fn service_environment_symtab(
+    env: &Environment,
+    service_symbols: &SymbolTable,
+) -> Result<openjd_expr::SerializedSymbolTable, SessionError> {
+    let mut symtab = match &env.resolved_symtab {
+        Some(st) => st.to_symtab(openjd_expr::PathFormat::host()).map_err(|e| {
+            SessionError::Runtime(format!(
+                "Service Environment '{}': failed to deserialize resolved_symtab: {e}",
+                env.name
+            ))
+        })?,
+        None => SymbolTable::new(),
+    };
+    symtab.merge_from(service_symbols);
+    Ok(openjd_expr::SerializedSymbolTable::from_symtab(&symtab))
 }
 
 /// The `reason` of a [`SessionError::ServiceScriptFailed`] for a finished
