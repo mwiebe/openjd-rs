@@ -73,6 +73,8 @@ mod test_scope_library_split;
 mod test_service;
 #[path = "integration/test_service_environments.rs"]
 mod test_service_environments;
+#[path = "integration/test_service_external.rs"]
+mod test_service_external;
 #[path = "integration/test_service_job_creation.rs"]
 mod test_service_job_creation;
 #[path = "integration/test_service_scope.rs"]

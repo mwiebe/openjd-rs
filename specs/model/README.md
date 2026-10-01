@@ -84,10 +84,13 @@ Currently implements `2023-09` with extensions:
   pass-8 validation of every format string and `let` inside a Service, job
   creation of Services (`job::Service`, `Job::job_services`,
   `Step::step_services`, resolved `<Service>.let` and numeric fields, job-side
-  `runScope` / Service hooks), and the runtime-facing `job::service_symbols`
-  builders; see [template-types.md](template-types.md), pass 8 "Service scopes"
-  and passes 10–11 in [validation.md](validation.md), "Services" in
-  [job-creation.md](job-creation.md), and [job-types.md](job-types.md). Not yet
-  implemented: merging an Environment Template's `services` into a job at
-  submission (§1.2.2 external Services) and execution of Services in
-  `openjd-sessions` / the CLI.
+  `runScope` / Service hooks), the runtime-facing `job::service_symbols`
+  builders, and the submission stage (`apply_environment_templates`: §1.2.2
+  external Services merged before the Job's `jobServices`, the
+  name-collision and wrapping-Environment checks, per-document profiles via
+  `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
+  pass 8 "Service scopes", passes 10–11, and "Submission-time checks" in
+  [validation.md](validation.md), "Services" and
+  "apply_environment_templates" in [job-creation.md](job-creation.md), and
+  [job-types.md](job-types.md). Not yet implemented: execution of Services in
+  `openjd-sessions` and wiring `apply_environment_templates` into the CLI.

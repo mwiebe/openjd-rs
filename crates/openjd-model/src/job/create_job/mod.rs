@@ -6,6 +6,7 @@
 //!
 //! Mirrors Python `_create_job.py` and `_merge_job_parameter.py`.
 
+mod external;
 mod instantiate;
 pub mod parameters;
 mod ranges;
@@ -21,6 +22,9 @@ use crate::template::JobTemplate;
 use crate::types::{JobParameterValues, ValidationContext};
 
 // Re-exports — preserve the existing public API
+pub use external::{
+    apply_environment_templates, AppliedEnvironmentTemplates, AttachedEnvironmentTemplate,
+};
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
 };

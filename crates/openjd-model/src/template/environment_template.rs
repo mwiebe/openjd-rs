@@ -49,4 +49,43 @@ impl EnvironmentTemplate {
     pub fn services(&self) -> &[Service] {
         self.services.as_deref().unwrap_or_default()
     }
+
+    /// The [`ModelProfile`](crate::ModelProfile) this document declares:
+    /// its specification revision plus the extensions in its `extensions`
+    /// list (§1.2 item 3). An extension listed here applies to this
+    /// document only, so this is the profile under which the document's
+    /// own Environment and Services are evaluated when a submission
+    /// applies the template to a Job — the counterpart of
+    /// [`JobTemplate::profile`](crate::template::JobTemplate::profile).
+    ///
+    /// Entries that don't parse as a known
+    /// [`ModelExtension`](crate::types::ModelExtension) are silently
+    /// skipped, as on the Job Template.
+    pub fn profile(&self) -> crate::ModelProfile {
+        use std::str::FromStr;
+        let revision =
+            crate::types::TemplateSpecificationVersion::from_str(&self.specification_version)
+                .map(|v| v.revision())
+                // Unknown spec versions shouldn't reach this point (the
+                // template was validated). Fall back to the first revision.
+                .unwrap_or(crate::types::SpecificationRevision::V2023_09);
+        let mut exts = crate::types::Extensions::new();
+        if let Some(list) = &self.extensions {
+            for e in list {
+                if let Ok(known) = crate::types::ModelExtension::from_str(e.as_str()) {
+                    exts.insert(known);
+                }
+            }
+        }
+        crate::ModelProfile::new(revision).with_extensions(exts)
+    }
+
+    /// Convenience: wrap [`profile`](Self::profile) in a
+    /// [`ValidationContext`](crate::types::ValidationContext) with default
+    /// caller limits — the "do what the document says" context. Callers
+    /// that set caller limits at decode should carry them here with
+    /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits).
+    pub fn default_validation_context(&self) -> crate::types::ValidationContext {
+        crate::types::ValidationContext::from_profile(self.profile())
+    }
 }
