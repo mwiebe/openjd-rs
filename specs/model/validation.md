@@ -301,16 +301,19 @@ Services see a Service's Service Environments only through that Service's ports 
 
 **Within a Service Environment** (`serviceEnvironments[j]`, §9 item 5), the symbol table is
 the session scope a `stepEnvironments` entry gets — `Param.*` including PATH, `RawParam.*`,
-`Session.*`, the owner's job-creation-stage symbols (`Job.Name`; for a Step Service `Step.Name`
-and the step-level `let` values; for an environment template's Service `Job.Name` only), the
-Environment's own `Env.File.*`, and its `<EnvironmentScript>.let` (host library; the
-step-level names are the enclosing scope) — plus the declaring Service's three endpoint values
-and the `port` / `connectAddress` of every in-scope Service. Not in scope: `Task.*`,
-`Service.File.*` (the Service's script's files), and the `<Service>.let` / `<ServiceScript>.let`
-names (§9 item 3 scopes `<Service>.let` to `hostRequirements`, `variables`, and `script`). The
-body is validated through `validate_env_format_strings` exactly like a `stepEnvironments`
-entry, so the wrap hooks get `WrappedAction.*` and their companion group, and the actions'
-`timeout` / cancelation fields validate against the owner's job-creation scope (no `Session.*`,
+`Session.*`, the Service's job-creation-stage symbols (`Job.Name`; for a Step Service
+`Step.Name` and the step-level `let` values; for an environment template's Service `Job.Name`
+only; and the `<Service>.let` values, which §9 item 3 makes available in `serviceEnvironments`
+as a Step's `let` is in its `stepEnvironments`), the Environment's own `Env.File.*`, and its
+`<EnvironmentScript>.let` (host library; the step-level and `<Service>.let` names are the
+enclosing scope, so `'<name>' shadows enclosing scope.` for either) — plus the declaring
+Service's three endpoint values and the `port` / `connectAddress` of every in-scope Service.
+Not in scope: `Task.*`, `Service.File.*` (the Service's script's files), the
+`<ServiceScript>.let` names, and another Service's `<Service>.let`. The Service Environments
+are therefore validated after the `<Service>.let` bindings. The body is validated through
+`validate_env_format_strings` exactly like a `stepEnvironments` entry, so the wrap hooks get
+`WrappedAction.*` and their companion group, and the actions' `timeout` / cancelation fields
+validate against the Service's job-creation scope (`<Service>.let` included; no `Session.*`,
 no `Service.*`). Comprehension loop variables are checked as for any environment.
 
 **The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the

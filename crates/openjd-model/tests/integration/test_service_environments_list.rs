@@ -672,30 +672,121 @@ fn service_environment_sees_session_params_names_and_its_own_files_and_let() {
 }
 
 #[test]
-fn service_environment_never_sees_task_service_file_or_service_let_names() {
+fn service_environment_never_sees_task_or_service_file_names() {
     expect_job_err(
         &template(&Tmpl {
             a_envs: &env_with_args(
                 "Conda",
-                r#"["{{ Task.Param.Frame }}", "{{ Service.File.Conf }}", "{{ svc_let }}"]"#,
+                r#"["{{ Task.Param.Frame }}", "{{ Service.File.Conf }}"]"#,
             ),
             ..Default::default()
         })
-        .replace(
-            "  - name: A\n",
-            "  - name: A\n    let:\n      - svc_let = 1\n",
-        )
         .replace(
             "        onRun:\n          command: a\n",
             "        onRun:\n          command: a\n      embeddedFiles:\n        - { name: Conf, type: TEXT, data: x }\n",
         ),
         &[
-            "3 validation errors for JobTemplate\n",
+            "2 validation errors for JobTemplate\n",
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
             &undefined("Task.Param.Frame"),
             "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[1]:\n\tFailed to parse interpolation expression at [",
             &undefined("Service.File.Conf"),
-            "jobServices[0] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[2]:\n\tFailed to parse interpolation expression at [",
+        ],
+    );
+}
+
+/// The template with `<Service>.let` bindings on Job Service `A` and Step
+/// Service `C`.
+fn with_service_lets(t: &Tmpl<'_>) -> String {
+    template(t)
+        .replace(
+            "  - name: A\n",
+            "  - name: A\n    let:\n      - svc_let = Param.Port + 1\n      - svc_dir = RawParam.Dir + '/cache'\n",
+        )
+        .replace(
+            "      - name: C\n",
+            "      - name: C\n        let:\n          - c_let = n * 3\n",
+        )
+}
+
+#[test]
+fn service_environment_sees_the_service_let_bindings() {
+    // §9 item 3: `<Service>.let` names are available in `serviceEnvironments`,
+    // as a Step's are in its `stepEnvironments` — in `variables`, actions,
+    // embedded files, the Environment's own `let`, and (being job-creation
+    // values) the `timeout` field. A Step Service's Service Environment sees
+    // both the step-level and the service-level bindings.
+    expect_job_ok(&with_service_lets(&Tmpl {
+        a_envs: r#"- name: Conda
+  variables:
+    N: "{{ svc_let }}"
+    D: "{{ svc_dir }}"
+  script:
+    let:
+      - doubled = svc_let * 2
+    actions:
+      onEnter:
+        command: setup
+        args: ["{{ svc_let }}", "{{ doubled }}", "{{ Env.File.Conf }}", "{{ Service.A.p.bindAddress }}"]
+        timeout: "{{ svc_let * 10 }}"
+    embeddedFiles:
+      - name: Conf
+        type: TEXT
+        data: "dir {{ svc_dir }} port {{ Service.A.p.port }}""#,
+        c_envs: r#"- name: Conda
+  script:
+    actions:
+      onEnter:
+        command: setup
+        args: ["{{ n }}", "{{ c_let }}", "{{ Service.C.r.bindAddress }}"]
+        timeout: "{{ c_let }}""#,
+        step_extra: "let:\n  - n = Param.Port * 2",
+        ..Default::default()
+    }));
+}
+
+#[test]
+fn service_environment_let_may_not_shadow_the_service_let() {
+    expect_job_err(
+        &with_service_lets(&Tmpl {
+            a_envs: r#"- name: Conda
+  script:
+    let:
+      - svc_let = 5
+    actions:
+      onEnter:
+        command: setup"#,
+            c_envs: r#"- name: Conda
+  script:
+    let:
+      - n = 1
+      - c_let = 2
+    actions:
+      onEnter:
+        command: setup"#,
+            step_extra: "let:\n  - n = Param.Port * 2",
+            ..Default::default()
+        }),
+        &[
+            "3 validation errors for JobTemplate\n",
+            "jobServices[0] -> serviceEnvironments[0] -> script -> let[0]:\n\t'svc_let' shadows enclosing scope.",
+            "steps[0] -> stepServices[0] -> serviceEnvironments[0] -> script -> let[0]:\n\t'n' shadows enclosing scope.",
+            "steps[0] -> stepServices[0] -> serviceEnvironments[0] -> script -> let[1]:\n\t'c_let' shadows enclosing scope.",
+        ],
+    );
+}
+
+#[test]
+fn another_services_let_is_not_in_scope_in_a_service_environment() {
+    expect_job_err(
+        &with_service_lets(&Tmpl {
+            b_envs: &env_with_args("Conda", r#"["{{ svc_let }}"]"#),
+            step_extra: "let:\n  - n = Param.Port * 2",
+            ..Default::default()
+        }),
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[1] -> serviceEnvironments[0] -> script -> actions -> onEnter -> args[0]:\n\tFailed to parse interpolation expression at [",
             &undefined("svc_let"),
         ],
     );
@@ -1044,6 +1135,64 @@ fn job_service_service_environments_are_populated_with_resolved_symtabs() {
     assert_eq!(&back, a);
     let b_json = serde_json::to_value(&job.job_services.as_ref().unwrap()[1]).unwrap();
     assert!(b_json.get("serviceEnvironments").is_none());
+}
+
+#[test]
+fn service_environment_resolved_symtab_carries_the_service_let_values() {
+    // §9 item 3: the `<Service>.let` values a Service Environment references
+    // are evaluated at job creation and carried in its `resolved_symtab`, as
+    // a Step's `let` values are for its `stepEnvironments`; the re-check with
+    // parameters bound sees them too.
+    let job = create_ok(
+        &with_service_lets(&Tmpl {
+            a_envs: r#"- name: Conda
+  variables:
+    N: "{{ svc_let }}"
+  script:
+    actions:
+      onEnter: { command: setup, args: ["{{ svc_dir }}", "{{ Service.A.p.bindAddress }}"], timeout: "{{ svc_let * 10 }}" }"#,
+            c_envs: r#"- name: Conda
+  script:
+    actions:
+      onEnter: { command: setup, args: ["{{ n }}", "{{ c_let }}"] }"#,
+            step_extra: "let:\n  - n = Param.Port * 2",
+            ..Default::default()
+        }),
+        &[("Port", "21")],
+    );
+    let a = &job.job_services.as_ref().unwrap()[0];
+    let envs = a.service_environments.as_ref().unwrap();
+    let st = symtab_of(envs[0].resolved_symtab.as_ref().unwrap());
+    assert_eq!(st.get_value("svc_let"), Some(&ExprValue::Int(22)));
+    // The PATH parameter's raw value is made absolute at job creation.
+    assert!(
+        matches!(st.get_value("svc_dir"), Some(ExprValue::String(v)) if v.ends_with("data/cache")),
+        "{:?}",
+        st.get_value("svc_dir")
+    );
+    assert_eq!(
+        envs[0]
+            .script
+            .as_ref()
+            .unwrap()
+            .actions
+            .on_enter
+            .as_ref()
+            .unwrap()
+            .timeout
+            .as_ref()
+            .map(|t| t.raw()),
+        Some("{{ svc_let * 10 }}")
+    );
+    let c = &job.steps[0].step_services.as_ref().unwrap()[0];
+    let st = symtab_of(
+        c.service_environments.as_ref().unwrap()[0]
+            .resolved_symtab
+            .as_ref()
+            .unwrap(),
+    );
+    assert_eq!(st.get_value("n"), Some(&ExprValue::Int(42)));
+    assert_eq!(st.get_value("c_let"), Some(&ExprValue::Int(126)));
 }
 
 #[test]

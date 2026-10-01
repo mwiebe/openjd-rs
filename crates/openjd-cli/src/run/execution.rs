@@ -5,6 +5,7 @@
 //! Execution phases for the `openjd run` command.
 
 use super::*;
+use openjd_model::job::Service;
 use openjd_model::AttachedEnvironmentTemplate;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
@@ -244,18 +245,20 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
 /// RFC 0008's single-wrap-layer rule over every Session stack this run
 /// builds. The combined Job's `jobEnvironments` already hold the
 /// `--environment` templates' Environments (in attachment order) ahead of
-/// the Job Template's own. A Service Session enters the same stacks (minus
-/// Environments whose `runScope` excludes `SERVICE`), so the check covers
-/// them too; that a `SERVICE`-scoped wrapper defines all four
-/// `onWrapService*` hooks (§9.7 item 6) is enforced by the model — per
-/// document at template validation, and across documents by
-/// `apply_environment_templates` — and is not repeated here.
+/// the Job Template's own. A Task Session's stack is the Job Environments
+/// plus one Step's; a Service Session's stack (RFC 0009) is the scope's
+/// Environments whose `runScope` includes `SERVICE` followed by that
+/// Service's own `serviceEnvironments`, which the Task-stack check does not
+/// see, so each Service (Job Services, and the Step Services of the Steps
+/// that run) is checked separately. The model enforces both rules per
+/// document at template validation; this covers the combined Job, where an
+/// `--environment` template's wrapper meets the Job Template's. That a
+/// `SERVICE`-scoped wrapper defines all four `onWrapService*` hooks (§9.7
+/// item 6) is enforced by the model — per document at template validation,
+/// and across documents by `apply_environment_templates` — and is not
+/// repeated here.
 fn validate_wrap_environment_stacks(job: &Job, steps_to_run: &[usize]) -> Result<(), RunError> {
-    let has_wrap_hook = |env: &Environment| {
-        env.script
-            .as_ref()
-            .is_some_and(|script| script.actions.has_any_wrap_hook())
-    };
+    let has_wrap_hook = env_has_wrap_hook;
     let base_wrap_envs: Vec<&str> = job
         .job_environments
         .iter()
@@ -265,9 +268,17 @@ fn validate_wrap_environment_stacks(job: &Job, steps_to_run: &[usize]) -> Result
         .collect();
     reject_multiple_wrap_environments(&base_wrap_envs)?;
 
+    // Service Session stacks: only the scope's Environments entered in
+    // Service Sessions count, then the Service's own list.
+    let job_service_wrap_envs = service_scope_wrap_envs(job.job_environments.as_deref());
+    for svc in job.job_services.iter().flatten() {
+        check_service_session_stack(svc, &job_service_wrap_envs)?;
+    }
+
     for &step_idx in steps_to_run {
+        let step = &job.steps[step_idx];
         let mut stack_wrap_envs = base_wrap_envs.clone();
-        if let Some(step_envs) = &job.steps[step_idx].step_environments {
+        if let Some(step_envs) = &step.step_environments {
             stack_wrap_envs.extend(
                 step_envs
                     .iter()
@@ -276,6 +287,14 @@ fn validate_wrap_environment_stacks(job: &Job, steps_to_run: &[usize]) -> Result
             );
         }
         reject_multiple_wrap_environments(&stack_wrap_envs)?;
+
+        if let Some(services) = &step.step_services {
+            let mut scope = job_service_wrap_envs.clone();
+            scope.extend(service_scope_wrap_envs(step.step_environments.as_deref()));
+            for svc in services {
+                check_service_session_stack(svc, &scope)?;
+            }
+        }
     }
     Ok(())
 }
@@ -287,6 +306,57 @@ fn reject_multiple_wrap_environments(names: &[&str]) -> Result<(), RunError> {
     Err(format!(
         "RFC 0008: a session may have at most one Environment defining wrap hooks \
          (onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit). Found {}: {}.",
+        names.len(),
+        names.join(", ")
+    )
+    .into())
+}
+
+/// The wrap-defining Environments of `envs` that a Service Session enters:
+/// those whose `runScope` includes `SERVICE`.
+fn service_scope_wrap_envs(envs: Option<&[Environment]>) -> Vec<&str> {
+    envs.unwrap_or(&[])
+        .iter()
+        .filter(|env| env.runs_in(RunScope::Service) && env_has_wrap_hook(env))
+        .map(|env| env.name.as_str())
+        .collect()
+}
+
+/// Apply the single-wrap-layer rule to `svc`'s Service Session: the scope's
+/// wrap-defining `SERVICE`-scoped Environments (`scope_wrap_envs`) followed
+/// by its own `serviceEnvironments`.
+fn check_service_session_stack(svc: &Service, scope_wrap_envs: &[&str]) -> Result<(), RunError> {
+    let mut stack = scope_wrap_envs.to_vec();
+    stack.extend(
+        svc.service_environments
+            .iter()
+            .flatten()
+            .filter(|env| env_has_wrap_hook(env))
+            .map(|env| env.name.as_str()),
+    );
+    reject_multiple_service_wrap_environments(&svc.name, &stack)
+}
+
+fn env_has_wrap_hook(env: &Environment) -> bool {
+    env.script
+        .as_ref()
+        .is_some_and(|script| script.actions.has_any_wrap_hook())
+}
+
+/// The single-wrap-layer rule for the Service Session of `service`, whose
+/// stack is the scope's `SERVICE`-scoped Environments followed by its
+/// `serviceEnvironments` (RFC 0009).
+fn reject_multiple_service_wrap_environments(
+    service: &str,
+    names: &[&str],
+) -> Result<(), RunError> {
+    if names.len() <= 1 {
+        return Ok(());
+    }
+    Err(format!(
+        "RFC 0008 / RFC 0009: the Service Session of Service '{service}' may have at most one \
+         Environment defining wrap hooks (the scope's Environments whose runScope includes \
+         SERVICE, then its serviceEnvironments). Found {}: {}.",
         names.len(),
         names.join(", ")
     )

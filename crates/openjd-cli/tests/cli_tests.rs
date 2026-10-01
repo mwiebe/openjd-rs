@@ -4344,4 +4344,177 @@ mod services {
         assert!(!collected.contains("EXIT_NORMAL"), "{collected}");
         assert_eq!(read_trace(&trace), vec!["service exit"]);
     }
+
+    /// RFC 0009 §9 item 5: a Job Service's `serviceEnvironments` entry is
+    /// entered in the Service Session after the Job Environment and before
+    /// `onEnter`, and exited after `onExit` and before the Job Environment.
+    /// Its `openjd_env` export (a marker file it installed) reaches
+    /// `onEnter` and `onRun`; its `variables` override the Job Environment's
+    /// for the Service's actions; it references the Service's own
+    /// `bindAddress`; and the Task Session never enters it.
+    #[test]
+    fn test_service_environment_entered_in_order_and_scoped_to_the_service() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_environments_marker.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let listening = pos(&stdout, "Service 'Store' is READY: store listening");
+        assert!(
+            listening < pos(&stdout, "Running step 'Consume'"),
+            "{stdout}"
+        );
+        // The Service Environment's openjd_env export is echoed from the
+        // Service Session.
+        assert!(stdout.contains("openjd_env: STORE_MARKER="), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY bind 127.0.0.1:"), "{stdout}");
+        // The Service Session (lines 0–3, 7–9) and the Task Session (4–6)
+        // each enter the Job Environment; only the Service Session enters the
+        // Service Environment, after the Job Environment and before onEnter,
+        // and exits it after onExit and before the Job Environment.
+        let lines = read_trace(&trace);
+        assert_eq!(lines.len(), 10, "{lines:?}");
+        assert_eq!(lines[0], "job-env enter");
+        assert_eq!(lines[1], "service-env enter SHARED=service-env");
+        assert_eq!(lines[2], "service enter SHARED=service-env marker=present");
+        assert!(
+            lines[3].starts_with("service run bind 127.0.0.1:")
+                && lines[3].ends_with(" SHARED=service-env"),
+            "{lines:?}"
+        );
+        assert_eq!(lines[4], "job-env enter");
+        assert!(
+            lines[5].starts_with("task bind 127.0.0.1:")
+                && lines[5].ends_with(" SHARED=job-env marker-var=unset"),
+            "the Task Session enters the Job Environment but not the Service Environment: {lines:?}"
+        );
+        assert_eq!(lines[6], "job-env exit");
+        assert_eq!(lines[7], "service exit");
+        assert_eq!(lines[8], "service-env exit");
+        assert_eq!(lines[9], "job-env exit");
+    }
+
+    /// The RFC's Valkey example with its `ValkeyConda` Service Environment,
+    /// adapted: the Service Environment puts a fake `valkey-server` on PATH
+    /// with `openjd_env`, the Service's bare `valkey-server` `onRun` resolves
+    /// through it, and the Tasks consume the endpoint without the fake
+    /// binary on their own PATH.
+    #[test]
+    fn test_valkey_example_with_service_environment_provisioning_the_binary() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_valkey_conda.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // The Service Environment's PATH export, then the fake binary found
+        // through it.
+        assert!(stdout.contains("openjd_env: PATH="), "{stdout}");
+        assert!(
+            stdout.contains("FAKE_VALKEY_LISTENING 127.0.0.1 "),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Cache' is READY"), "{stdout}");
+        for frame in 1..=3 {
+            assert!(
+                stdout.contains(&format!("FRAME {frame} CACHED done")),
+                "{stdout}"
+            );
+        }
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        let mut lines = read_trace(&trace);
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![
+                "frame 1 valkey-server-on-task-path=False",
+                "frame 2 valkey-server-on-task-path=False",
+                "frame 3 valkey-server-on-task-path=False",
+            ]
+        );
+    }
+
+    /// The single-wrap-layer preflight considers each Service Session's
+    /// stack — the scope's `SERVICE`-scoped Environments plus that Service's
+    /// `serviceEnvironments` — across documents: an `--environment`
+    /// template's wrapper (entered in Service Sessions) plus a wrapping
+    /// Service Environment in the Job Template is rejected before anything
+    /// runs.
+    #[test]
+    fn test_wrapping_service_environment_plus_external_wrapper_rejected() {
+        let tdir = templates_dir();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            tdir.join("service_wrapping_service_environment.yaml")
+                .to_str()
+                .unwrap(),
+            "--env",
+            tdir.join("service_wrap_env_external.yaml")
+                .to_str()
+                .unwrap(),
+        ]);
+        assert_ne!(
+            code, 0,
+            "two wrap layers in the Service Session must fail the run"
+        );
+        let combined = format!("{stdout}\n{stderr}");
+        assert!(
+            combined.contains(
+                "the Service Session of Service 'Store' may have at most one Environment \
+                 defining wrap hooks"
+            ) && combined.contains("Found 2: OuterWrap, Container."),
+            "expected the Service Session single-layer rejection; got:\n{combined}"
+        );
+        assert!(!combined.contains("Starting Service: Store"), "{combined}");
+
+        // Alone, the wrapping Service Environment is the one layer and the
+        // run succeeds, its onWrapServiceRun observing WrappedService.Ports.
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            tdir.join("service_wrapping_service_environment.yaml")
+                .to_str()
+                .unwrap(),
+        ]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // onWrapServiceRun ran in onRun's place with WrappedService.* and the
+        // Service's own bindAddress in scope; the readiness check is STDOUT
+        // and the Service defines neither onEnter nor onExit, so the other
+        // three Service hooks never run; the Task is not wrapped.
+        let endpoint_pos = pos(
+            &stdout,
+            "Service 'Store' (Job scope) endpoints: main -> 127.0.0.1:",
+        );
+        let port: u16 = stdout[endpoint_pos..]
+            .lines()
+            .next()
+            .unwrap()
+            .rsplit(':')
+            .next()
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(
+            stdout.contains(&format!(
+                "WRAPPED_RUN name=Store ports=1 first=main:{port}@127.0.0.1 own=127.0.0.1:{port}"
+            )),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Store' is READY: store listening"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_REPLY ECHO:hello"), "{stdout}");
+        for absent in [
+            "WRAPPED_ENTER",
+            "WRAPPED_EXIT",
+            "WRAPPED_CHECK",
+            "WRAPPED_ENV_",
+        ] {
+            assert!(!stdout.contains(absent), "{absent} must not run:\n{stdout}");
+        }
+    }
 }

@@ -2497,13 +2497,15 @@ fn let_binding_names(bindings: Option<&[String]>) -> HashSet<String> {
 ///   `serviceEnvironments` entry, the session scope an Environment gets
 ///   (`Param.*` including PATH, `RawParam.*`, `Session.*`, `Job.Name`, for a
 ///   Step Service `Step.Name` and the step-level `let` values, its own
-///   `Env.File.*` and `<EnvironmentScript>.let`) plus the declaring
-///   Service's own `Service.*` scope: its own endpoints with `bindAddress`
-///   and the `port` / `connectAddress` of every Service in `in_scope`. Not
-///   `Service.File.*`, the `<Service>.let` or `<ServiceScript>.let` names,
-///   or `Task.*`. Validated through [`validate_env_format_strings`] like a
-///   `stepEnvironments` entry, with the job-creation scope for the actions'
-///   `timeout` / cancelation fields.
+///   `Env.File.*` and `<EnvironmentScript>.let`), the `<Service>.let` values
+///   (§9 item 3, as a Step's `let` is in its `stepEnvironments`), plus the
+///   declaring Service's own `Service.*` scope: its own endpoints with
+///   `bindAddress` and the `port` / `connectAddress` of every Service in
+///   `in_scope`. Not `Service.File.*`, the `<ServiceScript>.let` names, or
+///   `Task.*`. Validated through [`validate_env_format_strings`] like a
+///   `stepEnvironments` entry, with the job-creation scope (including the
+///   `<Service>.let` values) for the actions' `timeout` / cancelation
+///   fields.
 ///
 /// `enclosing_let_names` are the step-level `let` names (empty for a Job
 /// Service), which neither `let` may shadow.
@@ -2521,57 +2523,6 @@ fn validate_service_format_strings<'a>(
     let expr_active = p8.expr_active;
     let template_ev = &p8.template_ev;
     let host_ev = &p8.host_ev;
-
-    // ── Service Environments (§9 item 5): the Service's own scope ──
-    if let Some(envs) = &svc.service_environments {
-        let envs_path = path_field(path, "serviceEnvironments");
-        for (j, env) in envs.iter().enumerate() {
-            let env_path = path_index(&envs_path, j);
-            let mut env_symtab = build_service_env_scope_symtab(
-                params,
-                base_template_symtab,
-                svc,
-                in_scope.clone(),
-                env,
-            );
-            if let Some(script) = &env.script {
-                if let Some(bindings) = &script.let_bindings {
-                    let let_path = path_field(&path_field(&env_path, "script"), "let");
-                    if !expr_active {
-                        errors.add(&let_path, "'let' requires the EXPR extension.");
-                    } else {
-                        let mut env_let_names = HashSet::new();
-                        validate_let_bindings(
-                            bindings,
-                            &let_path,
-                            enclosing_let_names,
-                            &mut env_let_names,
-                            &mut env_symtab,
-                            host_ev,
-                            p8.host_profile,
-                            errors,
-                        );
-                    }
-                }
-            }
-            validate_env_format_strings(
-                env,
-                &env_symtab,
-                host_ev,
-                base_template_symtab,
-                template_ev,
-                &env_path,
-                expr_active,
-                p8.limits.max_env_var_value_len,
-                p8.caller_limits.max_resolved_arg_len,
-                p8.caller_limits.max_resolved_data_len,
-                errors,
-            );
-            if expr_active {
-                validate_single_env_comprehensions(env, errors);
-            }
-        }
-    }
 
     // ── Job-creation scope: <Service>.let ──
     let mut template_symtab = base_template_symtab.clone();
@@ -2591,6 +2542,67 @@ fn validate_service_format_strings<'a>(
                 p8.template_profile,
                 errors,
             );
+        }
+    }
+
+    // Neither `<Service>.let` nor an enclosing `let` may be shadowed by a
+    // Service Environment's `<EnvironmentScript>.let`.
+    let env_enclosing_let_names: HashSet<String> = enclosing_let_names
+        .iter()
+        .chain(service_let_names.iter())
+        .cloned()
+        .collect();
+
+    // ── Service Environments (§9 item 5): the Service's own scope ──
+    // Validated after `<Service>.let` so its values are in scope here, as a
+    // Step's `let` values are in its `stepEnvironments` (§9 item 3).
+    if let Some(envs) = &svc.service_environments {
+        let envs_path = path_field(path, "serviceEnvironments");
+        for (j, env) in envs.iter().enumerate() {
+            let env_path = path_index(&envs_path, j);
+            let mut env_symtab = build_service_env_scope_symtab(
+                params,
+                &template_symtab,
+                svc,
+                in_scope.clone(),
+                env,
+            );
+            if let Some(script) = &env.script {
+                if let Some(bindings) = &script.let_bindings {
+                    let let_path = path_field(&path_field(&env_path, "script"), "let");
+                    if !expr_active {
+                        errors.add(&let_path, "'let' requires the EXPR extension.");
+                    } else {
+                        let mut env_let_names = HashSet::new();
+                        validate_let_bindings(
+                            bindings,
+                            &let_path,
+                            &env_enclosing_let_names,
+                            &mut env_let_names,
+                            &mut env_symtab,
+                            host_ev,
+                            p8.host_profile,
+                            errors,
+                        );
+                    }
+                }
+            }
+            validate_env_format_strings(
+                env,
+                &env_symtab,
+                host_ev,
+                &template_symtab,
+                template_ev,
+                &env_path,
+                expr_active,
+                p8.limits.max_env_var_value_len,
+                p8.caller_limits.max_resolved_arg_len,
+                p8.caller_limits.max_resolved_data_len,
+                errors,
+            );
+            if expr_active {
+                validate_single_env_comprehensions(env, errors);
+            }
         }
     }
 
@@ -2828,18 +2840,19 @@ fn validate_service_format_strings<'a>(
 /// Build the symbol table for one of a Service's `serviceEnvironments`
 /// (RFC 0009, Template Schemas §9 item 5): `Param.*` (including PATH) and
 /// `RawParam.*`, `Session.*`, every job-creation-stage symbol of the
-/// Service's *owner* in `base_template_symtab` (`Job.Name`; for a Step
-/// Service `Step.Name` and the step-level `let` values), the declaring
-/// Service's own `Service.<name>.<port>.*` with `bindAddress`, the `port` /
-/// `connectAddress` of every Service in `in_scope`, and the Environment's
-/// own `Env.File.*`. Unlike [`build_session_scope_symtab`] the `Service.*`
-/// seeding is unconditional (a Service Environment is entered only in the
-/// declaring Service's Session, after its ports are allocated) and includes
-/// the declaring Service itself; unlike the service-execution scope, neither
-/// `Service.File.*` nor the `<Service>.let` names are in scope.
+/// Service in `service_template_symtab` (`Job.Name`; for a Step Service
+/// `Step.Name` and the step-level `let` values; the `<Service>.let` values,
+/// per §9 item 3), the declaring Service's own `Service.<name>.<port>.*`
+/// with `bindAddress`, the `port` / `connectAddress` of every Service in
+/// `in_scope`, and the Environment's own `Env.File.*`. Unlike
+/// [`build_session_scope_symtab`] the `Service.*` seeding is unconditional
+/// (a Service Environment is entered only in the declaring Service's
+/// Session, after its ports are allocated) and includes the declaring
+/// Service itself; unlike the service-execution scope, `Service.File.*` is
+/// not in scope.
 fn build_service_env_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
-    base_template_symtab: &SymbolTable,
+    service_template_symtab: &SymbolTable,
     svc: &Service,
     in_scope: impl Iterator<Item = &'a Service>,
     env: &Environment,
@@ -2852,11 +2865,11 @@ fn build_service_env_scope_symtab<'a>(
     ] {
         symtab.set(name, ExprValue::unresolved(ty)).expect("symtab");
     }
-    for key in base_template_symtab.keys() {
+    for key in service_template_symtab.keys() {
         if key == "Param" || key == "RawParam" {
             continue;
         }
-        match base_template_symtab.get(key) {
+        match service_template_symtab.get(key) {
             Some(openjd_expr::symbol_table::SymbolTableEntry::Value(v)) => {
                 symtab.set(key, v.clone()).expect("symtab");
             }

@@ -30,7 +30,7 @@ agent):
 
 | Runtime (this crate) | Caller |
 |---|---|
-| Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
+| Enter `SERVICE`-scoped Environments and the Service's `serviceEnvironments`, run `onEnter`, launch `onRun`, probe readiness, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
 | Detect instance failures: readiness timeout, `onRun` exit before READY, `onRun` exit at any time | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
 | Cancel `onRun` with its own `cancelation` method on request and at `end()` | When to cancel (scope complete, readiness timed out, …) |
 | Run `onReadinessCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
@@ -148,15 +148,37 @@ Banner `Starting Service: <name>`. Any error leaves the state `StartFailed`
 (a *start failure*), logs `Service '<name>' failed to start: <error>`, and
 returns it; `end()` is still required.
 
-1. **Environments** (RFC 0009 "Services run inside Environments"). For each
-   configured Environment in order: if `!env.runs_in(RunScope::Service)`, log
-   `Skipping Environment '<name>': its runScope does not include SERVICE` and
-   continue; otherwise `Session::enter_environment(env,
-   env.resolved_symtab, None, None)`. Environments cannot reference `Service.*`
-   (model validation), so they resolve against the plain Session scope. An
-   Environment `onEnter` failure returns `SessionError::EnvironmentScriptFailed`;
-   the Environment counts as entered and is exited by `end()`, exactly as in a
-   Task Session.
+1. **The scope's Environments** (RFC 0009 "Services run inside
+   Environments"). For each configured Environment in order: if
+   `!env.runs_in(RunScope::Service)`, log `Skipping Environment '<name>': its
+   runScope does not include SERVICE` and continue; otherwise
+   `Session::enter_environment(env, env.resolved_symtab, None, None)`. Job and
+   Step Environments cannot reference `Service.*` (model validation), so they
+   resolve against the plain Session scope. An Environment `onEnter` failure
+   returns `SessionError::EnvironmentScriptFailed`; the Environment counts as
+   entered and is exited by `end()`, exactly as in a Task Session.
+1a. **The Service's `serviceEnvironments`** (§9 item 5), after all of the
+   scope's and before `onEnter`: for each `service.service_environments`
+   entry in order, `Session::enter_environment(env, Some(symtab), None,
+   None)` where `symtab` (`service_environment_symtab`) is the entry's own
+   `resolved_symtab` (`Param.*`, `RawParam.*`, `Job.Name`, for a Step Service
+   `Step.Name` and the step-level `let`, the `<Service>.let` values) with the
+   `Service.*` endpoint table of step 2 folded in — the declaring Service's
+   own ports **including `bindAddress`** and the `port` / `connectAddress` of
+   the Services in `in_scope_endpoints`: the same table the Service's own
+   script uses, which a Job or Step Environment never gets. Because the
+   argument is folded onto the stored Environment, its `onExit` and (for a
+   wrapping Service Environment) its hooks' own scope see `Service.*` too.
+   `run_scope` is never consulted (it is `None`; the effective scope is
+   `[SERVICE]`). They join the same entered stack as the scope's
+   Environments, so `end()` exits them first, in reverse; their `variables`
+   and `openjd_env` exports layer on top of the scope Environments' (later
+   Environments take precedence); and a wrapping Service Environment is found
+   by `Session::service_wrap_hooks` like any entered wrapper (see "Wrap
+   hooks"). A Service Environment `onEnter` failure is a start failure exactly
+   as a scope Environment's: `SessionError::EnvironmentScriptFailed`, state
+   `StartFailed`, `onExit` not run, every entered Environment exited by
+   `end()`; the caller's restart policy treats it like any start failure.
 2. **Symbol table**, built once and kept for the Session's lifetime:
    `Session::build_symbol_table(None, service.resolved_symtab)` (`Param.*`,
    `RawParam.*`, `Job.Name`, `Step.Name`, `<Service>.let` values, with PATH
@@ -197,13 +219,15 @@ returns it; `end()` is still required.
 
 1. `Session::evaluate_env_vars(None)` — the process environment,
    `OPENJD_SESSION_WORKING_DIR`, and the entered Environments' `variables` and
-   `openjd_env` / `openjd_unset_env` changes;
+   `openjd_env` / `openjd_unset_env` changes, in entry order (a later
+   Environment overrides an earlier one, so a Service Environment overrides
+   the scope's Environments);
 2. the Service's `variables`;
 3. `onEnter`'s `openjd_env` / `openjd_redacted_env` (when redaction is enabled
    by the profile) / `openjd_unset_env` changes.
 
 This is the precedence RFC 0009 "Services run inside Environments" states
-(Environment < Service `variables` < `onEnter`). The map is recomputed for each
+(scope Environments < Service Environments < Service `variables` < `onEnter`). The map is recomputed for each
 action, so every `onRun` instance (including relaunches) and `onExit` see
 `onEnter`'s changes — they are retained across relaunches because `onEnter`
 is not re-run (constraint 5 / "Failure and restart" step 3.2).
@@ -437,8 +461,15 @@ that defines any wrap hook (`Session::active_wrap_env`, RFC 0008's single
 layer), provided its `runScope` includes `SERVICE` — an Environment whose
 `runScope` excludes `SERVICE` (e.g. a `[TASK]` wrapper) is never entered in
 a Service Session in the first place (`enter()` step 1), so it is skipped
-entirely. When such an Environment is present, `ServiceSession::resolve_action(kind)`
-substitutes the hook for the Service's action:
+entirely. The entered stack is the scope's `SERVICE`-scoped Environments
+followed by the Service's `serviceEnvironments` (step 1a), so a wrapping
+Service Environment — `run_scope` `None`, effective `[SERVICE]`, defining
+`onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks — is
+found exactly as a wrapping Job or Step Environment is; the single-layer rule
+spans both parts of the stack (`Session::enter_environment` rejects a second
+wrapper with `MultipleWrapEnvironments`). When such an Environment is
+present, `ServiceSession::resolve_action(kind)` substitutes the hook for the
+Service's action:
 
 | Service action | Hook | Runs when |
 |---|---|---|
@@ -486,10 +517,14 @@ wrapped action's (rule 5): a failed `onWrapServiceEnter` is a start failure
 an instance exit, a failed `onWrapServiceExit` is an `onExit` failure, and
 an `onWrapServiceReadinessCheck` invocation's status has the check's
 meaning. The wrapping Environment's own `onEnter` / `onExit` are never
-wrapped, and inner Environments entered in the Service Session are wrapped by
-its `onWrapEnvEnter` / `onWrapEnvExit` exactly as in a Task Session — that is
+wrapped, and inner Environments entered in the Service Session — Service
+Environments after a wrapping one in the list, or every Service Environment
+when the wrapper is a scope Environment — are wrapped by its `onWrapEnvEnter`
+/ `onWrapEnvExit` exactly as in a Task Session — that is
 `Session::enter_environment` / `exit_environment`'s existing behavior, which
-`enter()` and `end()` call unchanged.
+`enter()` and `end()` call unchanged. A wrapping Service Environment's hooks
+have the declaring Service's `Service.*` scope (including `bindAddress`)
+through its folded `resolved_symtab`, in addition to `WrappedService.*`.
 
 ## Relaunch (constraint 5, "Failure and restart" 3.2)
 
@@ -519,7 +554,8 @@ teardown is complete:
    `onExit` does not run after an Environment `onEnter` start failure, since
    no Service action ran.
 3. Exit the entered Environments in reverse order
-   (`Session::exit_environment(id, None, false, None)`).
+   (`Session::exit_environment(id, None, false, None)`): the Service's
+   `serviceEnvironments` first (last entered), then the scope's.
 4. `Session::cleanup()` — the working directory is deleted (unless
    `retain_working_dir`); the cross-user helper is shut down.
 

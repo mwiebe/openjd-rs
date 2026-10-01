@@ -454,7 +454,7 @@ pub(super) fn instantiate_service<'a>(
             let env_symtab = build_service_env_check_symtab(
                 env,
                 svc,
-                base,
+                &service_symtab,
                 has_expr,
                 ctx,
                 budgets,
@@ -622,11 +622,11 @@ fn build_service_check_symtab<'a>(
 }
 
 /// Build the check symbol table for one of a Service's `serviceEnvironments`
-/// (RFC 0009, Template Schemas §9 item 5): `base` — the Service's *owner's*
-/// job-creation table (concrete `Param.*` / `RawParam.*` / `Job.Name`, and
-/// for a Step Service `Step.Name` and the step-level `let` bindings; not the
+/// (RFC 0009, Template Schemas §9 item 5): `base` — the Service's
+/// job-creation table (concrete `Param.*` / `RawParam.*` / `Job.Name`, for a
+/// Step Service `Step.Name` and the step-level `let` bindings, and the
 /// `<Service>.let` bindings, which §9 item 3 makes available in
-/// `hostRequirements`, `variables`, and `script` only) plus `Unresolved`
+/// `serviceEnvironments` as a Step's are in `stepEnvironments`) plus `Unresolved`
 /// placeholders for `Session.*`, PATH `Param.*`, the declaring Service's own
 /// `Service.<name>.<port>.*` (with `bindAddress`), the `port` /
 /// `connectAddress` of every Service in `in_scope`, and the Environment's

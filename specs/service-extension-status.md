@@ -63,8 +63,8 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 | S39 | Authors SHOULD omit `port` | N/A locally | template author advice |
 | S40 | `<Service>.serviceEnvironments`: an ordered list of `<Environment>`s; names unique within the list and distinct from the Job Environments and, for a Step Service, the declaring Step's Step Environments (§9 item 5.1, §9.7 item 5); each entry an ordinary `<Environment>` structurally | Implemented | `model/template/service.rs` (`service_environments`); `validate_v2023_09/service.rs` `validate_service_environments` (also: if provided, non-empty — mirrors `stepEnvironments`, not stated by the RFC); `tests/integration/test_service_environments_list.rs` |
 | S41 | `runScope` MUST NOT be provided on a Service Environment; its scope is fixed to the declaring Service's Session (§9 item 5.2, §9.7 item 3) | Implemented | `service.rs` (`... -> serviceEnvironments[j] -> runScope`) |
-| S42 | A Service Environment has an effective `runScope` of `[SERVICE]` for the hooks-follow-`runScope` rule: a wrapping one defines `onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks, not `onWrapTaskRun` (§4.3 rule 6, §9 item 5.2, §9.7 item 6) | Implemented | `wrap_actions.rs` `EffectiveRunScope::service_environment`; the single-wrap-layer rule is also applied per Service Session stack (scope environments with `SERVICE` in `runScope`, then `serviceEnvironments`) |
-| S43 | A Service Environment's format strings have the declaring Service's own scope — its ports including `bindAddress`, earlier Services' `port` / `connectAddress` — unlike a Job or Step Environment with `SERVICE` in `runScope` (§9 item 5, §7.3.1 scope rule 1, §4 item 3.2 exception, §9.7 items 1–2) | Implemented | `format_strings.rs` `build_service_env_scope_symtab`; job creation `instantiate.rs` `build_service_env_check_symtab`. Choice: `<Service>.let` names are *not* in scope there (§9 item 3 lists `hostRequirements`, `variables`, `script`); see open question Q10 |
+| S42 | A Service Environment has an effective `runScope` of `[SERVICE]` for the hooks-follow-`runScope` rule: a wrapping one defines `onWrapEnvEnter`, `onWrapEnvExit`, and the four `onWrapService*` hooks, not `onWrapTaskRun` (§4.3 rule 6, §9 item 5.2, §9.7 item 6) | Implemented | `wrap_actions.rs` `EffectiveRunScope::service_environment`; the single-wrap-layer rule is also applied per Service Session stack (scope environments with `SERVICE` in `runScope`, then `serviceEnvironments`) per document, and across the combined Job's documents by the CLI preflight `cli/execution.rs` `validate_wrap_environment_stacks` (`check_service_session_stack`). At run time a wrapping Service Environment is found by `Session::service_wrap_hooks` like any entered wrapper (`run_scope` `None` runs in every kind of Session) and wraps the Service's actions and the Service Environments after it; `sessions` test `wrapping_service_environment_wraps_the_service_actions`, CLI test `test_wrapping_service_environment_plus_external_wrapper_rejected` |
+| S43 | A Service Environment's format strings have the declaring Service's own scope — its ports including `bindAddress`, earlier Services' `port` / `connectAddress` — unlike a Job or Step Environment with `SERVICE` in `runScope` (§9 item 5, §7.3.1 scope rule 1, §4 item 3.2 exception, §9.7 items 1–2) | Implemented | `format_strings.rs` `build_service_env_scope_symtab`; job creation `instantiate.rs` `build_service_env_check_symtab`. The `<Service>.let` values are in scope (§9 item 3, as a Step's `let` is in its `stepEnvironments`), and the Environment's own `let` may not shadow them (Q10, resolved) |
 | S44 | Other Services see a Service's `serviceEnvironments` only through that Service's ports (§7.3.1 scope rule 2) | Implemented | structural: `Env.File.*` and the Environment's `let` are seeded for that Environment only; test `other_services_see_a_service_environment_only_through_its_service` |
 | S45 | External Services' `serviceEnvironments` are carried through submission unchanged; the §1.2.2 item 3 wrapper check does not apply to them (they share their Service's document, which declares `SERVICE`) | Implemented | `external.rs` (through `instantiate_service`); test `external_services_carry_their_service_environments_through_submission` |
 
@@ -112,7 +112,7 @@ File key: `model/…` = `crates/openjd-model/src/…`; `sessions/…` =
 | L26 | Authors SHOULD prefer COMMAND / STDOUT when TCP connect is insufficient | N/A locally | template author advice |
 | L27 | Placement: single-host runner on loopback with `bindAddress` = `connectAddress` = loopback; `connectAddress`:`port` from any host MUST reach the process | Implemented | `cli/service_ports.rs` (`127.0.0.1`) |
 | L28 | Schedulers SHOULD provide a hostname for `connectAddress` when one resolves from every host | N/A locally | loopback IP is what the RFC's Placement paragraph prescribes for a single-host runner |
-| L29 | A Service Session enters the Service's `serviceEnvironments`, in order, after the scope's Environments and before `onEnter`, and exits them in reverse after `onExit`; later Environments take precedence for environment variables, the Service's `variables` over all (§9 item 5, "Services run inside Environments", *How Jobs Are Run* § Services) | Not implemented (runtime) | the model side is complete: `job::Service::service_environments` is the list a Service Session must enter (each entry a `job::Environment` with its own `resolved_symtab`, resolving `Service.*` against the declaring Service's own endpoints, `bindAddress` included); `sessions/service_session.rs` `enter()` step 1 and `cli/services.rs` do not yet enter it, and `referenced_service_names` (L2) already includes references made from these Environments |
+| L29 | A Service Session enters the Service's `serviceEnvironments`, in order, after the scope's Environments and before `onEnter`, and exits them in reverse after `onExit`; later Environments take precedence for environment variables, the Service's `variables` over all; a Service Environment's format strings have the Service's own scope, `bindAddress` included (§9 item 5, "Services run inside Environments", *How Jobs Are Run* § Services) | Implemented | `sessions/service_session.rs` `enter()` step 1a (`service_environment_symtab` folds the Service's `Service.*` endpoint table onto each entry's `resolved_symtab`), `end()` step 3 (same entered stack, reverse order); a Service Environment `onEnter` failure is a start failure like a scope Environment's; `cli/services.rs` needs nothing beyond passing the `job::Service`; `referenced_service_names` (L2) includes references made from these Environments. Tests: `sessions/tests/integration/test_service_session.rs` "serviceEnvironments", `cli/tests/cli_tests.rs` `test_service_environment_*` / `test_valkey_example_*` |
 
 ## Service actions, readiness, concurrency (RFC `<ServiceActions>`, `<ServiceReadinessCheck>`, wiki §9.3, §9.6, §9.6.1)
 
@@ -190,9 +190,9 @@ Larger gaps (not implemented; listed for the record):
   is what relocation and resumption would use.
 - **A13 (MAY) collapsing the output of successful `onReadinessCheck` invocations.**
   Lines stream as they arrive; collapsing would need per-invocation buffering.
-- **L29 (`serviceEnvironments` at run time).** openjd-model validates, instantiates, and
-  carries `job::Service::service_environments`; the sessions runtime and the CLI do not enter
-  them yet. `CallerLimits::max_env_count` also does not count Service Environments.
+- **`CallerLimits::max_env_count` and Service Environments.** The caller limit on the
+  total number of Environments (`structure.rs`) counts Job and Step Environments only;
+  `serviceEnvironments` entries are not counted against it.
 
 ## Choices the specification leaves open
 
@@ -256,13 +256,12 @@ these. The implementation's choice and where it is recorded:
 - **Q8 — Wrapper embedded files and `WrappedAction.*` (C9).** Rule 1 plus
   RFC 0008's `Env.File.*` in hooks leaves open whether a wrapper's embedded file may
   reference `WrappedAction.*` (which differs per hook) in a Service Session.
-- **Q10 — `<Service>.let` names in `serviceEnvironments` (S43).** §9 item 3 says the
-  `<Service>.let` names "are available in *hostRequirements*, *variables*, and *script*"; the
-  `serviceEnvironments` commit did not add them to that list, while a `<StepTemplate>.let` is
-  explicitly available in `stepEnvironments` (§3.6.2). openjd-rs keeps `<Service>.let` out of
-  a Service Environment's scope (a reference is the ordinary undefined-variable error) and
-  lets a Step Service's Service Environment see the step-level `let`, as `stepEnvironments`
-  do. Widening later is backward compatible; the RFC should say which is intended.
+- **Q10 — `<Service>.let` names in `serviceEnvironments` (S43). Resolved.** The RFC now
+  says (§9 item 3) the `<Service>.let` names are available in *hostRequirements*,
+  *serviceEnvironments*, *variables*, and *script*, "as a Step's bindings are in its
+  `stepEnvironments`". openjd-rs seeds them into a Service Environment's pass 8 scope, its
+  job-creation check table, and (through the Service's job-creation table) its
+  `resolved_symtab`; a Service Environment's `<EnvironmentScript>.let` may not shadow them.
 - **Q11 — Cross-document Service Environment names.** §9 item 5.1 forbids a Service
   Environment's name from equaling a Job Environment's. For an Environment Template on its
   own, openjd-rs checks the document's own `environment` (which becomes a Job Environment of

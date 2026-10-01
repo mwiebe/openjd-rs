@@ -272,10 +272,10 @@ each seeing every Job Service and the Step Services before it. Per Service
    of `check_carried_forward_environment`.
 5. **`serviceEnvironments` re-checks** (§9 item 5) — for each entry,
    `build_service_env_check_symtab` builds the Service Environment's check
-   table: the Service's *owner's* job-creation table (`Param.*`,
-   `RawParam.*`, `Job.Name`; for a Step Service `Step.Name` and the
-   step-level `let` values — not the `<Service>.let` values, which §9 item
-   3 scopes to `hostRequirements`, `variables`, and `script`) plus the
+   table: the Service's job-creation table (`Param.*`, `RawParam.*`,
+   `Job.Name`; for a Step Service `Step.Name` and the step-level `let`
+   values; and the `<Service>.let` values, which §9 item 3 makes available
+   in `serviceEnvironments` as a Step's are in `stepEnvironments`) plus the
    `Unresolved` placeholders for `Session.*`, PATH `Param.*`, the declaring
    Service's own `Service.<name>.<port>.*` with `bindAddress`, the `port` /
    `connectAddress` of every in-scope Service, and the Environment's own
