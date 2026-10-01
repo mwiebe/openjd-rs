@@ -1,0 +1,22 @@
+# A Job Template with no `extensions` at all, consuming the queue-supplied
+# Kv Service (service_external_kv_join.yaml) through the KV_ADDR variable
+# its client Environment composes with `join_host_port`.
+specificationVersion: "jobtemplate-2023-09"
+name: "ExternalKvConsumer"
+steps:
+  - name: Talk
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import os, socket
+            host, port = os.environ["KV_ADDR"].rsplit(":", 1)
+            c = socket.create_connection((host, int(port)), timeout=10)
+            c.sendall(b"hello")
+            print("TASK_GOT", c.recv(64).decode(), flush=True)
+            c.close()

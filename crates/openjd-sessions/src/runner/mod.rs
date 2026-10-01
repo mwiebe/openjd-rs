@@ -119,6 +119,12 @@ pub(crate) struct ScriptRunnerBase {
     /// runs concurrently with `onRun` (RFC 0009 "Concurrency with `onRun`"
     /// rule 3); `None` for every other action.
     pub action_tag: Option<String>,
+    /// When set, every log record of the actions this runner runs is
+    /// prefixed with `[<tag>] ` and carries an `openjd_session_tag` field —
+    /// the Session's [`SessionConfig::log_tag`](crate::session::SessionConfig::log_tag),
+    /// copied onto every runner the Session builds. Precedes the action
+    /// tag: `[Service Files] [onReadinessCheck] …`.
+    pub session_tag: Option<String>,
 }
 
 impl ScriptRunnerBase {
@@ -145,6 +151,15 @@ impl ScriptRunnerBase {
             helper: None,
             cancel_writer: None,
             action_tag: None,
+            session_tag: None,
+        }
+    }
+
+    /// Both tags as one [`LogTag`](crate::logging::LogTag).
+    pub fn log_tag(&self) -> crate::logging::LogTag<'_> {
+        crate::logging::LogTag {
+            session: self.session_tag.as_deref(),
+            action: self.action_tag.as_deref(),
         }
     }
 
@@ -161,18 +176,20 @@ impl ScriptRunnerBase {
         default_cancel_period: Duration,
     ) -> Result<SubprocessResult, SessionError> {
         self.state = ScriptRunnerState::Running;
-        match self.action_tag.as_deref() {
-            // A concurrently running action's records are tagged line by
-            // line instead of delimited by banners, which would interleave
-            // with the other action's output (RFC 0009 rule 3).
-            Some(tag) => crate::session_action_log!(
+        let log_tag = self.log_tag();
+        if log_tag.is_empty() {
+            log_subsection_banner(&self.session_id, "Phase: Running action");
+        } else {
+            // A tagged action's records are tagged line by line instead of
+            // delimited by banners, which would interleave with another
+            // action's — or another Session's — output (RFC 0009 rule 3).
+            crate::session_tagged_log!(
                 info,
                 &self.session_id,
-                Some(tag),
+                log_tag,
                 crate::logging::LogContent::PROCESS_CONTROL,
                 "Phase: Running action"
-            ),
-            None => log_subsection_banner(&self.session_id, "Phase: Running action"),
+            );
         }
         let args = resolve_action_args(action, symtab, library, &self.limits)?;
         let timeout =
@@ -201,6 +218,7 @@ impl ScriptRunnerBase {
         );
         filter.add_redacted_values(&self.initial_redacted_values);
         filter.set_action_tag(self.action_tag.clone());
+        filter.set_session_tag(self.session_tag.clone());
 
         if let Some(ref mut helper) = self.helper {
             let result = crate::cross_user_helper::run_via_helper(

@@ -1,0 +1,68 @@
+# completedTasks: RERUN with maxAttempts: 0 — the exploratory report's
+# `06b` run: the Service crashes while a Task runs, the Task is canceled and
+# returns to the queue, and the Service is FAILED at once (no relaunch
+# budget). The Job fails; nothing is requeued, so the log must not announce
+# "Returning every completed Task of the Job to the queue" or open a new
+# Task Session.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RerunExhaustedMidTask"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+jobServices:
+  - name: Flaky
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 0
+      completedTasks: RERUN
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace = sys.argv[1]
+            with open(trace, "a") as f:
+                f.write("flaky launch\n")
+            print("openjd_service_ready: flaky up", flush=True)
+            while True:
+                time.sleep(0.1)
+                if os.path.exists(trace) and "task 2 start" in open(trace).read():
+                    time.sleep(0.3)
+                    with open(trace, "a") as f:
+                        f.write("flaky crash\n")
+                    sys.exit(1)
+steps:
+  - name: Work
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Task.Param.N }}", "{{ Param.TraceFile }}", "{{ Service.Flaky.main.port }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import sys, time
+            n, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"task {n} start\n")
+            time.sleep(1.5)
+            with open(trace, "a") as f:
+                f.write(f"task {n} done\n")

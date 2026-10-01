@@ -49,7 +49,7 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── embedded_files              — EmbeddedFiles, EndOfLine re-export
 ├── error                       — SessionError
 ├── let_bindings                — re-exports openjd_model::evaluate_let_bindings
-├── logging                     — LogContent, session_log!, session_action_log!, banner helpers
+├── logging                     — LogContent, LogTag, session_log!, session_action_log!, session_tagged_log!, banner helpers
 ├── limits                      — SessionLimits (caps + evaluation budgets)
 ├── path_mapping                — re-exported from openjd_expr
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
@@ -163,6 +163,28 @@ impl Session {
         os_env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(String, String), SessionError>;
 
+    /// Same as `enter_environment_with_output`, for an environment that
+    /// comes from a document with its own extension profile — an
+    /// Environment Template a scheduler attached (Template Schemas §1.2
+    /// item 3: an extension applies to the document that lists it; RFC
+    /// 0009 "Environment Template"). With `profile: Some(p)`, every
+    /// format string of this environment (`variables`, `onEnter`,
+    /// `onExit`, the hook wrapping them, its `let` bindings and embedded
+    /// files, and its own `onWrap*` hooks when it is the wrapper) is
+    /// evaluated with a function library derived from `p` under the
+    /// session's path-mapping rules, and `openjd_redacted_env` from its
+    /// actions is honored per `p`'s `REDACTED_ENV_VARS`. The profile is
+    /// kept until the environment is exited. `None` is exactly
+    /// `enter_environment_with_output`.
+    pub async fn enter_environment_with_profile(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&SerializedSymbolTable>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+        profile: Option<&openjd_model::ModelProfile>,
+    ) -> Result<(String, String), SessionError>;
+
     /// Exit an environment. Must be called in LIFO order — the
     /// last-entered environment first. Fails with
     /// `SessionError::LifoViolation` if called out of order.
@@ -248,6 +270,9 @@ impl Session {
     /// Replace the session's profile (revision + extensions).
     /// Rebuilds the derived `FunctionLibrary`.
     pub fn with_profile(self, profile: openjd_model::ModelProfile) -> Self;
+
+    /// The session-wide log tag (`SessionConfig::log_tag`).
+    pub fn log_tag(&self) -> Option<&str>;
 
     /// The profile's enabled extensions as their spec-string names.
     pub fn get_enabled_extensions(&self) -> Vec<String>;
@@ -390,6 +415,16 @@ pub struct SessionConfig {
     /// `false` does not improve security — it just removes the
     /// directive lines from operator-facing output.
     pub echo_openjd_directives: bool,
+
+    /// A label prefixed to every log record of this session (`[<tag>] `
+    /// on the message, an `openjd_session_tag` structured field) for a
+    /// runner that merges several Sessions' logs into one stream, as
+    /// `openjd run` does for a Job's Service Sessions (`Service <name>`).
+    /// A concurrently running action's tag follows it (`[Service Files]
+    /// [onReadinessCheck] …`), and each section banner of the session
+    /// becomes one tagged line instead of four. Default `None`: records
+    /// are exactly as before. See logging.md "LogTag".
+    pub log_tag: Option<String>,
 
     /// Caller-policy caps and evaluation budgets enforced during
     /// action resolution. Task execution is the enforcement boundary
@@ -564,6 +599,14 @@ pub struct ServiceSessionConfig {
     /// The Service's `serviceEnvironments` are not listed here; they come from
     /// `service`.
     pub environments: Vec<openjd_model::job::Environment>,
+    /// The document profile of each entry of `environments`, index for index,
+    /// for one from a document other than the Service's own: `Some(p)` enters
+    /// it through `Session::enter_environment_with_profile`; `None`, or an
+    /// index past the end, uses the Session's profile (`session.profile` — the
+    /// Service's own document's, which also governs its actions, `variables`,
+    /// `let`, embedded files and `serviceEnvironments`). Empty when every
+    /// scope Environment shares the Service's document.
+    pub environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
     /// The caller's assignment for every declared port (`port`, `bindAddress`,
     /// `connectAddress`). Port allocation is the caller's policy.
     pub endpoints: openjd_model::job::service_symbols::ServiceEndpoints,
@@ -1097,6 +1140,24 @@ pub fn logging::timestamp_usec() -> u64;
 /// Log a major section banner (surrounded by `=` lines).
 pub fn logging::log_section_banner(session_id: &str, title: &str);
 
+/// The same, as one tagged `BANNER` line `[<tag>] --------- <title>` when
+/// `session_tag` is `Some` (a Session with a `log_tag`); else
+/// `log_section_banner`.
+pub fn logging::log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
+
+/// The attribution of a log record: the Session's `log_tag` and/or the
+/// concurrently running action's name. `prefix()` is
+/// `"[<session>] [<action>] "` with the absent parts omitted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogTag<'a> {
+    pub session: Option<&'a str>,
+    pub action: Option<&'a str>,
+}
+impl LogTag<'_> {
+    pub fn prefix(&self) -> String;
+    pub fn is_empty(&self) -> bool;
+}
+
 /// Log a minor section banner (surrounded by `-` lines).
 pub fn logging::log_subsection_banner(session_id: &str, title: &str);
 ```
@@ -1122,10 +1183,21 @@ macro_rules! session_log { /* ... */ }
 ///   session_action_log!(info, session_id, Some("onReadinessCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
 #[macro_export]
 macro_rules! session_action_log { /* ... */ }
+
+/// Like `session_log!`, attributing the record per `$tag: LogTag`: the
+/// message is prefixed with `tag.prefix()` and the record carries
+/// `openjd_session_tag` and/or `openjd_action` for the tags that are set.
+/// `session_action_log!` is this with no session tag.
+///
+/// Usage:
+///   session_tagged_log!(info, session_id, tag, LogContent::COMMAND_OUTPUT, "{}", line);
+#[macro_export]
+macro_rules! session_tagged_log { /* ... */ }
 ```
 
 Structured fields on every record: `session_id`, `openjd_log_content`,
-`openjd_timestamp_usec`; plus `openjd_action` on attributed records.
+`openjd_timestamp_usec`; plus `openjd_action` on action-attributed records and
+`openjd_session_tag` on records of a Session with a `log_tag`.
 
 ## Error Type
 
@@ -1250,7 +1322,10 @@ the workspace's clippy, build, and test jobs.
 This crate tracks revision 2023-09 of the OpenJD specification.
 Revision gating lives in `ModelProfile` (from `openjd-model`), which
 is passed in via `SessionConfig.profile` and used to derive the
-expression-language profile for each action.
+expression-language profile for each action of the session's own
+document; an Environment from another document may carry its own
+through `Session::enter_environment_with_profile` /
+`ServiceSessionConfig::environment_profiles`.
 
 Enums that are `#[non_exhaustive]`:
 

@@ -280,6 +280,30 @@ as the document label. `PreparedRun::environment_documents`
 for index with the combined `job_environments`, which document each Environment
 came from. The CLI enters nothing itself from the template objects.
 
+**Per-document extension profiles.** An extension applies to the document that
+lists it (Template Schemas §1.2 item 3; RFC 0009 "Environment Template": a Job
+Template need not list the extensions the Environment Templates applied to it
+use, and vice versa). The Task Session's `SessionConfig::profile` is the Job
+Template's, so an attached Environment is entered through
+`Session::enter_environment_with_profile(env, symtab, None, None,
+Some(profile))` with **its own template's** profile — `PreparedRun::attached_profiles`
+(each `--environment` template's `EnvironmentTemplate::profile()`, by attachment
+index) looked up through `PreparedRun::profile_for(document)` — and the Job
+Template's own Environments with `None` (the Session's). The profile is kept on the
+`EnteredEnvironment` so a re-entry after a Service's endpoints change uses it
+again. Without this, the queue use case of RFC 0009 failed at run time
+(`Failed to resolve env var 'KV_ADDR': Unknown function: 'join_host_port'`) whenever
+the Job Template did not itself declare `SERVICE`: the attached Environment's
+`join_host_port` was looked up in the Job Template's library. The same rule applies
+to Service Sessions (see [Services](#services-rfc-0009) "Documents and profiles").
+
+The `EnteredEnvironment` also keeps the symbol table the Environment was actually
+entered with (`resolved`: the caller's table with the document's READY `Service.*`
+endpoints layered on), and `exit_environments_down_to` passes it to
+`Session::exit_environment`, so an `onExit` that references `Service.*` resolves the
+same values its `onEnter` and `variables` did instead of failing teardown with an
+undefined variable.
+
 Step environments receive the step's symbol table (`step_symtab`) for format string
 resolution. Job and template environments receive `None` for the step symbol table.
 When Services are in scope, `RunContext::task_symtab` layers the endpoints of the
@@ -363,6 +387,22 @@ in the run looks a Service up by name alone:
   with its document: `Service 'Cache' (from queue-cache.yaml)` (the path as given
   to `--environment`); the Job Template's own stay `Service 'Cache'`. See
   [Output](#output).
+
+**Documents and profiles.** Each document's strings are evaluated under its own
+extensions (Template Schemas §1.2 item 3). A Service Session's `SessionConfig::profile`
+is the profile of the Service's own document — `ServiceRunConfig::profile_for(&service.document)`:
+the Job Template's `profile` for its `jobServices` / `stepServices`, the attachment's
+entry of `attached_profiles` for an external Service — so an external Service's actions,
+`variables`, `let`, embedded files and `serviceEnvironments` use its template's `SERVICE`
+/ `EXPR` functions whatever the Job Template declares. The scope Environments a Service
+Session enters (the combined `job_environments`, then a Step's `stepEnvironments`) each
+come from a document; `ServiceManager::set_job_services` / `set_step_services` take
+`PreparedRun::environment_documents` and fill `ServiceSessionConfig::environment_profiles`
+with `Some(profile_for(doc))` for every Job Environment whose document differs from the
+Service's (`None` for those sharing it; Step Environments always share a Step Service's
+Job Template). The Job Template's `jobEnvironments` entered in an external Service's
+Session thus keep the Job's profile, and an attached Environment entered in a Job
+Template Service's Session keeps its template's.
 
 Template
 validation (per document) and `apply_environment_templates` (across documents) between
@@ -470,13 +510,22 @@ continues:
   to the queue (not a Task failure)` and not counted in `tasks_run` or as a failure.
   The Step's remaining Tasks are abandoned and the Step (a Step Service) or every
   selected Step (a Job Service) returns to pending: `run_workload` resumes from that
-  Step (or from the first), re-running completed Tasks. The requeued Tasks run in a
-  **new Task Session** (`RunContext::replace_task_session`): a canceled action leaves a
-  Session ending-only ("Brittle Sessions", `specs/sessions/session.md`), and a
-  scheduler would form new Sessions for requeued Tasks anyway. The new Session
-  re-enters the Job's Environments. A Job-scope `RERUN` also stops the current Step's
-  Services; they start again, in new Service Sessions, when the Step is next
-  scheduled ("RERUN and Step dependencies").
+  Step (or from the first), re-running completed Tasks — **only once the Service is
+  actually relaunched**: after the canceled Task's Step unwinds, `run_workload` runs
+  the readiness gate before announcing the requeue, so the restart decision (and the
+  relaunch) has settled. If the Service's attempts are exhausted it is FAILED instead,
+  the gate records the failure, and the run fails without printing `Returning every
+  completed Task …` or `New Task Session for the requeued Tasks` (the exploratory
+  report's stumble S10). Otherwise the requeue is logged (`Returning every completed
+  Task of the Job to the queue: a Job Service with completedTasks: RERUN was
+  relaunched; every Step returns to pending`, or `… of Step '<name>' …: a Step Service
+  …`) and the requeued Tasks run in a **new Task Session**
+  (`RunContext::replace_task_session`): a canceled action leaves a Session
+  ending-only ("Brittle Sessions", `specs/sessions/session.md`), and a scheduler would
+  form new Sessions for requeued Tasks anyway. The new Session re-enters the Job's
+  Environments. A Job-scope `RERUN` also stops the current Step's Services; they
+  start again, in new Service Sessions, when the Step is next scheduled ("RERUN and
+  Step dependencies").
 - `completedTasks: KEEP` — the Task continues; if it fails on its own that is an
   ordinary Task failure, which the local runner (having no Task retry) treats as it
   always has: the run fails. Completed Tasks stand.
@@ -539,7 +588,49 @@ line per event, each naming the Service and its scope: endpoints
 in its Service Session (relaunch N of M): <reason>` / `… in a new Service Session …`,
 `is FAILED: <reason>; N of M relaunch(es) used (restartPolicy.maxAttempts)`, and
 `stopped`. The Service's subprocess output streams through the session logger like a
-Task's, with the `[onReadinessCheck]` tag the runtime adds. A FAILED Service is also
+Task's, with the `[onReadinessCheck]` tag the runtime adds.
+
+**Attribution inside a Service Session.** Once Tasks run, a Service's `onRun` output
+interleaves with Task output in the single run log, and the sessions runtime enters a
+Service Session's Environments and runs its actions internally, where the CLI cannot
+print banners of its own. Both are solved with the Session's log tag
+(`SessionConfig::log_tag`, `specs/sessions/logging.md`): every Service Session is
+created with `log_tag = "Service <name>"` — `"Service <name> (from <document>)"` for an
+external Service — so **every line the Service Session logs is prefixed `[Service
+<name>] `**: its Environments' `onEnter` / `onExit` output, `onEnter`'s, `onRun`'s,
+`onExit`'s, the `Output:` headers, and the process-control lines. The concurrent
+`onReadinessCheck`'s lines keep the RFC 0009 rule-3 action tag *after* the Service
+tag: `[Service Files] [onReadinessCheck] CHECK_OK`. A tagged Session's section
+banners collapse to one tagged line each, and the CLI's `SessionLogger` prints
+`BANNER` records that carry a session tag (it still drops the untagged Task
+Session's, whose banners the CLI prints itself), so a Service Session's phases read:
+
+```
+--------- Starting Service: Files                        ← the CLI's banner (4 lines)
+Service 'Files' (Job scope) endpoints: main -> 127.0.0.1:41235
+[Service Files] --------- Starting Service: Files
+[Service Files] --------- Entering Environment: Shared
+[Service Files] Output:
+[Service Files] Shared.onEnter running in a Session
+[Service Files] --------- Service onEnter: Files
+[Service Files] Output:
+[Service Files] --------- Service onRun: Files (launch 1)
+Service 'Files' onRun launched (launch 1 in this Session); readiness check: TCP_CONNECT
+[Service Files] Output:
+Service 'Files' is READY
+…
+--------- Stopping Service: Files                        ← the CLI's banner (4 lines)
+[Service Files] --------- Ending Service: Files
+[Service Files] --------- Service onExit: Files
+[Service Files] --------- Exiting Environment: Shared
+Service 'Files' stopped
+```
+
+The CLI's own event lines (`Service 'Files' …`) are not tagged: they are the run's
+narrative, not the Session's output. The Task Session carries no tag, so Task and
+Task-Session Environment output is unchanged.
+
+A FAILED Service is also
 reported on stderr (`ERROR: Service '<name>' (<scope> scope) failed: <reason>`), in
 the summary (`Failed Service: <name> (<scope> scope): <reason>`; the result message
 becomes `Service '<name>' (<scope> scope) failed: <reason>`), and as `failed_services`
@@ -568,7 +659,11 @@ selects and sequences tasks.
 
 The CLI passes the instantiated job's `ModelProfile` and path-mapping rules through
 `SessionConfig`. `Session::with_config()` derives the matching expression profile and
-host-context function library used by environment and task actions.
+host-context function library used by the Job Template's environment and task actions.
+An attached Environment Template's Environment carries its own profile into the
+Session (`enter_environment_with_profile`), and each Service Session's `SessionConfig`
+carries the profile of the Service's own document; see
+[Environment Lifecycle](#environment-lifecycle) and [Services](#services-rfc-0009).
 
 ## Session Configuration
 
@@ -584,7 +679,7 @@ The `SessionConfig` struct is populated with:
 | `os_env_vars` | `None` (inherit current environment) |
 | `session_root_directory` | `None` (use system temp) |
 | `user` | `None` (run as current user) |
-| `profile` | `ModelProfile` built from the job template's declared extensions |
+| `profile` | `ModelProfile` built from the job template's declared extensions (the Task Session; a Service Session gets its own document's — `ServiceRunConfig::profile_for`) |
 | `limits` | `SessionLimits` with `max_resolved_arg_len = common::DEFAULT_MAX_ARG_LEN` (the CLI's uniform 32K-character default — see [check.md § Caller-Limits Policy](check.md#caller-limits-policy)); everything else `None` |
 
 The same OS-max cap applies at every enforcing stage the CLI drives:

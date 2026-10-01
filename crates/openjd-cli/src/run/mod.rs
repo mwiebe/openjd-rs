@@ -44,11 +44,47 @@ struct PreparedRun {
     /// The document of each entry of `job.job_environments`, index for
     /// index: the attached Environments carry their template, the Job
     /// Template's own `Document::JobTemplate`. Decides which document's
-    /// `Service.*` symbols each Job Environment sees.
+    /// `Service.*` symbols each Job Environment sees, and (through
+    /// [`profile_for`](Self::profile_for)) which document's extension
+    /// profile its format strings are evaluated with.
     environment_documents: Vec<Document>,
     param_values: JobParameterValues,
     path_rules: Vec<PathMappingRule>,
+    /// The Job Template's revision + extensions profile: the Task Session's
+    /// profile, and that of every entity the Job Template declares.
     revision_profile: ModelProfile,
+    /// The profile of each `--environment` template, by attachment index
+    /// (the index in `Document::EnvironmentTemplate`). An extension applies
+    /// to the document that lists it (Template Schemas §1.2 item 3), so an
+    /// attached Environment's strings — and an external Service's — are
+    /// evaluated under their own template's profile, not the Job's.
+    attached_profiles: Vec<ModelProfile>,
+}
+
+impl PreparedRun {
+    /// The extension profile of the document `document`: the Job Template's
+    /// for [`Document::JobTemplate`], the attached template's for an
+    /// [`Document::EnvironmentTemplate`].
+    fn profile_for(&self, document: &Document) -> &ModelProfile {
+        profile_for(&self.revision_profile, &self.attached_profiles, document)
+    }
+}
+
+/// The profile of `document` given the Job Template's `job_profile` and the
+/// attachments' `attached_profiles` (by attachment index). Shared by the
+/// Task Session side ([`PreparedRun`]) and the Service side
+/// (`ServiceRunConfig`).
+fn profile_for<'a>(
+    job_profile: &'a ModelProfile,
+    attached_profiles: &'a [ModelProfile],
+    document: &Document,
+) -> &'a ModelProfile {
+    match document {
+        Document::JobTemplate => job_profile,
+        Document::EnvironmentTemplate { index, .. } => {
+            attached_profiles.get(*index).unwrap_or(job_profile)
+        }
+    }
 }
 
 struct RunSelection {
@@ -65,9 +101,17 @@ struct EnteredEnvironment {
     /// The document that declares the Environment: the only document whose
     /// Services it may reference.
     document: Document,
+    /// That document's extension profile when it is not the Job Template's
+    /// (see `RunContext::enter_environment`), kept for re-entry.
+    profile: Option<ModelProfile>,
     /// The symbol table the caller supplied (before `Service.*` symbols were
-    /// layered on).
+    /// layered on), the input to a re-entry.
     symtab: EnvSymtab,
+    /// The symbol table the Environment was entered with — `symtab` with the
+    /// `Service.*` symbols of its document's READY Services layered on — so
+    /// its `onExit` resolves the same `Service.*` values its `onEnter` and
+    /// `variables` did.
+    resolved: EnvSymtab,
 }
 
 /// How one Task ended, from the run loop's point of view.
@@ -174,12 +218,17 @@ impl RunContext {
     /// Enter `env`, declared by `document`, in the Task Session unless its
     /// `runScope` excludes `TASK` (RFC 0009 `<Environment>`), layering the
     /// `Service.*` symbols of that document's READY Services onto `symtab`
-    /// (or the Environment's own `resolved_symtab`).
+    /// (or the Environment's own `resolved_symtab`). `profile` is that
+    /// document's extension profile: `Some` for an attached Environment
+    /// Template, whose strings are then evaluated under its own extensions
+    /// rather than the Job Template's (the Task Session's profile); `None`
+    /// for the Job Template's own Environments.
     async fn enter_environment(
         &mut self,
         env: &Environment,
         symtab: EnvSymtab,
         document: Document,
+        profile: Option<&ModelProfile>,
     ) {
         if !env.runs_in(RunScope::Task) {
             println!(
@@ -201,14 +250,16 @@ impl RunContext {
         self.print_action_banner(&format!("Entering Environment: {}", env.name));
         match self
             .session
-            .enter_environment(env, resolved.as_ref(), None, None)
+            .enter_environment_with_profile(env, resolved.as_ref(), None, None, profile)
             .await
         {
-            Ok(identifier) => self.entered_envs.push(EnteredEnvironment {
+            Ok((identifier, _stdout)) => self.entered_envs.push(EnteredEnvironment {
                 identifier,
                 env: env.clone(),
                 document,
+                profile: profile.cloned(),
                 symtab,
+                resolved,
             }),
             Err(e) => {
                 eprintln!("ERROR: Environment setup failed: {e}");
@@ -228,7 +279,9 @@ impl RunContext {
                             identifier: identifier.clone(),
                             env: env.clone(),
                             document,
+                            profile: profile.cloned(),
                             symtab,
+                            resolved,
                         });
                     }
                 }
@@ -246,7 +299,7 @@ impl RunContext {
             self.print_action_banner(&format!("Exiting Environment: {}", entered.env.name));
             if let Err(e) = self
                 .session
-                .exit_environment(&entered.identifier, entered.symtab.as_ref(), true, None)
+                .exit_environment(&entered.identifier, entered.resolved.as_ref(), true, None)
                 .await
             {
                 eprintln!("ERROR: Environment teardown failed: {e}");
@@ -267,16 +320,25 @@ impl RunContext {
             self.timestamp(),
             self.entered_envs.len() - baseline
         );
-        let to_reenter: Vec<(Environment, EnvSymtab, Document)> = self.entered_envs[baseline..]
+        let to_reenter: Vec<(Environment, EnvSymtab, Document, Option<ModelProfile>)> = self
+            .entered_envs[baseline..]
             .iter()
-            .map(|e| (e.env.clone(), e.symtab.clone(), e.document.clone()))
+            .map(|e| {
+                (
+                    e.env.clone(),
+                    e.symtab.clone(),
+                    e.document.clone(),
+                    e.profile.clone(),
+                )
+            })
             .collect();
         self.exit_environments_down_to(baseline).await;
-        for (env, symtab, document) in to_reenter {
+        for (env, symtab, document, profile) in to_reenter {
             if self.is_stopping() {
                 break;
             }
-            self.enter_environment(&env, symtab, document).await;
+            self.enter_environment(&env, symtab, document, profile.as_ref())
+                .await;
         }
     }
 
@@ -555,6 +617,7 @@ mod tests {
             sticky_bit_policy: Default::default(),
             debug_collect_stdout: false,
             echo_openjd_directives: true,
+            log_tag: None,
             limits: Default::default(),
         })
         .unwrap();
@@ -571,6 +634,7 @@ mod tests {
                 path_mapping_rules: None,
                 retain_working_dir: false,
                 profile: openjd_model::ModelProfile::default(),
+                attached_profiles: Vec::new(),
                 cancel_token: CancellationToken::new(),
                 limits: Default::default(),
             }),

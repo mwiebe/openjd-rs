@@ -3782,7 +3782,17 @@ mod services {
         let (code, stdout, stderr) = run_service_template("service_command_readiness.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(stdout.contains("readiness check: COMMAND"), "{stdout}");
-        assert!(stdout.contains("[onReadinessCheck] CHECK_OK"), "{stdout}");
+        // Every line of the Service Session carries the Service tag; the
+        // concurrent check's lines carry its action tag after it (RFC 0009
+        // rule 3), while onRun's carry the Service tag alone.
+        assert!(
+            stdout.contains("[Service Slow] [onReadinessCheck] CHECK_OK"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("\t[Service Slow] SLOW_LISTENING"),
+            "{stdout}"
+        );
         assert!(stdout.contains("Service 'Slow' is READY"), "{stdout}");
         assert!(
             pos(&stdout, "SLOW_LISTENING") < pos(&stdout, "Service 'Slow' is READY"),
@@ -3873,6 +3883,13 @@ mod services {
             stdout.contains("FRAME 1 CACHE_SAYS from-the-queue"),
             "{stdout}"
         );
+        // An external Service's lines are tagged with its document too.
+        assert!(
+            stdout.contains(&format!(
+                "\t[Service Cache (from {env_path})] CACHE_LISTENING"
+            )),
+            "{stdout}"
+        );
         assert!(
             stdout.contains("FRAME 2 CACHE_SAYS from-the-queue"),
             "{stdout}"
@@ -3885,6 +3902,97 @@ mod services {
                 ),
             "{stdout}"
         );
+    }
+
+    /// Exploratory report bug B1 / Template Schemas §1.2 item 3: an attached
+    /// Environment Template's strings are evaluated under *its* extensions.
+    /// The queue's client Environment composes `KV_ADDR` with
+    /// `join_host_port` (a `SERVICE` function) in `variables`, `onEnter`,
+    /// and `onExit`; the Job Template declares no extensions at all. Before
+    /// the fix the run failed with `Failed to resolve env var 'KV_ADDR':
+    /// Unknown function: 'join_host_port'`.
+    #[test]
+    fn test_attached_environment_uses_its_own_extensions_not_the_jobs() {
+        let tdir = templates_dir();
+        let env_path = tdir.join("service_external_kv_join.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_external_kv_consumer.yaml",
+            &["--environment", env_path],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            !stderr.contains("Unknown function: 'join_host_port'"),
+            "stderr:\n{stderr}"
+        );
+        // variables, onEnter, and onExit of the attached Environment all
+        // resolved `join_host_port`, and the Task read the composed value.
+        let port_of = |needle: &str| -> String {
+            let at = pos(&stdout, needle) + needle.len();
+            stdout[at..]
+                .trim_start()
+                .split(['\n', '\r'])
+                .next()
+                .unwrap()
+                .rsplit(':')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let enter_port = port_of("KVCLIENT_ENTER 127.0.0.1:");
+        let exit_port = port_of("KVCLIENT_EXIT 127.0.0.1:");
+        assert_eq!(enter_port, exit_port, "{stdout}");
+        assert!(
+            enter_port.parse::<u16>().is_ok(),
+            "port in {enter_port:?}:\n{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT KV_SAYS hello"), "{stdout}");
+        assert!(
+            pos(&stdout, &format!("Service 'Kv' (from {env_path}) is READY"))
+                < pos(&stdout, "Entering Environment: KvClient"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
+    /// The inverse of the previous test: a Job Template that declares
+    /// `SERVICE` attaches a plain `[EXPR]`-only Environment Template. The
+    /// attached Environment is evaluated under its own profile (its `upper()`
+    /// works), the Job's Service and Tasks under the Job's, and the Service
+    /// Session enters the attached Job Environment too (default `runScope`).
+    #[test]
+    fn test_plain_environment_template_attached_to_a_service_job() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let tdir = templates_dir();
+        let env_path = tdir.join("env_plain_expr_greeting.yaml");
+        let env_path = env_path.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_tcp.yaml",
+            &[
+                "--environment",
+                env_path,
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // Entered once in the Service Session (before the Service is READY)
+        // and once in the Task Session.
+        assert_eq!(
+            stdout
+                .matches("GREETING_ENTER HELLO FROM THE QUEUE")
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Starting Service: Store") < pos(&stdout, "GREETING_ENTER")
+                && pos(&stdout, "GREETING_ENTER") < pos(&stdout, "Service 'Store' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_REPLY ECHO:Second"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
     }
 
     /// Template Schemas §1.2.2 item 2: Service names are scoped to their
@@ -4155,13 +4263,20 @@ mod services {
             "{stdout}"
         );
         assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        // The CLI's own banner (`\t--------- …`), one per Service Session
+        // opened; the Session's tagged `[Service Helper] --------- Starting
+        // Service: Helper` line follows each.
         assert_eq!(
-            stdout.matches("Starting Service: Helper").count(),
+            stdout
+                .matches("\t--------- Starting Service: Helper")
+                .count(),
             2,
             "{stdout}"
         );
         assert_eq!(
-            stdout.matches("Starting Service: Shared").count(),
+            stdout
+                .matches("\t--------- Starting Service: Shared")
+                .count(),
             1,
             "{stdout}"
         );
@@ -4376,6 +4491,66 @@ mod services {
         );
     }
 
+    /// Exploratory report stumble S10 (`06b`): a `RERUN` Service whose
+    /// relaunch budget is exhausted while a Task runs. The Task is canceled
+    /// and returns to the queue, the Service is FAILED, and the Job fails —
+    /// without announcing a requeue that never happens or opening a new Task
+    /// Session for it.
+    #[test]
+    fn test_rerun_failed_service_does_not_announce_a_requeue() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_exhausted_mid_task.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Canceling the running Task of Step 'Work': a Service with completedTasks: RERUN \
+                 is UNREADY; the Task returns to the queue"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Task canceled; it returns to the queue (not a Task failure)"),
+            "{stdout}"
+        );
+        let reason = "onRun exited while the scope still had work (exit code: 1); 0 of 0 \
+                      relaunch(es) used (restartPolicy.maxAttempts)";
+        assert!(
+            stdout.contains(&format!("Service 'Flaky' (Job scope) is FAILED: {reason}")),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("Returning every completed Task"),
+            "no requeue is announced for a FAILED Service:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("New Task Session for the requeued Tasks"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Relaunching"), "{stdout}");
+        assert!(
+            stdout.contains(&format!("Failed Service: Flaky (Job scope): {reason}")),
+            "{stdout}"
+        );
+        // Task 1 completed; Task 2 was canceled; Task 3 never ran.
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines,
+            vec![
+                "flaky launch",
+                "task 1 start",
+                "task 1 done",
+                "task 2 start",
+                "flaky crash"
+            ],
+            "{lines:?}"
+        );
+    }
+
     /// The structured result carries the FAILED Service.
     #[test]
     fn test_failed_service_in_json_result() {
@@ -4534,8 +4709,57 @@ mod services {
             "{stdout}"
         );
         // The Service Environment's openjd_env export is echoed from the
-        // Service Session.
-        assert!(stdout.contains("openjd_env: STORE_MARKER="), "{stdout}");
+        // Service Session, tagged with the Service, and the Service Session's
+        // Environment entries and action phases are marked by single tagged
+        // banner lines (the Task Session's banners stay the CLI's four-line
+        // ones).
+        assert!(
+            stdout.contains("\t[Service Store] openjd_env: STORE_MARKER="),
+            "{stdout}"
+        );
+        let svc_job_env = pos(
+            &stdout,
+            "\t[Service Store] --------- Entering Environment: JobEnv",
+        );
+        let svc_env = pos(
+            &stdout,
+            "\t[Service Store] --------- Entering Environment: Provision",
+        );
+        let on_enter = pos(
+            &stdout,
+            "\t[Service Store] --------- Service onEnter: Store",
+        );
+        let on_run = pos(
+            &stdout,
+            "\t[Service Store] --------- Service onRun: Store (launch 1)",
+        );
+        assert!(
+            svc_job_env < svc_env && svc_env < on_enter && on_enter < on_run && on_run < listening,
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "\t[Service Store] --------- Service onExit: Store")
+                < pos(
+                    &stdout,
+                    "\t[Service Store] --------- Exiting Environment: Provision"
+                ),
+            "{stdout}"
+        );
+        assert!(
+            pos(
+                &stdout,
+                "\t[Service Store] --------- Exiting Environment: Provision"
+            ) < pos(
+                &stdout,
+                "\t[Service Store] --------- Exiting Environment: JobEnv"
+            ),
+            "{stdout}"
+        );
+        // The Task Session's entry of the same Job Environment is untagged.
+        assert!(
+            stdout.contains("\t--------- Entering Environment: JobEnv\n"),
+            "{stdout}"
+        );
         assert!(stdout.contains("TASK_REPLY bind 127.0.0.1:"), "{stdout}");
         // The Service Session (lines 0–3, 7–9) and the Task Session (4–6)
         // each enter the Job Environment; only the Service Session enters the

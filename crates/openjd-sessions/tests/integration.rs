@@ -18,6 +18,8 @@ mod test_cross_user;
 mod test_cross_user_windows;
 #[path = "integration/test_embedded_files.rs"]
 mod test_embedded_files;
+#[path = "integration/test_environment_profile.rs"]
+mod test_environment_profile;
 #[path = "integration/test_error_messages.rs"]
 mod test_error_messages;
 #[path = "integration/test_helper.rs"]

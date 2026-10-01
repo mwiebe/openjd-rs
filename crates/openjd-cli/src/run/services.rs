@@ -164,7 +164,15 @@ pub(super) struct ServiceRunConfig {
     pub job_parameter_values: JobParameterValues,
     pub path_mapping_rules: Option<Vec<PathMappingRule>>,
     pub retain_working_dir: bool,
+    /// The Job Template's profile: the profile of its `jobServices` /
+    /// `stepServices` and of its own Environments.
     pub profile: ModelProfile,
+    /// The `--environment` templates' profiles, by attachment index. An
+    /// external Service's Session runs under its own template's profile,
+    /// and every Environment a Service Session enters is evaluated under
+    /// the profile of the document that declares it (Template Schemas §1.2
+    /// item 3).
+    pub attached_profiles: Vec<ModelProfile>,
     /// The run's interruption token. A Service Session does not share it
     /// (a token canceled while a Session is being torn down would cancel
     /// its `onExit` and Environment exits too, which constraint 7 wants
@@ -173,6 +181,13 @@ pub(super) struct ServiceRunConfig {
     /// handle, then ends the Session as for a scope completion.
     pub cancel_token: CancellationToken,
     pub limits: SessionLimits,
+}
+
+impl ServiceRunConfig {
+    /// The profile of the document `document` (see [`super::profile_for`]).
+    fn profile_for(&self, document: &Document) -> &ModelProfile {
+        super::profile_for(&self.profile, &self.attached_profiles, document)
+    }
 }
 
 /// What the readiness gate found.
@@ -259,6 +274,10 @@ struct Instance {
     /// The Environments the Service Session enters (those whose `runScope`
     /// includes `SERVICE`), in entry order.
     environments: Vec<Environment>,
+    /// The profile of each entry of `environments` whose document is not
+    /// the Service's own (`None` for those that share it), index for index
+    /// — `ServiceSessionConfig::environment_profiles`.
+    environment_profiles: Vec<Option<ModelProfile>>,
     /// Endpoints of the Services earlier in the start order, **of this
     /// Service's own document**, that were READY when this Session was
     /// started (a `Service.*` reference resolves within its document).
@@ -365,16 +384,21 @@ impl ServiceManager {
     /// Register the Job's Services (the combined `jobServices`: external
     /// Services then the Job Template's own), not yet started. Their
     /// Sessions enter the Job's Environments.
-    pub(super) fn set_job_services(&mut self, job: &Job) {
+    ///
+    /// `environment_documents` is the document of each entry of
+    /// `job.job_environments`, index for index.
+    pub(super) fn set_job_services(&mut self, job: &Job, environment_documents: &[Document]) {
         if !self.job.is_empty() {
             return;
         }
         let envs: Vec<Environment> = job.job_environments.clone().unwrap_or_default();
         for service in job.job_services.iter().flatten() {
+            let profiles = self.environment_profiles(service, environment_documents);
             self.job.push(managed(
                 service,
                 ServiceScope::Job,
                 envs.clone(),
+                profiles,
                 self.shared.config.retain_working_dir,
             ));
         }
@@ -383,8 +407,15 @@ impl ServiceManager {
     /// Register `step`'s Services, not yet started. Their Sessions enter the
     /// Job's Environments followed by the Step's. A no-op while the current
     /// Step's Services are registered (a Step re-running its Tasks keeps
-    /// them).
-    pub(super) fn set_step_services(&mut self, job: &Job, step: &Step) {
+    /// them). `environment_documents` is as for
+    /// [`set_job_services`](Self::set_job_services); a Step's Environments
+    /// belong to the Job Template.
+    pub(super) fn set_step_services(
+        &mut self,
+        job: &Job,
+        environment_documents: &[Document],
+        step: &Step,
+    ) {
         if !self.step.is_empty() {
             return;
         }
@@ -395,13 +426,35 @@ impl ServiceManager {
         envs.extend(step.step_environments.iter().flatten().cloned());
         self.step_stop = self.shared.config.cancel_token.child_token();
         for service in services {
+            // Step Environments are the Job Template's: they share a Step
+            // Service's document, so they need no profile of their own.
+            let profiles = self.environment_profiles(service, environment_documents);
             self.step.push(managed(
                 service,
                 ServiceScope::Step(step.name.clone()),
                 envs.clone(),
+                profiles,
                 self.shared.config.retain_working_dir,
             ));
         }
+    }
+
+    /// The `environment_profiles` of `service`'s Session for the Job
+    /// Environments declared by `environment_documents`: `Some(profile)` for
+    /// each from a document other than the Service's own, `None` for those
+    /// sharing it (the Session's own profile — the Service's document's —
+    /// applies).
+    fn environment_profiles(
+        &self,
+        service: &Service,
+        environment_documents: &[Document],
+    ) -> Vec<Option<ModelProfile>> {
+        environment_documents
+            .iter()
+            .map(|doc| {
+                (*doc != service.document).then(|| self.shared.config.profile_for(doc).clone())
+            })
+            .collect()
     }
 
     /// `true` when any Service is registered.
@@ -784,6 +837,7 @@ fn managed(
     service: &Service,
     scope: ServiceScope,
     environments: Vec<Environment>,
+    environment_profiles: Vec<Option<ModelProfile>>,
     retain_working_dir: bool,
 ) -> Managed {
     let key = ServiceKey::of(service);
@@ -803,6 +857,7 @@ fn managed(
             scope,
             label: key.to_string(),
             environments,
+            environment_profiles,
             in_scope: Vec::new(),
             endpoints: None,
             session: None,
@@ -909,10 +964,20 @@ async fn end_instance(inst: &mut Instance) {
     log_line(msg);
 }
 
-fn session_config(shared: &Shared, service_name: &str) -> SessionConfig {
+/// The Session configuration of `service`'s Service Session. Its profile is
+/// that of the Service's own document: an external Service's actions,
+/// `variables`, `let` bindings, embedded files and `serviceEnvironments`
+/// are evaluated under its Environment Template's extensions, a Job
+/// Template Service's under the Job Template's. Its `log_tag` — `Service
+/// <name>`, plus `(from <document>)` for an external Service — prefixes
+/// every line the Session logs (`[Service Files] …`), so a Service's output
+/// stays attributable once it interleaves with Task output in the single
+/// run log, and its section banners (`Entering Environment: …`, `Service
+/// onEnter: …`) appear as single tagged lines.
+fn session_config(shared: &Shared, service: &Service) -> SessionConfig {
     let n = shared.session_counter.fetch_add(1, Ordering::SeqCst);
     SessionConfig {
-        session_id: format!("cli-{}-svc-{service_name}-{n}", std::process::id()),
+        session_id: format!("cli-{}-svc-{}-{n}", std::process::id(), service.name),
         job_parameter_values: shared.config.job_parameter_values.clone(),
         path_mapping_rules: shared.config.path_mapping_rules.clone(),
         retain_working_dir: shared.config.retain_working_dir,
@@ -920,11 +985,16 @@ fn session_config(shared: &Shared, service_name: &str) -> SessionConfig {
         os_env_vars: None,
         session_root_directory: None,
         user: None,
-        profile: Some(shared.config.profile.clone()),
+        profile: Some(shared.config.profile_for(&service.document).clone()),
         cancel_token: None,
         sticky_bit_policy: Default::default(),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        log_tag: Some(format!(
+            "Service {}{}",
+            service.name,
+            origin_suffix(&service.document)
+        )),
         limits: shared.config.limits,
     }
 }
@@ -1031,9 +1101,10 @@ async fn launch_until_ready(
         ));
         inst.endpoints = Some(endpoints.clone());
         let mut session = ServiceSession::with_config(ServiceSessionConfig {
-            session: session_config(shared, &inst.service.name),
+            session: session_config(shared, &inst.service),
             service: inst.service.clone(),
             environments: inst.environments.clone(),
+            environment_profiles: inst.environment_profiles.clone(),
             endpoints,
             in_scope_endpoints: inst.in_scope.clone(),
         })

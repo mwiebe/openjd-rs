@@ -44,15 +44,15 @@ use crate::action::{ActionMessage, ActionState};
 use crate::action_status::ActionStatus;
 use crate::embedded_files::{EmbeddedFiles, EmbeddedFilesScope};
 use crate::error::SessionError;
-use crate::logging::{log_section_banner, LogContent};
+use crate::logging::{LogContent, LogTag};
 use crate::runner::ScriptRunnerBase;
 use crate::session::{
     declared_terminate_delay, normalize_env_key, seed_wrapped_action_symbols, ActionCancelSlot,
     ActionStatusFields, EnvVarChanges, Session, SessionCancelHandle, SessionConfig, SharedCallback,
-    WrappedContext,
+    WrapLibraries, WrappedContext,
 };
 use crate::subprocess::SubprocessResult;
-use crate::{session_action_log, session_log};
+use crate::{session_log, session_tagged_log};
 
 /// Default `timeout` of a Service's `onExit` (Template Schemas §5 defaults
 /// table: 300 seconds, like an Environment's `onExit`).
@@ -93,6 +93,21 @@ pub struct ServiceSessionConfig {
     /// `serviceEnvironments` are not listed here; they come from
     /// [`service`](Self::service).
     pub environments: Vec<Environment>,
+    /// The document profile of each entry of
+    /// [`environments`](Self::environments), index for index, for an
+    /// Environment that comes from a document other than the Service's
+    /// (Template Schemas §1.2 item 3: an extension applies to the document
+    /// that lists it). `Some(profile)` enters that Environment through
+    /// [`Session::enter_environment_with_profile`]; `None`, or an index past
+    /// the end of this list, enters it with the Session's own profile —
+    /// [`session`](Self::session)`.profile`, which is the profile of the
+    /// Service's **own** document (the Job Template for a `jobServices` /
+    /// `stepServices` entry, the attached Environment Template for an
+    /// external Service) and also governs the Service's actions,
+    /// `variables`, `let` bindings, embedded files, and
+    /// `serviceEnvironments`. An empty list means every scope Environment
+    /// shares the Service's document.
+    pub environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
     /// The caller's endpoint assignment for every port the Service
     /// declares (`Service.<own>.<port>.*`, including `bindAddress`). Port
     /// allocation policy is the caller's: a single-host runner uses
@@ -286,6 +301,11 @@ struct ResolvedAction {
     name: &'static str,
     action: Action,
     symtab: Box<SymbolTable>,
+    /// The function library the action's command, args, timeout, and
+    /// cancelation resolve with: the Session's (the Service's document's)
+    /// for the Service's own action, the wrapping Environment's document's
+    /// for a hook.
+    library: Arc<FunctionLibrary>,
 }
 
 /// Everything the background `onRun` driver owns.
@@ -321,6 +341,9 @@ struct RunDriverInputs {
 struct CheckDriverInputs {
     session_id: String,
     service_name: String,
+    /// The Session's log tag (`SessionConfig::log_tag`), prefixed to every
+    /// process-control line of the driver ahead of the action tag.
+    session_tag: Option<String>,
     /// A runner with its own cross-user helper (when the Session is
     /// cross-user) and `action_tag` set to `action_name`, so every log
     /// record of the check is attributed to it (rule 3).
@@ -405,6 +428,8 @@ pub struct ServiceSession {
     session: Session,
     service: Service,
     environments: Vec<Environment>,
+    /// See [`ServiceSessionConfig::environment_profiles`].
+    environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
     endpoints: ServiceEndpoints,
     in_scope_endpoints: Vec<ServiceEndpoints>,
     state: ServiceSessionState,
@@ -453,6 +478,7 @@ impl ServiceSession {
             session,
             service,
             environments,
+            environment_profiles,
             mut endpoints,
             in_scope_endpoints,
         } = config;
@@ -508,6 +534,7 @@ impl ServiceSession {
             session,
             service,
             environments,
+            environment_profiles,
             endpoints,
             in_scope_endpoints,
             state: ServiceSessionState::Created,
@@ -632,14 +659,16 @@ impl ServiceSession {
 
     async fn enter_inner(&mut self) -> Result<(), SessionError> {
         let sid = self.session.session_id().to_string();
-        log_section_banner(&sid, &format!("Starting Service: {}", self.service.name));
+        self.session
+            .log_banner(&format!("Starting Service: {}", self.service.name));
 
         // RFC 0009 "Services run inside Environments": enter the scope's
         // Environments, in order, skipping those whose runScope excludes
         // SERVICE. The Environments cannot reference Service.* (validation
-        // forbids it), so they resolve against the plain Session scope.
+        // forbids it), so they resolve against the plain Session scope —
+        // each with its own document's profile when it has one.
         let environments = std::mem::take(&mut self.environments);
-        for env in &environments {
+        for (i, env) in environments.iter().enumerate() {
             if !env.runs_in(RunScope::Service) {
                 session_log!(
                     info,
@@ -650,9 +679,16 @@ impl ServiceSession {
                 );
                 continue;
             }
+            let profile = self.environment_profiles.get(i).and_then(Option::as_ref);
             let entered = self
                 .session
-                .enter_environment(env, env.resolved_symtab.as_ref(), None, None)
+                .enter_environment_with_profile(
+                    env,
+                    env.resolved_symtab.as_ref(),
+                    None,
+                    None,
+                    profile,
+                )
                 .await;
             if let Err(e) = entered {
                 self.environments = environments;
@@ -736,7 +772,9 @@ impl ServiceSession {
         let mut service_vars = HashMap::new();
         if let Some(vars) = &self.service.variables {
             for (key, fmt_str) in vars {
-                let value = self.session.resolve_env_var_value(key, fmt_str, &symtab)?;
+                let value =
+                    self.session
+                        .resolve_env_var_value(key, fmt_str, &symtab, Some(&library))?;
                 service_vars.insert(normalize_env_key(key), value);
             }
         }
@@ -745,7 +783,8 @@ impl ServiceSession {
 
         if let Some(on_enter) = self.resolve_action(ServiceActionKind::Enter)? {
             self.any_action_ran = true;
-            log_section_banner(&sid, &format!("Service onEnter: {}", self.service.name));
+            self.session
+                .log_banner(&format!("Service onEnter: {}", self.service.name));
             let result = self.run_foreground_action(&on_enter, None, true).await?;
             if result.state != ActionState::Success {
                 let fail_message = self.lock_status().fail_message.clone();
@@ -793,7 +832,7 @@ impl ServiceSession {
         let run = self
             .resolve_action(ServiceActionKind::Run)?
             .expect("every Service defines onRun");
-        let library = self.session.library_arc();
+        let library = run.library.clone();
         let env_vars = self.service_env_vars();
         let plan = self.readiness_plan()?;
         let check_stop = CancellationToken::new();
@@ -806,13 +845,10 @@ impl ServiceSession {
 
         self.launch_count += 1;
         self.any_action_ran = true;
-        log_section_banner(
-            &sid,
-            &format!(
-                "Service onRun: {} (launch {})",
-                self.service.name, self.launch_count
-            ),
-        );
+        self.session.log_banner(&format!(
+            "Service onRun: {} (launch {})",
+            self.service.name, self.launch_count
+        ));
         session_log!(
             info,
             &sid,
@@ -910,11 +946,12 @@ impl ServiceSession {
         Ok(CheckDriverInputs {
             session_id: self.session.session_id().to_string(),
             service_name: self.service.name.clone(),
+            session_tag: self.session.log_tag().map(str::to_string),
             runner,
             action_name: check.name,
             action: check.action,
             symtab: check.symtab,
-            library: self.session.library_arc(),
+            library: check.library,
             env_vars: env_vars.clone(),
             interval,
             slot: ActionCancelSlot::new(),
@@ -1036,8 +1073,8 @@ impl ServiceSession {
                 current: self.state,
             });
         }
-        let sid = self.session.session_id().to_string();
-        log_section_banner(&sid, &format!("Ending Service: {}", self.service.name));
+        self.session
+            .log_banner(&format!("Ending Service: {}", self.service.name));
         let mut first_error: Option<SessionError> = None;
 
         if self.state == ServiceSessionState::Running {
@@ -1051,7 +1088,8 @@ impl ServiceSession {
         if self.any_action_ran {
             match self.resolve_action(ServiceActionKind::Exit) {
                 Ok(Some(on_exit)) => {
-                    log_section_banner(&sid, &format!("Service onExit: {}", self.service.name));
+                    self.session
+                        .log_banner(&format!("Service onExit: {}", self.service.name));
                     match self
                         .run_foreground_action(&on_exit, Some(SERVICE_EXIT_DEFAULT_TIMEOUT), false)
                         .await
@@ -1258,6 +1296,7 @@ impl ServiceSession {
                 name: kind.name(),
                 action: inner,
                 symtab: inner_symtab,
+                library: self.session.library_arc(),
             }));
         };
 
@@ -1290,6 +1329,9 @@ impl ServiceSession {
                 }
             }
         }
+        // The Service's own strings (WrappedAction.*) resolve with the
+        // Session's library — the Service's document's; the hook and the
+        // wrapping Environment's scope with that Environment's document's.
         seed_wrapped_action_symbols(
             &mut hook_symtab,
             &hooks.scope,
@@ -1297,19 +1339,23 @@ impl ServiceSession {
             &inner,
             WrappedContext::Service(&self.endpoints),
             &self.wrapped_env_vars(),
-            Some(&library),
+            WrapLibraries {
+                inner: Some(&library),
+                hook: Some(&hooks.library),
+            },
             self.session.limits(),
             &format!("Service {}", kind.name()),
         )?;
         if first_use {
             if let Some(ef) = &self.wrap_hook_files {
-                ef.write_file_contents(&hook_symtab, Some(&library))?;
+                ef.write_file_contents(&hook_symtab, Some(&hooks.library))?;
             }
         }
         Ok(Some(ResolvedAction {
             name: kind.hook_name(),
             action: hook,
             symtab: Box::new(hook_symtab),
+            library: hooks.library,
         }))
     }
 
@@ -1353,8 +1399,8 @@ impl ServiceSession {
             name: phase,
             action,
             symtab,
+            library,
         } = resolved;
-        let library = self.session.library_arc();
         let env_vars = self.service_env_vars();
 
         let cancel_token = self.session.action_cancel_token();
@@ -1367,7 +1413,7 @@ impl ServiceSession {
             .set_terminate_delay(declared_terminate_delay(
                 &action.cancelation,
                 symtab,
-                Some(&library),
+                Some(library),
                 self.session.limits(),
                 SERVICE_DEFAULT_NOTIFY_PERIOD,
             ));
@@ -1381,7 +1427,7 @@ impl ServiceSession {
             let run_fut = Box::pin(runner.run_action(
                 action,
                 symtab,
-                Some(&library),
+                Some(library),
                 &env_vars,
                 tx,
                 default_timeout,
@@ -1977,6 +2023,7 @@ async fn drive_readiness_check(
     let CheckDriverInputs {
         session_id,
         service_name,
+        session_tag,
         mut runner,
         action_name,
         action,
@@ -1988,7 +2035,10 @@ async fn drive_readiness_check(
         handle_route,
         parent_token,
     } = inputs;
-    let tag = Some(action_name);
+    let tag = LogTag {
+        session: session_tag.as_deref(),
+        action: Some(action_name),
+    };
     let (route_writer, route_token) = match handle_route {
         Some((w, t)) => (Some(w), Some(t)),
         None => (None, None),
@@ -1998,7 +2048,7 @@ async fn drive_readiness_check(
 
     while !stop.is_cancelled() {
         invocation += 1;
-        session_action_log!(
+        session_tagged_log!(
             info,
             &session_id,
             tag,
@@ -2043,11 +2093,11 @@ async fn drive_readiness_check(
                     biased;
                     msg = message_rx.recv(), if result.is_none() => {
                         let Some(msg) = msg else { continue };
-                        log_check_message_ignored(&session_id, &service_name, action_name, &msg, &mut redacted_values);
+                        log_check_message_ignored(&session_id, &service_name, tag, &msg, &mut redacted_values);
                     }
                     _ = stop.cancelled(), if !cancel_sent && result.is_none() => {
                         cancel_sent = true;
-                        session_action_log!(
+                        session_tagged_log!(
                             info,
                             &session_id,
                             tag,
@@ -2066,7 +2116,7 @@ async fn drive_readiness_check(
                         log_check_message_ignored(
                             &session_id,
                             &service_name,
-                            action_name,
+                            tag,
                             &msg,
                             &mut redacted_values,
                         );
@@ -2085,7 +2135,7 @@ async fn drive_readiness_check(
         }
         match result {
             Ok(r) if r.state == ActionState::Timeout => {
-                session_action_log!(
+                session_tagged_log!(
                     info,
                     &session_id,
                     tag,
@@ -2096,7 +2146,7 @@ async fn drive_readiness_check(
             Ok(r) if r.state != ActionState::Canceled && r.exit_code == Some(0) => {
                 // Its result is its exit status (rule 2): exit 0 is READY
                 // even if the output carried an openjd_fail line.
-                session_action_log!(
+                session_tagged_log!(
                     info,
                     &session_id,
                     tag,
@@ -2107,7 +2157,7 @@ async fn drive_readiness_check(
                 break;
             }
             Ok(r) => {
-                session_action_log!(
+                session_tagged_log!(
                     info,
                     &session_id,
                     tag,
@@ -2117,7 +2167,7 @@ async fn drive_readiness_check(
                 );
             }
             Err(e) => {
-                session_action_log!(
+                session_tagged_log!(
                     info,
                     &session_id,
                     tag,
@@ -2150,10 +2200,11 @@ async fn drive_readiness_check(
 fn log_check_message_ignored(
     session_id: &str,
     service_name: &str,
-    action_name: &str,
+    tag: LogTag<'_>,
     msg: &ActionMessage,
     redacted_values: &mut Vec<String>,
 ) {
+    let action_name = tag.action.unwrap_or("onReadinessCheck");
     let what = match msg {
         ActionMessage::Progress(_) => "openjd_progress",
         ActionMessage::Status(_) => "openjd_status",
@@ -2167,10 +2218,10 @@ fn log_check_message_ignored(
         ActionMessage::ServiceReady(_) => "openjd_service_ready",
         ActionMessage::CancelMarkFailed { .. } => "malformed openjd env",
     };
-    session_action_log!(
+    session_tagged_log!(
         info,
         session_id,
-        Some(action_name),
+        tag,
         LogContent::PROCESS_CONTROL,
         "Ignoring {what} from Service '{service_name}' {action_name}: messages on the readiness check's stdout are not honored"
     );

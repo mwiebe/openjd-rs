@@ -1,0 +1,15 @@
+# A plain Environment Template declaring EXPR only — the inverse of the
+# queue case: attached to a Job Template that declares SERVICE, it is still
+# evaluated under its own [EXPR] profile, and the Job Template's Service
+# keeps its own.
+specificationVersion: "environment-2023-09"
+extensions: [EXPR]
+environment:
+  name: Greeting
+  variables:
+    GREETING: "{{ 'hello from the queue'.upper() }}"
+  script:
+    actions:
+      onEnter:
+        command: sh
+        args: ["-c", "echo GREETING_ENTER $GREETING"]
