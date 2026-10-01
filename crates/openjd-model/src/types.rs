@@ -593,13 +593,16 @@ impl ModelProfile {
         let revision = match self.revision {
             SpecificationRevision::V2023_09 => openjd_expr::ExprRevision::V2026_02,
         };
-        // `ExprExtension` is empty today — no expression-level
-        // extensions exist yet. Model-side `ModelExtension` variants
-        // gate *where* expressions are permitted in templates (EXPR,
-        // FEATURE_BUNDLE_1, TASK_CHUNKING, REDACTED_ENV_VARS), not
-        // which functions are registered once they are permitted, so
-        // the expression-level extension set is always empty for now.
-        let extensions = std::collections::HashSet::new();
+        // Most model-side `ModelExtension` variants gate *where*
+        // expressions are permitted in templates (EXPR, FEATURE_BUNDLE_1,
+        // TASK_CHUNKING, REDACTED_ENV_VARS), not which functions are
+        // registered once they are permitted. SERVICE is the exception:
+        // it adds the host and port functions (RFC 0009), so it maps to
+        // an expression-level extension.
+        let mut extensions = std::collections::HashSet::new();
+        if self.has_extension(ModelExtension::Service) {
+            extensions.insert(openjd_expr::ExprExtension::Service);
+        }
         openjd_expr::ExprProfile::new(revision)
             .with_extensions(extensions)
             .with_host_context(host_context)

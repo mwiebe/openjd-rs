@@ -619,6 +619,10 @@ sections 2.1 (Operators) and 2.2 (Built-in Functions). Key implementation choice
   `false`. All four count string operations proportional to the input length;
   `join_host_port` reserves its output budget before formatting and
   `split_host_port` builds its list through `make_list_checked`.
+  These are registered only when the profile enables `ExprExtension::Service`
+  (`FunctionLibrary::for_profile` merges them in `register_service_functions`); a
+  profile with EXPR alone reports them as unknown functions, and the base-library
+  inventory test asserts their absence.
 - **Regex functions** reject lookahead, lookbehind, backreferences, and `\Z` (§2.2.5).
   Validation parses the pattern with `regex_syntax`, rather than a substring
   scan. This correctly ignores lookaround-shaped syntax that appears inside

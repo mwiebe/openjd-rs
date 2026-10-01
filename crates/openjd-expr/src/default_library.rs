@@ -10,7 +10,7 @@
 //! is used for static type checking via `derive_return_type`.
 
 use crate::function_library::FunctionLibrary;
-use crate::profile::{ExprProfile, ExprRevision, HostContext, HostKind, ProfileKey};
+use crate::profile::{ExprExtension, ExprProfile, ExprRevision, HostContext, HostKind, ProfileKey};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
@@ -52,26 +52,42 @@ fn build_library_skeleton(profile: &ExprProfile) -> FunctionLibrary {
           // will produce a compile error here.
     };
 
-    // Merge in expression-level extensions. `ExprExtension` has no
-    // variants today, so this loop body is unreachable — but the
-    // exhaustive match on `*ext` below is the forcing function that
-    // makes adding the first variant produce a compile error at this
-    // site, rather than silently inheriting the base library.
-    //
-    // `#[allow(clippy::never_loop)]` is required because the empty
-    // match on an uninhabited-today enum diverges, so clippy's
-    // `never_loop` lint flags the loop. That's exactly the property
-    // we want preserved: when `ExprExtension` gains its first variant,
-    // the empty match becomes a compile error and the lint stops
-    // firing in one step.
-    #[allow(clippy::never_loop)]
+    // Merge in expression-level extensions. The exhaustive match on
+    // `*ext` is the forcing function: adding a variant to
+    // `ExprExtension` produces a compile error here until an arm says
+    // how that extension modifies the library.
+    let mut lib = lib;
     for ext in profile.extensions() {
-        match *ext {} // Intentionally empty — every future variant
-                      // must add an arm describing how it modifies
-                      // the library.
+        match *ext {
+            ExprExtension::Service => register_service_functions(&mut lib),
+        }
     }
 
     lib
+}
+
+/// Register the host and port string functions that the `SERVICE`
+/// extension (RFC 0009) adds to the Expression Language (§2.2.4). They
+/// are available only when a profile enables [`ExprExtension::Service`];
+/// a template that declares `EXPR` without `SERVICE` does not get them.
+fn register_service_functions(lib: &mut FunctionLibrary) {
+    use crate::functions::host_port::*;
+    lib.register_sig(
+        "join_host_port",
+        "(string, int) -> string",
+        join_host_port_fn,
+    )
+    .expect("bad builtin signature");
+    lib.register_sig(
+        "split_host_port",
+        "(string) -> list[string]?",
+        split_host_port_fn,
+    )
+    .expect("bad builtin signature");
+    lib.register_sig("is_ipv4", "(string) -> bool", is_ipv4_fn)
+        .expect("bad builtin signature");
+    lib.register_sig("is_ipv6", "(string) -> bool", is_ipv6_fn)
+        .expect("bad builtin signature");
 }
 
 impl FunctionLibrary {
@@ -500,26 +516,6 @@ fn string_functions() -> FunctionLibrary {
         .expect("bad builtin signature");
     lib.register_sig("rjust", "(string, int) -> string", rjust_fn)
         .expect("bad builtin signature");
-    // Host/port functions (§2.2.4, added by the SERVICE extension).
-    {
-        use crate::functions::host_port::*;
-        lib.register_sig(
-            "join_host_port",
-            "(string, int) -> string",
-            join_host_port_fn,
-        )
-        .expect("bad builtin signature");
-        lib.register_sig(
-            "split_host_port",
-            "(string) -> list[string]?",
-            split_host_port_fn,
-        )
-        .expect("bad builtin signature");
-        lib.register_sig("is_ipv4", "(string) -> bool", is_ipv4_fn)
-            .expect("bad builtin signature");
-        lib.register_sig("is_ipv6", "(string) -> bool", is_ipv6_fn)
-            .expect("bad builtin signature");
-    }
     lib
 }
 
@@ -1114,11 +1110,8 @@ mod tests {
             "isdigit",
             "islower",
             "isspace",
-            "is_ipv4",
-            "is_ipv6",
             "isupper",
             "join",
-            "join_host_port",
             "len",
             "list",
             "ljust",
@@ -1153,7 +1146,6 @@ mod tests {
             "rstrip",
             "sorted",
             "split",
-            "split_host_port",
             "startswith",
             "string",
             "strip",
@@ -1171,6 +1163,15 @@ mod tests {
             assert!(
                 !lib.get_signatures(name).is_empty(),
                 "Missing function: {name}"
+            );
+        }
+        // The SERVICE extension's host/port functions are NOT in the
+        // base library; they are added only when a profile enables
+        // `ExprExtension::Service`.
+        for name in ["join_host_port", "split_host_port", "is_ipv4", "is_ipv6"] {
+            assert!(
+                lib.get_signatures(name).is_empty(),
+                "{name} must require the SERVICE extension"
             );
         }
         // apply_path_mapping should NOT be in default library

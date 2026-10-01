@@ -63,28 +63,27 @@ impl Default for ExprRevision {
 /// Expression-language extensions.
 ///
 /// Expression-level extensions add or modify functions, operators, or
-/// types beyond what the base revision provides. Today no such
-/// extensions exist — the "EXPR" extension in `openjd-model` gates
-/// whether the expression language is *available at all*, not which
-/// functions are registered once it is available. This enum is therefore
-/// defined as empty-but-`#[non_exhaustive]`, reserving the API shape for
-/// the first expr-level extension.
-///
-/// Empty non-exhaustive enums are legal Rust and correctly express
-/// "values may exist in the future, none exist today."
+/// types beyond what the base revision provides. The "EXPR" extension in
+/// `openjd-model` gates whether the expression language is *available at
+/// all*; the variants here gate which additional functions are registered
+/// once it is available. The enum is `#[non_exhaustive]` so that future
+/// extensions can be added without breaking downstream matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
-pub enum ExprExtension {}
+pub enum ExprExtension {
+    /// The `SERVICE` extension (RFC 0009). Adds the host and port string
+    /// functions `join_host_port`, `split_host_port`, `is_ipv4`, and
+    /// `is_ipv6` (Expression Language §2.2.4).
+    Service,
+}
 
 impl ExprExtension {
     /// All extension variants, in a stable order. Used by
     /// [`ExprProfile::latest`] to construct a profile with every
     /// expression-level extension enabled.
     ///
-    /// When a new variant is added, include it here. With no variants
-    /// today the slice is empty; the constant still provides the
-    /// contract that downstream code can rely on.
-    pub const ALL: &'static [ExprExtension] = &[];
+    /// When a new variant is added, include it here.
+    pub const ALL: &'static [ExprExtension] = &[ExprExtension::Service];
 }
 
 /// Host-context state available to expression evaluation.
@@ -435,26 +434,24 @@ impl ExprProfile {
     #[allow(clippy::unused_self)] // placeholder: `self` is needed once extensions exist
     #[allow(clippy::never_loop)] // shape is preserved for when ExprExtension has variants
     fn extension_syntax_v2026_02(&self, feature: SyntaxFeature) -> bool {
-        // With no `ExprExtension` variants today, the iteration body is
-        // unreachable. The shape is kept so that adding a variant makes
-        // it obvious where to plug in the grant logic.
         for ext in &self.extensions {
             // Exhaustive match: adding a new `ExprExtension` variant
             // produces a compile error here, forcing the contributor to
             // state which `SyntaxFeature`s (if any) that variant
-            // enables under V2026_02.
+            // enables under V2026_02. An extension that enables one
+            // adds an arm like:
+            //
+            //     ExprExtension::DictLiteral => {
+            //         if matches!(feature, SyntaxFeature::DictLiteral) {
+            //             return true;
+            //         }
+            //     }
             match *ext {
-                // No variants today. When an extension is added that
-                // enables a syntax feature, add a match arm like:
-                //
-                //     ExprExtension::DictLiteral => {
-                //         if matches!(feature, SyntaxFeature::DictLiteral) {
-                //             return true;
-                //         }
-                //     }
+                // SERVICE adds functions only, no syntax.
+                ExprExtension::Service => {}
             }
         }
-        let _ = feature; // silence unused warning until extensions exist
+        let _ = feature;
         false
     }
 
