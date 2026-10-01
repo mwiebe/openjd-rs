@@ -71,6 +71,8 @@ mod test_resolved_value_constraints;
 mod test_scope_library_split;
 #[path = "integration/test_service.rs"]
 mod test_service;
+#[path = "integration/test_service_early_validation.rs"]
+mod test_service_early_validation;
 #[path = "integration/test_service_environments.rs"]
 mod test_service_environments;
 #[path = "integration/test_service_external.rs"]
