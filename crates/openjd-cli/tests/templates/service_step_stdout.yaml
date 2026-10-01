@@ -1,0 +1,85 @@
+# RFC 0009 example 2 adapted: a Step Service with STDOUT readiness that owns
+# the Step's state. Its onEnter / onRun / onExit and the Step's Tasks append
+# to a trace file so the test can verify the lifecycle order: the Service
+# starts before the first Task, stops (onExit) once the Step's three Tasks are
+# done, and the next Step runs after that.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "StepServiceStdout"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+steps:
+  - name: Coordinated
+    stepServices:
+      - name: Coordinator
+        ports:
+          - name: api
+        readinessCheck:
+          type: STDOUT
+          timeoutSeconds: 60
+        restartPolicy:
+          maxAttempts: 0
+          completedTasks: RERUN
+        script:
+          actions:
+            onEnter:
+              command: python
+              args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('service enter\\n')"]
+            onRun:
+              command: python
+              args: ["{{ Service.File.Serve }}", "{{ Service.Coordinator.api.bindAddress }}", "{{ Service.Coordinator.api.port }}", "{{ Param.TraceFile }}"]
+              cancelation:
+                mode: TERMINATE
+            onExit:
+              command: python
+              args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('service exit\\n')"]
+          embeddedFiles:
+            - name: Serve
+              type: TEXT
+              data: |
+                import socket, sys, time
+                host, port, trace = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+                s.listen(16)
+                with open(trace, "a") as f:
+                    f.write("service run\n")
+                print("openjd_service_ready: coordinator listening", flush=True)
+                count = 0
+                while True:
+                    c, _ = s.accept()
+                    count += 1
+                    c.sendall(str(count).encode())
+                    c.close()
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Tile
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.Coordinator.api.connectAddress }}", "{{ Service.Coordinator.api.port }}", "{{ Task.Param.Tile }}", "{{ Param.TraceFile }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, tile, trace = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+            c = socket.create_connection((host, port), timeout=10)
+            assignment = c.recv(64).decode()
+            c.close()
+            print("TILE", tile, "ASSIGNMENT", assignment, flush=True)
+            with open(trace, "a") as f:
+                f.write(f"task {tile} assignment {assignment}\n")
+  - name: After
+    dependencies:
+      - dependsOn: Coordinated
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('after task\\n')"]

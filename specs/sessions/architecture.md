@@ -140,6 +140,13 @@ has been removed. One consequence is that `ServiceSession` methods must be
 called from within a tokio runtime (as every async method of this crate
 already is).
 
+The futures of `Session::enter_environment` / `exit_environment` — and so of
+`ServiceSession::enter` / `end`, which call them — are `Send` as well: the
+boxed runner future those methods pin (to keep the state machine off the
+stack on Windows) carries a `+ Send` bound. A scheduler can therefore drive a
+whole `ServiceSession` on a spawned task, which is how `openjd run` starts
+Services concurrently and relaunches a `KEEP` Service while a Task runs.
+
 ## Data Flow
 
 A typical session lifecycle flows through these modules:

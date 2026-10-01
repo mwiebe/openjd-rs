@@ -1,0 +1,70 @@
+# Two Job Services that do not reference one another start concurrently (RFC
+# 0009 ordering constraint 2): each records its launch and readiness times
+# in the trace file, and each takes ~2 seconds to become READY, so the
+# launches overlap when started concurrently.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ConcurrentStart"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+jobServices:
+  - name: Alpha
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "Alpha", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import sys, time
+            name, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"{name} launch {time.time():.3f}\n")
+            time.sleep(2)
+            with open(trace, "a") as f:
+                f.write(f"{name} ready {time.time():.3f}\n")
+            print("openjd_service_ready:", name, flush=True)
+            while True:
+                time.sleep(1)
+  - name: Beta
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "Beta", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import sys, time
+            name, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"{name} launch {time.time():.3f}\n")
+            time.sleep(2)
+            with open(trace, "a") as f:
+                f.write(f"{name} ready {time.time():.3f}\n")
+            print("openjd_service_ready:", name, flush=True)
+            while True:
+                time.sleep(1)
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_RAN', {{ Service.Alpha.main.port }}, {{ Service.Beta.main.port }})"]

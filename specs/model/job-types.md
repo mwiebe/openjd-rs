@@ -411,7 +411,9 @@ every script action (command, args, timeout, cancelation), embedded-file `data`,
 `<ServiceScript>.let` — which is how the `<Service>.let` values (and, for a Step Service, the
 step-level `let` values) reach the host — with the `RawParam.*` fallback for PATH parameters.
 A Service Session layers `Session.*`, `Service.File.*`, and the `Service.*` endpoints from
-`job::service_symbols::build_service_symbol_table` on top.
+`job::service_symbols::build_service_symbol_table` on top. The same fields, walked by
+`job::service_symbols::referenced_service_names`, give a scheduler the Services this one
+references — the edges it orders Service starts by (RFC 0009 constraint 2).
 
 `Service` implements `PartialEq` and `Hash` with the module's invariant; `variables` hashes as
 key-sorted entries. It also implements `Deserialize`, so a created job's Services round-trip

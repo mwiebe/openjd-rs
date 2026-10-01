@@ -1513,6 +1513,15 @@ pub fn add_wrapped_service_symbols(
     symtab: &mut SymbolTable,
     endpoints: &ServiceEndpoints,
 ) -> Result<(), ModelError>;
+
+/// The names of the Services `service` references through
+/// `Service.<name>.<port>.*` in its `variables`, every action's
+/// command/args/timeout/cancelation, embedded-file `data`, and
+/// `<ServiceScript>.let` — excluding its own name and `Service.File.*`.
+/// The start-ordering edges of RFC 0009 constraint 2: a scheduler starts a
+/// Service once every name here is READY, and Services with disjoint sets
+/// concurrently. Pass 8 guarantees the graph is acyclic.
+pub fn referenced_service_names(service: &job::Service) -> BTreeSet<String>;
 ```
 
 Scope — which Services a Session may see — is the caller's decision (RFC

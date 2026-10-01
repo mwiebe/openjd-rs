@@ -2290,6 +2290,7 @@ version = "0.3.1"
 dependencies = [
  "chrono",
  "clap",
+ "futures-util",
  "log",
  "openjd-expr",
  "openjd-model",

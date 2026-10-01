@@ -3345,36 +3345,54 @@ mod python_compat {
 // Group: Interruption (SIGINT / Ctrl+Break) handling
 // ============================================================
 
+/// Deliver an interruption to the CLI process only (not the whole
+/// test-process group).
+///
+/// Unix: SIGINT via `kill`. Windows: CTRL_BREAK_EVENT via
+/// `GenerateConsoleCtrlEvent` — the CLI is spawned with
+/// CREATE_NEW_PROCESS_GROUP so the event reaches only its group, and
+/// because that flag disables Ctrl+C for the child, Ctrl+Break is the
+/// only console event that can interrupt it.
+fn send_interrupt(child: &std::process::Child) -> bool {
+    #[cfg(unix)]
+    {
+        Command::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+        unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()).is_ok() }
+    }
+}
+
+/// Spawn `openjd run <template> <args…>` with piped stdout, in its own
+/// process group on Windows so a console control event reaches it alone.
+fn spawn_run_piped(template: &std::path::Path, extra: &[&str]) -> std::process::Child {
+    let mut args = vec!["run", template.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let mut cmd = cli_command(&args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    }
+    cmd.stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn openjd")
+}
+
 mod interruption {
     use super::*;
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
-
-    /// Deliver an interruption to the CLI process only (not the whole
-    /// test-process group).
-    ///
-    /// Unix: SIGINT via `kill`. Windows: CTRL_BREAK_EVENT via
-    /// `GenerateConsoleCtrlEvent` — the CLI is spawned with
-    /// CREATE_NEW_PROCESS_GROUP so the event reaches only its group, and
-    /// because that flag disables Ctrl+C for the child, Ctrl+Break is the
-    /// only console event that can interrupt it.
-    fn send_interrupt(child: &std::process::Child) -> bool {
-        #[cfg(unix)]
-        {
-            Command::new("kill")
-                .args(["-INT", &child.id().to_string()])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
-        #[cfg(windows)]
-        {
-            use windows::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
-            unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()).is_ok() }
-        }
-    }
 
     /// End-to-end coverage for the RESULTS-phase rule "treat any observed
     /// interruption as a failed run" (specs/cli/run.md): an interrupted run
@@ -3646,5 +3664,684 @@ steps:
             stdout.contains("passes validation checks"),
             "stdout: {stdout}"
         );
+    }
+}
+
+// ============================================================
+// Group: RFC 0009 Services (openjd run orchestrates Service Sessions)
+// ============================================================
+
+mod services {
+    use super::*;
+    use std::io::{BufRead, BufReader};
+    use std::sync::mpsc;
+    use std::time::Duration;
+    use tempfile::TempDir;
+
+    fn run_service_template(name: &str, extra: &[&str]) -> (i32, String, String) {
+        let template = templates_dir().join(name);
+        let mut args = vec!["run", template.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        run_cli(&args)
+    }
+
+    fn read_trace(path: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Byte offset of `needle` in `haystack`, panicking with the output when
+    /// absent — used to assert the relative order of log lines.
+    fn pos(haystack: &str, needle: &str) -> usize {
+        haystack
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} in output:\n{haystack}"))
+    }
+
+    /// RFC 0009 example 1: a Job Service with TCP_CONNECT readiness is READY
+    /// before the first Task, is reached by Tasks of two Steps through
+    /// `Service.Store.main.connectAddress` / `.port`, and is stopped after
+    /// the last Step (constraints 1, 3, 6).
+    #[test]
+    fn test_job_service_tcp_consumed_by_two_steps() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_tcp.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Store' (Job scope) endpoints: main -> 127.0.0.1:"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Store' is READY"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:First-1"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:First-2"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY ECHO:Second"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'Store' is READY") < pos(&stdout, "Running step 'First'"),
+            "the Job Service must be READY before any Task:\n{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Running step 'Second'") < pos(&stdout, "Stopping Service: Store"),
+            "the Job Service must outlive every Step:\n{stdout}"
+        );
+        assert!(stdout.contains("Service 'Store' stopped"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        assert_eq!(
+            read_trace(&trace),
+            vec!["task First-1 ECHO:First-1", "task First-2 ECHO:First-2"]
+        );
+    }
+
+    /// RFC 0009 example 2: a Step Service with STDOUT readiness starts
+    /// (onEnter, onRun) before the Step's first Task and stops (onExit) once
+    /// the Step's three Tasks are done, before the next Step runs
+    /// (constraints 3, 6, 7).
+    #[test]
+    fn test_step_service_stdout_lifecycle_brackets_the_step() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_stdout.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Coordinator' is READY: coordinator listening"),
+            "{stdout}"
+        );
+        assert_eq!(
+            read_trace(&trace),
+            vec![
+                "service enter",
+                "service run",
+                "task 1 assignment 1",
+                "task 2 assignment 2",
+                "task 3 assignment 3",
+                "service exit",
+                "after task",
+            ]
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Coordinator") < pos(&stdout, "Running step 'After'"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+    }
+
+    /// COMMAND readiness: `onReadinessCheck` runs concurrently with `onRun`
+    /// (tagged `[onReadinessCheck]`), is "not ready" while the connection is
+    /// refused, and makes the Service READY when it exits 0.
+    #[test]
+    fn test_command_readiness_check() {
+        let (code, stdout, stderr) = run_service_template("service_command_readiness.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("readiness check: COMMAND"), "{stdout}");
+        assert!(stdout.contains("[onReadinessCheck] CHECK_OK"), "{stdout}");
+        assert!(stdout.contains("Service 'Slow' is READY"), "{stdout}");
+        assert!(
+            pos(&stdout, "SLOW_LISTENING") < pos(&stdout, "Service 'Slow' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT hello"), "{stdout}");
+    }
+
+    /// Constraint 2: a Service that references another's endpoint starts
+    /// only once the referenced Service is READY, and sees its endpoint.
+    #[test]
+    fn test_service_referencing_an_earlier_service_starts_after_it() {
+        let (code, stdout, stderr) = run_service_template("service_reference_chain.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Front"),
+            "Front must not start before Back is READY:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("FRONT_GOT_FROM_BACK BACK_VALUE"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_GOT front:BACK_VALUE"), "{stdout}");
+        // Constraint 4: stopped in reverse start order.
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+    }
+
+    /// Constraint 2: Services that do not reference one another start
+    /// concurrently — each takes ~2 s to become READY and both launch before
+    /// either is READY.
+    #[test]
+    fn test_independent_services_start_concurrently() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_concurrent_start.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let lines = read_trace(&trace);
+        let stamp = |event: &str| -> f64 {
+            lines
+                .iter()
+                .find(|l| l.starts_with(event))
+                .and_then(|l| l.rsplit(' ').next())
+                .and_then(|t| t.parse().ok())
+                .unwrap_or_else(|| panic!("missing {event:?} in trace {lines:?}"))
+        };
+        assert!(
+            stamp("Beta launch") < stamp("Alpha ready")
+                && stamp("Alpha launch") < stamp("Beta ready"),
+            "launches must overlap: {lines:?}"
+        );
+        assert!(stdout.contains("TASK_RAN"), "{stdout}");
+    }
+
+    /// RFC 0009 example 3: an external Service from an Environment Template
+    /// attached with `--environment`, published to Tasks of a Job Template
+    /// that does not use SERVICE through a TASK-scoped Environment's
+    /// variables; the template's own parameter reaches the Service.
+    #[test]
+    fn test_external_service_from_environment_template() {
+        let tdir = templates_dir();
+        let (code, stdout, stderr) = run_service_template(
+            "service_external_consumer.yaml",
+            &[
+                "--environment",
+                tdir.join("service_external_cache.yaml").to_str().unwrap(),
+                "-p",
+                "CachePayload=from-the-queue",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Service 'Cache' is READY")
+                < pos(&stdout, "Entering Environment: CacheClient"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("FRAME 1 CACHE_SAYS from-the-queue"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("FRAME 2 CACHE_SAYS from-the-queue"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Exiting Environment: CacheClient")
+                < pos(&stdout, "Stopping Service: Cache"),
+            "{stdout}"
+        );
+    }
+
+    /// "Failure and restart" with `completedTasks: RERUN`: the running Task
+    /// is canceled (not a Task failure), `onRun` is relaunched in the same
+    /// Service Session, and every completed Task of the Step runs again in
+    /// a new Task Session.
+    #[test]
+    fn test_rerun_relaunch_requeues_completed_tasks() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_relaunch.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'Flaky' (Step 'Work' scope) is UNREADY: onRun exited while the scope \
+                 still had work (exit code: 1) (completedTasks: RERUN)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Canceling the running Task of Step 'Work': a Service with completedTasks: RERUN \
+                 is UNREADY; the Task returns to the queue"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Flaky' onRun in its Service Session (relaunch 1 of 1)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Returning every completed Task of Step 'Work' to the queue"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("New Task Session for the requeued Tasks"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("All actions completed successfully!"),
+            "{stdout}"
+        );
+        // Task 1 completed, Task 2 was canceled, then Tasks 1-3 ran again.
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines.iter().filter(|l| *l == "service launch").count(),
+            2,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 1 done").count(),
+            2,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 2 done").count(),
+            1,
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| *l == "task 3 done").count(),
+            1,
+            "{lines:?}"
+        );
+        let crash = lines.iter().position(|l| l == "service crash").unwrap();
+        assert!(
+            lines[..crash].contains(&"task 2 start".to_string())
+                && !lines[..crash].contains(&"task 2 done".to_string()),
+            "the crash must land while Task 2 runs: {lines:?}"
+        );
+    }
+
+    /// `RERUN` on a Job Service returns every Step to pending ("RERUN and
+    /// Step dependencies"): Step A's completed Task runs again, and Step B's
+    /// Step Service — stopped when B returned to pending — starts again in
+    /// a new Service Session when B is next scheduled.
+    #[test]
+    fn test_rerun_on_job_service_returns_every_step_to_pending() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_job_scope.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Returning every completed Task of the Job to the queue: a Job Service with \
+                 completedTasks: RERUN was relaunched; every Step returns to pending"
+            ),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        assert_eq!(
+            stdout.matches("Starting Service: Helper").count(),
+            2,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("Starting Service: Shared").count(),
+            1,
+            "{stdout}"
+        );
+        // A1 ran, B1 was canceled, then A1, B1, B2 ran.
+        assert!(stdout.contains("Chunks run: 4"), "{stdout}");
+        let lines = read_trace(&trace);
+        // The Job Service's relaunch runs in the background while the Step
+        // Service stops, so the two "shared launch" lines are checked by
+        // count rather than by position.
+        assert_eq!(
+            lines.iter().filter(|l| *l == "shared launch").count(),
+            2,
+            "{lines:?}"
+        );
+        let without_launches: Vec<&String> =
+            lines.iter().filter(|l| *l != "shared launch").collect();
+        assert_eq!(
+            without_launches,
+            vec![
+                "task A1 start",
+                "task A1 done",
+                "helper launch",
+                "task B1 start",
+                "shared crash",
+                "helper exit",
+                "task A1 start",
+                "task A1 done",
+                "helper launch",
+                "task B1 start",
+                "task B1 done",
+                "task B2 start",
+                "task B2 done",
+                "helper exit",
+            ]
+        );
+    }
+
+    /// "Failure and restart" with `completedTasks: KEEP`: the running Task
+    /// continues and completes, completed Tasks stand, the Service is
+    /// relaunched before the next Task is gated on it.
+    #[test]
+    fn test_keep_crash_lets_tasks_continue() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_keep_crash.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("(completedTasks: KEEP)")
+                && stdout.contains("Relaunching Service 'Flaky' onRun in its Service Session"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+        let lines = read_trace(&trace);
+        assert_eq!(
+            lines,
+            vec![
+                "service launch",
+                "task 1 start",
+                "task 1 done",
+                "task 2 start",
+                "service crash",
+                "service launch",
+                "task 2 done",
+                "task 3 start",
+                "task 3 done",
+            ]
+        );
+    }
+
+    /// A relaunch that begins a new Service Session changes the Service's
+    /// endpoints: a Service that references it is restarted with the new
+    /// value (no attempt consumed), a TASK-scoped Environment that captured
+    /// it is re-entered, and later Tasks resolve the new port. With `KEEP`,
+    /// the Task running during the relaunch completes.
+    #[test]
+    fn test_new_session_restarts_dependents_and_reenters_environments() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_new_session_dependents.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("CounterFile={}", counter.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' onRun in its Service Session (relaunch 1 of 2)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' in a new Service Session (relaunch 2 of 2): onRun \
+                 exited before becoming READY (exit code: 7)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' references a Service that began a new Service Session; \
+                 restarting it with the new endpoints"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Re-entering 1 Environment(s): a Service they may reference has new endpoints"
+            ),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+
+        let lines = read_trace(&trace);
+        let port_of = |prefix: &str| -> String {
+            lines
+                .iter()
+                .find(|l| l.starts_with(prefix))
+                .and_then(|l| l.rsplit(' ').next())
+                .unwrap_or_else(|| panic!("missing {prefix:?} in {lines:?}"))
+                .to_string()
+        };
+        let old_port = port_of("back launch 1 port ");
+        let new_port = port_of("back launch 3 port ");
+        assert_ne!(old_port, new_port, "{lines:?}");
+        assert_eq!(port_of("back launch 2 port "), old_port, "{lines:?}");
+        let expected: Vec<String> = [
+            format!("back launch 1 port {old_port}"),
+            format!("front launch backport {old_port}"),
+            format!("env enter backport {old_port}"),
+            format!("task 1 start backport {old_port}"),
+            "task 1 done".to_string(),
+            format!("task 2 start backport {old_port}"),
+            "back crash".to_string(),
+            format!("back launch 2 port {old_port}"),
+            format!("back launch 3 port {new_port}"),
+            "task 2 done".to_string(),
+            format!("front launch backport {new_port}"),
+            format!("env enter backport {new_port}"),
+            format!("task 3 start backport {new_port}"),
+            "task 3 done".to_string(),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(lines, expected);
+    }
+
+    /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
+    /// begins a new Service Session (new ports, onExit each time), then the
+    /// Service is FAILED, the Job fails with a non-zero exit code, no Task
+    /// runs, and the result names the Service.
+    #[test]
+    fn test_max_attempts_exhausted_fails_the_job() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_fail_exhausted.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Broken' in a new Service Session (relaunch 2 of 2): onRun \
+                 exited before becoming READY (exit code: 3)"
+            ),
+            "{stdout}"
+        );
+        let reason = "onRun exited before becoming READY (exit code: 3); 2 of 2 relaunch(es) \
+                      used (restartPolicy.maxAttempts)";
+        assert!(
+            stdout.contains(&format!("Service 'Broken' (Job scope) is FAILED: {reason}")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("Service 'Broken' (Job scope) failed: {reason}")),
+            "{stdout}"
+        );
+        assert!(
+            stderr.contains("ERROR: Service 'Broken' (Job scope) failed:"),
+            "{stderr}"
+        );
+        assert!(stdout.contains("Session ended with errors."), "{stdout}");
+        assert!(
+            stdout.contains(&format!("Failed Service: Broken (Job scope): {reason}")),
+            "{stdout}"
+        );
+        let lines = read_trace(&trace);
+        let ports: std::collections::BTreeSet<&str> = lines
+            .iter()
+            .filter_map(|l| l.strip_prefix("launch port "))
+            .collect();
+        assert_eq!(ports.len(), 3, "each new Session gets new ports: {lines:?}");
+        assert_eq!(
+            lines.iter().filter(|l| *l == "exit").count(),
+            3,
+            "{lines:?}"
+        );
+    }
+
+    /// The structured result carries the FAILED Service.
+    #[test]
+    fn test_failed_service_in_json_result() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, _stderr) = run_service_template(
+            "service_fail_exhausted.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "--output",
+                "json",
+            ],
+        );
+        assert_eq!(code, 1, "{stdout}");
+        let json_start = stdout.find('{').expect("json output");
+        let value: serde_json::Value = serde_json::from_str(&stdout[json_start..]).unwrap();
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["failed_services"][0]["name"], "Broken");
+        assert_eq!(value["failed_services"][0]["scope"], "Job");
+        assert_eq!(
+            value["failed_services"][0]["reason"],
+            "onRun exited before becoming READY (exit code: 3); 2 of 2 relaunch(es) used \
+             (restartPolicy.maxAttempts)"
+        );
+        assert!(
+            value["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("Service 'Broken' (Job scope) failed:"),
+            "{value}"
+        );
+    }
+
+    /// Constraint 10: a Step whose selection schedules no Task does not
+    /// start its Step Services.
+    #[test]
+    fn test_step_with_no_tasks_does_not_start_its_service() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_no_tasks.yaml",
+            &[
+                "-p",
+                &format!("MarkerFile={}", marker.display()),
+                "--tasks",
+                "[]",
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Not starting the 1 Step Service(s) of Step 'Work': no Task of this Step will run"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+        assert!(!marker.exists(), "the Service must not have started");
+        assert!(stdout.contains("Chunks run: 0"), "{stdout}");
+    }
+
+    /// An interruption cancels the running Task and stops every Service:
+    /// `onRun` is canceled and `onExit` still runs (constraint 7).
+    #[test]
+    fn test_interrupt_stops_services() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let template = templates_dir().join("service_interruptible.yaml");
+        let mut child = spawn_run_piped(
+            &template,
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut collected = String::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    let hit = line.contains("READY_FOR_SIGNAL");
+                    collected.push_str(&line);
+                    collected.push('\n');
+                    if hit {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!("task never signaled readiness. output so far:\n{collected}");
+                }
+            }
+        }
+        if !send_interrupt(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            #[cfg(windows)]
+            {
+                eprintln!("SKIPPED: no console available to deliver CTRL_BREAK_EVENT");
+                return;
+            }
+            #[cfg(not(windows))]
+            panic!("failed to deliver SIGINT to the CLI process");
+        }
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    collected.push_str(&line);
+                    collected.push('\n');
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    panic!("CLI did not exit within 60s of interruption. output:\n{collected}");
+                }
+            }
+        }
+        reader.join().unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(1), "{collected}");
+        assert!(
+            collected.contains("Interruption signal received."),
+            "{collected}"
+        );
+        assert!(collected.contains("Stopping Service: Store"), "{collected}");
+        assert!(collected.contains("Service 'Store' stopped"), "{collected}");
+        assert!(!collected.contains("EXIT_NORMAL"), "{collected}");
+        assert_eq!(read_trace(&trace), vec!["service exit"]);
     }
 }

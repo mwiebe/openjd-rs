@@ -238,6 +238,99 @@ pub fn add_wrapped_service_symbols(
     Ok(())
 }
 
+/// The names of the Services that `service` references through
+/// `Service.<name>.<port>.*` in its host-resolved fields — `variables`,
+/// every action's `command` / `args` / `timeout` / `cancelation`, embedded
+/// files' `data`, and the `<ServiceScript>.let` bindings — excluding its own
+/// name and `Service.File.*`.
+///
+/// RFC 0009 ordering constraint 2: no action of a Service Session begins
+/// until every Service it references is READY, and Services that do not
+/// reference one another may start concurrently. A scheduler derives the
+/// start-ordering edges from this set; template validation (pass 8) has
+/// already confirmed every reference names a Service earlier in the start
+/// order, so the result is acyclic.
+///
+/// # Examples
+///
+/// ```
+/// # use openjd_model::job::service_symbols::referenced_service_names;
+/// # use openjd_model::{create_job, decode_job_template};
+/// # use serde_json::json;
+/// let template = decode_job_template(json!({
+///     "specificationVersion": "jobtemplate-2023-09",
+///     "extensions": ["SERVICE", "EXPR"],
+///     "name": "J",
+///     "jobServices": [
+///         {"name": "A", "ports": [{"name": "p"}], "script": {"actions": {"onRun": {"command": "a"}}}},
+///         {"name": "B", "ports": [{"name": "p"}], "script": {"actions": {"onRun": {
+///             "command": "b", "args": ["{{ Service.A.p.port }}", "{{ Service.B.p.bindAddress }}"]}}}}
+///     ],
+///     "steps": [{"name": "S", "script": {"actions": {"onRun": {"command": "s"}}}}]
+/// }), Some(&["SERVICE", "EXPR"]), &Default::default()).unwrap();
+/// let job = create_job(&template, &Default::default(), &template.default_validation_context()).unwrap();
+/// let services = job.job_services.as_ref().unwrap();
+/// assert!(referenced_service_names(&services[0]).is_empty());
+/// assert_eq!(
+///     referenced_service_names(&services[1]).into_iter().collect::<Vec<_>>(),
+///     vec!["A".to_string()]
+/// );
+/// ```
+#[must_use]
+pub fn referenced_service_names(service: &super::Service) -> std::collections::BTreeSet<String> {
+    let mut symbols = std::collections::HashSet::new();
+    if let Some(vars) = &service.variables {
+        for fs in vars.values() {
+            symbols.extend(fs.accessed_symbols());
+        }
+    }
+    for action in service.script.actions.iter_actions() {
+        symbols.extend(action.command.accessed_symbols());
+        for arg in action.args.iter().flatten() {
+            symbols.extend(arg.accessed_symbols());
+        }
+        if let Some(timeout) = &action.timeout {
+            symbols.extend(timeout.accessed_symbols());
+        }
+        match &action.cancelation {
+            Some(super::CancelationMode::NotifyThenTerminate {
+                notify_period_in_seconds: Some(n),
+            }) => symbols.extend(n.accessed_symbols()),
+            Some(super::CancelationMode::DeferredMode {
+                mode,
+                notify_period_in_seconds,
+            }) => {
+                symbols.extend(mode.accessed_symbols());
+                if let Some(n) = notify_period_in_seconds {
+                    symbols.extend(n.accessed_symbols());
+                }
+            }
+            _ => {}
+        }
+    }
+    for file in service.script.embedded_files.iter().flatten() {
+        if let Some(data) = &file.data {
+            symbols.extend(data.accessed_symbols());
+        }
+    }
+    for binding in service.script.let_bindings.iter().flatten() {
+        if let Some(eq_pos) = binding.find('=') {
+            let expr = binding[eq_pos + 1..].trim();
+            if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
+                symbols.extend(parsed.accessed_symbols().iter().cloned());
+            }
+        }
+    }
+
+    let file_prefix = format!("{SERVICE_FILE_PREFIX}.");
+    symbols
+        .into_iter()
+        .filter(|s| s.starts_with(&format!("{SERVICE_SCOPE}.")) && !s.starts_with(&file_prefix))
+        .filter_map(|s| s.split('.').nth(1).map(str::to_string))
+        .filter(|name| *name != service.name)
+        .collect()
+}
+
 // ── Unresolved placeholders (template validation and job creation) ────
 
 /// Seed `Unresolved` placeholders for the `Service.<name>.<port>.*` values
@@ -436,6 +529,85 @@ mod tests {
                 ExprValue::String("::".into())
             ]
         );
+    }
+
+    #[test]
+    fn referenced_service_names_walks_every_host_resolved_field() {
+        use crate::job;
+        let fs = |s: &str| openjd_expr::FormatString::new(s).unwrap();
+        let action = |cmd: &str, args: &[&str]| job::Action {
+            command: fs(cmd),
+            args: Some(args.iter().map(|a| fs(a)).collect()),
+            timeout: None,
+            cancelation: None,
+        };
+        let mut svc = job::Service {
+            name: "Self".into(),
+            description: None,
+            host_requirements: None,
+            ports: vec![job::ServicePort {
+                name: "p".into(),
+                port: None,
+            }],
+            readiness_check: job::ServiceReadinessCheck::Stdout { timeout_seconds: 1 },
+            restart_policy: job::ServiceRestartPolicy {
+                max_attempts: 0,
+                completed_tasks: job::CompletedTasksPolicy::Rerun,
+            },
+            variables: Some(
+                [(
+                    "V".to_string(),
+                    fs("{{ Service.FromVar.p.connectAddress }}"),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            script: job::ServiceScript {
+                let_bindings: Some(vec!["x = Service.FromLet.p.port + 1".into()]),
+                actions: job::ServiceActions {
+                    on_enter: Some(action("{{ Service.FromCmd.p.connectAddress }}", &[])),
+                    on_run: action(
+                        "run",
+                        &[
+                            "{{ Service.Self.p.bindAddress }}",
+                            "{{ Service.FromArg.p.port }}",
+                        ],
+                    ),
+                    on_readiness_check: None,
+                    on_exit: None,
+                },
+                embedded_files: Some(vec![job::EmbeddedFile {
+                    name: "F".into(),
+                    file_type: crate::types::FileType::Text,
+                    filename: None,
+                    data: Some(fs("{{ Service.FromFile.p.port }} {{ Service.File.F }}")),
+                    runnable: None,
+                    end_of_line: None,
+                }]),
+            },
+            resolved_symtab: None,
+        };
+        let names: Vec<String> = referenced_service_names(&svc).into_iter().collect();
+        assert_eq!(
+            names,
+            vec!["FromArg", "FromCmd", "FromFile", "FromLet", "FromVar"]
+        );
+
+        // No references at all — including the Service's own name and
+        // Service.File.* — is an empty set.
+        svc.variables = None;
+        svc.script.let_bindings = None;
+        svc.script.actions.on_enter = None;
+        svc.script.actions.on_run = action("run", &["{{ Service.Self.p.port }}"]);
+        svc.script.embedded_files = Some(vec![job::EmbeddedFile {
+            name: "F".into(),
+            file_type: crate::types::FileType::Text,
+            filename: None,
+            data: Some(fs("{{ Service.File.F }}")),
+            runnable: None,
+            end_of_line: None,
+        }]);
+        assert!(referenced_service_names(&svc).is_empty());
     }
 
     #[test]
