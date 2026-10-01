@@ -398,6 +398,166 @@ Cost note: job creation previously did not evaluate these fields, so the pass
 adds work proportional to what a single worker would do anyway — done
 once at submission instead of per-task-per-worker.
 
+### apply_environment_templates
+
+```rust
+pub fn apply_environment_templates(
+    job: &job::Job,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    caller_limits: &CallerLimits,
+) -> Result<AppliedEnvironmentTemplates, ModelError>
+```
+
+Applies the Environment Templates of a submission to the Job that
+`create_job` built from the Job Template alone (Template Schemas §1.2.2
+"Services from Environment Templates", RFC 0009 "Environment Template" and
+the "Validation" section's two submission-time checks). `create_job` stays
+a function of the Job Template only; this is the second stage of a
+submission, and the only place the crate sees several documents together.
+
+Inputs: `attached` in the scheduler's order (an
+`AttachedEnvironmentTemplate` is a `&EnvironmentTemplate` plus an optional
+label — a file path, say — that replaces the positional document name
+`EnvironmentTemplate[i]` in error paths and messages);
+`job_parameter_values` as `preprocess_job_parameters` produced them for the
+same submission (every template's `parameterDefinitions` merged per
+§1.2.1); and the caller's limits, applied to every template as they were
+to the Job Template.
+
+Output: `AppliedEnvironmentTemplates { external_services, environments }`
+— the external Services instantiated in start order (attachment order,
+then each template's `services` order) and the attached Environments
+converted in attachment order (a services-only template contributes
+none). `into_combined_job(job)` folds them into the Job: `job_services`
+becomes external Services followed by the Job Template's own, and
+`job_environments` the attached Environments followed by the Job
+Template's own (merge rule 1: "placed before every Service in the Job
+Template's `jobServices`; the attached Environments are placed in
+`jobEnvironments` as today"). `Job::extensions` is left as the Job
+Template declared it — an extension applies to the document that lists
+it (§1.2 item 3), and every external Service and attached Environment
+carries the symbols it needs in its own `resolved_symtab`. A runtime that
+enters the attached Environments itself (as the CLI does today) may read
+the two lists instead of folding.
+
+**Per-document profile.** Each attachment is evaluated under its own
+`EnvironmentTemplate::profile()` (its `specificationVersion` and
+`extensions`, the counterpart of `JobTemplate::profile`) with the caller
+limits layered on. The Job Template need not declare `SERVICE` or `EXPR`
+for an attachment to use them, and vice versa: the RFC's queue-cache
+example applies a `[SERVICE, EXPR, FEATURE_BUNDLE_1]` attachment to a Job
+Template with no `extensions` at all. The symbol table for a template is
+`build_symbol_table(job_parameter_values)` (the merged `Param.*` /
+`RawParam.*`), plus `Job.Name` when that template declares `EXPR` — the
+same table pass 8 validated the document against, now with real values.
+
+**Order of work.** The two submission-time checks run first, against the
+combined Job, and every violation is reported in one `ModelValidation`
+error for the model name `Submission` (no single template is "the"
+model). Only if both pass are the Services instantiated and the
+Environments converted:
+
+1. **Merge rule 2 — name collisions.** The combined Service list is
+   assembled with provenance: every external Service (attachment order,
+   `services` order), then the Job's `jobServices`, then each Step's
+   `stepServices`. Each external Service is compared with every external
+   Service before it and with every Service the Job Template declares; a
+   hit is reported at the external Service's path
+   (`EnvironmentTemplate[i] -> services[k]`, or `<label> -> services[k]`)
+   naming both sources:
+
+   ```
+   external Service 'Cache' (EnvironmentTemplate[0] -> services[0]) has the same name as
+   Service 'Cache' (JobTemplate -> jobServices[0]); the name of an external Service must
+   not equal the name of any other external Service, nor of any Service in the Job
+   Template's jobServices or any Step's stepServices (RFC 0009, Template Schemas §1.2.2
+   item 2).
+   ```
+
+   The other source reads `Service '<name>' (JobTemplate -> steps[i] ->
+   stepServices[k])` or `external Service '<name>' (EnvironmentTemplate[j]
+   -> services[k])`. A repeat within one document is a template-validation
+   error (§9.7 item 5), so a hit here is always across documents. Every
+   collision is reported, not just the first.
+
+2. **Merge rule 3 — wrapping Environments from SERVICE-less documents.**
+   A document that does not declare `SERVICE` cannot write `runScope` or
+   the `onWrapService*` hooks (both gated), so any wrapping Environment it
+   defines (one with any `WRAP_ACTIONS` hook) has the default `runScope`
+   and is entered in every Service Session in its scope without being
+   able to wrap the Service. The scope of a Job Environment — the Job
+   Template's or an attached one — is every Service of the combined Job
+   (combined `jobServices` plus every Step's `stepServices`, since a Step
+   Service's Session enters the Job Environments too); a Step
+   Environment's is only its Step's `stepServices`, since a Job Service's
+   Session enters `jobEnvironments` alone. Whether a document declares `SERVICE` is read from
+   `EnvironmentTemplate::profile()` for an attachment and `Job::extensions`
+   for the Job Template. A violation is reported at the Environment
+   (`EnvironmentTemplate[i] -> environment`, `JobTemplate ->
+   jobEnvironments[i]`, or `JobTemplate -> steps[i] ->
+   stepEnvironments[j]`), naming the document as the cause and the first
+   Service in scope as the witness, with the spec's remedy:
+
+   ```
+   wrapping Environment 'QueueContainer' is defined by EnvironmentTemplate[0], which does
+   not declare the SERVICE extension, so it has the default runScope (every kind of
+   Session) and cannot define the onWrapService* hooks; but the combined Job places
+   Service 'Cache' (JobTemplate -> jobServices[0]) in its scope, and the Service would run
+   in a Session the Environment enters but cannot wrap. Declare SERVICE in
+   EnvironmentTemplate[0] and either define onWrapServiceEnter, onWrapServiceRun,
+   onWrapServiceReadinessCheck, and onWrapServiceExit, or declare a runScope that excludes
+   SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).
+   ```
+
+   For the Job Template the document reads `the Job Template`. Both
+   directions the spec names are covered by the same walk: a queue's
+   wrapper attachment with a Job that declares Services (or with another
+   attachment that does), and a Job Template wrapper — job- or step-level
+   — with an attachment that defines a Service. A document that does
+   declare `SERVICE` is not subject to this rule: pass 10's
+   hooks-follow-`runScope` rule already made its wrapper either define
+   the four hooks or exclude `SERVICE` from `runScope`. With nothing in
+   scope (no Service anywhere) a SERVICE-less wrapper is accepted exactly
+   as before RFC 0009.
+
+3. **External Services.** Each `services[k]` is instantiated with the same
+   `instantiate_service` as a `jobServices[k]` entry, in Job scope, with
+   `InstantiateCtx` built from the attachment's profile and
+   `job_services` set to that document's `services` (so the "in scope"
+   iterator is `services[..k]` — earlier Services of the same document,
+   the only ones a `Service.*` reference can name; a reference to another
+   document's Service, or a Job Template's reference to an external
+   Service, is a template-validation error and cannot reach here).
+   `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
+   and the carried-forward re-checks all run as for a Job Service.
+4. **Attached Environments.** The carried-forward resolved-value checks
+   run as for a `jobEnvironments` entry (`build_env_check_symtab` seeded
+   with the document's own Services, only when the Environment's
+   `runScope` excludes `SERVICE`, exactly the pass 8 scope), then
+   `convert_environment_with_symtab` freezes the attachment's table into
+   `resolved_symtab`.
+
+Errors raised inside one document in steps 3–4 are attributed to it:
+validation errors get the document prefixed to every path and report for
+`Submission` (`EnvironmentTemplate[0] -> services[0] -> ports[0] -> port:
+must be between 1 and 65535.`); format-string and expression errors get
+the document name prefixed to the message (`Expression error:
+EnvironmentTemplate[0]: service let binding 'share': ...`).
+
+**Limits.** The 10-element cap on `services` is per document (pass 11)
+and is not re-applied to the combined list: three documents at the cap
+combine to 30 Services. `CallerLimits::max_environment_size` is applied
+by `create_job` to the Job Template's Environments; an application that
+wants it on attached Environments measures the returned `environments`.
+
+**Unchanged behavior.** An attachment that defines no Services and
+declares no `SERVICE` has exactly the pre-RFC-0009 behavior: its
+Environment is converted with the merged parameter table (what the CLI
+did by hand with `build_symbol_table` + `convert_environment_with_symtab`),
+the collision rule has nothing to compare, and the wrapper rule has no
+Service in scope.
+
 ### convert_environment
 
 ```rust

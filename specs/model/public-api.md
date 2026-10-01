@@ -19,6 +19,11 @@ worker-host-agnostic way. An `openjd-model` caller's typical flow is:
 5. Call [`create_job`] with the preprocessed values and the
    [`ValidationContext`]. The result is an owned [`job::Job`] ready for
    the session runtime.
+6. When the submission attaches Environment Templates, call
+   [`apply_environment_templates`] with the Job, the templates in the
+   scheduler's order, and the same preprocessed values; it runs the
+   submission-time checks (RFC 0009 §1.2.2) and returns the external
+   Services and attached Environments to fold into the Job.
 
 Beyond that core flow, the crate exposes low-level building blocks —
 symbol-table construction, step dependency graphs, lazy parameter-space
@@ -172,6 +177,42 @@ pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
 ) -> job::Environment;
+
+/// RFC 0009 / Template Schemas §1.2.2: apply a submission's Environment
+/// Templates to the Job `create_job` built from the Job Template alone.
+pub fn apply_environment_templates(
+    job: &job::Job,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    caller_limits: &CallerLimits,
+) -> Result<AppliedEnvironmentTemplates, ModelError>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct AttachedEnvironmentTemplate<'a> {
+    pub template: &'a EnvironmentTemplate,
+    /// Replaces `EnvironmentTemplate[i]` as the document's name in errors.
+    pub label: Option<&'a str>,
+}
+
+impl<'a> AttachedEnvironmentTemplate<'a> {
+    pub fn new(template: &'a EnvironmentTemplate) -> Self;
+    pub fn with_label(self, label: &'a str) -> Self;
+}
+impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppliedEnvironmentTemplates {
+    /// Attachment order, then each template's `services` order.
+    pub external_services: Vec<job::Service>,
+    /// Attachment order; services-only templates contribute none.
+    pub environments: Vec<job::Environment>,
+}
+
+impl AppliedEnvironmentTemplates {
+    /// `job_services` = external then the Job's own; `job_environments` =
+    /// attached then the Job's own. Empty lists stay `None`.
+    pub fn into_combined_job(self, job: job::Job) -> job::Job;
+}
 ```
 
 [`create_job`] is the high-level entry point: it resolves the job name
@@ -221,6 +262,27 @@ for PATH-typed parameters). The CLI uses this for `--environment`
 templates so the environment's own `parameterDefinitions` resolve
 inside its actions and RFC 0008 wrap hooks. Also available via the
 `create_job::` module path.
+
+[`apply_environment_templates`] is the second stage of a submission
+(RFC 0009, Template Schemas §1.2.2 "Services from Environment Templates"):
+given the Job that `create_job` built from the Job Template alone and the
+scheduler-ordered Environment Templates, it runs the two submission-time
+checks that relate documents only the scheduler sees together — the
+external-Service name collision rule (merge rule 2) and the
+wrapping-Environment rule (merge rule 3) — reporting every violation as a
+`ModelValidation` error for the model name `Submission` with paths rooted
+at the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
+attachment's label); then instantiates each template's `services` as
+**external Services** under that template's own
+[`EnvironmentTemplate::profile`] and converts its Environment with the
+merged parameter table. [`AppliedEnvironmentTemplates::into_combined_job`]
+places the external Services before the Job Template's `jobServices` and
+the attached Environments before its `jobEnvironments` (merge rule 1). A
+caller that enters the attached Environments itself (the CLI's `run`)
+reads the two lists instead. The function is also the one-call replacement
+for the CLI's per-template `build_symbol_table` +
+`convert_environment_with_symtab`, which stays available. See "apply_environment_templates"
+in [job-creation.md](job-creation.md).
 
 ## Template Types (Unresolved)
 
@@ -282,6 +344,13 @@ impl EnvironmentTemplate {
     pub fn environment(&self) -> Option<&template::Environment>;
     /// Empty when `services` is absent.
     pub fn services(&self) -> &[template::Service];
+    /// This document's revision + `extensions` — the profile its own
+    /// Environment and Services are evaluated under at submission
+    /// (§1.2 item 3: an extension applies to the document that lists
+    /// it). Counterpart of `JobTemplate::profile`.
+    pub fn profile(&self) -> ModelProfile;
+    /// `ValidationContext::from_profile(self.profile())`.
+    pub fn default_validation_context(&self) -> ValidationContext;
 }
 ```
 
@@ -1470,6 +1539,22 @@ pub fn convert_environment_with_symtab(
     symtab: Option<&SymbolTable>,
 ) -> job::Environment;
 ```
+
+### `apply_environment_templates` (RFC 0009)
+
+Re-exported at the crate root (signatures under [Job
+Instantiation](#job-instantiation)) and also available via the
+`create_job::` module path: `apply_environment_templates`,
+`AttachedEnvironmentTemplate`, `AppliedEnvironmentTemplates`. Error
+contract: a `ModelValidation` error for `Submission` collecting every
+merge-rule-2 collision (at `<doc> -> services[k]`) and merge-rule-3
+wrapper violation (at `<doc> -> environment`, `JobTemplate ->
+jobEnvironments[i]`, or `JobTemplate -> steps[i] -> stepEnvironments[j]`)
+before any Service is instantiated; thereafter a per-document error from
+`instantiate_service` or the Environment re-checks, with the document
+prefixed to its paths (validation errors, also reported for `Submission`)
+or to its message (format-string and expression errors). Full messages
+and the walk are in [job-creation.md](job-creation.md).
 
 ## Parameter Space Iteration
 

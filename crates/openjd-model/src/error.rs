@@ -193,7 +193,7 @@ impl ValidationErrors {
     }
 
     /// Set the model name for Display formatting and return self.
-    fn with_model_name(mut self, name: &str) -> Self {
+    pub(crate) fn with_model_name(mut self, name: &str) -> Self {
         self.model_name = Some(name.to_string());
         self
     }

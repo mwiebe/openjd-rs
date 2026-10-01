@@ -561,7 +561,9 @@ separately-validated env templates are composed into a session at assembly time
 (worker-side), the cross-layer constraint must be enforced there. Likewise the §1.2.2 item 3
 rule — a wrapping environment from a document that does not declare `SERVICE` may not have a
 Service placed in its scope — relates documents only the scheduler sees together and is not a
-template-validation check.
+template-validation check: it is one of the two submission-time checks
+`apply_environment_templates` runs on the combined Job (see "Submission-time checks" below
+and [job-creation.md](job-creation.md)).
 
 ## Pass 11: SERVICE Gating and Structure
 
@@ -622,8 +624,48 @@ The discriminator of `readinessCheck` and the `completedTasks` enum are enforced
 
 Not in this pass: `Service.*` scope rules (§9.7 items 1–2; pass 8, "Service scopes"), the
 wrap hooks an Environment's `runScope` calls for (item 6; pass 10), `let` bindings and format
-strings inside a Service (pass 8), and job creation of Services (see
-[job-creation.md](job-creation.md)).
+strings inside a Service (pass 8), job creation of Services (see
+[job-creation.md](job-creation.md)), and the two submission-time checks (next section).
+
+## Submission-time checks (RFC 0009, Template Schemas §1.2.2 items 2–3, §9.7 closing paragraph)
+
+Two of the SERVICE extension's rules relate documents that only the scheduler sees together
+— a Job Template and the Environment Templates attached to a submission — and so cannot run
+when a template is validated on its own. They run in `apply_environment_templates`
+(`job/create_job/external.rs`), against the combined Job, after `create_job` and before any
+external Service is instantiated; every violation of both rules is collected into one
+`ModelValidation` error whose model name is `Submission` and whose paths are rooted at the
+document (`JobTemplate`, `EnvironmentTemplate[i]` by attachment index, or the label the
+caller gave the attachment):
+
+- **External-Service name collision (§1.2.2 item 2).** An external Service's `name` must not
+  equal that of any other external Service, nor of any Service in the Job Template's
+  `jobServices` or any Step's `stepServices`. Reported at `<doc> -> services[k]`:
+  `external Service '<n>' (<doc> -> services[k]) has the same name as <Service|external
+  Service> '<n>' (<other source>); the name of an external Service must not equal ... (RFC
+  0009, Template Schemas §1.2.2 item 2).` The other source is `JobTemplate ->
+  jobServices[j]`, `JobTemplate -> steps[i] -> stepServices[j]`, or `EnvironmentTemplate[j]
+  -> services[m]` for an earlier attachment. Within one document the §9.7 item 5 uniqueness
+  check (pass 11) already applies.
+- **Wrapping Environment from a SERVICE-less document (§1.2.2 item 3).** Such an Environment
+  (any `WRAP_ACTIONS` hook defined; `runScope` and the `onWrapService*` hooks are both gated
+  behind `SERVICE`, so it necessarily has the default scope and no Service hooks) must have
+  no Service in its scope in the combined Job: for a Job Environment, the combined
+  `jobServices` and every Step's `stepServices`; for a Step Environment, the combined
+  `jobServices` and that Step's `stepServices`. Reported at `<doc> -> environment`,
+  `JobTemplate -> jobEnvironments[i]`, or `JobTemplate -> steps[i] -> stepEnvironments[j]`,
+  naming the document as the cause and quoting the spec's remedy: `wrapping Environment
+  '<e>' is defined by <doc|the Job Template>, which does not declare the SERVICE extension,
+  so it has the default runScope (every kind of Session) and cannot define the
+  onWrapService* hooks; but the combined Job places <Service> in its scope, and the Service
+  would run in a Session the Environment enters but cannot wrap. Declare SERVICE in <doc>
+  and either define onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and
+  onWrapServiceExit, or declare a runScope that excludes SERVICE (RFC 0009, Template Schemas
+  §1.2.2 item 3).` A document that declares `SERVICE` is governed by pass 10's
+  hooks-follow-`runScope` rule instead and is never reported here.
+
+The 10-element cap on `services` (pass 11) is per document; the combined list is not capped.
+Everything else in §9.7 is checked per document by the passes above.
 
 ## Error Infrastructure
 
