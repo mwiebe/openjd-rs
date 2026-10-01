@@ -449,7 +449,11 @@ action runs:
 
 Static validation is *not* deferred: at parse time the validator still checks
 the expression is well-formed and that `WrappedAction.*` is only referenced
-inside wrap hooks. Any format string is accepted — normal interpolation like
+inside wrap hooks. A wrap hook's `timeout` and `cancelation` fields validate
+against the same scope as its `command` and `args` — `WrappedAction.*` plus the
+hook's companion group (`WrappedEnv.Name`, `WrappedStep.Name`, or the RFC 0009
+`WrappedService.*`) — because the runtime resolves all of a hook's fields
+against one symbol table. Any format string is accepted — normal interpolation like
 `"{{Prefix}}_THEN_TERMINATE"` is permitted; only the resolved value is
 constrained. You just can't know *which* of the two modes it'll be until the
 wrapped action is in front of you — which is inherent to forwarding: the same

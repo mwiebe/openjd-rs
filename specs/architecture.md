@@ -139,3 +139,7 @@ Detailed design specifications for individual crates:
 - [snapshots/](snapshots/) — `openjd-snapshots` crate (**experimental**): job attachment snapshot operations
 - [cli/](cli/) — `openjd-cli` crate: CLI binary, command implementations, output formatting, context-aware help
 - [openjd-for-js/spec.md](openjd-for-js/spec.md) — `openjd-for-js` crate (**experimental**): ECMAScript/WebAssembly bindings
+
+Cross-cutting records:
+
+- [service-extension-status.md](service-extension-status.md) — RFC 0009 (`SERVICE`) alignment: every normative statement with its implementation status and file, the gaps, the choices the specification leaves open, and the open questions for the RFC author

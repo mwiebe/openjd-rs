@@ -136,6 +136,7 @@ specs/
 ├── cli/README.md                # → cli spec index
 ├── job-attachments-snapshots.md # Cross-cutting design doc
 ├── rust-port-agent-method.md    # Porting methodology from Python
+├── service-extension-status.md  # RFC 0009 (SERVICE) alignment record: status table, gaps, open spec questions
 └── windows-cross-user-helper.md # Cross-cutting Windows design
 ```
 
@@ -236,7 +237,7 @@ PRs run these checks (all must pass):
 | **Clippy** | `cargo clippy` on Linux, Windows, macOS — includes the helper binary |
 | **Build** | Release build on all three platforms |
 | **Test** | `cargo test --workspace` + helper tests on all three platforms |
-| **Conformance** | Full OpenJD conformance suite (1,038 tests) on all three platforms |
+| **Conformance** | Full OpenJD conformance suite on all three platforms (1,209 tests on the openjd-specifications `mainline`; 1,425 with the `SERVICE` suite on its `rfc-service` branch) |
 | **MSRV** | `cargo check --workspace` with Rust 1.96.0 |
 | **Documentation** | `cargo doc --no-deps --workspace` with `-D warnings` |
 | **Compliance** | Copyright header check |

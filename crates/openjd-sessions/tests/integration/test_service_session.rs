@@ -860,11 +860,18 @@ async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_en
     let root = TempDir::new().unwrap();
     let trace = root.path().join("trace.txt");
     let t = trace.display().to_string();
+    // onRun announces readiness and then waits for a stop file before exiting
+    // with status 1, so that READY is always observed while onRun is still
+    // running (the RFC's "onRun exit wins" rule would otherwise make a fast
+    // exit race the readiness line).
+    let stop = root.path().join("stop");
+    let stop_s = stop.display().to_string();
     let service = ServiceBuilder::new(
         "svc",
         &["main"],
         sh(&format!(
-            "echo \"run TOKEN=$TOKEN WD=$OPENJD_SESSION_WORKING_DIR\" >> {t}; echo openjd_service_ready: ok; exit 1"
+            "echo \"run TOKEN=$TOKEN WD=$OPENJD_SESSION_WORKING_DIR\" >> {t}; echo openjd_service_ready: ok; \
+             while [ ! -e {stop_s} ]; do sleep 0.05; done; rm -f {stop_s}; exit 1"
         )),
     )
     .readiness(stdout_check(300))
@@ -881,6 +888,7 @@ async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_en
     let wd = ss.session().working_directory().display().to_string();
 
     assert!(ss.start().await.unwrap().is_ready());
+    std::fs::write(&stop, b"").unwrap();
     let first = ss.wait_exit().await.unwrap();
     assert_eq!(first.exit_code, Some(1));
     assert!(!first.canceled);
@@ -892,6 +900,7 @@ async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_en
     assert_eq!(ss.state(), ServiceSessionState::Running);
     assert_eq!(ss.readiness(), Some(ServiceReadiness::Pending));
     assert!(ss.wait_ready().await.unwrap().is_ready());
+    std::fs::write(&stop, b"").unwrap();
     let second = ss.wait_exit().await.unwrap();
     assert_eq!(second.exit_code, Some(1));
     ss.end().await.unwrap();
@@ -969,9 +978,11 @@ async fn on_enter_failure_is_a_start_failure_and_end_still_runs_on_exit() {
         vec![],
     );
     let err = ss.enter().await.unwrap_err();
+    // RFC 0009 <ServiceActions>: the openjd_fail message accompanies the
+    // start failure it explains.
     assert_eq!(
         err.to_string(),
-        "Service 'svc' onEnter failed: exit code: 2"
+        "Service 'svc' onEnter failed: exit code: 2; openjd_fail: no license"
     );
     assert_eq!(ss.state(), ServiceSessionState::StartFailed);
     let status = ss.action_status().unwrap();
@@ -1085,7 +1096,7 @@ async fn on_exit_failure_is_reported_after_full_teardown() {
         sh("echo openjd_service_ready: ok; exit 0"),
     )
     .readiness(stdout_check(300))
-    .on_exit(sh("exit 5"))
+    .on_exit(sh("echo openjd_fail: cleanup incomplete; exit 5"))
     .build();
     let mut config = session_config(&root, "svc-test:onexit");
     config.retain_working_dir = false;
@@ -1101,7 +1112,10 @@ async fn on_exit_failure_is_reported_after_full_teardown() {
     ss.wait_exit().await.unwrap();
     let wd = ss.session().working_directory().to_path_buf();
     let err = ss.end().await.unwrap_err();
-    assert_eq!(err.to_string(), "Service 'svc' onExit failed: exit code: 5");
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' onExit failed: exit code: 5; openjd_fail: cleanup incomplete"
+    );
     assert_eq!(ss.state(), ServiceSessionState::Ended);
     assert_eq!(read_trace(&trace), vec!["env-exit"]);
     assert!(
