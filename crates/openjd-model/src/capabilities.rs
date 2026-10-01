@@ -25,6 +25,10 @@ const STANDARD_AMOUNT_CAPABILITIES_V2023_09: &[&str] = &[
 const STANDARD_ATTRIBUTE_CAPABILITIES_V2023_09: &[(&str, &[&str])] = &[
     ("attr.worker.os.family", &["linux", "windows", "macos"]),
     ("attr.worker.cpu.arch", &["x86_64", "arm64"]),
+    // RFC 0009: whether the host's capacity may be reclaimed while work is
+    // running on it. Not gated by the SERVICE extension; a standard name any
+    // Step may require. Values are the strings "true" and "false".
+    ("attr.worker.preemptible", &["true", "false"]),
 ];
 
 fn unsupported_revision(revision: SpecificationRevision) -> ModelError {

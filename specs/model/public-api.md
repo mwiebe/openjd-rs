@@ -56,6 +56,10 @@ The structural template types — `template::JobTemplate`,
 `template::Environment`, `template::EnvironmentScript`,
 `template::EnvironmentActions`, `template::Action`,
 `template::EmbeddedFile`, `template::StepScript`,
+`template::Service`, `template::ServicePort`,
+`template::ServiceReadinessCheck`, `template::ServiceRestartPolicy`,
+`template::CompletedTasksPolicy`, `template::ServiceScript`,
+`template::ServiceActions`,
 `template::StepActions`, `template::CancelationMode`,
 `template::HostRequirements`, `template::AmountRequirement`,
 `template::AttributeRequirement`, `template::StepDependency`,
@@ -230,6 +234,8 @@ pub struct JobTemplate {
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<template::Environment>>,
+    /// RFC 0009 — requires the `SERVICE` extension.
+    pub job_services: Option<Vec<template::Service>>,
     pub steps: Vec<template::StepTemplate>,
 }
 ```
@@ -273,6 +279,104 @@ crate-private as a path) but re-exported as `template::ExtensionName`
 and `template::Description`. They reach the public surface as field
 types on these structs and are nameable directly through the
 `template::*` path.
+
+### Services (`SERVICE` extension, RFC 0009)
+
+`template::StepTemplate` gains `pub step_services: Option<Vec<template::Service>>`
+beside `step_environments`. The `<Service>` types (Template Schemas §9) are:
+
+```rust
+pub struct template::Service {
+    pub name: String,
+    pub description: Option<Description>,
+    pub let_bindings: Option<Vec<String>>,
+    pub host_requirements: Option<template::HostRequirements>,
+    pub ports: Vec<template::ServicePort>,
+    pub readiness_check: Option<template::ServiceReadinessCheck>,
+    pub restart_policy: Option<template::ServiceRestartPolicy>,
+    pub variables: Option<HashMap<String, FormatString>>,
+    pub script: template::ServiceScript,
+}
+
+impl template::Service {
+    /// Declared, or the §9 default `{ type: TCP_CONNECT }` on every port.
+    pub fn readiness_check(&self) -> ServiceReadinessCheck;
+    /// Declared, or the §9 default `{ maxAttempts: 0, completedTasks: RERUN }`.
+    pub fn restart_policy(&self) -> ServiceRestartPolicy;
+    pub fn port_names(&self) -> impl Iterator<Item = &str>;
+}
+
+pub struct template::ServicePort {
+    pub name: String,
+    /// `<posinteger> | <posintstring>`, modeled like `<Action>.timeout`.
+    pub port: Option<FormatString>,
+}
+
+/// Discriminated on `type`; the numeric fields are `@fmtstring`.
+pub enum template::ServiceReadinessCheck {
+    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },
+    Command { interval_seconds: Option<FormatString>, timeout_seconds: Option<FormatString> },
+    Stdout { timeout_seconds: Option<FormatString> },
+}
+
+impl template::ServiceReadinessCheck {
+    pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    pub const DEFAULT_COMMAND_INTERVAL_SECONDS: u64 = 5;
+    pub fn type_name(&self) -> &'static str;
+    pub fn timeout_seconds(&self) -> Option<&FormatString>;
+}
+impl Default for template::ServiceReadinessCheck;  // TcpConnect { None, None }
+
+#[derive(Default)]
+pub struct template::ServiceRestartPolicy {
+    pub max_attempts: Option<FormatString>,
+    pub completed_tasks: Option<CompletedTasksPolicy>,
+}
+
+impl template::ServiceRestartPolicy {
+    pub const DEFAULT_MAX_ATTEMPTS: i64 = 0;
+    pub fn completed_tasks(&self) -> CompletedTasksPolicy;  // declared, or Rerun
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum template::CompletedTasksPolicy {
+    Keep,
+    #[default]
+    Rerun,
+}
+
+impl template::CompletedTasksPolicy {
+    pub fn as_str(&self) -> &'static str;
+}
+
+pub struct template::ServiceScript {
+    pub let_bindings: Option<Vec<String>>,
+    pub actions: template::ServiceActions,
+    pub embedded_files: Option<Vec<template::EmbeddedFile>>,
+}
+
+pub struct template::ServiceActions {
+    pub on_enter: Option<template::Action>,
+    pub on_run: template::Action,
+    pub on_readiness_check: Option<template::Action>,
+    pub on_exit: Option<template::Action>,
+}
+
+impl template::ServiceActions {
+    pub const ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    /// onEnter/onRun → None; onReadinessCheck → Some(30); onExit → Some(300).
+    pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
+    pub fn named_slots(&self) -> [(&'static str, Option<&template::Action>); 4];
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &template::Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &template::Action>;
+}
+```
+
+All derive `Debug, Clone, Deserialize` with `#[serde(rename_all = "camelCase",
+deny_unknown_fields)]`. There are no `job::*` counterparts yet: job creation does not
+instantiate Services in this milestone.
 
 ### Job Parameter Definitions
 
@@ -675,6 +779,7 @@ pub enum ModelExtension {
     FeatureBundle1,    // RFC 0004 — "FEATURE_BUNDLE_1"
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
+    Service,           // RFC 0009 — "SERVICE" (requires EXPR)
 }
 
 impl ModelExtension {
@@ -1238,8 +1343,9 @@ pub mod capabilities {
     ) -> Result<Vec<&'static str>, ModelError>;
 
     /// Attribute capability names paired with their allowed value sets.
-    /// Today: `("attr.worker.os.family", ["linux", "windows", "macos"])`
-    /// and `("attr.worker.cpu.arch", ["x86_64", "arm64"])`.
+    /// Today: `("attr.worker.os.family", ["linux", "windows", "macos"])`,
+    /// `("attr.worker.cpu.arch", ["x86_64", "arm64"])`, and (RFC 0009, not
+    /// gated by SERVICE) `("attr.worker.preemptible", ["true", "false"])`.
     pub fn standard_attribute_capabilities(
         revision: SpecificationRevision,
         extensions: &Extensions,

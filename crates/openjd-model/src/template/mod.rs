@@ -14,6 +14,7 @@ mod expr_parameters;
 mod host_requirements;
 mod job_template;
 mod parameters;
+mod service;
 mod step;
 mod task_parameters;
 pub(crate) mod validate_v2023_09;
@@ -47,6 +48,11 @@ pub use expr_parameters::{
 pub use step::{SimpleAction, StepDependency, StepScript, StepTemplate};
 // environment
 pub use environment::{EmbeddedFile, Environment, EnvironmentScript};
+// service (SERVICE extension, RFC 0009)
+pub use service::{
+    CompletedTasksPolicy, Service, ServiceActions, ServicePort, ServiceReadinessCheck,
+    ServiceRestartPolicy, ServiceScript,
+};
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;
 pub use actions::{Action, CancelationMode, EnvironmentActions, StepActions, WrapHookScope};

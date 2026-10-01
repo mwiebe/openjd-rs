@@ -1,0 +1,38 @@
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR, FEATURE_BUNDLE_1]
+parameterDefinitions:
+  - name: CacheMemoryMiB
+    type: INT
+    default: 8192
+services:
+  - name: Cache
+    description: "A per-Job Valkey store shared by all of the Job's Tasks."
+    hostRequirements:
+      amounts:
+        - name: amount.worker.memory
+          min: "{{ Param.CacheMemoryMiB }}"
+    ports:
+      - name: main
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: valkey-server
+          args:
+            - "--port"
+            - "{{ Service.Cache.main.port }}"
+            - "--bind"
+            - "{{ Service.Cache.main.bindAddress }}"
+            - "--maxmemory"
+            - "{{ Param.CacheMemoryMiB }}mb"
+environment:
+  name: CacheClient
+  description: "Tells every Task where the Job's Valkey store is."
+  # This Environment references the Service, so it applies to Task Sessions only;
+  # it would be meaningless in the Service's own Session.
+  runScope: [TASK]
+  variables:
+    VALKEY_HOST: "{{ Service.Cache.main.connectAddress }}"
+    VALKEY_PORT: "{{ Service.Cache.main.port }}"

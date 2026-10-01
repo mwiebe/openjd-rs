@@ -11,11 +11,13 @@
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
 //! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
+//! - Pass 11: SERVICE (validate or reject, RFC 0009)
 
 mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
+mod service;
 mod structure;
 mod task_chunking;
 mod wrap_actions;
@@ -203,6 +205,9 @@ pub(crate) fn validate_job_template(
     // Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
     wrap_actions::validate_wrap_actions_job_template(jt, ctx, &mut errors);
 
+    // Pass 11: SERVICE (validate or reject, RFC 0009)
+    service::validate_services_job_template(jt, &limits, &rules, ctx, &mut errors);
+
     errors.into_result("JobTemplate")
 }
 
@@ -261,6 +266,11 @@ pub fn validate_environment_template(
 
     // WRAP_ACTIONS gating (RFC 0008)
     wrap_actions::validate_wrap_actions_environment_template(et, ctx, &mut errors);
+
+    // SERVICE's EXPR prerequisite (RFC 0009). The Environment Template's
+    // `services` list is not modeled yet; declaring the extension alone is
+    // still subject to the prerequisite.
+    service::check_expr_prerequisite(ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

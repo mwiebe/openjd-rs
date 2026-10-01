@@ -188,16 +188,7 @@ pub fn validate_structure(
             );
         }
         if let Some(desc) = &step.description {
-            let dp = path_field(&step_path, "description");
-            if desc.0.chars().count() > limits.max_description_len {
-                errors.add(
-                    &dp,
-                    format!("exceeds {} characters.", limits.max_description_len),
-                );
-            }
-            if has_control_chars(&desc.0) {
-                errors.add(&dp, "contains control characters.");
-            }
+            validate_description(desc, &path_field(&step_path, "description"), limits, errors);
         }
         // Must have script or SimpleAction
         if step.script.is_none()
@@ -241,43 +232,13 @@ pub fn validate_structure(
 
         // Host requirements
         if let Some(hr) = &step.host_requirements {
-            let hr_path = path_field(&step_path, "hostRequirements");
-            match (
-                capabilities::standard_amount_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-                capabilities::standard_attribute_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-            ) {
-                (Ok(std_amounts), Ok(std_attrs)) => {
-                    validate_host_requirements(
-                        hr,
-                        &hr_path,
-                        rules,
-                        std_amounts,
-                        &std_attrs,
-                        errors,
-                    );
-                }
-                _ => {
-                    let ext_list: Vec<_> = ctx
-                        .profile
-                        .extensions()
-                        .iter()
-                        .map(|e| e.as_str())
-                        .collect();
-                    errors.add(
-                        &hr_path,
-                        format!(
-                            "cannot validate: no capability definitions for revision {} with extensions {:?}.",
-                            ctx.profile.revision(), ext_list
-                        ),
-                    );
-                }
-            }
+            validate_host_requirements_in_context(
+                hr,
+                &path_field(&step_path, "hostRequirements"),
+                rules,
+                ctx,
+                errors,
+            );
         }
 
         // Parameter space
@@ -390,26 +351,7 @@ pub fn validate_single_environment(
     }
 
     if let Some(vars) = &env.variables {
-        let vars_path = path_field(path, "variables");
-        if vars.is_empty() {
-            errors.add(&vars_path, "if provided, must not be empty.");
-        }
-        for (name, value) in vars {
-            let var_path = path_field(&vars_path, name);
-            validate_env_var_name(name, &var_path, errors);
-            if value.raw().contains('\0') {
-                errors.add(
-                    &var_path,
-                    "value contains a NUL byte, which cannot be represented in a process environment.",
-                );
-            }
-            if value.raw().chars().count() > limits.max_env_var_value_len {
-                errors.add(
-                    &var_path,
-                    format!("value exceeds {} characters.", limits.max_env_var_value_len),
-                );
-            }
-        }
+        validate_variables(vars, &path_field(path, "variables"), limits, errors);
     }
 
     if let Some(script) = &env.script {
@@ -451,7 +393,99 @@ pub fn validate_single_environment(
     }
 }
 
-fn validate_action(
+/// Check a `<Description>` (§7.2) against the effective limits: length and
+/// control characters. `path` is the description field's path.
+pub(super) fn validate_description(
+    desc: &Description,
+    path: &[PathElement],
+    limits: &super::EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    if desc.0.chars().count() > limits.max_description_len {
+        errors.add(
+            path,
+            format!("exceeds {} characters.", limits.max_description_len),
+        );
+    }
+    if has_control_chars(&desc.0) {
+        errors.add(path, "contains control characters.");
+    }
+}
+
+/// Check an `<EnvironmentVariables>` map (§4.4): non-empty if provided,
+/// valid variable names, no NUL bytes, and the §4.4.2 value length. Shared by
+/// `<Environment>.variables` and `<Service>.variables`, which have the same
+/// schema. `path` is the `variables` field's path.
+pub(super) fn validate_variables(
+    vars: &HashMap<String, openjd_expr::FormatString>,
+    path: &[PathElement],
+    limits: &super::EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    if vars.is_empty() {
+        errors.add(path, "if provided, must not be empty.");
+    }
+    for (name, value) in vars {
+        let var_path = path_field(path, name);
+        validate_env_var_name(name, &var_path, errors);
+        if value.raw().contains('\0') {
+            errors.add(
+                &var_path,
+                "value contains a NUL byte, which cannot be represented in a process environment.",
+            );
+        }
+        if value.raw().chars().count() > limits.max_env_var_value_len {
+            errors.add(
+                &var_path,
+                format!("value exceeds {} characters.", limits.max_env_var_value_len),
+            );
+        }
+    }
+}
+
+/// Validate a `<HostRequirements>` object (§3.3) using the standard
+/// capability names for the context's revision and extensions. Shared by
+/// `<StepTemplate>.hostRequirements` and `<Service>.hostRequirements`.
+pub(super) fn validate_host_requirements_in_context(
+    hr: &HostRequirements,
+    hr_path: &[PathElement],
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    match (
+        capabilities::standard_amount_capability_names(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+        capabilities::standard_attribute_capabilities(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+    ) {
+        (Ok(std_amounts), Ok(std_attrs)) => {
+            validate_host_requirements(hr, hr_path, rules, std_amounts, std_attrs, errors);
+        }
+        _ => {
+            let ext_list: Vec<_> = ctx
+                .profile
+                .extensions()
+                .iter()
+                .map(|e| e.as_str())
+                .collect();
+            errors.add(
+                hr_path,
+                format!(
+                    "cannot validate: no capability definitions for revision {} with extensions {:?}.",
+                    ctx.profile.revision(),
+                    ext_list
+                ),
+            );
+        }
+    }
+}
+
+pub(super) fn validate_action(
     action: &Action,
     path: &[PathElement],
     limits: &super::EffectiveLimits,
@@ -546,9 +580,10 @@ fn validate_host_requirements(
     path: &[PathElement],
     rules: &EffectiveRules,
     standard_amounts: &[&str],
-    standard_attrs: &[&str],
+    standard_attrs: &[(&str, &[&str])],
     errors: &mut ValidationErrors,
 ) {
+    let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
     let has_amounts = hr.amounts.as_ref().is_some_and(|a| !a.is_empty());
     let has_attrs = hr.attributes.as_ref().is_some_and(|a| !a.is_empty());
     if !has_amounts && !has_attrs {
@@ -652,7 +687,7 @@ fn validate_host_requirements(
                 check_capability_name(
                     name,
                     CapabilityKind::Attribute,
-                    standard_attrs,
+                    &standard_attr_names,
                     &attr_path,
                     errors,
                 );
@@ -710,8 +745,12 @@ fn validate_host_requirements(
             // to the template element count regardless of expressions, so a
             // deferred single-valued list is still bounded here.
             check_single_valued_all_of(&attr_lower, attr.all_of.as_deref(), &attr_path, errors);
-            if attr_lower == "attr.worker.os.family" {
-                let valid = ["linux", "windows", "macos"];
+            // Each standard attribute constrains its literal values to its
+            // allowed set (§3.3.2.1), compared case-insensitively.
+            if let Some((std_name, valid)) = standard_attrs
+                .iter()
+                .find(|(std_name, _)| *std_name == attr_lower)
+            {
                 for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
                     if let Some(vals) = vals {
                         for v in vals {
@@ -720,30 +759,7 @@ fn validate_host_requirements(
                             {
                                 errors.add(
                                     &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.os.family.",
-                                        v.raw()
-                                    ),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-            if attr_lower == "attr.worker.cpu.arch" {
-                let valid = ["x86_64", "arm64"];
-                for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals {
-                        for v in vals {
-                            if v.is_literal()
-                                && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
-                            {
-                                errors.add(
-                                    &path_field(&attr_path, field),
-                                    format!(
-                                        "value '{}' is not valid for attr.worker.cpu.arch.",
-                                        v.raw()
-                                    ),
+                                    format!("value '{}' is not valid for {std_name}.", v.raw()),
                                 );
                             }
                         }
@@ -949,7 +965,7 @@ fn validate_combination_expr(
     }
 }
 
-fn validate_embedded_files(
+pub(super) fn validate_embedded_files(
     files: &[EmbeddedFile],
     path: &[PathElement],
     errors: &mut ValidationErrors,

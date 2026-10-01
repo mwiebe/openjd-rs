@@ -69,6 +69,8 @@ mod test_resolved_bindings;
 mod test_resolved_value_constraints;
 #[path = "integration/test_scope_library_split.rs"]
 mod test_scope_library_split;
+#[path = "integration/test_service.rs"]
+mod test_service;
 #[path = "integration/test_simple_action_let.rs"]
 mod test_simple_action_let;
 #[path = "integration/test_step_dependency_graph.rs"]

@@ -27,7 +27,7 @@ applicable passes, and return accumulated errors as `ModelError::ModelValidation
 
 ## Pass Architecture
 
-The validation pipeline is passes 5–10 of the overall decode pipeline (passes 1–4 are in
+The validation pipeline is passes 5–11 of the overall decode pipeline (passes 1–4 are in
 the `parse` module — see [parsing.md](parsing.md)). Passes run sequentially. Each pass
 receives the template and the computed limits/rules, and appends errors to a shared
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
@@ -41,6 +41,7 @@ short-circuiting), so users see all problems at once.
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
+| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`) and validate every `<Service>` structurally (RFC 0009, Template Schemas §9) |
 
 ### Environment template pipeline
 
@@ -109,9 +110,13 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - Step name non-empty, no control characters
 - Must have `script` or exactly one simple action field (mutually exclusive)
 - Dependencies: no self-dependency, target must exist, no duplicates
-- Host requirements: amounts/attributes validation, capability name patterns,
+- Host requirements (`validate_host_requirements_in_context`, shared with `<Service>`):
+  amounts/attributes validation, capability name patterns,
   reserved scope checks (reserved scopes: `worker`, `job`, `step`, `task`),
-  standard capability value validation. Expression-free amount `min`/`max` values must
+  standard capability value validation — a literal value of a standard attribute must be
+  in that attribute's allowed set from `capabilities::standard_attribute_capabilities`
+  (`attr.worker.os.family`, `attr.worker.cpu.arch`, and RFC 0009's
+  `attr.worker.preemptible` with values `true`/`false`). Expression-free amount `min`/`max` values must
   parse as finite numbers; validation of values containing expressions is deferred until
   job creation.
 
@@ -426,6 +431,57 @@ one environment, so the rule is trivially satisfied for an isolated env template
 separately-validated env templates are composed into a session at assembly time
 (worker-side), the cross-layer constraint must be enforced there.
 
+## Pass 11: SERVICE Gating and Structure
+
+Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas §1.1 item 8,
+§3 item 6, §9–§9.7). Error paths are `jobServices[i] -> …` and
+`steps[i] -> stepServices[j] -> …`.
+
+**Gating (extension not declared):**
+- `jobServices` → `jobServices requires the SERVICE extension.`; `stepServices` →
+  `stepServices requires the SERVICE extension.` The list's contents are not examined.
+
+**EXPR prerequisite (§9.7 item 7):** declaring `SERVICE` without `EXPR` is an error at
+`extensions`, in both job and environment templates, whether or not any Service is defined:
+``SERVICE requires EXPR; both must be listed in the template's `extensions` (RFC 0009).``
+
+**With the extension declared:**
+- **Lists** (§1.1 item 8, §3 item 6): each `jobServices`/`stepServices` list `must not be
+  empty.` and `must not contain more than 10 elements.`
+- **Name uniqueness** (§9.7 item 5): `duplicate service name: '<name>'` on the offending
+  element, for a repeat within a list and for a Step Service that shares a name with a Job
+  Service. Different Steps may reuse a Step Service name.
+- **`<ServiceName>` and port names** (§9.1, §9.2 item 1, §9.7 item 5): on the `name` field,
+  `'<name>' is not a valid identifier.`, `exceeds <max_identifier_len> characters.` (64, or
+  512 with FEATURE_BUNDLE_1), and `must not be 'File'; it is reserved for Service.File.*
+  references.`
+- **Ports** (§9 item 5): `ports` `must not be empty.` / `must not contain more than 10
+  elements.`; `duplicate port name '<name>'.` on the element.
+- **Numeric `@fmtstring` fields**, checked on the field path when the value carries no
+  expression (a format string is deferred to job creation, like `<Action>.timeout`):
+  `port` `must be between 1 and 65535.`; `readinessCheck.timeoutSeconds` and
+  `readinessCheck.intervalSeconds` `must be > 0.`; `restartPolicy.maxAttempts` `must be >=
+  0.`; any of them `must be an integer.` when the text does not parse.
+- **Readiness consistency** (§9.7 item 4): `script -> actions`:
+  `onReadinessCheck must be defined when readinessCheck.type is COMMAND.`;
+  `script -> actions -> onReadinessCheck`: `onReadinessCheck must not be defined when
+  readinessCheck.type is <TCP_CONNECT|STDOUT>.` (the default readiness type is
+  `TCP_CONNECT`). A `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry
+  that is not a declared port reports `references undeclared port '<name>'.` on
+  `readinessCheck -> ports[k]`.
+- **Reused validators:** `description` (`validate_description`), `variables`
+  (`validate_variables`, shared with `<Environment>`), `hostRequirements`
+  (`validate_host_requirements_in_context`, shared with `<StepTemplate>`), every defined
+  action (`validate_action`), and `script.embeddedFiles` (`must not be empty.` plus
+  `validate_embedded_files` and the identifier/filename length limits).
+
+The discriminator of `readinessCheck` and the `completedTasks` enum are enforced by serde
+(`unknown variant`), as is the presence of `ports`, `script`, and `onRun`.
+
+Not in this pass: `Service.*` scope rules (§9.7 items 1–2), `runScope` (item 3), the wrap
+hooks an Environment's `runScope` calls for (item 6), `let` bindings and format strings inside
+a Service (pass 8 does not yet walk Services), and job creation of Services.
+
 ## Error Infrastructure
 
 See [error-handling.md](error-handling.md) for details on `ValidationErrors`, `PathElement`,
@@ -446,7 +502,7 @@ and error formatting.
 | Constant | Values |
 |----------|--------|
 | `STANDARD_AMOUNT_CAPABILITIES` | `amount.worker.vcpu`, `amount.worker.memory`, `amount.worker.gpu`, `amount.worker.gpu.memory`, `amount.worker.disk.scratch` |
-| `STANDARD_ATTRIBUTE_CAPABILITIES` | `attr.worker.os.family`, `attr.worker.cpu.arch` |
+| `STANDARD_ATTRIBUTE_CAPABILITIES` | `attr.worker.os.family`, `attr.worker.cpu.arch`, `attr.worker.preemptible` (RFC 0009) |
 | `RESERVED_SCOPES` | `worker`, `job`, `step`, `task` |
 
 Note: Standard capability names include their `amount.` or `attr.` prefix.

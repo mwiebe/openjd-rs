@@ -34,6 +34,7 @@ pub struct JobTemplate {
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
+    pub job_services: Option<Vec<Service>>,                   // SERVICE extension (RFC 0009)
     pub steps: Vec<StepTemplate>,
 }
 ```
@@ -66,6 +67,7 @@ pub struct StepTemplate {
     pub let_bindings: Option<Vec<String>>,           // "let" field in YAML
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
+    pub step_services: Option<Vec<Service>>,          // SERVICE extension (RFC 0009)
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
     pub script: Option<StepScript>,
@@ -135,6 +137,141 @@ pub struct EmbeddedFile {
     pub end_of_line: Option<String>,          // FEATURE_BUNDLE_1: "LF", "CRLF", "AUTO"
 }
 ```
+
+## Service (§9, `SERVICE` extension, RFC 0009)
+
+A Service is a long-lived process with named TCP ports that a scheduler starts before any
+Task in its scope is scheduled and keeps running for the lifetime of its scope: the Job for a
+`jobServices` entry, the declaring Step for a `stepServices` entry. The types below are the
+unresolved template shapes. The `Service.*` format-string scope, `<Environment>.runScope`,
+the Environment Template `services` list, and job creation of Services are not modeled yet.
+
+```rust
+pub struct Service {
+    pub name: String,                                    // <ServiceName> §9.1: identifier, not "File"
+    pub description: Option<Description>,
+    pub let_bindings: Option<Vec<String>>,               // "let" field in YAML (EXPR)
+    pub host_requirements: Option<HostRequirements>,     // same type as StepTemplate's
+    pub ports: Vec<ServicePort>,                         // 1–10, unique names
+    pub readiness_check: Option<ServiceReadinessCheck>,  // None = { type: TCP_CONNECT } on all ports
+    pub restart_policy: Option<ServiceRestartPolicy>,    // None = { maxAttempts: 0, completedTasks: RERUN }
+    pub variables: Option<HashMap<String, FormatString>>, // same schema as Environment.variables
+    pub script: ServiceScript,
+}
+
+impl Service {
+    pub fn readiness_check(&self) -> ServiceReadinessCheck;  // declared, or the §9 default
+    pub fn restart_policy(&self) -> ServiceRestartPolicy;    // declared, or the §9 default
+    pub fn port_names(&self) -> impl Iterator<Item = &str>;
+}
+```
+
+`name` (and `ServicePort::name`) is a plain `String` rather than `Identifier` so that the
+identifier, length, and `File` constraints are reported with a field path by the validation
+pipeline instead of as a serde error.
+
+### ServicePort (§9.2)
+
+```rust
+pub struct ServicePort {
+    pub name: String,                 // identifier, not "File", unique within the Service
+    pub port: Option<FormatString>,   // <posinteger> | <posintstring>, 1–65535; None = runtime allocates
+}
+```
+
+### Numeric `@fmtstring` fields
+
+`ServicePort::port`, `ServiceReadinessCheck`'s `timeoutSeconds` and `intervalSeconds`, and
+`ServiceRestartPolicy::max_attempts` are `<posinteger> | <posintstring>` (or `<integer> |
+<intstring>`) marked `@fmtstring`. They are modeled exactly like `<Action>.timeout`: the field
+is an `Option<FormatString>`, a YAML integer is accepted and held as its decimal text, and a
+format string is kept unevaluated. Unlike `<Action>.timeout`, a format string here is admitted
+by `SERVICE` itself (the spec marks the fields `@fmtstring`), not by `FEATURE_BUNDLE_1`.
+Validation range-checks a value that carries no expression (see [validation.md](validation.md),
+pass 11); a value with an expression is resolved at job creation in the `<Service>.let` scope,
+which is a later milestone.
+
+### ServiceReadinessCheck (§9.3)
+
+A discriminated union on `type`, derived with `#[serde(tag = "type", deny_unknown_fields)]`,
+so a field belonging to another variant (`ports` on `STDOUT`, `intervalSeconds` on
+`TCP_CONNECT`) is a deserialization error.
+
+```rust
+pub enum ServiceReadinessCheck {
+    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },  // "TCP_CONNECT"
+    Command { interval_seconds: Option<FormatString>, timeout_seconds: Option<FormatString> }, // "COMMAND"
+    Stdout { timeout_seconds: Option<FormatString> },                                   // "STDOUT"
+}
+
+impl ServiceReadinessCheck {
+    pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    pub const DEFAULT_COMMAND_INTERVAL_SECONDS: u64 = 5;
+    pub fn type_name(&self) -> &'static str;                 // "TCP_CONNECT" | "COMMAND" | "STDOUT"
+    pub fn timeout_seconds(&self) -> Option<&FormatString>;
+}
+
+impl Default for ServiceReadinessCheck;  // TcpConnect { ports: None, timeout_seconds: None }
+```
+
+### ServiceRestartPolicy (§9.4)
+
+```rust
+pub struct ServiceRestartPolicy {
+    pub max_attempts: Option<FormatString>,              // <integer> | <intstring>, >= 0
+    pub completed_tasks: Option<CompletedTasksPolicy>,   // None = RERUN
+}
+
+impl ServiceRestartPolicy {
+    pub const DEFAULT_MAX_ATTEMPTS: i64 = 0;
+    pub fn completed_tasks(&self) -> CompletedTasksPolicy;  // declared, or Rerun
+}
+
+impl Default for ServiceRestartPolicy;  // both fields None
+
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CompletedTasksPolicy {
+    Keep,
+    #[default]
+    Rerun,
+}
+
+impl CompletedTasksPolicy {
+    pub fn as_str(&self) -> &'static str;  // "KEEP" | "RERUN"
+}
+```
+
+### ServiceScript (§9.5) and ServiceActions (§9.6)
+
+```rust
+pub struct ServiceScript {
+    pub let_bindings: Option<Vec<String>>,       // "let" field in YAML (EXPR)
+    pub actions: ServiceActions,
+    pub embedded_files: Option<Vec<EmbeddedFile>>,
+}
+
+pub struct ServiceActions {
+    pub on_enter: Option<Action>,
+    pub on_run: Action,                          // required: the process that is the service
+    pub on_readiness_check: Option<Action>,      // iff readinessCheck.type is COMMAND
+    pub on_exit: Option<Action>,
+}
+
+impl ServiceActions {
+    pub const ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    /// RFC 0009 `<Action>` default-timeout table: onEnter None, onRun None,
+    /// onReadinessCheck Some(30), onExit Some(300); None for any other name.
+    pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
+    pub fn named_slots(&self) -> [(&'static str, Option<&Action>); 4];
+    pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)>;
+    pub fn iter_actions(&self) -> impl Iterator<Item = &Action>;
+}
+```
+
+The model crate does not apply action default timeouts itself — the sessions runtime does, as
+it does for an Environment's `onExit` — so the Service defaults are recorded here as constants
+for the runtime to consume.
 
 ## Actions (§5)
 

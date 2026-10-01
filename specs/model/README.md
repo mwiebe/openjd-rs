@@ -71,3 +71,11 @@ Currently implements `2023-09` with extensions:
   Re-materialization of the wrap environment's embedded files on each task
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
+- `SERVICE` (RFC 0009) — in progress. The `<Service>` schema (`jobServices`,
+  `stepServices`, and the §9 sub-objects), the extension gating and EXPR
+  prerequisite, and the §9.7 structural checks (items 3–5, 7 as far as they
+  concern Services) are implemented; see [template-types.md](template-types.md)
+  and pass 11 in [validation.md](validation.md). The `Service.*` format-string
+  scope, `<Environment>.runScope`, the `onWrapService*` hooks, Environment
+  Template `services`, and job creation and execution of Services are not
+  yet implemented.

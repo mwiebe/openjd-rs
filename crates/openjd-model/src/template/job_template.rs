@@ -7,6 +7,7 @@
 use super::constrained_strings::{Description, ExtensionName};
 use super::environment::Environment;
 use super::parameters::JobParameterDefinition;
+use super::service::Service;
 use super::step::StepTemplate;
 use crate::format_string::FormatString;
 use serde::Deserialize;
@@ -23,6 +24,9 @@ pub struct JobTemplate {
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
+    /// RFC 0009 — the Services every Task of the Job depends on. Requires
+    /// the `SERVICE` extension.
+    pub job_services: Option<Vec<Service>>,
     pub steps: Vec<StepTemplate>,
 }
 

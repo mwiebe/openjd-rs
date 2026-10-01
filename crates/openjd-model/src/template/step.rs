@@ -8,6 +8,7 @@ use super::actions::{Action, CancelationMode, StepActions};
 use super::constrained_strings::Description;
 use super::environment::{EmbeddedFile, Environment};
 use super::host_requirements::HostRequirements;
+use super::service::Service;
 use super::task_parameters::StepParameterSpaceDefinition;
 use crate::format_string::FormatString;
 use serde::Deserialize;
@@ -40,6 +41,9 @@ pub struct StepTemplate {
     pub let_bindings: Option<Vec<String>>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
+    /// RFC 0009 — the Services the Tasks of this Step depend on. Requires
+    /// the `SERVICE` extension.
+    pub step_services: Option<Vec<Service>>,
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
     pub script: Option<StepScript>,
