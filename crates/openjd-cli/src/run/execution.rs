@@ -221,14 +221,13 @@ fn validate_wrap_environment_stacks(
     };
     let mut base_wrap_envs: Vec<&str> = env_templates
         .iter()
-        .filter(|template| {
-            template
-                .environment
-                .script
+        .filter_map(|template| template.environment.as_ref())
+        .filter(|env| {
+            env.script
                 .as_ref()
                 .is_some_and(|script| script.actions.has_any_wrap_hook())
         })
-        .map(|template| template.environment.name.as_str())
+        .map(|env| env.name.as_str())
         .collect();
     if let Some(job_envs) = &job.job_environments {
         base_wrap_envs.extend(
@@ -346,16 +345,18 @@ async fn run_workload(
     env_template_symtab: &openjd_expr::SymbolTable,
     selection: &RunSelection,
 ) -> Result<(), RunError> {
-    for template in env_templates {
+    // A services-only Environment Template (RFC 0009) defines no
+    // Environment to enter.
+    for template_env in env_templates
+        .iter()
+        .filter_map(|template| template.environment.as_ref())
+    {
         if ctx.is_stopping() {
             break;
         }
-        let env = openjd_model::convert_environment_with_symtab(
-            &template.environment,
-            Some(env_template_symtab),
-        );
-        ctx.enter_environment(&env, &template.environment.name, None)
-            .await;
+        let env =
+            openjd_model::convert_environment_with_symtab(template_env, Some(env_template_symtab));
+        ctx.enter_environment(&env, &template_env.name, None).await;
     }
     if let Some(job_envs) = &job.job_environments {
         for env in job_envs {

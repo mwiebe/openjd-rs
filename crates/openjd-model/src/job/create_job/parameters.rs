@@ -119,7 +119,10 @@ pub fn merge_job_parameter_definitions(
 
     // Process env templates first (in order), job template last
     for et in environment_templates {
-        let source = format!("EnvironmentTemplate '{}'", et.environment.name);
+        let source = match &et.environment {
+            Some(env) => format!("EnvironmentTemplate '{}'", env.name),
+            None => "EnvironmentTemplate (services only)".to_string(),
+        };
         if let Some(params) = &et.parameter_definitions {
             for p in params {
                 process_param(p, &source)?;

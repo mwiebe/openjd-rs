@@ -1339,7 +1339,12 @@ fn validate_env_actions_timing_fs(
     actions_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let wrap_hook_names: [&str; 3] = ["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"];
+    let wrap_hook_names: Vec<&str> = script
+        .actions
+        .wrap_hooks()
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect();
     for (name, action) in script.actions.iter_named() {
         let action_path = path_field(actions_path, name);
         let scoped_symtab: SymbolTable;
@@ -1541,6 +1546,9 @@ pub(crate) fn check_carried_forward_environment(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    // RFC 0009: the `WrappedService.*` group is not modeled
+                    // yet; the Service hooks see `WrappedAction.*` only.
+                    WrapHookScope::Service => {}
                 }
                 validate_action_fs(
                     action,
@@ -2260,6 +2268,11 @@ pub fn validate_format_strings_environment_template(
     ctx: &ValidationContext,
     errors: &mut ValidationErrors,
 ) {
+    // A services-only Environment Template (RFC 0009) has no environment body
+    // to walk; format strings inside `services` are a later milestone.
+    let Some(env) = &et.environment else {
+        return;
+    };
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
     let host_profile = ctx
         .profile
@@ -2270,7 +2283,6 @@ pub fn validate_format_strings_environment_template(
     let host_ev = FsEval::new(&host_lib, &ctx.caller_limits);
     let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
 
-    let env = &et.environment;
     let env_path = vec![PathElement::Field("environment".into())];
     let mut env_symtab =
         build_session_scope_symtab(et.parameter_definitions.as_deref(), env, false, expr_active);
@@ -2412,10 +2424,12 @@ fn validate_env_format_strings(
                 errors,
             );
         }
-        // RFC 0008: all three wrap hooks see `WrappedAction.*`. `onWrapEnvEnter`
+        // RFC 0008: every wrap hook sees `WrappedAction.*`. `onWrapEnvEnter`
         // and `onWrapEnvExit` additionally see `WrappedEnv.Name`; `onWrapTaskRun`
         // additionally sees `WrappedStep.Name`. Referencing these outside the
         // permitted hook surfaces as a normal "Undefined variable" error.
+        // (The RFC 0009 `onWrapService*` hooks will additionally see
+        // `WrappedService.*` once that group is modeled.)
         for (hook_name, action_opt, extra) in script.actions.wrap_hooks() {
             if let Some(action) = action_opt {
                 let mut st = symtab.clone();
@@ -2423,6 +2437,9 @@ fn validate_env_format_strings(
                 match extra {
                     WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
                     WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    // RFC 0009: the `WrappedService.*` group is not modeled
+                    // yet; the Service hooks see `WrappedAction.*` only.
+                    WrapHookScope::Service => {}
                 }
                 validate_action_fs(
                     action,

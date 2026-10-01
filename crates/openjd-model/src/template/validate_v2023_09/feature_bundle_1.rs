@@ -88,12 +88,14 @@ pub fn validate_feature_bundle_1_environment_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
-    check_single_env_embedded_eol(
-        &et.environment,
-        &[PathElement::Field("environment".into())],
-        active,
-        errors,
-    );
+    if let Some(env) = &et.environment {
+        check_single_env_embedded_eol(
+            env,
+            &[PathElement::Field("environment".into())],
+            active,
+            errors,
+        );
+    }
 }
 
 fn check_env_embedded_eol(

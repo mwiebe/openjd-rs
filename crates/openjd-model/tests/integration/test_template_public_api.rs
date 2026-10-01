@@ -266,7 +266,7 @@ fn environment_template_field_access() {
     }"#,
     );
     assert_eq!(et.specification_version, "environment-2023-09");
-    let env: &Environment = &et.environment;
+    let env: &Environment = et.environment.as_ref().unwrap();
     assert_eq!(env.name, "EnvX");
     assert_eq!(env.description.as_ref().unwrap().0, "an env");
     let vars = env.variables.as_ref().unwrap();

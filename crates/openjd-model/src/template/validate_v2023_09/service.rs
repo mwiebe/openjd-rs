@@ -4,17 +4,24 @@
 
 //! Pass 11: `SERVICE` — validate or reject (RFC 0009, Template Schemas §9).
 //!
-//! Two fields are gated by the `SERVICE` extension:
+//! Four fields are gated by the `SERVICE` extension:
 //! - `jobServices` on the job template root (§1.1)
 //! - `stepServices` on `<StepTemplate>` (§3)
+//! - `services` on the environment template root (§1.2)
+//! - `runScope` on `<Environment>` (§4 item 3)
 //!
-//! When the extension is not enabled, using either field is a validation
-//! error and nothing inside the lists is examined. When it is enabled, this
-//! pass additionally enforces:
+//! (The `onWrapService*` hooks on `<EnvironmentActions>`, gated on both
+//! `WRAP_ACTIONS` and `SERVICE`, are handled by pass 10 with the other wrap
+//! hooks.)
+//!
+//! When the extension is not enabled, using any of these fields is a
+//! validation error and nothing inside the lists is examined. When it is
+//! enabled, this pass additionally enforces:
 //!
 //! - **EXPR prerequisite.** A template that lists `SERVICE` in
 //!   `extensions:` must also list `EXPR` (§9, §9.7 item 7).
-//! - **List shape.** Each list has 1–10 elements (§1.1 item 8, §3 item 6).
+//! - **List shape.** Each Service list has 1–10 elements (§1.1 item 8, §1.2
+//!   item 6, §3 item 6).
 //! - **Name uniqueness.** Service names are unique within a list, and a Step
 //!   Service must not share a name with a Job Service. Different Steps may
 //!   reuse a Step Service name (§9.7 item 5).
@@ -25,6 +32,8 @@
 //!   `COMMAND`; every port a `TCP_CONNECT` check names is declared (§9.7
 //!   item 4). `description`, `variables`, `hostRequirements`, embedded files
 //!   and every `<Action>` reuse the pass-6 validators.
+//! - **`runScope`** (§4 item 3, §9.7 item 3): at least one element, only
+//!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates.
 //!
 //! The numeric `@fmtstring` fields are modeled like `<Action>.timeout`: a
 //! value without an expression is checked here, and a format string is
@@ -43,8 +52,8 @@ use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
-/// §1.1 item 8 / §3 item 6 / §9 item 5: maximum elements in a Service list
-/// and in a Service's `ports` list.
+/// §1.1 item 8 / §1.2 item 6 / §3 item 6 / §9 item 5: maximum elements in a
+/// Service list and in a Service's `ports` list.
 const MAX_SERVICES: usize = 10;
 const MAX_PORTS: usize = 10;
 
@@ -54,8 +63,9 @@ const RESERVED_FILE_NAME: &str = "File";
 /// Validate RFC 0009 constraints for a job template.
 ///
 /// Runs regardless of whether `SERVICE` is enabled: when disabled, it
-/// rejects templates that use `jobServices` or `stepServices`; when
-/// enabled, it enforces the EXPR prerequisite and validates every Service.
+/// rejects templates that use `jobServices`, `stepServices`, or `runScope`;
+/// when enabled, it enforces the EXPR prerequisite, validates every Service,
+/// and validates every Environment's `runScope`.
 pub fn validate_services_job_template(
     jt: &JobTemplate,
     limits: &EffectiveLimits,
@@ -110,11 +120,114 @@ pub fn validate_services_job_template(
             );
         }
     }
+
+    // §4 item 3: `runScope` on every Environment.
+    if let Some(envs) = &jt.job_environments {
+        let envs_path = path_field(&[], "jobEnvironments");
+        for (i, env) in envs.iter().enumerate() {
+            validate_run_scope(env, &path_index(&envs_path, i), active, errors);
+        }
+    }
+    for (i, step) in jt.steps.iter().enumerate() {
+        let Some(envs) = &step.step_environments else {
+            continue;
+        };
+        let envs_path = path_field(
+            &[PathElement::Field("steps".into()), PathElement::Index(i)],
+            "stepEnvironments",
+        );
+        for (j, env) in envs.iter().enumerate() {
+            validate_run_scope(env, &path_index(&envs_path, j), active, errors);
+        }
+    }
+}
+
+/// Validate RFC 0009 constraints for an environment template: the EXPR
+/// prerequisite, the `services` list (§1.2 item 6, gated and validated
+/// exactly like `jobServices`), and the Environment's `runScope`.
+pub fn validate_services_environment_template(
+    et: &EnvironmentTemplate,
+    limits: &EffectiveLimits,
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let active = ctx.profile.has_extension(ModelExtension::Service);
+    check_expr_prerequisite(ctx, errors);
+
+    if let Some(services) = &et.services {
+        let list_path = path_field(&[], "services");
+        if !active {
+            errors.add(&list_path, "services requires the SERVICE extension.");
+        } else {
+            validate_service_list(
+                services,
+                &list_path,
+                &HashSet::new(),
+                limits,
+                rules,
+                ctx,
+                errors,
+            );
+        }
+    }
+
+    if let Some(env) = &et.environment {
+        validate_run_scope(env, &path_field(&[], "environment"), active, errors);
+    }
+}
+
+/// §4 item 3 / §9.7 item 3: validate one Environment's `runScope` at
+/// `env_path`. Without `SERVICE` the field is rejected outright; with it,
+/// the list must be non-empty, name only recognized `<RunScopeName>`s, and
+/// name each at most once. Each offending element is reported on its own
+/// index so the user sees the complete list.
+fn validate_run_scope(
+    env: &Environment,
+    env_path: &[PathElement],
+    active: bool,
+    errors: &mut ValidationErrors,
+) {
+    let Some(names) = &env.run_scope else {
+        return;
+    };
+    let path = path_field(env_path, "runScope");
+    if !active {
+        errors.add(&path, "runScope requires the SERVICE extension.");
+        return;
+    }
+    if names.is_empty() {
+        errors.add(&path, "must not be empty.");
+    }
+    let mut seen: HashSet<&str> = HashSet::new();
+    for (i, name) in names.iter().enumerate() {
+        let elem_path = path_index(&path, i);
+        if name.parse::<RunScope>().is_err() {
+            errors.add(
+                &elem_path,
+                format!(
+                    "unknown run scope name '{name}'; expected one of {}.",
+                    known_run_scopes()
+                ),
+            );
+        } else if !seen.insert(name.as_str()) {
+            errors.add(&elem_path, format!("duplicate run scope name '{name}'."));
+        }
+    }
+}
+
+/// The recognized `<RunScopeName>`s as `TASK, SERVICE`, for error messages.
+fn known_run_scopes() -> String {
+    RunScope::ALL
+        .iter()
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Enforce the EXPR prerequisite: when `SERVICE` is listed in a template's
 /// `extensions:`, `EXPR` must also be listed (§9, RFC 0009).
-pub(super) fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationErrors) {
+fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationErrors) {
     let has_service = ctx.profile.has_extension(ModelExtension::Service);
     let has_expr = ctx.profile.has_extension(ModelExtension::Expr);
     if has_service && !has_expr {

@@ -1037,8 +1037,10 @@ environment:
     full.set("Param.Grace", openjd_expr::ExprValue::Int(45))
         .expect("set should succeed");
 
-    let converted =
-        openjd_model::convert_environment_with_symtab(&env_template.environment, Some(&full));
+    let converted = openjd_model::convert_environment_with_symtab(
+        env_template.environment.as_ref().unwrap(),
+        Some(&full),
+    );
     let frozen = converted
         .resolved_symtab
         .expect("conversion with a symtab must produce a frozen resolved_symtab");
@@ -1126,8 +1128,10 @@ environment:
     )
     .expect("set should succeed");
 
-    let converted =
-        openjd_model::convert_environment_with_symtab(&env_template.environment, Some(&full));
+    let converted = openjd_model::convert_environment_with_symtab(
+        env_template.environment.as_ref().unwrap(),
+        Some(&full),
+    );
     let frozen = converted
         .resolved_symtab
         .expect("conversion with a symtab must produce a frozen resolved_symtab");

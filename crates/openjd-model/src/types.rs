@@ -359,11 +359,13 @@ pub enum ModelExtension {
     FeatureBundle1,
     Expr,
     /// `WRAP_ACTIONS` — enables `onWrapEnvEnter`, `onWrapTaskRun`, and
-    /// `onWrapEnvExit` on `<EnvironmentActions>`. See RFC 0008.
+    /// `onWrapEnvExit` on `<EnvironmentActions>` (and, with `SERVICE`, the
+    /// four `onWrapService*` hooks). See RFC 0008.
     WrapActions,
-    /// `SERVICE` — enables `jobServices` on the job template and
-    /// `stepServices` on `<StepTemplate>`, and the `<Service>` entity.
-    /// Requires `EXPR`. See RFC 0009.
+    /// `SERVICE` — enables `jobServices` on the job template, `stepServices`
+    /// on `<StepTemplate>`, `services` on the environment template,
+    /// `runScope` on `<Environment>`, and the `<Service>` entity. Requires
+    /// `EXPR`. See RFC 0009.
     Service,
 }
 

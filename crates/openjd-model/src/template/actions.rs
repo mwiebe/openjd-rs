@@ -146,41 +146,119 @@ pub struct EnvironmentActions {
     /// RFC 0008 — wraps inner environments' `onExit` actions. Requires the
     /// `WRAP_ACTIONS` extension.
     pub on_wrap_env_exit: Option<Action>,
+    /// RFC 0009 — in a Service Session, runs instead of the wrapped
+    /// Service's `onEnter`. Requires both the `WRAP_ACTIONS` and `SERVICE`
+    /// extensions.
+    pub on_wrap_service_enter: Option<Action>,
+    /// RFC 0009 — in a Service Session, runs instead of the wrapped
+    /// Service's `onRun`. Requires both the `WRAP_ACTIONS` and `SERVICE`
+    /// extensions.
+    pub on_wrap_service_run: Option<Action>,
+    /// RFC 0009 — in a Service Session, runs instead of the wrapped
+    /// Service's `onReadinessCheck`, concurrently with `onWrapServiceRun`.
+    /// Requires both the `WRAP_ACTIONS` and `SERVICE` extensions.
+    pub on_wrap_service_readiness_check: Option<Action>,
+    /// RFC 0009 — in a Service Session, runs instead of the wrapped
+    /// Service's `onExit`. Requires both the `WRAP_ACTIONS` and `SERVICE`
+    /// extensions.
+    pub on_wrap_service_exit: Option<Action>,
     pub on_exit: Option<Action>,
 }
 
-/// RFC 0008: the per-hook companion template variable a wrap hook exposes
-/// in addition to `WrappedAction.*`.
+impl EnvironmentActions {
+    /// Template Schemas §5 default `timeout` for `onExit`, in seconds (five
+    /// minutes), shared by `onWrapEnvExit` and `onWrapServiceExit`.
+    pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
+    /// Default `timeout` for `onWrapServiceReadinessCheck`, in seconds: the
+    /// wrapped `<ServiceActions>.onReadinessCheck` default (RFC 0009), as
+    /// `onWrapEnvExit` takes `onExit`'s.
+    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+
+    /// The default `timeout` of the named `<EnvironmentActions>` slot when
+    /// the template gives none, per the Template Schemas §5 timeout table:
+    /// `onExit` and `onWrapEnvExit` 300 seconds; the RFC 0009 Service hooks
+    /// take the wrapped `<ServiceActions>` default — `onWrapServiceExit` 300
+    /// seconds, `onWrapServiceReadinessCheck` 30 seconds; every other slot
+    /// has no default (`None`). Also `None` for a name that is not an
+    /// `<EnvironmentActions>` slot.
+    pub fn default_timeout_seconds(action_name: &str) -> Option<u64> {
+        match action_name {
+            "onExit" | "onWrapEnvExit" | "onWrapServiceExit" => {
+                Some(Self::ON_EXIT_DEFAULT_TIMEOUT_SECONDS)
+            }
+            "onWrapServiceReadinessCheck" => {
+                Some(Self::ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS)
+            }
+            _ => None,
+        }
+    }
+
+    /// The four RFC 0009 `onWrapService*` hooks, each paired with its schema
+    /// name, in lifecycle order. A wrapping Environment whose `runScope`
+    /// includes `SERVICE` must define all of them (Template Schemas §4.3
+    /// WRAP_ACTIONS constraint 6).
+    pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<Action>); 4] {
+        [
+            ("onWrapServiceEnter", &self.on_wrap_service_enter),
+            ("onWrapServiceRun", &self.on_wrap_service_run),
+            (
+                "onWrapServiceReadinessCheck",
+                &self.on_wrap_service_readiness_check,
+            ),
+            ("onWrapServiceExit", &self.on_wrap_service_exit),
+        ]
+    }
+
+    /// True iff any of the four RFC 0009 `onWrapService*` hooks is defined.
+    pub fn has_any_service_wrap_hook(&self) -> bool {
+        self.service_wrap_hooks()
+            .iter()
+            .any(|(_, slot)| slot.is_some())
+    }
+}
+
+/// The per-hook companion template variables a wrap hook exposes in
+/// addition to `WrappedAction.*` (RFC 0008, RFC 0009).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WrapHookScope {
     /// `WrappedEnv.Name` — available in `onWrapEnvEnter` and `onWrapEnvExit`.
     EnvName,
     /// `WrappedStep.Name` — available in `onWrapTaskRun`.
     StepName,
+    /// `WrappedService.*` — available in the four RFC 0009 `onWrapService*`
+    /// hooks (`SERVICE` extension).
+    Service,
 }
 
 /// Generate the shared accessor/iteration helpers for an
-/// `EnvironmentActions` struct.
+/// `EnvironmentActions` struct from its list of action slots and the subset
+/// of them that are wrap hooks.
 ///
 /// The template-side (`template::actions`) and job-side (`job`) structs
-/// have identical field names but distinct `Action` types and derives, so
-/// the five action slots — and the three RFC 0008 wrap hooks — are
-/// enumerated here exactly once. Every consumer that needs to "walk the
-/// actions" goes through these methods instead of re-listing the fields,
-/// which is what keeps a field rename from rippling across the codebase.
+/// share field names but have distinct `Action` types and derives — and the
+/// template side additionally carries the RFC 0009 `onWrapService*` hooks —
+/// so each struct's slots are enumerated exactly once, at its invocation.
+/// Every consumer that needs to "walk the actions" goes through these
+/// methods instead of re-listing the fields, which is what keeps a field
+/// rename from rippling across the codebase.
+///
+/// `slots` lists every action slot as `(schema name, field)` in
+/// declaration order; `wrap_hooks` lists the wrap-hook subset as
+/// `(schema name, field, WrapHookScope variant)`.
 macro_rules! impl_environment_actions_helpers {
-    ($ty:ty, $action:ty) => {
+    (
+        $ty:ty, $action:ty,
+        slots: [ $( ($slot_name:literal, $slot_field:ident) ),* $(,)? ],
+        wrap_hooks: [ $( ($hook_name:literal, $hook_field:ident, $hook_scope:ident) ),* $(,)? ]
+    ) => {
         impl $ty {
-            /// All five action slots paired with their camelCase schema
-            /// name, in declaration order.
-            pub fn named_slots(&self) -> [(&'static str, &Option<$action>); 5] {
-                [
-                    ("onEnter", &self.on_enter),
-                    ("onWrapEnvEnter", &self.on_wrap_env_enter),
-                    ("onWrapTaskRun", &self.on_wrap_task_run),
-                    ("onWrapEnvExit", &self.on_wrap_env_exit),
-                    ("onExit", &self.on_exit),
-                ]
+            /// Every action slot paired with its camelCase schema name, in
+            /// declaration order.
+            pub fn named_slots(
+                &self,
+            ) -> [(&'static str, &Option<$action>); { <[()]>::len(&[$( { let _ = $slot_name; } ),*]) }]
+            {
+                [$( ($slot_name, &self.$slot_field) ),*]
             }
 
             /// The defined actions, each paired with its schema name, in
@@ -196,29 +274,30 @@ macro_rules! impl_environment_actions_helpers {
                 self.iter_named().map(|(_, action)| action)
             }
 
-            /// The three RFC 0008 wrap hooks, each paired with its schema
-            /// name and the companion template variable it exposes.
+            /// The wrap hooks, each paired with its schema name and the
+            /// companion template variables it exposes, in declaration
+            /// order.
             pub fn wrap_hooks(
                 &self,
             ) -> [(
                 &'static str,
                 &Option<$action>,
                 $crate::template::WrapHookScope,
-            ); 3] {
-                use $crate::template::WrapHookScope::{EnvName, StepName};
-                [
-                    ("onWrapEnvEnter", &self.on_wrap_env_enter, EnvName),
-                    ("onWrapTaskRun", &self.on_wrap_task_run, StepName),
-                    ("onWrapEnvExit", &self.on_wrap_env_exit, EnvName),
-                ]
+            ); { <[()]>::len(&[$( { let _ = $hook_name; } ),*]) }] {
+                [$( (
+                    $hook_name,
+                    &self.$hook_field,
+                    $crate::template::WrapHookScope::$hook_scope,
+                ) ),*]
             }
 
-            /// True iff at least one of the five actions is defined.
+            /// True iff at least one action slot is defined.
             pub fn has_any_action(&self) -> bool {
                 self.named_slots().iter().any(|(_, slot)| slot.is_some())
             }
 
-            /// True iff any of the three RFC 0008 wrap hooks is defined.
+            /// True iff any wrap hook is defined — the definition of a
+            /// *wrapping* Environment (RFC 0008, RFC 0009).
             pub fn has_any_wrap_hook(&self) -> bool {
                 self.wrap_hooks().iter().any(|(_, slot, _)| slot.is_some())
             }
@@ -227,4 +306,26 @@ macro_rules! impl_environment_actions_helpers {
 }
 pub(crate) use impl_environment_actions_helpers;
 
-impl_environment_actions_helpers!(EnvironmentActions, Action);
+impl_environment_actions_helpers!(
+    EnvironmentActions, Action,
+    slots: [
+        ("onEnter", on_enter),
+        ("onWrapEnvEnter", on_wrap_env_enter),
+        ("onWrapTaskRun", on_wrap_task_run),
+        ("onWrapEnvExit", on_wrap_env_exit),
+        ("onWrapServiceEnter", on_wrap_service_enter),
+        ("onWrapServiceRun", on_wrap_service_run),
+        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check),
+        ("onWrapServiceExit", on_wrap_service_exit),
+        ("onExit", on_exit),
+    ],
+    wrap_hooks: [
+        ("onWrapEnvEnter", on_wrap_env_enter, EnvName),
+        ("onWrapTaskRun", on_wrap_task_run, StepName),
+        ("onWrapEnvExit", on_wrap_env_exit, EnvName),
+        ("onWrapServiceEnter", on_wrap_service_enter, Service),
+        ("onWrapServiceRun", on_wrap_service_run, Service),
+        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check, Service),
+        ("onWrapServiceExit", on_wrap_service_exit, Service),
+    ]
+);
