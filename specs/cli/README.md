@@ -15,7 +15,7 @@ Rust's clap derive API, async runtime (tokio), and the structured logging facade
 | [architecture.md](architecture.md) | Crate structure, module layout, dependency graph, public API surface, key design decisions |
 | [check.md](check.md) | `check` command: template validation pipeline, extension handling, error reporting |
 | [summary.md](summary.md) | `summary` command: job/step summarization, output formatting, parameter display |
-| [run.md](run.md) | `run` command: full session lifecycle, task iteration, adaptive chunking, environment management |
+| [run.md](run.md) | `run` command: full session lifecycle, task iteration, adaptive chunking, environment management, Service orchestration (RFC 0009) |
 | [help.md](help.md) | Context-aware help: template-driven `--help` output for the `run` command |
 | [logging.md](logging.md) | Session logger: timestamp formatting, `openjd_log_content` filtering, log level control |
 | [output-formatting.md](output-formatting.md) | Structured output: human-readable, JSON, and YAML output modes across all commands |
@@ -31,6 +31,7 @@ implementation:
 | Argument parsing | argparse with manual subparser wiring | clap derive macros |
 | Output formatting | `@print_cli_result` decorator on dataclass results | Inline match on `--output` format string |
 | Session management | `LocalSession` context manager with signal handlers | Direct `Session` API calls in async `execute()` |
+| Services (RFC 0009) | Not implemented | `ServiceManager` schedules `ServiceSession`s alongside the Task Session |
 | Async runtime | None (synchronous, threads in sessions layer) | tokio multi-thread runtime |
 | Logging | `LocalSessionLogHandler` (Python `logging.Handler`) | Custom `log::Log` impl filtering on kv metadata |
 | Context-aware help | `JobTemplateHelpAction` (argparse `Action` subclass) | `try_context_aware_help()` intercepting args before clap |

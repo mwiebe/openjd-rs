@@ -1,0 +1,101 @@
+# A relaunch that begins a new Service Session (new endpoints) propagates:
+# Back's second instance exits before READY, so its third starts in a new
+# Service Session with a new port; Front, which references Back's endpoint,
+# is then restarted with the new value (without consuming one of its own
+# attempts), and the TASK-scoped Client Environment is re-entered so Tasks
+# see the new BACK_PORT. completedTasks: KEEP lets the Task that was running
+# during the relaunch complete.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "NewSessionDependents"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+  - name: CounterFile
+    type: STRING
+jobServices:
+  - name: Back
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 2
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.TraceFile }}", "{{ Param.CounterFile }}", "{{ Service.Back.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace, counter, port = sys.argv[1], sys.argv[2], sys.argv[3]
+            n = int(open(counter).read() or "0") + 1 if os.path.exists(counter) else 1
+            open(counter, "w").write(str(n))
+            with open(trace, "a") as f:
+                f.write(f"back launch {n} port {port}\n")
+            if n == 2:
+                # Exit before READY: the runner must suspect a port conflict.
+                print("BACK_EXITING_BEFORE_READY", flush=True)
+                sys.exit(7)
+            print("openjd_service_ready: back up", flush=True)
+            while True:
+                time.sleep(0.1)
+                if n == 1 and os.path.exists(trace) and "task 1 done" in open(trace).read():
+                    time.sleep(0.3)
+                    with open(trace, "a") as f:
+                        f.write("back crash\n")
+                    sys.exit(1)
+  - name: Front
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+    restartPolicy:
+      maxAttempts: 0
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.TraceFile }}', 'a').write('front launch backport {{ Service.Back.main.port }}\\n'); print('openjd_service_ready: front up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+jobEnvironments:
+  - name: Client
+    runScope: [TASK]
+    variables:
+      BACK_PORT: "{{ Service.Back.main.port }}"
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "import os; open(r'{{ Param.TraceFile }}', 'a').write(f\"env enter backport {os.environ['BACK_PORT']}\\n\")"]
+steps:
+  - name: Work
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Task.Param.N }}", "{{ Param.TraceFile }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import os, sys, time
+            n, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"task {n} start backport {os.environ['BACK_PORT']}\n")
+            time.sleep(1.0)
+            with open(trace, "a") as f:
+                f.write(f"task {n} done\n")

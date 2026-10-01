@@ -1,0 +1,36 @@
+# Interruption (Ctrl-C / SIGINT) with a Job Service running: the in-flight
+# Task is canceled and the Service is stopped (onRun canceled, onExit run),
+# with the Service's onExit recording to the trace file.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ServiceInterrupt"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+jobServices:
+  - name: Store
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('service exit\\n')"]
+steps:
+  - name: SleepStep
+    script:
+      actions:
+        onRun:
+          command: python
+          args:
+            - '-c'
+            - "import time,sys; print('READY_FOR_SIGNAL', {{ Service.Store.main.port }}); sys.stdout.flush(); time.sleep(60); print(chr(69)+'XIT_NORMAL')"
+          cancelation:
+            mode: TERMINATE

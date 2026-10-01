@@ -92,5 +92,8 @@ Currently implements `2023-09` with extensions:
   pass 8 "Service scopes", passes 10–11, and "Submission-time checks" in
   [validation.md](validation.md), "Services" and
   "apply_environment_templates" in [job-creation.md](job-creation.md), and
-  [job-types.md](job-types.md). Not yet implemented: execution of Services in
-  `openjd-sessions` and wiring `apply_environment_templates` into the CLI.
+  [job-types.md](job-types.md), and the scheduler-facing
+  `referenced_service_names` (the start-ordering edges of RFC 0009 constraint
+  2). Execution lives in `openjd-sessions` (`ServiceSession`) and
+  orchestration in `openjd-cli` (`openjd run`, which calls
+  `apply_environment_templates`).

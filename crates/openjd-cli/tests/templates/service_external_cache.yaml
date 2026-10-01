@@ -1,0 +1,48 @@
+# RFC 0009 example 3 adapted: an Environment Template a queue would attach,
+# defining an external Service (a python TCP listener standing in for valkey)
+# and a TASK-scoped client Environment that publishes its endpoint through
+# environment variables. The Job Template that consumes it does not use the
+# SERVICE extension at all.
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+parameterDefinitions:
+  - name: CachePayload
+    type: STRING
+    default: "cached-value"
+services:
+  - name: Cache
+    description: "A per-Job store shared by all of the Job's Tasks."
+    ports:
+      - name: main
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Cache.main.bindAddress }}", "{{ Service.Cache.main.port }}", "{{ Param.CachePayload }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, payload = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("CACHE_LISTENING", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(payload.encode())
+                c.close()
+environment:
+  name: CacheClient
+  description: "Tells every Task where the Job's cache is."
+  runScope: [TASK]
+  variables:
+    CACHE_HOST: "{{ Service.Cache.main.connectAddress }}"
+    CACHE_PORT: "{{ Service.Cache.main.port }}"

@@ -26,7 +26,10 @@ src/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives
 │   ├── execution.rs # Preflight, step/task execution, reporting phases
 │   ├── params.rs # Job/task parameter and path mapping parsing
-│   └── result.rs # Structured run result
+│   ├── result.rs # Structured run result
+│   ├── services.rs # RFC 0009 scheduler side: ServiceManager (start order,
+│   │               # readiness gate, failure/restart, stop)
+│   └── service_ports.rs # Loopback endpoint allocation for Services
 └── help.rs       # Context-aware help: template-driven --help for run command
 ```
 
@@ -37,13 +40,15 @@ Each command module exports an `Args` struct (clap derive) and an `execute()` fu
 
 | Dependency | Purpose |
 |------------|---------|
-| `openjd-model` | `parse::*` (template decoding), `create_job`, `preprocess_job_parameters`, `StepParameterSpaceIterator`, job/template types |
-| `openjd-sessions` | `Session`, `SessionConfig`, `ActionState`, `PathMappingRule` |
+| `openjd-model` | `parse::*` (template decoding), `create_job`, `apply_environment_templates`, `preprocess_job_parameters`, `StepParameterSpaceIterator`, `job::service_symbols` (endpoint symbols, Service references), job/template types |
+| `openjd-sessions` | `Session`, `SessionConfig`, `ServiceSession`, `ServiceSessionConfig`, `ActionState`, `PathMappingRule` |
 | `openjd-expr` | `ExprValue`, `SymbolTable`, serialized symbol tables, host path format |
 | `clap` | Argument parsing via derive macros (`Parser`, `Subcommand`, `Args`) |
 | `serde_json` | JSON output formatting, inline JSON parameter parsing, path mapping rule loading |
 | `serde-saphyr` | YAML output formatting and YAML parameter/task file loading |
-| `tokio` | Async runtime (`rt-multi-thread`, `macros`) for session execution |
+| `tokio` | Async runtime (`rt-multi-thread`, `macros`, `signal`) for session execution; Service Sessions start and relaunch on spawned tasks |
+| `tokio-util` | `CancellationToken` for interruption and Service stop |
+| `futures-util` | `select_all` over the Services' exit channels while a Task runs |
 | `log` | Logging facade; custom `Log` impl for subprocess output |
 | `chrono` | Timestamp formatting (local, UTC) for session logs |
 
@@ -110,6 +115,22 @@ The command-specific orchestration remains in `run/execution.rs`, split into pre
 preflight, environment lifecycle, step/task execution, adaptive chunking, and reporting
 helpers. This keeps cleanup state centralized without introducing a reusable session
 abstraction that no other command needs.
+
+### Services: the CLI is the scheduler
+
+RFC 0009 splits a Service between a runtime (one Service Session:
+`openjd_sessions::ServiceSession`) and a scheduler (endpoints, start order, Task
+gating, restart policy, stop). `openjd run` is a scheduler with one host, so
+`run/services.rs` holds that side: a `ServiceManager` owned by `RunContext` that
+registers the combined Job's Services and each Step's, starts them on background
+tokio tasks in reference-ordered waves, gates every Task on their readiness, watches
+their `onRun` exit channels while a Task runs, applies `restartPolicy` (relaunch in
+the same Session, or a new Session with new ports when a port conflict is possible,
+restarting dependents and re-entering the Task Session's Environments when endpoints
+change), and ends every Session when its scope completes. `run/service_ports.rs`
+holds the loopback port policy. The Task Session is replaced after a
+`completedTasks: RERUN` cancelation because a canceled action leaves a Session
+ending-only. See [run.md § Services](run.md#services-rfc-0009).
 
 ### Async Main
 

@@ -1,0 +1,35 @@
+# A Job Service whose onRun exits before becoming READY every time. Each
+# relaunch begins a new Service Session (a port conflict cannot be ruled
+# out); after maxAttempts relaunches the Service is FAILED and the Job fails
+# before any Task runs.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "FailExhausted"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+jobServices:
+  - name: Broken
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 30
+    restartPolicy:
+      maxAttempts: 2
+      completedTasks: RERUN
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('launch port {{ Service.Broken.main.port }}\\n'); print('BROKEN_EXITING'); raise SystemExit(3)"]
+        onExit:
+          command: python
+          args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('exit\\n')"]
+steps:
+  - name: Never
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_MUST_NOT_RUN')"]

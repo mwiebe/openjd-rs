@@ -1,0 +1,48 @@
+# COMMAND readiness: onRun starts listening only after a delay, and the
+# Service's onReadinessCheck (run concurrently with onRun, every
+# intervalSeconds) exits 0 once a TCP connection succeeds.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "CommandReadiness"
+jobServices:
+  - name: Slow
+    ports:
+      - name: main
+    readinessCheck:
+      type: COMMAND
+      intervalSeconds: 1
+      timeoutSeconds: 60
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Slow.main.bindAddress }}", "{{ Service.Slow.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+        onReadinessCheck:
+          command: python
+          args: ["-c", "import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1).close(); print('CHECK_OK')", "{{ Service.Slow.main.connectAddress }}", "{{ Service.Slow.main.port }}"]
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys, time
+            host, port = sys.argv[1], int(sys.argv[2])
+            print("SLOW_WARMING_UP", flush=True)
+            time.sleep(1.5)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("SLOW_LISTENING", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(b"hello")
+                c.close()
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import socket,sys; c=socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=10); print('TASK_GOT', c.recv(64).decode(), flush=True)", "{{ Service.Slow.main.connectAddress }}", "{{ Service.Slow.main.port }}"]

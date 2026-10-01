@@ -1,0 +1,107 @@
+# completedTasks: RERUN on a Job Service: when its first instance exits while
+# Step B's first Task runs, every Step returns to pending — Step A's completed
+# Task runs again, and Step B's Step Service (stopped when B returned to
+# pending) starts again in a new Service Session when B is next scheduled.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RerunJobScope"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+  - name: MarkerFile
+    type: STRING
+jobServices:
+  - name: Shared
+    ports:
+      - name: main
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 1
+      completedTasks: RERUN
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.TraceFile }}", "{{ Param.MarkerFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace, marker = sys.argv[1], sys.argv[2]
+            first = not os.path.exists(marker)
+            open(marker, "a").close()
+            with open(trace, "a") as f:
+                f.write("shared launch\n")
+            print("openjd_service_ready: shared up", flush=True)
+            while True:
+                time.sleep(0.1)
+                if first and os.path.exists(trace) and "task B1 start" in open(trace).read():
+                    time.sleep(0.3)
+                    with open(trace, "a") as f:
+                        f.write("shared crash\n")
+                    sys.exit(1)
+steps:
+  - name: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "A1", "{{ Param.TraceFile }}", "{{ Service.Shared.main.port }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import sys, time
+            n, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"task {n} start\n")
+            time.sleep(0.5)
+            with open(trace, "a") as f:
+                f.write(f"task {n} done\n")
+  - name: B
+    dependencies:
+      - dependsOn: A
+    stepServices:
+      - name: Helper
+        ports:
+          - name: main
+        readinessCheck:
+          type: STDOUT
+        script:
+          actions:
+            onRun:
+              command: python
+              args: ["-c", "import time; open(r'{{ Param.TraceFile }}', 'a').write('helper launch\\n'); print('openjd_service_ready: helper up', flush=True); time.sleep(600)"]
+              cancelation:
+                mode: TERMINATE
+            onExit:
+              command: python
+              args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('helper exit\\n')"]
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-2"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "B{{ Task.Param.N }}", "{{ Param.TraceFile }}", "{{ Service.Shared.main.port }}", "{{ Service.Helper.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import sys, time
+            n, trace = sys.argv[1], sys.argv[2]
+            with open(trace, "a") as f:
+                f.write(f"task {n} start\n")
+            time.sleep(1.0)
+            with open(trace, "a") as f:
+                f.write(f"task {n} done\n")

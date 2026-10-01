@@ -1457,10 +1457,13 @@ impl Session {
             // Box::pin keeps the inner subprocess/select! state machine off the
             // outer future's stack. Without this, the combined future exceeds
             // Windows' default 1 MB thread stack in release builds. The boxed
-            // type unifies the two match arms; it carries no `+ Send` bound
-            // because `drive_action` does not need one (the subprocess future
-            // itself is `Send` — the Service Session runtime spawns it).
-            let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _>>> =
+            // type unifies the two match arms. The `+ Send` bound is not
+            // needed by `drive_action`, but it keeps `enter_environment`'s
+            // future `Send`, so a caller can drive a Session — or a
+            // `ServiceSession`, which enters Environments through this
+            // method — on a spawned tokio task (the local runner starts
+            // Services concurrently that way).
+            let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>> =
                 match wrap_action.as_ref() {
                     Some((_, action)) => Box::pin(runner.run_wrap_action(
                         action,
@@ -1726,10 +1729,9 @@ impl Session {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
             // See the note in the onEnter path about Box::pin and the Windows
-            // 1 MB thread-stack limit on release builds. As there, the boxed
-            // type carries no `+ Send` bound because `drive_action` does not
-            // need one.
-            let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _>>> =
+            // 1 MB thread-stack limit on release builds, and about the
+            // `+ Send` bound.
+            let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>> =
                 match wrap_action.as_ref() {
                     // RFC 0008 / Template Schemas §5 defaults table: the
                     // substituted onWrapEnvExit gets the same 300-second

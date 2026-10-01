@@ -11,18 +11,42 @@ pub(crate) struct RunResult {
     pub step_name: Option<String>,
     pub duration: f64,
     pub chunks_run: usize,
+    /// Services that became FAILED (RFC 0009), failing their scope.
+    pub failed_services: Vec<FailedService>,
+}
+
+/// One FAILED Service in the result output.
+pub(crate) struct FailedService {
+    pub name: String,
+    /// `Job` or `Step '<name>'`.
+    pub scope: String,
+    pub reason: String,
 }
 
 impl crate::common::CliResult for RunResult {
     fn to_json_value(&self) -> serde_json::Value {
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "status": self.status,
             "message": self.message,
             "job_name": self.job_name,
             "step_name": self.step_name,
             "duration": self.duration,
             "chunks_run": self.chunks_run,
-        })
+        });
+        if !self.failed_services.is_empty() {
+            value["failed_services"] = self
+                .failed_services
+                .iter()
+                .map(|f| {
+                    serde_json::json!({
+                        "name": f.name,
+                        "scope": f.scope,
+                        "reason": f.reason,
+                    })
+                })
+                .collect();
+        }
+        value
     }
 }
 
@@ -38,6 +62,14 @@ impl std::fmt::Display for RunResult {
             writeln!(f, "Step: {sn}")?;
         }
         writeln!(f, "Duration: {:.3} seconds", self.duration)?;
-        write!(f, "Chunks run: {}", self.chunks_run)
+        write!(f, "Chunks run: {}", self.chunks_run)?;
+        for failed in &self.failed_services {
+            write!(
+                f,
+                "\nFailed Service: {} ({} scope): {}",
+                failed.name, failed.scope, failed.reason
+            )?;
+        }
+        Ok(())
     }
 }

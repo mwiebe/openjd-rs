@@ -5,6 +5,7 @@
 //! Execution phases for the `openjd run` command.
 
 use super::*;
+use openjd_model::AttachedEnvironmentTemplate;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     if args.verbose {
@@ -17,18 +18,21 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
 
     let prepared = prepare_run(&args)?;
     let selection = prepare_selection(&args, &prepared.job)?;
-    validate_wrap_environment_stacks(
-        &prepared.job,
-        &prepared.env_templates,
-        &selection.steps_to_run,
-    )?;
-    let env_template_symtab = openjd_model::build_symbol_table(&prepared.param_values)
-        .map_err(|e| format!("Failed to build environment template symbol table: {e}"))?;
+    validate_wrap_environment_stacks(&prepared.job, &selection.steps_to_run)?;
+    let base_symtab = openjd_model::build_symbol_table(&prepared.param_values)
+        .map_err(|e| format!("Failed to build the job parameter symbol table: {e}"))?;
 
     let cancel_token = CancellationToken::new();
     let session = create_session(&args, &prepared, cancel_token.clone())?;
-    let working_dir = session.working_directory().to_path_buf();
-    let interrupted = install_signal_handler(cancel_token);
+    let services = ServiceManager::new(services::ServiceRunConfig {
+        job_parameter_values: prepared.param_values.clone(),
+        path_mapping_rules: (!prepared.path_rules.is_empty()).then(|| prepared.path_rules.clone()),
+        retain_working_dir: args.preserve,
+        profile: prepared.revision_profile.clone(),
+        cancel_token: cancel_token.clone(),
+        limits: openjd_sessions::SessionLimits::from(&crate::common::caller_limits()),
+    });
+    let interrupted = install_signal_handler(cancel_token.clone());
     let mut ctx = RunContext {
         session,
         entered_envs: Vec::new(),
@@ -36,22 +40,25 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         started_at,
         tasks_run: 0,
         session_failed: false,
+        services,
+        failed_services: Vec::new(),
+        step_env_baseline: 0,
+        base_symtab: SerializedSymbolTable::from_symtab(&base_symtab),
+        cancel_token,
+        preserved_working_dirs: Vec::new(),
     };
 
     println!("{}\tSession start", ctx.timestamp());
     println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
-    let execution_result = run_workload(
-        &mut ctx,
-        &args,
-        &prepared.job,
-        &prepared.env_templates,
-        &env_template_symtab,
-        &selection,
-    )
-    .await;
+    let execution_result = run_workload(&mut ctx, &args, &prepared, &selection).await;
 
-    // Once a Session exists, errors must not bypass environment cleanup.
+    // Once a Session exists, errors must not bypass environment cleanup —
+    // nor Service teardown (RFC 0009 constraint 6: a Service whose scope
+    // completes has its Session ended whatever its state). Step Services
+    // first, then Job Services (constraint 4), after the Task Session has
+    // left their Environments.
     ctx.exit_environments_down_to(0).await;
+    ctx.services.stop_all().await;
     ctx.record_interruption();
     if let Err(e) = execution_result {
         if !args.preserve {
@@ -60,7 +67,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         return Err(e);
     }
 
-    report_result(&mut ctx, &args, &prepared.job, &working_dir);
+    report_result(&mut ctx, &args, &prepared.job);
     if ctx.session_failed {
         std::process::exit(1);
     }
@@ -132,9 +139,34 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
         .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
 
+    // The second stage of the submission (RFC 0009, Template Schemas
+    // §1.2.2): the --environment templates' Services become external
+    // Services placed before the Job Template's jobServices, their
+    // Environments are placed before its jobEnvironments, and the two
+    // submission-time checks (external-Service name collisions, wrapping
+    // Environments from SERVICE-less documents) run against the combined
+    // Job. Each template is labeled with its path in error messages.
+    let labels: Vec<String> = args
+        .environments
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    let attached: Vec<AttachedEnvironmentTemplate<'_>> = env_templates
+        .iter()
+        .zip(&labels)
+        .map(|(template, label)| AttachedEnvironmentTemplate::new(template).with_label(label))
+        .collect();
+    let job = openjd_model::apply_environment_templates(
+        &job,
+        &attached,
+        &param_values,
+        &crate::common::caller_limits(),
+    )
+    .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?
+    .into_combined_job(job);
+
     Ok(PreparedRun {
         job,
-        env_templates,
         param_values,
         path_rules,
         revision_profile,
@@ -209,34 +241,28 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
     })
 }
 
-fn validate_wrap_environment_stacks(
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    steps_to_run: &[usize],
-) -> Result<(), RunError> {
+/// RFC 0008's single-wrap-layer rule over every Session stack this run
+/// builds. The combined Job's `jobEnvironments` already hold the
+/// `--environment` templates' Environments (in attachment order) ahead of
+/// the Job Template's own. A Service Session enters the same stacks (minus
+/// Environments whose `runScope` excludes `SERVICE`), so the check covers
+/// them too; that a `SERVICE`-scoped wrapper defines all four
+/// `onWrapService*` hooks (§9.7 item 6) is enforced by the model — per
+/// document at template validation, and across documents by
+/// `apply_environment_templates` — and is not repeated here.
+fn validate_wrap_environment_stacks(job: &Job, steps_to_run: &[usize]) -> Result<(), RunError> {
     let has_wrap_hook = |env: &Environment| {
         env.script
             .as_ref()
             .is_some_and(|script| script.actions.has_any_wrap_hook())
     };
-    let mut base_wrap_envs: Vec<&str> = env_templates
+    let base_wrap_envs: Vec<&str> = job
+        .job_environments
         .iter()
-        .filter_map(|template| template.environment.as_ref())
-        .filter(|env| {
-            env.script
-                .as_ref()
-                .is_some_and(|script| script.actions.has_any_wrap_hook())
-        })
+        .flatten()
+        .filter(|env| has_wrap_hook(env))
         .map(|env| env.name.as_str())
         .collect();
-    if let Some(job_envs) = &job.job_environments {
-        base_wrap_envs.extend(
-            job_envs
-                .iter()
-                .filter(|env| has_wrap_hook(env))
-                .map(|env| env.name.as_str()),
-        );
-    }
     reject_multiple_wrap_environments(&base_wrap_envs)?;
 
     for &step_idx in steps_to_run {
@@ -337,72 +363,186 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
     interrupted
 }
 
+/// Whether `step` will run at least one Task under this selection — RFC
+/// 0009 constraint 10 lets the runner decline to start a Service whose scope
+/// schedules no Task (a `--tasks '[]'` selection, say).
+fn step_runs_tasks(step_idx: usize, selection: &RunSelection) -> bool {
+    if selection.selected_step_idx == Some(step_idx) {
+        if let Some(explicit) = &selection.explicit_task_params {
+            return !explicit.is_empty();
+        }
+    }
+    // A parameter space always yields at least one Task, and a Step
+    // without one runs exactly one; `--maximum-tasks 0` means "no limit".
+    true
+}
+
+/// How a Step's attempt ended.
+enum StepOutcome {
+    /// The Step's Tasks are done (or the run is stopping).
+    Done,
+    /// A Service with `completedTasks: RERUN` failed: the completed Tasks
+    /// of its scope return to the queue (the Step's, or every Step's).
+    Rerun(RerunScope),
+}
+
+/// How a Step's Task iteration ended.
+enum TasksOutcome {
+    Done,
+    Rerun(RerunScope),
+}
+
 async fn run_workload(
     ctx: &mut RunContext,
     args: &RunArgs,
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    env_template_symtab: &openjd_expr::SymbolTable,
+    prepared: &PreparedRun,
     selection: &RunSelection,
 ) -> Result<(), RunError> {
-    // A services-only Environment Template (RFC 0009) defines no
-    // Environment to enter.
-    for template_env in env_templates
+    let job = &prepared.job;
+    // RFC 0009 constraint 10: a Job whose selection schedules no Task does
+    // not start its Job Services.
+    let job_runs_tasks = selection
+        .steps_to_run
         .iter()
-        .filter_map(|template| template.environment.as_ref())
-    {
-        if ctx.is_stopping() {
-            break;
-        }
-        let env =
-            openjd_model::convert_environment_with_symtab(template_env, Some(env_template_symtab));
-        ctx.enter_environment(&env, &template_env.name, None).await;
+        .any(|&idx| step_runs_tasks(idx, selection));
+    let job_service_count = job.job_services.as_ref().map_or(0, Vec::len);
+    if job_runs_tasks {
+        ctx.services.set_job_services(job);
+    } else if job_service_count > 0 {
+        println!(
+            "{}\tNot starting the {job_service_count} Job Service(s): no Task of this Job will run",
+            ctx.timestamp()
+        );
     }
-    if let Some(job_envs) = &job.job_environments {
-        for env in job_envs {
+
+    // Position in `steps_to_run` to resume from after a RERUN.
+    let mut resume_from = 0;
+    loop {
+        // Constraints 2–3: Job Services are READY before any Task; here,
+        // before the Task Session even enters the Job's Environments (a
+        // TASK-scoped one may reference their endpoints).
+        if !ctx.is_stopping() {
+            ctx.gate_services().await?;
+        }
+        for env in job.job_environments.iter().flatten() {
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, None).await;
+            ctx.enter_environment(env, None).await;
         }
-    }
 
-    for &step_idx in &selection.steps_to_run {
-        if ctx.is_stopping() {
-            break;
+        let mut rerun: Option<(RerunScope, usize)> = None;
+        for (pos, &step_idx) in selection.steps_to_run.iter().enumerate() {
+            if pos < resume_from || ctx.is_stopping() {
+                continue;
+            }
+            match execute_step(ctx, args, job, &job.steps[step_idx], step_idx, selection).await? {
+                StepOutcome::Done => {}
+                StepOutcome::Rerun(scope) => {
+                    rerun = Some((scope, pos));
+                    break;
+                }
+            }
         }
-        execute_step(ctx, args, &job.steps[step_idx], step_idx, selection).await?;
+        ctx.exit_environments_down_to(0).await;
+        let Some((scope, pos)) = rerun.filter(|_| !ctx.is_stopping()) else {
+            return Ok(());
+        };
+        // The requeued Tasks run in a new Task Session: a canceled action
+        // leaves a Session ending-only (see specs/sessions/session.md
+        // "Brittle Sessions"), and a scheduler would form new Sessions for
+        // requeued Tasks anyway. The new Session re-enters the Job's
+        // Environments, so a TASK-scoped one re-resolves the Service's
+        // (possibly new) endpoints.
+        match scope {
+            RerunScope::Job => {
+                // "RERUN and Step dependencies": every Step returns to
+                // pending and dependencies are resolved again from scratch.
+                println!(
+                    "{}\tReturning every completed Task of the Job to the queue: a Job Service \
+                     with completedTasks: RERUN was relaunched; every Step returns to pending",
+                    ctx.timestamp()
+                );
+                resume_from = 0;
+            }
+            RerunScope::Step => {
+                println!(
+                    "{}\tReturning every completed Task of Step '{}' to the queue: a Step Service \
+                     with completedTasks: RERUN was relaunched",
+                    ctx.timestamp(),
+                    job.steps[selection.steps_to_run[pos]].name
+                );
+                resume_from = pos;
+            }
+        }
+        let replacement = create_session(args, prepared, ctx.cancel_token.clone())?;
+        ctx.replace_task_session(replacement, args.preserve);
     }
-    Ok(())
 }
 
 async fn execute_step(
     ctx: &mut RunContext,
     args: &RunArgs,
+    job: &Job,
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
-) -> Result<(), RunError> {
+) -> Result<StepOutcome, RunError> {
     println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
+    let runs_tasks = step_runs_tasks(step_idx, selection);
+    let step_service_count = step.step_services.as_ref().map_or(0, Vec::len);
+    if !runs_tasks && step_service_count > 0 {
+        println!(
+            "{}\tNot starting the {step_service_count} Step Service(s) of Step '{}': no Task of \
+             this Step will run",
+            ctx.timestamp(),
+            step.name
+        );
+    }
+    // A Step Service is UNREADY from the time its Step's dependencies are
+    // satisfied (constraint 3 gates the Step's Tasks on it). It is
+    // registered here and started by the gate, before the Task Session
+    // enters the Step's Environments. A Step re-running its Tasks after a
+    // RERUN finds its Services still registered.
+    if runs_tasks && !ctx.is_stopping() {
+        ctx.services.set_step_services(job, step);
+        ctx.gate_services().await?;
+    }
     let environment_baseline = ctx.entered_envs.len();
-    if let Some(step_envs) = &step.step_environments {
-        for env in step_envs {
-            if ctx.is_stopping() {
-                break;
-            }
-            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone())
-                .await;
+    ctx.step_env_baseline = environment_baseline;
+    for env in step.step_environments.iter().flatten() {
+        if ctx.is_stopping() {
+            break;
         }
+        ctx.enter_environment(env, step.resolved_symtab.clone())
+            .await;
     }
 
     let result = if ctx.session_failed {
-        Ok(())
+        Ok(TasksOutcome::Done)
     } else {
         execute_step_tasks(ctx, args, step, step_idx, selection).await
     };
     // This unwind happens before propagating task setup/runtime errors.
     ctx.exit_environments_down_to(environment_baseline).await;
-    result
+    match result? {
+        TasksOutcome::Rerun(RerunScope::Step) if !ctx.is_stopping() => {
+            // The Step's Services stay registered (the failed one is
+            // relaunching); the Step's Tasks run again from the start.
+            Ok(StepOutcome::Rerun(RerunScope::Step))
+        }
+        TasksOutcome::Rerun(RerunScope::Job) if !ctx.is_stopping() => {
+            // The Step returns to pending with every other Step; its
+            // Services stop now and start again when it is next scheduled.
+            ctx.services.stop_step_services().await;
+            Ok(StepOutcome::Rerun(RerunScope::Job))
+        }
+        TasksOutcome::Done | TasksOutcome::Rerun(_) => {
+            // Constraint 6: the Step's scope is complete.
+            ctx.services.stop_step_services().await;
+            Ok(StepOutcome::Done)
+        }
+    }
 }
 
 async fn execute_step_tasks(
@@ -411,11 +551,12 @@ async fn execute_step_tasks(
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
-) -> Result<(), RunError> {
+) -> Result<TasksOutcome, RunError> {
     let Some(parameter_space) = &step.parameter_space else {
-        ctx.print_banner("Running Task");
-        ctx.run_task(step, None).await?;
-        return Ok(());
+        return Ok(match ctx.run_task(step, None, &[]).await? {
+            TaskRun::Rerun(scope) => TasksOutcome::Rerun(scope),
+            TaskRun::Completed(_) | TaskRun::Aborted => TasksOutcome::Done,
+        });
     };
 
     let mut iter = openjd_model::StepParameterSpaceIterator::new(parameter_space)?;
@@ -434,7 +575,7 @@ async fn execute_explicit_tasks(
     parameter_space: &openjd_model::job::StepParameterSpace,
     task_param_sets: &[HashMap<String, String>],
     iter: &openjd_model::StepParameterSpaceIterator,
-) -> Result<(), RunError> {
+) -> Result<TasksOutcome, RunError> {
     let mut typed_sets = Vec::with_capacity(task_param_sets.len());
     for (index, params) in task_param_sets.iter().enumerate() {
         let values = coerce_task_params(params, parameter_space)?;
@@ -447,14 +588,17 @@ async fn execute_explicit_tasks(
         if ctx.is_stopping() {
             break;
         }
-        ctx.print_banner("Running Task");
-        println!("{}\tParameter values:", ctx.timestamp());
-        for (name, value) in params {
-            println!("{}\t{name} = {value}", ctx.timestamp());
+        let lines: Vec<String> = params
+            .iter()
+            .map(|(name, value)| format!("{name} = {value}"))
+            .collect();
+        match ctx.run_task(step, Some(values), &lines).await? {
+            TaskRun::Completed(_) => {}
+            TaskRun::Rerun(scope) => return Ok(TasksOutcome::Rerun(scope)),
+            TaskRun::Aborted => break,
         }
-        ctx.run_task(step, Some(values)).await?;
     }
-    Ok(())
+    Ok(TasksOutcome::Done)
 }
 
 async fn execute_parameter_space_tasks(
@@ -462,7 +606,7 @@ async fn execute_parameter_space_tasks(
     maximum_tasks: i64,
     step: &Step,
     iter: &mut openjd_model::StepParameterSpaceIterator,
-) -> Result<(), RunError> {
+) -> Result<TasksOutcome, RunError> {
     let is_adaptive = iter.chunks_adaptive();
     let chunks_param_name = iter.chunks_parameter_name().map(String::from);
     let target_runtime_seconds = adaptive_target_runtime(step, is_adaptive);
@@ -478,22 +622,26 @@ async fn execute_parameter_space_tasks(
         let Some(task_params) = iter.next() else {
             break;
         };
-        ctx.print_banner("Running Task");
-        println!("{}\tParameter values:", ctx.timestamp());
-        for (name, value) in &task_params {
-            println!(
-                "{}\t{}({}) = {}",
-                ctx.timestamp(),
-                name,
-                value.param_type.as_spec_str(),
-                value.value.to_display_string()
-            );
-        }
+        let lines: Vec<String> = task_params
+            .iter()
+            .map(|(name, value)| {
+                format!(
+                    "{}({}) = {}",
+                    name,
+                    value.param_type.as_spec_str(),
+                    value.value.to_display_string()
+                )
+            })
+            .collect();
         let task_values: TaskParameterSet = task_params
             .iter()
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        let task_duration = ctx.run_task(step, Some(&task_values)).await?;
+        let task_duration = match ctx.run_task(step, Some(&task_values), &lines).await? {
+            TaskRun::Completed(duration) => duration,
+            TaskRun::Rerun(scope) => return Ok(TasksOutcome::Rerun(scope)),
+            TaskRun::Aborted => break,
+        };
         remaining_tasks -= 1;
 
         if is_adaptive && !ctx.is_stopping() {
@@ -516,7 +664,7 @@ async fn execute_parameter_space_tasks(
             );
         }
     }
-    Ok(())
+    Ok(TasksOutcome::Done)
 }
 
 fn adaptive_target_runtime(step: &Step, is_adaptive: bool) -> f64 {
@@ -587,8 +735,12 @@ fn adjust_adaptive_chunk_size(
     }
 }
 
-fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &std::path::Path) {
+fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
+    let working_dir = ctx.session.working_directory().to_path_buf();
     println!("{}\t", ctx.timestamp());
+    for failure in &ctx.failed_services {
+        println!("{}\t{failure}", ctx.timestamp());
+    }
     if ctx.session_failed {
         println!("{}\tSession ended with errors.", ctx.timestamp());
     } else {
@@ -598,15 +750,18 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &
 
     let duration = ctx.started_at.elapsed().as_secs_f64();
     let preserved_msg = if args.preserve {
-        format!(
-            "\nWorking directory preserved at: {}",
-            working_dir.display()
-        )
+        ctx.preserved_working_dirs.push(working_dir);
+        ctx.preserved_working_dirs
+            .iter()
+            .map(|dir| format!("\nWorking directory preserved at: {}", dir.display()))
+            .collect::<String>()
     } else {
         ctx.session.cleanup();
         String::new()
     };
-    let (status, message) = if ctx.session_failed {
+    let (status, message) = if let Some(failure) = ctx.failed_services.first() {
+        ("error", format!("{failure}{preserved_msg}"))
+    } else if ctx.session_failed {
         (
             "error",
             format!("Session ended with errors; see Task logs for details{preserved_msg}"),
@@ -624,6 +779,15 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &
         step_name: args.step.clone(),
         duration,
         chunks_run: ctx.tasks_run,
+        failed_services: ctx
+            .failed_services
+            .iter()
+            .map(|f| result::FailedService {
+                name: f.name.clone(),
+                scope: f.scope.to_string(),
+                reason: f.reason.clone(),
+            })
+            .collect(),
     };
     crate::common::print_cli_result(&result, &args.output);
 }
