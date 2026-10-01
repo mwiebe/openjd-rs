@@ -98,6 +98,9 @@ pub type EnvironmentIdentifier = String;
 /// Callback invoked when action status changes.
 pub type SessionCallbackType = Box<dyn Fn(&str, &ActionStatus) + Send + Sync>;
 
+/// The session's stored, shareable form of [`SessionCallbackType`].
+pub(crate) type SharedCallback = Arc<dyn Fn(&str, &ActionStatus) + Send + Sync>;
+
 /// Configuration for creating a new Session.
 pub struct SessionConfig {
     pub session_id: String,
@@ -172,7 +175,7 @@ fn format_exit_code(code: Option<i32>) -> String {
 /// Normalize an environment variable name for the current platform.
 /// On Windows, env vars are case-insensitive, so we uppercase all keys
 /// to avoid undefined behavior from mixed-case duplicates in the Win32 API.
-fn normalize_env_key(name: &str) -> String {
+pub(crate) fn normalize_env_key(name: &str) -> String {
     #[cfg(windows)]
     {
         name.to_uppercase()
@@ -187,21 +190,21 @@ fn normalize_env_key(name: &str) -> String {
 /// Uses a HashMap for automatic deduplication — last write wins,
 /// matching Python's SimplifiedEnvironmentVariableChanges dict.
 /// `None` value means "unset this variable".
-type EnvVarChanges = HashMap<String, Option<String>>;
+pub(crate) type EnvVarChanges = HashMap<String, Option<String>>;
 
 /// Tracks the status of the currently running (or most recently completed) action.
-struct ActionStatusFields {
-    state: Option<ActionState>,
-    progress: Option<f64>,
-    status_message: Option<String>,
-    fail_message: Option<String>,
-    exit_code: Option<i32>,
-    started_at: Option<std::time::SystemTime>,
-    ended_at: Option<std::time::SystemTime>,
+pub(crate) struct ActionStatusFields {
+    pub(crate) state: Option<ActionState>,
+    pub(crate) progress: Option<f64>,
+    pub(crate) status_message: Option<String>,
+    pub(crate) fail_message: Option<String>,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) started_at: Option<std::time::SystemTime>,
+    pub(crate) ended_at: Option<std::time::SystemTime>,
 }
 
 impl ActionStatusFields {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: None,
             progress: None,
@@ -214,7 +217,7 @@ impl ActionStatusFields {
     }
 
     /// Reset all fields for a new action.
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.state = Some(ActionState::Running);
         self.started_at = Some(std::time::SystemTime::now());
         self.ended_at = None;
@@ -223,14 +226,34 @@ impl ActionStatusFields {
         self.fail_message = None;
         self.exit_code = None;
     }
+
+    /// Snapshot as the public [`ActionStatus`], or `None` before any action.
+    pub(crate) fn snapshot(&self) -> Option<ActionStatus> {
+        self.state.map(|state| ActionStatus {
+            state,
+            progress: self.progress,
+            status_message: self.status_message.clone(),
+            fail_message: self.fail_message.clone(),
+            exit_code: self.exit_code,
+            started_at: self.started_at,
+            ended_at: self.ended_at,
+        })
+    }
+
+    /// Record the terminal result of an action.
+    pub(crate) fn finish(&mut self, state: ActionState, exit_code: Option<i32>) {
+        self.state = Some(state);
+        self.exit_code = exit_code;
+        self.ended_at = Some(std::time::SystemTime::now());
+    }
 }
 
 /// Cancellation state for the current action, shared with any
 /// [`SessionCancelHandle`]s so cancellation can be requested from another
 /// thread while the `Session` itself is owned by an action-running thread.
-struct CancelShared {
+pub(crate) struct CancelShared {
     /// Token for the current action (cancelled to abort the subprocess).
-    token: Option<CancellationToken>,
+    pub(crate) token: Option<CancellationToken>,
     /// Channel to send cancel requests (with optional time limit) to the subprocess.
     request_tx: Option<tokio::sync::watch::Sender<Option<Duration>>>,
     /// The running action's declared NOTIFY_THEN_TERMINATE grace period,
@@ -241,11 +264,11 @@ struct CancelShared {
     /// notifyThenTerminate cancelation.
     terminate_delay: Option<Duration>,
     /// When true, a Canceled action result is reported as Failed.
-    mark_failed: bool,
+    pub(crate) mark_failed: bool,
 }
 
 /// Cancellation state for the current action and external cancellation support.
-struct CancelFields {
+pub(crate) struct CancelFields {
     /// Per-action cancellation state, shared with `SessionCancelHandle`s.
     shared: Arc<StdMutex<CancelShared>>,
     /// External cancellation token from the caller; action tokens are children of this.
@@ -267,13 +290,13 @@ impl CancelFields {
 
     /// Lock the shared state, recovering from a poisoned mutex. The state is
     /// plain data (no invariants across fields), so recovery is safe.
-    fn lock(&self) -> std::sync::MutexGuard<'_, CancelShared> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, CancelShared> {
         self.shared
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn set_action(
+    pub(crate) fn set_action(
         &self,
         token: CancellationToken,
         request_tx: tokio::sync::watch::Sender<Option<Duration>>,
@@ -291,11 +314,11 @@ impl CancelFields {
     /// Record the effective action's declared NOTIFY_THEN_TERMINATE grace
     /// period. Called after `set_action`, once any wrap-hook substitution
     /// has resolved which action will actually run.
-    fn set_terminate_delay(&self, delay: Option<Duration>) {
+    pub(crate) fn set_terminate_delay(&self, delay: Option<Duration>) {
         self.lock().terminate_delay = delay;
     }
 
-    fn reset(&self) {
+    pub(crate) fn reset(&self) {
         let mut shared = self.lock();
         shared.token = None;
         shared.request_tx = None;
@@ -419,7 +442,7 @@ fn send_helper_cancel_command(
 /// Derives through [`crate::runner::cancel_method_for_action`] so the value
 /// recorded for helper-pipe cancel delivery is exactly what the runner will
 /// enforce on the same-user path.
-fn declared_terminate_delay(
+pub(crate) fn declared_terminate_delay(
     cancelation: &Option<openjd_model::job::CancelationMode>,
     symtab: &SymbolTable,
     library: Option<&FunctionLibrary>,
@@ -520,8 +543,9 @@ pub struct Session {
     action: ActionStatusFields,
     cancel: CancelFields,
     cross_user: CrossUserFields,
-    // Callback
-    callback: Option<SessionCallbackType>,
+    // Callback. Stored as an `Arc` so a Service Session's background
+    // `onRun` driver can report through the same callback (RFC 0009).
+    callback: Option<SharedCallback>,
     // Redaction
     redacted_values: HashSet<String>,
     profile: Option<openjd_model::ModelProfile>,
@@ -798,7 +822,7 @@ impl Session {
                 cancel_writer,
                 helper_auth_token,
             },
-            callback: config.callback,
+            callback: config.callback.map(Arc::from),
             redacted_values: HashSet::new(),
             profile,
             debug_collect_stdout: config.debug_collect_stdout,
@@ -1210,50 +1234,7 @@ impl Session {
         // Set static variables
         if let Some(vars) = &env.variables {
             for (key, fmt_str) in vars {
-                // Required string values (§4.4.2): a single whole-field
-                // expression resolves with target type `string`
-                // (Expression Language §1.3.2), so `null` and list values
-                // are errors rather than display renderings.
-                let value = fmt_str
-                    .resolve_with(
-                        &symtab,
-                        &crate::limits::fs_options(self.lib(), &self.limits)
-                            .with_target_type(&openjd_expr::ExprType::STRING),
-                    )
-                    .map(|v| match v {
-                        openjd_expr::ExprValue::String(s) => s,
-                        other => other.to_display_string(),
-                    })
-                    .map_err(|e| SessionError::FormatString {
-                        context: format!("env var '{key}'"),
-                        reason: e.to_string(),
-                    })?;
-                // A NUL in the resolved value would poison every subsequent
-                // Command::spawn in the session. Reject it here so the
-                // environment entry fails cleanly rather than bricking later
-                // actions — including the environment's own onExit teardown.
-                if value.contains('\0') {
-                    return Err(SessionError::FormatString {
-                        context: format!("env var '{key}'"),
-                        reason: "resolved value contains a NUL byte, which cannot be represented in a process environment.".to_string(),
-                    });
-                }
-                // Template Schemas §4.4.2: at most 2048 characters. This is
-                // the enforcement stage — template validation only catches
-                // statically knowable violations (an interpolation of an
-                // unresolved symbol contributes 0 to its lower bound), so a
-                // value that only becomes long here must be rejected here.
-                // Kept in sync with the model's
-                // EffectiveLimits::max_env_var_value_len.
-                let char_count = value.chars().count();
-                if char_count > ENV_VAR_VALUE_MAX_LEN {
-                    return Err(SessionError::FormatString {
-                        context: format!("env var '{key}'"),
-                        reason: format!(
-                            "resolved value is {char_count} characters, exceeding the maximum of {ENV_VAR_VALUE_MAX_LEN}."
-                        ),
-                    });
-                }
+                let value = self.resolve_env_var_value(key, fmt_str, &symtab)?;
                 let norm_key = normalize_env_key(key);
                 self.env_vars.insert(norm_key.clone(), value.clone());
                 if let Some(changes) = self.created_env_vars.get_mut(&identifier) {
@@ -1412,10 +1393,9 @@ impl Session {
             // Box::pin keeps the inner subprocess/select! state machine off the
             // outer future's stack. Without this, the combined future exceeds
             // Windows' default 1 MB thread stack in release builds. The boxed
-            // type unifies the two match arms; it is intentionally NOT `+ Send`
-            // because on Windows the subprocess future holds a non-Send
-            // `Option<HANDLE>` across an await (and `drive_action` does not
-            // require `Send`), matching the plain `enter`/`exit`/`run` paths.
+            // type unifies the two match arms; it carries no `+ Send` bound
+            // because `drive_action` does not need one (the subprocess future
+            // itself is `Send` — the Service Session runtime spawns it).
             let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _>>> =
                 match wrap_action.as_ref() {
                     Some((_, action)) => Box::pin(runner.run_wrap_action(
@@ -1683,8 +1663,8 @@ impl Session {
 
             // See the note in the onEnter path about Box::pin and the Windows
             // 1 MB thread-stack limit on release builds. As there, the boxed
-            // type is intentionally NOT `+ Send` (the subprocess future holds a
-            // non-Send `Option<HANDLE>` across an await on Windows).
+            // type carries no `+ Send` bound because `drive_action` does not
+            // need one.
             let runner_fut: std::pin::Pin<Box<dyn std::future::Future<Output = _>>> =
                 match wrap_action.as_ref() {
                     // RFC 0008 / Template Schemas §5 defaults table: the
@@ -2184,6 +2164,142 @@ impl Session {
 
     // --- Internal helpers ---
 
+    /// Resolve one declarative `variables` entry (an Environment's or, under
+    /// RFC 0009, a Service's) to the string placed in the process environment.
+    ///
+    /// Required string values (§4.4.2): a single whole-field expression
+    /// resolves with target type `string` (Expression Language §1.3.2), so
+    /// `null` and list values are errors rather than display renderings. The
+    /// resolved value is rejected when it contains a NUL byte (it would
+    /// poison every subsequent `Command::spawn` in the session) or exceeds
+    /// 2048 characters (Template Schemas §4.4.2 — the session is the
+    /// enforcement stage for values unknown at template validation; kept in
+    /// sync with the model's `EffectiveLimits::max_env_var_value_len`).
+    pub(crate) fn resolve_env_var_value(
+        &self,
+        key: &str,
+        fmt_str: &openjd_model::FormatString,
+        symtab: &SymbolTable,
+    ) -> Result<String, SessionError> {
+        let value = fmt_str
+            .resolve_with(
+                symtab,
+                &crate::limits::fs_options(self.lib(), &self.limits)
+                    .with_target_type(&openjd_expr::ExprType::STRING),
+            )
+            .map(|v| match v {
+                openjd_expr::ExprValue::String(s) => s,
+                other => other.to_display_string(),
+            })
+            .map_err(|e| SessionError::FormatString {
+                context: format!("env var '{key}'"),
+                reason: e.to_string(),
+            })?;
+        if value.contains('\0') {
+            return Err(SessionError::FormatString {
+                context: format!("env var '{key}'"),
+                reason: "resolved value contains a NUL byte, which cannot be represented in a process environment.".to_string(),
+            });
+        }
+        let char_count = value.chars().count();
+        if char_count > ENV_VAR_VALUE_MAX_LEN {
+            return Err(SessionError::FormatString {
+                context: format!("env var '{key}'"),
+                reason: format!(
+                    "resolved value is {char_count} characters, exceeding the maximum of {ENV_VAR_VALUE_MAX_LEN}."
+                ),
+            });
+        }
+        Ok(value)
+    }
+
+    // --- Crate-internal accessors for the Service Session runtime (RFC 0009) ---
+
+    /// The shared callback, if any.
+    pub(crate) fn callback_arc(&self) -> Option<SharedCallback> {
+        self.callback.clone()
+    }
+
+    /// The derived expression function library.
+    pub(crate) fn library_arc(&self) -> Arc<FunctionLibrary> {
+        self.library.clone()
+    }
+
+    /// The caller-policy limits in force.
+    pub(crate) fn limits(&self) -> &crate::limits::SessionLimits {
+        &self.limits
+    }
+
+    /// Whether `openjd_redacted_env` is honored in this session.
+    pub(crate) fn redactions_are_enabled(&self) -> bool {
+        self.redactions_enabled()
+    }
+
+    /// The per-action cancel state, shared with [`SessionCancelHandle`]s.
+    pub(crate) fn cancel_fields(&self) -> &CancelFields {
+        &self.cancel
+    }
+
+    /// A fresh per-action cancel token (child of the external token, if any).
+    pub(crate) fn action_cancel_token(&self) -> CancellationToken {
+        self.new_action_cancel_token()
+    }
+
+    /// Record values to redact from subsequent output.
+    pub(crate) fn add_redacted_values(&mut self, values: impl IntoIterator<Item = String>) {
+        self.redacted_values.extend(values);
+    }
+
+    /// The embedded-files helper for one scope, configured for this session.
+    pub(crate) fn embedded_files(&self, scope: EmbeddedFilesScope) -> EmbeddedFiles {
+        EmbeddedFiles::new(scope, self.files_directory.clone(), &self.session_id)
+            .with_user(self.cross_user.user.clone())
+            .with_limits(self.limits)
+    }
+
+    /// Build a fully configured [`ScriptRunnerBase`](crate::runner::ScriptRunnerBase)
+    /// for running one action of this session, registering `cancel_token`
+    /// as the current action's token. Takes the cross-user helper out of
+    /// the session; the caller must hand it back with
+    /// [`restore_runner_base`](Self::restore_runner_base) once the action
+    /// has finished, before any other action runs.
+    pub(crate) fn new_runner_base(
+        &mut self,
+        cancel_token: CancellationToken,
+        cancel_rx: tokio::sync::watch::Receiver<Option<Duration>>,
+    ) -> crate::runner::ScriptRunnerBase {
+        let mut base = crate::runner::ScriptRunnerBase::new(
+            &self.session_id,
+            self.working_directory.clone(),
+            self.files_directory.clone(),
+            self.cross_user.user.clone(),
+        );
+        base.redactions_enabled = self.redactions_enabled();
+        base.debug_collect_stdout = self.debug_collect_stdout;
+        base.echo_openjd_directives = self.echo_openjd_directives;
+        base.limits = self.limits;
+        base.initial_redacted_values = self.redacted_values.iter().cloned().collect();
+        base.cancel_token = cancel_token;
+        base.cancel_request_rx = Some(cancel_rx);
+        base.helpers_directory = self.cross_user.helpers_dir.clone();
+        base.helper = self.cross_user.helper.take();
+        if base.helper.is_some() {
+            base.cancel_writer = self
+                .cross_user
+                .cancel_writer
+                .as_ref()
+                .and_then(|f| f.try_clone().ok());
+        }
+        base
+    }
+
+    /// Return the cross-user helper taken by [`new_runner_base`](Self::new_runner_base).
+    pub(crate) fn restore_runner_base(&mut self, mut base: crate::runner::ScriptRunnerBase) {
+        if let Some(helper) = base.helper.take() {
+            self.cross_user.helper = Some(helper);
+        }
+    }
+
     /// Run an action future while concurrently processing messages from the channel
     /// in real-time. This ensures callbacks fire as stdout lines are parsed, not
     /// after the action completes.
@@ -2318,6 +2434,10 @@ impl Session {
                 }
                 self.redacted_values.insert(value);
             }
+            ActionMessage::ServiceReady(_) => {
+                // RFC 0009: honored only from a Service's onRun (see
+                // `service_session.rs`); from any other action it is ignored.
+            }
             ActionMessage::CancelMarkFailed { fail_message } => {
                 self.action.fail_message = Some(fail_message);
                 let _ = self.cancel_action(None, true);
@@ -2331,7 +2451,10 @@ impl Session {
     }
 
     /// Materialize path mapping rules to a JSON file and set symbol table entries.
-    fn materialize_path_mapping(&self, symtab: &mut SymbolTable) -> Result<(), SessionError> {
+    pub(crate) fn materialize_path_mapping(
+        &self,
+        symtab: &mut SymbolTable,
+    ) -> Result<(), SessionError> {
         let has_rules = !self.path_mapping_rules.is_empty();
         let rules_json = if has_rules {
             let rules: Vec<serde_json::Value> = self

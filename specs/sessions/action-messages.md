@@ -18,9 +18,32 @@ pub enum ActionMessage {
     SetEnv { name: String, value: String },
     UnsetEnv { name: String },
     RedactedEnv { name: String, value: String },
+    ServiceReady(String),
     CancelMarkFailed { fail_message: String },
 }
 ```
+
+### `ServiceReady` — `openjd_service_ready: <message>` (RFC 0009)
+
+The `SERVICE` extension adds one message. `ActionFilter` parses it exactly
+like the others (`openjd_service_ready`, then `: `, then a non-empty payload;
+near-misses are ordinary output), echoes it under `echo_openjd_directives`,
+and the subprocess loop forwards it as `ActionMessage::ServiceReady(message)`.
+It carries no cancel flag.
+
+Which consumer honors it is a scope decision, not the filter's:
+
+| Consumer | Effect |
+|---|---|
+| `ServiceSession` background `onRun` driver, readiness type `STDOUT` | The first line makes the instance READY with `message`; later lines have no further effect; a line drained after `onRun` exited cannot (onRun exit wins). |
+| `ServiceSession` `onRun` driver, readiness type `TCP_CONNECT` | Logged as ignored. |
+| `ServiceSession` `onEnter` / `onExit` | Logged as ignored. |
+| `Session` (Environment actions, Tasks, ad-hoc subprocesses) | Ignored silently in `apply_message`. |
+
+See [service-session.md](service-session.md) for the per-action message table
+of a Service Session (notably: `SetEnv` / `UnsetEnv` / `RedactedEnv` /
+`CancelMarkFailed` are honored from a Service's `onEnter` only and are logged
+as ignored from `onRun` and `onExit`).
 
 ### Why an enum instead of a trait or callback
 

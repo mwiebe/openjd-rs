@@ -17,6 +17,7 @@ replaces all of that with async/await, channels, and cancellation tokens.
 | [architecture.md](architecture.md) | Crate structure, module layout, dependency graph, public API surface |
 | [public-api.md](public-api.md) | Authoritative reference for every public type, function, and re-export |
 | [session.md](session.md) | Session struct, state machine, lifecycle, environment tracking, symbol table construction |
+| [service-session.md](service-session.md) | ServiceSession (RFC 0009): Service lifecycle, `Service.*` scope, readiness checks, background `onRun`, relaunch, constraint-7 teardown |
 | [subprocess.md](subprocess.md) | Async subprocess execution, stdout streaming, signal delivery, process group isolation |
 | [action-filter.md](action-filter.md) | Parsing `openjd_*` directives from stdout, redaction, malformed command detection |
 | [action-messages.md](action-messages.md) | Real-time ActionMessage streaming via tokio mpsc channels |
@@ -62,3 +63,6 @@ Currently implements `2023-09` with extensions:
 - `REDACTED_ENV_VARS` (RFC 0003)
 - `FEATURE_BUNDLE_1` (RFC 0004)
 - `EXPR` (RFC 0005)
+- `WRAP_ACTIONS` (RFC 0008)
+- `SERVICE` (RFC 0009) — single-Service Session runtime: `TCP_CONNECT` and `STDOUT`
+  readiness; `COMMAND` readiness and the `onWrapService*` hooks are not yet implemented

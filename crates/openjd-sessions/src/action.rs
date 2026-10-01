@@ -49,6 +49,11 @@ pub enum ActionMessage {
     UnsetEnv { name: String },
     /// `openjd_redacted_env: <var>=<value>`
     RedactedEnv { name: String, value: String },
+    /// `openjd_service_ready: <message>` (RFC 0009, `SERVICE` extension).
+    ///
+    /// Honored only from the `onRun` action of a Service whose readiness
+    /// check type is `STDOUT`; every other action ignores it.
+    ServiceReady(String),
     /// Request to cancel the action and mark it as failed (from malformed env commands)
     CancelMarkFailed { fail_message: String },
 }
@@ -62,6 +67,7 @@ impl std::fmt::Display for ActionMessage {
             Self::SetEnv { name, .. } => write!(f, "SetEnv({name})"),
             Self::UnsetEnv { name } => write!(f, "UnsetEnv({name})"),
             Self::RedactedEnv { name, .. } => write!(f, "RedactedEnv({name})"),
+            Self::ServiceReady(s) => write!(f, "ServiceReady({s})"),
             Self::CancelMarkFailed { fail_message } => {
                 write!(f, "CancelMarkFailed({fail_message})")
             }
@@ -114,6 +120,10 @@ mod tests {
             }
             .to_string(),
             "RedactedEnv(K)"
+        );
+        assert_eq!(
+            ActionMessage::ServiceReady("listening".into()).to_string(),
+            "ServiceReady(listening)"
         );
         assert_eq!(
             ActionMessage::CancelMarkFailed {

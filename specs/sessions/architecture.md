@@ -31,6 +31,7 @@ openjd-sessions
 src/
 ├── lib.rs                  # Public API re-exports
 ├── session.rs              # Session struct, state machine, lifecycle
+├── service_session.rs      # ServiceSession: RFC 0009 Service Session runtime (composes Session)
 ├── action.rs               # ActionState, ActionMessage, ActionResult types
 ├── action_status.rs        # ActionStatus struct (progress, status, fail, exit_code)
 ├── action_filter.rs        # Directive parsing from stdout lines, redaction
@@ -65,6 +66,11 @@ Re-exported from `lib.rs`:
 ```rust
 // Core session
 pub use session::{Session, SessionState, SessionConfig, EnvironmentIdentifier};
+
+// Service Session (RFC 0009)
+pub use service_session::{
+    ServiceSession, ServiceSessionConfig, ServiceSessionState, ServiceReadiness, ServiceRunExit,
+};
 pub use action::{ActionState, ActionResult, ActionMessage};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
@@ -95,6 +101,44 @@ When provided, all action cancel tokens are created as children of this token vi
 `parent.child_token()`. Canceling the parent cascades to all current and future actions
 in the session. This enables the worker agent to cancel an entire session from outside
 the session's async context.
+
+## Service Session Data Flow (RFC 0009)
+
+`ServiceSession` wraps a `Session` and reuses its environment stack, symbol
+table construction, path mapping, embedded files, cross-user helper, and
+cleanup; the Service-specific parts are the `Service.*` scope, Service
+`variables`, `onEnter`'s retained env changes, and a background `onRun`
+driver. See [service-session.md](service-session.md).
+
+```
+ServiceSessionConfig ──► ServiceSession::with_config()  ──► Session::with_config()
+        │
+        ▼
+   enter()      ── for env in scope, if env.runs_in(Service): Session::enter_environment()
+                ── build_symbol_table() + build_service_symbol_table() + materialize_path_mapping()
+                ── EmbeddedFiles(Service) allocate → <ServiceScript>.let → write contents
+                ── resolve Service `variables`
+                ── onEnter (foreground; openjd_env/unset_env/redacted_env retained)
+        │
+        ▼
+   launch()     ── ScriptRunnerBase::run_action(onRun) inside tokio::spawn(drive_run)
+                       ├── stdout ──► ActionFilter ──► ActionMessage (status/progress/fail; service_ready)
+                       ├── TCP_CONNECT probe loop (1 s) ── or ── STDOUT openjd_service_ready
+                       ├── readiness timeout (from launch)
+                       └── exit ──► watch<Option<ServiceRunExit>>
+        │
+        ├── wait_ready() / wait_exit() / cancel_run()
+        ├── launch() again (relaunch in the same Session)
+        ▼
+   end()        ── cancel onRun → await exit → onExit (300 s default) → exit envs (reverse) → cleanup()
+```
+
+The `onRun` driver runs on a `tokio::spawn`ed task, which requires the
+`run_subprocess` future to be `Send`. It is: the formerly non-`Send`
+`Option<HANDLE>` the Windows path carried across an await was dead code and
+has been removed. One consequence is that `ServiceSession` methods must be
+called from within a tokio runtime (as every async method of this crate
+already is).
 
 ## Data Flow
 

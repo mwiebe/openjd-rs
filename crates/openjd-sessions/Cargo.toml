@@ -33,7 +33,7 @@ serde_json = { workspace = true }
 serde-saphyr = { workspace = true }
 thiserror = { workspace = true }
 shlex = { workspace = true }
-tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "time", "sync", "macros", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "time", "sync", "macros", "fs", "net"] }
 tokio-util = "0.7"
 log = { version = "0.4", features = ["kv", "kv_std"] }
 bitflags = "2"

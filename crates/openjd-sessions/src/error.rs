@@ -120,6 +120,45 @@ pub enum SessionError {
          already defines wrap hooks; cannot also enter '{entering}'."
     )]
     MultipleWrapEnvironments { existing: String, entering: String },
+
+    /// RFC 0009: a Service Session is not in the expected phase for the
+    /// requested operation (see
+    /// [`ServiceSessionState`](crate::service_session::ServiceSessionState)).
+    #[error(
+        "Service Session must be in {} state, current: {current}",
+        format_service_expected(.expected)
+    )]
+    InvalidServiceState {
+        expected: Vec<crate::service_session::ServiceSessionState>,
+        current: crate::service_session::ServiceSessionState,
+    },
+
+    /// RFC 0009: a Service's `onEnter` or `onExit` action did not succeed. An
+    /// `onEnter` failure is a *start failure*; an `onExit` failure is an
+    /// *onExit failure* (reported, but it does not change the scope's outcome).
+    #[error("Service '{name}' {action} failed: {reason}")]
+    ServiceScriptFailed {
+        name: String,
+        action: String,
+        reason: String,
+    },
+
+    /// RFC 0009: a Service's `TCP_CONNECT` readiness check names a port, or
+    /// the caller's endpoint assignment omits one, that the Service does not
+    /// declare — the two inputs to a Service Session disagree.
+    #[error("Service '{name}' port '{port}' has no endpoint assignment")]
+    ServicePortUnassigned { name: String, port: String },
+}
+
+fn format_service_expected(states: &[crate::service_session::ServiceSessionState]) -> String {
+    match states {
+        [single] => single.to_string(),
+        _ => states
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(" or "),
+    }
 }
 
 fn format_expected(states: &[SessionState]) -> String {

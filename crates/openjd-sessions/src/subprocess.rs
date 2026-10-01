@@ -957,9 +957,10 @@ pub async fn run_subprocess(
     );
 
     // Spawn the process via tokio::process::Command (same-user only;
-    // cross-user was rejected above).
-    #[cfg(windows)]
-    let win32_process_handle: Option<windows::Win32::Foundation::HANDLE> = None;
+    // cross-user was rejected above). Nothing non-`Send` is held across an
+    // await here, so this future can be `tokio::spawn`ed — the Service
+    // Session runtime relies on that to run a Service's `onRun` in the
+    // background (RFC 0009).
 
     #[allow(unused_mut)]
     let (mut child, pid, stdout_for_reading): (
@@ -1167,25 +1168,9 @@ pub async fn run_subprocess(
             }
         }
     } else {
-        // Windows cross-user: wait on the raw process handle
-        #[cfg(windows)]
-        {
-            win32_process_handle.map(|h| {
-                use std::os::windows::process::ExitStatusExt;
-                use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
-                unsafe {
-                    let _ = WaitForSingleObject(h, 60000);
-                    let mut code = 0u32;
-                    let _ = GetExitCodeProcess(h, &mut code);
-                    let _ = windows::Win32::Foundation::CloseHandle(h);
-                    std::process::ExitStatus::from_raw(code)
-                }
-            })
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
+        // Unreachable in practice: the spawn block above always yields a
+        // child (cross-user execution was rejected before it).
+        None
     };
 
     let exit_code = exit_status.and_then(|s| s.code());
@@ -1270,7 +1255,14 @@ pub(crate) fn process_line(
                     None
                 }
             }
-            _ => None,
+            ActionMessageKind::ServiceReady => {
+                if let ActionMessageValue::String(s) = cb.value {
+                    Some(ActionMessage::ServiceReady(s))
+                } else {
+                    None
+                }
+            }
+            ActionMessageKind::SessionRuntimeLoglevel => None,
         };
         if let Some(msg) = msg {
             let _ = message_tx.send(msg);
