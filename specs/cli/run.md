@@ -437,16 +437,20 @@ RFC 0008's single-layer rule over the combined stacks.
 
 `PortAllocator` (`run/service_ports.rs`) is the **local runner's** policy: every
 Service binds and is reached on the loopback interface. For each declared port it
-binds `127.0.0.1:0` to find a free TCP port (or binds the requested `port` once to
-confirm it is available), releases the listener, and records the number so that no
-two Services of the run ever receive the same port — numbers are never reused within
-a run, even after a Service Session ends, so a Task that resolved an old endpoint
-cannot reach the wrong Service. `bindAddress` and `connectAddress` are both
-`127.0.0.1`, as bare addresses (RFC 0009 "Address forms"; templates join an address
-and a port with `join_host_port`). A requested port that is already allocated or
-cannot be bound is a *start failure* of the Service. Endpoints are allocated when the
-Service Session is opened, before any of its actions runs; a new Service Session gets
-new ports.
+binds `127.0.0.1:0` with a socket of the port's `protocol` — a `TcpListener` for a
+TCP port, a `UdpSocket` for a UDP port (§9.2 item 3) — to find a free port in that
+protocol's space (or binds the requested `port` once, the same way, to confirm it is
+available), releases the socket, and records `(protocol, number)` so that no two
+Services of the run ever receive the same port of one protocol — numbers are never
+reused within a run, even after a Service Session ends, so a Task that resolved an old
+endpoint cannot reach the wrong Service. TCP and UDP are independent spaces: a TCP
+port and a UDP port may be allocated, or requested, with the same number.
+`bindAddress` and `connectAddress` are both `127.0.0.1`, as bare addresses (RFC 0009
+"Address forms"; templates join an address and a port with `join_host_port`). A
+requested port that is already allocated in its protocol or cannot be bound (`Service
+'A' port 'dgram' requests UDP port 8125, which is not available on 127.0.0.1: …`) is
+a *start failure* of the Service. Endpoints are allocated when the Service Session is
+opened, before any of its actions runs; a new Service Session gets new ports.
 
 ### Start ordering (constraints 2, 10)
 
@@ -605,7 +609,9 @@ Session normally.
 Service lifecycle is logged on the run's timeline with the same banners the
 Environments use (`Starting Service: <name>` / `Stopping Service: <name>`) and one
 line per event, each naming the Service and its scope: endpoints
-(`Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:41235`), `onRun launched
+(`Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:41235`; a UDP port's
+address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
+unsuffixed), `onRun launched
 (launch N in this Session); readiness check: <TYPE>`, `is READY[: <message>]`,
 `is UNREADY: <reason> (completedTasks: <policy>)`, `Relaunching Service '<name>' onRun
 in its Service Session (relaunch N of M): <reason>` / `… in a new Service Session …`,

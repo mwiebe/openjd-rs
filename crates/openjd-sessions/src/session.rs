@@ -3459,8 +3459,9 @@ pub(crate) enum WrappedContext<'a> {
     /// Within `onWrapTaskRun`: sets `WrappedStep.Name`.
     Step(&'a str),
     /// Within the four `onWrapService*` hooks (RFC 0009): sets
-    /// `WrappedService.Name`, `.PortNames`, `.Ports`, `.BindAddresses` from
-    /// the Service's endpoint assignment, in port declaration order.
+    /// `WrappedService.Name`, `.PortNames`, `.Ports`, `.BindAddresses`,
+    /// `.Protocols` from the Service's endpoint assignment, in port
+    /// declaration order.
     Service(&'a openjd_model::job::service_symbols::ServiceEndpoints),
 }
 
@@ -3940,6 +3941,7 @@ mod wrap_actions_tests {
     #[test]
     fn overlay_sets_wrapped_service_group_when_provided() {
         use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
+        use openjd_model::job::ServicePortProtocol;
         let endpoints = ServiceEndpoints::new(
             "svc",
             vec![
@@ -3947,6 +3949,7 @@ mod wrap_actions_tests {
                     "main".to_string(),
                     ServiceEndpoint {
                         port: 4100,
+                        protocol: ServicePortProtocol::Tcp,
                         bind_address: "0.0.0.0".into(),
                         connect_address: "10.0.0.5".into(),
                     },
@@ -3955,6 +3958,7 @@ mod wrap_actions_tests {
                     "metrics".to_string(),
                     ServiceEndpoint {
                         port: 4101,
+                        protocol: ServicePortProtocol::Udp,
                         bind_address: "127.0.0.1".into(),
                         connect_address: "127.0.0.1".into(),
                     },
@@ -3996,6 +4000,14 @@ mod wrap_actions_tests {
             vec![
                 ExprValue::String("0.0.0.0".into()),
                 ExprValue::String("127.0.0.1".into())
+            ]
+        );
+        let protocols = symtab.get_value("WrappedService.Protocols").unwrap();
+        assert_eq!(
+            protocols.list_elements().unwrap(),
+            vec![
+                ExprValue::String("TCP".into()),
+                ExprValue::String("UDP".into())
             ]
         );
         assert!(symtab.get_value("WrappedEnv.Name").is_none());

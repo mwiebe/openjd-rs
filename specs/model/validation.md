@@ -356,7 +356,8 @@ no `Service.*`). Comprehension loop variables are checked as for any environment
 **The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the
 four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_scope`):
 `WrappedService.Name` (`string`), `WrappedService.PortNames` (`list[string]`),
-`WrappedService.Ports` (`list[int]`), `WrappedService.BindAddresses` (`list[string]`). It is
+`WrappedService.Ports` (`list[int]`), `WrappedService.BindAddresses` (`list[string]`),
+`WrappedService.Protocols` (`list[string]`, each `TCP` or `UDP`). It is
 not available in `onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit`, and `WrappedEnv.Name` /
 `WrappedStep.Name` are not available in the Service hooks.
 
@@ -696,8 +697,15 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
   `'<name>' is not a valid identifier.`, `exceeds <max_identifier_len> characters.` (64, or
   512 with FEATURE_BUNDLE_1), and `must not be 'File'; it is reserved for Service.File.*
   references.`
-- **Ports** (§9 item 5): `ports` `must not be empty.` / `must not contain more than 10
+- **Ports** (§9 item 6): `ports` `must not be empty.` / `must not contain more than 10
   elements.`; `duplicate port name '<name>'.` on the element.
+- **Port numbers per protocol** (§9 item 6.4, §9.7 item 8): on `ports[i] -> port` of the later
+  port, `<TCP|UDP> port <n> is also used by port '<earlier>'; two ports with the same protocol
+  must not have the same port number.` Only literal numbers are compared here (one that
+  carries an expression is compared at job creation, once resolved — see
+  [job-creation.md](job-creation.md)). The same number on a TCP port and a UDP port is
+  allowed. `protocol` itself (`TCP` | `UDP`, default `TCP`) is a serde enum, so `udp`, `SCTP`,
+  or a format string is `unknown variant`.
 - **Numeric `@fmtstring` fields**, checked on the field path when the value carries no
   expression (a format string is type-checked and, when static, range-checked by pass 8, and
   resolved and range-checked at job creation, like `<Action>.timeout`):
@@ -711,6 +719,16 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
   `TCP_CONNECT`). A `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry
   that is not a declared port reports `references undeclared port '<name>'.` on
   `readinessCheck -> ports[k]`.
+- **Readiness and port protocols** (§9 item 7, §9.3 item 2, §9.7 item 4): a `TCP_CONNECT`
+  `ports` entry naming a UDP port reports, on `readinessCheck -> ports[k]`, `port '<name>' has
+  protocol UDP and cannot be probed by a TCP_CONNECT readiness check; only TCP ports may be
+  named.` A Service none of whose ports is TCP whose effective check is `TCP_CONNECT` reports,
+  on `readinessCheck`, `the default TCP_CONNECT readiness check has no TCP port to probe: none
+  of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is
+  required.` when `readinessCheck` is omitted, or `a TCP_CONNECT readiness check has no TCP
+  port to probe: …` (same tail) when one of type `TCP_CONNECT` is given. (Not reported when
+  `ports` is empty, which is already an error.) A Service with at least one TCP port may omit
+  the check whatever else it declares: the default probes its TCP ports only.
 - **Reused validators:** `description` (`validate_description`), `variables`
   (`validate_variables`, shared with `<Environment>`), `hostRequirements`
   (`validate_host_requirements_in_context`, shared with `<StepTemplate>`), every defined

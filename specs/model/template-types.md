@@ -190,7 +190,7 @@ pub struct EmbeddedFile {
 
 ## Service (§9, `SERVICE` extension, RFC 0009)
 
-A Service is a long-lived process with named TCP ports that a scheduler starts before any
+A Service is a long-lived process with named TCP or UDP ports that a scheduler starts before any
 Task in its scope is scheduled and keeps running for the lifetime of its scope: the Job for a
 `jobServices` entry, the declaring Step for a `stepServices` entry. The types below are the
 unresolved template shapes; the `Service.*` format-string scope and the `WrappedService.*`
@@ -206,8 +206,8 @@ pub struct Service {
     pub let_bindings: Option<Vec<String>>,               // "let" field in YAML (EXPR)
     pub host_requirements: Option<HostRequirements>,     // same type as StepTemplate's
     pub service_environments: Option<Vec<Environment>>,  // §9 item 5: entered only in this Service's Session
-    pub ports: Vec<ServicePort>,                         // 1–10, unique names
-    pub readiness_check: Option<ServiceReadinessCheck>,  // None = { type: TCP_CONNECT } on all ports
+    pub ports: Vec<ServicePort>,                         // 1–10, unique names; no two of one protocol share a number
+    pub readiness_check: Option<ServiceReadinessCheck>,  // None = { type: TCP_CONNECT } on every TCP port
     pub restart_policy: Option<ServiceRestartPolicy>,    // None = { maxAttempts: 0, completedTasks: RERUN }
     pub variables: Option<HashMap<String, FormatString>>, // same schema as Environment.variables
     pub script: ServiceScript,
@@ -217,6 +217,7 @@ impl Service {
     pub fn readiness_check(&self) -> ServiceReadinessCheck;  // declared, or the §9 default
     pub fn restart_policy(&self) -> ServiceRestartPolicy;    // declared, or the §9 default
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
+    pub fn tcp_port_names(&self) -> impl Iterator<Item = &str>;  // the ports a defaulted TCP_CONNECT probes
 }
 ```
 
@@ -246,9 +247,26 @@ entry like a Job Environment, with its own `resolved_symtab` (see
 ```rust
 pub struct ServicePort {
     pub name: String,                 // identifier, not "File", unique within the Service
-    pub port: Option<FormatString>,   // <posinteger> | <posintstring>, 1–65535; None = runtime allocates
+    pub port: Option<FormatString>,   // <posinteger> | <posintstring>, 1–65535 in the protocol's space; None = runtime allocates
+    #[serde(default)]
+    pub protocol: ServicePortProtocol, // §9.2 item 3: TCP (default) | UDP; a literal, not @fmtstring
+}
+
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ServicePortProtocol { #[default] Tcp, Udp }   // Copy, Ord, Hash, Serialize, Display
+
+impl ServicePortProtocol {
+    pub fn as_str(&self) -> &'static str;   // "TCP" | "UDP" — also the WrappedService.Protocols spelling
+    pub fn is_default(&self) -> bool;       // for skip_serializing_if on job types
 }
 ```
+
+`protocol` is an enum literal, so `udp`, `SCTP`, or a format string such as `"{{ Param.Proto
+}}"` is a serde `unknown variant` error, as a bad `completedTasks` is. TCP and UDP numbers are
+separate spaces: two ports may give the same `port` when their protocols differ, and a number
+is requested or allocated in the space of its protocol (see [validation.md](validation.md),
+pass 11, and [job-creation.md](job-creation.md), "Services"). A UDP port cannot be probed by
+`TCP_CONNECT`.
 
 ### Numeric `@fmtstring` fields
 
@@ -272,7 +290,7 @@ so a field belonging to another variant (`ports` on `STDOUT`, `intervalSeconds` 
 
 ```rust
 pub enum ServiceReadinessCheck {
-    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },  // "TCP_CONNECT"
+    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },  // "TCP_CONNECT"; ports: TCP ports only, None = every TCP port
     Command { interval_seconds: Option<FormatString>, timeout_seconds: Option<FormatString> }, // "COMMAND"
     Stdout { timeout_seconds: Option<FormatString> },                                   // "STDOUT"
 }

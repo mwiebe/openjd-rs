@@ -346,9 +346,11 @@ pub(super) fn instantiate_service<'a>(
             Ok(job::ServicePort {
                 name: p.name.clone(),
                 port,
+                protocol: p.protocol,
             })
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
+    check_duplicate_port_numbers(&ports, &ports_path)?;
 
     let rc_path = path_field(path, "readinessCheck");
     let positive = 1..=i64::MAX;
@@ -357,7 +359,9 @@ pub(super) fn instantiate_service<'a>(
             ports: probed,
             timeout_seconds,
         } => job::ServiceReadinessCheck::TcpConnect {
-            ports: probed.unwrap_or_else(|| svc.port_names().map(str::to_string).collect()),
+            // §9 item 7 / §9.3 item 2: the default port set is every TCP
+            // port; validation has rejected a Service with none.
+            ports: probed.unwrap_or_else(|| svc.tcp_port_names().map(str::to_string).collect()),
             timeout_seconds: resolve_service_u64(
                 timeout_seconds.as_ref(),
                 &service_symtab,
@@ -520,6 +524,36 @@ pub(super) fn instantiate_service<'a>(
         resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(&filtered)),
         ..converted
     })
+}
+
+/// §9 item 6.4 / §9.7 item 8: no two ports of the same `protocol` share a
+/// resolved `port` number. Template validation applies the same rule to
+/// literal numbers; this catches the format-string forms once resolved,
+/// reporting the later port with the same message, at `ports[i] -> port`.
+fn check_duplicate_port_numbers(
+    ports: &[job::ServicePort],
+    ports_path: &[PathElement],
+) -> Result<(), ModelError> {
+    let mut errors = ValidationErrors::default();
+    for (i, later) in ports.iter().enumerate() {
+        let Some(number) = later.port else {
+            continue;
+        };
+        if let Some(earlier) = ports[..i]
+            .iter()
+            .find(|p| p.protocol == later.protocol && p.port == Some(number))
+        {
+            errors.add(
+                &path_field(&path_index(ports_path, i), "port"),
+                format!(
+                    "{} port {number} is also used by port '{}'; two ports with the same \
+                     protocol must not have the same port number.",
+                    later.protocol, earlier.name
+                ),
+            );
+        }
+    }
+    errors.into_result("JobTemplate")
 }
 
 /// Resolve one of a Service's numeric `@fmtstring` fields (`port`,

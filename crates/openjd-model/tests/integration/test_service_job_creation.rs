@@ -17,7 +17,9 @@ use openjd_expr::{ExprValue, FormatString, SymbolTable};
 use openjd_model::job::service_symbols::{
     add_wrapped_service_symbols, build_service_symbol_table, ServiceEndpoint, ServiceEndpoints,
 };
-use openjd_model::job::{self, CompletedTasksPolicy, RunScope, ServiceReadinessCheck};
+use openjd_model::job::{
+    self, CompletedTasksPolicy, RunScope, ServicePortProtocol, ServiceReadinessCheck,
+};
 use openjd_model::{
     create_job, decode_job_template, CallerLimits, JobParameterInputValues, ModelError,
 };
@@ -766,6 +768,140 @@ steps:
 }
 
 // ════════════════════════════════════════════════════════════════════
+// <ServicePort>.protocol — §9.2 item 3, §9 items 6.4 and 7, §9.7 item 8
+// ════════════════════════════════════════════════════════════════════
+
+/// A metrics sink with a UDP `ingest` port and a TCP `api` port, both
+/// numbered by Job Parameters, with the readiness check `readiness` (a YAML
+/// body indented four spaces; empty = omitted).
+fn protocol_template(readiness: &str) -> String {
+    format!(
+        r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Test
+parameterDefinitions:
+  - {{ name: Ingest, type: INT, default: 8125 }}
+  - {{ name: Api, type: INT, default: 8080 }}
+jobServices:
+  - name: Metrics
+    ports:
+      - name: ingest
+        port: "{{{{ Param.Ingest }}}}"
+        protocol: UDP
+      - name: api
+        port: "{{{{ Param.Api }}}}"
+{readiness}    script:
+      actions:
+        onRun:
+          command: sink
+steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: run
+"#
+    )
+}
+
+#[test]
+fn port_protocol_is_carried_into_the_job_and_tcp_is_omitted_from_json() {
+    let job = create_ok(&protocol_template(""), &[]);
+    let svc = &job.job_services.as_ref().unwrap()[0];
+    assert_eq!(
+        svc.ports,
+        vec![
+            job::ServicePort {
+                name: "ingest".into(),
+                port: Some(8125),
+                protocol: ServicePortProtocol::Udp,
+            },
+            job::ServicePort {
+                name: "api".into(),
+                port: Some(8080),
+                protocol: ServicePortProtocol::Tcp,
+            },
+        ]
+    );
+    let json = serde_json::to_value(svc).unwrap();
+    assert_eq!(json["ports"][0]["protocol"], "UDP");
+    assert!(
+        json["ports"][1].get("protocol").is_none(),
+        "TCP is the default and is not serialized: {json}"
+    );
+    // A Job serialized before `protocol` existed still deserializes.
+    let legacy: job::ServicePort = serde_json::from_str(r#"{"name": "main", "port": 80}"#).unwrap();
+    assert_eq!(legacy.protocol, ServicePortProtocol::Tcp);
+    let back: job::Service = serde_json::from_value(json).unwrap();
+    assert_eq!(&back, svc);
+}
+
+#[test]
+fn default_tcp_connect_probes_only_the_tcp_ports() {
+    let job = create_ok(&protocol_template(""), &[]);
+    let svc = &job.job_services.as_ref().unwrap()[0];
+    assert_eq!(
+        svc.readiness_check,
+        ServiceReadinessCheck::TcpConnect {
+            ports: vec!["api".to_string()],
+            timeout_seconds: 300,
+        }
+    );
+    // An explicit TCP_CONNECT without `ports` defaults the same way.
+    let job = create_ok(
+        &protocol_template(
+            "    readinessCheck:\n      type: TCP_CONNECT\n      timeoutSeconds: 7\n",
+        ),
+        &[],
+    );
+    assert_eq!(
+        job.job_services.as_ref().unwrap()[0].readiness_check,
+        ServiceReadinessCheck::TcpConnect {
+            ports: vec!["api".to_string()],
+            timeout_seconds: 7,
+        }
+    );
+}
+
+#[test]
+fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
+    // Same number across protocols is allowed (DNS-style).
+    let job = create_ok(
+        &protocol_template(""),
+        &[("Ingest", "5353"), ("Api", "5353")],
+    );
+    let ports: Vec<Option<u16>> = job.job_services.as_ref().unwrap()[0]
+        .ports
+        .iter()
+        .map(|p| p.port)
+        .collect();
+    assert_eq!(ports, vec![Some(5353), Some(5353)]);
+
+    // Same number in one protocol's space is rejected once resolved.
+    let tmpl = protocol_template("").replace("        protocol: UDP\n", "");
+    let err = create_err(&tmpl, &[("Ingest", "6379"), ("Api", "6379")]);
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
+    );
+    // One literal and one format string are compared too.
+    let tmpl = protocol_template("    readinessCheck:\n      type: STDOUT\n").replace(
+        "port: \"{{ Param.Ingest }}\"\n        protocol: UDP",
+        "port: 9000\n        protocol: UDP",
+    );
+    let tmpl = tmpl.replace(
+        "port: \"{{ Param.Api }}\"",
+        "port: \"{{ Param.Api }}\"\n        protocol: UDP",
+    );
+    let err = create_err(&tmpl, &[("Api", "9000")]);
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[1] -> port:\n\tUDP port 9000 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // Runtime-facing symbol table construction
 // ════════════════════════════════════════════════════════════════════
 
@@ -782,6 +918,7 @@ fn service_symbol_table_resolves_the_rfc_examples_format_strings() {
                     p.to_string(),
                     ServiceEndpoint {
                         port: 6379,
+                        protocol: ServicePortProtocol::Tcp,
                         bind_address: "0.0.0.0".to_string(),
                         connect_address: "cache.farm.example".to_string(),
                     },
@@ -831,5 +968,14 @@ fn service_symbol_table_resolves_the_rfc_examples_format_strings() {
         )
         .unwrap(),
         "Cache/main"
+    );
+    // RFC 0009 §4.3.1: the Docker `-p` list with the protocol of each port.
+    let fs = FormatString::new(
+        "{{ flatten([['-p', string(WrappedService.Ports[i]) + ':' + string(WrappedService.Ports[i]) + '/' + lower(WrappedService.Protocols[i])] for i in range(len(WrappedService.Ports))]) }}",
+    )
+    .unwrap();
+    assert_eq!(
+        resolve(&fs, &wrapped).unwrap(),
+        r#"["-p", "6379:6379/tcp"]"#
     );
 }

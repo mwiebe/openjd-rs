@@ -22,6 +22,7 @@ use openjd_expr::format_string::FormatString;
 use openjd_expr::symbol_table::{SerializedSymbolTable, SymbolTable};
 use openjd_expr::ExprValue;
 use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
+use openjd_model::job::ServicePortProtocol;
 use openjd_model::job::{
     Action, CompletedTasksPolicy, Environment, EnvironmentActions, EnvironmentScript, RunScope,
     Service, ServiceActions, ServicePort, ServiceReadinessCheck, ServiceRestartPolicy,
@@ -497,6 +498,7 @@ fn endpoints(name: &str, port: u16) -> ServiceEndpoints {
             "main".to_string(),
             ServiceEndpoint {
                 port,
+                protocol: ServicePortProtocol::Tcp,
                 bind_address: "127.0.0.1".into(),
                 connect_address: "127.0.0.1".into(),
             },
@@ -514,6 +516,7 @@ fn service(name: &str, on_run: Action) -> Service {
         ports: vec![ServicePort {
             name: "main".into(),
             port: None,
+            protocol: ServicePortProtocol::Tcp,
         }],
         readiness_check: ServiceReadinessCheck::Stdout {
             timeout_seconds: 30,

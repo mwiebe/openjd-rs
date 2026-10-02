@@ -32,7 +32,8 @@
 //! Pydantic-style error path + message.
 
 use openjd_model::template::{
-    CompletedTasksPolicy, ServiceActions, ServiceReadinessCheck, ServiceRestartPolicy,
+    CompletedTasksPolicy, ServiceActions, ServicePortProtocol, ServiceReadinessCheck,
+    ServiceRestartPolicy,
 };
 use openjd_model::{
     decode_environment_template, decode_job_template, CallerLimits, ModelExtension,
@@ -1161,6 +1162,192 @@ fn readiness_check_rejects_fields_of_other_types() {
 }
 
 // ════════════════════════════════════════════════════════════════════
+// <ServicePort>.protocol — §9.2 item 3, §9 items 6.4 and 7, §9.7 items 4 and 8
+// ════════════════════════════════════════════════════════════════════
+
+/// A service with the given `ports` list body (indented six spaces) and
+/// optional `readinessCheck` body (indented six spaces; empty = omitted).
+fn service_with_ports_and_readiness(ports: &str, readiness: &str) -> String {
+    let readiness = if readiness.is_empty() {
+        String::new()
+    } else {
+        format!("    readinessCheck:\n{readiness}")
+    };
+    job_with_service_body(&format!(
+        "    ports:\n{ports}{readiness}    script:\n      actions:\n        onRun:\n          command: run\n"
+    ))
+}
+
+#[test]
+fn port_protocol_defaults_to_tcp_and_accepts_both_literals() {
+    let jt = expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n      - name: api\n      - name: admin\n        protocol: TCP\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+    let svc = &jt.job_services.as_ref().unwrap()[0];
+    let protocols: Vec<ServicePortProtocol> = svc.ports.iter().map(|p| p.protocol).collect();
+    assert_eq!(
+        protocols,
+        vec![
+            ServicePortProtocol::Udp,
+            ServicePortProtocol::Tcp,
+            ServicePortProtocol::Tcp
+        ]
+    );
+    assert_eq!(
+        svc.tcp_port_names().collect::<Vec<_>>(),
+        vec!["api", "admin"]
+    );
+}
+
+#[test]
+fn port_protocol_is_a_case_sensitive_enum_not_a_format_string() {
+    for bad in ["udp", "SCTP", "{{ Param.P }}"] {
+        let err = decode_job_template(
+            yaml_val(&service_with_ports_and_readiness(
+                &format!("      - name: main\n        protocol: \"{bad}\"\n"),
+                "",
+            )),
+            Some(SERVICE_EXTS),
+            &CallerLimits::default(),
+        )
+        .expect_err("invalid protocol");
+        assert!(
+            err.to_string()
+                .contains(&format!("unknown variant `{bad}`")),
+            "got: {err}"
+        );
+    }
+}
+
+#[test]
+fn tcp_connect_may_not_name_a_udp_port() {
+    expect_job_err(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n      - name: api\n",
+            "      type: TCP_CONNECT\n      ports: [api, ingest]\n",
+        ),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[0] -> readinessCheck -> ports[1]:\n\tport 'ingest' has protocol UDP and cannot be probed by a TCP_CONNECT readiness check; only TCP ports may be named.",
+        ],
+    );
+    // Naming the TCP port alone is fine.
+    expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n      - name: api\n",
+            "      type: TCP_CONNECT\n      ports: [api]\n",
+        ),
+        SERVICE_EXTS,
+    );
+}
+
+#[test]
+fn all_udp_service_requires_stdout_or_command_readiness() {
+    // Omitted: the default TCP_CONNECT has nothing to probe.
+    expect_job_err(
+        &service_with_ports_and_readiness("      - name: ingest\n        protocol: UDP\n", ""),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[0] -> readinessCheck:\n\tthe default TCP_CONNECT readiness check has no TCP port to probe: none of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is required.",
+        ],
+    );
+    // Explicit TCP_CONNECT without `ports`: its default list is empty.
+    expect_job_err(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n      - name: discovery\n        protocol: UDP\n",
+            "      type: TCP_CONNECT\n      timeoutSeconds: 30\n",
+        ),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[0] -> readinessCheck:\n\ta TCP_CONNECT readiness check has no TCP port to probe: none of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is required.",
+        ],
+    );
+    // STDOUT and COMMAND are accepted.
+    expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n",
+            "      type: STDOUT\n      timeoutSeconds: 60\n",
+        ),
+        SERVICE_EXTS,
+    );
+    expect_job_ok(
+        &job_with_service_body(
+            "    ports:\n      - name: ingest\n        protocol: UDP\n    readinessCheck:\n      type: COMMAND\n    script:\n      actions:\n        onRun:\n          command: run\n        onReadinessCheck:\n          command: probe\n",
+        ),
+        SERVICE_EXTS,
+    );
+    // A mixed Service may omit the check: the default probes the TCP port.
+    expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        protocol: UDP\n      - name: api\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+}
+
+#[test]
+fn same_port_number_twice_in_one_protocol_is_rejected() {
+    // TCP given and defaulted.
+    expect_job_err(
+        &service_with_ports_and_readiness(
+            "      - name: main\n        port: 6379\n      - name: admin\n        port: 6379\n        protocol: TCP\n",
+            "",
+        ),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'main'; two ports with the same protocol must not have the same port number.",
+        ],
+    );
+    // UDP twice.
+    expect_job_err(
+        &service_with_ports_and_readiness(
+            "      - name: ingest\n        port: 8125\n        protocol: UDP\n      - name: trace\n        port: 8125\n        protocol: UDP\n",
+            "      type: STDOUT\n",
+        ),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "jobServices[0] -> ports[1] -> port:\n\tUDP port 8125 is also used by port 'ingest'; two ports with the same protocol must not have the same port number.",
+        ],
+    );
+}
+
+#[test]
+fn same_port_number_across_protocols_is_allowed() {
+    let jt = expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: tcp\n        port: 5353\n      - name: udp\n        port: 5353\n        protocol: UDP\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+    let svc = &jt.job_services.as_ref().unwrap()[0];
+    assert_eq!(svc.ports[0].port.as_ref().unwrap().raw(), "5353");
+    assert_eq!(svc.ports[1].port.as_ref().unwrap().raw(), "5353");
+}
+
+#[test]
+fn duplicate_port_number_check_defers_format_strings_to_job_creation() {
+    // A format-string number is not compared at template validation.
+    expect_job_ok(
+        &service_with_ports_and_readiness(
+            "      - name: main\n        port: 6379\n      - name: admin\n        port: \"{{ Param.P }}\"\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
 // <ServiceRestartPolicy> — §9.4
 // ════════════════════════════════════════════════════════════════════
 
@@ -1418,14 +1605,14 @@ fn service_rejects_unknown_fields() {
     );
     let err = decode_job_template(
         yaml_val(&job_with_service_body(
-            "    ports: [{name: main, protocol: UDP}]\n    script: {actions: {onRun: {command: run}}}\n",
+            "    ports: [{name: main, transport: UDP}]\n    script: {actions: {onRun: {command: run}}}\n",
         )),
         Some(SERVICE_EXTS),
         &CallerLimits::default(),
     )
     .expect_err("unknown port field");
     assert!(
-        err.to_string().contains("unknown field `protocol`"),
+        err.to_string().contains("unknown field `transport`"),
         "got: {err}"
     );
     let err = decode_job_template(

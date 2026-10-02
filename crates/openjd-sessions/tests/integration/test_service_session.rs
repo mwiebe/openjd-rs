@@ -21,6 +21,7 @@ use openjd_expr::format_string::FormatString;
 use openjd_expr::symbol_table::{SerializedSymbolTable, SymbolTable};
 use openjd_expr::ExprValue;
 use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
+use openjd_model::job::ServicePortProtocol;
 use openjd_model::job::{
     Action, CancelationMode, CompletedTasksPolicy, EmbeddedFile, Environment, EnvironmentActions,
     EnvironmentScript, RunScope, Service, ServiceActions, ServicePort, ServiceReadinessCheck,
@@ -106,6 +107,7 @@ impl ServiceBuilder {
                     .map(|p| ServicePort {
                         name: p.to_string(),
                         port: None,
+                        protocol: ServicePortProtocol::Tcp,
                     })
                     .collect(),
                 readiness_check: tcp_check(ports, 300),
@@ -130,6 +132,17 @@ impl ServiceBuilder {
     }
     fn readiness(mut self, check: ServiceReadinessCheck) -> Self {
         self.service.readiness_check = check;
+        self
+    }
+    /// Declare the named port `protocol: UDP`.
+    fn udp_port(mut self, name: &str) -> Self {
+        let port = self
+            .service
+            .ports
+            .iter_mut()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("no port {name}"));
+        port.protocol = ServicePortProtocol::Udp;
         self
     }
     fn on_enter(mut self, a: Action) -> Self {
@@ -224,15 +237,29 @@ fn free_port() -> u16 {
 }
 
 fn endpoints(name: &str, ports: &[(&str, u16)]) -> ServiceEndpoints {
+    endpoints_with_protocols(
+        name,
+        &ports
+            .iter()
+            .map(|(p, port)| (*p, *port, ServicePortProtocol::Tcp))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn endpoints_with_protocols(
+    name: &str,
+    ports: &[(&str, u16, ServicePortProtocol)],
+) -> ServiceEndpoints {
     ServiceEndpoints::new(
         name,
         ports
             .iter()
-            .map(|(p, port)| {
+            .map(|(p, port, protocol)| {
                 (
                     p.to_string(),
                     ServiceEndpoint {
                         port: *port,
+                        protocol: *protocol,
                         bind_address: "127.0.0.1".into(),
                         connect_address: "127.0.0.1".into(),
                     },
@@ -1228,6 +1255,7 @@ async fn service_symbols_resolve_in_on_run_args() {
             "p".to_string(),
             ServiceEndpoint {
                 port: db_port,
+                protocol: ServicePortProtocol::Tcp,
                 bind_address: "0.0.0.0".into(),
                 connect_address: "db.internal".into(),
             },
@@ -1293,6 +1321,7 @@ async fn earlier_service_bind_address_is_not_in_scope() {
             "p".to_string(),
             ServiceEndpoint {
                 port: 9,
+                protocol: ServicePortProtocol::Tcp,
                 bind_address: "0.0.0.0".into(),
                 connect_address: "db".into(),
             },
@@ -1480,6 +1509,143 @@ async fn with_config_rejects_mismatched_service_name_and_command_without_check()
         err.to_string(),
         "Service 'svc': readiness check type is COMMAND but onReadinessCheck is not defined"
     );
+}
+
+#[tokio::test]
+async fn with_config_checks_each_endpoint_protocol_against_the_declared_port() {
+    let root = TempDir::new().unwrap();
+    // The scheduler allocated `ingest` as TCP, but the port is UDP.
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .readiness(tcp_check(&["api"], 300))
+        .build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:protocol"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        endpoints: endpoints("svc", &[("ingest", 5), ("api", 6)]),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc' port 'ingest' is declared UDP but its endpoint assignment is TCP"
+    );
+
+    // A TCP_CONNECT check that names the UDP port (model validation
+    // forbids this; the runtime refuses rather than probing it).
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .readiness(tcp_check(&["api", "ingest"], 300))
+        .build();
+    let err = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:probe-udp"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        endpoints: endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", 5, ServicePortProtocol::Udp),
+                ("api", 6, ServicePortProtocol::Tcp),
+            ],
+        ),
+        in_scope_endpoints: vec![],
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        err.to_string(),
+        "Service 'svc': TCP_CONNECT readiness check names port 'ingest', whose protocol is UDP; \
+         only TCP ports can be probed"
+    );
+
+    // Matching protocols construct fine.
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
+        .udp_port("ingest")
+        .readiness(tcp_check(&["api"], 300))
+        .build();
+    ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:protocol-ok"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        endpoints: endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", 5, ServicePortProtocol::Udp),
+                ("api", 6, ServicePortProtocol::Tcp),
+            ],
+        ),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+}
+
+/// A mixed TCP+UDP Service whose `TCP_CONNECT` check (the model's default
+/// set: every TCP port) probes the TCP port only: the UDP port is never
+/// connected to, and the Service is READY once the TCP listener is up.
+#[tokio::test]
+async fn tcp_connect_readiness_probes_only_the_listed_tcp_port_of_a_mixed_service() {
+    let root = TempDir::new().unwrap();
+    let tcp_port = free_port();
+    let udp_port = {
+        let s = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        s.local_addr().unwrap().port()
+    };
+    // Bind the UDP port and the TCP port; report both.
+    let on_run = Action {
+        command: fs("python3"),
+        args: Some(vec![
+            fs("-c"),
+            fs(r#"
+import socket, sys
+u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+u.bind((sys.argv[1], int(sys.argv[2])))
+t = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+t.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+t.bind((sys.argv[3], int(sys.argv[4])))
+t.listen(5)
+print("bound", sys.argv[2], sys.argv[4], flush=True)
+while True:
+    c, _ = t.accept()
+    c.close()
+"#),
+            fs("{{Service.svc.ingest.bindAddress}}"),
+            fs("{{Service.svc.ingest.port}}"),
+            fs("{{Service.svc.api.bindAddress}}"),
+            fs("{{Service.svc.api.port}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    };
+    let service = ServiceBuilder::new("svc", &["ingest", "api"], on_run)
+        .udp_port("ingest")
+        .readiness(tcp_check(&["api"], 30))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints_with_protocols(
+            "svc",
+            &[
+                ("ingest", udp_port, ServicePortProtocol::Udp),
+                ("api", tcp_port, ServicePortProtocol::Tcp),
+            ],
+        ),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(
+        lines(&exit.stdout),
+        vec![format!("bound {udp_port} {tcp_port}")]
+    );
+    ss.end().await.unwrap();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -2026,8 +2192,8 @@ fn forwarding_hook(tag: &str, trace: &str) -> Action {
     let script = format!(
         "echo \"[{tag}] name={{{{WrappedService.Name}}}} \
          ports={{{{len(WrappedService.Ports)}}}} \
-         p0={{{{WrappedService.PortNames[0]}}}}:{{{{WrappedService.Ports[0]}}}}@{{{{WrappedService.BindAddresses[0]}}}} \
-         p1={{{{WrappedService.PortNames[1]}}}}:{{{{WrappedService.Ports[1]}}}}@{{{{WrappedService.BindAddresses[1]}}}} \
+         p0={{{{WrappedService.PortNames[0]}}}}:{{{{WrappedService.Ports[0]}}}}@{{{{WrappedService.BindAddresses[0]}}}}/{{{{lower(WrappedService.Protocols[0])}}}} \
+         p1={{{{WrappedService.PortNames[1]}}}}:{{{{WrappedService.Ports[1]}}}}@{{{{WrappedService.BindAddresses[1]}}}}/{{{{lower(WrappedService.Protocols[1])}}}} \
          cmd={{{{WrappedAction.Command}}}} nargs=$#\" >> '{trace}'\n\
          exec {{{{WrappedAction.Command}}}} \"$@\""
     );
@@ -2101,12 +2267,20 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
     .readiness(stdout_check(300))
     .on_enter(sh("echo openjd_env: FROM_ENTER=yes"))
     .on_exit(sh(&format!("echo exit >> {t}")))
+    // `metrics` is a UDP port: WrappedService.Protocols reports it.
+    .udp_port("metrics")
     .build();
     let mut ss = service_session(
         &root,
         service,
         vec![wrapper],
-        endpoints("svc", &[("main", 4100), ("metrics", 4101)]),
+        endpoints_with_protocols(
+            "svc",
+            &[
+                ("main", 4100, ServicePortProtocol::Tcp),
+                ("metrics", 4101, ServicePortProtocol::Udp),
+            ],
+        ),
         vec![],
     );
     let ready = ss.start().await.unwrap();
@@ -2123,7 +2297,8 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
     assert_eq!(lines(&exit.stdout)[0], "from-enter=yes");
     ss.end().await.unwrap();
 
-    let values = "name=svc ports=2 p0=main:4100@127.0.0.1 p1=metrics:4101@127.0.0.1 cmd=sh nargs=2";
+    let values =
+        "name=svc ports=2 p0=main:4100@127.0.0.1/tcp p1=metrics:4101@127.0.0.1/udp cmd=sh nargs=2";
     assert_eq!(
         read_trace(&trace),
         vec![
@@ -2185,7 +2360,7 @@ async fn wrap_hooks_run_only_for_actions_the_service_defines() {
     assert_eq!(
         read_trace(&trace),
         vec![format!(
-            "[onWrapServiceRun] name=svc ports=2 p0=main:{port}@127.0.0.1 p1=metrics:7@127.0.0.1 cmd=python3 nargs=5"
+            "[onWrapServiceRun] name=svc ports=2 p0=main:{port}@127.0.0.1/tcp p1=metrics:7@127.0.0.1/tcp cmd=python3 nargs=5"
         )]
     );
 }
@@ -2239,7 +2414,8 @@ async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
     ss.end().await.unwrap();
     let got = read_trace(&trace);
     let hooks: Vec<&String> = got.iter().filter(|l| l.starts_with('[')).collect();
-    let values = "name=svc ports=2 p0=main:4200@127.0.0.1 p1=metrics:4201@127.0.0.1 cmd=sh nargs=2";
+    let values =
+        "name=svc ports=2 p0=main:4200@127.0.0.1/tcp p1=metrics:4201@127.0.0.1/tcp cmd=sh nargs=2";
     assert_eq!(hooks[0], &format!("[onWrapServiceRun] {values}"));
     // Every check invocation went through the hook, while onRun ran.
     assert!(hooks.len() >= 3, "{got:?}");
@@ -2670,7 +2846,8 @@ async fn wrapping_service_environment_wraps_the_service_actions() {
     assert!(ss.start().await.unwrap().is_ready());
     ss.end().await.unwrap();
 
-    let values = "name=svc ports=2 p0=main:4200@127.0.0.1 p1=metrics:4201@127.0.0.1 cmd=sh nargs=2";
+    let values =
+        "name=svc ports=2 p0=main:4200@127.0.0.1/tcp p1=metrics:4201@127.0.0.1/tcp cmd=sh nargs=2";
     assert_eq!(
         read_trace(&trace),
         vec![

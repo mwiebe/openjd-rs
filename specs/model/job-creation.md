@@ -259,7 +259,18 @@ each seeing every Job Service and the Step Services before it. Per Service
    whose message carries the field path. The §9 defaults also fill the
    `readinessCheck` / `restartPolicy` objects when the template omits
    them, and a `TCP_CONNECT` check without `ports` is expanded to every
-   declared port, so `job::Service` never needs the template defaults.
+   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 7 —
+   validation has rejected a Service with none), so `job::Service` never
+   needs the template defaults. Each `job::ServicePort` carries its
+   `protocol` (§9.2 item 3) unchanged from the template. Once every
+   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 6.4
+   / §9.7 item 8 to the resolved numbers: two ports with the same
+   `protocol` and the same number fail at `ports[i] -> port` of the later
+   one with pass 11's wording (`<TCP|UDP> port <n> is also used by port
+   '<earlier>'; two ports with the same protocol must not have the same
+   port number.`), which catches the format-string forms the template
+   validator could not compare. The same number on a TCP and a UDP port
+   is accepted.
 4. **Carried-forward re-checks** — `build_service_check_symtab` extends the
    Service's table with the `Unresolved` placeholders the Service Session
    binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded

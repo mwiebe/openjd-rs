@@ -150,6 +150,13 @@ Checks, before any directory is created:
 - Every declared port, and every port a `TCP_CONNECT` check names, has an
   endpoint: else `SessionError::ServicePortUnassigned { name, port }` —
   `Service 'svc' port 'metrics' has no endpoint assignment`.
+- Each endpoint's `protocol` is the declared port's `protocol` (§9.2 item 3;
+  the number was allocated in that protocol's space): else
+  `SessionError::Runtime("Service 'svc' port 'ingest' is declared UDP but its
+  endpoint assignment is TCP")`. And every port a `TCP_CONNECT` check names
+  is TCP (§9.3 item 2): else `SessionError::Runtime("Service 'svc':
+  TCP_CONNECT readiness check names port 'ingest', whose protocol is UDP;
+  only TCP ports can be probed")` — model validation already forbids this.
 - A `COMMAND` readiness check comes with an `onReadinessCheck`: else
   `SessionError::Runtime("Service 'svc': readiness check type is COMMAND but
   onReadinessCheck is not defined")` (model validation already forbids this
@@ -157,7 +164,8 @@ Checks, before any directory is created:
 
 The endpoint assignment's ports are then re-ordered into the Service's
 `ports` declaration order, so `WrappedService.PortNames` / `.Ports` /
-`.BindAddresses` are parallel lists in declaration order (§4.3.1).
+`.BindAddresses` / `.Protocols` are parallel lists in declaration order
+(§4.3.1).
 
 Then `Session::with_config(config.session)` runs — same working directory,
 sticky-bit, cross-user helper, and host-info logging as any Session.
@@ -353,7 +361,9 @@ pub enum ServiceReadiness {
 The timeout (`timeoutSeconds`, model default 300) is measured from launch.
 
 - **`TCP_CONNECT`** — for each probed port (the check's `ports`, which the
-  model defaults to every declared port), the probe address is the loopback
+  model restricts to TCP ports and defaults to every declared TCP port — a
+  UDP port of a mixed Service is never probed, §9 item 7), the probe address
+  is the loopback
   address of the same family when `bindAddress` is a wildcard (`0.0.0.0` →
   `127.0.0.1`, `::` → `::1`), otherwise `bindAddress` itself (an IP literal or
   a hostname). One probe round connects to every target in turn with a 1 s
@@ -519,8 +529,9 @@ with the Service's document library, so a wrapper-defined name never leaks
 into the wrapped command, while the wrapping Environment's `let`s, embedded
 files, and the hook's own command/args/timeout/cancelation resolve with
 *its* document's library (`WrapLibraries { inner, hook }`) — and
-`WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses`
-(`openjd_model::job::service_symbols::add_wrapped_service_symbols`, parallel
+`WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses` /
+`.Protocols` (`"TCP"` / `"UDP"` per port;
+`openjd_model::job::service_symbols::add_wrapped_service_symbols`, parallel
 lists in port declaration order). `WrappedAction.Environment` is the
 session-defined environment the wrapped action would have run with: the
 entered Environments' `variables` and `openjd_env` exports (RFC 0008), then

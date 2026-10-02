@@ -62,7 +62,7 @@ The structural template types — `template::JobTemplate`,
 `template::Environment`, `template::RunScope`, `template::EnvironmentScript`,
 `template::EnvironmentActions`, `template::WrapHookScope`, `template::Action`,
 `template::EmbeddedFile`, `template::StepScript`,
-`template::Service`, `template::ServicePort`,
+`template::Service`, `template::ServicePort`, `template::ServicePortProtocol`,
 `template::ServiceReadinessCheck`, `template::ServiceRestartPolicy`,
 `template::CompletedTasksPolicy`, `template::ServiceScript`,
 `template::ServiceActions`,
@@ -476,18 +476,37 @@ pub struct template::Service {
 }
 
 impl template::Service {
-    /// Declared, or the §9 default `{ type: TCP_CONNECT }` on every port.
+    /// Declared, or the §9 default `{ type: TCP_CONNECT }` on every TCP port.
     pub fn readiness_check(&self) -> ServiceReadinessCheck;
     /// Declared, or the §9 default `{ maxAttempts: 0, completedTasks: RERUN }`.
     pub fn restart_policy(&self) -> ServiceRestartPolicy;
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
+    /// The ports whose `protocol` is TCP — a defaulted TCP_CONNECT's probe set.
+    pub fn tcp_port_names(&self) -> impl Iterator<Item = &str>;
 }
 
 pub struct template::ServicePort {
     pub name: String,
     /// `<posinteger> | <posintstring>`, modeled like `<Action>.timeout`.
     pub port: Option<FormatString>,
+    /// §9.2 item 3; default `TCP`. A literal, not a format string.
+    #[serde(default)]
+    pub protocol: template::ServicePortProtocol,
 }
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum template::ServicePortProtocol {
+    #[default]
+    Tcp,
+    Udp,
+}
+
+impl template::ServicePortProtocol {
+    pub fn as_str(&self) -> &'static str;   // "TCP" | "UDP"
+    pub fn is_default(&self) -> bool;       // `== Tcp`, for skip_serializing_if
+}
+impl Display for template::ServicePortProtocol;  // as_str()
 
 /// Discriminated on `type`; the numeric fields are `@fmtstring`.
 pub enum template::ServiceReadinessCheck {
@@ -859,7 +878,7 @@ impl job::Environment {
 }
 
 // Re-exported from `template` for the job-side types:
-pub use template::{CompletedTasksPolicy, RunScope};
+pub use template::{CompletedTasksPolicy, RunScope, ServicePortProtocol};
 
 pub struct job::EnvironmentScript {
     pub let_bindings: Option<Vec<String>>,
@@ -1028,8 +1047,11 @@ impl Display for job::Document;
 
 pub struct job::ServicePort {
     pub name: String,
-    /// `None` when the runtime allocates the port.
+    /// `None` when the runtime allocates the port (in `protocol`'s space).
     pub port: Option<u16>,
+    /// `TCP` (default, omitted from JSON) or `UDP`.
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
 }
 
 #[serde(tag = "type")]
@@ -1520,6 +1542,9 @@ pub fn service_file_key(file_name: &str) -> String;                      // Serv
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ServiceEndpoint {
     pub port: u16,
+    /// The protocol the number was allocated in; `TCP` (default, omitted from JSON) or `UDP`.
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
     pub bind_address: String,
     pub connect_address: String,
 }
@@ -1550,8 +1575,8 @@ pub fn build_service_symbol_table(
     declaring: Option<&ServiceEndpoints>,
 ) -> Result<SymbolTable, ModelError>;
 
-/// `WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses`
-/// (Template Schemas §4.3.1) for the four `onWrapService*` hooks.
+/// `WrappedService.Name` / `.PortNames` / `.Ports` / `.BindAddresses` /
+/// `.Protocols` (Template Schemas §4.3.1) for the four `onWrapService*` hooks.
 pub fn add_wrapped_service_symbols(
     symtab: &mut SymbolTable,
     endpoints: &ServiceEndpoints,

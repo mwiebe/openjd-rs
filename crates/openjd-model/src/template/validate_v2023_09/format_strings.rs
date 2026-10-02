@@ -3299,7 +3299,8 @@ fn add_wrapped_step_name_scope(symtab: &mut SymbolTable) {
 }
 
 /// Augment with `WrappedService.*` — `Name` (string), `PortNames`
-/// (list[string]), `Ports` (list[int]), `BindAddresses` (list[string]) —
+/// (list[string]), `Ports` (list[int]), `BindAddresses` (list[string]),
+/// `Protocols` (list[string]) —
 /// available only in the four `onWrapService*` hooks (RFC 0009, Template
 /// Schemas §4.3.1).
 fn add_wrapped_service_scope(symtab: &mut SymbolTable) {

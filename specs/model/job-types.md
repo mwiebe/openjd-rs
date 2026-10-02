@@ -369,12 +369,16 @@ impl Display for Document;   // "JobTemplate" | <label> | "EnvironmentTemplate[i
 
 pub struct ServicePort {
     pub name: String,
-    pub port: Option<u16>,                                 // None = runtime allocates
+    pub port: Option<u16>,                                 // None = runtime allocates (in `protocol`'s space)
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,                     // §9.2 item 3: TCP (default, omitted from JSON) | UDP
 }
+
+pub use template::ServicePortProtocol;                     // re-exported; see template-types.md
 
 #[serde(tag = "type")]
 pub enum ServiceReadinessCheck {
-    TcpConnect { ports: Vec<String>, timeout_seconds: u64 },   // "TCP_CONNECT"; ports = every declared port when the template named none
+    TcpConnect { ports: Vec<String>, timeout_seconds: u64 },   // "TCP_CONNECT"; ports = every declared TCP port when the template named none
     Command { interval_seconds: u64, timeout_seconds: u64 },   // "COMMAND"
     Stdout { timeout_seconds: u64 },                           // "STDOUT"
 }
