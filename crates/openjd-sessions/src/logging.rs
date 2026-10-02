@@ -75,7 +75,7 @@ pub fn timestamp_usec() -> u64 {
 /// `openjd run` does for a Job's Service Sessions (`Service <name>`), so a
 /// Service's `onRun` output interleaved with Task output stays attributable.
 /// `action` is the name of an action running concurrently with another of
-/// the same Session (`onReadinessCheck` / `onWrapServiceReadinessCheck`;
+/// the same Session (`onHealthCheck` / `onWrapServiceHealthCheck`;
 /// RFC 0009 "Concurrency with `onRun`" rule 3). A record's message is
 /// prefixed `[<session>] [<action>] ` with whichever are present, in that
 /// order, and carries the structured fields `openjd_session_tag` and
@@ -87,8 +87,8 @@ pub fn timestamp_usec() -> u64 {
 /// assert_eq!(LogTag::default().prefix(), "");
 /// assert_eq!(LogTag { session: Some("Service Files"), action: None }.prefix(), "[Service Files] ");
 /// assert_eq!(
-///     LogTag { session: Some("Service Files"), action: Some("onReadinessCheck") }.prefix(),
-///     "[Service Files] [onReadinessCheck] "
+///     LogTag { session: Some("Service Files"), action: Some("onHealthCheck") }.prefix(),
+///     "[Service Files] [onHealthCheck] "
 /// );
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -174,12 +174,12 @@ macro_rules! session_tagged_log {
 /// session tag.
 ///
 /// This is how a Service Session satisfies RFC 0009 "Concurrency with
-/// `onRun`" rule 3 (log attribution): `onReadinessCheck` runs while `onRun`
+/// `onRun`" rule 3 (log attribution): `onHealthCheck` runs while `onRun`
 /// runs, so every line of its output — and every process-control line about
 /// it — is tagged, while `onRun`'s lines stay untagged.
 ///
 /// Usage:
-///   session_action_log!(info, session_id, Some("onReadinessCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
+///   session_action_log!(info, session_id, Some("onHealthCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
 #[macro_export]
 macro_rules! session_action_log {
     ($level:ident, $session_id:expr, $action:expr, $content:expr, $($arg:tt)+) => {
@@ -261,7 +261,7 @@ mod tests {
         crate::session_action_log!(
             info,
             "sid",
-            Some("onReadinessCheck"),
+            Some("onHealthCheck"),
             LogContent::COMMAND_OUTPUT,
             "line {}",
             1
@@ -269,7 +269,7 @@ mod tests {
         crate::session_action_log!(info, "sid", None, LogContent::COMMAND_OUTPUT, "line {}", 2);
         testing_logger::validate(|logs| {
             assert_eq!(logs.len(), 2);
-            assert_eq!(logs[0].body, "[onReadinessCheck] line 1");
+            assert_eq!(logs[0].body, "[onHealthCheck] line 1");
             assert_eq!(logs[1].body, "line 2");
             assert_eq!(logs[0].target, "openjd.sessions");
         });
@@ -280,7 +280,7 @@ mod tests {
         testing_logger::setup();
         let both = LogTag {
             session: Some("Service Files"),
-            action: Some("onReadinessCheck"),
+            action: Some("onHealthCheck"),
         };
         crate::session_tagged_log!(info, "sid", both, LogContent::COMMAND_OUTPUT, "l{}", 1);
         let session_only = LogTag {
@@ -306,7 +306,7 @@ mod tests {
         log_section_banner_tagged("sid", Some("Service Files"), "Entering Environment: E");
         log_section_banner_tagged("sid", None, "Entering Environment: E");
         testing_logger::validate(|logs| {
-            assert_eq!(logs[0].body, "[Service Files] [onReadinessCheck] l1");
+            assert_eq!(logs[0].body, "[Service Files] [onHealthCheck] l1");
             assert_eq!(logs[1].body, "[Service Files] l2");
             assert_eq!(logs[2].body, "l3");
             assert_eq!(

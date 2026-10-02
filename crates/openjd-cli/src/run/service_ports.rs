@@ -168,7 +168,7 @@ pub(super) fn describe_endpoints(endpoints: &ServiceEndpoints) -> String {
 mod tests {
     use super::*;
     use openjd_model::job::{
-        Action, CompletedTasksPolicy, ServiceActions, ServicePort, ServiceReadinessCheck,
+        Action, CompletedTasksPolicy, ServiceActions, ServiceHealthCheck, ServicePort,
         ServiceRestartPolicy, ServiceScript,
     };
 
@@ -199,7 +199,11 @@ mod tests {
                     protocol: *protocol,
                 })
                 .collect(),
-            readiness_check: ServiceReadinessCheck::Stdout { timeout_seconds: 1 },
+            health_check: ServiceHealthCheck::Stdout {
+                ready_timeout_seconds: 1,
+                health_interval_seconds: None,
+                failure_threshold: 3,
+            },
             restart_policy: ServiceRestartPolicy {
                 max_attempts: 0,
                 completed_tasks: CompletedTasksPolicy::Rerun,
@@ -215,7 +219,7 @@ mod tests {
                         timeout: None,
                         cancelation: None,
                     },
-                    on_readiness_check: None,
+                    on_health_check: None,
                     on_exit: None,
                 },
                 embedded_files: None,

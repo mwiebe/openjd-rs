@@ -137,7 +137,7 @@ execute(args).await
   │       ├── Readiness gate: start every Step Service, wait until READY
   │       ├── Enter step environments
   │       ├── Execute tasks (explicit, lazy iteration, or no-param single task),
-  │       │   each behind the readiness gate and watched for Service exits
+  │       │   each behind the readiness gate and watched for Service instance failures
   │       ├── Exit step environments (reverse order)
   │       └── Stop the Step's Services (reverse start order)
   │       A completedTasks: RERUN relaunch returns the Step (or every Step) to
@@ -507,14 +507,18 @@ including `None` for job Environments).
 ### Failure and restart
 
 While a Task runs, `RunContext::run_task` selects between the Task and
-`ServiceManager::wait_instance_failure`, which resolves when the `onRun` of any READY
-Service exits other than by cancelation. Between Tasks, the gate polls the same exit
-channels. An exit observed after the scope completed is never seen (nothing watches
-after the last Task), so it is not a failure — the RFC's stop race.
+`ServiceManager::wait_instance_failure`, which resolves when a READY Service suffers
+an instance failure: its `onRun` exits other than by cancelation, or its health check
+declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after READY —
+RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
+and, per lifecycle constraint 11, has already canceled `onRun` with its cancelation
+method). Between Tasks, the gate polls the same health and exit channels. An exit
+observed after the scope completed is never seen (nothing watches after the last
+Task), so it is not a failure — the RFC's stop race.
 
-On an instance failure the Service becomes UNREADY and the restart decision runs on
-a background task (`start_or_recover`), so a `KEEP` relaunch proceeds while the Task
-continues:
+On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged as
+`is UNHEALTHY: <reason>` first) and the restart decision runs on a background task
+(`start_or_recover`), so a `KEEP` relaunch proceeds while the Task continues:
 
 - `completedTasks: RERUN` — the running Task is canceled through the Task Session's
   cancel handle (its own `cancelation` method), logged as `Task canceled; it returns
@@ -543,8 +547,10 @@ continues:
 
 Then, if relaunches so far `< restartPolicy.maxAttempts`, the Service is relaunched
 (consuming one attempt): `ServiceSession::launch()` again in the same Session after an
-exit of a READY instance or a readiness timeout (which first cancels `onRun` and
-awaits its exit — "Failure and restart" step 2), but in a **new Service Session**
+exit of a READY instance, an UNHEALTHY verdict (the relaunch first awaits the exit of
+the `onRun` the Session canceled — "Failure and restart" step 2, constraint 5), or a
+ready timeout (which first cancels `onRun` and awaits its exit — step 2), but in a
+**new Service Session**
 (new working directory, new ports, Environments re-entered, `onEnter` re-run) when the
 failure may be a port conflict — `onRun` exited before becoming READY — or was a
 start failure (requested port unavailable, Environment `onEnter` failed, Service
@@ -596,12 +602,19 @@ line per event, each naming the Service and its scope: endpoints
 (`Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:41235`; a UDP port's
 address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
 unsuffixed), `onRun launched
-(launch N in this Session); readiness check: <TYPE>`, `is READY[: <message>]`,
-`is UNREADY: <reason> (completedTasks: <policy>)`, `Relaunching Service '<name>' onRun
-in its Service Session (relaunch N of M): <reason>` / `… in a new Service Session …`,
-`is FAILED: <reason>; N of M relaunch(es) used (restartPolicy.maxAttempts)`, and
-`stopped`. The Service's subprocess output streams through the session logger like a
-Task's, with the `[onReadinessCheck]` tag the runtime adds — including the runtime's
+(launch N in this Session); health check: <TYPE> (readyTimeoutSeconds N[,
+readinessIntervalSeconds N], healthIntervalSeconds N, failureThreshold N)` (or `…, no
+heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>]`,
+`is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
+<what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `Relaunching Service
+'<name>' onRun in its Service Session (relaunch N of M): <reason>` / `… in a new
+Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
+(restartPolicy.maxAttempts)`, and `stopped`. The `<reason>` of a failure is one of
+`failed to start: …`, `onRun exited before becoming READY (exit code: N[; <fail
+message>])`, `did not become READY within readyTimeoutSeconds`, `onRun exited while the
+scope still had work (…)`, or `instance UNHEALTHY: <the UNHEALTHY detail>`. The
+Service's subprocess output streams through the session logger like a Task's, with the
+`[onHealthCheck]` tag the runtime adds — including the runtime's
 WARN line when the Service's `onEnter` uses `openjd_redacted_env` without the
 document declaring `REDACTED_ENV_VARS` (see [Environment
 Lifecycle](#environment-lifecycle) "Per-document extension profiles").
@@ -615,8 +628,8 @@ created with `log_tag = "Service <name>"` — `"Service <name> (from <document>)
 external Service — so **every line the Service Session logs is prefixed `[Service
 <name>] `**: its Environments' `onEnter` / `onExit` output, `onEnter`'s, `onRun`'s,
 `onExit`'s, the `Output:` headers, and the process-control lines. The concurrent
-`onReadinessCheck`'s lines keep the RFC 0009 rule-3 action tag *after* the Service
-tag: `[Service Files] [onReadinessCheck] CHECK_OK`. A tagged Session's section
+`onHealthCheck`'s lines keep the RFC 0009 rule-3 action tag *after* the Service
+tag: `[Service Files] [onHealthCheck] CHECK_OK`. A tagged Session's section
 banners collapse to one tagged line each, and the CLI's `SessionLogger` prints
 `BANNER` records that carry a session tag (it still drops the untagged Task
 Session's, whose banners the CLI prints itself), so a Service Session's phases read:
@@ -631,7 +644,7 @@ Service 'Files' (Job scope) endpoints: main -> 127.0.0.1:41235
 [Service Files] --------- Service onEnter: Files
 [Service Files] Output:
 [Service Files] --------- Service onRun: Files (launch 1)
-Service 'Files' onRun launched (launch 1 in this Session); readiness check: TCP_CONNECT
+Service 'Files' onRun launched (launch 1 in this Session); health check: TCP_CONNECT (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)
 [Service Files] Output:
 Service 'Files' is READY
 …

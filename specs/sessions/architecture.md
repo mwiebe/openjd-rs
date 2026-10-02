@@ -69,7 +69,7 @@ pub use session::{Session, SessionState, SessionConfig, EnvironmentIdentifier};
 
 // Service Session (RFC 0009)
 pub use service_session::{
-    ServiceSession, ServiceSessionConfig, ServiceSessionState, ServiceReadiness, ServiceRunExit,
+    ServiceSession, ServiceSessionConfig, ServiceSessionState, ServiceHealth, ServiceUnhealthy, ServiceRunExit,
 };
 pub use action::{ActionState, ActionResult, ActionMessage};
 pub use action_status::ActionStatus;
@@ -123,8 +123,11 @@ ServiceSessionConfig ──► ServiceSession::with_config()  ──► Session:
         ▼
    launch()     ── ScriptRunnerBase::run_action(onRun) inside tokio::spawn(drive_run)
                        ├── stdout ──► ActionFilter ──► ActionMessage (status/progress/fail; service_ready)
-                       ├── TCP_CONNECT probe loop (1 s) ── or ── STDOUT openjd_service_ready
-                       ├── readiness timeout (from launch)
+                       ├── probes: TCP_CONNECT round / COMMAND onHealthCheck invocation / STDOUT openjd_service_ready
+                       │     every readinessIntervalSeconds until READY, then every healthIntervalSeconds;
+                       │     failureThreshold consecutive failures ──► UNHEALTHY ──► cancel onRun
+                       ├── ready timeout (from launch)
+                       ├── health ──► watch<ServiceHealth>
                        └── exit ──► watch<Option<ServiceRunExit>>
         │
         ├── wait_ready() / wait_exit() / cancel_run()

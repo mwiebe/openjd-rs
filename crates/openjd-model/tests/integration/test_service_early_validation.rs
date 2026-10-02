@@ -54,7 +54,7 @@ fn env_err(s: &str, expected: &[&str]) {
     }
 }
 
-/// A Job Template with one Job Service whose port, readiness timeout,
+/// A Job Template with one Job Service whose port, ready timeout,
 /// restart policy, variable, and consuming Task arg are supplied by the
 /// caller, so each test varies exactly one field.
 fn job(port: &str, timeout: &str, max_attempts: &str, var: &str, task_arg: &str) -> String {
@@ -75,9 +75,9 @@ jobServices:
     ports:
       - name: main
         port: {port}
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
-      timeoutSeconds: {timeout}
+      readyTimeoutSeconds: {timeout}
     restartPolicy:
       maxAttempts: {max_attempts}
     variables:
@@ -146,10 +146,10 @@ fn let_bound_values_are_resolved_and_range_checked() {
 }
 
 #[test]
-fn timeout_seconds_zero_is_rejected_at_validation() {
+fn ready_timeout_seconds_zero_is_rejected_at_validation() {
     job_err(
         &job(OK_PORT, r#""{{ 0 }}""#, OK_ATTEMPTS, OK_VAR, OK_ARG),
-        &["jobServices[0] -> readinessCheck -> timeoutSeconds:\n\tmust be > 0."],
+        &["jobServices[0] -> healthCheck -> readyTimeoutSeconds:\n\tmust be > 0."],
     );
 }
 

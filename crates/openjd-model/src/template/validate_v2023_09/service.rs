@@ -26,14 +26,20 @@
 //!   Service must not share a name with a Job Service. Different Steps may
 //!   reuse a Step Service name (§9.7 item 5).
 //! - **`<Service>` structure** (§9–§9.6): identifier names that are not
-//!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; literal
-//!   `timeoutSeconds`/`intervalSeconds` positive; literal `maxAttempts`
-//!   non-negative; `onReadinessCheck` defined iff the readiness type is
-//!   `COMMAND`; every port a `TCP_CONNECT` check names is declared and has
-//!   `protocol: TCP`; a Service none of whose ports is TCP declares a
-//!   `STDOUT` or `COMMAND` check (§9 item 6, §9.7 item 4); no two ports of
-//!   the same `protocol` have the same literal `port` number (§9 item 5.4,
-//!   §9.7 item 8 — format-string numbers are checked at job creation).
+//!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; the
+//!   literal `<ServiceHealthCheck>` numeric fields
+//!   (`readinessIntervalSeconds`, `readyTimeoutSeconds`,
+//!   `healthIntervalSeconds`, `failureThreshold`) positive; literal
+//!   `maxAttempts` non-negative; `onHealthCheck` defined iff the health
+//!   check type is `COMMAND`; every port a `TCP_CONNECT` check names is
+//!   declared and has `protocol: TCP`; a Service none of whose ports is TCP
+//!   declares a `STDOUT` or `COMMAND` check; a `STDOUT` check gives
+//!   `failureThreshold` only together with `healthIntervalSeconds` (§9 item
+//!   6, §9.3 items 3 and 6, §9.7 item 4 — a `STDOUT` check's
+//!   `readinessIntervalSeconds` is rejected as an unknown field at decode,
+//!   as `ports` is on anything but `TCP_CONNECT`); no two ports of the same
+//!   `protocol` have the same literal `port` number (§9 item 5.4, §9.7 item
+//!   8 — format-string numbers are checked at job creation).
 //!   `description`, `variables`, `hostRequirements`, embedded files and
 //!   every `<Action>` reuse the pass-6 validators.
 //! - **`runScope`** (§4 item 3, §9.7 item 3): at least one element, only
@@ -357,44 +363,47 @@ fn validate_service(
     };
     let has_tcp_port = service.tcp_port_names().next().is_some();
 
-    // §9.3 <ServiceReadinessCheck>
-    let readiness = service.readiness_check();
+    // §9.3 <ServiceHealthCheck>
+    let health = service.health_check();
     // §9 item 6 / §9.7 item 4: TCP_CONNECT, given or defaulted, needs a TCP
     // port to probe. (An empty `ports` list is already reported above.)
     if !service.ports.is_empty()
         && !has_tcp_port
-        && matches!(readiness, ServiceReadinessCheck::TcpConnect { .. })
+        && matches!(health, ServiceHealthCheck::TcpConnect { .. })
     {
-        let which = if service.readiness_check.is_some() {
-            "a TCP_CONNECT readiness check"
+        let which = if service.health_check.is_some() {
+            "a TCP_CONNECT health check"
         } else {
-            "the default TCP_CONNECT readiness check"
+            "the default TCP_CONNECT health check"
         };
         errors.add(
-            &path_field(path, "readinessCheck"),
+            &path_field(path, "healthCheck"),
             format!(
                 "{which} has no TCP port to probe: none of the Service's ports has protocol \
-                 TCP, so a readinessCheck of type STDOUT or COMMAND is required."
+                 TCP, so a healthCheck of type STDOUT or COMMAND is required."
             ),
         );
     }
-    if let Some(declared) = &service.readiness_check {
-        let rc_path = path_field(path, "readinessCheck");
-        if let Some(timeout) = declared.timeout_seconds() {
-            check_literal_int(
-                timeout,
-                &path_field(&rc_path, "timeoutSeconds"),
-                1..=i64::MAX,
-                "must be > 0.",
-                errors,
-            );
+    if let Some(declared) = &service.health_check {
+        let hc_path = path_field(path, "healthCheck");
+        // §9.3 items 3–6: every numeric field is a <posinteger>.
+        for (name, value) in declared.numeric_fields() {
+            if let Some(value) = value {
+                check_literal_int(
+                    value,
+                    &path_field(&hc_path, name),
+                    1..=i64::MAX,
+                    "must be > 0.",
+                    errors,
+                );
+            }
         }
         match declared {
-            ServiceReadinessCheck::TcpConnect {
+            ServiceHealthCheck::TcpConnect {
                 ports: Some(probed),
                 ..
             } => {
-                let probed_path = path_field(&rc_path, "ports");
+                let probed_path = path_field(&hc_path, "ports");
                 if probed.is_empty() {
                     errors.add(&probed_path, "if provided, must not be empty.");
                 }
@@ -411,22 +420,25 @@ fn validate_service(
                             &path_index(&probed_path, i),
                             format!(
                                 "port '{name}' has protocol {protocol} and cannot be probed by a \
-                                 TCP_CONNECT readiness check; only TCP ports may be named."
+                                 TCP_CONNECT health check; only TCP ports may be named."
                             ),
                         ),
                     }
                 }
             }
-            ServiceReadinessCheck::Command {
-                interval_seconds: Some(interval),
+            // §9.3 item 6 / §9.7 item 4: a STDOUT check gives
+            // failureThreshold only together with healthIntervalSeconds —
+            // without a heartbeat there is no probe for it to count.
+            ServiceHealthCheck::Stdout {
+                health_interval_seconds: None,
+                failure_threshold: Some(_),
                 ..
             } => {
-                check_literal_int(
-                    interval,
-                    &path_field(&rc_path, "intervalSeconds"),
-                    1..=i64::MAX,
-                    "must be > 0.",
-                    errors,
+                errors.add(
+                    &path_field(&hc_path, "failureThreshold"),
+                    "a STDOUT health check gives failureThreshold only together with \
+                     healthIntervalSeconds; without a heartbeat interval there is no probe for \
+                     it to count.",
                 );
             }
             _ => {}
@@ -462,18 +474,18 @@ fn validate_service(
             errors,
         );
     }
-    // §9.6 item 3 / §9.7 item 4: onReadinessCheck iff type is COMMAND.
-    let is_command = matches!(readiness, ServiceReadinessCheck::Command { .. });
-    match (&service.script.actions.on_readiness_check, is_command) {
+    // §9.6 item 3 / §9.7 item 4: onHealthCheck iff type is COMMAND.
+    let is_command = matches!(health, ServiceHealthCheck::Command { .. });
+    match (&service.script.actions.on_health_check, is_command) {
         (None, true) => errors.add(
             &actions_path,
-            "onReadinessCheck must be defined when readinessCheck.type is COMMAND.",
+            "onHealthCheck must be defined when healthCheck.type is COMMAND.",
         ),
         (Some(_), false) => errors.add(
-            &path_field(&actions_path, "onReadinessCheck"),
+            &path_field(&actions_path, "onHealthCheck"),
             format!(
-                "onReadinessCheck must not be defined when readinessCheck.type is {}.",
-                readiness.type_name()
+                "onHealthCheck must not be defined when healthCheck.type is {}.",
+                health.type_name()
             ),
         ),
         _ => {}

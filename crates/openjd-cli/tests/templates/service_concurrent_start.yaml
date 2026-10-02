@@ -12,7 +12,7 @@ jobServices:
   - name: Alpha
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
     script:
       actions:
@@ -38,7 +38,7 @@ jobServices:
   - name: Beta
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
     script:
       actions:

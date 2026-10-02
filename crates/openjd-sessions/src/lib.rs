@@ -54,7 +54,8 @@ pub use logging::{LogContent, LogTag};
 pub use openjd_expr::path_mapping::{PathFormat, PathMappingRule};
 pub use runner::{CancelMethod, ScriptRunnerState};
 pub use service_session::{
-    ServiceReadiness, ServiceRunExit, ServiceSession, ServiceSessionConfig, ServiceSessionState,
+    ServiceHealth, ServiceRunExit, ServiceSession, ServiceSessionConfig, ServiceSessionState,
+    ServiceUnhealthy,
 };
 pub use session::{
     EnvironmentIdentifier, Session, SessionCancelHandle, SessionConfig, SessionState,

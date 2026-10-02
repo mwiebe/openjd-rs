@@ -14,9 +14,9 @@ jobServices:
   - name: Shared
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 1
       completedTasks: RERUN
@@ -70,7 +70,7 @@ steps:
       - name: Helper
         ports:
           - name: main
-        readinessCheck:
+        healthCheck:
           type: STDOUT
         script:
           actions:

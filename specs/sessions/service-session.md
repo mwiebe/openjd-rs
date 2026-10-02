@@ -9,14 +9,15 @@ owns the working directory, the Environment stack, cumulative environment
 variables, path mapping, redaction, the cross-user helper, and cleanup; the
 `ServiceSession` adds the `Service.*` symbol scope, Service `variables`,
 `onEnter`'s retained `openjd_env` changes, the background `onRun` driver with
-its readiness check, the second action slot in which `onReadinessCheck` runs
-concurrently with `onRun` (`COMMAND` readiness), the `onWrapService*` hook
+its two-phase health check (readiness, then health monitoring until
+UNHEALTHY), the second action slot in which `onHealthCheck` runs
+concurrently with `onRun` (`COMMAND` probes), the `onWrapService*` hook
 dispatch, and the constraint-7 teardown.
 
 Normative references: RFC 0009 "Modifications to How Jobs Are Run" (Service
 lifecycle constraints, "Services run inside Environments", "Failure and
 restart"), `<ServiceActions>` incl. "Concurrency with `onRun`" (rules 1–6),
-`<ServiceReadinessCheck>`, the `<EnvironmentActions>` modification
+`<ServiceHealthCheck>`, the `<EnvironmentActions>` modification
 (`onWrapService*`, "RFC 0008's rules extend to the new hooks" 1–6,
 `WrappedService.*`), "Environment variables within a Service", and the
 `openjd_service_ready` message; wiki *Template Schemas* §4.3 rule 6, §4.3.1,
@@ -30,17 +31,17 @@ agent):
 
 | Runtime (this crate) | Caller |
 |---|---|
-| Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
-| Detect instance failures: readiness timeout, `onRun` exit before READY, `onRun` exit at any time | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
-| Cancel `onRun` with its own `cancelation` method on request and at `end()` | When to cancel (scope complete, readiness timed out, …) |
-| Run `onReadinessCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
+| Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness then health, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
+| Detect instance failures: ready timeout, `onRun` exit before READY, `onRun` exit at any time, UNHEALTHY (`failureThreshold` consecutive failed probes after READY) | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
+| Cancel `onRun` with its own `cancelation` method on request, at `end()`, and on UNHEALTHY (constraint 11) | When to cancel otherwise (scope complete, ready timeout, …) |
+| Run `onHealthCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
 
 ## Why a sibling type, not a mode of `Session`
 
 `Session`'s state machine runs one action at a time behind `&mut self`, and
 every caller-facing operation (`enter_environment`, `run_task`, …) awaits the
 action to completion. A Service's `onRun` is the opposite: it is launched and
-*not* awaited, and while it runs the caller must be able to observe readiness,
+*not* awaited, and while it runs the caller must be able to observe health,
 observe exit, cancel it, and end the Session. Threading that through `Session`
 would have meant a second state machine inside the first. Composition keeps
 `Session` unchanged for Task Sessions and gives Service Sessions their own
@@ -67,7 +68,7 @@ a `SessionCancelHandle` delivers a cancel to. A Service Session's `onEnter`,
 `onRun`, `onExit`, and Environment actions all run in that **main slot** —
 `ServiceSession::cancel_handle()` / `cancel_run()` target it.
 
-`onReadinessCheck` is the one action that runs *while* another runs, so it
+`onHealthCheck` is the one action that runs *while* another runs, so it
 gets a **second slot** of its own: its own `ActionCancelSlot`, its own
 `ScriptRunnerBase` (built by `Session::new_detached_runner_base`, which does
 not take the Session's cross-user helper), its own cross-user helper when the
@@ -75,7 +76,7 @@ Session is cross-user (`Session::spawn_detached_helper` — the helper protocol
 runs one command at a time, so each concurrent action needs its own helper
 process, spawned from the same helper binary and shut down with the runner),
 and its own log attribution tag. The runtime alone cancels through the second
-slot (when `onRun` exits, the readiness decision is made, or the Session
+slot (when `onRun` exits, probing stops, or the Session
 ends); the caller's handle never reaches it. The shared slot stays shared for
 everything that runs one at a time, and only the concurrent action gets a
 separate one.
@@ -155,11 +156,11 @@ Checks, before any directory is created:
   `SessionError::Runtime("Service 'svc' port 'ingest' is declared UDP but its
   endpoint assignment is TCP")`. And every port a `TCP_CONNECT` check names
   is TCP (§9.3 item 2): else `SessionError::Runtime("Service 'svc':
-  TCP_CONNECT readiness check names port 'ingest', whose protocol is UDP;
+  TCP_CONNECT health check names port 'ingest', whose protocol is UDP;
   only TCP ports can be probed")` — model validation already forbids this.
-- A `COMMAND` readiness check comes with an `onReadinessCheck`: else
-  `SessionError::Runtime("Service 'svc': readiness check type is COMMAND but
-  onReadinessCheck is not defined")` (model validation already forbids this
+- A `COMMAND` health check comes with an `onHealthCheck`: else
+  `SessionError::Runtime("Service 'svc': health check type is COMMAND but
+  onHealthCheck is not defined")` (model validation already forbids this
   combination, §9.7 item 4).
 
 The endpoint assignment's ports are then re-ordered into the Service's
@@ -200,7 +201,7 @@ returns it; `end()` is still required.
    the embedded files' contents written.
 
    Embedded files are written **once**, here, and never again in the
-   Session — not before `onRun`, not before any `onReadinessCheck`
+   Session — not before `onRun`, not before any `onHealthCheck`
    invocation, not on relaunch, not before `onExit`. This is how rule 1 of
    "Concurrency with `onRun`" (§9.6.1 item 1) is satisfied: a Service
    Session's format-string values are constant for its lifetime, so the
@@ -239,14 +240,14 @@ action, so every `onRun` instance (including relaunches) and `onExit` see
 `onEnter`'s changes — they are retained across relaunches because `onEnter`
 is not re-run (constraint 5 / "Failure and restart" step 3.2).
 
-The same map is given to `onReadinessCheck`, which therefore sees
+The same map is given to `onHealthCheck`, which therefore sees
 `onEnter`'s variables too (RFC 0009: "every instance of *onRun*,
-*onReadinessCheck*, and *onExit*").
+*onHealthCheck*, and *onExit*").
 
 Messages honored per action ("Environment variables within a Service", the
 wiki's message table, and §9.6.1 rule 2):
 
-| Message | `onEnter` | `onRun` | `onReadinessCheck` | `onExit` |
+| Message | `onEnter` | `onRun` | `onHealthCheck` | `onExit` |
 |---|---|---|---|---|
 | `openjd_status` / `openjd_progress` / `openjd_fail` | honored | honored | ignored (logged) | honored |
 | `openjd_env` / `openjd_redacted_env` / `openjd_unset_env` | honored | ignored (logged) | ignored (logged) | ignored (logged) |
@@ -255,8 +256,8 @@ wiki's message table, and §9.6.1 rule 2):
 
 "Ignored (logged)" is one `info` line, e.g. `Ignoring openjd_env from Service
 'svc' onRun: environment variable messages are honored only from onEnter`, or
-for the check `[onReadinessCheck] Ignoring openjd_fail from Service 'svc'
-onReadinessCheck: messages on the readiness check's stdout are not honored`.
+for the check `[onHealthCheck] Ignoring openjd_fail from Service 'svc'
+onHealthCheck: messages on the health check's stdout are not honored`.
 The value of an ignored `openjd_redacted_env` is still added to the Session's
 redaction set — the directive's effect is ignored, not its secrecy. Nothing a
 Service sets is ever propagated to the entities in its scope: the `Session`'s
@@ -269,14 +270,17 @@ is READY. Under wrapping, the action name in these lines is the hook's
 ## `launch()` — the background `onRun` driver
 
 Allowed in `Entered` and `Exited`. Banner `Service onRun: <name> (launch N)`
-and `Readiness check: <TYPE> (timeout Ns)`. Steps:
+and `Health check: <TYPE> (readyTimeoutSeconds N[, readinessIntervalSeconds
+N], healthIntervalSeconds N, failureThreshold N)` — or, for a `STDOUT` check
+without a heartbeat, `Health check: STDOUT (readyTimeoutSeconds N, no
+heartbeat after READY)`. Steps:
 
 1. Reclaim the previous driver, if any (restores the cross-user helper).
 2. Resolve the action to run as `onRun` (the Service's, or
-   `onWrapServiceRun`) and the readiness plan (below). For `COMMAND`,
-   resolve the check action (the Service's `onReadinessCheck`, or
-   `onWrapServiceReadinessCheck`) and build its second-slot runner
-   (`prepare_readiness_check`: detached helper, detached runner base with
+   `onWrapServiceRun`) and the health plan (below). For `COMMAND`,
+   resolve the check action (the Service's `onHealthCheck`, or
+   `onWrapServiceHealthCheck`) and build its second-slot runner
+   (`prepare_health_check`: detached helper, detached runner base with
    `action_tag` = the check action's name, a fresh `ActionCancelSlot`). A
    failure here — a wrap hook's scope not resolving, or the detached
    helper not spawning — is returned from `launch()` with the state
@@ -291,94 +295,140 @@ and `Readiness check: <TYPE> (timeout Ns)`. Steps:
 5. Reset the Service action status to `Running` and notify the callback.
 6. `tokio::spawn(drive_run(..))`, passing the runner, the cloned symbol table,
    the resolved environment, the plan, the status, the callback, and fresh
-   `watch` channels for readiness and exit. The `run_subprocess` future is
+   `watch` channels for health and exit, and the Session's cancel handle
+   (for canceling `onRun` on UNHEALTHY). The `run_subprocess` future is
    `Send` on every platform (the vestigial Windows `HANDLE` it used to hold
    was removed), which is what makes spawning possible.
 
-`drive_run` is one `tokio::select!` loop, `biased` toward messages. For a
-`COMMAND` check it first spawns the check driver (`drive_readiness_check`, a
-second task) with a `check_stop` token and a one-shot report channel:
+`drive_run` is one `tokio::select!` loop, `biased` toward messages, around a
+`HealthTracker` (phase: `Pending` → `Ready { failed_probes }` → `Stopped`).
+For a `COMMAND` check it first spawns the check driver (`drive_health_check`,
+a second task) with a `check_stop` token and a request channel: each probe is
+one request carrying a `oneshot` for its `ProbeResult` (`Ok` or `Failed(why)`),
+so invocations are sequential by construction. A `TCP_CONNECT` probe is a
+`tcp_probe` future; a `STDOUT` check has no probe future — its probe is the
+`openjd_service_ready` message, with a heartbeat timer after READY:
 
 ```
 loop select! {
-    msg    = message_rx.recv()                            → apply (status/progress/fail; service_ready; env lines ignored)
-    report = check_rx.recv(),  if check active            → READY if pending (onRun still running); stop the check
-    r      = onRun future                                 → exit observed; stop the check
-    ok     = TCP probe future, if pending && TCP_CONNECT  → READY, or re-arm the probe after 1 s
-    _      = readiness deadline, if pending               → TimedOut; stop the check
+    msg   = message_rx.recv()                        → apply (status/progress/fail; service_ready = STDOUT probe; env lines ignored)
+    r     = onRun future                             → exit observed; stop everything
+    res   = probe in flight, if any                  → Pending: Ok → READY, arm next after healthIntervalSeconds (or Stopped if none);
+                                                       Failed → "not yet READY: why", arm next after readinessIntervalSeconds
+                                                       Ready: apply_health_probe → reset / "failed (n of t)" / UNHEALTHY → cancel onRun, stop the check
+    ()    = next-probe timer, if armed               → start the next probe (unless Stopped)
+    ()    = heartbeat timer, if armed (STDOUT)       → one failed probe ("no openjd_service_ready line within Ns"); re-arm, or UNHEALTHY → cancel onRun
+    _     = ready deadline, if Pending               → TimedOut; stop the check
 }
 ```
 
 After the exit, remaining messages are drained with the same handler, except
 that an `openjd_service_ready` drained after the exit cannot make the instance
-READY ("`onRun` exit wins"), and a check report is no longer received. The
-driver awaits the check driver (so an invocation in flight is canceled and
-reaped before the exit is published — and so before `end()` can run
-`onExit`, rule 5), merges its redacted values, then: if readiness is still
-pending it becomes `ExitedBeforeReady`; it logs `Service '<name>' onRun
-exited: <state> (exit code: N)[, canceled by the runtime]`, finishes the
-status, notifies the callback, publishes the `ServiceRunExit`, and returns
-the runner.
+READY or count as a heartbeat ("`onRun` exit wins", constraint 11), and a
+probe result is no longer received. The driver awaits the check driver (so an
+invocation in flight is canceled and reaped before the exit is published —
+and so before `end()` can run `onExit`, rule 5), merges its redacted values,
+then: if readiness is still pending it becomes `ExitedBeforeReady`; it logs
+`Service '<name>' onRun exited: <state> (exit code: N)[, canceled by the
+runtime[: UNHEALTHY]]`, finishes the status, notifies the callback, publishes
+the `ServiceRunExit`, and returns the runner.
 
 `onRun` runs with **no default timeout**; a declared `timeout` is measured
 from launch and its expiry is reported as `state: Timeout` (Template Schemas
 §5 note 3: an instance failure).
 
-### Readiness
+### Health
 
 ```rust
-pub enum ServiceReadiness {
-    Pending,
-    Ready { message: Option<String> },   // STDOUT: the openjd_service_ready text
-    TimedOut,                            // timeoutSeconds elapsed; onRun may still run
-    ExitedBeforeReady,                   // onRun exited first
+pub enum ServiceHealth {
+    Pending,                                               // phase 1: no probe has passed
+    Ready { message: Option<String>, failed_probes: u64 }, // phase 2; message = STDOUT ready text; failed_probes < failureThreshold
+    TimedOut,                                              // readyTimeoutSeconds elapsed; onRun may still run
+    ExitedBeforeReady,                                     // onRun exited first
+    Unhealthy(ServiceUnhealthy),                           // failureThreshold reached; onRun canceled by the runtime
 }
+
+pub struct ServiceUnhealthy {
+    pub failed_probes: u64,       // == failure_threshold
+    pub failure_threshold: u64,
+    pub last_failure: String,     // what the last failed probe reported
+}
+// Display: "3 consecutive health probes failed (failureThreshold: 3); last probe: <last_failure>"
 ```
 
-The timeout (`timeoutSeconds`, model default 300) is measured from launch.
+`is_terminal()` is true for everything but `Pending` (it is what
+`wait_ready()` returns on); `is_ready()` for `Ready` only. The watch channel
+re-sends `Ready` whenever `failed_probes` changes, so a scheduler can log
+each below-threshold failure if it wants to.
+
+One probe mechanism, two phases (RFC `<ServiceHealthCheck>`). **Phase 1
+(readiness):** the first probe starts as soon as `onRun` is launched; each
+failed probe logs `Service '<name>' is not yet READY: <why>` and the next
+starts `readinessIntervalSeconds` (model default 1 for `TCP_CONNECT`, 5 for
+`COMMAND`) after it ends; the first success makes the instance READY (`Ready
+{ failed_probes: 0 }`) iff `onRun` is still running. `readyTimeoutSeconds`
+(model default 300) is measured from launch and runs continuously, including
+while a probe is in progress. **Phase 2 (health):** a probe starts
+`healthIntervalSeconds` (model default 30) after the previous one ends. A
+failure increments `failed_probes` and logs `Service '<name>' health probe
+failed (n of t): <why>` (warn); a success resets it, logging `Service
+'<name>' health probe succeeded; failure count reset from n` when it was
+non-zero. When `failed_probes` reaches `failureThreshold` (model default 3)
+the instance is UNHEALTHY: `Service '<name>' is UNHEALTHY: <ServiceUnhealthy>`
+(error), `Unhealthy` is published, probing stops (the check driver is
+stopped), and the runtime cancels `onRun` with its own cancelation method
+through the Session's cancel handle (`Canceling Service '<name>' onRun: the
+instance is UNHEALTHY`) — lifecycle constraint 11, "stopped the same way an
+instance is stopped at scope end". The resulting `ServiceRunExit` has
+`unhealthy: Some(..)` and `canceled: false`: UNHEALTHY is an instance failure,
+and the caller takes the restart decision once the exit arrives. A probe
+result that arrives after probing stopped is discarded.
 
 - **`TCP_CONNECT`** — for each probed port (the check's `ports`, which the
   model restricts to TCP ports and defaults to every declared TCP port — a
   UDP port of a mixed Service is never probed, §9 item 6), the probe address
-  is the loopback
-  address of the same family when `bindAddress` is a wildcard (`0.0.0.0` →
-  `127.0.0.1`, `::` → `::1`), otherwise `bindAddress` itself (an IP literal or
-  a hostname). One probe round connects to every target in turn with a 1 s
-  per-connect bound and closes immediately; READY when every connection
-  succeeds. The first round starts immediately after launch; each failed round
-  re-arms 1 s later. READY requires `onRun` still running: the probe arm is
-  disabled once the exit is observed.
-- **`STDOUT`** — READY on the first `openjd_service_ready: <message>` line on
+  is the loopback address of the same family when `bindAddress` is a
+  wildcard (`0.0.0.0` → `127.0.0.1`, `::` → `::1`), otherwise `bindAddress`
+  itself (an IP literal or a hostname). One probe connects to every target in
+  turn with a 1 s per-connect bound and closes immediately; it succeeds when
+  every connection does, else it fails naming the first port that did not
+  (`TCP connect to port 'main' (127.0.0.1:4100) failed: Connection refused`
+  / `… timed out after 1s`). The same probe serves both phases.
+- **`STDOUT`** — the probe is an `openjd_service_ready: <message>` line on
   `onRun`'s stdout (same `openjd_<kind>: <payload>` syntax as every message;
-  `ActionFilter` parses it to `ActionMessage::ServiceReady`). Later lines have
-  no effect; the line is still echoed/logged like any directive. Under
-  `TCP_CONNECT` and `COMMAND` the line is logged as ignored (`Ignoring
-  openjd_service_ready from Service 'svc' onRun: its readiness check type is
-  COMMAND`).
-- **`COMMAND`** — `onReadinessCheck` is run by the check driver, in the
-  second slot, concurrently with `onRun`. The first invocation begins as soon
-  as `onRun` is launched (the driver is spawned together with the `onRun`
-  future); each later one begins `intervalSeconds` (model default 5) after
-  the previous one ends. One invocation is bounded by the action's own
-  `timeout`, default `SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT` (30 s): on
-  overrun the process is terminated and the invocation counts as not ready.
-  Any exit status other than 0, a timeout, or a command that cannot be run
-  (`not ready (failed to run: …)`) is "not yet ready" — never a Service
-  failure. Exit status 0 is reported to the `onRun` driver, which makes the
-  instance READY iff `onRun` is still running and readiness is still pending
-  (`Ready { message: None }`); the check driver then returns, so the action
-  never runs again (rule 4). The readiness `timeoutSeconds` (default 300)
-  is the `onRun` driver's deadline and runs continuously, including while an
-  invocation is in progress. Readiness is not a liveness check.
+  `ActionFilter` parses it to `ActionMessage::ServiceReady`). The first
+  makes the instance READY (`Ready { message: Some(text), .. }`). Afterwards,
+  when the check gives `healthIntervalSeconds`, the line is a heartbeat: a
+  timer of that length is (re)started by READY and by every later line, and
+  its expiry is one failed probe (`no openjd_service_ready line within Ns`)
+  that re-arms the timer; a line after a miss is a successful probe that
+  resets the count. Without `healthIntervalSeconds` the instance is not
+  monitored after READY (`HealthPhase::Stopped`; its health is that `onRun`
+  runs) and later lines have no effect — they are still echoed/logged like
+  any directive. Under `TCP_CONNECT` and `COMMAND` the line is logged as
+  ignored (`Ignoring openjd_service_ready from Service 'svc' onRun: its
+  health check type is COMMAND`). `readinessIntervalSeconds` does not exist
+  for this type.
+- **`COMMAND`** — a probe is one `onHealthCheck` invocation, run by the check
+  driver in the second slot, concurrently with `onRun`, on request from the
+  `onRun` driver. One invocation is bounded by the action's own `timeout`,
+  default `SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT` (30 s): on overrun the
+  process is terminated and the probe fails (`onHealthCheck exceeded its
+  timeout`); any exit status other than 0 (`onHealthCheck exit code: 1`) or
+  a command that cannot be run (`onHealthCheck failed to run: …`) fails the
+  probe; exit status 0 succeeds regardless of the output (rule 2). No single
+  failure is a Service failure. The ready deadline is the `onRun` driver's,
+  not the check driver's.
 
   Per-invocation log lines (all tagged, see "Logging"): `Service 'svc'
-  readiness check invocation N`, then one of `Readiness check invocation N:
-  ready (exit code: 0)` / `not ready (exit code: 1)` / `not ready (exceeded
-  its timeout)` / `not ready (failed to run: <error>)`, or `Canceling
-  readiness check invocation N: its result will be discarded`.
+  health check invocation N`, then `Health check invocation N: succeeded
+  (exit code: 0)` / `failed (onHealthCheck exit code: 1)` / `failed
+  (onHealthCheck exceeded its timeout)` / `failed (onHealthCheck failed to
+  run: <error>)`, or `Canceling health check invocation N: its result will
+  be discarded`.
 
-READY is logged as `Service '<name>' is READY[: <message>]`; a timeout as
-`Service '<name>' did not become READY within Ns (<TYPE> readiness check)`
+READY is logged as `Service '<name>' is READY[: <message>]`; a ready timeout
+as `Service '<name>' did not become READY within Ns (<TYPE> health check)`
 (error level); an exit before READY as `Service '<name>' onRun exited before
 becoming READY`.
 
@@ -386,7 +436,9 @@ On `TimedOut` the runtime does **not** cancel `onRun`: the RFC's restart
 decision ("cancels `onRun` if it is still running … and waits for it to exit")
 belongs to the scheduler, which calls `cancel_run` then `wait_exit`. It does
 stop the check driver: a `COMMAND` invocation in flight at the deadline is
-canceled, and no further invocation starts.
+canceled, and no further invocation starts. On `Unhealthy` the runtime
+*does* cancel `onRun` (constraint 11 says how an UNHEALTHY instance is
+stopped); the scheduler only awaits the exit.
 
 ### Concurrency with `onRun` (RFC 0009 §9.6.1), rule by rule
 
@@ -402,24 +454,29 @@ canceled, and no further invocation starts.
 2. **Stdout** — every `ActionMessage` from the check is logged and ignored
    (`log_check_message_ignored`); the check's result is `exit_code == 0`,
    not `SubprocessResult::state`, so an `openjd_fail` line cannot turn an
-   exit-0 invocation into "not ready". The Service's `ActionStatus` is
+   exit-0 invocation into a failed probe. The Service's `ActionStatus` is
    written by `onEnter`, `onRun`, `onExit` only.
 3. **Log attribution** — see "Logging".
 4. **At most one invocation at a time** — structural: the check driver is one
-   sequential loop; it exists only between `launch()` and the `onRun` exit
-   (so never while `onEnter` or `onExit` runs, which happen outside that
-   window and in the main slot); it returns after reporting success, so
-   nothing runs after READY.
-5. **`onRun` exit wins** — a success report is only honored while the
-   `onRun` future is still pending (the `check_rx` arm is disabled once the
-   exit is observed, and the report channel is not drained afterwards); on
+   sequential loop that runs one invocation per request, and the `onRun`
+   driver requests the next only after receiving the previous result and
+   waiting the phase's interval; it exists only between `launch()` and the
+   `onRun` exit (so never while `onEnter` or `onExit` runs, which happen
+   outside that window and in the main slot). Invocations continue for as
+   long as `onRun` runs: every `readinessIntervalSeconds` before READY and
+   every `healthIntervalSeconds` after, until UNHEALTHY stops them.
+5. **`onRun` exit wins** (and constraint 11) — a probe result is only
+   honored while the `onRun` future is still pending (the probe arm is
+   disabled once the exit is observed and the in-flight future dropped); on
    exit the `onRun` driver cancels `check_stop`, the check driver cancels the
    in-flight invocation through its own slot (`SessionCancelHandle::cancel(None,
    false)` — the action's own cancelation method, full declared grace) and
-   discards the result; the `onRun` driver awaits the check driver before
-   publishing the exit. `end()` cancels `onRun`, awaits that exit (and thus
-   the check), then runs `onExit`.
-6. **Wrap hooks** — `onWrapServiceReadinessCheck` runs in the second slot
+   discards the result (the dropped `oneshot` tells the requester so); the
+   `onRun` driver awaits the check driver before publishing the exit. This
+   holds whether the instance was READY or not: an exit after READY is an
+   ordinary instance failure, never UNHEALTHY. `end()` cancels `onRun`,
+   awaits that exit (and thus the check), then runs `onExit`.
+6. **Wrap hooks** — `onWrapServiceHealthCheck` runs in the second slot
    while `onWrapServiceRun` runs in the main slot, exactly as the unwrapped
    pair does. Wrap scripts must tolerate this (RFC); nothing in the runtime
    serializes them.
@@ -434,22 +491,27 @@ authors; the runtime cannot enforce it.
 pub struct ServiceRunExit {
     pub state: ActionState,         // Success | Failed | Canceled | Timeout
     pub exit_code: Option<i32>,
-    pub canceled: bool,             // requested through this runtime
+    pub canceled: bool,             // requested by the caller through this runtime
+    pub unhealthy: Option<ServiceUnhealthy>, // Some: the health check canceled onRun (UNHEALTHY)
     pub fail_message: Option<String>,
     pub stdout: String,             // when debug_collect_stdout
 }
 ```
 
 `canceled` is true when the cancel was requested through `cancel_run`,
-`end`, or the cancel handle, or the runner reported `Canceled` — i.e. the
-exit is *not* an instance failure under "Failure and restart". A command
+`end`, or the cancel handle, or the runner reported `Canceled` other than
+because the health check canceled it — i.e. the exit is *not* an instance
+failure under "Failure and restart". An UNHEALTHY exit has `unhealthy:
+Some(..)` and `canceled: false` (it *is* an instance failure); when the
+caller's own cancel races the health check's, both are set and the exit is
+not a failure. A command
 that cannot be started, or a format string that fails to resolve, is a
 `Failed` exit with `exit_code: None` and the error as `fail_message`
 (instance failure, not a `launch()` error). As for every other action in this
 crate, an `openjd_fail` line makes the action `Failed` regardless of exit
 status and supplies `fail_message`.
 
-Observation API: `wait_ready()` / `readiness()` / `readiness_watch()`,
+Observation API: `wait_ready()` / `health()` / `health_watch()`,
 `wait_exit()` / `run_exit()` / `exit_watch()`, `action_status()` (the Service
 action's `ActionStatus`, also delivered to the `SessionConfig` callback), and
 `launch_count()`.
@@ -477,7 +539,7 @@ substitutes the hook for the Service's action:
 |---|---|---|
 | `onEnter` | `onWrapServiceEnter` | the Service defines `onEnter` |
 | `onRun` | `onWrapServiceRun` | always (every Service defines `onRun`) |
-| `onReadinessCheck` | `onWrapServiceReadinessCheck` | readiness type is `COMMAND` (so the Service defines `onReadinessCheck`) |
+| `onHealthCheck` | `onWrapServiceHealthCheck` | health check type is `COMMAND` (so the Service defines `onHealthCheck`) |
 | `onExit` | `onWrapServiceExit` | the Service defines `onExit` and any Service action ran |
 
 ("Nothing to replace", RFC rule 2 / §4.3 rule 6.) A hook that is defined but
@@ -521,7 +583,7 @@ check's exit status is the hook's exit status. Failure mapping is the
 wrapped action's (rule 5): a failed `onWrapServiceEnter` is a start failure
 (`ServiceScriptFailed { action: "onEnter" }`), an `onWrapServiceRun` exit is
 an instance exit, a failed `onWrapServiceExit` is an `onExit` failure, and
-an `onWrapServiceReadinessCheck` invocation's status has the check's
+an `onWrapServiceHealthCheck` invocation's status has the check's
 meaning. The wrapping Environment's own `onEnter` / `onExit` are never
 wrapped, and inner Environments entered in the Service Session (the scope's
 Environments after a wrapping one) are wrapped by its `onWrapEnvEnter` /
@@ -533,7 +595,7 @@ Environments after a wrapping one) are wrapped by its `onWrapEnvEnter` /
 
 `launch()` in `Exited` relaunches `onRun` in the same Session: same working
 directory and endpoints, `onEnter` not re-run, its environment-variable changes
-retained, embedded files already in place, a fresh readiness check (for
+retained, embedded files already in place, a fresh health check (for
 `COMMAND`, a fresh check driver and invocation count). Constraint
 5 is enforced structurally: `launch()` in `Running` is
 `InvalidServiceState`. Whether to relaunch here or open a new Session (new
@@ -547,7 +609,7 @@ teardown is complete:
 
 1. If `Running`: `cancel_run(None)` (the action's own method, full declared
    grace), then await the exit — which includes the cancelation of any
-   `onReadinessCheck` invocation in flight (rule 5: canceled before `onExit`).
+   `onHealthCheck` invocation in flight (rule 5: canceled before `onExit`).
 2. If any action of the Service has run (`onEnter` ran, or `onRun` was ever
    launched) and `onExit` is defined: run it (or `onWrapServiceExit`) in the
    foreground with the 300 s default timeout (banner `Service onExit:
@@ -567,8 +629,8 @@ task (which detaches but does not stop the `onRun` process beyond what the
 `Session`'s `Drop` does), and relies on `Session`'s `Drop` for the working
 directory.
 
-`start()` is `enter()` → `launch()` → `wait_ready()`, returning the terminal
-readiness.
+`start()` is `enter()` → `launch()` → `wait_ready()`, returning the readiness
+decision.
 
 ## Logging and attribution (rule 3)
 
@@ -579,14 +641,14 @@ banners delimit their output as in any Session, and `onRun`'s lines stay
 **untagged** — it is the Service's main stream and the only one present once
 the instance is READY.
 
-`onReadinessCheck` interleaves with `onRun`, so every record about it is
+`onHealthCheck` interleaves with `onRun`, so every record about it is
 attributed to it in both forms RFC 0009 describes:
 
 - **structured**: the record carries the key-value field `openjd_action =
   "<action name>"` next to `session_id` / `openjd_log_content` /
   `openjd_timestamp_usec`;
 - **plain text**: the message is prefixed with `[<action name>] `, e.g.
-  `[onReadinessCheck] connection refused`.
+  `[onHealthCheck] connection refused`.
 
 Both come from the `session_action_log!` macro (`logging.rs`), the tagged
 sibling of `session_log!`. The tag is carried by `ScriptRunnerBase::action_tag`
@@ -597,8 +659,8 @@ notices, `Process exit code: …`. The runner's `Phase: Running action`
 subsection banner is replaced by one tagged line for a tagged action (banners
 would interleave). The check driver's own lines (invocation start/outcome,
 ignored messages, cancelation) are tagged the same way. The tag is the name
-of the action that actually ran: `onReadinessCheck`, or
-`onWrapServiceReadinessCheck` when wrapped (RFC rule 3 applies to the wrap
+of the action that actually ran: `onHealthCheck`, or
+`onWrapServiceHealthCheck` when wrapped (RFC rule 3 applies to the wrap
 script's output too). The tag is added by the runtime; the Service's
 processes do not prefix their own output. Redaction applies to the line
 before the prefix is added.
@@ -613,7 +675,7 @@ A single-host runner that merges every Session's log into one — `openjd run`
 <document>)` for an external Service), and then *every* record of the Service
 Session carries it ahead of any action tag: `[Service Files] line` for
 `onRun`, `onEnter`, `onExit` and the entered Environments' actions, `[Service
-Files] [onReadinessCheck] line` for the check (the action tag's rule-3
+Files] [onHealthCheck] line` for the check (the action tag's rule-3
 meaning is unchanged), and the Session's section banners — `Starting Service:
 …`, `Entering Environment: …`, `Service onEnter: …`, `Service onRun: … (launch
 N)`, `Ending Service: …`, `Service onExit: …`, `Exiting Environment: …` —
@@ -630,6 +692,6 @@ tag nothing changes.
   single-layer rule (checked by `Session::enter_environment` as in any
   Session), and that a `SERVICE`-scoped wrapping Environment defines all four
   `onWrapService*` hooks (§9.7 item 6) — is the CLI's / scheduler's.
-- Collapsing successful `onReadinessCheck` output (RFC MAY) — see "Logging".
+- Collapsing successful `onHealthCheck` output (RFC MAY) — see "Logging".
 - Host loss (constraint 8) is a scheduler concern; nothing here waits on a
   lost host because nothing here runs there.

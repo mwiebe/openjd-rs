@@ -51,8 +51,10 @@ pub enum ActionMessage {
     RedactedEnv { name: String, value: String },
     /// `openjd_service_ready: <message>` (RFC 0009, `SERVICE` extension).
     ///
-    /// Honored only from the `onRun` action of a Service whose readiness
-    /// check type is `STDOUT`; every other action ignores it.
+    /// Honored only from the `onRun` action of a Service whose health check
+    /// type is `STDOUT` (the first line makes the instance READY; later
+    /// lines are its heartbeat when the check gives `healthIntervalSeconds`);
+    /// every other action ignores it.
     ServiceReady(String),
     /// Request to cancel the action and mark it as failed (from malformed env commands)
     CancelMarkFailed { fail_message: String },

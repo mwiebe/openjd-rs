@@ -25,8 +25,7 @@ use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
 use openjd_model::job::ServicePortProtocol;
 use openjd_model::job::{
     Action, CompletedTasksPolicy, Environment, EnvironmentActions, EnvironmentScript, RunScope,
-    Service, ServiceActions, ServicePort, ServiceReadinessCheck, ServiceRestartPolicy,
-    ServiceScript,
+    Service, ServiceActions, ServiceHealthCheck, ServicePort, ServiceRestartPolicy, ServiceScript,
 };
 use openjd_model::{ModelExtension, ModelProfile, SpecificationRevision};
 use openjd_sessions::session::Session;
@@ -99,7 +98,7 @@ fn env(
                 on_wrap_env_exit: None,
                 on_wrap_service_enter: None,
                 on_wrap_service_run: None,
-                on_wrap_service_readiness_check: None,
+                on_wrap_service_health_check: None,
                 on_wrap_service_exit: None,
                 on_exit,
             },
@@ -517,8 +516,10 @@ fn service(name: &str, on_run: Action) -> Service {
             port: None,
             protocol: ServicePortProtocol::Tcp,
         }],
-        readiness_check: ServiceReadinessCheck::Stdout {
-            timeout_seconds: 30,
+        health_check: ServiceHealthCheck::Stdout {
+            ready_timeout_seconds: 30,
+            health_interval_seconds: None,
+            failure_threshold: 3,
         },
         restart_policy: ServiceRestartPolicy {
             max_attempts: 0,
@@ -530,7 +531,7 @@ fn service(name: &str, on_run: Action) -> Service {
             actions: ServiceActions {
                 on_enter: None,
                 on_run,
-                on_readiness_check: None,
+                on_health_check: None,
                 on_exit: None,
             },
             embedded_files: None,

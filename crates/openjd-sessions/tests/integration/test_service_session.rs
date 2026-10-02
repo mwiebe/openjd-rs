@@ -24,14 +24,14 @@ use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
 use openjd_model::job::ServicePortProtocol;
 use openjd_model::job::{
     Action, CancelationMode, CompletedTasksPolicy, EmbeddedFile, Environment, EnvironmentActions,
-    EnvironmentScript, RunScope, Service, ServiceActions, ServicePort, ServiceReadinessCheck,
+    EnvironmentScript, RunScope, Service, ServiceActions, ServiceHealthCheck, ServicePort,
     ServiceRestartPolicy, ServiceScript,
 };
 use openjd_model::types::{FileType, JobParameterType, JobParameterValue};
 use openjd_sessions::action::ActionState;
 use openjd_sessions::{
-    ActionStatus, PathFormat, PathMappingRule, ServiceReadiness, ServiceSession,
-    ServiceSessionConfig, ServiceSessionState, SessionConfig, StickyBitPolicy,
+    ActionStatus, PathFormat, PathMappingRule, ServiceHealth, ServiceSession, ServiceSessionConfig,
+    ServiceSessionState, ServiceUnhealthy, SessionConfig, StickyBitPolicy,
 };
 use tempfile::TempDir;
 
@@ -63,21 +63,81 @@ fn sh_ntt(script: &str, notify_secs: u64) -> Action {
     }
 }
 
-fn tcp_check(ports: &[&str], timeout_seconds: u64) -> ServiceReadinessCheck {
-    ServiceReadinessCheck::TcpConnect {
+/// A `TCP_CONNECT` check with the spec defaults (readiness interval 1 s,
+/// health interval 30 s, threshold 3) and the given ready timeout.
+fn tcp_check(ports: &[&str], ready_timeout_seconds: u64) -> ServiceHealthCheck {
+    ServiceHealthCheck::TcpConnect {
         ports: ports.iter().map(|p| p.to_string()).collect(),
-        timeout_seconds,
+        readiness_interval_seconds: 1,
+        ready_timeout_seconds,
+        health_interval_seconds: 30,
+        failure_threshold: 3,
     }
 }
 
-fn stdout_check(timeout_seconds: u64) -> ServiceReadinessCheck {
-    ServiceReadinessCheck::Stdout { timeout_seconds }
+/// A `TCP_CONNECT` check monitored after READY every `health_interval`
+/// seconds with the given threshold.
+fn tcp_health_check(
+    ports: &[&str],
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::TcpConnect {
+        ports: ports.iter().map(|p| p.to_string()).collect(),
+        readiness_interval_seconds: 1,
+        ready_timeout_seconds: 300,
+        health_interval_seconds,
+        failure_threshold,
+    }
 }
 
-fn command_check(interval_seconds: u64, timeout_seconds: u64) -> ServiceReadinessCheck {
-    ServiceReadinessCheck::Command {
-        interval_seconds,
-        timeout_seconds,
+/// A `STDOUT` check without a heartbeat.
+fn stdout_check(ready_timeout_seconds: u64) -> ServiceHealthCheck {
+    ServiceHealthCheck::Stdout {
+        ready_timeout_seconds,
+        health_interval_seconds: None,
+        failure_threshold: 3,
+    }
+}
+
+/// A `STDOUT` check expecting an `openjd_service_ready` heartbeat every
+/// `health_interval_seconds` after READY.
+fn stdout_heartbeat_check(
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Stdout {
+        ready_timeout_seconds: 300,
+        health_interval_seconds: Some(health_interval_seconds),
+        failure_threshold,
+    }
+}
+
+/// A `COMMAND` check with the given readiness interval and ready timeout
+/// and the spec's health defaults (30 s, threshold 3).
+fn command_check(
+    readiness_interval_seconds: u64,
+    ready_timeout_seconds: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Command {
+        readiness_interval_seconds,
+        ready_timeout_seconds,
+        health_interval_seconds: 30,
+        failure_threshold: 3,
+    }
+}
+
+/// A `COMMAND` check probing every second before READY and every
+/// `health_interval_seconds` after, with the given threshold.
+fn command_health_check(
+    health_interval_seconds: u64,
+    failure_threshold: u64,
+) -> ServiceHealthCheck {
+    ServiceHealthCheck::Command {
+        readiness_interval_seconds: 1,
+        ready_timeout_seconds: 300,
+        health_interval_seconds,
+        failure_threshold,
     }
 }
 
@@ -109,7 +169,7 @@ impl ServiceBuilder {
                         protocol: ServicePortProtocol::Tcp,
                     })
                     .collect(),
-                readiness_check: tcp_check(ports, 300),
+                health_check: tcp_check(ports, 300),
                 restart_policy: ServiceRestartPolicy {
                     max_attempts: 0,
                     completed_tasks: CompletedTasksPolicy::Rerun,
@@ -120,7 +180,7 @@ impl ServiceBuilder {
                     actions: ServiceActions {
                         on_enter: None,
                         on_run,
-                        on_readiness_check: None,
+                        on_health_check: None,
                         on_exit: None,
                     },
                     embedded_files: None,
@@ -129,8 +189,8 @@ impl ServiceBuilder {
             },
         }
     }
-    fn readiness(mut self, check: ServiceReadinessCheck) -> Self {
-        self.service.readiness_check = check;
+    fn health(mut self, check: ServiceHealthCheck) -> Self {
+        self.service.health_check = check;
         self
     }
     /// Declare the named port `protocol: UDP`.
@@ -152,8 +212,8 @@ impl ServiceBuilder {
         self.service.script.actions.on_exit = Some(a);
         self
     }
-    fn on_readiness_check(mut self, a: Action) -> Self {
-        self.service.script.actions.on_readiness_check = Some(a);
+    fn on_health_check(mut self, a: Action) -> Self {
+        self.service.script.actions.on_health_check = Some(a);
         self
     }
     fn variables(mut self, vars: &[(&str, &str)]) -> Self {
@@ -212,7 +272,7 @@ fn env(
                 on_wrap_env_exit: None,
                 on_wrap_service_enter: None,
                 on_wrap_service_run: None,
-                on_wrap_service_readiness_check: None,
+                on_wrap_service_health_check: None,
                 on_wrap_service_exit: None,
                 on_exit,
             },
@@ -372,7 +432,7 @@ async fn tcp_connect_readiness_becomes_ready_then_cancel_and_end() {
     );
 
     assert_eq!(ss.state(), ServiceSessionState::Created);
-    assert!(ss.readiness().is_none());
+    assert!(ss.health().is_none());
     ss.enter().await.unwrap();
     assert_eq!(ss.state(), ServiceSessionState::Entered);
     ss.launch().await.unwrap();
@@ -380,8 +440,14 @@ async fn tcp_connect_readiness_becomes_ready_then_cancel_and_end() {
     assert_eq!(ss.launch_count(), 1);
 
     let ready = ss.wait_ready().await.unwrap();
-    assert_eq!(ready, ServiceReadiness::Ready { message: None });
-    assert!(ss.readiness().unwrap().is_ready());
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
+    assert!(ss.health().unwrap().is_ready());
     // READY requires onRun still running.
     assert_eq!(ss.state(), ServiceSessionState::Running);
     assert!(ss.run_exit().is_none());
@@ -412,7 +478,7 @@ async fn tcp_connect_readiness_becomes_ready_then_cancel_and_end() {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         assert!(bodies.contains(&"--------- Starting Service: svc"));
         assert!(bodies.contains(&"--------- Service onRun: svc (launch 1)"));
-        assert!(bodies.contains(&"Readiness check: TCP_CONNECT (timeout 300s)"));
+        assert!(bodies.contains(&"Health check: TCP_CONNECT (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
         assert!(bodies.contains(&"Service 'svc' is READY"));
         assert!(bodies.contains(&"Canceling Service 'svc' onRun"));
         assert!(
@@ -434,7 +500,7 @@ async fn stdout_readiness_carries_message_and_dedups() {
         &["main"],
         sh("echo openjd_service_ready: warmed up; echo openjd_service_ready: again; sleep 30"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut ss = service_session(
         &root,
@@ -446,16 +512,18 @@ async fn stdout_readiness_carries_message_and_dedups() {
     let ready = ss.start().await.unwrap();
     assert_eq!(
         ready,
-        ServiceReadiness::Ready {
-            message: Some("warmed up".into())
+        ServiceHealth::Ready {
+            message: Some("warmed up".into()),
+            failed_probes: 0
         }
     );
     // Give the second line time to arrive: it must not change the message.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(
-        ss.readiness(),
-        Some(ServiceReadiness::Ready {
-            message: Some("warmed up".into())
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: Some("warmed up".into()),
+            failed_probes: 0
         })
     );
     ss.cancel_run(Some(Duration::ZERO));
@@ -486,7 +554,7 @@ async fn service_ready_message_ignored_under_tcp_connect_and_readiness_times_out
         &["main"],
         sh("echo openjd_service_ready: nope; sleep 30"),
     )
-    .readiness(tcp_check(&["main"], 2))
+    .health(tcp_check(&["main"], 2))
     .build();
     let mut ss = service_session(
         &root,
@@ -497,7 +565,7 @@ async fn service_ready_message_ignored_under_tcp_connect_and_readiness_times_out
     );
     let started = std::time::Instant::now();
     let ready = ss.start().await.unwrap();
-    assert_eq!(ready, ServiceReadiness::TimedOut);
+    assert_eq!(ready, ServiceHealth::TimedOut);
     assert!(started.elapsed() >= Duration::from_secs(2));
     assert!(started.elapsed() < Duration::from_secs(10));
     // The instance failed but onRun is still running: the caller cancels it.
@@ -511,11 +579,10 @@ async fn service_ready_message_ignored_under_tcp_connect_and_readiness_times_out
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         assert!(bodies.contains(
-            &"Ignoring openjd_service_ready from Service 'svc' onRun: its readiness check type is TCP_CONNECT"
+            &"Ignoring openjd_service_ready from Service 'svc' onRun: its health check type is TCP_CONNECT"
         ), "{bodies:?}");
-        assert!(bodies.contains(
-            &"Service 'svc' did not become READY within 2s (TCP_CONNECT readiness check)"
-        ));
+        assert!(bodies
+            .contains(&"Service 'svc' did not become READY within 2s (TCP_CONNECT health check)"));
     });
 }
 
@@ -523,7 +590,7 @@ async fn service_ready_message_ignored_under_tcp_connect_and_readiness_times_out
 async fn stdout_readiness_timeout_when_never_emitted() {
     let root = TempDir::new().unwrap();
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
-        .readiness(stdout_check(1))
+        .health(stdout_check(1))
         .build();
     let mut ss = service_session(
         &root,
@@ -532,7 +599,7 @@ async fn stdout_readiness_timeout_when_never_emitted() {
         endpoints("svc", &[("main", 5)]),
         vec![],
     );
-    assert_eq!(ss.start().await.unwrap(), ServiceReadiness::TimedOut);
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
     ss.cancel_run(Some(Duration::ZERO));
     ss.wait_exit().await.unwrap();
     ss.end().await.unwrap();
@@ -546,7 +613,7 @@ async fn tcp_connect_probes_only_listed_ports() {
     let main_port = free_port();
     let other_port = free_port();
     let service = ServiceBuilder::new("svc", &["main", "other"], python_listener("svc", "x"))
-        .readiness(tcp_check(&["main"], 300))
+        .health(tcp_check(&["main"], 300))
         .build();
     let mut ss = service_session(
         &root,
@@ -557,7 +624,10 @@ async fn tcp_connect_probes_only_listed_ports() {
     );
     assert_eq!(
         ss.start().await.unwrap(),
-        ServiceReadiness::Ready { message: None }
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
     );
     ss.cancel_run(Some(Duration::ZERO));
     ss.wait_exit().await.unwrap();
@@ -573,7 +643,7 @@ async fn on_run_exit_before_ready_is_detected() {
     testing_logger::setup();
     let root = TempDir::new().unwrap();
     let service = ServiceBuilder::new("svc", &["main"], sh("echo starting; exit 3"))
-        .readiness(stdout_check(300))
+        .health(stdout_check(300))
         .build();
     let mut ss = service_session(
         &root,
@@ -583,7 +653,7 @@ async fn on_run_exit_before_ready_is_detected() {
         vec![],
     );
     let ready = ss.start().await.unwrap();
-    assert_eq!(ready, ServiceReadiness::ExitedBeforeReady);
+    assert_eq!(ready, ServiceHealth::ExitedBeforeReady);
     let exit = ss.wait_exit().await.unwrap();
     assert_eq!(exit.state, ActionState::Failed);
     assert_eq!(exit.exit_code, Some(3));
@@ -608,7 +678,7 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
         &["main"],
         sh("echo openjd_service_ready: up; sleep 1; echo openjd_status: shutting down; echo openjd_fail: disk full; exit 0"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let statuses: Arc<Mutex<Vec<ActionStatus>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = statuses.clone();
@@ -627,8 +697,9 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     .unwrap();
     assert_eq!(
         ss.start().await.unwrap(),
-        ServiceReadiness::Ready {
-            message: Some("up".into())
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 0
         }
     );
     // An exit-watch receiver is the asynchronous notification.
@@ -645,9 +716,10 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     assert_eq!(exit.fail_message.as_deref(), Some("disk full"));
     // Readiness is unchanged by a later exit.
     assert_eq!(
-        ss.readiness(),
-        Some(ServiceReadiness::Ready {
-            message: Some("up".into())
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 0
         })
     );
     let status = ss.action_status().unwrap();
@@ -678,7 +750,7 @@ async fn on_run_command_not_found_is_a_failed_exit() {
             cancelation: None,
         },
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut ss = service_session(
         &root,
@@ -687,10 +759,7 @@ async fn on_run_command_not_found_is_a_failed_exit() {
         endpoints("svc", &[("main", 5)]),
         vec![],
     );
-    assert_eq!(
-        ss.start().await.unwrap(),
-        ServiceReadiness::ExitedBeforeReady
-    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
     let exit = ss.wait_exit().await.unwrap();
     assert_eq!(exit.state, ActionState::Failed);
     assert_eq!(exit.exit_code, None);
@@ -713,7 +782,7 @@ async fn on_run_declared_timeout_is_an_instance_failure() {
             ..sh("echo openjd_service_ready: up; sleep 30")
         },
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut ss = service_session(
         &root,
@@ -751,7 +820,7 @@ async fn on_enter_env_vars_reach_on_run_and_precedence_holds() {
         // the process by printing its length instead.
         sh(r#"echo "A=$A B=$B C=$C D=${D:-unset} E_LEN=${#E} PORT=$PORT WD=$OPENJD_SESSION_WORKING_DIR"; echo openjd_service_ready: ok; sleep 30"#),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .variables(&[("A", "svc"), ("B", "svc-{{Service.svc.main.port}}"), ("PORT", "{{Service.svc.main.port}}")])
     .on_enter(sh(r#"echo "enter sees A=$A B=$B C=$C PORT=$PORT"; echo openjd_env: A=enter; echo openjd_unset_env: D; echo openjd_redacted_env: E=s3cret"#))
     .build();
@@ -797,7 +866,7 @@ async fn env_messages_from_on_run_and_on_exit_are_ignored() {
         &["main"],
         sh("echo openjd_env: FROM_RUN=1; echo openjd_unset_env: PATH; echo openjd_service_ready: ok; exit 0"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_exit(sh(&format!(
         "echo openjd_env: FROM_EXIT=1; echo \"exit FROM_RUN=${{FROM_RUN:-unset}} PATH_SET=${{PATH:+yes}}\" >> {}",
         trace.display()
@@ -853,7 +922,7 @@ async fn end_cancels_running_on_run_with_its_method_then_runs_on_exit_and_exits_
             10,
         ),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_enter(sh(&format!("echo svc-enter >> {t}")))
     .on_exit(sh(&format!("echo svc-exit >> {t}")))
     .build();
@@ -906,7 +975,7 @@ async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_en
              while [ ! -e {stop_s} ]; do sleep 0.05; done; rm -f {stop_s}; exit 1"
         )),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_enter(sh(&format!("echo svc-enter >> {t}; echo openjd_env: TOKEN=abc123")))
     .on_exit(sh(&format!("echo svc-exit >> {t}")))
     .build();
@@ -930,7 +999,7 @@ async fn relaunch_within_session_preserves_on_enter_env_and_does_not_rerun_on_en
     ss.launch().await.unwrap();
     assert_eq!(ss.launch_count(), 2);
     assert_eq!(ss.state(), ServiceSessionState::Running);
-    assert_eq!(ss.readiness(), Some(ServiceReadiness::Pending));
+    assert_eq!(ss.health(), Some(ServiceHealth::Pending));
     assert!(ss.wait_ready().await.unwrap().is_ready());
     std::fs::write(&stop, b"").unwrap();
     let second = ss.wait_exit().await.unwrap();
@@ -956,7 +1025,7 @@ async fn launch_is_rejected_while_on_run_is_running() {
         &["main"],
         sh("echo openjd_service_ready: ok; sleep 30"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut ss = service_session(
         &root,
@@ -1127,7 +1196,7 @@ async fn on_exit_failure_is_reported_after_full_teardown() {
         &["main"],
         sh("echo openjd_service_ready: ok; exit 0"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_exit(sh("echo openjd_fail: cleanup incomplete; exit 5"))
     .build();
     let mut config = session_config(&root, "svc-test:onexit");
@@ -1185,7 +1254,7 @@ async fn task_scoped_environment_is_not_entered() {
         &["main"],
         sh("echo openjd_service_ready: ok; sleep 30"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut ss = service_session(
         &root,
@@ -1244,7 +1313,7 @@ async fn service_symbols_resolve_in_on_run_args() {
         cancelation: None,
     };
     let service = ServiceBuilder::new("svc", &["main"], on_run)
-        .readiness(stdout_check(300))
+        .health(stdout_check(300))
         .lets(&["Scaled = Scale * Service.svc.main.port"])
         .resolved_symtab(&base)
         .build();
@@ -1312,7 +1381,7 @@ async fn earlier_service_bind_address_is_not_in_scope() {
         &["main"],
         sh("echo {{Service.db.p.bindAddress}}; sleep 30"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let db = ServiceEndpoints::new(
         "db",
@@ -1335,10 +1404,7 @@ async fn earlier_service_bind_address_is_not_in_scope() {
     );
     // Resolution fails when the action is launched; that surfaces as a
     // failed onRun exit (an instance failure), not as a launch error.
-    assert_eq!(
-        ss.start().await.unwrap(),
-        ServiceReadiness::ExitedBeforeReady
-    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
     let exit = ss.wait_exit().await.unwrap();
     assert_eq!(exit.state, ActionState::Failed);
     assert_eq!(exit.exit_code, None);
@@ -1364,7 +1430,7 @@ async fn service_file_resolves_for_embedded_file() {
             cancelation: None,
         },
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .embedded_file(
         "serve",
         "#!/bin/sh\necho \"config=$(cat \"$1\")\"\necho openjd_service_ready: ok\nsleep 30\n",
@@ -1403,7 +1469,7 @@ async fn path_mapping_rules_are_materialized_and_applied() {
         &["main"],
         sh("echo {{Session.HasPathMappingRules}}; echo {{Session.PathMappingRulesFile}}; echo {{Param.Scene}}; echo openjd_service_ready: ok; exit 0"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .build();
     let mut config = session_config(&root, "svc-test:pathmap");
     config.path_mapping_rules = Some(vec![PathMappingRule {
@@ -1489,10 +1555,7 @@ async fn with_config_rejects_mismatched_service_name_and_command_without_check()
     );
 
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 1"))
-        .readiness(ServiceReadinessCheck::Command {
-            interval_seconds: 5,
-            timeout_seconds: 300,
-        })
+        .health(command_check(5, 300))
         .build();
     let err = ServiceSession::with_config(ServiceSessionConfig {
         session: session_config(&root, "svc-test:command"),
@@ -1506,7 +1569,7 @@ async fn with_config_rejects_mismatched_service_name_and_command_without_check()
     .unwrap();
     assert_eq!(
         err.to_string(),
-        "Service 'svc': readiness check type is COMMAND but onReadinessCheck is not defined"
+        "Service 'svc': health check type is COMMAND but onHealthCheck is not defined"
     );
 }
 
@@ -1516,7 +1579,7 @@ async fn with_config_checks_each_endpoint_protocol_against_the_declared_port() {
     // The scheduler allocated `ingest` as TCP, but the port is UDP.
     let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
         .udp_port("ingest")
-        .readiness(tcp_check(&["api"], 300))
+        .health(tcp_check(&["api"], 300))
         .build();
     let err = ServiceSession::with_config(ServiceSessionConfig {
         session: session_config(&root, "svc-test:protocol"),
@@ -1537,7 +1600,7 @@ async fn with_config_checks_each_endpoint_protocol_against_the_declared_port() {
     // forbids this; the runtime refuses rather than probing it).
     let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
         .udp_port("ingest")
-        .readiness(tcp_check(&["api", "ingest"], 300))
+        .health(tcp_check(&["api", "ingest"], 300))
         .build();
     let err = ServiceSession::with_config(ServiceSessionConfig {
         session: session_config(&root, "svc-test:probe-udp"),
@@ -1557,14 +1620,14 @@ async fn with_config_checks_each_endpoint_protocol_against_the_declared_port() {
     .unwrap();
     assert_eq!(
         err.to_string(),
-        "Service 'svc': TCP_CONNECT readiness check names port 'ingest', whose protocol is UDP; \
+        "Service 'svc': TCP_CONNECT health check names port 'ingest', whose protocol is UDP; \
          only TCP ports can be probed"
     );
 
     // Matching protocols construct fine.
     let service = ServiceBuilder::new("svc", &["ingest", "api"], sh("sleep 1"))
         .udp_port("ingest")
-        .readiness(tcp_check(&["api"], 300))
+        .health(tcp_check(&["api"], 300))
         .build();
     ServiceSession::with_config(ServiceSessionConfig {
         session: session_config(&root, "svc-test:protocol-ok"),
@@ -1622,7 +1685,7 @@ while True:
     };
     let service = ServiceBuilder::new("svc", &["ingest", "api"], on_run)
         .udp_port("ingest")
-        .readiness(tcp_check(&["api"], 30))
+        .health(tcp_check(&["api"], 30))
         .build();
     let mut ss = service_session(
         &root,
@@ -1648,7 +1711,7 @@ while True:
 }
 
 // ────────────────────────────────────────────────────────────────────
-// COMMAND readiness (onReadinessCheck) and its concurrency rules
+// COMMAND probes (onHealthCheck) and their concurrency rules
 // ────────────────────────────────────────────────────────────────────
 
 /// A check script that counts its invocations in `counter` and exits 0 on
@@ -1675,8 +1738,8 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
     let counter = root.path().join("counter.txt");
     let c = counter.display().to_string();
     let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
-        .readiness(command_check(1, 300))
-        .on_readiness_check(sh(&counting_check(&c, 3)))
+        .health(command_check(1, 300))
+        .on_health_check(sh(&counting_check(&c, 3)))
         .build();
     let mut ss = service_session(
         &root,
@@ -1687,7 +1750,13 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
     );
     let started = std::time::Instant::now();
     let ready = ss.start().await.unwrap();
-    assert_eq!(ready, ServiceReadiness::Ready { message: None });
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
     // Two 1 s intervals separate the three invocations.
     assert!(
         started.elapsed() >= Duration::from_secs(2),
@@ -1697,7 +1766,8 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
     assert_eq!(read_counter(&counter), 3);
     assert_eq!(ss.state(), ServiceSessionState::Running);
 
-    // Rule 4: once READY the action is not run again.
+    // Rule 4: once READY the action runs every healthIntervalSeconds (30 s
+    // here), not every readinessIntervalSeconds.
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert_eq!(read_counter(&counter), 3);
 
@@ -1708,29 +1778,26 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
 
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies.contains(&"Readiness check: COMMAND (timeout 300s)"));
+        assert!(bodies.contains(&"Health check: COMMAND (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
         // Rule 3: the check's output is tagged, onRun's is not.
-        assert!(
-            bodies.contains(&"[onReadinessCheck] attempt 1"),
-            "{bodies:?}"
-        );
-        assert!(bodies.contains(&"[onReadinessCheck] attempt 2"));
-        assert!(bodies.contains(&"[onReadinessCheck] attempt 3"));
+        assert!(bodies.contains(&"[onHealthCheck] attempt 1"), "{bodies:?}");
+        assert!(bodies.contains(&"[onHealthCheck] attempt 2"));
+        assert!(bodies.contains(&"[onHealthCheck] attempt 3"));
         assert!(bodies.contains(&"service line"));
         assert!(!bodies.iter().any(|b| b.contains("] service line")));
         // Process-control lines of the check are tagged too.
-        assert!(bodies.contains(&"[onReadinessCheck] Service 'svc' readiness check invocation 1"));
+        assert!(bodies.contains(&"[onHealthCheck] Service 'svc' health check invocation 1"));
         assert!(bodies.contains(
-            &"[onReadinessCheck] Readiness check invocation 1: not ready (exit code: 1)"
+            &"[onHealthCheck] Health check invocation 1: failed (onHealthCheck exit code: 1)"
         ));
-        assert!(bodies
-            .contains(&"[onReadinessCheck] Readiness check invocation 3: ready (exit code: 0)"));
+        assert!(
+            bodies.contains(&"[onHealthCheck] Health check invocation 3: succeeded (exit code: 0)")
+        );
         assert!(bodies.contains(&"Service 'svc' is READY"));
         assert_eq!(
             bodies
                 .iter()
-                .filter(|b| b
-                    .starts_with("[onReadinessCheck] Service 'svc' readiness check invocation"))
+                .filter(|b| b.starts_with("[onHealthCheck] Service 'svc' health check invocation"))
                 .count(),
             3
         );
@@ -1748,8 +1815,8 @@ async fn session_log_tag_prefixes_every_record_and_collapses_banners() {
     let counter = root.path().join("counter.txt");
     let c = counter.display().to_string();
     let service = ServiceBuilder::new("svc", &["main"], sh("echo service line; sleep 60"))
-        .readiness(command_check(1, 300))
-        .on_readiness_check(sh(&counting_check(&c, 1)))
+        .health(command_check(1, 300))
+        .on_health_check(sh(&counting_check(&c, 1)))
         .on_enter(sh("echo enter line"))
         .build();
     let environment = env("Scope", None, Some(sh("echo env line")), None);
@@ -1766,7 +1833,10 @@ async fn session_log_tag_prefixes_every_record_and_collapses_banners() {
     .unwrap();
     assert_eq!(
         ss.start().await.unwrap(),
-        ServiceReadiness::Ready { message: None }
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
     );
     ss.cancel_run(Some(Duration::ZERO));
     let _ = ss.wait_exit().await.unwrap();
@@ -1782,8 +1852,8 @@ async fn session_log_tag_prefixes_every_record_and_collapses_banners() {
             "[Service svc] enter line",
             "[Service svc] --------- Service onRun: svc (launch 1)",
             "[Service svc] service line",
-            "[Service svc] [onReadinessCheck] attempt 1",
-            "[Service svc] [onReadinessCheck] Service 'svc' readiness check invocation 1",
+            "[Service svc] [onHealthCheck] attempt 1",
+            "[Service svc] [onHealthCheck] Service 'svc' health check invocation 1",
             "[Service svc] --------- Ending Service: svc",
             "[Service svc] --------- Exiting Environment: Scope",
         ] {
@@ -1813,8 +1883,8 @@ async fn command_readiness_waits_interval_between_invocations() {
     let times = root.path().join("times.txt");
     let c = counter.display().to_string();
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
-        .readiness(command_check(2, 300))
-        .on_readiness_check(sh(&format!(
+        .health(command_check(2, 300))
+        .on_health_check(sh(&format!(
             "date +%s%N >> {}; {}",
             times.display(),
             counting_check(&c, 2)
@@ -1850,8 +1920,8 @@ async fn command_readiness_invocation_timeout_counts_as_not_ready() {
     let c = counter.display().to_string();
     // The first invocation hangs past its 1 s timeout; the second exits 0.
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
-        .readiness(command_check(1, 300))
-        .on_readiness_check(sh_timeout(
+        .health(command_check(1, 300))
+        .on_health_check(sh_timeout(
             &format!(
                 "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
                  if [ $n -eq 1 ]; then sleep 30; fi; exit 0"
@@ -1878,12 +1948,13 @@ async fn command_readiness_invocation_timeout_counts_as_not_ready() {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         assert!(
             bodies.contains(
-                &"[onReadinessCheck] Readiness check invocation 1: not ready (exceeded its timeout)"
+                &"[onHealthCheck] Health check invocation 1: failed (onHealthCheck exceeded its timeout)"
             ),
             "{bodies:?}"
         );
-        assert!(bodies
-            .contains(&"[onReadinessCheck] Readiness check invocation 2: ready (exit code: 0)"));
+        assert!(
+            bodies.contains(&"[onHealthCheck] Health check invocation 2: succeeded (exit code: 0)")
+        );
     });
 }
 
@@ -1894,8 +1965,8 @@ async fn command_readiness_timeout_is_not_a_service_failure_and_stops_the_check(
     let counter = root.path().join("counter.txt");
     let c = counter.display().to_string();
     let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
-        .readiness(command_check(1, 2))
-        .on_readiness_check(sh(&counting_check(&c, 1000)))
+        .health(command_check(1, 2))
+        .on_health_check(sh(&counting_check(&c, 1000)))
         .build();
     let mut ss = service_session(
         &root,
@@ -1904,7 +1975,7 @@ async fn command_readiness_timeout_is_not_a_service_failure_and_stops_the_check(
         endpoints("svc", &[("main", 5)]),
         vec![],
     );
-    assert_eq!(ss.start().await.unwrap(), ServiceReadiness::TimedOut);
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
     // onRun is still running: the restart decision is the caller's.
     assert_eq!(ss.state(), ServiceSessionState::Running);
     assert!(ss.run_exit().is_none());
@@ -1919,8 +1990,9 @@ async fn command_readiness_timeout_is_not_a_service_failure_and_stops_the_check(
     ss.end().await.unwrap();
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies
-            .contains(&"Service 'svc' did not become READY within 2s (COMMAND readiness check)"));
+        assert!(
+            bodies.contains(&"Service 'svc' did not become READY within 2s (COMMAND health check)")
+        );
     });
 }
 
@@ -1937,8 +2009,8 @@ async fn on_run_exit_during_check_invocation_cancels_it_with_its_method() {
         &["main"],
         sh(&format!("sleep 1; echo run-exit >> {t}; exit 0")),
     )
-    .readiness(command_check(1, 300))
-    .on_readiness_check(sh_ntt(
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
         &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
         5,
     ))
@@ -1951,10 +2023,7 @@ async fn on_run_exit_during_check_invocation_cancels_it_with_its_method() {
         vec![],
     );
     let started = std::time::Instant::now();
-    assert_eq!(
-        ss.start().await.unwrap(),
-        ServiceReadiness::ExitedBeforeReady
-    );
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::ExitedBeforeReady);
     let exit = ss.wait_exit().await.unwrap();
     assert_eq!(exit.state, ActionState::Success);
     assert!(!exit.canceled);
@@ -1970,15 +2039,15 @@ async fn on_run_exit_during_check_invocation_cancels_it_with_its_method() {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         assert!(
             bodies.contains(
-                &"[onReadinessCheck] Canceling readiness check invocation 1: its result will be discarded"
+                &"[onHealthCheck] Canceling health check invocation 1: its result will be discarded"
             ),
             "{bodies:?}"
         );
         assert!(bodies.contains(&"Service 'svc' onRun exited before becoming READY"));
-        // The discarded invocation reports no readiness outcome.
+        // The discarded invocation reports no probe outcome.
         assert!(!bodies
             .iter()
-            .any(|b| b.starts_with("[onReadinessCheck] Readiness check invocation 1:")));
+            .any(|b| b.starts_with("[onHealthCheck] Health check invocation 1:")));
     });
 }
 
@@ -1996,8 +2065,8 @@ async fn messages_on_check_stdout_are_logged_and_ignored() {
         &["main"],
         sh("echo openjd_status: from onRun; sleep 60"),
     )
-    .readiness(command_check(1, 300))
-    .on_readiness_check(sh(&format!(
+    .health(command_check(1, 300))
+    .on_health_check(sh(&format!(
         "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
          if [ $n -eq 1 ]; then \
            echo openjd_service_ready: not really; \
@@ -2022,7 +2091,13 @@ async fn messages_on_check_stdout_are_logged_and_ignored() {
     ss.enter().await.unwrap();
     ss.launch().await.unwrap();
     let ready = ss.wait_ready().await.unwrap();
-    assert_eq!(ready, ServiceReadiness::Ready { message: None });
+    assert_eq!(
+        ready,
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
+    );
     assert_eq!(read_counter(&counter), 2);
     // The Service's status comes from onRun only.
     let status = ss.action_status().unwrap();
@@ -2046,8 +2121,8 @@ async fn messages_on_check_stdout_are_logged_and_ignored() {
             "openjd_fail",
         ] {
             let expected = format!(
-                "[onReadinessCheck] Ignoring {what} from Service 'svc' onReadinessCheck: \
-                 messages on the readiness check's stdout are not honored"
+                "[onHealthCheck] Ignoring {what} from Service 'svc' onHealthCheck: \
+                 messages on the health check's stdout are not honored"
             );
             assert!(
                 bodies.contains(&expected.as_str()),
@@ -2056,7 +2131,7 @@ async fn messages_on_check_stdout_are_logged_and_ignored() {
         }
         // The redacted value never reaches the log.
         assert!(!bodies.iter().any(|b| b.contains("hunter2")));
-        assert!(bodies.contains(&"[onReadinessCheck] openjd_redacted_env: SECRET=********"));
+        assert!(bodies.contains(&"[onHealthCheck] openjd_redacted_env: SECRET=********"));
     });
 }
 
@@ -2073,8 +2148,8 @@ async fn end_during_check_invocation_cancels_check_before_on_exit() {
             5,
         ),
     )
-    .readiness(command_check(1, 300))
-    .on_readiness_check(sh_ntt(
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
         &format!("trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; while true; do sleep 0.1; done"),
         5,
     ))
@@ -2091,7 +2166,7 @@ async fn end_during_check_invocation_cancels_check_before_on_exit() {
     ss.launch().await.unwrap();
     // Let the first invocation start.
     tokio::time::sleep(Duration::from_millis(700)).await;
-    assert_eq!(ss.readiness(), Some(ServiceReadiness::Pending));
+    assert_eq!(ss.health(), Some(ServiceHealth::Pending));
     let started = std::time::Instant::now();
     ss.end().await.unwrap();
     assert!(started.elapsed() < Duration::from_secs(8));
@@ -2102,7 +2177,7 @@ async fn end_during_check_invocation_cancels_check_before_on_exit() {
     assert!(got.contains(&"run-term".to_string()));
     assert!(got.contains(&"check-term".to_string()));
     assert_eq!(got.len(), 4);
-    assert_eq!(ss.readiness(), Some(ServiceReadiness::ExitedBeforeReady));
+    assert_eq!(ss.health(), Some(ServiceHealth::ExitedBeforeReady));
 }
 
 #[tokio::test]
@@ -2120,8 +2195,8 @@ async fn service_file_usable_from_check_and_never_rewritten() {
             cancelation: None,
         },
     )
-    .readiness(command_check(1, 300))
-    .on_readiness_check(Action {
+    .health(command_check(1, 300))
+    .on_health_check(Action {
         command: fs("{{Service.File.probe}}"),
         args: Some(vec![fs("{{Service.File.config}}")]),
         timeout: None,
@@ -2181,6 +2256,546 @@ async fn service_file_usable_from_check_and_never_rewritten() {
 }
 
 // ────────────────────────────────────────────────────────────────────
+// Health after READY (phase 2): failureThreshold, blips, UNHEALTHY
+// ────────────────────────────────────────────────────────────────────
+
+/// Collect the current health value and every later one a health watch
+/// publishes, until it reports `Unhealthy` or the sender is dropped. (A
+/// receiver from `health_watch()` has not necessarily observed the current
+/// value, so `borrow_and_update` first.)
+async fn collect_health(mut rx: tokio::sync::watch::Receiver<ServiceHealth>) -> Vec<ServiceHealth> {
+    let mut seen = vec![rx.borrow_and_update().clone()];
+    while !matches!(seen.last(), Some(ServiceHealth::Unhealthy(_))) {
+        if rx.changed().await.is_err() {
+            break;
+        }
+        seen.push(rx.borrow_and_update().clone());
+    }
+    seen
+}
+
+fn unhealthy(failed_probes: u64, failure_threshold: u64, last_failure: &str) -> ServiceHealth {
+    ServiceHealth::Unhealthy(ServiceUnhealthy {
+        failed_probes,
+        failure_threshold,
+        last_failure: last_failure.into(),
+    })
+}
+
+/// COMMAND, phase 2: the check passes once (READY) then fails every time.
+/// With healthIntervalSeconds 1 and failureThreshold 2, the second
+/// consecutive failure makes the instance UNHEALTHY, the runtime cancels
+/// onRun with its cancelation method (NOTIFY_THEN_TERMINATE here: SIGTERM,
+/// which the trap records), and the exit carries the reason.
+#[tokio::test]
+async fn command_health_failures_reach_threshold_and_cancel_on_run() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!("trap 'echo run-term >> {t}; exit 143' TERM; while true; do sleep 0.1; done"),
+            5,
+        ),
+    )
+    .health(command_health_check(1, 2))
+    // Invocation 1 exits 0; every later one exits 1.
+    .on_health_check(sh(&format!(
+        "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; echo \"probe $n\"; [ $n -le 1 ]"
+    )))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert!(ss.start().await.unwrap().is_ready());
+    let health = tokio::spawn(collect_health(ss.health_watch().unwrap()));
+
+    // The onRun exit arrives on its own: the runtime canceled it.
+    let exit = ss.wait_exit().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled, "UNHEALTHY is an instance failure: {exit:?}");
+    assert_eq!(
+        exit.unhealthy,
+        Some(ServiceUnhealthy {
+            failed_probes: 2,
+            failure_threshold: 2,
+            last_failure: "onHealthCheck exit code: 1".into(),
+        })
+    );
+    // Two 1 s health intervals, plus probe time; well under the 30 s
+    // default timeout of a check invocation.
+    assert!(elapsed >= Duration::from_secs(2), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+    assert_eq!(read_counter(&counter), 3);
+    assert_eq!(read_trace(&trace), vec!["run-term"]);
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+
+    // The watch published READY, the first failure, then UNHEALTHY.
+    assert_eq!(
+        health.await.unwrap(),
+        vec![
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 0
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 1
+            },
+            unhealthy(2, 2, "onHealthCheck exit code: 1"),
+        ]
+    );
+    assert_eq!(
+        ss.health(),
+        Some(unhealthy(2, 2, "onHealthCheck exit code: 1"))
+    );
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Health check: COMMAND (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Service 'svc' is READY"));
+        assert!(
+            bodies.contains(
+                &"Service 'svc' health probe failed (1 of 2): onHealthCheck exit code: 1"
+            ),
+            "{bodies:?}"
+        );
+        assert!(bodies.contains(
+            &"Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: onHealthCheck exit code: 1"
+        ));
+        assert!(bodies.contains(&"Canceling Service 'svc' onRun: the instance is UNHEALTHY"));
+        // (The exit code is 143 when the trap ran before the process was
+        // reaped, N/A otherwise.)
+        assert!(
+            bodies
+                .iter()
+                .any(|b| b.starts_with("Service 'svc' onRun exited: Canceled (")
+                    && b.ends_with("), canceled by the runtime: UNHEALTHY")),
+            "{bodies:?}"
+        );
+        // No probe runs after UNHEALTHY.
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|b| b.starts_with("[onHealthCheck] Service 'svc' health check invocation"))
+                .count(),
+            3
+        );
+    });
+}
+
+/// COMMAND, phase 2: two failures below a threshold of 3, then a success,
+/// reset the count ("a single successful probe resets the count"); the
+/// instance stays READY and onRun is never canceled by the runtime.
+#[tokio::test]
+async fn command_health_blips_below_threshold_keep_the_instance_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_health_check(1, 3))
+        // Invocation 1 (READY) ok; 2 and 3 fail (the blips); 4+ ok.
+        .on_health_check(sh(&format!(
+            "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; [ $n -eq 1 ] || [ $n -ge 4 ]"
+        )))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    // Wait for the two blips and the recovery probe (invocation 4).
+    let mut seen = Vec::new();
+    while read_counter(&counter) < 5 {
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            r = health.changed() => {
+                r.unwrap();
+                seen.push(health.borrow_and_update().clone());
+            }
+        }
+    }
+    while health.has_changed().unwrap() {
+        seen.push(health.borrow_and_update().clone());
+    }
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    assert_eq!(
+        seen,
+        vec![
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 1
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 2
+            },
+            ServiceHealth::Ready {
+                message: None,
+                failed_probes: 0
+            },
+        ]
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies
+            .contains(&"Service 'svc' health probe failed (1 of 3): onHealthCheck exit code: 1"));
+        assert!(bodies
+            .contains(&"Service 'svc' health probe failed (2 of 3): onHealthCheck exit code: 1"));
+        assert!(
+            bodies.contains(&"Service 'svc' health probe succeeded; failure count reset from 2")
+        );
+        assert!(!bodies.iter().any(|b| b.contains("UNHEALTHY")));
+    });
+}
+
+/// TCP_CONNECT, phase 2: the listener closes its socket after READY while
+/// the process keeps running (a hang). Two refused connections make the
+/// instance UNHEALTHY and the runtime cancels onRun.
+#[tokio::test]
+async fn tcp_connect_port_closed_after_ready_is_unhealthy() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let port = free_port();
+    let script = r#"
+import socket, sys, time
+host, port = sys.argv[1], int(sys.argv[2])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((host, port))
+s.listen(5)
+print("listening", flush=True)
+# Serve the readiness probe, then hang with the port closed.
+c, _ = s.accept()
+c.close()
+s.close()
+print("closed", flush=True)
+time.sleep(600)
+"#;
+    let on_run = Action {
+        command: fs("python3"),
+        args: Some(vec![
+            fs("-c"),
+            fs(script),
+            fs("{{Service.svc.main.bindAddress}}"),
+            fs("{{Service.svc.main.port}}"),
+        ]),
+        timeout: None,
+        cancelation: None,
+    };
+    let service = ServiceBuilder::new("svc", &["main"], on_run)
+        .health(tcp_health_check(&["main"], 1, 2))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", port)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let started = std::time::Instant::now();
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled);
+    let u = exit.unhealthy.expect("UNHEALTHY exit");
+    assert_eq!((u.failed_probes, u.failure_threshold), (2, 2));
+    assert!(
+        u.last_failure.starts_with(&format!(
+            "TCP connect to port 'main' (127.0.0.1:{port}) failed: "
+        )),
+        "{}",
+        u.last_failure
+    );
+    assert_eq!(lines(&exit.stdout), vec!["listening", "closed"]);
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.iter().any(|b| b.starts_with(
+            "Service 'svc' health probe failed (1 of 2): TCP connect to port 'main'"
+        )));
+        assert!(bodies.iter().any(|b| b.starts_with(
+            "Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: TCP connect to port 'main'"
+        )));
+    });
+}
+
+/// STDOUT with healthIntervalSeconds: `openjd_service_ready` is a
+/// heartbeat after READY. The service beats every 0.2 s for a while, then
+/// stops; with interval 1 and threshold 2, two silent intervals make the
+/// instance UNHEALTHY.
+#[tokio::test]
+async fn stdout_heartbeat_missed_is_unhealthy() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("for i in 1 2 3 4 5 6 7 8; do echo openjd_service_ready: beat $i; sleep 0.2; done; echo silent; sleep 60"),
+    )
+    .health(stdout_heartbeat_check(1, 2))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: Some("beat 1".into()),
+            failed_probes: 0
+        }
+    );
+    let health = tokio::spawn(collect_health(ss.health_watch().unwrap()));
+    let exit = ss.wait_exit().await.unwrap();
+    let elapsed = started.elapsed();
+    // ~1.4 s to the last heartbeat, then two 1 s intervals.
+    assert!(elapsed >= Duration::from_millis(3000), "{elapsed:?}");
+    assert!(elapsed < Duration::from_secs(15), "{elapsed:?}");
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert!(!exit.canceled);
+    assert_eq!(
+        exit.unhealthy,
+        Some(ServiceUnhealthy {
+            failed_probes: 2,
+            failure_threshold: 2,
+            last_failure: "no openjd_service_ready line within 1s".into(),
+        })
+    );
+    assert!(lines(&exit.stdout).contains(&"silent"));
+    assert_eq!(
+        health.await.unwrap(),
+        vec![
+            ServiceHealth::Ready {
+                message: Some("beat 1".into()),
+                failed_probes: 0
+            },
+            ServiceHealth::Ready {
+                message: Some("beat 1".into()),
+                failed_probes: 1
+            },
+            unhealthy(2, 2, "no openjd_service_ready line within 1s"),
+        ]
+    );
+    ss.end().await.unwrap();
+
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(&"Health check: STDOUT (readyTimeoutSeconds 300, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Service 'svc' is READY: beat 1"));
+        assert!(bodies.contains(
+            &"Service 'svc' health probe failed (1 of 2): no openjd_service_ready line within 1s"
+        ));
+        assert!(bodies.contains(
+            &"Service 'svc' is UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last probe: no openjd_service_ready line within 1s"
+        ));
+    });
+}
+
+/// STDOUT with healthIntervalSeconds: a heartbeat that resumes after one
+/// missed interval resets the count; the instance stays READY.
+#[tokio::test]
+async fn stdout_heartbeat_resuming_resets_the_count() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; sleep 1.5; while true; do echo openjd_service_ready: beat; sleep 0.2; done"),
+    )
+    .health(stdout_heartbeat_check(1, 2))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    // One missed interval…
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow_and_update().clone(),
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 1
+        }
+    );
+    // …then the heartbeat resumes and resets the count.
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow_and_update().clone(),
+        ServiceHealth::Ready {
+            message: Some("up".into()),
+            failed_probes: 0
+        }
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert!(ss.run_exit().is_none());
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+}
+
+/// STDOUT without healthIntervalSeconds: no heartbeat is expected. The
+/// service prints the ready line once and is silent; it stays READY for as
+/// long as onRun runs, and later lines have no effect.
+#[tokio::test]
+async fn stdout_without_interval_ignores_silence_after_ready() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: once; sleep 2.5; echo openjd_service_ready: again; sleep 60"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.start().await.unwrap(),
+        ServiceHealth::Ready {
+            message: Some("once".into()),
+            failed_probes: 0
+        }
+    );
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!health.has_changed().unwrap());
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: Some("once".into()),
+            failed_probes: 0
+        })
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies
+            .contains(&"Health check: STDOUT (readyTimeoutSeconds 300, no heartbeat after READY)"));
+        assert!(!bodies.iter().any(|b| b.contains("health probe failed")));
+    });
+}
+
+/// Constraint 11 after READY: a health-check invocation in flight when
+/// onRun exits is canceled with its cancelation method and its result is
+/// discarded; the exit is an ordinary instance failure, not UNHEALTHY.
+#[tokio::test]
+async fn on_run_exit_after_ready_cancels_the_health_probe_in_flight() {
+    testing_logger::setup();
+    let root = TempDir::new().unwrap();
+    let counter = root.path().join("counter.txt");
+    let c = counter.display().to_string();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    // onRun exits 3 s in — during the second (health) invocation, which
+    // hangs from 1 s after READY.
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh(&format!("sleep 3; echo run-exit >> {t}; exit 7")),
+    )
+    .health(command_health_check(1, 3))
+    .on_health_check(sh_ntt(
+        &format!(
+            "n=$(cat {c} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {c}; \
+             [ $n -eq 1 ] && exit 0; \
+             trap 'echo check-term >> {t}; exit 143' TERM; echo check-start >> {t}; \
+             while true; do sleep 0.1; done"
+        ),
+        5,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let started = std::time::Instant::now();
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert_eq!(exit.state, ActionState::Failed);
+    assert_eq!(exit.exit_code, Some(7));
+    assert!(!exit.canceled);
+    assert_eq!(exit.unhealthy, None);
+    assert_eq!(
+        read_trace(&trace),
+        vec!["check-start", "run-exit", "check-term"]
+    );
+    // The instance was READY until it exited; no UNHEALTHY verdict.
+    assert_eq!(
+        ss.health(),
+        Some(ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        })
+    );
+    ss.end().await.unwrap();
+    testing_logger::validate(|logs| {
+        let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
+        assert!(bodies.contains(
+            &"[onHealthCheck] Canceling health check invocation 2: its result will be discarded"
+        ));
+        assert!(!bodies
+            .iter()
+            .any(|b| b.starts_with("[onHealthCheck] Health check invocation 2:")));
+        assert!(!bodies.iter().any(|b| b.contains("UNHEALTHY")));
+    });
+}
+
+// ────────────────────────────────────────────────────────────────────
 // onWrapService* hooks (WRAP_ACTIONS + SERVICE)
 // ────────────────────────────────────────────────────────────────────
 
@@ -2228,7 +2843,7 @@ fn service_wrap_env(
                 on_wrap_env_exit: Some(sh("true")),
                 on_wrap_service_enter: enter,
                 on_wrap_service_run: run,
-                on_wrap_service_readiness_check: check,
+                on_wrap_service_health_check: check,
                 on_wrap_service_exit: exit,
                 on_exit: None,
             },
@@ -2251,7 +2866,7 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
         [
             Some(forwarding_hook("onWrapServiceEnter", &t)),
             Some(forwarding_hook("onWrapServiceRun", &t)),
-            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
             Some(forwarding_hook("onWrapServiceExit", &t)),
         ],
     );
@@ -2263,7 +2878,7 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
              echo run >> {t}; sleep 60"
         )),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_enter(sh("echo openjd_env: FROM_ENTER=yes"))
     .on_exit(sh(&format!("echo exit >> {t}")))
     // `metrics` is a UDP port: WrappedService.Protocols reports it.
@@ -2286,8 +2901,9 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
     // openjd_service_ready is honored through the wrapper's forwarded stdout.
     assert_eq!(
         ready,
-        ServiceReadiness::Ready {
-            message: Some("up on 4100".into())
+        ServiceHealth::Ready {
+            message: Some("up on 4100".into()),
+            failed_probes: 0
         }
     );
     ss.cancel_run(Some(Duration::ZERO));
@@ -2319,10 +2935,10 @@ async fn wrap_hooks_replace_the_service_actions_and_forward_messages() {
         assert!(bodies.contains(
             &"Service 'svc' onExit: running onWrapServiceExit of wrapping Environment 'Wrapper' in its place"
         ));
-        // STDOUT readiness: onWrapServiceReadinessCheck never runs.
+        // STDOUT readiness: onWrapServiceHealthCheck never runs.
         assert!(!bodies
             .iter()
-            .any(|b| b.contains("onWrapServiceReadinessCheck")));
+            .any(|b| b.contains("onWrapServiceHealthCheck")));
         assert!(bodies.contains(&"from-enter=yes"));
     });
 }
@@ -2338,13 +2954,13 @@ async fn wrap_hooks_run_only_for_actions_the_service_defines() {
         [
             Some(forwarding_hook("onWrapServiceEnter", &t)),
             Some(forwarding_hook("onWrapServiceRun", &t)),
-            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
             Some(forwarding_hook("onWrapServiceExit", &t)),
         ],
     );
     // No onEnter, no onExit, TCP_CONNECT readiness: only onRun exists to wrap.
     let service = ServiceBuilder::new("svc", &["main", "metrics"], python_listener("svc", "x"))
-        .readiness(tcp_check(&["main"], 300))
+        .health(tcp_check(&["main"], 300))
         .build();
     let port = free_port();
     let mut ss = service_session(
@@ -2365,7 +2981,7 @@ async fn wrap_hooks_run_only_for_actions_the_service_defines() {
 }
 
 #[tokio::test]
-async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
+async fn wrapped_health_check_runs_concurrently_with_wrapped_on_run() {
     testing_logger::setup();
     let root = TempDir::new().unwrap();
     let trace = root.path().join("trace.txt");
@@ -2378,7 +2994,7 @@ async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
         [
             None,
             Some(forwarding_hook("onWrapServiceRun", &t)),
-            Some(forwarding_hook("onWrapServiceReadinessCheck", &t)),
+            Some(forwarding_hook("onWrapServiceHealthCheck", &t)),
             None,
         ],
     );
@@ -2389,9 +3005,9 @@ async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
             "echo run-start >> {t}; echo service line; while true; do sleep 0.1; done"
         )),
     )
-    .readiness(command_check(1, 300))
+    .health(command_check(1, 300))
     // READY on the 2nd attempt, but only once onRun has started.
-    .on_readiness_check(sh(&format!(
+    .on_health_check(sh(&format!(
         "grep -q run-start {t} || exit 1; {}",
         counting_check(&c, 2)
     )))
@@ -2405,7 +3021,10 @@ async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
     );
     assert_eq!(
         ss.start().await.unwrap(),
-        ServiceReadiness::Ready { message: None }
+        ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0
+        }
     );
     assert_eq!(ss.state(), ServiceSessionState::Running);
     ss.cancel_run(Some(Duration::ZERO));
@@ -2420,18 +3039,18 @@ async fn wrapped_readiness_check_runs_concurrently_with_wrapped_on_run() {
     assert!(hooks.len() >= 3, "{got:?}");
     assert!(hooks[1..]
         .iter()
-        .all(|h| **h == format!("[onWrapServiceReadinessCheck] {values}")));
+        .all(|h| **h == format!("[onWrapServiceHealthCheck] {values}")));
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         // The wrapped check's output is attributed to the hook that ran.
         assert!(
-            bodies.contains(&"[onWrapServiceReadinessCheck] attempt 1"),
+            bodies.contains(&"[onWrapServiceHealthCheck] attempt 1"),
             "{bodies:?}"
         );
-        assert!(bodies.contains(&"[onWrapServiceReadinessCheck] attempt 2"));
+        assert!(bodies.contains(&"[onWrapServiceHealthCheck] attempt 2"));
         assert!(bodies.contains(&"service line"));
         assert!(bodies.contains(
-            &"Service 'svc' onReadinessCheck: running onWrapServiceReadinessCheck of wrapping Environment 'Wrapper' in its place"
+            &"Service 'svc' onHealthCheck: running onWrapServiceHealthCheck of wrapping Environment 'Wrapper' in its place"
         ));
     });
 }
@@ -2457,7 +3076,7 @@ async fn task_only_wrapper_is_skipped_entirely() {
         &["main"],
         sh("echo openjd_service_ready: ok; sleep 60"),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_enter(sh(&format!("echo svc-enter >> {t}")))
     .build();
     let mut ss = service_session(
@@ -2551,7 +3170,7 @@ async fn wrapping_scope_environment_wraps_inner_environments_and_the_service_act
             "echo openjd_service_ready: up; echo run >> {t}; sleep 60"
         )),
     )
-    .readiness(stdout_check(300))
+    .health(stdout_check(300))
     .on_enter(sh(&format!("echo svc-enter >> {t}")))
     .on_exit(sh(&format!("echo svc-exit >> {t}")))
     .build();

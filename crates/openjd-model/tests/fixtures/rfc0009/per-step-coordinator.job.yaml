@@ -9,9 +9,9 @@ steps:
         ports:
           - name: api
           - name: metrics
-        readinessCheck:
+        healthCheck:
           type: STDOUT
-          timeoutSeconds: 120
+          readyTimeoutSeconds: 120
         restartPolicy:
           maxAttempts: 1
           completedTasks: RERUN

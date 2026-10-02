@@ -21,9 +21,9 @@ jobServices:
     description: "A Valkey store the Job's Tasks share to cache and coordinate."
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 3
       completedTasks: KEEP

@@ -19,9 +19,11 @@ jobServices:
           min: 8192
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
+      healthIntervalSeconds: 10
+      failureThreshold: 3
     restartPolicy:
       maxAttempts: 3
       completedTasks: KEEP

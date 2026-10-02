@@ -143,7 +143,7 @@ pub enum SessionError {
         reason: String,
     },
 
-    /// RFC 0009: a Service's `TCP_CONNECT` readiness check names a port, or
+    /// RFC 0009: a Service's `TCP_CONNECT` health check names a port, or
     /// the caller's endpoint assignment omits one, that the Service does not
     /// declare — the two inputs to a Service Session disagree.
     #[error("Service '{name}' port '{port}' has no endpoint assignment")]

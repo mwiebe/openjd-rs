@@ -10,7 +10,8 @@
 //! `specs/sessions/service-session.md` describes: it allocates endpoints
 //! ([`super::service_ports`]), decides when each Service Session starts
 //! (ordering constraints 2 and 10), gates Tasks on readiness (constraint
-//! 3), watches for instance failures while Tasks run and applies the
+//! 3), watches for instance failures while Tasks run — an `onRun` exit, or
+//! an UNHEALTHY verdict from the Session's health check — and applies the
 //! restart policy ("Failure and restart"), and stops Services when their
 //! scope completes (constraints 4, 6, 7). The Service Sessions themselves
 //! are `openjd_sessions::ServiceSession`s.
@@ -36,8 +37,8 @@ use openjd_model::types::{JobParameterValues, ModelProfile};
 use openjd_sessions::path_mapping::PathMappingRule;
 use openjd_sessions::session::SessionConfig;
 use openjd_sessions::{
-    ServiceReadiness, ServiceRunExit, ServiceSession, ServiceSessionConfig, ServiceSessionState,
-    SessionLimits,
+    ServiceHealth, ServiceRunExit, ServiceSession, ServiceSessionConfig, ServiceSessionState,
+    ServiceUnhealthy, SessionLimits,
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -215,14 +216,18 @@ enum FailureKind {
     /// not be created, an Environment `onEnter` failed, or `onEnter`
     /// failed. Always begins a new Service Session.
     Start(String),
-    /// `onRun` exited before the readiness check passed — possibly a port
+    /// `onRun` exited before a health-check probe passed — possibly a port
     /// conflict, so the relaunch begins a new Service Session (new ports).
     ExitedBeforeReady(ServiceRunExit),
-    /// The readiness check timed out while `onRun` kept running (it has
+    /// `readyTimeoutSeconds` elapsed while `onRun` kept running (it has
     /// been canceled and has exited by the time this is reported).
-    ReadinessTimedOut,
+    ReadyTimedOut,
     /// `onRun` exited after READY while the scope still had work.
     Exited(ServiceRunExit),
+    /// The instance became UNHEALTHY: `failureThreshold` consecutive health
+    /// probes failed after READY. The runtime has canceled `onRun`; it has
+    /// exited by the time the restart decision is taken.
+    Unhealthy(ServiceUnhealthy),
 }
 
 impl FailureKind {
@@ -239,13 +244,35 @@ impl FailureKind {
                     describe_exit(exit)
                 )
             }
-            Self::ReadinessTimedOut => "readiness check timed out".to_string(),
+            Self::ReadyTimedOut => "did not become READY within readyTimeoutSeconds".to_string(),
             Self::Exited(exit) => format!(
                 "onRun exited while the scope still had work ({})",
                 describe_exit(exit)
             ),
+            Self::Unhealthy(unhealthy) => format!("instance UNHEALTHY: {unhealthy}"),
         }
     }
+}
+
+/// `<TYPE> (readyTimeoutSeconds N[, readinessIntervalSeconds N][, healthIntervalSeconds N, failureThreshold N])`
+/// — the effective health check, for the launch log line.
+fn describe_health_check(check: &openjd_model::job::ServiceHealthCheck) -> String {
+    let mut s = format!(
+        "{} (readyTimeoutSeconds {}",
+        check.type_name(),
+        check.ready_timeout_seconds()
+    );
+    if let Some(i) = check.readiness_interval_seconds() {
+        s.push_str(&format!(", readinessIntervalSeconds {i}"));
+    }
+    match check.health_interval_seconds() {
+        Some(i) => s.push_str(&format!(
+            ", healthIntervalSeconds {i}, failureThreshold {})",
+            check.failure_threshold()
+        )),
+        None => s.push_str(", no heartbeat after READY)"),
+    }
+    s
 }
 
 fn describe_exit(exit: &ServiceRunExit) -> String {
@@ -328,11 +355,37 @@ struct Shared {
     session_counter: AtomicU32,
 }
 
-/// An `onRun` exit observed on a READY Service.
+/// An instance failure observed on a READY Service (RFC 0009 "Failure and
+/// restart"): its `onRun` exited other than by the runner's cancelation, or
+/// its health check declared it UNHEALTHY (on which the Service Session has
+/// already canceled `onRun`).
 pub(super) struct Detected {
     group: Group,
     idx: usize,
-    exit: ServiceRunExit,
+    failure: InstanceFailure,
+}
+
+enum InstanceFailure {
+    Exit(ServiceRunExit),
+    Unhealthy(ServiceUnhealthy),
+}
+
+impl InstanceFailure {
+    /// Classify an `onRun` exit the Session reported: UNHEALTHY when the
+    /// health check forced it, an ordinary exit otherwise.
+    fn from_exit(exit: ServiceRunExit) -> Self {
+        match exit.unhealthy {
+            Some(u) => Self::Unhealthy(u),
+            None => Self::Exit(exit),
+        }
+    }
+
+    fn into_kind(self) -> FailureKind {
+        match self {
+            Self::Exit(exit) => FailureKind::Exited(exit),
+            Self::Unhealthy(u) => FailureKind::Unhealthy(u),
+        }
+    }
 }
 
 /// The scheduler side of RFC 0009 for one `openjd run`.
@@ -478,7 +531,7 @@ impl ServiceManager {
     }
 
     /// The readiness gate (constraint 3), run before every Task: observe
-    /// any `onRun` exit since the last gate and begin the restart decision
+    /// any instance failure since the last gate and begin the restart decision
     /// for it; await every background start/relaunch; restart the Services
     /// that reference one whose Session was replaced; start every Service
     /// not yet started, in waves of Services whose referenced Services are
@@ -531,9 +584,9 @@ impl ServiceManager {
         self.stop_job_services().await;
     }
 
-    /// Resolve when the `onRun` of a READY Service exits other than by
-    /// cancelation — an instance failure while a Task runs. Pending forever
-    /// when no Service is READY.
+    /// Resolve when a READY Service suffers an instance failure while a Task
+    /// runs: its health check declares it UNHEALTHY, or its `onRun` exits
+    /// other than by cancelation. Pending forever when no Service is READY.
     pub(super) async fn wait_instance_failure(&self) -> Detected {
         let mut watchers: Vec<Pin<Box<dyn Future<Output = Detected> + Send>>> = Vec::new();
         for (group, list) in [(Group::Job, &self.job), (Group::Step, &self.step)] {
@@ -541,23 +594,61 @@ impl ServiceManager {
                 let State::Ready(inst) = &m.state else {
                     continue;
                 };
-                let Some(mut rx) = inst.session.as_ref().and_then(|s| s.exit_watch()) else {
+                let Some(session) = inst.session.as_ref() else {
+                    continue;
+                };
+                let (Some(mut exit_rx), Some(mut health_rx)) =
+                    (session.exit_watch(), session.health_watch())
+                else {
                     continue;
                 };
                 watchers.push(Box::pin(async move {
                     loop {
-                        let current = rx.borrow_and_update().clone();
-                        match current {
-                            Some(exit) if exit.canceled => std::future::pending::<()>().await,
-                            Some(exit) => return Detected { group, idx, exit },
-                            None => {}
-                        }
-                        if rx.changed().await.is_err() {
+                        // UNHEALTHY is reported as soon as the health check
+                        // decides it, before the canceled onRun has exited.
+                        if let ServiceHealth::Unhealthy(u) = health_rx.borrow_and_update().clone() {
                             return Detected {
                                 group,
                                 idx,
-                                exit: driver_lost_exit(),
+                                failure: InstanceFailure::Unhealthy(u),
                             };
+                        }
+                        let current = exit_rx.borrow_and_update().clone();
+                        match current {
+                            Some(exit) if exit.canceled => std::future::pending::<()>().await,
+                            Some(exit) => {
+                                return Detected {
+                                    group,
+                                    idx,
+                                    failure: InstanceFailure::from_exit(exit),
+                                }
+                            }
+                            None => {}
+                        }
+                        tokio::select! {
+                            r = exit_rx.changed() => {
+                                if r.is_err() {
+                                    return Detected {
+                                        group,
+                                        idx,
+                                        failure: InstanceFailure::Exit(driver_lost_exit()),
+                                    };
+                                }
+                            }
+                            r = health_rx.changed() => {
+                                if r.is_err() {
+                                    // The driver is gone; the exit watcher
+                                    // reports what happened.
+                                    health_rx.mark_unchanged();
+                                    if exit_rx.changed().await.is_err() {
+                                        return Detected {
+                                            group,
+                                            idx,
+                                            failure: InstanceFailure::Exit(driver_lost_exit()),
+                                        };
+                                    }
+                                }
+                            }
                         }
                     }
                 }));
@@ -570,16 +661,21 @@ impl ServiceManager {
         detected
     }
 
-    /// Observe the restart decision for an `onRun` exit (RFC 0009 "Failure
-    /// and restart"): the Service becomes UNREADY and its relaunch (or
-    /// FAILED verdict) proceeds in the background. Returns the Service's
-    /// `completedTasks` policy and the scope a `RERUN` reaches, so the
-    /// caller can cancel and requeue Tasks.
+    /// Observe the restart decision for an instance failure (RFC 0009
+    /// "Failure and restart"): the Service becomes UNREADY (an UNHEALTHY
+    /// instance once its canceled `onRun` has exited, which the background
+    /// relaunch awaits) and its relaunch (or FAILED verdict) proceeds in the
+    /// background. Returns the Service's `completedTasks` policy and the
+    /// scope a `RERUN` reaches, so the caller can cancel and requeue Tasks.
     pub(super) fn begin_recovery(
         &mut self,
         detected: Detected,
     ) -> (CompletedTasksPolicy, RerunScope) {
-        let Detected { group, idx, exit } = detected;
+        let Detected {
+            group,
+            idx,
+            failure,
+        } = detected;
         let stop = match group {
             Group::Job => self.job_stop.clone(),
             Group::Step => self.step_stop.clone(),
@@ -595,7 +691,13 @@ impl ServiceManager {
             Group::Step => RerunScope::Step,
         };
         if let State::Ready(inst) = std::mem::replace(&mut m.state, State::Failed) {
-            let kind = FailureKind::Exited(exit);
+            if let InstanceFailure::Unhealthy(u) = &failure {
+                log_line(format!(
+                    "{} ({} scope) is UNHEALTHY: {u}",
+                    inst.label, inst.scope
+                ));
+            }
+            let kind = failure.into_kind();
             log_line(format!(
                 "{} ({} scope) is UNREADY: {} (completedTasks: {})",
                 inst.label,
@@ -620,13 +722,30 @@ impl ServiceManager {
                 let State::Ready(inst) = &m.state else {
                     continue;
                 };
-                let Some(rx) = inst.session.as_ref().and_then(|s| s.exit_watch()) else {
+                let Some(session) = inst.session.as_ref() else {
+                    continue;
+                };
+                if let Some(ServiceHealth::Unhealthy(u)) =
+                    session.health_watch().map(|rx| rx.borrow().clone())
+                {
+                    out.push(Detected {
+                        group,
+                        idx,
+                        failure: InstanceFailure::Unhealthy(u),
+                    });
+                    continue;
+                }
+                let Some(rx) = session.exit_watch() else {
                     continue;
                 };
                 let current = rx.borrow().clone();
                 if let Some(exit) = current {
                     if !exit.canceled {
-                        out.push(Detected { group, idx, exit });
+                        out.push(Detected {
+                            group,
+                            idx,
+                            failure: InstanceFailure::from_exit(exit),
+                        });
                     }
                 }
             }
@@ -914,6 +1033,7 @@ fn driver_lost_exit() -> ServiceRunExit {
         state: openjd_sessions::ActionState::Failed,
         exit_code: None,
         canceled: false,
+        unhealthy: None,
         fail_message: Some("onRun driver ended without reporting an exit".into()),
         stdout: String::new(),
     }
@@ -1128,8 +1248,11 @@ async fn launch_until_ready(
         .as_mut()
         .expect("a Service Session is live at this point");
     if session.state() == ServiceSessionState::Running {
-        // The exit was observed on the watch channel; the Session moves to
-        // EXITED (and reclaims its driver) when the exit is awaited here.
+        // The exit was observed on the watch channel — or, for an UNHEALTHY
+        // instance, is on its way: the Session canceled onRun and the
+        // restart decision waits for it (RFC 0009 "Failure and restart"
+        // step 2, constraint 5). The Session moves to EXITED (and reclaims
+        // its driver) when the exit is awaited here.
         let _ = session.wait_exit().await;
     }
     if stop.is_cancelled() {
@@ -1140,29 +1263,39 @@ async fn launch_until_ready(
         .await
         .map_err(|e| FailureKind::Start(format!("could not launch onRun: {e}")))?;
     log_line(format!(
-        "{} onRun launched (launch {} in this Session); readiness check: {}",
+        "{} onRun launched (launch {} in this Session); health check: {}",
         inst.label,
         session.launch_count(),
-        inst.service.readiness_check.type_name()
+        describe_health_check(&inst.service.health_check)
     ));
-    let readiness = tokio::select! {
+    let health = tokio::select! {
         r = session.wait_ready() => r,
         _ = stop.cancelled() => return Ok(false),
     };
-    match readiness {
-        Ok(ServiceReadiness::Ready { message }) => {
+    match health {
+        Ok(ServiceHealth::Ready { message, .. }) => {
             let suffix = message.map(|m| format!(": {m}")).unwrap_or_default();
             log_line(format!("{} is READY{suffix}", inst.label));
             Ok(true)
         }
-        Ok(ServiceReadiness::TimedOut) => {
+        Ok(ServiceHealth::TimedOut) => {
             // RFC 0009 "Failure and restart" step 2: cancel onRun and wait
             // for it to exit before deciding.
             session.cancel_run(None);
             let _ = session.wait_exit().await;
-            Err(FailureKind::ReadinessTimedOut)
+            Err(FailureKind::ReadyTimedOut)
         }
-        Ok(ServiceReadiness::ExitedBeforeReady | ServiceReadiness::Pending) => {
+        Ok(ServiceHealth::Unhealthy(u)) => {
+            // READY and UNHEALTHY before this task observed either: the
+            // Session has canceled onRun; wait for it (step 2).
+            log_line(format!(
+                "{} ({} scope) is UNHEALTHY: {u}",
+                inst.label, inst.scope
+            ));
+            let _ = session.wait_exit().await;
+            Err(FailureKind::Unhealthy(u))
+        }
+        Ok(ServiceHealth::ExitedBeforeReady | ServiceHealth::Pending) => {
             let exit = session
                 .wait_exit()
                 .await
@@ -1197,27 +1330,59 @@ mod tests {
             state: openjd_sessions::ActionState::Failed,
             exit_code: Some(3),
             canceled: false,
+            unhealthy: None,
             fail_message: Some("boom".into()),
             stdout: String::new(),
         };
         let start = FailureKind::Start("port 1 unavailable".into());
         let before = FailureKind::ExitedBeforeReady(exit.clone());
-        let timed_out = FailureKind::ReadinessTimedOut;
-        let exited = FailureKind::Exited(exit);
+        let timed_out = FailureKind::ReadyTimedOut;
+        let exited = FailureKind::Exited(exit.clone());
+        let unhealthy = FailureKind::Unhealthy(ServiceUnhealthy {
+            failed_probes: 2,
+            failure_threshold: 2,
+            last_failure: "onHealthCheck exit code: 1".into(),
+        });
         assert!(start.requires_new_session());
         assert!(before.requires_new_session());
         assert!(!timed_out.requires_new_session());
         assert!(!exited.requires_new_session());
+        assert!(!unhealthy.requires_new_session());
         assert_eq!(start.describe(), "failed to start: port 1 unavailable");
         assert_eq!(
             before.describe(),
             "onRun exited before becoming READY (exit code: 3; boom)"
         );
-        assert_eq!(timed_out.describe(), "readiness check timed out");
+        assert_eq!(
+            timed_out.describe(),
+            "did not become READY within readyTimeoutSeconds"
+        );
         assert_eq!(
             exited.describe(),
             "onRun exited while the scope still had work (exit code: 3; boom)"
         );
+        assert_eq!(
+            unhealthy.describe(),
+            "instance UNHEALTHY: 2 consecutive health probes failed (failureThreshold: 2); last \
+             probe: onHealthCheck exit code: 1"
+        );
+        // An exit the health check forced is classified UNHEALTHY; the
+        // runner's Canceled state does not make it a caller cancelation.
+        let forced = ServiceRunExit {
+            state: openjd_sessions::ActionState::Canceled,
+            exit_code: None,
+            unhealthy: Some(ServiceUnhealthy {
+                failed_probes: 3,
+                failure_threshold: 3,
+                last_failure: "no openjd_service_ready line within 5s".into(),
+            }),
+            fail_message: None,
+            ..exit
+        };
+        assert!(matches!(
+            InstanceFailure::from_exit(forced).into_kind(),
+            FailureKind::Unhealthy(u) if u.failed_probes == 3
+        ));
         assert_eq!(
             describe_exit(&driver_lost_exit()),
             "failed; onRun driver ended without reporting an exit"
@@ -1230,12 +1395,13 @@ mod tests {
             name: "Cache".into(),
             document: Document::JobTemplate,
             scope: ServiceScope::Step("Render".into()),
-            reason: "readiness check timed out; 1 of 1 relaunch(es) used".into(),
+            reason: "did not become READY within readyTimeoutSeconds; 1 of 1 relaunch(es) used"
+                .into(),
         };
         assert_eq!(
             f.to_string(),
-            "Service 'Cache' (Step 'Render' scope) failed: readiness check timed out; 1 of 1 \
-             relaunch(es) used"
+            "Service 'Cache' (Step 'Render' scope) failed: did not become READY within \
+             readyTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
         assert_eq!(ServiceScope::Job.to_string(), "Job");
 
@@ -1247,8 +1413,8 @@ mod tests {
         };
         assert_eq!(
             f.to_string(),
-            "Service 'Cache' (from queue-cache.yaml) (Job scope) failed: readiness check timed \
-             out; 1 of 1 relaunch(es) used"
+            "Service 'Cache' (from queue-cache.yaml) (Job scope) failed: did not become READY \
+             within readyTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
     }
 

@@ -226,7 +226,7 @@ Received openjd_redacted_env for 'NAME' but the REDACTED_ENV_VARS extension is n
 - It is emitted through `session_tagged_log!` with the filter's `log_tag()`
   (its session and action tags), so in a Service Session it reads
   `[Service <name>] Received openjd_redacted_env for 'NAME' …` like every other
-  line of that Session, and `[<session>] [onReadinessCheck] …` for the
+  line of that Session, and `[<session>] [onHealthCheck] …` for the
   concurrent check.
 - It is emitted at most once per directive line, by the filter alone: the
   Session's `apply_message` and the Service Session's `apply_foreground_message`

@@ -101,8 +101,8 @@ Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDes
 | **Total** | **1,209** |
 
 The `SERVICE` extension suite (RFC 0009, on the openjd-specifications `rfc-service`
-branch) adds 162 job template, 44 environment template, and 49 job execution tests, all
-passing (1,464 in total).
+branch) adds 168 job template, 44 environment template, and 54 job execution tests, all
+passing (1,475 in total).
 
 ## Architecture
 

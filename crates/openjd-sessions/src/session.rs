@@ -164,7 +164,7 @@ pub struct SessionConfig {
     /// stays attributable, and each section banner of the session
     /// (`Entering Environment: …`, `Running Task`, …) becomes one tagged
     /// line instead of four. A concurrently running action's own tag
-    /// follows it: `[Service Files] [onReadinessCheck] …`. `None` (the
+    /// follows it: `[Service Files] [onHealthCheck] …`. `None` (the
     /// default) leaves records exactly as before. See
     /// [`LogTag`](crate::logging::LogTag).
     pub log_tag: Option<String>,
@@ -281,7 +281,7 @@ pub(crate) struct CancelShared {
 
 /// One cancelation target: the state a [`SessionCancelHandle`] delivers a
 /// cancel to. A `Session` has one — its running action — and a Service
-/// Session (RFC 0009) adds a second for the `onReadinessCheck` invocation
+/// Session (RFC 0009) adds a second for the `onHealthCheck` invocation
 /// that runs concurrently with `onRun`, so each concurrent action is
 /// canceled through its own slot with its own cancelation method.
 #[derive(Clone)]
@@ -2550,7 +2550,7 @@ impl Session {
 
     /// Spawn a second cross-user helper process for an action that runs
     /// *concurrently* with the one holding the Session's helper (a Service
-    /// Session's `onReadinessCheck`, RFC 0009). The helper protocol runs one
+    /// Session's `onHealthCheck`, RFC 0009). The helper protocol runs one
     /// command at a time, so each concurrent action needs its own helper.
     /// `Ok(None)` for a same-user Session.
     ///
@@ -2661,7 +2661,7 @@ impl Session {
             embedded_files: script.embedded_files.clone(),
             on_enter: script.actions.on_wrap_service_enter.clone(),
             on_run: script.actions.on_wrap_service_run.clone(),
-            on_readiness_check: script.actions.on_wrap_service_readiness_check.clone(),
+            on_health_check: script.actions.on_wrap_service_health_check.clone(),
             on_exit: script.actions.on_wrap_service_exit.clone(),
         })
     }
@@ -3431,7 +3431,7 @@ pub(crate) struct ServiceWrapHooks {
     pub(crate) embedded_files: Option<Vec<openjd_model::job::EmbeddedFile>>,
     pub(crate) on_enter: Option<openjd_model::job::Action>,
     pub(crate) on_run: Option<openjd_model::job::Action>,
-    pub(crate) on_readiness_check: Option<openjd_model::job::Action>,
+    pub(crate) on_health_check: Option<openjd_model::job::Action>,
     pub(crate) on_exit: Option<openjd_model::job::Action>,
 }
 
@@ -3820,7 +3820,7 @@ mod wrap_actions_tests {
             on_wrap_env_exit: None,
             on_wrap_service_enter: None,
             on_wrap_service_run: None,
-            on_wrap_service_readiness_check: None,
+            on_wrap_service_health_check: None,
             on_wrap_service_exit: None,
             on_exit: None,
         }

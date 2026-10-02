@@ -1,0 +1,102 @@
+# RFC 0009 <ServiceHealthCheck> after READY, lifecycle constraint 11, and
+# "Failure and restart": a COMMAND probe that passes until Task 1 writes a
+# marker, then fails. With healthIntervalSeconds: 1 and failureThreshold: 2,
+# two consecutive failed probes make instance 1 UNHEALTHY, an instance
+# failure: onRun is canceled and, with maxAttempts: 1 and KEEP, a second
+# instance is launched. Instance 2 clears the marker, passes a probe, and
+# serves the remaining Tasks. Task 1 (running under KEEP) completes against
+# instance 1 and keeps its result.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: HealthCommandFails
+parameterDefinitions:
+  - name: MarkerDir
+    type: PATH
+jobServices:
+  - name: Store
+    ports:
+      - name: main
+    healthCheck:
+      type: COMMAND
+      readinessIntervalSeconds: 1
+      readyTimeoutSeconds: 60
+      healthIntervalSeconds: 1
+      failureThreshold: 2
+    restartPolicy:
+      maxAttempts: 1
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Store.main.bindAddress }}", "{{ Service.Store.main.port }}", "{{ Param.MarkerDir }}"]
+          cancelation:
+            mode: TERMINATE
+        onHealthCheck:
+          command: python
+          args: ["{{ Service.File.Check }}", "{{ Service.Store.main.connectAddress }}", "{{ Service.Store.main.port }}", "{{ Param.MarkerDir }}"]
+          timeout: 10
+      embeddedFiles:
+        - name: Check
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port, d = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            socket.create_connection((host, port), timeout=1).close()
+            if os.path.exists(os.path.join(d, "sick")):
+                print("CHECK_UNHEALTHY", flush=True)
+                sys.exit(1)
+            print("CHECK_OK", flush=True)
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port, d = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            marker = os.path.join(d, "marker")
+            sick = os.path.join(d, "sick")
+            instance = 2 if os.path.exists(marker) else 1
+            open(marker, "a").close()
+            os.path.exists(sick) and os.remove(sick)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("INSTANCE", instance, "LISTENING", flush=True)
+            while True:
+                c, _ = s.accept()
+                try:
+                    data = c.recv(64)
+                except OSError:
+                    data = b""
+                if data:
+                    c.sendall(str(instance).encode())
+                c.close()
+steps:
+  - name: Work
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.Store.main.connectAddress }}", "{{ Service.Store.main.port }}", "{{ Task.Param.N }}", "{{ Param.MarkerDir }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import os, socket, sys, time
+            host, port, n, d = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+            c = socket.create_connection((host, port), timeout=10)
+            c.sendall(("task " + n).encode())
+            instance = c.recv(64).decode()
+            c.close()
+            print("TASK", n, "GOT INSTANCE", instance, flush=True)
+            if n == "1":
+                open(os.path.join(d, "sick"), "a").close()
+                time.sleep(5)
+            print("TASK", n, "INSTANCE", instance, "DONE", flush=True)

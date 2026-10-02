@@ -16,7 +16,7 @@
 //!    path-annotated validation error.
 //! 3. **Structural validation** (§9.7 items 3–5 and 7 as far as they concern
 //!    Services): list sizes, name uniqueness and collisions, identifier and
-//!    `File` rules, port ranges, readiness/restart constraints, and the reuse
+//!    `File` rules, port ranges, health-check/restart constraints, and the reuse
 //!    of the `<Environment>`-shaped validators for `variables`,
 //!    `hostRequirements`, embedded files and `<Action>`.
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
@@ -32,7 +32,7 @@
 //! Pydantic-style error path + message.
 
 use openjd_model::template::{
-    CompletedTasksPolicy, ServiceActions, ServicePortProtocol, ServiceReadinessCheck,
+    CompletedTasksPolicy, ServiceActions, ServiceHealthCheck, ServicePortProtocol,
     ServiceRestartPolicy,
 };
 use openjd_model::{
@@ -187,20 +187,35 @@ fn minimal_service_decodes_with_spec_defaults() {
     assert_eq!(svc.port_names().collect::<Vec<_>>(), vec!["main"]);
     assert!(svc.ports[0].port.is_none());
 
-    // §9 item 6: readiness defaults to TCP_CONNECT on every port.
-    assert!(svc.readiness_check.is_none());
-    match svc.readiness_check() {
-        ServiceReadinessCheck::TcpConnect {
+    // §9 item 6: the health check defaults to TCP_CONNECT on every port.
+    assert!(svc.health_check.is_none());
+    match svc.health_check() {
+        ServiceHealthCheck::TcpConnect {
             ports,
-            timeout_seconds,
+            readiness_interval_seconds,
+            ready_timeout_seconds,
+            health_interval_seconds,
+            failure_threshold,
         } => {
             assert!(ports.is_none());
-            assert!(timeout_seconds.is_none());
+            assert!(readiness_interval_seconds.is_none());
+            assert!(ready_timeout_seconds.is_none());
+            assert!(health_interval_seconds.is_none());
+            assert!(failure_threshold.is_none());
         }
-        other => panic!("unexpected default readiness check: {other:?}"),
+        other => panic!("unexpected default health check: {other:?}"),
     }
-    assert_eq!(ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS, 300);
-    assert_eq!(ServiceReadinessCheck::DEFAULT_COMMAND_INTERVAL_SECONDS, 5);
+    assert_eq!(
+        ServiceHealthCheck::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS,
+        1
+    );
+    assert_eq!(
+        ServiceHealthCheck::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS,
+        5
+    );
+    assert_eq!(ServiceHealthCheck::DEFAULT_READY_TIMEOUT_SECONDS, 300);
+    assert_eq!(ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS, 30);
+    assert_eq!(ServiceHealthCheck::DEFAULT_FAILURE_THRESHOLD, 3);
 
     // §9 item 7: restart policy defaults to { maxAttempts: 0, completedTasks: RERUN }.
     assert!(svc.restart_policy.is_none());
@@ -213,7 +228,7 @@ fn minimal_service_decodes_with_spec_defaults() {
     assert_eq!(ServiceActions::default_timeout_seconds("onEnter"), None);
     assert_eq!(ServiceActions::default_timeout_seconds("onRun"), None);
     assert_eq!(
-        ServiceActions::default_timeout_seconds("onReadinessCheck"),
+        ServiceActions::default_timeout_seconds("onHealthCheck"),
         Some(30)
     );
     assert_eq!(ServiceActions::default_timeout_seconds("onExit"), Some(300));
@@ -242,10 +257,12 @@ fn full_service_decodes_every_field() {
         port: 6379
       - name: metrics
         port: "{{ Param.MetricsPort }}"
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
       ports: [main]
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
+      healthIntervalSeconds: 10
+      failureThreshold: 2
     restartPolicy:
       maxAttempts: 3
       completedTasks: KEEP
@@ -276,25 +293,25 @@ fn full_service_decodes_every_field() {
   - name: Coordinator
     ports:
       - name: api
-    readinessCheck:
+    healthCheck:
       type: COMMAND
-      intervalSeconds: 2
-      timeoutSeconds: "{{ Param.Timeout }}"
+      readinessIntervalSeconds: 2
+      readyTimeoutSeconds: "{{ Param.Timeout }}"
     restartPolicy:
       maxAttempts: "{{ Param.Attempts }}"
     script:
       actions:
         onRun:
           command: coordinator
-        onReadinessCheck:
+        onHealthCheck:
           command: coordinator
           args: [ping]
   - name: Logger
     ports:
       - name: ingest
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 10
+      readyTimeoutSeconds: 10
     script:
       actions:
         onRun:
@@ -315,15 +332,21 @@ fn full_service_decodes_every_field() {
         cache.ports[1].port.as_ref().unwrap().raw(),
         "{{ Param.MetricsPort }}"
     );
-    match cache.readiness_check.as_ref().unwrap() {
-        ServiceReadinessCheck::TcpConnect {
+    match cache.health_check.as_ref().unwrap() {
+        ServiceHealthCheck::TcpConnect {
             ports,
-            timeout_seconds,
+            readiness_interval_seconds,
+            ready_timeout_seconds,
+            health_interval_seconds,
+            failure_threshold,
         } => {
             assert_eq!(ports.as_ref().unwrap(), &["main"]);
-            assert_eq!(timeout_seconds.as_ref().unwrap().raw(), "60");
+            assert!(readiness_interval_seconds.is_none());
+            assert_eq!(ready_timeout_seconds.as_ref().unwrap().raw(), "60");
+            assert_eq!(health_interval_seconds.as_ref().unwrap().raw(), "10");
+            assert_eq!(failure_threshold.as_ref().unwrap().raw(), "2");
         }
-        other => panic!("unexpected readiness check {other:?}"),
+        other => panic!("unexpected health check {other:?}"),
     }
     let policy = cache.restart_policy();
     assert_eq!(policy.max_attempts.as_ref().unwrap().raw(), "3");
@@ -362,18 +385,22 @@ fn full_service_decodes_every_field() {
     );
 
     let coordinator = &services[1];
-    match coordinator.readiness_check.as_ref().unwrap() {
-        ServiceReadinessCheck::Command {
-            interval_seconds,
-            timeout_seconds,
+    match coordinator.health_check.as_ref().unwrap() {
+        ServiceHealthCheck::Command {
+            readiness_interval_seconds,
+            ready_timeout_seconds,
+            health_interval_seconds,
+            failure_threshold,
         } => {
-            assert_eq!(interval_seconds.as_ref().unwrap().raw(), "2");
+            assert_eq!(readiness_interval_seconds.as_ref().unwrap().raw(), "2");
             assert_eq!(
-                timeout_seconds.as_ref().unwrap().raw(),
+                ready_timeout_seconds.as_ref().unwrap().raw(),
                 "{{ Param.Timeout }}"
             );
+            assert!(health_interval_seconds.is_none());
+            assert!(failure_threshold.is_none());
         }
-        other => panic!("unexpected readiness check {other:?}"),
+        other => panic!("unexpected health check {other:?}"),
     }
     assert_eq!(
         coordinator.restart_policy().max_attempts.unwrap().raw(),
@@ -383,12 +410,12 @@ fn full_service_decodes_every_field() {
         coordinator.restart_policy().completed_tasks(),
         CompletedTasksPolicy::Rerun
     );
-    assert!(coordinator.script.actions.on_readiness_check.is_some());
+    assert!(coordinator.script.actions.on_health_check.is_some());
 
     let logger = &services[2];
-    assert_eq!(logger.readiness_check().type_name(), "STDOUT");
+    assert_eq!(logger.health_check().type_name(), "STDOUT");
     assert_eq!(
-        logger.readiness_check().timeout_seconds().unwrap().raw(),
+        logger.health_check().ready_timeout_seconds().unwrap().raw(),
         "10"
     );
 }
@@ -950,19 +977,19 @@ fn port_number_range() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServiceReadinessCheck> — §9.3, §9.7 item 4
+// <ServiceHealthCheck> — §9.3, §9.7 item 4
 // ════════════════════════════════════════════════════════════════════
 
-/// A service with ports `main` and `metrics`, the given `readinessCheck`
+/// A service with ports `main` and `metrics`, the given `healthCheck`
 /// body (indented six spaces), and the given extra actions (indented eight
 /// spaces) beside `onRun`.
-fn service_with_readiness(readiness: &str, extra_actions: &str) -> String {
+fn service_with_health(health: &str, extra_actions: &str) -> String {
     job_with_service_body(&format!(
         r#"    ports:
       - name: main
       - name: metrics
-    readinessCheck:
-{readiness}    script:
+    healthCheck:
+{health}    script:
       actions:
         onRun:
           command: run
@@ -970,16 +997,16 @@ fn service_with_readiness(readiness: &str, extra_actions: &str) -> String {
     ))
 }
 
-const ON_READINESS_CHECK: &str = "        onReadinessCheck:\n          command: probe\n";
+const ON_HEALTH_CHECK: &str = "        onHealthCheck:\n          command: probe\n";
 
 #[test]
 fn tcp_connect_ports_must_be_declared() {
     expect_job_err(
-        &service_with_readiness("      type: TCP_CONNECT\n      ports: [main, admin]\n", ""),
+        &service_with_health("      type: TCP_CONNECT\n      ports: [main, admin]\n", ""),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck -> ports[1]:\n\treferences undeclared port 'admin'.",
+            "jobServices[0] -> healthCheck -> ports[1]:\n\treferences undeclared port 'admin'.",
         ],
     );
 }
@@ -987,11 +1014,11 @@ fn tcp_connect_ports_must_be_declared() {
 #[test]
 fn tcp_connect_ports_if_provided_not_empty() {
     expect_job_err(
-        &service_with_readiness("      type: TCP_CONNECT\n      ports: []\n", ""),
+        &service_with_health("      type: TCP_CONNECT\n      ports: []\n", ""),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck -> ports:\n\tif provided, must not be empty.",
+            "jobServices[0] -> healthCheck -> ports:\n\tif provided, must not be empty.",
         ],
     );
 }
@@ -999,44 +1026,74 @@ fn tcp_connect_ports_if_provided_not_empty() {
 #[test]
 fn tcp_connect_declared_ports_accepted() {
     expect_job_ok(
-        &service_with_readiness(
-            "      type: TCP_CONNECT\n      ports: [metrics, main]\n      timeoutSeconds: 1\n",
+        &service_with_health(
+            "      type: TCP_CONNECT\n      ports: [metrics, main]\n      readyTimeoutSeconds: 1\n",
             "",
         ),
         SERVICE_EXTS,
     );
 }
 
+/// §9.3 items 3–6: every numeric field of every form is a `<posinteger>`.
+/// `readinessIntervalSeconds` is not a field of the `STDOUT` form (tested
+/// separately); `failureThreshold` on `STDOUT` needs `healthIntervalSeconds`
+/// beside it to reach the range check.
 #[test]
-fn readiness_timeout_seconds_must_be_positive() {
-    for (ty, extra) in [
-        ("TCP_CONNECT", ""),
-        ("COMMAND", ON_READINESS_CHECK),
-        ("STDOUT", ""),
-    ] {
+fn health_numeric_fields_must_be_positive() {
+    let cases: &[(&str, &str, &str, &str)] = &[
+        ("TCP_CONNECT", "", "readinessIntervalSeconds", ""),
+        ("TCP_CONNECT", "", "readyTimeoutSeconds", ""),
+        ("TCP_CONNECT", "", "healthIntervalSeconds", ""),
+        ("TCP_CONNECT", "", "failureThreshold", ""),
+        ("COMMAND", ON_HEALTH_CHECK, "readinessIntervalSeconds", ""),
+        ("COMMAND", ON_HEALTH_CHECK, "readyTimeoutSeconds", ""),
+        ("COMMAND", ON_HEALTH_CHECK, "healthIntervalSeconds", ""),
+        ("COMMAND", ON_HEALTH_CHECK, "failureThreshold", ""),
+        ("STDOUT", "", "readyTimeoutSeconds", ""),
+        ("STDOUT", "", "healthIntervalSeconds", ""),
+        (
+            "STDOUT",
+            "",
+            "failureThreshold",
+            "      healthIntervalSeconds: 5\n",
+        ),
+    ];
+    for (ty, extra, field, companion) in cases {
+        for bad in ["0", "-5"] {
+            expect_job_err(
+                &service_with_health(
+                    &format!("      type: {ty}\n{companion}      {field}: {bad}\n"),
+                    extra,
+                ),
+                SERVICE_EXTS,
+                &[
+                    "1 validation error for JobTemplate\n",
+                    &format!("jobServices[0] -> healthCheck -> {field}:\n\tmust be > 0."),
+                ],
+            );
+        }
         expect_job_err(
-            &service_with_readiness(
-                &format!("      type: {ty}\n      timeoutSeconds: 0\n"),
+            &service_with_health(
+                &format!("      type: {ty}\n{companion}      {field}: \"soon\"\n"),
                 extra,
             ),
             SERVICE_EXTS,
-            &[
-                "1 validation error for JobTemplate\n",
-                "jobServices[0] -> readinessCheck -> timeoutSeconds:\n\tmust be > 0.",
-            ],
-        );
-        expect_job_err(
-            &service_with_readiness(
-                &format!("      type: {ty}\n      timeoutSeconds: \"soon\"\n"),
-                extra,
-            ),
-            SERVICE_EXTS,
-            &["jobServices[0] -> readinessCheck -> timeoutSeconds:\n\tmust be an integer."],
+            &[&format!(
+                "jobServices[0] -> healthCheck -> {field}:\n\tmust be an integer."
+            )],
         );
         // A format string is resolved at job creation, not checked here.
         expect_job_ok(
-            &service_with_readiness(
-                &format!("      type: {ty}\n      timeoutSeconds: \"{{{{ Param.T }}}}\"\n"),
+            &service_with_health(
+                &format!("      type: {ty}\n{companion}      {field}: \"{{{{ Param.T }}}}\"\n"),
+                extra,
+            ),
+            SERVICE_EXTS,
+        );
+        // A positive literal is accepted.
+        expect_job_ok(
+            &service_with_health(
+                &format!("      type: {ty}\n{companion}      {field}: 7\n"),
                 extra,
             ),
             SERVICE_EXTS,
@@ -1044,86 +1101,128 @@ fn readiness_timeout_seconds_must_be_positive() {
     }
 }
 
+/// §9.3 item 6 / §9.7 item 4: on a STDOUT check `failureThreshold` is
+/// permitted only together with `healthIntervalSeconds`.
 #[test]
-fn command_interval_seconds_must_be_positive() {
+fn stdout_failure_threshold_requires_health_interval() {
     expect_job_err(
-        &service_with_readiness(
-            "      type: COMMAND\n      intervalSeconds: 0\n",
-            ON_READINESS_CHECK,
-        ),
+        &service_with_health("      type: STDOUT\n      failureThreshold: 2\n", ""),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck -> intervalSeconds:\n\tmust be > 0.",
+            "jobServices[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives \
+             failureThreshold only together with healthIntervalSeconds; without a heartbeat \
+             interval there is no probe for it to count.",
         ],
     );
+    // A format string counts as given.
     expect_job_err(
-        &service_with_readiness(
-            "      type: COMMAND\n      intervalSeconds: -5\n",
-            ON_READINESS_CHECK,
+        &service_with_health(
+            "      type: STDOUT\n      failureThreshold: \"{{ Param.N }}\"\n",
+            "",
         ),
         SERVICE_EXTS,
-        &["jobServices[0] -> readinessCheck -> intervalSeconds:\n\tmust be > 0."],
+        &["jobServices[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives"],
     );
     expect_job_ok(
-        &service_with_readiness(
-            "      type: COMMAND\n      intervalSeconds: \"{{ Param.I }}\"\n",
-            ON_READINESS_CHECK,
+        &service_with_health(
+            "      type: STDOUT\n      healthIntervalSeconds: 15\n      failureThreshold: 2\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+    expect_job_ok(
+        &service_with_health("      type: STDOUT\n      healthIntervalSeconds: 15\n", ""),
+        SERVICE_EXTS,
+    );
+}
+
+/// §9.3 item 3: `readinessIntervalSeconds` does not apply to a STDOUT
+/// check; it is not a property of that form and is rejected as unknown.
+#[test]
+fn stdout_readiness_interval_rejected() {
+    let err = decode_job_template(
+        yaml_val(&service_with_health(
+            "      type: STDOUT\n      readinessIntervalSeconds: 1\n",
+            "",
+        )),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("readinessIntervalSeconds is not a STDOUT field");
+    assert!(
+        err.to_string()
+            .contains("unknown field `readinessIntervalSeconds`"),
+        "got: {err}"
+    );
+    // It is accepted on both other forms (§9.3 item 3: default 1 for
+    // TCP_CONNECT, 5 for COMMAND).
+    expect_job_ok(
+        &service_with_health(
+            "      type: TCP_CONNECT\n      readinessIntervalSeconds: 5\n",
+            "",
+        ),
+        SERVICE_EXTS,
+    );
+    expect_job_ok(
+        &service_with_health(
+            "      type: COMMAND\n      readinessIntervalSeconds: 5\n",
+            ON_HEALTH_CHECK,
         ),
         SERVICE_EXTS,
     );
 }
 
 #[test]
-fn command_requires_on_readiness_check() {
+fn command_requires_on_health_check() {
     expect_job_err(
-        &service_with_readiness("      type: COMMAND\n", ""),
+        &service_with_health("      type: COMMAND\n", ""),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions:\n\tonReadinessCheck must be defined when readinessCheck.type is COMMAND.",
+            "jobServices[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
         ],
     );
 }
 
 #[test]
-fn on_readiness_check_forbidden_unless_command() {
+fn on_health_check_forbidden_unless_command() {
     // Explicit TCP_CONNECT.
     expect_job_err(
-        &service_with_readiness("      type: TCP_CONNECT\n", ON_READINESS_CHECK),
+        &service_with_health("      type: TCP_CONNECT\n", ON_HEALTH_CHECK),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onReadinessCheck:\n\tonReadinessCheck must not be defined when readinessCheck.type is TCP_CONNECT.",
+            "jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
         ],
     );
     // STDOUT.
     expect_job_err(
-        &service_with_readiness("      type: STDOUT\n", ON_READINESS_CHECK),
+        &service_with_health("      type: STDOUT\n", ON_HEALTH_CHECK),
         SERVICE_EXTS,
-        &["jobServices[0] -> script -> actions -> onReadinessCheck:\n\tonReadinessCheck must not be defined when readinessCheck.type is STDOUT."],
+        &["jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is STDOUT."],
     );
-    // The default (no readinessCheck) is TCP_CONNECT.
+    // The default (no healthCheck) is TCP_CONNECT.
     expect_job_err(
         &job_with_service_body(&format!(
-            "    ports: [{{name: main}}]\n    script:\n      actions:\n        onRun:\n          command: run\n{ON_READINESS_CHECK}"
+            "    ports: [{{name: main}}]\n    script:\n      actions:\n        onRun:\n          command: run\n{ON_HEALTH_CHECK}"
         )),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onReadinessCheck:\n\tonReadinessCheck must not be defined when readinessCheck.type is TCP_CONNECT.",
+            "jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
         ],
     );
 }
 
 #[test]
-fn readiness_check_unknown_type_rejected() {
+fn health_check_unknown_type_rejected() {
     let err = decode_job_template(
-        yaml_val(&service_with_readiness("      type: HTTP\n", "")),
+        yaml_val(&service_with_health("      type: HTTP\n", "")),
         Some(SERVICE_EXTS),
         &CallerLimits::default(),
     )
-    .expect_err("unknown readiness type");
+    .expect_err("unknown health check type");
     let msg = err.to_string();
     assert!(
         msg.contains("unknown variant `HTTP`, expected one of `TCP_CONNECT`, `COMMAND`, `STDOUT`"),
@@ -1132,9 +1231,9 @@ fn readiness_check_unknown_type_rejected() {
 }
 
 #[test]
-fn readiness_check_rejects_fields_of_other_types() {
+fn health_check_rejects_fields_of_other_types() {
     let err = decode_job_template(
-        yaml_val(&service_with_readiness(
+        yaml_val(&service_with_health(
             "      type: STDOUT\n      ports: [main]\n",
             "",
         )),
@@ -1147,18 +1246,64 @@ fn readiness_check_rejects_fields_of_other_types() {
         "got: {err}"
     );
     let err = decode_job_template(
-        yaml_val(&service_with_readiness(
-            "      type: TCP_CONNECT\n      intervalSeconds: 5\n",
-            "",
+        yaml_val(&service_with_health(
+            "      type: COMMAND\n      ports: [main]\n",
+            ON_HEALTH_CHECK,
         )),
         Some(SERVICE_EXTS),
         &CallerLimits::default(),
     )
-    .expect_err("intervalSeconds is COMMAND-only");
+    .expect_err("ports is TCP_CONNECT-only");
     assert!(
-        err.to_string().contains("unknown field `intervalSeconds`"),
+        err.to_string().contains("unknown field `ports`"),
         "got: {err}"
     );
+}
+
+/// The pre-RFC-revision spellings — `readinessCheck` on `<Service>`,
+/// `onReadinessCheck` on `<ServiceActions>`, and `timeoutSeconds` /
+/// `intervalSeconds` on the check — are unknown properties and are
+/// rejected, like the conformance fixtures
+/// `9.3--health-old-readiness-check-key` and
+/// `9.3--health-old-timeout-seconds-key` require.
+#[test]
+fn old_readiness_spellings_rejected_as_unknown() {
+    let cases = [
+        (
+            job_with_service_body(
+                "    ports: [{name: main}]\n    readinessCheck:\n      type: TCP_CONNECT\n    \
+                 script:\n      actions:\n        onRun:\n          command: run\n",
+            ),
+            "unknown field `readinessCheck`",
+        ),
+        (
+            service_with_health("      type: TCP_CONNECT\n      timeoutSeconds: 60\n", ""),
+            "unknown field `timeoutSeconds`",
+        ),
+        (
+            service_with_health(
+                "      type: COMMAND\n      intervalSeconds: 5\n",
+                ON_HEALTH_CHECK,
+            ),
+            "unknown field `intervalSeconds`",
+        ),
+        (
+            service_with_health(
+                "      type: COMMAND\n",
+                "        onReadinessCheck:\n          command: probe\n",
+            ),
+            "unknown field `onReadinessCheck`",
+        ),
+    ];
+    for (template, expected) in cases {
+        let err = decode_job_template(
+            yaml_val(&template),
+            Some(SERVICE_EXTS),
+            &CallerLimits::default(),
+        )
+        .expect_err(expected);
+        assert!(err.to_string().contains(expected), "got: {err}");
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1166,22 +1311,22 @@ fn readiness_check_rejects_fields_of_other_types() {
 // ════════════════════════════════════════════════════════════════════
 
 /// A service with the given `ports` list body (indented six spaces) and
-/// optional `readinessCheck` body (indented six spaces; empty = omitted).
-fn service_with_ports_and_readiness(ports: &str, readiness: &str) -> String {
-    let readiness = if readiness.is_empty() {
+/// optional `healthCheck` body (indented six spaces; empty = omitted).
+fn service_with_ports_and_health(ports: &str, health: &str) -> String {
+    let health = if health.is_empty() {
         String::new()
     } else {
-        format!("    readinessCheck:\n{readiness}")
+        format!("    healthCheck:\n{health}")
     };
     job_with_service_body(&format!(
-        "    ports:\n{ports}{readiness}    script:\n      actions:\n        onRun:\n          command: run\n"
+        "    ports:\n{ports}{health}    script:\n      actions:\n        onRun:\n          command: run\n"
     ))
 }
 
 #[test]
 fn port_protocol_defaults_to_tcp_and_accepts_both_literals() {
     let jt = expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: api\n      - name: admin\n        protocol: TCP\n",
             "",
         ),
@@ -1207,7 +1352,7 @@ fn port_protocol_defaults_to_tcp_and_accepts_both_literals() {
 fn port_protocol_is_a_case_sensitive_enum_not_a_format_string() {
     for bad in ["udp", "SCTP", "{{ Param.P }}"] {
         let err = decode_job_template(
-            yaml_val(&service_with_ports_and_readiness(
+            yaml_val(&service_with_ports_and_health(
                 &format!("      - name: main\n        protocol: \"{bad}\"\n"),
                 "",
             )),
@@ -1226,19 +1371,19 @@ fn port_protocol_is_a_case_sensitive_enum_not_a_format_string() {
 #[test]
 fn tcp_connect_may_not_name_a_udp_port() {
     expect_job_err(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: api\n",
             "      type: TCP_CONNECT\n      ports: [api, ingest]\n",
         ),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck -> ports[1]:\n\tport 'ingest' has protocol UDP and cannot be probed by a TCP_CONNECT readiness check; only TCP ports may be named.",
+            "jobServices[0] -> healthCheck -> ports[1]:\n\tport 'ingest' has protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be named.",
         ],
     );
     // Naming the TCP port alone is fine.
     expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: api\n",
             "      type: TCP_CONNECT\n      ports: [api]\n",
         ),
@@ -1247,45 +1392,45 @@ fn tcp_connect_may_not_name_a_udp_port() {
 }
 
 #[test]
-fn all_udp_service_requires_stdout_or_command_readiness() {
+fn all_udp_service_requires_stdout_or_command_health_check() {
     // Omitted: the default TCP_CONNECT has nothing to probe.
     expect_job_err(
-        &service_with_ports_and_readiness("      - name: ingest\n        protocol: UDP\n", ""),
+        &service_with_ports_and_health("      - name: ingest\n        protocol: UDP\n", ""),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck:\n\tthe default TCP_CONNECT readiness check has no TCP port to probe: none of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is required.",
+            "jobServices[0] -> healthCheck:\n\tthe default TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
         ],
     );
     // Explicit TCP_CONNECT without `ports`: its default list is empty.
     expect_job_err(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: discovery\n        protocol: UDP\n",
-            "      type: TCP_CONNECT\n      timeoutSeconds: 30\n",
+            "      type: TCP_CONNECT\n      readyTimeoutSeconds: 30\n",
         ),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> readinessCheck:\n\ta TCP_CONNECT readiness check has no TCP port to probe: none of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is required.",
+            "jobServices[0] -> healthCheck:\n\ta TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
         ],
     );
     // STDOUT and COMMAND are accepted.
     expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n",
-            "      type: STDOUT\n      timeoutSeconds: 60\n",
+            "      type: STDOUT\n      readyTimeoutSeconds: 60\n",
         ),
         SERVICE_EXTS,
     );
     expect_job_ok(
         &job_with_service_body(
-            "    ports:\n      - name: ingest\n        protocol: UDP\n    readinessCheck:\n      type: COMMAND\n    script:\n      actions:\n        onRun:\n          command: run\n        onReadinessCheck:\n          command: probe\n",
+            "    ports:\n      - name: ingest\n        protocol: UDP\n    healthCheck:\n      type: COMMAND\n    script:\n      actions:\n        onRun:\n          command: run\n        onHealthCheck:\n          command: probe\n",
         ),
         SERVICE_EXTS,
     );
     // A mixed Service may omit the check: the default probes the TCP port.
     expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: api\n",
             "",
         ),
@@ -1297,7 +1442,7 @@ fn all_udp_service_requires_stdout_or_command_readiness() {
 fn same_port_number_twice_in_one_protocol_is_rejected() {
     // TCP given and defaulted.
     expect_job_err(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: main\n        port: 6379\n      - name: admin\n        port: 6379\n        protocol: TCP\n",
             "",
         ),
@@ -1309,7 +1454,7 @@ fn same_port_number_twice_in_one_protocol_is_rejected() {
     );
     // UDP twice.
     expect_job_err(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: ingest\n        port: 8125\n        protocol: UDP\n      - name: trace\n        port: 8125\n        protocol: UDP\n",
             "      type: STDOUT\n",
         ),
@@ -1324,7 +1469,7 @@ fn same_port_number_twice_in_one_protocol_is_rejected() {
 #[test]
 fn same_port_number_across_protocols_is_allowed() {
     let jt = expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: tcp\n        port: 5353\n      - name: udp\n        port: 5353\n        protocol: UDP\n",
             "",
         ),
@@ -1339,7 +1484,7 @@ fn same_port_number_across_protocols_is_allowed() {
 fn duplicate_port_number_check_defers_format_strings_to_job_creation() {
     // A format-string number is not compared at template validation.
     expect_job_ok(
-        &service_with_ports_and_readiness(
+        &service_with_ports_and_health(
             "      - name: main\n        port: 6379\n      - name: admin\n        port: \"{{ Param.P }}\"\n",
             "",
         ),
@@ -1742,7 +1887,7 @@ fn step_service_errors_carry_step_path() {
         ports:
           - name: api
             port: 70000
-        readinessCheck:
+        healthCheck:
           type: COMMAND
         restartPolicy:
           maxAttempts: -3
@@ -1758,7 +1903,7 @@ fn step_service_errors_carry_step_path() {
             "steps[0] -> stepServices[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
             "steps[0] -> stepServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
             "steps[0] -> stepServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0.",
-            "steps[0] -> stepServices[0] -> script -> actions:\n\tonReadinessCheck must be defined when readinessCheck.type is COMMAND.",
+            "steps[0] -> stepServices[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
         ],
     );
 }
@@ -1772,7 +1917,7 @@ fn errors_accumulate_across_services() {
     script: {actions: {onRun: {command: run}}}
   - name: B
     ports: [{name: main}]
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
       ports: [nope]
     script: {actions: {onRun: {command: run}}}
@@ -1782,7 +1927,7 @@ fn errors_accumulate_across_services() {
         &[
             "2 validation errors for JobTemplate\n",
             "jobServices[0] -> ports[1]:\n\tduplicate port name 'main'.",
-            "jobServices[1] -> readinessCheck -> ports[0]:\n\treferences undeclared port 'nope'.",
+            "jobServices[1] -> healthCheck -> ports[0]:\n\treferences undeclared port 'nope'.",
         ],
     );
 }
@@ -1860,9 +2005,9 @@ fn rfc_example_valkey_shared_store_services_validate() {
     let cache = &jt.job_services.as_ref().unwrap()[0];
     assert_eq!(cache.name, "Cache");
     assert_eq!(cache.port_names().collect::<Vec<_>>(), vec!["main"]);
-    assert_eq!(cache.readiness_check().type_name(), "TCP_CONNECT");
+    assert_eq!(cache.health_check().type_name(), "TCP_CONNECT");
     assert_eq!(
-        cache.readiness_check().timeout_seconds().unwrap().raw(),
+        cache.health_check().ready_timeout_seconds().unwrap().raw(),
         "60"
     );
     let policy = cache.restart_policy();
@@ -1887,11 +2032,11 @@ fn rfc_example_per_step_coordinator_services_validate() {
         coordinator.port_names().collect::<Vec<_>>(),
         vec!["api", "metrics"]
     );
-    assert_eq!(coordinator.readiness_check().type_name(), "STDOUT");
+    assert_eq!(coordinator.health_check().type_name(), "STDOUT");
     assert_eq!(
         coordinator
-            .readiness_check()
-            .timeout_seconds()
+            .health_check()
+            .ready_timeout_seconds()
             .unwrap()
             .raw(),
         "120"

@@ -154,7 +154,7 @@ const RFC0008_HOOKS: &[&str] = &["onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvEx
 const SERVICE_HOOKS: &[&str] = &[
     "onWrapServiceEnter",
     "onWrapServiceRun",
-    "onWrapServiceReadinessCheck",
+    "onWrapServiceHealthCheck",
     "onWrapServiceExit",
 ];
 const ENV_HOOKS: &[&str] = &["onWrapEnvEnter", "onWrapEnvExit"];
@@ -429,7 +429,7 @@ fn all_seven_wrap_hooks_accepted_with_default_run_scope() {
     let actions = &et.environment().unwrap().script.as_ref().unwrap().actions;
     assert!(actions.on_wrap_service_enter.is_some());
     assert!(actions.on_wrap_service_run.is_some());
-    assert!(actions.on_wrap_service_readiness_check.is_some());
+    assert!(actions.on_wrap_service_health_check.is_some());
     assert!(actions.on_wrap_service_exit.is_some());
     assert!(actions.has_any_wrap_hook());
     assert!(actions.has_any_service_wrap_hook());
@@ -459,7 +459,7 @@ fn wrap_hook_default_timeouts_follow_the_wrapped_action() {
         ("onWrapEnvExit", Some(300)),
         ("onWrapServiceEnter", None),
         ("onWrapServiceRun", None),
-        ("onWrapServiceReadinessCheck", Some(30)),
+        ("onWrapServiceHealthCheck", Some(30)),
         ("onWrapServiceExit", Some(300)),
         ("onExit", Some(300)),
         ("onRun", None),
@@ -472,7 +472,7 @@ fn wrap_hook_default_timeouts_follow_the_wrapped_action() {
     }
     assert_eq!(EnvironmentActions::ON_EXIT_DEFAULT_TIMEOUT_SECONDS, 300);
     assert_eq!(
-        EnvironmentActions::ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS,
+        EnvironmentActions::ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS,
         30
     );
 }
@@ -489,7 +489,7 @@ fn service_hooks_require_wrap_actions_when_only_service_declared() {
             "4 validation errors for EnvironmentTemplate\n",
             "environment -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter requires the WRAP_ACTIONS extension.",
             "environment -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun requires the WRAP_ACTIONS extension.",
-            "environment -> script -> actions -> onWrapServiceReadinessCheck:\n\tonWrapServiceReadinessCheck requires the WRAP_ACTIONS extension.",
+            "environment -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck requires the WRAP_ACTIONS extension.",
             "environment -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit requires the WRAP_ACTIONS extension.",
         ],
     );
@@ -509,7 +509,7 @@ fn service_hooks_require_service_when_only_wrap_actions_declared() {
             "4 validation errors for EnvironmentTemplate\n",
             "environment -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter requires the SERVICE extension.",
             "environment -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun requires the SERVICE extension.",
-            "environment -> script -> actions -> onWrapServiceReadinessCheck:\n\tonWrapServiceReadinessCheck requires the SERVICE extension.",
+            "environment -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck requires the SERVICE extension.",
             "environment -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit requires the SERVICE extension.",
         ],
     );
@@ -567,7 +567,7 @@ fn service_hooks_see_wrapped_action_variables() {
       onWrapServiceRun:
         command: "{{ WrappedAction.Command }}"
         timeout: "{{ WrappedAction.Timeout }}"
-      onWrapServiceReadinessCheck: { command: "{{ WrappedAction.Command }}" }
+      onWrapServiceHealthCheck: { command: "{{ WrappedAction.Command }}" }
       onWrapServiceExit: { command: "{{ WrappedAction.Command }}" }
 "#,
         ),
@@ -599,7 +599,7 @@ fn service_hook_timing_fields_see_wrapped_service() {
         cancelation:
           mode: NOTIFY_THEN_TERMINATE
           notifyPeriodInSeconds: "{{ 30 + len(WrappedService.Ports) }}"
-      onWrapServiceReadinessCheck: { command: echo }
+      onWrapServiceHealthCheck: { command: echo }
       onWrapServiceExit: { command: echo }
 "#,
         ),
@@ -627,7 +627,7 @@ fn hook_timing_fields_reject_other_hooks_companion_groups() {
       onWrapServiceRun:
         command: echo
         timeout: "{{ 60 if WrappedStep.Name == 'Render' else 30 }}"
-      onWrapServiceReadinessCheck: { command: echo }
+      onWrapServiceHealthCheck: { command: echo }
       onWrapServiceExit: { command: echo }
 "#,
         ),
@@ -653,7 +653,7 @@ fn wrapped_env_and_step_names_not_available_in_service_hooks() {
       onWrapEnvExit: { command: echo }
       onWrapServiceEnter: { command: "{{ WrappedEnv.Name }}" }
       onWrapServiceRun: { command: "{{ WrappedStep.Name }}" }
-      onWrapServiceReadinessCheck: { command: echo }
+      onWrapServiceHealthCheck: { command: echo }
       onWrapServiceExit: { command: echo }
 "#,
         ),
@@ -670,7 +670,7 @@ fn wrapped_env_and_step_names_not_available_in_service_hooks() {
 // §4.3 WRAP_ACTIONS constraint 6 — hooks follow runScope
 // ════════════════════════════════════════════════════════════════════
 
-const SERVICE_GROUP_MISSING_ALL: &str = "a wrapping environment whose runScope includes SERVICE (default runScope: every kind of Session) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, onWrapServiceExit (RFC 0009).";
+const SERVICE_GROUP_MISSING_ALL: &str = "a wrapping environment whose runScope includes SERVICE (default runScope: every kind of Session) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, onWrapServiceExit (RFC 0009).";
 
 #[test]
 fn default_run_scope_requires_all_seven_hooks() {
@@ -734,7 +734,7 @@ fn task_run_scope_rejects_service_hooks() {
             "4 validation errors for EnvironmentTemplate\n",
             "environment -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
             "environment -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
-            "environment -> script -> actions -> onWrapServiceReadinessCheck:\n\tonWrapServiceReadinessCheck must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
+            "environment -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
             "environment -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
         ],
     );
@@ -822,7 +822,7 @@ fn service_run_scope_missing_some_service_hooks() {
                         "onWrapEnvEnter",
                         "onWrapEnvExit",
                         "onWrapServiceRun",
-                        "onWrapServiceReadinessCheck"
+                        "onWrapServiceHealthCheck"
                     ],
                     2
                 )
@@ -831,7 +831,7 @@ fn service_run_scope_missing_some_service_hooks() {
         ALL_EXTS,
         &[
             "1 validation error for EnvironmentTemplate\n",
-            "environment -> script -> actions:\n\ta wrapping environment whose runScope includes SERVICE (runScope: [SERVICE]) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceExit (RFC 0009).",
+            "environment -> script -> actions:\n\ta wrapping environment whose runScope includes SERVICE (runScope: [SERVICE]) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceExit (RFC 0009).",
         ],
     );
 }
@@ -881,7 +881,7 @@ fn single_hook_reports_every_group_at_once() {
             "3 validation errors for EnvironmentTemplate\n",
             "environment -> script -> actions:\n\ta wrapping environment must define onWrapEnvEnter and onWrapEnvExit whatever its runScope; missing: onWrapEnvEnter, onWrapEnvExit (RFC 0009).",
             "environment -> script -> actions:\n\ta wrapping environment whose runScope includes TASK (default runScope: every kind of Session) must define onWrapTaskRun; missing: onWrapTaskRun (RFC 0009).",
-            "environment -> script -> actions:\n\ta wrapping environment whose runScope includes SERVICE (default runScope: every kind of Session) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceReadinessCheck, onWrapServiceExit (RFC 0009).",
+            "environment -> script -> actions:\n\ta wrapping environment whose runScope includes SERVICE (default runScope: every kind of Session) must define onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit; missing: onWrapServiceEnter, onWrapServiceHealthCheck, onWrapServiceExit (RFC 0009).",
         ],
     );
 }
@@ -1260,7 +1260,7 @@ services:
     ports:
       - name: main
         port: 70000
-    readinessCheck:
+    healthCheck:
       type: COMMAND
     script:
       actions:
@@ -1272,7 +1272,7 @@ services:
             "3 validation errors for EnvironmentTemplate\n",
             "services[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
             "services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
-            "services[0] -> script -> actions:\n\tonReadinessCheck must be defined when readinessCheck.type is COMMAND.",
+            "services[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
         ],
     );
 }
