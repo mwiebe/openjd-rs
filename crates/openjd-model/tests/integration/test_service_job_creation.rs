@@ -130,7 +130,13 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
     assert_eq!(args[1].raw(), "{{ Service.Cache.main.port }}");
     assert_eq!(args[3].raw(), "{{ Service.Cache.main.bindAddress }}");
     assert!(cache.variables.is_none());
-    assert!(cache.script.actions.on_enter.is_none());
+    // The RFC's example provisions Valkey from Conda in onEnter (the
+    // rejected `serviceEnvironments` list once held this).
+    let on_enter = cache.script.actions.on_enter.as_ref().expect("onEnter");
+    assert_eq!(on_enter.command.raw(), "bash");
+    assert!(on_enter.args.as_ref().unwrap()[1]
+        .raw()
+        .starts_with("conda create -y -p ./valkey-env"));
     assert!(cache.script.actions.on_readiness_check.is_none());
     assert_eq!(
         cache
@@ -139,7 +145,7 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
             .iter_named()
             .map(|(n, _)| n)
             .collect::<Vec<_>>(),
-        vec!["onRun"]
+        vec!["onEnter", "onRun"]
     );
     assert!(job.steps[0].step_services.is_none());
     // The step script still references the Service, unresolved.

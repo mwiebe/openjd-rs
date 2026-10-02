@@ -191,7 +191,6 @@ mod tests {
             description: None,
             document: Default::default(),
             host_requirements: None,
-            service_environments: None,
             ports: ports
                 .iter()
                 .map(|(n, p, protocol)| ServicePort {

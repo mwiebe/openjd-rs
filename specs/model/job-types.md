@@ -342,7 +342,6 @@ pub struct Service {
     pub description: Option<String>,
     pub document: Document,                                // §1.2.2 item 2; omitted from JSON when JobTemplate
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
-    pub service_environments: Option<Vec<Environment>>,    // §9 item 5; omitted from JSON when None
     pub ports: Vec<ServicePort>,                           // Declaration order
     pub readiness_check: ServiceReadinessCheck,            // §9.3 defaults applied
     pub restart_policy: ServiceRestartPolicy,              // §9.4 defaults applied
@@ -437,24 +436,12 @@ the same Service iff `(document, name)` agree; a scheduler keys on that pair, an
 submission-time error paths do. The field is omitted from JSON for the Job Template's own
 Services (the default on deserialization), so a Job without attachments serializes as before.
 
-`service_environments` is the instantiated `serviceEnvironments` list (RFC 0009, Template
-Schemas §9 item 5), in order: the Environments a Service Session enters after the scope's
-Environments whose `runScope` includes `SERVICE` and before `onEnter`, and exits in reverse
-after `onExit`. Each is a `job::Environment` converted exactly as a Job Environment is
-(`convert_environment_with_symtab`), carrying its own filtered `resolved_symtab` from the
-Service's job-creation table, so a Service Session can enter them from the `job::Service`
-alone; `run_scope` is always `None` (validation rejects `runScope` on a Service Environment)
-and the effective scope is `[SERVICE]`. Their format strings resolve against the declaring
-Service's own `Service.*` scope, `bindAddress` included, which a Service Session binds for
-them exactly as for the Service's script. The key is omitted from JSON when `None`.
-
 `resolved_symtab` is filtered like an Environment's: the symbols referenced by `variables`,
 every script action (command, args, timeout, cancelation), embedded-file `data`, and
 `<ServiceScript>.let` — which is how the `<Service>.let` values (and, for a Step Service, the
 step-level `let` values) reach the host — with the `RawParam.*` fallback for PATH parameters.
 A Service Session layers `Session.*`, `Service.File.*`, and the `Service.*` endpoints from
-`job::service_symbols::build_service_symbol_table` on top. The same fields, plus every field
-of the `service_environments`, walked by
+`job::service_symbols::build_service_symbol_table` on top. The same fields, walked by
 `job::service_symbols::referenced_service_names`, give a scheduler the Services this one
 references — the edges it orders Service starts by (RFC 0009 constraint 2).
 

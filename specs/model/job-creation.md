@@ -259,11 +259,11 @@ each seeing every Job Service and the Step Services before it. Per Service
    whose message carries the field path. The §9 defaults also fill the
    `readinessCheck` / `restartPolicy` objects when the template omits
    them, and a `TCP_CONNECT` check without `ports` is expanded to every
-   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 7 —
+   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 6 —
    validation has rejected a Service with none), so `job::Service` never
    needs the template defaults. Each `job::ServicePort` carries its
    `protocol` (§9.2 item 3) unchanged from the template. Once every
-   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 6.4
+   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 5.4
    / §9.7 item 8 to the resolved numbers: two ports with the same
    `protocol` and the same number fail at `ports[i] -> port` of the later
    one with pass 11's wording (`<TCP|UDP> port <n> is also used by port
@@ -281,28 +281,10 @@ each seeing every Job Service and the Step Services before it. Per Service
    8 constraints on `variables` (§4.4.2 length), every action's
    `command` / `args`, and embedded-file `data` — the Service counterpart
    of `check_carried_forward_environment`.
-5. **`serviceEnvironments` re-checks** (§9 item 5) — for each entry,
-   `build_service_env_check_symtab` builds the Service Environment's check
-   table: the Service's job-creation table (`Param.*`, `RawParam.*`,
-   `Job.Name`; for a Step Service `Step.Name` and the step-level `let`
-   values; and the `<Service>.let` values, which §9 item 3 makes available
-   in `serviceEnvironments` as a Step's are in `stepEnvironments`) plus the
-   `Unresolved` placeholders for `Session.*`, PATH `Param.*`, the declaring
-   Service's own `Service.<name>.<port>.*` with `bindAddress`, the `port` /
-   `connectAddress` of every in-scope Service, and the Environment's own
-   `Env.File.*`, with its `<EnvironmentScript>.let` evaluated in. Unlike
-   `build_env_check_symtab` the `Service.*` seeding is unconditional and
-   includes the declaring Service (a Service Environment is entered only in
-   that Service's Session). `check_carried_forward_environment` then re-runs
-   the pass 8 constraints at `<service path> -> serviceEnvironments[j]`.
-6. **Conversion** — `variables` and `script` are carried as
+5. **Conversion** — `variables` and `script` are carried as
    `FormatString`s; `resolved_symtab` is `filter_symtab_for_service`
    (the symbols those fields and `<ServiceScript>.let` reference, with the
-   `RawParam.*` fallback). Each `serviceEnvironments` entry is converted
-   with `convert_environment_with_symtab` against the Service's
-   job-creation table — the path a Job Environment takes — so each carries
-   its own filtered `resolved_symtab` into
-   `job::Service::service_environments`.
+   `RawParam.*` fallback).
 
 The check symbol tables of the entities *around* a Service also change:
 `build_task_check_symtab` seeds the `port` / `connectAddress` of every Job
@@ -314,12 +296,6 @@ that validated resolves here and at run time.
 
 Environment conversion carries `runScope` (parsed to `Vec<RunScope>`) and
 the four `onWrapService*` hooks into `job::Environment`.
-
-`job::service_symbols::referenced_service_names` walks a Service's
-`service_environments` too (`collect_env_accessed_symbols`, the same walk
-`filter_symtab_for_environment` uses), so a Service that references another
-only from a Service Environment still starts after it (RFC 0009 ordering
-constraint 2).
 
 #### Resolved-value checks on carried-forward fields
 

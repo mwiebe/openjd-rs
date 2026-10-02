@@ -13,7 +13,7 @@
 
 use super::actions::Action;
 use super::constrained_strings::Description;
-use super::environment::{EmbeddedFile, Environment};
+use super::environment::EmbeddedFile;
 use super::host_requirements::HostRequirements;
 use crate::format_string::FormatString;
 use serde::Deserialize;
@@ -41,23 +41,14 @@ pub struct Service {
     /// Requirements the service host must satisfy. Independent of the
     /// `hostRequirements` of any Step whose Tasks use the Service.
     pub host_requirements: Option<HostRequirements>,
-    /// §9 item 5 Environments entered only in this Service's Session — the
-    /// analogue of a Step's `stepEnvironments` — in order, after the
-    /// Environments of the Service's scope and before `onEnter`, and exited
-    /// in reverse after `onExit`. Their format strings have the declaring
-    /// Service's own `Service.*` scope (including `bindAddress`). Names are
-    /// unique within the list and distinct from the Job Environments and,
-    /// for a Step Service, the Step's Step Environments; `runScope` must not
-    /// be provided (the effective scope is `[SERVICE]`).
-    pub service_environments: Option<Vec<Environment>>,
     /// §9.2 The named ports the Service exposes: 1–10 entries with unique
     /// names, each TCP (the default) or UDP. No two ports of the same
-    /// protocol may have the same `port` number (§9 item 6.4).
+    /// protocol may have the same `port` number (§9 item 5.4).
     pub ports: Vec<ServicePort>,
     /// §9.3 How readiness is determined. `None` means
     /// `{ type: TCP_CONNECT }` on every declared TCP port; a Service none
     /// of whose ports is TCP must declare a `STDOUT` or `COMMAND` check
-    /// (§9 item 7). See [`readiness_check`](Self::readiness_check).
+    /// (§9 item 6). See [`readiness_check`](Self::readiness_check).
     pub readiness_check: Option<ServiceReadinessCheck>,
     /// §9.4 What happens when `onRun` exits before the scope ends. `None`
     /// means `{ maxAttempts: 0, completedTasks: RERUN }`; see
@@ -91,7 +82,7 @@ impl Service {
 
     /// The names of the declared ports whose `protocol` is `TCP`, in
     /// declaration order — the ports a `TCP_CONNECT` readiness check
-    /// probes when it names none (§9 item 7, §9.3 item 2).
+    /// probes when it names none (§9 item 6, §9.3 item 2).
     pub fn tcp_port_names(&self) -> impl Iterator<Item = &str> {
         self.ports
             .iter()
@@ -604,29 +595,27 @@ script:
     }
 
     #[test]
-    fn service_environments_parse_in_order() {
-        let svc = parse(&format!(
-            "{MINIMAL}serviceEnvironments:\n  - name: Conda\n    variables: {{ A: b }}\n  - name: Wrap\n    runScope: [SERVICE]\n    script:\n      actions:\n        onEnter: {{ command: x }}\n"
-        ));
-        let envs = svc.service_environments.as_ref().unwrap();
-        assert_eq!(envs.len(), 2);
-        assert_eq!(envs[0].name, "Conda");
-        assert!(envs[0].run_scope.is_none());
-        assert_eq!(envs[1].name, "Wrap");
-        // Parsed as any <Environment>; validation rejects runScope here.
-        assert_eq!(
-            envs[1].run_scope.as_deref(),
-            Some(&["SERVICE".to_string()][..])
-        );
-        assert!(parse(MINIMAL).service_environments.is_none());
-    }
-
-    #[test]
     fn unknown_service_field_rejected() {
         let err =
             serde_saphyr::from_str::<Service>(&format!("{MINIMAL}replicas: 2\n")).unwrap_err();
         assert!(
             err.to_string().contains("unknown field `replicas`"),
+            "got: {err}"
+        );
+    }
+
+    /// `serviceEnvironments` was removed from the RFC (Rejected Ideas: "a
+    /// Service-scoped Environment list"); it is an unknown property like any
+    /// other.
+    #[test]
+    fn service_environments_is_not_a_property() {
+        let err = serde_saphyr::from_str::<Service>(&format!(
+            "{MINIMAL}serviceEnvironments:\n  - name: Conda\n    variables: {{ A: b }}\n"
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown field `serviceEnvironments`"),
             "got: {err}"
         );
     }

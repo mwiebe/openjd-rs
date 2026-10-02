@@ -116,11 +116,9 @@ execute(args).await
   │   ├── Resolve step selection (explicit / auto-select / all)
   │   ├── Parse explicit task params and require a parameter space
   │   ├── Determine step execution order
-  │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack:
-  │       each Task Session's (jobEnvironments + one Step's stepEnvironments)
-  │       and each Service Session's (the scope's Environments whose runScope
-  │       includes SERVICE + that Service's serviceEnvironments), across the
-  │       combined Job's documents
+  │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack
+  │       (jobEnvironments + one Step's stepEnvironments, which a Service
+  │       Session's stack is a subset of), across the combined Job's documents
   │
   ├── 3. SESSION CREATION
   │   ├── Create SessionConfig from parameters, path rules, and model profile
@@ -416,7 +414,7 @@ extensions (Template Schemas §1.2 item 3). A Service Session's `SessionConfig::
 is the profile of the Service's own document — `ServiceRunConfig::profile_for(&service.document)`:
 the Job Template's `profile` for its `jobServices` / `stepServices`, the attachment's
 entry of `attached_profiles` for an external Service — so an external Service's actions,
-`variables`, `let`, embedded files and `serviceEnvironments` use its template's `SERVICE`
+`variables`, `let` and embedded files use its template's `SERVICE`
 / `EXPR` functions whatever the Job Template declares. The scope Environments a Service
 Session enters (the combined `job_environments`, then a Step's `stepEnvironments`) each
 come from a document; `ServiceManager::set_job_services` / `set_step_services` take
@@ -474,21 +472,7 @@ run at least one Task; a Step's Services only if that Step will (constraint 10 �
 `--tasks '[]'` selection runs none, and the run logs `Not starting the N Step
 Service(s) of Step '<name>': no Task of this Step will run`). A Service Session enters
 the Job's Environments (a Job Service) or the Job's then the Step's (a Step Service),
-skipping those whose `runScope` excludes `SERVICE`, and then the Service's own
-`serviceEnvironments` (§9 item 5) — the runtime does the skipping and the Service
-Environment entry, from the `job::Service` the CLI hands it; the CLI orchestrates
-nothing differently for a Service with `serviceEnvironments`.
-
-The preflight single-wrap-layer check (`validate_wrap_environment_stacks`) covers the
-Service Session stacks as well as the Task Session stacks: for every Job Service, and
-every Step Service of a Step that runs, the wrap-defining Environments among the
-scope's Environments whose `runScope` includes `SERVICE` plus its `serviceEnvironments`
-must number at most one, else `RFC 0008 / RFC 0009: the Service Session of Service
-'<name>' may have at most one Environment defining wrap hooks (the scope's Environments
-whose runScope includes SERVICE, then its serviceEnvironments). Found N: <names>.`
-before anything runs. The model enforces the same rule per document at template
-validation; the preflight is what catches an `--environment` template's wrapper meeting
-a wrapping Service Environment of the Job Template.
+skipping those whose `runScope` excludes `SERVICE` — the runtime does the skipping.
 
 ### Task gating (constraint 3)
 

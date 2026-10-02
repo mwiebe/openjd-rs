@@ -31,20 +31,11 @@
 //!   non-negative; `onReadinessCheck` defined iff the readiness type is
 //!   `COMMAND`; every port a `TCP_CONNECT` check names is declared and has
 //!   `protocol: TCP`; a Service none of whose ports is TCP declares a
-//!   `STDOUT` or `COMMAND` check (§9 item 7, §9.7 item 4); no two ports of
-//!   the same `protocol` have the same literal `port` number (§9 item 6.4,
+//!   `STDOUT` or `COMMAND` check (§9 item 6, §9.7 item 4); no two ports of
+//!   the same `protocol` have the same literal `port` number (§9 item 5.4,
 //!   §9.7 item 8 — format-string numbers are checked at job creation).
 //!   `description`, `variables`, `hostRequirements`, embedded files and
 //!   every `<Action>` reuse the pass-6 validators.
-//! - **`serviceEnvironments`** (§9 item 5, §9.7 items 3 and 5): each entry is
-//!   a `<Environment>` validated with the pass-6 environment validator (and
-//!   the pass-5 limits and pass-7 `endOfLine` gating a `stepEnvironments`
-//!   entry gets); the list, if provided, is non-empty; names are unique
-//!   within the list and distinct from every Job Environment and, for a Step
-//!   Service, the declaring Step's Step Environments; `runScope` must not be
-//!   provided. The hooks-follow-`runScope` rule for these Environments (with
-//!   the effective `[SERVICE]`) is pass 10's; their format strings are pass
-//!   8's.
 //! - **`runScope`** (§4 item 3, §9.7 item 3): at least one element, only
 //!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates.
 //!
@@ -58,7 +49,7 @@ use std::collections::HashSet;
 
 use super::structure::{
     validate_action, validate_description, validate_embedded_files,
-    validate_host_requirements_in_context, validate_single_environment, validate_variables,
+    validate_host_requirements_in_context, validate_variables,
 };
 use super::{EffectiveLimits, EffectiveRules};
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
@@ -89,16 +80,6 @@ pub fn validate_services_job_template(
     let active = ctx.profile.has_extension(ModelExtension::Service);
     check_expr_prerequisite(ctx, errors);
 
-    // §9 item 5.1: a Service Environment's name must not be that of a Job
-    // Environment, nor — for a Step Service — of the declaring Step's Step
-    // Environments.
-    let job_env_names: HashSet<&str> = jt
-        .job_environments
-        .iter()
-        .flatten()
-        .map(|e| e.name.as_str())
-        .collect();
-
     let mut job_service_names: HashSet<&str> = HashSet::new();
     if let Some(services) = &jt.job_services {
         let list_path = path_field(&[], "jobServices");
@@ -109,7 +90,6 @@ pub fn validate_services_job_template(
                 services,
                 &list_path,
                 &HashSet::new(),
-                &job_env_names,
                 limits,
                 rules,
                 ctx,
@@ -133,21 +113,10 @@ pub fn validate_services_job_template(
             // §3 item 6.4: a Step Service must not share a name with a Job
             // Service. Different Steps may reuse a name (item 6, note), so
             // only the Job Services are carried into each Step's check.
-            let outer_env_names: HashSet<&str> = job_env_names
-                .iter()
-                .copied()
-                .chain(
-                    step.step_environments
-                        .iter()
-                        .flatten()
-                        .map(|e| e.name.as_str()),
-                )
-                .collect();
             validate_service_list(
                 services,
                 &list_path,
                 &job_service_names,
-                &outer_env_names,
                 limits,
                 rules,
                 ctx,
@@ -195,16 +164,10 @@ pub fn validate_services_environment_template(
         if !active {
             errors.add(&list_path, "services requires the SERVICE extension.");
         } else {
-            // The document's own `environment` becomes a Job Environment of
-            // every Job it is attached to, so a Service Environment may not
-            // reuse its name (§9 item 5.1).
-            let outer_env_names: HashSet<&str> =
-                et.environment.iter().map(|e| e.name.as_str()).collect();
             validate_service_list(
                 services,
                 &list_path,
                 &HashSet::new(),
-                &outer_env_names,
                 limits,
                 rules,
                 ctx,
@@ -282,14 +245,10 @@ fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationError
 /// Validate one `jobServices` or `stepServices` list: its size, the
 /// uniqueness of its names (also against `outer_names`, the Job Service
 /// names when validating a Step's list), and each `<Service>`.
-/// `outer_env_names` are the Environment names a Service Environment in
-/// any of these Services may not reuse (§9 item 5.1).
-#[allow(clippy::too_many_arguments)]
 fn validate_service_list(
     services: &[Service],
     list_path: &[PathElement],
     outer_names: &HashSet<&str>,
-    outer_env_names: &HashSet<&str>,
     limits: &EffectiveLimits,
     rules: &EffectiveRules,
     ctx: &ValidationContext,
@@ -313,15 +272,7 @@ fn validate_service_list(
                 format!("duplicate service name: '{}'", service.name),
             );
         }
-        validate_service(
-            service,
-            &service_path,
-            outer_env_names,
-            limits,
-            rules,
-            ctx,
-            errors,
-        );
+        validate_service(service, &service_path, limits, rules, ctx, errors);
     }
 }
 
@@ -329,7 +280,6 @@ fn validate_service_list(
 fn validate_service(
     service: &Service,
     path: &[PathElement],
-    outer_env_names: &HashSet<&str>,
     limits: &EffectiveLimits,
     rules: &EffectiveRules,
     ctx: &ValidationContext,
@@ -352,20 +302,7 @@ fn validate_service(
         );
     }
 
-    // §9 item 5 serviceEnvironments
-    if let Some(envs) = &service.service_environments {
-        validate_service_environments(
-            envs,
-            &path_field(path, "serviceEnvironments"),
-            outer_env_names,
-            limits,
-            rules,
-            ctx,
-            errors,
-        );
-    }
-
-    // §9 item 6, §9.2 <ServicePort>
+    // §9 item 5, §9.2 <ServicePort>
     let ports_path = path_field(path, "ports");
     if service.ports.is_empty() {
         errors.add(&ports_path, "must not be empty.");
@@ -392,7 +329,7 @@ fn validate_service(
                 "must be between 1 and 65535.",
                 errors,
             );
-            // §9 item 6.4 / §9.7 item 8: the same literal number twice in
+            // §9 item 5.4 / §9.7 item 8: the same literal number twice in
             // one protocol's space. Format-string numbers are compared at
             // job creation, once resolved.
             if let Some(n) = literal_int(number) {
@@ -422,7 +359,7 @@ fn validate_service(
 
     // §9.3 <ServiceReadinessCheck>
     let readiness = service.readiness_check();
-    // §9 item 7 / §9.7 item 4: TCP_CONNECT, given or defaulted, needs a TCP
+    // §9 item 6 / §9.7 item 4: TCP_CONNECT, given or defaulted, needs a TCP
     // port to probe. (An empty `ports` list is already reported above.)
     if !service.ports.is_empty()
         && !has_tcp_port
@@ -559,80 +496,6 @@ fn validate_service(
                     errors.add(
                         &path_field(&path_index(&files_path, i), "filename"),
                         format!("exceeds {} characters.", limits.max_filename_len),
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// §9 item 5: validate a Service's `serviceEnvironments` list at
-/// `list_path`. Each entry is an ordinary `<Environment>` and gets the
-/// structural checks a `stepEnvironments` entry gets (pass 6's
-/// `validate_single_environment`, pass 5's embedded-file length limits,
-/// pass 7's `endOfLine` gating). On top of those, per the RFC's constraints:
-///
-/// 1. (item 5.1) no two entries share a `name`, and none has the `name` of
-///    an Environment in `outer_env_names` (the Job Environments and, for a
-///    Step Service, the declaring Step's Step Environments) — reported at the
-///    entry's `name` with the Environment collision message.
-/// 2. (item 5.2, §9.7 item 3) `runScope` is not provided: a Service
-///    Environment's scope is fixed to the declaring Service's Session.
-///
-/// The list is `@optional`; like `stepEnvironments`, when it is provided it
-/// must not be empty.
-fn validate_service_environments(
-    envs: &[Environment],
-    list_path: &[PathElement],
-    outer_env_names: &HashSet<&str>,
-    limits: &EffectiveLimits,
-    rules: &EffectiveRules,
-    ctx: &ValidationContext,
-    errors: &mut ValidationErrors,
-) {
-    if envs.is_empty() {
-        errors.add(list_path, "must not be empty.");
-    }
-    let fb1_active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
-    let mut names: HashSet<&str> = HashSet::new();
-    for (j, env) in envs.iter().enumerate() {
-        let env_path = path_index(list_path, j);
-        if outer_env_names.contains(env.name.as_str()) || !names.insert(env.name.as_str()) {
-            errors.add(
-                &path_field(&env_path, "name"),
-                format!("duplicate environment name: '{}'", env.name),
-            );
-        }
-        if env.run_scope.is_some() {
-            errors.add(
-                &path_field(&env_path, "runScope"),
-                "must not be provided on a Service Environment: its scope is fixed to the \
-                 declaring Service's Session (RFC 0009).",
-            );
-        }
-        validate_single_environment(env, limits, rules, &env_path, errors);
-        if let Some(files) = env.script.as_ref().and_then(|s| s.embedded_files.as_ref()) {
-            let files_path = path_field(&path_field(&env_path, "script"), "embeddedFiles");
-            for (i, f) in files.iter().enumerate() {
-                let f_path = path_index(&files_path, i);
-                if f.name.chars().count() > limits.max_identifier_len {
-                    errors.add(
-                        &path_field(&f_path, "name"),
-                        format!("exceeds {} characters.", limits.max_identifier_len),
-                    );
-                }
-                if let Some(filename) = &f.filename {
-                    if filename.chars().count() > limits.max_filename_len {
-                        errors.add(
-                            &path_field(&f_path, "filename"),
-                            format!("exceeds {} characters.", limits.max_filename_len),
-                        );
-                    }
-                }
-                if f.end_of_line.is_some() && !fb1_active {
-                    errors.add(
-                        &path_field(&f_path, "endOfLine"),
-                        "requires the FEATURE_BUNDLE_1 extension.",
                     );
                 }
             }

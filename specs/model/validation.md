@@ -40,8 +40,8 @@ short-circuiting), so users see all problems at once.
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
 | 8 | `format_strings.rs`, then `service_scope.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009). `service_scope.rs` then rewrites the generic undefined-variable message of each out-of-scope `Service.*` / `Task.*` reference whose Service the document declares into the scope rule it breaks |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
-| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule (with the effective `[SERVICE]` for a Service's `serviceEnvironments`), and the single-wrap-layer-per-session rule for Task and Service Sessions (RFC 0008, RFC 0009) |
-| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally — including its `serviceEnvironments` — and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
+| 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule, and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
+| 11 | `service.rs` | Gate SERVICE features (`jobServices`, `stepServices`, `services`, `runScope`), validate every `<Service>` structurally, and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
 
 ### Environment template pipeline
 
@@ -259,8 +259,8 @@ somewhere in the document** (or `Task.*` inside a Service), replace that sentenc
 `Failed to parse interpolation expression at [s, e]. ` / `Invalid expression in let binding
 'x': ` prefix, and the expression-source and caret lines that follow are untouched, and the
 structured `ErrorDetail` summary and span summaries are updated in step. The reference site is
-classified from the error path (`Site`: a Step's `script`, a Service body or its
-`serviceEnvironments`, a Job Environment, a Step Environment, an Environment Template's
+classified from the error path (`Site`: a Step's `script`, a Service body, a Job Environment,
+a Step Environment, an Environment Template's
 `environment`, or a job-creation field — `hostRequirements`, any `let`, a `parameterSpace`
 range, `timeout` / `notifyPeriodInSeconds`, a Service's `port` / `timeoutSeconds` /
 `intervalSeconds` / `maxAttempts`); the declarations are every `jobServices` /
@@ -280,8 +280,8 @@ Everything else keeps the generic message with its suggestion: a Service name de
 (a typo is then the likeliest cause — `Undefined variable: 'Service.Cash.main.connectAddress'.
 Did you mean: Service.Cache.main.connectAddress`), an unknown value name after a declared port,
 `Service.File.*`, or a reference with too few components. The conformance `.invalid` fixtures
-check only pass/fail and are unaffected; `tests/integration/test_service_scope.rs` and
-`test_service_environments_list.rs` pin the exact messages.
+check only pass/fail and are unaffected; `tests/integration/test_service_scope.rs` pins the
+exact messages.
 
 Who sees which Services (the `in_scope` iterator at each site):
 
@@ -293,7 +293,6 @@ Who sees which Services (the `in_scope` iterator at each site):
 | `jobServices[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | `jobServices[..k]` (earlier in the list) plus itself | its own only |
 | `steps[i].stepServices[k]` body | every `jobServices` entry, `stepServices[..k]`, plus itself | its own only |
 | environment template `services[k]` body | `services[..k]` plus itself | its own only |
-| `<service path> -> serviceEnvironments[j]` (variables, actions incl. wrap hooks, embedded files, `<EnvironmentScript>.let`) — `build_service_env_scope_symtab` | the same Services as the declaring Service's body, **unconditionally** (a Service Environment carries no `runScope`; it is entered only in the declaring Service's Session, after its ports are allocated) | the declaring Service's only |
 | environment template `environment` | every `services` entry, under the `runScope` condition | never |
 | any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, action `timeout` / cancelation fields, numeric Service fields | **none** — job-creation stage | never |
 
@@ -302,11 +301,9 @@ Service cannot reference any Step Service, a Step cannot reference another Step'
 wrapping Job or Step environment entered in Service Sessions (any `runScope` including
 `SERVICE`, so also the default) sees no `Service.*` even in its `onWrapService*` hooks, and
 `Task.*` is never seeded for a Service (§9: "`Task.*` values are never available within a
-Service"). A Service Environment is the one exception to the `runScope` rule (§4 item 3.2,
-§7.3.1 scope rule 1): it sees the declaring Service's own scope, `bindAddress` included, in
-every field including its `onWrapService*` hooks (alongside `WrappedService.*`); other
-Services see a Service's Service Environments only through that Service's ports (scope rule
-2), so `Env.File.*` of one is undefined everywhere else.
+Service"). There is no Environment that sees a Service's `bindAddress`: a `<Service>` has no
+`serviceEnvironments` property (the RFC's Rejected Ideas), so the only Environments a Service
+Session enters are the scope's, which follow the `runScope` rule.
 
 `Service.File.<name>` is seeded for the declaring Service only, from its script's
 `embeddedFiles`, into the service-execution scope (and so into `<ServiceScript>.let`, like
@@ -335,23 +332,6 @@ Services see a Service's Service Environments only through that Service's ports 
   rejected with `complex expressions require the EXPR extension.`; `let` in either position
   is rejected with `'let' requires the EXPR extension.`; comprehension loop variables may not
   shadow any `let` name in scope.
-
-**Within a Service Environment** (`serviceEnvironments[j]`, §9 item 5), the symbol table is
-the session scope a `stepEnvironments` entry gets — `Param.*` including PATH, `RawParam.*`,
-`Session.*`, the Service's job-creation-stage symbols (`Job.Name`; for a Step Service
-`Step.Name` and the step-level `let` values; for an environment template's Service `Job.Name`
-only; and the `<Service>.let` values, which §9 item 3 makes available in `serviceEnvironments`
-as a Step's `let` is in its `stepEnvironments`), the Environment's own `Env.File.*`, and its
-`<EnvironmentScript>.let` (host library; the step-level and `<Service>.let` names are the
-enclosing scope, so `'<name>' shadows enclosing scope.` for either) — plus the declaring
-Service's three endpoint values and the `port` / `connectAddress` of every in-scope Service.
-Not in scope: `Task.*`, `Service.File.*` (the Service's script's files), the
-`<ServiceScript>.let` names, and another Service's `<Service>.let`. The Service Environments
-are therefore validated after the `<Service>.let` bindings. The body is validated through
-`validate_env_format_strings` exactly like a `stepEnvironments` entry, so the wrap hooks get
-`WrappedAction.*` and their companion group, and the actions' `timeout` / cancelation fields
-validate against the Service's job-creation scope (`<Service>.let` included; no `Session.*`,
-no `Service.*`). Comprehension loop variables are checked as for any environment.
 
 **The `WrappedService.*` group** (§4.3.1) is added to the wrap-hook symbol table for exactly the
 four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_scope`):
@@ -609,36 +589,17 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
   evaluated over the recognized names only. A non-wrapping environment is not subject to the
   rule whatever its `runScope`.
 
-  A Service's `serviceEnvironments` (RFC 0009 §9 item 5.2) are checked with the effective
-  `runScope: [SERVICE]` whatever they declare (pass 11 rejects a `runScope` written on one),
-  under `<service path> -> serviceEnvironments[j] -> script -> actions`. The `runScope` text
-  in their messages is `effective runScope: [SERVICE], a Service Environment`: a wrapping
-  Service Environment must define `onWrapEnvEnter`, `onWrapEnvExit`, and the four
-  `onWrapService*` hooks, and `onWrapTaskRun must not be defined: this environment's runScope
-  (effective runScope: [SERVICE], a Service Environment) excludes TASK (RFC 0009).` This is the
-  way to wrap one Service in a container without wrapping anything else.
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
   wrap hooks. A session's environment stack is the job's `jobEnvironments` plus exactly
   one step's `stepEnvironments`, so this is enforced per step: for every step, the count
   of wrap-defining envs in `jobEnvironments` plus that step's `stepEnvironments` must be
   ≤ 1. Multiple wrap envs in `jobEnvironments` alone are reported once at the
   `jobEnvironments` path (reachable from every session); a step that adds its own wrap env
-  on top is reported at that step's `stepEnvironments` path.
+  on top is reported at that step's `stepEnvironments` path. A Service Session's stack is a
+  subset of the corresponding Task Session's (the scope's environments whose `runScope`
+  includes `SERVICE`), so the same check covers Service Sessions.
 
-- **Single-wrap-layer rule for Service Sessions** (RFC 0009; with `SERVICE`): a Service
-  Session's stack is the scope's environments entered in Service Sessions — `jobEnvironments`
-  whose `runScope` includes `SERVICE`, plus the Step's such `stepEnvironments` for a Step
-  Service — followed by the Service's own `serviceEnvironments`. For every Service (`jobServices`,
-  each Step's `stepServices`, and an environment template's `services`, where the document's own
-  `environment` is the outer layer), when its `serviceEnvironments` contribute at least one wrap
-  layer and the stack holds more than one, one error is reported at `<service path> ->
-  serviceEnvironments`: `only one environment in a Service Session's stack (the scope's
-  environments whose runScope includes SERVICE, then this Service's serviceEnvironments) may
-  define any wrap hook (RFC 0008, RFC 0009).` Two layers in `jobEnvironments` alone are reported
-  there once, not again under every Service; a wrapping `runScope: [TASK]` environment is never
-  in a Service Session and does not count.
-
-The Task-Session single-layer rule runs only in the job-template path. An environment template
+The single-layer rule runs only in the job-template path. An environment template
 defines at most one environment, so the rule is trivially satisfied for an isolated env template; if
 separately-validated env templates are composed into a session at assembly time
 (worker-side), the cross-layer constraint must be enforced there. Likewise the §1.2.2 item 3
@@ -677,29 +638,13 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 - **Name uniqueness** (§9.7 item 5): `duplicate service name: '<name>'` on the offending
   element, for a repeat within a list and for a Step Service that shares a name with a Job
   Service. Different Steps may reuse a Step Service name.
-- **`serviceEnvironments`** (§9 item 5, `validate_service_environments`), at `<service path> ->
-  serviceEnvironments`: if provided, `must not be empty.` (as `stepEnvironments`). Each entry
-  `[j]` gets pass 6's `validate_single_environment` (so `must have at least one of 'script' or
-  'variables'.`, the `name` checks, action and embedded-file validation), pass 5's embedded-file
-  `name` / `filename` length limits, and pass 7's `endOfLine` → `requires the FEATURE_BUNDLE_1
-  extension.` gating, on the same paths a `stepEnvironments` entry reports them. Then (item 5.1)
-  `serviceEnvironments[j] -> name`: `duplicate environment name: '<name>'` — the Environment
-  collision message — for a repeat within the list, for the name of any `jobEnvironments`
-  entry, and, for a Step Service, for the name of the declaring Step's `stepEnvironments`; in an
-  environment template, for the name of the document's own `environment` (a Job Environment of
-  every Job it is attached to). Different Services may reuse a Service Environment name, a Job
-  Service's may reuse a Step Environment's name, and a Step Service's may reuse another Step's
-  Step Environment's name. And (item 5.2, §9.7 item 3) `serviceEnvironments[j] -> runScope`:
-  `must not be provided on a Service Environment: its scope is fixed to the declaring Service's
-  Session (RFC 0009).` — the list is not examined. The hooks-follow-`runScope` rule for these
-  Environments (pass 10) and their format strings (pass 8, "Service scopes") are elsewhere.
 - **`<ServiceName>` and port names** (§9.1, §9.2 item 1, §9.7 item 5): on the `name` field,
   `'<name>' is not a valid identifier.`, `exceeds <max_identifier_len> characters.` (64, or
   512 with FEATURE_BUNDLE_1), and `must not be 'File'; it is reserved for Service.File.*
   references.`
-- **Ports** (§9 item 6): `ports` `must not be empty.` / `must not contain more than 10
+- **Ports** (§9 item 5): `ports` `must not be empty.` / `must not contain more than 10
   elements.`; `duplicate port name '<name>'.` on the element.
-- **Port numbers per protocol** (§9 item 6.4, §9.7 item 8): on `ports[i] -> port` of the later
+- **Port numbers per protocol** (§9 item 5.4, §9.7 item 8): on `ports[i] -> port` of the later
   port, `<TCP|UDP> port <n> is also used by port '<earlier>'; two ports with the same protocol
   must not have the same port number.` Only literal numbers are compared here (one that
   carries an expression is compared at job creation, once resolved — see
@@ -719,7 +664,7 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
   `TCP_CONNECT`). A `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry
   that is not a declared port reports `references undeclared port '<name>'.` on
   `readinessCheck -> ports[k]`.
-- **Readiness and port protocols** (§9 item 7, §9.3 item 2, §9.7 item 4): a `TCP_CONNECT`
+- **Readiness and port protocols** (§9 item 6, §9.3 item 2, §9.7 item 4): a `TCP_CONNECT`
   `ports` entry naming a UDP port reports, on `readinessCheck -> ports[k]`, `port '<name>' has
   protocol UDP and cannot be probed by a TCP_CONNECT readiness check; only TCP ports may be
   named.` A Service none of whose ports is TCP whose effective check is `TCP_CONNECT` reports,

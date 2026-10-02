@@ -114,11 +114,6 @@ pub(super) fn origin_suffix(document: &Document) -> String {
     }
 }
 
-/// `Service 'X'` / `Service 'X' (from <doc>)` for `service`.
-pub(super) fn service_label(service: &Service) -> String {
-    ServiceKey::of(service).to_string()
-}
-
 /// A Service that became FAILED: its scope fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServiceFailure {
@@ -966,8 +961,8 @@ async fn end_instance(inst: &mut Instance) {
 
 /// The Session configuration of `service`'s Service Session. Its profile is
 /// that of the Service's own document: an external Service's actions,
-/// `variables`, `let` bindings, embedded files and `serviceEnvironments`
-/// are evaluated under its Environment Template's extensions, a Job
+/// `variables`, `let` bindings and embedded files are evaluated under its
+/// Environment Template's extensions, a Job
 /// Template Service's under the Job Template's. Its `log_tag` — `Service
 /// <name>`, plus `(from <document>)` for an external Service — prefixes
 /// every line the Session logs (`[Service Files] …`), so a Service's output

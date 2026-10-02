@@ -376,9 +376,7 @@ impl std::fmt::Display for Document {
 /// `maxAttempts`, with the §9 defaults applied where the template gave
 /// none), and `hostRequirements`. `variables` and `script` are
 /// `@fmtstring[host]` and remain `FormatString`s for the Service Session to
-/// resolve, exactly like an [`Environment`]'s. The Service's own
-/// [`service_environments`](Self::service_environments) are converted like
-/// `stepEnvironments`, each with its own `resolved_symtab`.
+/// resolve, exactly like an [`Environment`]'s.
 ///
 /// Two Services of a combined Job are the same Service iff their
 /// [`document`](Self::document) and `name` agree: names are unique within
@@ -398,17 +396,6 @@ pub struct Service {
     pub document: Document,
     /// Resolved host requirements the service host must satisfy.
     pub host_requirements: Option<HostRequirements>,
-    /// The Environments entered only in this Service's Session (RFC 0009
-    /// `serviceEnvironments`, Template Schemas §9 item 5), in order. A
-    /// Service Session enters them after the Environments of the Service's
-    /// scope whose `runScope` includes `SERVICE` and before `onEnter`, and
-    /// exits them in reverse after `onExit`. Their `run_scope` is always
-    /// `None` (validation rejects `runScope` here); the effective scope is
-    /// `[SERVICE]`. Their format strings resolve with the declaring Service's
-    /// own `Service.*` scope, `bindAddress` included. `None` when the
-    /// template declares none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_environments: Option<Vec<Environment>>,
     /// The declared ports, in declaration order.
     pub ports: Vec<ServicePort>,
     /// The effective readiness check, with the §9.3 defaults applied.
@@ -437,7 +424,6 @@ impl Hash for Service {
         self.description.hash(state);
         self.document.hash(state);
         self.host_requirements.hash(state);
-        self.service_environments.hash(state);
         self.ports.hash(state);
         self.readiness_check.hash(state);
         self.restart_policy.hash(state);
@@ -489,7 +475,7 @@ pub enum ServiceReadinessCheck {
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         /// The names of the TCP ports to probe — every declared TCP port
-        /// when the template named none (§9 item 7, §9.3 item 2).
+        /// when the template named none (§9 item 6, §9.3 item 2).
         ports: Vec<String>,
         timeout_seconds: u64,
     },
