@@ -30,8 +30,9 @@
 //!    within a Service.* (§9 item 3.)
 //! 2. The site is a job-creation-time field (`hostRequirements`, a `let`
 //!    list, a `parameterSpace` range, an action `timeout` /
-//!    `notifyPeriodInSeconds`, a Service's `port` / `timeoutSeconds` /
-//!    `intervalSeconds` / `maxAttempts`): *Service.\* is not available in
+//!    `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the
+//!    four `<ServiceHealthCheck>` numeric fields): *Service.\* is not
+//!    available in
 //!    `<field>`: it is resolved at job creation, before any Service has an
 //!    endpoint.* (§3.6.2, §9.7 item 1.)
 //! 3. The site is an Environment whose `runScope` includes `SERVICE` (the
@@ -252,8 +253,10 @@ fn job_creation_field(path: &[PathElement]) -> Option<&'static str> {
         Some("timeout") => Some("timeout"),
         Some("notifyPeriodInSeconds") => Some("notifyPeriodInSeconds"),
         Some("port") if fields.contains(&"ports") => Some("port"),
-        Some("timeoutSeconds") => Some("timeoutSeconds"),
-        Some("intervalSeconds") => Some("intervalSeconds"),
+        Some("readinessIntervalSeconds") => Some("readinessIntervalSeconds"),
+        Some("readyTimeoutSeconds") => Some("readyTimeoutSeconds"),
+        Some("healthIntervalSeconds") => Some("healthIntervalSeconds"),
+        Some("failureThreshold") => Some("failureThreshold"),
         Some("maxAttempts") => Some("maxAttempts"),
         _ => None,
     }

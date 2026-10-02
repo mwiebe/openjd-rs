@@ -63,7 +63,8 @@ The structural template types — `template::JobTemplate`,
 `template::EnvironmentActions`, `template::WrapHookScope`, `template::Action`,
 `template::EmbeddedFile`, `template::StepScript`,
 `template::Service`, `template::ServicePort`, `template::ServicePortProtocol`,
-`template::ServiceReadinessCheck`, `template::ServiceRestartPolicy`,
+`template::ServiceHealthCheck`, `template::SERVICE_HEALTH_CHECK_NUMERIC_FIELDS`,
+`template::ServiceRestartPolicy`,
 `template::CompletedTasksPolicy`, `template::ServiceScript`,
 `template::ServiceActions`,
 `template::StepActions`, `template::CancelationMode`,
@@ -415,16 +416,16 @@ pub struct template::EnvironmentActions {
     /// RFC 0009 — require both `WRAP_ACTIONS` and `SERVICE`.
     pub on_wrap_service_enter: Option<template::Action>,
     pub on_wrap_service_run: Option<template::Action>,
-    pub on_wrap_service_readiness_check: Option<template::Action>,
+    pub on_wrap_service_health_check: Option<template::Action>,
     pub on_wrap_service_exit: Option<template::Action>,
     pub on_exit: Option<template::Action>,
 }
 
 impl template::EnvironmentActions {
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
     /// onExit/onWrapEnvExit/onWrapServiceExit → Some(300);
-    /// onWrapServiceReadinessCheck → Some(30); anything else → None.
+    /// onWrapServiceHealthCheck → Some(30); anything else → None.
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
     /// The four RFC 0009 hooks, in lifecycle order.
     pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<template::Action>); 4];
@@ -466,7 +467,7 @@ pub struct template::Service {
     pub let_bindings: Option<Vec<String>>,
     pub host_requirements: Option<template::HostRequirements>,
     pub ports: Vec<template::ServicePort>,
-    pub readiness_check: Option<template::ServiceReadinessCheck>,
+    pub health_check: Option<template::ServiceHealthCheck>,
     pub restart_policy: Option<template::ServiceRestartPolicy>,
     pub variables: Option<HashMap<String, FormatString>>,
     pub script: template::ServiceScript,
@@ -474,7 +475,7 @@ pub struct template::Service {
 
 impl template::Service {
     /// Declared, or the §9 default `{ type: TCP_CONNECT }` on every TCP port.
-    pub fn readiness_check(&self) -> ServiceReadinessCheck;
+    pub fn health_check(&self) -> ServiceHealthCheck;
     /// Declared, or the §9 default `{ maxAttempts: 0, completedTasks: RERUN }`.
     pub fn restart_policy(&self) -> ServiceRestartPolicy;
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
@@ -505,20 +506,47 @@ impl template::ServicePortProtocol {
 }
 impl Display for template::ServicePortProtocol;  // as_str()
 
-/// Discriminated on `type`; the numeric fields are `@fmtstring`.
-pub enum template::ServiceReadinessCheck {
-    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },
-    Command { interval_seconds: Option<FormatString>, timeout_seconds: Option<FormatString> },
-    Stdout { timeout_seconds: Option<FormatString> },
+/// Discriminated on `type`; the numeric fields are `@fmtstring`. STDOUT has
+/// no `readiness_interval_seconds` (rejected as an unknown field).
+pub enum template::ServiceHealthCheck {
+    TcpConnect {
+        ports: Option<Vec<String>>,
+        readiness_interval_seconds: Option<FormatString>,
+        ready_timeout_seconds: Option<FormatString>,
+        health_interval_seconds: Option<FormatString>,
+        failure_threshold: Option<FormatString>,
+    },
+    Command {
+        readiness_interval_seconds: Option<FormatString>,
+        ready_timeout_seconds: Option<FormatString>,
+        health_interval_seconds: Option<FormatString>,
+        failure_threshold: Option<FormatString>,
+    },
+    Stdout {
+        ready_timeout_seconds: Option<FormatString>,
+        health_interval_seconds: Option<FormatString>,
+        failure_threshold: Option<FormatString>,
+    },
 }
 
-impl template::ServiceReadinessCheck {
-    pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    pub const DEFAULT_COMMAND_INTERVAL_SECONDS: u64 = 5;
+/// `["readinessIntervalSeconds", "readyTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"]`
+pub const template::SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4];
+
+impl template::ServiceHealthCheck {
+    pub const DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64 = 1;
+    pub const DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64 = 5;
+    pub const DEFAULT_READY_TIMEOUT_SECONDS: u64 = 300;
+    pub const DEFAULT_HEALTH_INTERVAL_SECONDS: u64 = 30;
+    pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
     pub fn type_name(&self) -> &'static str;
-    pub fn timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn readiness_interval_seconds(&self) -> Option<&FormatString>;  // None for STDOUT
+    pub fn ready_timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn health_interval_seconds(&self) -> Option<&FormatString>;
+    pub fn failure_threshold(&self) -> Option<&FormatString>;
+    /// The four fields, named, in SERVICE_HEALTH_CHECK_NUMERIC_FIELDS order.
+    pub fn numeric_fields(&self) -> [(&'static str, Option<&FormatString>); 4];
 }
-impl Default for template::ServiceReadinessCheck;  // TcpConnect { None, None }
+impl Default for template::ServiceHealthCheck;  // TcpConnect with every field None
 
 #[derive(Default)]
 pub struct template::ServiceRestartPolicy {
@@ -552,14 +580,14 @@ pub struct template::ServiceScript {
 pub struct template::ServiceActions {
     pub on_enter: Option<template::Action>,
     pub on_run: template::Action,
-    pub on_readiness_check: Option<template::Action>,
+    pub on_health_check: Option<template::Action>,
     pub on_exit: Option<template::Action>,
 }
 
 impl template::ServiceActions {
-    pub const ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    /// onEnter/onRun → None; onReadinessCheck → Some(30); onExit → Some(300).
+    /// onEnter/onRun → None; onHealthCheck → Some(30); onExit → Some(300).
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
     pub fn named_slots(&self) -> [(&'static str, Option<&template::Action>); 4];
     pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &template::Action)>;
@@ -895,11 +923,11 @@ pub struct job::EnvironmentActions {
     /// the `WRAP_ACTIONS` extension at template-validation time.
     pub on_wrap_env_exit: Option<Action>,
     /// RFC 0009 — in a Service Session, wrap the Service's `onEnter`,
-    /// `onRun`, `onReadinessCheck`, and `onExit`. Require `WRAP_ACTIONS` and
+    /// `onRun`, `onHealthCheck`, and `onExit`. Require `WRAP_ACTIONS` and
     /// `SERVICE` at template-validation time. Omitted from JSON when `None`.
     pub on_wrap_service_enter: Option<Action>,
     pub on_wrap_service_run: Option<Action>,
-    pub on_wrap_service_readiness_check: Option<Action>,
+    pub on_wrap_service_health_check: Option<Action>,
     pub on_wrap_service_exit: Option<Action>,
     pub on_exit: Option<Action>,
 }
@@ -1003,7 +1031,7 @@ pub struct job::Service {
     pub document: Document,
     pub host_requirements: Option<HostRequirements>,
     pub ports: Vec<ServicePort>,
-    pub readiness_check: ServiceReadinessCheck,
+    pub health_check: ServiceHealthCheck,
     pub restart_policy: ServiceRestartPolicy,
     pub variables: Option<HashMap<String, FormatString>>,
     pub script: ServiceScript,
@@ -1048,18 +1076,39 @@ pub struct job::ServicePort {
 }
 
 #[serde(tag = "type")]
-pub enum job::ServiceReadinessCheck {
+pub enum job::ServiceHealthCheck {
     #[serde(rename = "TCP_CONNECT")]
-    TcpConnect { ports: Vec<String>, timeout_seconds: u64 },
+    TcpConnect {
+        ports: Vec<String>,
+        readiness_interval_seconds: u64,
+        ready_timeout_seconds: u64,
+        health_interval_seconds: u64,
+        failure_threshold: u64,
+    },
     #[serde(rename = "COMMAND")]
-    Command { interval_seconds: u64, timeout_seconds: u64 },
+    Command {
+        readiness_interval_seconds: u64,
+        ready_timeout_seconds: u64,
+        health_interval_seconds: u64,
+        failure_threshold: u64,
+    },
     #[serde(rename = "STDOUT")]
-    Stdout { timeout_seconds: u64 },
+    Stdout {
+        ready_timeout_seconds: u64,
+        /// `None` = no heartbeat expected (omitted from JSON).
+        health_interval_seconds: Option<u64>,
+        failure_threshold: u64,
+    },
 }
 
-impl job::ServiceReadinessCheck {
+impl job::ServiceHealthCheck {
     pub fn type_name(&self) -> &'static str;
-    pub fn timeout_seconds(&self) -> u64;
+    pub fn readiness_interval_seconds(&self) -> Option<u64>;  // None for STDOUT
+    pub fn ready_timeout_seconds(&self) -> u64;
+    pub fn health_interval_seconds(&self) -> Option<u64>;
+    pub fn failure_threshold(&self) -> u64;
+    /// `health_interval_seconds().is_some()`
+    pub fn monitors_health(&self) -> bool;
 }
 
 pub struct job::ServiceRestartPolicy {
@@ -1076,7 +1125,7 @@ pub struct job::ServiceScript {
 pub struct job::ServiceActions {
     pub on_enter: Option<Action>,
     pub on_run: Action,
-    pub on_readiness_check: Option<Action>,
+    pub on_health_check: Option<Action>,
     pub on_exit: Option<Action>,
 }
 

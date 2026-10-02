@@ -155,9 +155,9 @@ pub struct EnvironmentActions {
     /// extensions.
     pub on_wrap_service_run: Option<Action>,
     /// RFC 0009 — in a Service Session, runs instead of the wrapped
-    /// Service's `onReadinessCheck`, concurrently with `onWrapServiceRun`.
+    /// Service's `onHealthCheck`, concurrently with `onWrapServiceRun`.
     /// Requires both the `WRAP_ACTIONS` and `SERVICE` extensions.
-    pub on_wrap_service_readiness_check: Option<Action>,
+    pub on_wrap_service_health_check: Option<Action>,
     /// RFC 0009 — in a Service Session, runs instead of the wrapped
     /// Service's `onExit`. Requires both the `WRAP_ACTIONS` and `SERVICE`
     /// extensions.
@@ -169,16 +169,16 @@ impl EnvironmentActions {
     /// Template Schemas §5 default `timeout` for `onExit`, in seconds (five
     /// minutes), shared by `onWrapEnvExit` and `onWrapServiceExit`.
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    /// Default `timeout` for `onWrapServiceReadinessCheck`, in seconds: the
-    /// wrapped `<ServiceActions>.onReadinessCheck` default (RFC 0009), as
+    /// Default `timeout` for `onWrapServiceHealthCheck`, in seconds: the
+    /// wrapped `<ServiceActions>.onHealthCheck` default (RFC 0009), as
     /// `onWrapEnvExit` takes `onExit`'s.
-    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
 
     /// The default `timeout` of the named `<EnvironmentActions>` slot when
     /// the template gives none, per the Template Schemas §5 timeout table:
     /// `onExit` and `onWrapEnvExit` 300 seconds; the RFC 0009 Service hooks
     /// take the wrapped `<ServiceActions>` default — `onWrapServiceExit` 300
-    /// seconds, `onWrapServiceReadinessCheck` 30 seconds; every other slot
+    /// seconds, `onWrapServiceHealthCheck` 30 seconds; every other slot
     /// has no default (`None`). Also `None` for a name that is not an
     /// `<EnvironmentActions>` slot.
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64> {
@@ -186,8 +186,8 @@ impl EnvironmentActions {
             "onExit" | "onWrapEnvExit" | "onWrapServiceExit" => {
                 Some(Self::ON_EXIT_DEFAULT_TIMEOUT_SECONDS)
             }
-            "onWrapServiceReadinessCheck" => {
-                Some(Self::ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS)
+            "onWrapServiceHealthCheck" => {
+                Some(Self::ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS)
             }
             _ => None,
         }
@@ -202,8 +202,8 @@ impl EnvironmentActions {
             ("onWrapServiceEnter", &self.on_wrap_service_enter),
             ("onWrapServiceRun", &self.on_wrap_service_run),
             (
-                "onWrapServiceReadinessCheck",
-                &self.on_wrap_service_readiness_check,
+                "onWrapServiceHealthCheck",
+                &self.on_wrap_service_health_check,
             ),
             ("onWrapServiceExit", &self.on_wrap_service_exit),
         ]
@@ -315,7 +315,7 @@ impl_environment_actions_helpers!(
         ("onWrapEnvExit", on_wrap_env_exit),
         ("onWrapServiceEnter", on_wrap_service_enter),
         ("onWrapServiceRun", on_wrap_service_run),
-        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check),
+        ("onWrapServiceHealthCheck", on_wrap_service_health_check),
         ("onWrapServiceExit", on_wrap_service_exit),
         ("onExit", on_exit),
     ],
@@ -325,7 +325,7 @@ impl_environment_actions_helpers!(
         ("onWrapEnvExit", on_wrap_env_exit, EnvName),
         ("onWrapServiceEnter", on_wrap_service_enter, Service),
         ("onWrapServiceRun", on_wrap_service_run, Service),
-        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check, Service),
+        ("onWrapServiceHealthCheck", on_wrap_service_health_check, Service),
         ("onWrapServiceExit", on_wrap_service_exit, Service),
     ]
 );

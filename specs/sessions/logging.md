@@ -77,7 +77,7 @@ macro_rules! session_action_log {
 }
 ```
 
-A Service Session's `onReadinessCheck` runs *while* `onRun` runs, so banners
+A Service Session's `onHealthCheck` runs *while* `onRun` runs, so banners
 no longer attribute output lines to the action that produced them. RFC 0009
 "Concurrency with `onRun`" rule 3 requires every captured stdout/stderr line
 of a Service Session to be attributable to its action, and describes two
@@ -95,7 +95,7 @@ unchanged. `session_action_log!` is shorthand for `session_tagged_log!` (below)
 with no session tag.
 
 Who sets the tag: `ScriptRunnerBase::action_tag` (set by the Service Session
-to `"onReadinessCheck"`, or `"onWrapServiceReadinessCheck"` when wrapped) is
+to `"onHealthCheck"`, or `"onWrapServiceHealthCheck"` when wrapped) is
 copied into `ActionFilter::action_tag` for the action's run, and
 `subprocess::run_subprocess` / `cross_user_helper::run_via_helper` emit every
 record about the action — `Running command …`, `Command started as pid`,
@@ -141,7 +141,7 @@ set:
   `openjd_action = "<action>"`;
 - the message prefix `[<session>] [<action>] ` in that order — the session
   tag first, so a Service's concurrent check reads `[Service Files]
-  [onReadinessCheck] CHECK_OK` and its `onRun` `[Service Files] line`. The
+  [onHealthCheck] CHECK_OK` and its `onRun` `[Service Files] line`. The
   action tag's meaning (rule 3) is unchanged; the session tag is purely
   additive.
 

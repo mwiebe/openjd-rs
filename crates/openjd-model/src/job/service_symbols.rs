@@ -601,7 +601,11 @@ mod tests {
                 port: None,
                 protocol: ServicePortProtocol::Tcp,
             }],
-            readiness_check: job::ServiceReadinessCheck::Stdout { timeout_seconds: 1 },
+            health_check: job::ServiceHealthCheck::Stdout {
+                ready_timeout_seconds: 1,
+                health_interval_seconds: None,
+                failure_threshold: 3,
+            },
             restart_policy: job::ServiceRestartPolicy {
                 max_attempts: 0,
                 completed_tasks: job::CompletedTasksPolicy::Rerun,
@@ -625,7 +629,7 @@ mod tests {
                             "{{ Service.FromArg.p.port }}",
                         ],
                     ),
-                    on_readiness_check: None,
+                    on_health_check: None,
                     on_exit: None,
                 },
                 embedded_files: Some(vec![job::EmbeddedFile {

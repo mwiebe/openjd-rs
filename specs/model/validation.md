@@ -262,14 +262,14 @@ structured `ErrorDetail` summary and span summaries are updated in step. The ref
 classified from the error path (`Site`: a Step's `script`, a Service body, a Job Environment,
 a Step Environment, an Environment Template's
 `environment`, or a job-creation field — `hostRequirements`, any `let`, a `parameterSpace`
-range, `timeout` / `notifyPeriodInSeconds`, a Service's `port` / `timeoutSeconds` /
-`intervalSeconds` / `maxAttempts`); the declarations are every `jobServices` /
+range, `timeout` / `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the four
+`<ServiceHealthCheck>` numeric fields); the declarations are every `jobServices` /
 `stepServices` entry (or an Environment Template's `services`). Rules, in the order tried:
 
 | Condition | Message |
 |---|---|
 | `Task.*` at a Service site | `Task.* is not available within a Service.` |
-| job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `timeoutSeconds`, `intervalSeconds`, or `maxAttempts`) |
+| job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readyTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`) |
 | the site is an Environment with `SERVICE` in its (effective) `runScope` | `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` |
 | `<svc>` is declared later in the referencing Service's own list | `Service 'Backend' is declared later in jobServices than 'Proxy'; a Service may reference only itself and earlier Services.` (`stepServices` / `services` for the other lists) |
 | `<svc>` is a Step Service not in scope here | `Service 'Counter' is a Step Service of step 'Count' and is not in scope in step 'After'.` (`in Job Environment 'E'` / `in Service 'B'` for those sites) |
@@ -344,9 +344,9 @@ not available in `onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit`, and `Wrap
 **Numeric `@fmtstring` fields** (§9.2 note; `SERVICE_PORT_CONSTRAINT`,
 `SERVICE_SECONDS_CONSTRAINT`, `SERVICE_MAX_ATTEMPTS_CONSTRAINT`) join the resolved-value
 constraint table below with target type `int?`: `port` 1–65535 (`must be between 1 and
-65535.`), `timeoutSeconds` / `intervalSeconds` > 0 (`must be > 0.`), `maxAttempts` ≥ 0 (`must
-be >= 0.`), non-integers `must be an integer.`, a whole-field `null` accepted as "not
-provided". The messages match pass 11's checks on the literal forms and job creation's on the
+65535.`), the four `<ServiceHealthCheck>` numeric fields > 0 (`must be > 0.`), `maxAttempts` ≥
+0 (`must be >= 0.`), non-integers `must be an integer.`, a whole-field `null` accepted as "not
+provided" (for a `STDOUT` check's `healthIntervalSeconds`: no heartbeat). The messages match pass 11's checks on the literal forms and job creation's on the
 resolved values.
 
 ### Let Binding Validation
@@ -424,7 +424,7 @@ deferring it to job submission or the worker. Two stages of checking:
 | `notifyPeriodInSeconds` (Template Schemas §5.3.2, FB1) | `int?` | soft cap: 100 chars | coerced integer > 0, ≤ 600; `null` = unset |
 | cancelation `mode` (FB1 deferred, Template Schemas §5.3) | `string?` | ≤ 21 chars (longest valid value) | `TERMINATE` / `NOTIFY_THEN_TERMINATE`; `null` = cancelation unset |
 | Service `port` (SERVICE, Template Schemas §9.2) | `int?` | soft cap: 100 chars | coerced integer in 1–65535; `null` = runtime allocates |
-| Service `timeoutSeconds` / `intervalSeconds` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default |
+| Service `readinessIntervalSeconds` / `readyTimeoutSeconds` / `healthIntervalSeconds` / `failureThreshold` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default (STDOUT `healthIntervalSeconds`: no heartbeat) |
 | Service `maxAttempts` (SERVICE, §9.4) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = 0 |
 | chunks `defaultTaskCount` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int` | soft cap: 100 chars | coerced integer ≥ 1 |
 | chunks `targetRuntimeSeconds` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = unset |
@@ -553,7 +553,7 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
 - **Wrap hooks** (`onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`): Rejected on any
   environment when the extension is not declared: `<hook> requires the WRAP_ACTIONS
   extension.` on the hook's path.
-- **Service hooks** (`onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceReadinessCheck`,
+- **Service hooks** (`onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceHealthCheck`,
   `onWrapServiceExit`; RFC 0009): require both `WRAP_ACTIONS` and `SERVICE`. The message on
   the hook's path names what is missing: `<hook> requires the WRAP_ACTIONS extension.`,
   `<hook> requires the SERVICE extension.`, or `<hook> requires the WRAP_ACTIONS and SERVICE
@@ -580,7 +580,7 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
   - `a wrapping environment whose runScope includes TASK (<runScope>) must define onWrapTaskRun;
     missing: onWrapTaskRun (RFC 0009).`
   - `a wrapping environment whose runScope includes SERVICE (<runScope>) must define
-    onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit;
+    onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit;
     missing: <hooks> (RFC 0009).`
 
   Each hook the `runScope` does not call for is one error on the hook's own path: `<hook> must
@@ -654,34 +654,43 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
 - **Numeric `@fmtstring` fields**, checked on the field path when the value carries no
   expression (a format string is type-checked and, when static, range-checked by pass 8, and
   resolved and range-checked at job creation, like `<Action>.timeout`):
-  `port` `must be between 1 and 65535.`; `readinessCheck.timeoutSeconds` and
-  `readinessCheck.intervalSeconds` `must be > 0.`; `restartPolicy.maxAttempts` `must be >=
-  0.`; any of them `must be an integer.` when the text does not parse.
-- **Readiness consistency** (§9.7 item 4): `script -> actions`:
-  `onReadinessCheck must be defined when readinessCheck.type is COMMAND.`;
-  `script -> actions -> onReadinessCheck`: `onReadinessCheck must not be defined when
-  readinessCheck.type is <TCP_CONNECT|STDOUT>.` (the default readiness type is
-  `TCP_CONNECT`). A `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry
-  that is not a declared port reports `references undeclared port '<name>'.` on
-  `readinessCheck -> ports[k]`.
-- **Readiness and port protocols** (§9 item 6, §9.3 item 2, §9.7 item 4): a `TCP_CONNECT`
-  `ports` entry naming a UDP port reports, on `readinessCheck -> ports[k]`, `port '<name>' has
-  protocol UDP and cannot be probed by a TCP_CONNECT readiness check; only TCP ports may be
+  `port` `must be between 1 and 65535.`; each of `healthCheck.readinessIntervalSeconds`,
+  `healthCheck.readyTimeoutSeconds`, `healthCheck.healthIntervalSeconds`, and
+  `healthCheck.failureThreshold` `must be > 0.`; `restartPolicy.maxAttempts` `must be >= 0.`;
+  any of them `must be an integer.` when the text does not parse.
+- **Health-check consistency** (§9.3 items 3 and 6, §9.6 item 3, §9.7 item 4):
+  `script -> actions`: `onHealthCheck must be defined when healthCheck.type is COMMAND.`;
+  `script -> actions -> onHealthCheck`: `onHealthCheck must not be defined when
+  healthCheck.type is <TCP_CONNECT|STDOUT>.` (the default type is `TCP_CONNECT`). A
+  `TCP_CONNECT` `ports` list `if provided, must not be empty.` and each entry that is not a
+  declared port reports `references undeclared port '<name>'.` on `healthCheck -> ports[k]`.
+  A `STDOUT` check that gives `failureThreshold` without `healthIntervalSeconds` reports, on
+  `healthCheck -> failureThreshold`, `a STDOUT health check gives failureThreshold only
+  together with healthIntervalSeconds; without a heartbeat interval there is no probe for it to
+  count.` (a format-string `failureThreshold` counts as given). A `STDOUT` check that gives
+  `readinessIntervalSeconds` is rejected at decode as an unknown field, since the `STDOUT` form
+  has no such property (as `ports` is on the other two forms).
+- **Health check and port protocols** (§9 item 6, §9.3 item 2, §9.7 item 4): a `TCP_CONNECT`
+  `ports` entry naming a UDP port reports, on `healthCheck -> ports[k]`, `port '<name>' has
+  protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be
   named.` A Service none of whose ports is TCP whose effective check is `TCP_CONNECT` reports,
-  on `readinessCheck`, `the default TCP_CONNECT readiness check has no TCP port to probe: none
-  of the Service's ports has protocol TCP, so a readinessCheck of type STDOUT or COMMAND is
-  required.` when `readinessCheck` is omitted, or `a TCP_CONNECT readiness check has no TCP
-  port to probe: …` (same tail) when one of type `TCP_CONNECT` is given. (Not reported when
-  `ports` is empty, which is already an error.) A Service with at least one TCP port may omit
-  the check whatever else it declares: the default probes its TCP ports only.
+  on `healthCheck`, `the default TCP_CONNECT health check has no TCP port to probe: none of
+  the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is
+  required.` when `healthCheck` is omitted, or `a TCP_CONNECT health check has no TCP port to
+  probe: …` (same tail) when one of type `TCP_CONNECT` is given. (Not reported when `ports` is
+  empty, which is already an error.) A Service with at least one TCP port may omit the check
+  whatever else it declares: the default probes its TCP ports only.
 - **Reused validators:** `description` (`validate_description`), `variables`
   (`validate_variables`, shared with `<Environment>`), `hostRequirements`
   (`validate_host_requirements_in_context`, shared with `<StepTemplate>`), every defined
   action (`validate_action`), and `script.embeddedFiles` (`must not be empty.` plus
   `validate_embedded_files` and the identifier/filename length limits).
 
-The discriminator of `readinessCheck` and the `completedTasks` enum are enforced by serde
-(`unknown variant`), as is the presence of `ports`, `script`, and `onRun`.
+The discriminator of `healthCheck` and the `completedTasks` enum are enforced by serde
+(`unknown variant`), as is the presence of `ports`, `script`, and `onRun`. The pre-revision
+spellings — `readinessCheck`, `onReadinessCheck`, `timeoutSeconds`, `intervalSeconds` — are
+unknown fields (conformance fixtures `9.3--health-old-readiness-check-key.invalid` and
+`9.3--health-old-timeout-seconds-key.invalid`).
 
 Not in this pass: `Service.*` scope rules (§9.7 items 1–2; pass 8, "Service scopes"), the
 wrap hooks an Environment's `runScope` calls for (item 6; pass 10), `let` bindings and format
@@ -720,7 +729,7 @@ the attachment):
   so it has the default runScope (every kind of Session) and cannot define the
   onWrapService* hooks; but the combined Job places <Service> in its scope, and the Service
   would run in a Session the Environment enters but cannot wrap. Declare SERVICE in <doc>
-  and either define onWrapServiceEnter, onWrapServiceRun, onWrapServiceReadinessCheck, and
+  and either define onWrapServiceEnter, onWrapServiceRun, onWrapServiceHealthCheck, and
   onWrapServiceExit, or declare a runScope that excludes SERVICE (RFC 0009, Template Schemas
   §1.2.2 item 3).` A document that declares `SERVICE` is governed by pass 10's
   hooks-follow-`runScope` rule instead and is never reported here.

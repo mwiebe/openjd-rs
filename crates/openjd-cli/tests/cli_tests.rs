@@ -3701,7 +3701,7 @@ mod services {
             .unwrap_or_else(|| panic!("missing {needle:?} in output:\n{haystack}"))
     }
 
-    /// RFC 0009 example 1: a Job Service with TCP_CONNECT readiness is READY
+    /// RFC 0009 example 1: a Job Service with a TCP_CONNECT health check is READY
     /// before the first Task, is reached by Tasks of two Steps through
     /// `Service.Store.main.connectAddress` / `.port`, and is stopped after
     /// the last Step (constraints 1, 3, 6).
@@ -3768,12 +3768,12 @@ mod services {
     }
 
     /// RFC 0009 "A metrics sink with a UDP ingest port": a Job Service with
-    /// a UDP port and a TCP port and no `readinessCheck` becomes READY
+    /// a UDP port and a TCP port and no `healthCheck` becomes READY
     /// through the default TCP_CONNECT, which probes the TCP port only
     /// (§9 item 6, §9.3 item 2). The endpoints line suffixes only the UDP
     /// port; the Task reaches both ports.
     #[test]
-    fn test_job_service_mixed_tcp_udp_default_readiness_probes_tcp_only() {
+    fn test_job_service_mixed_tcp_udp_default_health_check_probes_tcp_only() {
         let (code, stdout, stderr) = run_service_template("service_job_tcp_udp.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         let line = stdout
@@ -3803,7 +3803,7 @@ mod services {
         assert!(stdout.contains("Chunks run: 1"), "{stdout}");
     }
 
-    /// RFC 0009 example 2: a Step Service with STDOUT readiness starts
+    /// RFC 0009 example 2: a Step Service with a STDOUT health check starts
     /// (onEnter, onRun) before the Step's first Task and stops (onExit) once
     /// the Step's three Tasks are done, before the next Step runs
     /// (constraints 3, 6, 7).
@@ -3839,19 +3839,25 @@ mod services {
         assert!(stdout.contains("Chunks run: 4"), "{stdout}");
     }
 
-    /// COMMAND readiness: `onReadinessCheck` runs concurrently with `onRun`
-    /// (tagged `[onReadinessCheck]`), is "not ready" while the connection is
+    /// COMMAND health check, phase 1: `onHealthCheck` runs concurrently with
+    /// `onRun` (tagged `[onHealthCheck]`), fails while the connection is
     /// refused, and makes the Service READY when it exits 0.
     #[test]
-    fn test_command_readiness_check() {
-        let (code, stdout, stderr) = run_service_template("service_command_readiness.yaml", &[]);
+    fn test_command_health_check() {
+        let (code, stdout, stderr) = run_service_template("service_command_health_check.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-        assert!(stdout.contains("readiness check: COMMAND"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "health check: COMMAND (readyTimeoutSeconds 60, readinessIntervalSeconds 1, \
+                 healthIntervalSeconds 30, failureThreshold 3)"
+            ),
+            "{stdout}"
+        );
         // Every line of the Service Session carries the Service tag; the
         // concurrent check's lines carry its action tag after it (RFC 0009
         // rule 3), while onRun's carry the Service tag alone.
         assert!(
-            stdout.contains("[Service Slow] [onReadinessCheck] CHECK_OK"),
+            stdout.contains("[Service Slow] [onHealthCheck] CHECK_OK"),
             "{stdout}"
         );
         assert!(
@@ -3864,6 +3870,202 @@ mod services {
             "{stdout}"
         );
         assert!(stdout.contains("TASK_GOT hello"), "{stdout}");
+    }
+
+    /// RFC 0009 `<ServiceHealthCheck>` after READY, constraint 11, "Failure
+    /// and restart": a COMMAND probe fails `failureThreshold` times after
+    /// Task 1 makes the service sick; the instance is UNHEALTHY, `onRun` is
+    /// canceled, and with `maxAttempts: 1` / `KEEP` a second instance is
+    /// relaunched in the same Service Session and serves Tasks 2 and 3.
+    /// Task 1 completes against instance 1 (conformance
+    /// `service-health-command-fails-after-ready-relaunches`).
+    #[test]
+    fn test_health_command_fails_after_ready_relaunches() {
+        let dir = TempDir::new().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_command_fails.yaml",
+            &["-p", &format!("MarkerDir={}", dir.path().display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unhealthy = "Service 'Store' (Job scope) is UNHEALTHY: 2 consecutive health probes \
+                         failed (failureThreshold: 2); last probe: onHealthCheck exit code: 1";
+        assert!(stdout.contains(unhealthy), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (Job scope) is UNREADY: instance UNHEALTHY: 2 consecutive \
+                 health probes failed (failureThreshold: 2); last probe: onHealthCheck exit \
+                 code: 1 (completedTasks: KEEP)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Store' onRun in its Service Session (relaunch 1 of 1): \
+                 instance UNHEALTHY"
+            ),
+            "{stdout}"
+        );
+        // The Session's own lines: the probe failures and the forced cancel.
+        assert!(
+            stdout.contains("[Service Store] [onHealthCheck] CHECK_UNHEALTHY"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        for needle in [
+            "INSTANCE 1 LISTENING",
+            "TASK 1 GOT INSTANCE 1",
+            "TASK 1 INSTANCE 1 DONE",
+            "INSTANCE 2 LISTENING",
+            "TASK 2 INSTANCE 2 DONE",
+            "TASK 3 INSTANCE 2 DONE",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT INSTANCE 1"), "{stdout}");
+        assert!(
+            pos(&stdout, unhealthy) < pos(&stdout, "INSTANCE 2 LISTENING"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// RFC 0009 `<ServiceHealthCheck>` item 6: two failures below a
+    /// `failureThreshold` of 3, then a success, leave the instance READY;
+    /// nothing is relaunched and every Task is served by instance 1
+    /// (conformance `service-health-threshold-tolerates-blips`).
+    #[test]
+    fn test_health_threshold_tolerates_blips() {
+        let dir = TempDir::new().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_threshold_blips.yaml",
+            &["-p", &format!("MarkerDir={}", dir.path().display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for needle in [
+            "[Service Store] [onHealthCheck] CHECK_BLIP 1",
+            "[Service Store] [onHealthCheck] CHECK_BLIP 2",
+            "[Service Store] [onHealthCheck] CHECK_OK 3",
+            "TASK 1 INSTANCE 1 DONE",
+            "TASK 2 INSTANCE 1 DONE",
+            "TASK 3 INSTANCE 1 DONE",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("INSTANCE 2"), "{stdout}");
+        assert!(!stdout.contains("UNHEALTHY"), "{stdout}");
+        assert!(!stdout.contains("Relaunching"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
+    }
+
+    /// TCP_CONNECT after READY: the service closes its listener and hangs.
+    /// Two refused connections make the instance UNHEALTHY; `onRun` is
+    /// canceled; with `maxAttempts` 0 the Service is FAILED and the Job
+    /// fails before Task 2; `onExit` still runs (conformance
+    /// `service-health-tcp-port-closed-while-process-hangs`).
+    #[test]
+    fn test_health_tcp_port_closed_while_process_hangs_fails_the_job() {
+        let (code, stdout, stderr) =
+            run_service_template("service_health_tcp_port_closed.yaml", &[]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for needle in [
+            "STORE_LISTENING",
+            "TASK 1 GOT hello",
+            "STORE_LISTENER_CLOSED",
+            "STORE_EXIT_RAN",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (Job scope) is UNHEALTHY: 2 consecutive health probes failed \
+                 (failureThreshold: 2); last probe: TCP connect to port 'main' (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Store' (Job scope) is FAILED: instance UNHEALTHY: 2 consecutive"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("0 of 0 relaunch(es) used (restartPolicy.maxAttempts)"),
+            "{stdout}"
+        );
+        assert!(
+            stderr.contains("ERROR: Service 'Store' (Job scope) failed: instance UNHEALTHY"),
+            "{stderr}"
+        );
+        assert!(stdout.contains("Session ended with errors."), "{stdout}");
+    }
+
+    /// STDOUT with `healthIntervalSeconds`: the heartbeat stops after Task
+    /// 1; two silent intervals make the instance UNHEALTHY and, with
+    /// `maxAttempts` 0, fail the Job (conformance
+    /// `service-health-stdout-heartbeat-missed`).
+    #[test]
+    fn test_health_stdout_heartbeat_missed_fails_the_job() {
+        let (code, stdout, stderr) =
+            run_service_template("service_health_stdout_heartbeat_missed.yaml", &[]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: STDOUT (readyTimeoutSeconds 60, healthIntervalSeconds 1, \
+                 failureThreshold 2)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Store' is READY: beat"),
+            "{stdout}"
+        );
+        for needle in [
+            "TASK 1 GOT hello",
+            "STORE_HEARTBEAT_STOPPED",
+            "STORE_EXIT_RAN",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("TASK 2 GOT"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'Store' (Job scope) is UNHEALTHY: 2 consecutive health probes failed \
+                 (failureThreshold: 2); last probe: no openjd_service_ready line within 1s"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Failed Service: Store (Job scope): instance UNHEALTHY"),
+            "{stdout}"
+        );
+    }
+
+    /// STDOUT without `healthIntervalSeconds`: no heartbeat is expected, so
+    /// a service that prints `openjd_service_ready` once and is then silent
+    /// stays READY for every Task (conformance
+    /// `service-health-stdout-no-heartbeat-configured`).
+    #[test]
+    fn test_health_stdout_no_heartbeat_configured_runs_every_task() {
+        let (code, stdout, stderr) =
+            run_service_template("service_health_stdout_no_heartbeat.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: STDOUT (readyTimeoutSeconds 60, no heartbeat after READY)"
+            ),
+            "{stdout}"
+        );
+        for needle in [
+            "STORE_READY_ONCE",
+            "TASK 1 SERVED AS 1",
+            "TASK 2 SERVED AS 2",
+            "TASK 3 SERVED AS 3",
+        ] {
+            assert!(stdout.contains(needle), "missing {needle}: {stdout}");
+        }
+        assert!(!stdout.contains("UNHEALTHY"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 3"), "{stdout}");
     }
 
     /// Constraint 2: a Service that references another's endpoint starts

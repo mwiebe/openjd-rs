@@ -50,8 +50,8 @@ pub use step::{SimpleAction, StepDependency, StepScript, StepTemplate};
 pub use environment::{EmbeddedFile, Environment, EnvironmentScript, RunScope};
 // service (SERVICE extension, RFC 0009)
 pub use service::{
-    CompletedTasksPolicy, Service, ServiceActions, ServicePort, ServicePortProtocol,
-    ServiceReadinessCheck, ServiceRestartPolicy, ServiceScript,
+    CompletedTasksPolicy, Service, ServiceActions, ServiceHealthCheck, ServicePort,
+    ServicePortProtocol, ServiceRestartPolicy, ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
 };
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;

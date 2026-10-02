@@ -310,7 +310,7 @@ fn test_env_actions_unknown_field() {
     }"#;
     check_err(
         s,
-        &["unknown field `onUnknown`, expected one of `onEnter`, `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, `onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceReadinessCheck`, `onWrapServiceExit`, `onExit`"],
+        &["unknown field `onUnknown`, expected one of `onEnter`, `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit`, `onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceHealthCheck`, `onWrapServiceExit`, `onExit`"],
     );
 }
 

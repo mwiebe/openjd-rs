@@ -515,7 +515,7 @@ fn wrapper_message(
          define the onWrapService* hooks; but the combined Job places {} in its scope, and the \
          Service would run in a Session the Environment enters but cannot wrap. Declare SERVICE \
          in {document} and either define onWrapServiceEnter, onWrapServiceRun, \
-         onWrapServiceReadinessCheck, and onWrapServiceExit, or declare a runScope that excludes \
+         onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope that excludes \
          SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).",
         docs.describe_service(in_scope),
     )

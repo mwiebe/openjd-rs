@@ -12,9 +12,9 @@ jobServices:
   - name: Broken
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 30
+      readyTimeoutSeconds: 30
     restartPolicy:
       maxAttempts: 2
       completedTasks: RERUN

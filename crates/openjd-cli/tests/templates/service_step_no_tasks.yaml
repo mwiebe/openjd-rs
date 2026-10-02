@@ -13,7 +13,7 @@ steps:
       - name: Unused
         ports:
           - name: main
-        readinessCheck:
+        healthCheck:
           type: STDOUT
         script:
           actions:

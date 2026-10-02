@@ -1,17 +1,18 @@
-# COMMAND readiness: onRun starts listening only after a delay, and the
-# Service's onReadinessCheck (run concurrently with onRun, every
-# intervalSeconds) exits 0 once a TCP connection succeeds.
+# COMMAND health check: onRun starts listening only after a delay, and the
+# Service's onHealthCheck (run concurrently with onRun, every
+# readinessIntervalSeconds until READY) exits 0 once a TCP connection
+# succeeds.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
-name: "CommandReadiness"
+name: "CommandHealthCheck"
 jobServices:
   - name: Slow
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: COMMAND
-      intervalSeconds: 1
-      timeoutSeconds: 60
+      readinessIntervalSeconds: 1
+      readyTimeoutSeconds: 60
     script:
       actions:
         onRun:
@@ -19,7 +20,7 @@ jobServices:
           args: ["{{ Service.File.Serve }}", "{{ Service.Slow.main.bindAddress }}", "{{ Service.Slow.main.port }}"]
           cancelation:
             mode: TERMINATE
-        onReadinessCheck:
+        onHealthCheck:
           command: python
           args: ["-c", "import socket,sys; socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=1).close(); print('CHECK_OK')", "{{ Service.Slow.main.connectAddress }}", "{{ Service.Slow.main.port }}"]
       embeddedFiles:

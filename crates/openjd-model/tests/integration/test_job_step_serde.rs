@@ -123,7 +123,7 @@ fn environment_script_serializes_let_key() {
             on_wrap_env_exit: None,
             on_wrap_service_enter: None,
             on_wrap_service_run: None,
-            on_wrap_service_readiness_check: None,
+            on_wrap_service_health_check: None,
             on_wrap_service_exit: None,
             on_exit: None,
         },

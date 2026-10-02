@@ -17,9 +17,9 @@ jobServices:
   - name: Back
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 2
       completedTasks: KEEP
@@ -55,7 +55,7 @@ jobServices:
   - name: Front
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: STDOUT
     restartPolicy:
       maxAttempts: 0

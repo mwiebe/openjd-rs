@@ -6,10 +6,13 @@
 //! A [`ServiceSession`] runs the actions of one `<Service>` on the service
 //! host: it enters the Environments of the Service's scope whose `runScope`
 //! includes `SERVICE`, runs the Service's `onEnter`, launches `onRun` in the
-//! background, applies the readiness check (`TCP_CONNECT`, `STDOUT`, or
-//! `COMMAND` — the latter running `onReadinessCheck` concurrently with
-//! `onRun` under the rules of RFC 0009 "Concurrency with `onRun`"), reports
-//! `onRun`'s exit, allows `onRun` to be relaunched within the same Session,
+//! background, applies the health check (`TCP_CONNECT`, `STDOUT`, or
+//! `COMMAND` — the latter running `onHealthCheck` concurrently with
+//! `onRun` under the rules of RFC 0009 "Concurrency with `onRun`") in its
+//! two phases — probing for readiness until the instance is READY, then
+//! probing for health until `failureThreshold` consecutive failures make it
+//! UNHEALTHY, an instance failure that cancels `onRun` — reports `onRun`'s
+//! exit, allows `onRun` to be relaunched within the same Session,
 //! and ends per *How Jobs Are Run* "Service lifecycle" constraint 7 (cancel
 //! the running action, run `onExit`, exit the Environments in reverse,
 //! delete the working directory). When the entered stack contains a
@@ -21,8 +24,8 @@
 //! Environment stack, cumulative environment variables, path mapping, the
 //! cross-user helper, and cleanup — and adds the Service-specific pieces: the
 //! `Service.*` symbol scope, Service `variables`, `onEnter`'s retained
-//! `openjd_env` changes, the background `onRun` driver, readiness, and the
-//! second action slot `onReadinessCheck` runs in.
+//! `openjd_env` changes, the background `onRun` driver, the health check,
+//! and the second action slot `onHealthCheck` runs in.
 //!
 //! See `specs/sessions/service-session.md`.
 
@@ -35,7 +38,7 @@ use std::time::Duration;
 use openjd_expr::function_library::FunctionLibrary;
 use openjd_model::job::service_symbols::{build_service_symbol_table, ServiceEndpoints};
 use openjd_model::job::{
-    Action, Environment, RunScope, Service, ServicePortProtocol, ServiceReadinessCheck,
+    Action, Environment, RunScope, Service, ServiceHealthCheck, ServicePortProtocol,
 };
 use openjd_model::symbol_table::SymbolTable;
 use tokio::sync::{mpsc, watch};
@@ -59,20 +62,17 @@ use crate::{session_log, session_tagged_log};
 /// table: 300 seconds, like an Environment's `onExit`).
 pub const SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-/// Default `timeout` of a Service's `onReadinessCheck` — one invocation
+/// Default `timeout` of a Service's `onHealthCheck` — one invocation
 /// (RFC 0009 `<ServiceActions>` defaults table: 30 seconds).
-pub const SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+pub const SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Default `notifyPeriodInSeconds` for every Service action (Template
 /// Schemas §5.3.2: 120 for a `<StepActions>` `onRun`, 30 otherwise).
 const SERVICE_DEFAULT_NOTIFY_PERIOD: Duration = Duration::from_secs(30);
 
-/// Interval between `TCP_CONNECT` readiness probes (RFC 0009 recommends
-/// one second).
-const TCP_PROBE_INTERVAL: Duration = Duration::from_secs(1);
-
 /// Bound on one `TCP_CONNECT` attempt so an unresponsive address cannot
-/// stall the probe loop past the readiness timeout.
+/// stall the probe loop past the ready timeout (or, after READY, past the
+/// health interval).
 const TCP_PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Configuration for a [`ServiceSession`].
@@ -153,33 +153,48 @@ impl std::fmt::Display for ServiceSessionState {
     }
 }
 
-/// Readiness of the current (or most recent) `onRun` instance.
+/// Health of the current (or most recent) `onRun` instance, as the
+/// Service's health check (RFC 0009 `<ServiceHealthCheck>`) decides it in
+/// its two phases: readiness before the first successful probe, health
+/// after.
 ///
-/// The two failure variants are the *instance failures* of RFC 0009
+/// The three failure variants are the *instance failures* of RFC 0009
 /// "Failure and restart" that this runtime can observe; the restart decision
 /// is the caller's.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServiceReadiness {
-    /// `onRun` is running and the readiness check has neither passed nor
-    /// failed.
+pub enum ServiceHealth {
+    /// `onRun` is running and no probe has succeeded yet (phase 1).
     Pending,
-    /// The instance is READY: the check passed while `onRun` was running.
-    /// For a `STDOUT` check, `message` is the text of the
+    /// The instance is READY: a probe passed while `onRun` was running, and
+    /// fewer than `failureThreshold` consecutive probes have failed since
+    /// (phase 2). For a `STDOUT` check, `message` is the text of the first
     /// `openjd_service_ready` line.
     Ready {
         /// The informational `openjd_service_ready` message, if any.
         message: Option<String>,
+        /// Consecutive failed health probes since the last success — below
+        /// `failureThreshold`, else the instance is [`Unhealthy`](Self::Unhealthy).
+        /// Always 0 for a `STDOUT` check without `healthIntervalSeconds`.
+        failed_probes: u64,
     },
-    /// `timeoutSeconds` elapsed (measured from launch) before the check
+    /// `readyTimeoutSeconds` elapsed (measured from launch) before a probe
     /// passed. `onRun` may still be running; the caller cancels it with
     /// [`ServiceSession::cancel_run`] before relaunching or ending.
     TimedOut,
-    /// `onRun` exited before the check passed.
+    /// `onRun` exited before a probe passed.
     ExitedBeforeReady,
+    /// `failureThreshold` consecutive health probes failed after READY. The
+    /// runtime has canceled `onRun` with its cancelation method; the caller
+    /// awaits the exit ([`ServiceSession::wait_exit`], whose
+    /// [`ServiceRunExit::unhealthy`] carries the same detail) and takes the
+    /// restart decision.
+    Unhealthy(ServiceUnhealthy),
 }
 
-impl ServiceReadiness {
-    /// `true` once the readiness check has reached a terminal outcome.
+impl ServiceHealth {
+    /// `true` once the readiness phase has reached a decision: anything but
+    /// [`Pending`](Self::Pending). [`ServiceSession::wait_ready`] returns on
+    /// the first such value.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         !matches!(self, Self::Pending)
@@ -192,20 +207,65 @@ impl ServiceReadiness {
     }
 }
 
+/// Why an instance became UNHEALTHY (RFC 0009 `<ServiceHealthCheck>` item
+/// 6): `failureThreshold` consecutive health probes failed after READY.
+///
+/// ```
+/// use openjd_sessions::ServiceUnhealthy;
+///
+/// let u = ServiceUnhealthy {
+///     failed_probes: 2,
+///     failure_threshold: 2,
+///     last_failure: "onHealthCheck exit code: 1".into(),
+/// };
+/// assert_eq!(
+///     u.to_string(),
+///     "2 consecutive health probes failed (failureThreshold: 2); last probe: onHealthCheck exit code: 1"
+/// );
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUnhealthy {
+    /// The consecutive failures observed — equal to `failure_threshold`.
+    pub failed_probes: u64,
+    /// The Service's effective `failureThreshold`.
+    pub failure_threshold: u64,
+    /// What the last failed probe reported (a refused connection, the
+    /// `onHealthCheck` exit code or timeout, a missed heartbeat).
+    pub last_failure: String,
+}
+
+impl std::fmt::Display for ServiceUnhealthy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} consecutive health probes failed (failureThreshold: {}); last probe: {}",
+            self.failed_probes, self.failure_threshold, self.last_failure
+        )
+    }
+}
+
 /// How an `onRun` instance ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceRunExit {
     /// `Success` (exit 0), `Failed` (non-zero exit, `openjd_fail`, or the
     /// process could not be started), `Canceled` (canceled through this
-    /// runtime), or `Timeout` (the action's own `timeout` expired — an
-    /// instance failure per Template Schemas §5 note 3).
+    /// runtime — by the caller, or by the health check on UNHEALTHY), or
+    /// `Timeout` (the action's own `timeout` expired — an instance failure
+    /// per Template Schemas §5 note 3).
     pub state: ActionState,
     /// The process exit code, when the process ran and reported one.
     pub exit_code: Option<i32>,
     /// `true` when the exit was requested through [`ServiceSession::cancel_run`],
     /// [`ServiceSession::end`], or the cancel handle — i.e. not an instance
-    /// failure under RFC 0009 "Failure and restart".
+    /// failure under RFC 0009 "Failure and restart". `false` for an exit the
+    /// health check forced on UNHEALTHY (see [`unhealthy`](Self::unhealthy)),
+    /// which is one.
     pub canceled: bool,
+    /// `Some` when the health check canceled `onRun` because the instance
+    /// became UNHEALTHY (RFC 0009 lifecycle constraint 11, "Failure and
+    /// restart"). Set even when the caller's own cancelation raced it, in
+    /// which case `canceled` is also `true` and the exit is not a failure.
+    pub unhealthy: Option<ServiceUnhealthy>,
     /// The `openjd_fail` message, or the reason the action could not run.
     pub fail_message: Option<String>,
     /// `onRun`'s captured output, when `SessionConfig::debug_collect_stdout`
@@ -213,41 +273,78 @@ pub struct ServiceRunExit {
     pub stdout: String,
 }
 
-/// The readiness check to apply to a launched instance, with the
+/// The health check to apply to a launched instance, with the
 /// `TCP_CONNECT` targets resolved against the endpoint assignment.
 #[derive(Debug, Clone)]
-enum ReadinessPlan {
+struct HealthPlan {
+    probe: ProbePlan,
+    /// `readyTimeoutSeconds`, measured from launch.
+    ready_timeout: Duration,
+    /// `healthIntervalSeconds`: the pause between the end of one probe and
+    /// the start of the next after READY. `None` for a `STDOUT` check
+    /// without a heartbeat: the instance is not monitored after READY.
+    health_interval: Option<Duration>,
+    /// `failureThreshold`.
+    failure_threshold: u64,
+}
+
+/// The probe mechanism of a [`HealthPlan`].
+#[derive(Debug, Clone)]
+enum ProbePlan {
     TcpConnect {
         /// `(port name, address to connect to, port)` for each probed port.
         targets: Vec<(String, String, u16)>,
-        timeout: Duration,
+        /// `readinessIntervalSeconds`.
+        readiness_interval: Duration,
     },
-    Stdout {
-        timeout: Duration,
-    },
+    Stdout,
     Command {
-        /// `intervalSeconds`: the pause between the end of one
-        /// `onReadinessCheck` invocation and the start of the next.
-        interval: Duration,
-        timeout: Duration,
+        /// `readinessIntervalSeconds`: the pause between the end of one
+        /// `onHealthCheck` invocation and the start of the next before READY.
+        readiness_interval: Duration,
     },
 }
 
-impl ReadinessPlan {
-    fn timeout(&self) -> Duration {
-        match self {
-            Self::TcpConnect { timeout, .. }
-            | Self::Stdout { timeout }
-            | Self::Command { timeout, .. } => *timeout,
+impl HealthPlan {
+    fn type_name(&self) -> &'static str {
+        match self.probe {
+            ProbePlan::TcpConnect { .. } => "TCP_CONNECT",
+            ProbePlan::Stdout => "STDOUT",
+            ProbePlan::Command { .. } => "COMMAND",
         }
     }
 
-    fn type_name(&self) -> &'static str {
-        match self {
-            Self::TcpConnect { .. } => "TCP_CONNECT",
-            Self::Stdout { .. } => "STDOUT",
-            Self::Command { .. } => "COMMAND",
+    /// The pause between probes before READY; `None` for `STDOUT`, whose
+    /// ready line arrives when it arrives.
+    fn readiness_interval(&self) -> Option<Duration> {
+        match self.probe {
+            ProbePlan::TcpConnect {
+                readiness_interval, ..
+            }
+            | ProbePlan::Command { readiness_interval } => Some(readiness_interval),
+            ProbePlan::Stdout => None,
         }
+    }
+
+    /// One line describing the plan for the launch log.
+    fn describe(&self) -> String {
+        let mut s = format!(
+            "Health check: {} (readyTimeoutSeconds {}",
+            self.type_name(),
+            self.ready_timeout.as_secs()
+        );
+        if let Some(i) = self.readiness_interval() {
+            s.push_str(&format!(", readinessIntervalSeconds {}", i.as_secs()));
+        }
+        match self.health_interval {
+            Some(i) => s.push_str(&format!(
+                ", healthIntervalSeconds {}, failureThreshold {})",
+                i.as_secs(),
+                self.failure_threshold
+            )),
+            None => s.push_str(", no heartbeat after READY)"),
+        }
+        s
     }
 }
 
@@ -256,7 +353,7 @@ impl ReadinessPlan {
 enum ServiceActionKind {
     Enter,
     Run,
-    ReadinessCheck,
+    HealthCheck,
     Exit,
 }
 
@@ -266,7 +363,7 @@ impl ServiceActionKind {
         match self {
             Self::Enter => "onEnter",
             Self::Run => "onRun",
-            Self::ReadinessCheck => "onReadinessCheck",
+            Self::HealthCheck => "onHealthCheck",
             Self::Exit => "onExit",
         }
     }
@@ -277,7 +374,7 @@ impl ServiceActionKind {
         match self {
             Self::Enter => "onWrapServiceEnter",
             Self::Run => "onWrapServiceRun",
-            Self::ReadinessCheck => "onWrapServiceReadinessCheck",
+            Self::HealthCheck => "onWrapServiceHealthCheck",
             Self::Exit => "onWrapServiceExit",
         }
     }
@@ -292,7 +389,7 @@ impl ServiceActionKind {
 struct ResolvedAction {
     /// The name of the action that actually runs: the `<ServiceActions>`
     /// name, or the hook's name when wrapped. Used in log lines and as the
-    /// log attribution tag of `onReadinessCheck`.
+    /// log attribution tag of `onHealthCheck`.
     name: &'static str,
     action: Action,
     symtab: Box<SymbolTable>,
@@ -315,24 +412,28 @@ struct RunDriverInputs {
     symtab: Box<SymbolTable>,
     library: Arc<FunctionLibrary>,
     env_vars: HashMap<String, Option<String>>,
-    plan: ReadinessPlan,
+    plan: HealthPlan,
     status: Arc<Mutex<ActionStatusFields>>,
     callback: Option<SharedCallback>,
-    readiness_tx: watch::Sender<ServiceReadiness>,
+    health_tx: watch::Sender<ServiceHealth>,
     exit_tx: watch::Sender<Option<ServiceRunExit>>,
     message_tx: mpsc::UnboundedSender<ActionMessage>,
     message_rx: mpsc::UnboundedReceiver<ActionMessage>,
     cancel_requested: Arc<AtomicBool>,
-    /// The `onReadinessCheck` driver's inputs, for a `COMMAND` readiness
-    /// check. The `onRun` driver spawns it, decides READY from its reports,
-    /// and stops it (`check_stop`) on READY, on the readiness timeout, and
-    /// when `onRun` exits.
+    /// Cancels `onRun` with its own cancelation method when the instance
+    /// becomes UNHEALTHY (lifecycle constraint 11).
+    cancel_handle: SessionCancelHandle,
+    /// The `onHealthCheck` driver's inputs, for a `COMMAND` health check.
+    /// The `onRun` driver spawns it, requests one invocation per probe,
+    /// decides READY and UNHEALTHY from the results, and stops it
+    /// (`check_stop`) when probing ends: on the ready timeout, on
+    /// UNHEALTHY, and when `onRun` exits.
     check: Option<CheckDriverInputs>,
     check_stop: CancellationToken,
 }
 
-/// Everything the `onReadinessCheck` driver owns — the second action slot
-/// of a Service Session (RFC 0009 "Concurrency with `onRun`").
+/// Everything the `onHealthCheck` driver owns — the second action slot of a
+/// Service Session (RFC 0009 "Concurrency with `onRun`").
 struct CheckDriverInputs {
     session_id: String,
     service_name: String,
@@ -343,14 +444,12 @@ struct CheckDriverInputs {
     /// cross-user) and `action_tag` set to `action_name`, so every log
     /// record of the check is attributed to it (rule 3).
     runner: ScriptRunnerBase,
-    /// `onReadinessCheck`, or `onWrapServiceReadinessCheck` when wrapped.
+    /// `onHealthCheck`, or `onWrapServiceHealthCheck` when wrapped.
     action_name: &'static str,
     action: Action,
     symtab: Box<SymbolTable>,
     library: Arc<FunctionLibrary>,
     env_vars: HashMap<String, Option<String>>,
-    /// `intervalSeconds`.
-    interval: Duration,
     /// The check's own cancel slot: the invocation in flight is canceled
     /// through it with the action's own cancelation method.
     slot: ActionCancelSlot,
@@ -362,12 +461,26 @@ struct CheckDriverInputs {
     parent_token: CancellationToken,
 }
 
-/// What the `onReadinessCheck` driver hands back when it stops.
+/// What the `onHealthCheck` driver hands back when it stops.
 struct CheckDriverOutput {
     /// Values from `openjd_redacted_env` lines on the check's stdout: the
     /// directive is ignored (rule 2) but the value is still redacted from
     /// every later line of the Session.
     redacted_values: Vec<String>,
+}
+
+/// One probe request to the `onHealthCheck` driver: the sender the
+/// invocation's result is reported on.
+type ProbeRequest = tokio::sync::oneshot::Sender<ProbeResult>;
+
+/// The result of one health-check probe, whichever mechanism produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProbeResult {
+    /// The probe succeeded.
+    Ok,
+    /// The probe failed; the text says how, for the log and for
+    /// [`ServiceUnhealthy::last_failure`].
+    Failed(String),
 }
 
 /// What the driver hands back when `onRun` has exited.
@@ -381,11 +494,11 @@ struct RunDriverOutput {
 
 /// The current (or most recent) launched `onRun` instance.
 struct RunInstance {
-    readiness_rx: watch::Receiver<ServiceReadiness>,
+    health_rx: watch::Receiver<ServiceHealth>,
     exit_rx: watch::Receiver<Option<ServiceRunExit>>,
     join: Option<tokio::task::JoinHandle<RunDriverOutput>>,
     cancel_requested: Arc<AtomicBool>,
-    /// Stops the `onReadinessCheck` driver (if any); canceled by the `onRun`
+    /// Stops the `onHealthCheck` driver (if any); canceled by the `onRun`
     /// driver itself in normal operation, and by `Drop` if the Service
     /// Session is dropped without `end()`.
     check_stop: CancellationToken,
@@ -399,13 +512,14 @@ struct RunInstance {
 /// 2. [`ServiceSession::enter`] — enter the scope's `SERVICE` Environments
 ///    and run `onEnter`. An error is a *start failure*.
 /// 3. [`ServiceSession::launch`] — launch `onRun` in the background and start
-///    the readiness check (for `COMMAND`, the concurrent `onReadinessCheck`
+///    the health check (for `COMMAND`, the concurrent `onHealthCheck`
 ///    invocations).
 /// 4. [`ServiceSession::wait_ready`] — await READY, or an instance failure.
 /// 5. Observe the instance with [`ServiceSession::wait_exit`] /
-///    [`ServiceSession::exit_watch`]; stop it with
-///    [`ServiceSession::cancel_run`]; relaunch with [`ServiceSession::launch`]
-///    once it has exited (constraint 5).
+///    [`ServiceSession::exit_watch`] / [`ServiceSession::health_watch`] —
+///    the health check keeps probing and, on UNHEALTHY, cancels `onRun`
+///    itself; stop it with [`ServiceSession::cancel_run`]; relaunch with
+///    [`ServiceSession::launch`] once it has exited (constraint 5).
 /// 6. [`ServiceSession::end`] — constraint 7 teardown. Always call it, in
 ///    every state except `Ended`.
 ///
@@ -413,7 +527,7 @@ struct RunInstance {
 ///
 /// When the entered Environments include a wrapping Environment
 /// (`WRAP_ACTIONS`) whose `runScope` includes `SERVICE`, its
-/// `onWrapServiceEnter` / `onWrapServiceRun` / `onWrapServiceReadinessCheck`
+/// `onWrapServiceEnter` / `onWrapServiceRun` / `onWrapServiceHealthCheck`
 /// / `onWrapServiceExit` run in place of the Service's actions, each only
 /// when the Service defines the corresponding action (RFC 0009
 /// `<EnvironmentActions>`). The hooks see `WrappedAction.*` as RFC 0008
@@ -467,8 +581,8 @@ impl ServiceSession {
     /// when a declared or probed port has no endpoint; [`SessionError::Runtime`]
     /// when the endpoint assignment names a different Service, an endpoint's
     /// protocol differs from its port's declared `protocol`, a `TCP_CONNECT`
-    /// check names a UDP port, or the readiness check type is `COMMAND` and
-    /// the Service defines no `onReadinessCheck` (model validation forbids
+    /// check names a UDP port, or the health check type is `COMMAND` and
+    /// the Service defines no `onHealthCheck` (model validation forbids
     /// the last two combinations).
     pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError> {
         let ServiceSessionConfig {
@@ -503,7 +617,7 @@ impl ServiceSession {
                 )));
             }
         }
-        if let ServiceReadinessCheck::TcpConnect { ports, .. } = &service.readiness_check {
+        if let ServiceHealthCheck::TcpConnect { ports, .. } = &service.health_check {
             for p in ports {
                 let Some((_, endpoint)) = endpoints.ports.iter().find(|(n, _)| n == p) else {
                     return Err(SessionError::ServicePortUnassigned {
@@ -515,20 +629,18 @@ impl ServiceSession {
                 // (§9.3 item 2).
                 if endpoint.protocol != ServicePortProtocol::Tcp {
                     return Err(SessionError::Runtime(format!(
-                        "Service '{}': TCP_CONNECT readiness check names port '{p}', whose \
+                        "Service '{}': TCP_CONNECT health check names port '{p}', whose \
                          protocol is {}; only TCP ports can be probed",
                         service.name, endpoint.protocol
                     )));
                 }
             }
         }
-        if matches!(
-            service.readiness_check,
-            ServiceReadinessCheck::Command { .. }
-        ) && service.script.actions.on_readiness_check.is_none()
+        if matches!(service.health_check, ServiceHealthCheck::Command { .. })
+            && service.script.actions.on_health_check.is_none()
         {
             return Err(SessionError::Runtime(format!(
-                "Service '{}': readiness check type is COMMAND but onReadinessCheck is not defined",
+                "Service '{}': health check type is COMMAND but onHealthCheck is not defined",
                 service.name
             )));
         }
@@ -599,10 +711,10 @@ impl ServiceSession {
         self.launch_count
     }
 
-    /// Readiness of the current/most recent `onRun` instance; `None` before
+    /// Health of the current/most recent `onRun` instance; `None` before
     /// the first launch.
-    pub fn readiness(&self) -> Option<ServiceReadiness> {
-        self.run.as_ref().map(|r| r.readiness_rx.borrow().clone())
+    pub fn health(&self) -> Option<ServiceHealth> {
+        self.run.as_ref().map(|r| r.health_rx.borrow().clone())
     }
 
     /// How the most recent `onRun` instance exited; `None` before the first
@@ -611,11 +723,13 @@ impl ServiceSession {
         self.run.as_ref().and_then(|r| r.exit_rx.borrow().clone())
     }
 
-    /// A receiver that tracks the current instance's readiness. Resolves
-    /// through `Pending` to one terminal variant. Available after
-    /// [`launch`](Self::launch); each launch installs a fresh channel.
-    pub fn readiness_watch(&self) -> Option<watch::Receiver<ServiceReadiness>> {
-        self.run.as_ref().map(|r| r.readiness_rx.clone())
+    /// A receiver that tracks the current instance's health: `Pending`,
+    /// then `Ready` (re-sent whenever its `failed_probes` count changes) or
+    /// one of the readiness failures, and `Unhealthy` once
+    /// `failureThreshold` consecutive probes fail after READY. Available
+    /// after [`launch`](Self::launch); each launch installs a fresh channel.
+    pub fn health_watch(&self) -> Option<watch::Receiver<ServiceHealth>> {
+        self.run.as_ref().map(|r| r.health_rx.clone())
     }
 
     /// A receiver that becomes `Some` when the current instance's `onRun`
@@ -629,9 +743,9 @@ impl ServiceSession {
     /// A thread-safe handle that cancels whichever action of this Session is
     /// running in its main slot — `onEnter`, `onRun`, `onExit`, or an
     /// Environment action — with its own cancelation method. See
-    /// [`SessionCancelHandle`]. A concurrent `onReadinessCheck` invocation
+    /// [`SessionCancelHandle`]. A concurrent `onHealthCheck` invocation
     /// runs in its own slot and is canceled only by the runtime (when
-    /// `onRun` exits, the readiness check ends, or the Session ends).
+    /// `onRun` exits, the health check stops probing, or the Session ends).
     pub fn cancel_handle(&self) -> SessionCancelHandle {
         self.session.cancel_handle()
     }
@@ -792,17 +906,27 @@ impl ServiceSession {
         Ok(())
     }
 
-    /// Launch `onRun` in the background and begin the readiness check.
+    /// Launch `onRun` in the background and begin the health check.
     /// Returns as soon as the process has been handed to the background
     /// driver; observe it with [`wait_ready`](Self::wait_ready),
     /// [`wait_exit`](Self::wait_exit), and the watch receivers.
     ///
-    /// For a `COMMAND` readiness check this also starts the
-    /// `onReadinessCheck` driver: sequential invocations, the first as soon
-    /// as `onRun` is launched and each later one `intervalSeconds` after the
-    /// previous ends, each bounded by the action's `timeout` (default 30 s),
-    /// until one exits 0 while `onRun` is running (READY), `timeoutSeconds`
-    /// elapses, or `onRun` exits (RFC 0009 `<ServiceReadinessCheck>`).
+    /// The health check runs in two phases (RFC 0009 `<ServiceHealthCheck>`).
+    /// Before READY the first probe runs as soon as `onRun` is launched and
+    /// one more `readinessIntervalSeconds` after each failure, until one
+    /// succeeds while `onRun` is running (READY), `readyTimeoutSeconds`
+    /// elapses, or `onRun` exits. After READY a probe runs every
+    /// `healthIntervalSeconds`; `failureThreshold` consecutive failures make
+    /// the instance UNHEALTHY, on which the runtime cancels `onRun` with its
+    /// cancelation method (constraint 11) and stops probing; a success
+    /// resets the count. Intervals are measured from the end of the
+    /// previous probe. For `TCP_CONNECT` a probe connects to every listed
+    /// port; for `STDOUT` the first `openjd_service_ready` line is the
+    /// readiness probe and, only when `healthIntervalSeconds` is given, each
+    /// interval without another line is a failed probe; for `COMMAND` a
+    /// probe is one `onHealthCheck` invocation (sequential, each bounded by
+    /// the action's `timeout`, default 30 s), run by the check driver this
+    /// also starts.
     ///
     /// Allowed in [`Entered`](ServiceSessionState::Entered) (first launch)
     /// and [`Exited`](ServiceSessionState::Exited) (relaunch within the same
@@ -815,7 +939,7 @@ impl ServiceSession {
     /// [`SessionError::InvalidServiceState`] in any other state. A failure
     /// to build a wrap hook's scope (`WrappedAction.*` resolution, the
     /// wrapping Environment's `let` bindings or embedded files), or to spawn
-    /// the readiness check's cross-user helper, is returned without changing
+    /// the health check's cross-user helper, is returned without changing
     /// the state.
     pub async fn launch(&mut self) -> Result<(), SessionError> {
         self.require_state(&[ServiceSessionState::Entered, ServiceSessionState::Exited])?;
@@ -828,12 +952,10 @@ impl ServiceSession {
             .expect("every Service defines onRun");
         let library = run.library.clone();
         let env_vars = self.service_env_vars();
-        let plan = self.readiness_plan()?;
+        let plan = self.health_plan()?;
         let check_stop = CancellationToken::new();
-        let check = match &plan {
-            ReadinessPlan::Command { interval, .. } => {
-                Some(self.prepare_readiness_check(*interval, &env_vars)?)
-            }
+        let check = match &plan.probe {
+            ProbePlan::Command { .. } => Some(self.prepare_health_check(&env_vars)?),
             _ => None,
         };
 
@@ -847,9 +969,8 @@ impl ServiceSession {
             info,
             &sid,
             LogContent::PROCESS_CONTROL,
-            "Readiness check: {} (timeout {}s)",
-            plan.type_name(),
-            plan.timeout().as_secs()
+            "{}",
+            plan.describe()
         );
 
         let cancel_token = self.session.action_cancel_token();
@@ -867,6 +988,7 @@ impl ServiceSession {
                 SERVICE_DEFAULT_NOTIFY_PERIOD,
             ));
         let runner = self.session.new_runner_base(cancel_token, cancel_rx);
+        let cancel_handle = self.session.cancel_handle();
 
         {
             let mut status = self.lock_status();
@@ -875,7 +997,7 @@ impl ServiceSession {
         self.notify_callback();
 
         let (message_tx, message_rx) = mpsc::unbounded_channel();
-        let (readiness_tx, readiness_rx) = watch::channel(ServiceReadiness::Pending);
+        let (health_tx, health_rx) = watch::channel(ServiceHealth::Pending);
         let (exit_tx, exit_rx) = watch::channel(None);
         let cancel_requested = Arc::new(AtomicBool::new(false));
 
@@ -891,17 +1013,18 @@ impl ServiceSession {
             plan,
             status: self.status.clone(),
             callback: self.session.callback_arc(),
-            readiness_tx,
+            health_tx,
             exit_tx,
             message_tx,
             message_rx,
             cancel_requested: cancel_requested.clone(),
+            cancel_handle,
             check,
             check_stop: check_stop.clone(),
         };
         let join = tokio::spawn(drive_run(inputs));
         self.run = Some(RunInstance {
-            readiness_rx,
+            health_rx,
             exit_rx,
             join: Some(join),
             cancel_requested,
@@ -911,20 +1034,19 @@ impl ServiceSession {
         Ok(())
     }
 
-    /// Resolve `onReadinessCheck` (or `onWrapServiceReadinessCheck`) and
+    /// Resolve `onHealthCheck` (or `onWrapServiceHealthCheck`) and
     /// build its runner: the second action slot, with its own cancel slot,
     /// its own cross-user helper when the Session is cross-user, and its log
     /// attribution tag.
-    fn prepare_readiness_check(
+    fn prepare_health_check(
         &mut self,
-        interval: Duration,
         env_vars: &HashMap<String, Option<String>>,
     ) -> Result<CheckDriverInputs, SessionError> {
         let check = self
-            .resolve_action(ServiceActionKind::ReadinessCheck)?
+            .resolve_action(ServiceActionKind::HealthCheck)?
             .ok_or_else(|| {
                 SessionError::Runtime(format!(
-                    "Service '{}': readiness check type is COMMAND but onReadinessCheck is not defined",
+                    "Service '{}': health check type is COMMAND but onHealthCheck is not defined",
                     self.service.name
                 ))
             })?;
@@ -947,7 +1069,6 @@ impl ServiceSession {
             symtab: check.symtab,
             library: check.library,
             env_vars: env_vars.clone(),
-            interval,
             slot: ActionCancelSlot::new(),
             handle_route,
             parent_token,
@@ -956,29 +1077,30 @@ impl ServiceSession {
 
     /// [`enter`](Self::enter), [`launch`](Self::launch), then
     /// [`wait_ready`](Self::wait_ready): the whole "start a Service"
-    /// sequence of *How Jobs Are Run*. The returned readiness is either
-    /// `Ready` or one of the instance-failure variants; a start failure is
+    /// sequence of *How Jobs Are Run*. The returned health is either
+    /// `Ready` or one of the readiness-failure variants; a start failure is
     /// an `Err`.
     ///
     /// # Errors
     ///
     /// As [`enter`](Self::enter) and [`launch`](Self::launch).
-    pub async fn start(&mut self) -> Result<ServiceReadiness, SessionError> {
+    pub async fn start(&mut self) -> Result<ServiceHealth, SessionError> {
         self.enter().await?;
         self.launch().await?;
         self.wait_ready().await
     }
 
-    /// Wait until the current instance's readiness check passes or fails,
-    /// and return the terminal [`ServiceReadiness`]. Returns immediately
-    /// once it is terminal.
+    /// Wait until the current instance's readiness phase is decided —
+    /// READY, or one of the readiness failures — and return that
+    /// [`ServiceHealth`]. Returns immediately once it is decided (including
+    /// `Unhealthy`, for an instance that was READY and has since failed).
     ///
     /// # Errors
     ///
     /// [`SessionError::InvalidServiceState`] if `onRun` has never been
     /// launched.
-    pub async fn wait_ready(&self) -> Result<ServiceReadiness, SessionError> {
-        let mut rx = self.require_run()?.readiness_rx.clone();
+    pub async fn wait_ready(&self) -> Result<ServiceHealth, SessionError> {
+        let mut rx = self.require_run()?.health_rx.clone();
         loop {
             let current = rx.borrow_and_update().clone();
             if current.is_terminal() {
@@ -986,7 +1108,7 @@ impl ServiceSession {
             }
             if rx.changed().await.is_err() {
                 // The driver is gone without a terminal value: it exited.
-                return Ok(ServiceReadiness::ExitedBeforeReady);
+                return Ok(ServiceHealth::ExitedBeforeReady);
             }
         }
     }
@@ -1009,6 +1131,7 @@ impl ServiceSession {
                     state: ActionState::Failed,
                     exit_code: None,
                     canceled: false,
+                    unhealthy: None,
                     fail_message: Some("onRun driver ended without reporting an exit".into()),
                     stdout: String::new(),
                 };
@@ -1207,12 +1330,14 @@ impl ServiceSession {
         env
     }
 
-    /// Resolve the readiness check against the endpoint assignment.
-    fn readiness_plan(&self) -> Result<ReadinessPlan, SessionError> {
-        match &self.service.readiness_check {
-            ServiceReadinessCheck::TcpConnect {
+    /// Resolve the health check against the endpoint assignment.
+    fn health_plan(&self) -> Result<HealthPlan, SessionError> {
+        let check = &self.service.health_check;
+        let probe = match check {
+            ServiceHealthCheck::TcpConnect {
                 ports,
-                timeout_seconds,
+                readiness_interval_seconds,
+                ..
             } => {
                 let mut targets = Vec::with_capacity(ports.len());
                 for port_name in ports {
@@ -1231,26 +1356,29 @@ impl ServiceSession {
                         endpoint.port,
                     ));
                 }
-                Ok(ReadinessPlan::TcpConnect {
+                ProbePlan::TcpConnect {
                     targets,
-                    timeout: Duration::from_secs(*timeout_seconds),
-                })
+                    readiness_interval: Duration::from_secs(*readiness_interval_seconds),
+                }
             }
-            ServiceReadinessCheck::Stdout { timeout_seconds } => Ok(ReadinessPlan::Stdout {
-                timeout: Duration::from_secs(*timeout_seconds),
-            }),
-            ServiceReadinessCheck::Command {
-                interval_seconds,
-                timeout_seconds,
-            } => Ok(ReadinessPlan::Command {
-                interval: Duration::from_secs(*interval_seconds),
-                timeout: Duration::from_secs(*timeout_seconds),
-            }),
-        }
+            ServiceHealthCheck::Stdout { .. } => ProbePlan::Stdout,
+            ServiceHealthCheck::Command {
+                readiness_interval_seconds,
+                ..
+            } => ProbePlan::Command {
+                readiness_interval: Duration::from_secs(*readiness_interval_seconds),
+            },
+        };
+        Ok(HealthPlan {
+            probe,
+            ready_timeout: Duration::from_secs(check.ready_timeout_seconds()),
+            health_interval: check.health_interval_seconds().map(Duration::from_secs),
+            failure_threshold: check.failure_threshold(),
+        })
     }
 
     /// The Service action to run for `kind`: `None` when the Service does
-    /// not define it (`onEnter`, `onReadinessCheck`, `onExit` are optional;
+    /// not define it (`onEnter`, `onHealthCheck`, `onExit` are optional;
     /// `onRun` always resolves). When the entered stack contains a wrapping
     /// Environment whose `runScope` includes `SERVICE` and which defines the
     /// corresponding `onWrapService*` hook, the hook is returned instead,
@@ -1267,7 +1395,7 @@ impl ServiceSession {
         let inner = match kind {
             ServiceActionKind::Enter => actions.on_enter.as_ref(),
             ServiceActionKind::Run => Some(&actions.on_run),
-            ServiceActionKind::ReadinessCheck => actions.on_readiness_check.as_ref(),
+            ServiceActionKind::HealthCheck => actions.on_health_check.as_ref(),
             ServiceActionKind::Exit => actions.on_exit.as_ref(),
         };
         let Some(inner) = inner.cloned() else {
@@ -1282,7 +1410,7 @@ impl ServiceSession {
         let hook = hooks.as_ref().and_then(|h| match kind {
             ServiceActionKind::Enter => h.on_enter.clone(),
             ServiceActionKind::Run => h.on_run.clone(),
-            ServiceActionKind::ReadinessCheck => h.on_readiness_check.clone(),
+            ServiceActionKind::HealthCheck => h.on_health_check.clone(),
             ServiceActionKind::Exit => h.on_exit.clone(),
         });
         let (Some(hooks), Some(hook)) = (hooks, hook) else {
@@ -1561,7 +1689,7 @@ impl Drop for ServiceSession {
                 self.service.name
             );
             if let Some(run) = self.run.as_ref() {
-                // Stop the onReadinessCheck driver (it is owned by the onRun
+                // Stop the onHealthCheck driver (it is owned by the onRun
                 // driver task, which is aborted next).
                 run.check_stop.cancel();
                 if let Some(join) = run.join.as_ref() {
@@ -1615,40 +1743,66 @@ fn probe_address(bind_address: &str) -> String {
     }
 }
 
-/// One round of `TCP_CONNECT` probing: connect to every target and close
-/// immediately. `true` iff every connection succeeded.
-async fn tcp_probe(targets: &[(String, String, u16)]) -> bool {
-    for (_, address, port) in targets {
+/// One `TCP_CONNECT` probe: connect to every target and close immediately.
+/// `Ok` iff every connection succeeded; otherwise the first port that could
+/// not be connected to, and why.
+async fn tcp_probe(targets: &[(String, String, u16)]) -> ProbeResult {
+    for (name, address, port) in targets {
         let connect = tokio::net::TcpStream::connect((address.as_str(), *port));
         match tokio::time::timeout(TCP_PROBE_CONNECT_TIMEOUT, connect).await {
             Ok(Ok(_stream)) => {}
-            _ => return false,
+            Ok(Err(e)) => {
+                return ProbeResult::Failed(format!(
+                    "TCP connect to port '{name}' ({address}:{port}) failed: {e}"
+                ));
+            }
+            Err(_) => {
+                return ProbeResult::Failed(format!(
+                    "TCP connect to port '{name}' ({address}:{port}) timed out after {}s",
+                    TCP_PROBE_CONNECT_TIMEOUT.as_secs()
+                ));
+            }
         }
     }
-    true
+    ProbeResult::Ok
 }
 
-/// Applies `onRun`'s `openjd_*` messages for the background driver.
-struct RunMessageSink<'a> {
+/// The health check's view of one `onRun` instance: which phase it is in
+/// and how many consecutive probes have failed in phase 2. Owned by the
+/// `onRun` driver, which also applies `onRun`'s `openjd_*` messages through
+/// it (the `STDOUT` probe *is* a message).
+struct HealthTracker<'a> {
     session_id: &'a str,
     service_name: &'a str,
     /// The name of the action running as `onRun` (`onRun`, or
     /// `onWrapServiceRun` when wrapped), for log lines.
     action_name: &'a str,
-    /// The readiness check type, for log lines.
+    /// The health check type, for log lines.
     check_type: &'static str,
-    /// Whether `openjd_service_ready` is honored (readiness type `STDOUT`).
-    stdout_readiness: bool,
+    /// Whether `openjd_service_ready` is honored (type `STDOUT`).
+    stdout_check: bool,
+    failure_threshold: u64,
     status: &'a Arc<Mutex<ActionStatusFields>>,
     callback: Option<&'a SharedCallback>,
-    readiness_tx: &'a watch::Sender<ServiceReadiness>,
-    /// Whether the readiness check is still undecided.
-    pending: bool,
+    health_tx: &'a watch::Sender<ServiceHealth>,
+    phase: HealthPhase,
     /// Values from `openjd_redacted_env` lines; see [`RunDriverOutput`].
     redacted_values: Vec<String>,
 }
 
-impl RunMessageSink<'_> {
+/// Where the health check stands for the current instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HealthPhase {
+    /// Phase 1: no probe has succeeded yet.
+    Pending,
+    /// Phase 2: READY, counting consecutive failures.
+    Ready { failed_probes: u64 },
+    /// Probing has stopped: the ready timeout elapsed, the instance became
+    /// UNHEALTHY, or `onRun` exited.
+    Stopped,
+}
+
+impl HealthTracker<'_> {
     fn lock_status(&self) -> std::sync::MutexGuard<'_, ActionStatusFields> {
         self.status.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -1661,8 +1815,17 @@ impl RunMessageSink<'_> {
         }
     }
 
+    fn is_pending(&self) -> bool {
+        self.phase == HealthPhase::Pending
+    }
+
+    fn is_ready(&self) -> bool {
+        matches!(self.phase, HealthPhase::Ready { .. })
+    }
+
+    /// Phase 1 → 2: the first successful probe while `onRun` runs.
     fn set_ready(&mut self, message: Option<String>) {
-        self.pending = false;
+        self.phase = HealthPhase::Ready { failed_probes: 0 };
         session_log!(
             info,
             self.session_id,
@@ -1674,31 +1837,160 @@ impl RunMessageSink<'_> {
                 .map(|m| format!(": {m}"))
                 .unwrap_or_default()
         );
-        let _ = self.readiness_tx.send(ServiceReadiness::Ready { message });
+        let _ = self.health_tx.send(ServiceHealth::Ready {
+            message,
+            failed_probes: 0,
+        });
     }
 
-    /// Apply one message. `running` is false for messages drained after
-    /// `onRun` exited, which cannot make the instance READY.
-    fn apply(&mut self, msg: ActionMessage, running: bool) {
+    /// Phase 1 ended without READY: `readyTimeoutSeconds` elapsed.
+    fn set_timed_out(&mut self, ready_timeout: Duration) {
+        self.phase = HealthPhase::Stopped;
+        session_log!(
+            error,
+            self.session_id,
+            LogContent::PROCESS_CONTROL,
+            "Service '{}' did not become READY within {}s ({} health check)",
+            self.service_name,
+            ready_timeout.as_secs(),
+            self.check_type
+        );
+        let _ = self.health_tx.send(ServiceHealth::TimedOut);
+    }
+
+    /// `onRun` exited while phase 1 was undecided.
+    fn set_exited_before_ready(&mut self) {
+        self.phase = HealthPhase::Stopped;
+        session_log!(
+            error,
+            self.session_id,
+            LogContent::PROCESS_CONTROL,
+            "Service '{}' {} exited before becoming READY",
+            self.service_name,
+            self.action_name
+        );
+        let _ = self.health_tx.send(ServiceHealth::ExitedBeforeReady);
+    }
+
+    /// Apply a phase-2 probe result. Returns `Some` when the instance has
+    /// just become UNHEALTHY (`failureThreshold` reached); the caller stops
+    /// probing and cancels `onRun`.
+    fn apply_health_probe(&mut self, result: ProbeResult) -> Option<ServiceUnhealthy> {
+        let HealthPhase::Ready { failed_probes } = &mut self.phase else {
+            return None;
+        };
+        match result {
+            ProbeResult::Ok => {
+                if *failed_probes > 0 {
+                    session_log!(
+                        info,
+                        self.session_id,
+                        LogContent::PROCESS_CONTROL,
+                        "Service '{}' health probe succeeded; failure count reset from {}",
+                        self.service_name,
+                        failed_probes
+                    );
+                    *failed_probes = 0;
+                    self.publish_ready_count();
+                }
+                None
+            }
+            ProbeResult::Failed(detail) => {
+                *failed_probes += 1;
+                let count = *failed_probes;
+                if count >= self.failure_threshold {
+                    let unhealthy = ServiceUnhealthy {
+                        failed_probes: count,
+                        failure_threshold: self.failure_threshold,
+                        last_failure: detail,
+                    };
+                    session_log!(
+                        error,
+                        self.session_id,
+                        LogContent::PROCESS_CONTROL,
+                        "Service '{}' is UNHEALTHY: {unhealthy}",
+                        self.service_name
+                    );
+                    self.phase = HealthPhase::Stopped;
+                    let _ = self
+                        .health_tx
+                        .send(ServiceHealth::Unhealthy(unhealthy.clone()));
+                    Some(unhealthy)
+                } else {
+                    session_log!(
+                        warn,
+                        self.session_id,
+                        LogContent::PROCESS_CONTROL,
+                        "Service '{}' health probe failed ({count} of {}): {detail}",
+                        self.service_name,
+                        self.failure_threshold
+                    );
+                    self.publish_ready_count();
+                    None
+                }
+            }
+        }
+    }
+
+    /// Re-send `Ready` with the current failure count, keeping the message.
+    fn publish_ready_count(&self) {
+        let HealthPhase::Ready { failed_probes } = self.phase else {
+            return;
+        };
+        self.health_tx.send_modify(|h| {
+            if let ServiceHealth::Ready {
+                failed_probes: count,
+                ..
+            } = h
+            {
+                *count = failed_probes;
+            }
+        });
+    }
+
+    /// Stop probing because `onRun` exited (constraint 11): a phase-1
+    /// instance has failed; a phase-2 instance is simply no longer probed.
+    fn stop_for_exit(&mut self) {
+        if self.is_pending() {
+            self.set_exited_before_ready();
+        } else {
+            self.phase = HealthPhase::Stopped;
+        }
+    }
+
+    /// Apply one `onRun` message. `running` is false for messages drained
+    /// after `onRun` exited, which cannot make the instance READY or count
+    /// as a heartbeat. Returns `true` when the message was an honored
+    /// `openjd_service_ready` line (the `STDOUT` probe), so the driver can
+    /// reset its heartbeat timer.
+    fn apply(&mut self, msg: ActionMessage, running: bool) -> bool {
+        let mut heartbeat = false;
         match msg {
             ActionMessage::Progress(v) => self.lock_status().progress = Some(v),
             ActionMessage::Status(s) => self.lock_status().status_message = Some(s),
             ActionMessage::Fail(s) => self.lock_status().fail_message = Some(s),
             ActionMessage::ServiceReady(message) => {
-                if !self.stdout_readiness {
+                if !self.stdout_check {
                     session_log!(
                         info,
                         self.session_id,
                         LogContent::PROCESS_CONTROL,
-                        "Ignoring openjd_service_ready from Service '{}' {}: its readiness check type is {}",
+                        "Ignoring openjd_service_ready from Service '{}' {}: its health check type is {}",
                         self.service_name,
                         self.action_name,
                         self.check_type
                     );
-                } else if self.pending && running {
-                    self.set_ready(Some(message));
+                } else if running {
+                    if self.is_pending() {
+                        self.set_ready(Some(message));
+                    } else if self.is_ready() {
+                        // After READY the line is a heartbeat (when the
+                        // check gives healthIntervalSeconds) and has no
+                        // other effect.
+                        self.apply_health_probe(ProbeResult::Ok);
+                    }
+                    heartbeat = true;
                 }
-                // Emitting it again has no additional effect.
             }
             ActionMessage::SetEnv { .. } => {
                 log_env_message_ignored(
@@ -1735,13 +2027,46 @@ impl RunMessageSink<'_> {
             }
         }
         self.notify();
+        heartbeat
+    }
+}
+
+type ProbeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ProbeResult> + Send>>;
+
+/// Start one probe of the plan's mechanism: a `TCP_CONNECT` round, or one
+/// `onHealthCheck` invocation requested from the check driver (whose result
+/// is `Failed` if the driver has stopped). Never called for `STDOUT`.
+fn start_probe(
+    probe: &ProbePlan,
+    request_tx: Option<&mpsc::UnboundedSender<ProbeRequest>>,
+) -> ProbeFuture {
+    match probe {
+        ProbePlan::TcpConnect { targets, .. } => {
+            let t = targets.clone();
+            Box::pin(async move { tcp_probe(&t).await })
+        }
+        ProbePlan::Command { .. } => {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let sent = request_tx.is_some_and(|req| req.send(tx).is_ok());
+            Box::pin(async move {
+                if !sent {
+                    return ProbeResult::Failed("the health check driver has stopped".into());
+                }
+                rx.await.unwrap_or_else(|_| {
+                    ProbeResult::Failed("the health check invocation was canceled".into())
+                })
+            })
+        }
+        ProbePlan::Stdout => Box::pin(async {
+            ProbeResult::Failed("a STDOUT health check has no probe to run".into())
+        }),
     }
 }
 
 /// The background driver of one `onRun` instance: runs the action, applies
-/// its `openjd_*` messages, runs the readiness check against it (spawning
-/// and stopping the `onReadinessCheck` driver for a `COMMAND` check), and
-/// publishes readiness and exit.
+/// its `openjd_*` messages, runs the health check against it in both
+/// phases (spawning and stopping the `onHealthCheck` driver for a `COMMAND`
+/// check), cancels `onRun` on UNHEALTHY, and publishes health and exit.
 async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     let RunDriverInputs {
         session_id,
@@ -1755,11 +2080,12 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         plan,
         status,
         callback,
-        readiness_tx,
+        health_tx,
         exit_tx,
         message_tx,
         mut message_rx,
         cancel_requested,
+        cancel_handle,
         check,
         check_stop,
     } = inputs;
@@ -1772,45 +2098,47 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         }
     };
 
-    // The readiness timeout is measured from launch (RFC 0009 §9.3 item 4)
-    // and runs continuously, including while a check invocation is in
-    // progress.
-    let deadline = tokio::time::sleep(plan.timeout());
+    // The ready timeout is measured from launch (RFC 0009 §9.3 item 4)
+    // and runs continuously, including while a probe is in progress.
+    let deadline = tokio::time::sleep(plan.ready_timeout);
     tokio::pin!(deadline);
-    let is_tcp = matches!(plan, ReadinessPlan::TcpConnect { .. });
-    let targets: Vec<(String, String, u16)> = match &plan {
-        ReadinessPlan::TcpConnect { targets, .. } => targets.clone(),
-        ReadinessPlan::Stdout { .. } | ReadinessPlan::Command { .. } => Vec::new(),
-    };
-    let mut probe: std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send>> = {
-        let t = targets.clone();
-        Box::pin(async move { tcp_probe(&t).await })
-    };
+    let is_stdout = matches!(plan.probe, ProbePlan::Stdout);
 
-    // COMMAND: the onReadinessCheck driver runs in its own task and reports
-    // each successful invocation on `check_rx`; it stops when `check_stop`
-    // fires (READY observed, readiness timed out, or onRun exited — rules 4
-    // and 5) or after reporting a success. The first invocation begins as
-    // soon as onRun is launched, i.e. now.
-    let (check_tx, mut check_rx) = mpsc::unbounded_channel::<()>();
-    let mut check_active = check.is_some();
+    // COMMAND: the onHealthCheck driver runs in its own task and performs
+    // one invocation per request on `request_tx`, reporting the result on
+    // the request's oneshot. It stops when `check_stop` fires (probing
+    // ended, or onRun exited — rules 4 and 5).
+    let (request_tx, request_rx) = mpsc::unbounded_channel::<ProbeRequest>();
     let check_join = check.map(|inputs| {
         let stop = check_stop.clone();
-        tokio::spawn(drive_readiness_check(inputs, stop, check_tx))
+        tokio::spawn(drive_health_check(inputs, stop, request_rx))
     });
+    let request_tx = check_join.is_some().then_some(&request_tx);
 
-    let mut sink = RunMessageSink {
+    let mut tracker = HealthTracker {
         session_id: &session_id,
         service_name: &service_name,
         action_name,
         check_type: plan.type_name(),
-        stdout_readiness: matches!(plan, ReadinessPlan::Stdout { .. }),
+        stdout_check: is_stdout,
+        failure_threshold: plan.failure_threshold,
         status: &status,
         callback: callback.as_ref(),
-        readiness_tx: &readiness_tx,
-        pending: true,
+        health_tx: &health_tx,
+        phase: HealthPhase::Pending,
         redacted_values: Vec::new(),
     };
+
+    // The probe schedule. For TCP_CONNECT and COMMAND: `probe` is the
+    // round in flight, `next_probe` the pause before the next one (the
+    // first probe runs as soon as onRun is launched, i.e. now; each later
+    // one an interval after the previous ends). For STDOUT after READY with
+    // healthIntervalSeconds: `heartbeat` is the interval in which a line
+    // must arrive, restarted by each line and by each expiry.
+    let mut probe: Option<ProbeFuture> = (!is_stdout).then(|| start_probe(&plan.probe, request_tx));
+    let mut next_probe: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    let mut heartbeat: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
+    let mut unhealthy: Option<ServiceUnhealthy> = None;
 
     let result = {
         let run_fut = runner.run_action(
@@ -1829,58 +2157,128 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 biased;
                 msg = message_rx.recv(), if result.is_none() => {
                     let Some(msg) = msg else { continue };
-                    sink.apply(msg, true);
-                }
-                report = check_rx.recv(), if check_active && result.is_none() => {
-                    // A successful invocation observed while onRun is still
-                    // running (this arm is disabled once the exit is seen).
-                    check_active = false;
-                    if report.is_some() && sink.pending {
-                        sink.set_ready(None);
-                        check_stop.cancel();
+                    let was_pending = tracker.is_pending();
+                    if tracker.apply(msg, true) {
+                        // A STDOUT probe: READY on the first line; a
+                        // heartbeat afterwards. Either (re)starts the
+                        // heartbeat interval when the check gives one.
+                        if let Some(interval) = plan.health_interval {
+                            if tracker.is_ready() {
+                                heartbeat = Some(Box::pin(tokio::time::sleep(interval)));
+                            }
+                        } else if was_pending {
+                            // No heartbeat: the instance is not monitored
+                            // after READY (its health is that onRun runs).
+                            tracker.phase = HealthPhase::Stopped;
+                        }
                     }
                 }
                 r = &mut run_fut, if result.is_none() => {
                     result = Some(r);
                 }
-                ok = &mut probe, if sink.pending && is_tcp && result.is_none() => {
-                    if ok {
-                        sink.set_ready(None);
-                    } else {
-                        let t = targets.clone();
-                        probe = Box::pin(async move {
-                            tokio::time::sleep(TCP_PROBE_INTERVAL).await;
-                            tcp_probe(&t).await
-                        });
+                outcome = async { probe.as_mut().expect("guarded").await }, if probe.is_some() && result.is_none() => {
+                    probe = None;
+                    if tracker.is_pending() {
+                        match outcome {
+                            ProbeResult::Ok => {
+                                tracker.set_ready(None);
+                                // Phase 2 begins: the next probe is a health
+                                // probe, healthIntervalSeconds from now.
+                                match plan.health_interval {
+                                    Some(i) => next_probe = Some(Box::pin(tokio::time::sleep(i))),
+                                    None => tracker.phase = HealthPhase::Stopped,
+                                }
+                            }
+                            ProbeResult::Failed(detail) => {
+                                session_log!(
+                                    info,
+                                    &session_id,
+                                    LogContent::PROCESS_CONTROL,
+                                    "Service '{}' is not yet READY: {detail}",
+                                    service_name
+                                );
+                                let i = plan.readiness_interval().expect("TCP_CONNECT or COMMAND");
+                                next_probe = Some(Box::pin(tokio::time::sleep(i)));
+                            }
+                        }
+                    } else if tracker.is_ready() {
+                        match tracker.apply_health_probe(outcome) {
+                            Some(u) => {
+                                // Constraint 11: an UNHEALTHY instance is
+                                // stopped as at scope end — onRun canceled
+                                // with its cancelation method; probing ends.
+                                unhealthy = Some(u);
+                                check_stop.cancel();
+                                session_log!(
+                                    info,
+                                    &session_id,
+                                    LogContent::PROCESS_CONTROL,
+                                    "Canceling Service '{}' {action_name}: the instance is UNHEALTHY",
+                                    service_name
+                                );
+                                cancel_handle.cancel(None, false);
+                            }
+                            None => {
+                                let i = plan.health_interval.expect("phase 2 implies an interval");
+                                next_probe = Some(Box::pin(tokio::time::sleep(i)));
+                            }
+                        }
+                    }
+                    // Stopped: a result that raced the stop is discarded.
+                }
+                () = async { next_probe.as_mut().expect("guarded").await }, if next_probe.is_some() && result.is_none() => {
+                    next_probe = None;
+                    if tracker.phase != HealthPhase::Stopped {
+                        probe = Some(start_probe(&plan.probe, request_tx));
                     }
                 }
-                _ = &mut deadline, if sink.pending && result.is_none() => {
-                    sink.pending = false;
-                    session_log!(
-                        error,
-                        &session_id,
-                        LogContent::PROCESS_CONTROL,
-                        "Service '{}' did not become READY within {}s ({} readiness check)",
-                        service_name,
-                        plan.timeout().as_secs(),
-                        plan.type_name()
-                    );
-                    let _ = readiness_tx.send(ServiceReadiness::TimedOut);
+                () = async { heartbeat.as_mut().expect("guarded").await }, if heartbeat.is_some() && result.is_none() => {
+                    heartbeat = None;
+                    if tracker.is_ready() {
+                        let interval = plan.health_interval.expect("a heartbeat implies an interval");
+                        let missed = ProbeResult::Failed(format!(
+                            "no openjd_service_ready line within {}s",
+                            interval.as_secs()
+                        ));
+                        match tracker.apply_health_probe(missed) {
+                            Some(u) => {
+                                unhealthy = Some(u);
+                                session_log!(
+                                    info,
+                                    &session_id,
+                                    LogContent::PROCESS_CONTROL,
+                                    "Canceling Service '{}' {action_name}: the instance is UNHEALTHY",
+                                    service_name
+                                );
+                                cancel_handle.cancel(None, false);
+                            }
+                            None => heartbeat = Some(Box::pin(tokio::time::sleep(interval))),
+                        }
+                    }
+                }
+                _ = &mut deadline, if tracker.is_pending() && result.is_none() => {
+                    tracker.set_timed_out(plan.ready_timeout);
                     // An invocation in flight is canceled: the decision is
                     // terminal and the check never runs again.
+                    probe = None;
+                    next_probe = None;
                     check_stop.cancel();
                 }
                 else => break,
             }
             if result.is_some() {
-                // "onRun exit wins" (rule 5): the check is stopped — an
-                // invocation in flight is canceled with its own cancelation
-                // method and its result discarded — and messages that raced
-                // the exit are still applied, but neither a readiness line
-                // nor a check success can make the instance READY now.
+                // "onRun exit wins" (rule 5, constraint 11): the check is
+                // stopped — an invocation in flight is canceled with its own
+                // cancelation method and its result discarded — and messages
+                // that raced the exit are still applied, but neither a
+                // readiness line nor a probe success can make the instance
+                // READY or keep it READY now.
                 check_stop.cancel();
+                drop(probe.take());
+                drop(next_probe.take());
+                drop(heartbeat.take());
                 while let Ok(msg) = message_rx.try_recv() {
-                    sink.apply(msg, false);
+                    tracker.apply(msg, false);
                 }
                 break;
             }
@@ -1890,13 +2288,14 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
 
     let exit = match result {
         Ok(r) => {
-            let canceled =
-                cancel_requested.load(Ordering::SeqCst) || r.state == ActionState::Canceled;
+            let canceled = cancel_requested.load(Ordering::SeqCst)
+                || (r.state == ActionState::Canceled && unhealthy.is_none());
             let fail_message = lock_status().fail_message.clone();
             ServiceRunExit {
                 state: r.state,
                 exit_code: r.exit_code,
                 canceled,
+                unhealthy: unhealthy.clone(),
                 fail_message,
                 stdout: r.stdout,
             }
@@ -1914,16 +2313,17 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 state: ActionState::Failed,
                 exit_code: None,
                 canceled: cancel_requested.load(Ordering::SeqCst),
+                unhealthy: unhealthy.clone(),
                 fail_message: Some(e.to_string()),
                 stdout: String::new(),
             }
         }
     };
-    let RunMessageSink {
-        pending,
+    tracker.stop_for_exit();
+    let HealthTracker {
         mut redacted_values,
         ..
-    } = sink;
+    } = tracker;
 
     // The check driver stops before the exit is published (and so before
     // `end()` can run onExit — rule 5): await it here.
@@ -1934,22 +2334,12 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 error,
                 &session_id,
                 LogContent::EXCEPTION_INFO,
-                "Service '{}' onReadinessCheck driver task failed: {e}",
+                "Service '{}' onHealthCheck driver task failed: {e}",
                 service_name
             ),
         }
     }
 
-    if pending {
-        session_log!(
-            error,
-            &session_id,
-            LogContent::PROCESS_CONTROL,
-            "Service '{}' {action_name} exited before becoming READY",
-            service_name
-        );
-        let _ = readiness_tx.send(ServiceReadiness::ExitedBeforeReady);
-    }
     session_log!(
         info,
         &session_id,
@@ -1958,7 +2348,9 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         service_name,
         exit.state,
         format_exit_code(exit.exit_code),
-        if exit.canceled {
+        if exit.unhealthy.is_some() {
+            ", canceled by the runtime: UNHEALTHY"
+        } else if exit.canceled {
             ", canceled by the runtime"
         } else {
             ""
@@ -1974,21 +2366,23 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     }
 }
 
-/// The driver of the `onReadinessCheck` invocations of one `onRun` instance
-/// (RFC 0009 `<ServiceReadinessCheck>` `COMMAND`, "Concurrency with
-/// `onRun`"): sequential invocations `interval` apart, each bounded by the
-/// action's `timeout` (default 30 s, canceled on overrun, counted as not
-/// ready), until one exits 0 — reported once on `report_tx`, after which the
-/// driver returns — or `stop` fires. An invocation in flight when `stop`
-/// fires is canceled through the check's own cancel slot with its own
-/// cancelation method, and its result is discarded. No `openjd_*` message on
-/// the check's stdout is honored (rule 2): each is logged and ignored. Every
-/// log record of the check is tagged with the action name (rule 3) through
-/// the runner's `action_tag`.
-async fn drive_readiness_check(
+/// The driver of the `onHealthCheck` invocations of one `onRun` instance
+/// (RFC 0009 `<ServiceHealthCheck>` `COMMAND`, "Concurrency with `onRun`"):
+/// one invocation per request on `request_rx`, each bounded by the action's
+/// `timeout` (default 30 s, canceled on overrun, a failed probe), its result
+/// — exit 0 is a successful probe, anything else a failed one — reported on
+/// the request's channel. Invocations are sequential by construction: the
+/// `onRun` driver requests the next only after receiving the previous
+/// result and waiting the phase's interval. The driver returns when `stop`
+/// fires; an invocation in flight then is canceled through the check's own
+/// cancel slot with its own cancelation method, and its result is discarded.
+/// No `openjd_*` message on the check's stdout is honored (rule 2): each is
+/// logged and ignored. Every log record of the check is tagged with the
+/// action name (rule 3) through the runner's `action_tag`.
+async fn drive_health_check(
     inputs: CheckDriverInputs,
     stop: CancellationToken,
-    report_tx: mpsc::UnboundedSender<()>,
+    mut request_rx: mpsc::UnboundedReceiver<ProbeRequest>,
 ) -> CheckDriverOutput {
     let CheckDriverInputs {
         session_id,
@@ -2000,7 +2394,6 @@ async fn drive_readiness_check(
         symtab,
         library,
         env_vars,
-        interval,
         slot,
         handle_route,
         parent_token,
@@ -2016,14 +2409,22 @@ async fn drive_readiness_check(
     let mut redacted_values = Vec::new();
     let mut invocation: u32 = 0;
 
-    while !stop.is_cancelled() {
+    loop {
+        let reply = tokio::select! {
+            biased;
+            _ = stop.cancelled() => break,
+            req = request_rx.recv() => match req {
+                Some(reply) => reply,
+                None => break,
+            },
+        };
         invocation += 1;
         session_tagged_log!(
             info,
             &session_id,
             tag,
             LogContent::PROCESS_CONTROL,
-            "Service '{service_name}' readiness check invocation {invocation}"
+            "Service '{service_name}' health check invocation {invocation}"
         );
 
         // Each invocation gets a fresh cancel token in the check's own slot.
@@ -2052,7 +2453,7 @@ async fn drive_readiness_check(
                 Some(&library),
                 &env_vars,
                 message_tx,
-                Some(SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT),
+                Some(SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT),
                 SERVICE_DEFAULT_NOTIFY_PERIOD,
             );
             tokio::pin!(run_fut);
@@ -2072,7 +2473,7 @@ async fn drive_readiness_check(
                             &session_id,
                             tag,
                             LogContent::PROCESS_CONTROL,
-                            "Canceling readiness check invocation {invocation}: its result will be discarded"
+                            "Canceling health check invocation {invocation}: its result will be discarded"
                         );
                         handle.cancel(None, false);
                     }
@@ -2099,60 +2500,40 @@ async fn drive_readiness_check(
         slot.reset();
 
         if stop.is_cancelled() {
-            // Rule 5: canceled by the runtime (onRun exited, the readiness
-            // check reached a decision, or the Session is ending).
+            // Rule 5 / constraint 11: canceled by the runtime (onRun exited,
+            // probing ended, or the Session is ending). The result is
+            // discarded; the dropped `reply` tells the requester so.
             break;
         }
-        match result {
+        let outcome = match result {
             Ok(r) if r.state == ActionState::Timeout => {
-                session_tagged_log!(
-                    info,
-                    &session_id,
-                    tag,
-                    LogContent::PROCESS_CONTROL,
-                    "Readiness check invocation {invocation}: not ready (exceeded its timeout)"
-                );
+                ProbeResult::Failed(format!("{action_name} exceeded its timeout"))
             }
             Ok(r) if r.state != ActionState::Canceled && r.exit_code == Some(0) => {
-                // Its result is its exit status (rule 2): exit 0 is READY
-                // even if the output carried an openjd_fail line.
-                session_tagged_log!(
-                    info,
-                    &session_id,
-                    tag,
-                    LogContent::PROCESS_CONTROL,
-                    "Readiness check invocation {invocation}: ready (exit code: 0)"
-                );
-                let _ = report_tx.send(());
-                break;
+                // Its result is its exit status (rule 2): exit 0 is a
+                // successful probe even if the output carried an
+                // openjd_fail line.
+                ProbeResult::Ok
             }
             Ok(r) => {
-                session_tagged_log!(
-                    info,
-                    &session_id,
-                    tag,
-                    LogContent::PROCESS_CONTROL,
-                    "Readiness check invocation {invocation}: not ready ({})",
-                    format_exit_code(r.exit_code)
-                );
+                ProbeResult::Failed(format!("{action_name} {}", format_exit_code(r.exit_code)))
             }
-            Err(e) => {
-                session_tagged_log!(
-                    info,
-                    &session_id,
-                    tag,
-                    LogContent::PROCESS_CONTROL,
-                    "Readiness check invocation {invocation}: not ready (failed to run: {e})"
-                );
+            Err(e) => ProbeResult::Failed(format!("{action_name} failed to run: {e}")),
+        };
+        session_tagged_log!(
+            info,
+            &session_id,
+            tag,
+            LogContent::PROCESS_CONTROL,
+            "Health check invocation {invocation}: {}",
+            match &outcome {
+                ProbeResult::Ok => "succeeded (exit code: 0)".to_string(),
+                ProbeResult::Failed(detail) => format!("failed ({detail})"),
             }
-        }
-
-        // intervalSeconds between the end of one invocation and the start of
-        // the next.
-        tokio::select! {
-            _ = stop.cancelled() => break,
-            _ = tokio::time::sleep(interval) => {}
-        }
+        );
+        // The requester may have moved on (probing stopped); nothing to do
+        // then.
+        let _ = reply.send(outcome);
     }
 
     // The check's own cross-user helper (if any) is done: shut it down
@@ -2163,7 +2544,7 @@ async fn drive_readiness_check(
     CheckDriverOutput { redacted_values }
 }
 
-/// Rule 2: log one line for an `openjd_*` message on `onReadinessCheck`'s
+/// Rule 2: log one line for an `openjd_*` message on `onHealthCheck`'s
 /// stdout and ignore it. The value of an `openjd_redacted_env` is still
 /// collected for redaction — the directive's effect is ignored, not its
 /// secrecy.
@@ -2174,7 +2555,7 @@ fn log_check_message_ignored(
     msg: &ActionMessage,
     redacted_values: &mut Vec<String>,
 ) {
-    let action_name = tag.action.unwrap_or("onReadinessCheck");
+    let action_name = tag.action.unwrap_or("onHealthCheck");
     let what = match msg {
         ActionMessage::Progress(_) => "openjd_progress",
         ActionMessage::Status(_) => "openjd_status",
@@ -2193,7 +2574,7 @@ fn log_check_message_ignored(
         session_id,
         tag,
         LogContent::PROCESS_CONTROL,
-        "Ignoring {what} from Service '{service_name}' {action_name}: messages on the readiness check's stdout are not honored"
+        "Ignoring {what} from Service '{service_name}' {action_name}: messages on the health check's stdout are not honored"
     );
 }
 
@@ -2215,55 +2596,89 @@ mod tests {
     }
 
     #[test]
-    fn readiness_predicates() {
-        assert!(!ServiceReadiness::Pending.is_terminal());
-        assert!(ServiceReadiness::Ready { message: None }.is_terminal());
-        assert!(ServiceReadiness::Ready { message: None }.is_ready());
-        assert!(ServiceReadiness::TimedOut.is_terminal());
-        assert!(!ServiceReadiness::TimedOut.is_ready());
-        assert!(ServiceReadiness::ExitedBeforeReady.is_terminal());
+    fn health_predicates() {
+        let ready = ServiceHealth::Ready {
+            message: None,
+            failed_probes: 0,
+        };
+        assert!(!ServiceHealth::Pending.is_terminal());
+        assert!(ready.is_terminal());
+        assert!(ready.is_ready());
+        assert!(ServiceHealth::TimedOut.is_terminal());
+        assert!(!ServiceHealth::TimedOut.is_ready());
+        assert!(ServiceHealth::ExitedBeforeReady.is_terminal());
+        let unhealthy = ServiceHealth::Unhealthy(ServiceUnhealthy {
+            failed_probes: 3,
+            failure_threshold: 3,
+            last_failure: "x".into(),
+        });
+        assert!(unhealthy.is_terminal());
+        assert!(!unhealthy.is_ready());
     }
 
     #[test]
-    fn readiness_plan_names_and_timeouts() {
-        let cmd = ReadinessPlan::Command {
-            interval: Duration::from_secs(5),
-            timeout: Duration::from_secs(7),
+    fn health_plan_names_intervals_and_description() {
+        let cmd = HealthPlan {
+            probe: ProbePlan::Command {
+                readiness_interval: Duration::from_secs(5),
+            },
+            ready_timeout: Duration::from_secs(7),
+            health_interval: Some(Duration::from_secs(30)),
+            failure_threshold: 3,
         };
         assert_eq!(cmd.type_name(), "COMMAND");
-        assert_eq!(cmd.timeout(), Duration::from_secs(7));
-        let out = ReadinessPlan::Stdout {
-            timeout: Duration::from_secs(9),
+        assert_eq!(cmd.readiness_interval(), Some(Duration::from_secs(5)));
+        assert_eq!(
+            cmd.describe(),
+            "Health check: COMMAND (readyTimeoutSeconds 7, readinessIntervalSeconds 5, \
+             healthIntervalSeconds 30, failureThreshold 3)"
+        );
+        let out = HealthPlan {
+            probe: ProbePlan::Stdout,
+            ready_timeout: Duration::from_secs(9),
+            health_interval: None,
+            failure_threshold: 3,
         };
         assert_eq!(out.type_name(), "STDOUT");
-        assert_eq!(out.timeout(), Duration::from_secs(9));
-        let tcp = ReadinessPlan::TcpConnect {
-            targets: vec![],
-            timeout: Duration::from_secs(11),
+        assert_eq!(out.readiness_interval(), None);
+        assert_eq!(
+            out.describe(),
+            "Health check: STDOUT (readyTimeoutSeconds 9, no heartbeat after READY)"
+        );
+        let beat = HealthPlan {
+            health_interval: Some(Duration::from_secs(15)),
+            failure_threshold: 2,
+            ..out
+        };
+        assert_eq!(
+            beat.describe(),
+            "Health check: STDOUT (readyTimeoutSeconds 9, healthIntervalSeconds 15, \
+             failureThreshold 2)"
+        );
+        let tcp = HealthPlan {
+            probe: ProbePlan::TcpConnect {
+                targets: vec![],
+                readiness_interval: Duration::from_secs(1),
+            },
+            ready_timeout: Duration::from_secs(11),
+            health_interval: Some(Duration::from_secs(30)),
+            failure_threshold: 3,
         };
         assert_eq!(tcp.type_name(), "TCP_CONNECT");
-        assert_eq!(tcp.timeout(), Duration::from_secs(11));
+        assert_eq!(tcp.readiness_interval(), Some(Duration::from_secs(1)));
     }
 
     #[test]
-    fn service_action_kind_names() {
-        let kinds = [
-            (ServiceActionKind::Enter, "onEnter", "onWrapServiceEnter"),
-            (ServiceActionKind::Run, "onRun", "onWrapServiceRun"),
-            (
-                ServiceActionKind::ReadinessCheck,
-                "onReadinessCheck",
-                "onWrapServiceReadinessCheck",
-            ),
-            (ServiceActionKind::Exit, "onExit", "onWrapServiceExit"),
-        ];
-        for (kind, name, hook) in kinds {
-            assert_eq!(kind.name(), name);
-            assert_eq!(kind.hook_name(), hook);
-        }
+    fn unhealthy_display() {
+        let u = ServiceUnhealthy {
+            failed_probes: 3,
+            failure_threshold: 3,
+            last_failure: "TCP connect to port 'main' (127.0.0.1:1) failed: refused".into(),
+        };
         assert_eq!(
-            SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT,
-            Duration::from_secs(30)
+            u.to_string(),
+            "3 consecutive health probes failed (failureThreshold: 3); last probe: TCP connect \
+             to port 'main' (127.0.0.1:1) failed: refused"
         );
     }
 
@@ -2282,17 +2697,27 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let open = ("a".to_string(), "127.0.0.1".to_string(), port);
-        assert!(tcp_probe(std::slice::from_ref(&open)).await);
-        // A second, closed port fails the round.
+        assert_eq!(
+            tcp_probe(std::slice::from_ref(&open)).await,
+            ProbeResult::Ok
+        );
+        // A second, closed port fails the round and is named.
         let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let closed_port = closed.local_addr().unwrap().port();
         drop(closed);
-        assert!(
-            !tcp_probe(&[
-                open,
-                ("b".to_string(), "127.0.0.1".to_string(), closed_port)
-            ])
-            .await
-        );
+        match tcp_probe(&[
+            open,
+            ("b".to_string(), "127.0.0.1".to_string(), closed_port),
+        ])
+        .await
+        {
+            ProbeResult::Failed(detail) => assert!(
+                detail.starts_with(&format!(
+                    "TCP connect to port 'b' (127.0.0.1:{closed_port}) failed: "
+                )),
+                "{detail}"
+            ),
+            ProbeResult::Ok => panic!("closed port probed ok"),
+        }
     }
 }

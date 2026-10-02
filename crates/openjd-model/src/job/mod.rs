@@ -237,9 +237,9 @@ pub struct EnvironmentActions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wrap_service_run: Option<Action>,
     /// RFC 0009 — in a Service Session, wraps the Service's
-    /// `onReadinessCheck`, concurrently with `onWrapServiceRun`.
+    /// `onHealthCheck`, concurrently with `onWrapServiceRun`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_wrap_service_readiness_check: Option<Action>,
+    pub on_wrap_service_health_check: Option<Action>,
     /// RFC 0009 — in a Service Session, wraps the Service's `onExit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_wrap_service_exit: Option<Action>,
@@ -258,7 +258,7 @@ crate::template::impl_environment_actions_helpers!(
         ("onWrapEnvExit", on_wrap_env_exit),
         ("onWrapServiceEnter", on_wrap_service_enter),
         ("onWrapServiceRun", on_wrap_service_run),
-        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check),
+        ("onWrapServiceHealthCheck", on_wrap_service_health_check),
         ("onWrapServiceExit", on_wrap_service_exit),
         ("onExit", on_exit),
     ],
@@ -268,7 +268,7 @@ crate::template::impl_environment_actions_helpers!(
         ("onWrapEnvExit", on_wrap_env_exit, EnvName),
         ("onWrapServiceEnter", on_wrap_service_enter, Service),
         ("onWrapServiceRun", on_wrap_service_run, Service),
-        ("onWrapServiceReadinessCheck", on_wrap_service_readiness_check, Service),
+        ("onWrapServiceHealthCheck", on_wrap_service_health_check, Service),
         ("onWrapServiceExit", on_wrap_service_exit, Service),
     ]
 );
@@ -282,8 +282,8 @@ impl EnvironmentActions {
             ("onWrapServiceEnter", &self.on_wrap_service_enter),
             ("onWrapServiceRun", &self.on_wrap_service_run),
             (
-                "onWrapServiceReadinessCheck",
-                &self.on_wrap_service_readiness_check,
+                "onWrapServiceHealthCheck",
+                &self.on_wrap_service_health_check,
             ),
             ("onWrapServiceExit", &self.on_wrap_service_exit),
         ]
@@ -398,8 +398,8 @@ pub struct Service {
     pub host_requirements: Option<HostRequirements>,
     /// The declared ports, in declaration order.
     pub ports: Vec<ServicePort>,
-    /// The effective readiness check, with the §9.3 defaults applied.
-    pub readiness_check: ServiceReadinessCheck,
+    /// The effective health check, with the §9.3 defaults applied.
+    pub health_check: ServiceHealthCheck,
     /// The effective restart policy, with the §9.4 defaults applied.
     pub restart_policy: ServiceRestartPolicy,
     /// Environment variables set for every action of the Service's script
@@ -425,7 +425,7 @@ impl Hash for Service {
         self.document.hash(state);
         self.host_requirements.hash(state);
         self.ports.hash(state);
-        self.readiness_check.hash(state);
+        self.health_check.hash(state);
         self.restart_policy.hash(state);
         match &self.variables {
             None => false.hash(state),
@@ -465,32 +465,57 @@ pub struct ServicePort {
     pub protocol: ServicePortProtocol,
 }
 
-/// An instantiated `<ServiceReadinessCheck>` (§9.3), with the defaults
-/// applied: `timeoutSeconds` 300, `intervalSeconds` 5, and a `TCP_CONNECT`
-/// check without `ports` probing every declared TCP port.
+/// An instantiated `<ServiceHealthCheck>` (§9.3), with the defaults
+/// applied: `readinessIntervalSeconds` 1 (`TCP_CONNECT`) or 5 (`COMMAND`),
+/// `readyTimeoutSeconds` 300, `healthIntervalSeconds` 30 (no default for
+/// `STDOUT`, where it is the opt-in heartbeat), `failureThreshold` 3, and a
+/// `TCP_CONNECT` check without `ports` probing every declared TCP port.
+///
+/// One probe mechanism in two phases: before READY a probe runs on launch
+/// and every `readiness_interval_seconds`, bounded by
+/// `ready_timeout_seconds`; after READY one runs every
+/// `health_interval_seconds`, and `failure_threshold` consecutive failures
+/// make the instance UNHEALTHY. Intervals are measured from the end of the
+/// previous probe.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
-pub enum ServiceReadinessCheck {
-    /// READY once a TCP connection to each of `ports` succeeds.
+pub enum ServiceHealthCheck {
+    /// A probe succeeds when a TCP connection to each of `ports` succeeds.
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         /// The names of the TCP ports to probe — every declared TCP port
         /// when the template named none (§9 item 6, §9.3 item 2).
         ports: Vec<String>,
-        timeout_seconds: u64,
+        readiness_interval_seconds: u64,
+        ready_timeout_seconds: u64,
+        health_interval_seconds: u64,
+        failure_threshold: u64,
     },
-    /// READY once `onReadinessCheck` exits 0 while `onRun` is running.
+    /// A probe is one `onHealthCheck` invocation; exit 0 while `onRun` is
+    /// running is a success.
     #[serde(rename = "COMMAND")]
     Command {
-        interval_seconds: u64,
-        timeout_seconds: u64,
+        readiness_interval_seconds: u64,
+        ready_timeout_seconds: u64,
+        health_interval_seconds: u64,
+        failure_threshold: u64,
     },
-    /// READY once `onRun` writes `openjd_service_ready: <message>`.
+    /// A probe is an `openjd_service_ready: <message>` line on `onRun`'s
+    /// stdout: the first makes the instance READY; afterwards one is
+    /// expected every `health_interval_seconds` when that is `Some`.
     #[serde(rename = "STDOUT")]
-    Stdout { timeout_seconds: u64 },
+    Stdout {
+        ready_timeout_seconds: u64,
+        /// The heartbeat interval, or `None` when no heartbeat is expected
+        /// and the instance's health is that `onRun` is still running.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        health_interval_seconds: Option<u64>,
+        /// Meaningful only when `health_interval_seconds` is `Some`.
+        failure_threshold: u64,
+    },
 }
 
-impl ServiceReadinessCheck {
+impl ServiceHealthCheck {
     /// The schema value of the `type` discriminator.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -500,17 +525,80 @@ impl ServiceReadinessCheck {
         }
     }
 
-    /// The effective `timeoutSeconds`, whichever variant this is.
-    pub fn timeout_seconds(&self) -> u64 {
+    /// The effective `readinessIntervalSeconds`; `None` for `STDOUT`,
+    /// which has no readiness probe to space.
+    pub fn readiness_interval_seconds(&self) -> Option<u64> {
         match self {
             Self::TcpConnect {
-                timeout_seconds, ..
+                readiness_interval_seconds,
+                ..
             }
             | Self::Command {
-                timeout_seconds, ..
-            }
-            | Self::Stdout { timeout_seconds } => *timeout_seconds,
+                readiness_interval_seconds,
+                ..
+            } => Some(*readiness_interval_seconds),
+            Self::Stdout { .. } => None,
         }
+    }
+
+    /// The effective `readyTimeoutSeconds`, whichever variant this is.
+    pub fn ready_timeout_seconds(&self) -> u64 {
+        match self {
+            Self::TcpConnect {
+                ready_timeout_seconds,
+                ..
+            }
+            | Self::Command {
+                ready_timeout_seconds,
+                ..
+            }
+            | Self::Stdout {
+                ready_timeout_seconds,
+                ..
+            } => *ready_timeout_seconds,
+        }
+    }
+
+    /// The effective `healthIntervalSeconds`: always `Some` for
+    /// `TCP_CONNECT` and `COMMAND`; for `STDOUT`, `Some` only when the
+    /// template opted into the heartbeat.
+    pub fn health_interval_seconds(&self) -> Option<u64> {
+        match self {
+            Self::TcpConnect {
+                health_interval_seconds,
+                ..
+            }
+            | Self::Command {
+                health_interval_seconds,
+                ..
+            } => Some(*health_interval_seconds),
+            Self::Stdout {
+                health_interval_seconds,
+                ..
+            } => *health_interval_seconds,
+        }
+    }
+
+    /// The effective `failureThreshold`, whichever variant this is.
+    pub fn failure_threshold(&self) -> u64 {
+        match self {
+            Self::TcpConnect {
+                failure_threshold, ..
+            }
+            | Self::Command {
+                failure_threshold, ..
+            }
+            | Self::Stdout {
+                failure_threshold, ..
+            } => *failure_threshold,
+        }
+    }
+
+    /// Whether the instance is monitored after READY: `true` unless this
+    /// is a `STDOUT` check without `healthIntervalSeconds`.
+    #[must_use]
+    pub fn monitors_health(&self) -> bool {
+        self.health_interval_seconds().is_some()
     }
 }
 
@@ -542,7 +630,7 @@ pub struct ServiceScript {
 pub struct ServiceActions {
     pub on_enter: Option<Action>,
     pub on_run: Action,
-    pub on_readiness_check: Option<Action>,
+    pub on_health_check: Option<Action>,
     pub on_exit: Option<Action>,
 }
 
@@ -553,7 +641,7 @@ impl ServiceActions {
         [
             ("onEnter", self.on_enter.as_ref()),
             ("onRun", Some(&self.on_run)),
-            ("onReadinessCheck", self.on_readiness_check.as_ref()),
+            ("onHealthCheck", self.on_health_check.as_ref()),
             ("onExit", self.on_exit.as_ref()),
         ]
     }

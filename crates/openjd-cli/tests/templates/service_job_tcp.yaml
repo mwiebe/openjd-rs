@@ -1,5 +1,5 @@
 # RFC 0009 example 1 adapted: a Job Service (a python TCP listener standing in
-# for valkey-server) with TCP_CONNECT readiness, consumed by the Tasks of two
+# for valkey-server) with a TCP_CONNECT health check, consumed by the Tasks of two
 # Steps through Service.Store.main.connectAddress / .port.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
@@ -13,9 +13,9 @@ jobServices:
     description: "A TCP echo store shared by every Task."
     ports:
       - name: main
-    readinessCheck:
+    healthCheck:
       type: TCP_CONNECT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 1
       completedTasks: KEEP

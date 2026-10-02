@@ -35,17 +35,17 @@ Which consumer honors it is a scope decision, not the filter's:
 
 | Consumer | Effect |
 |---|---|
-| `ServiceSession` background `onRun` driver, readiness type `STDOUT` | The first line makes the instance READY with `message`; later lines have no further effect; a line drained after `onRun` exited cannot (onRun exit wins). |
-| `ServiceSession` `onRun` driver, readiness type `TCP_CONNECT` or `COMMAND` | Logged as ignored. |
+| `ServiceSession` background `onRun` driver, health check type `STDOUT` | The first line makes the instance READY with `message`. Afterwards, when the check gives `healthIntervalSeconds`, each line is a heartbeat (a successful health probe that resets the failure count and restarts the interval); without it later lines have no effect. A line drained after `onRun` exited does neither (onRun exit wins, constraint 11). |
+| `ServiceSession` `onRun` driver, health check type `TCP_CONNECT` or `COMMAND` | Logged as ignored. |
 | `ServiceSession` `onEnter` / `onExit` | Logged as ignored. |
-| `ServiceSession` `onReadinessCheck` driver | Logged as ignored, like every message on the check's stdout (RFC 0009 §9.6.1 rule 2: the check's result is its exit status). |
+| `ServiceSession` `onHealthCheck` driver | Logged as ignored, like every message on the check's stdout (RFC 0009 §9.6.1 rule 2: the check's result is its exit status). |
 | `Session` (Environment actions, Tasks, ad-hoc subprocesses) | Ignored silently in `apply_message`. |
 
 See [service-session.md](service-session.md) for the per-action message table
 of a Service Session (notably: `SetEnv` / `UnsetEnv` / `RedactedEnv` /
 `CancelMarkFailed` are honored from a Service's `onEnter` only and are logged
-as ignored from `onRun`, `onReadinessCheck`, and `onExit`; from
-`onReadinessCheck` *every* message, `Fail` / `Status` / `Progress` included,
+as ignored from `onRun`, `onHealthCheck`, and `onExit`; from
+`onHealthCheck` *every* message, `Fail` / `Status` / `Progress` included,
 is logged and ignored, and a `Fail` does not change the invocation's
 result). Under `WRAP_ACTIONS` the messages are scanned on the wrap script's
 stdout, so a wrapped `onEnter`'s `SetEnv` and a wrapped `onRun`'s

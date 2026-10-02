@@ -33,7 +33,7 @@ composes a `Session`:
 
 1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
 2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
-3. `svc.launch().await?` — launch `onRun` in the background and start the readiness check (for `COMMAND`, the concurrent `onReadinessCheck` invocations).
+3. `svc.launch().await?` — launch `onRun` in the background and start the health check (for `COMMAND`, the concurrent `onHealthCheck` invocations); it keeps probing after READY and cancels `onRun` on UNHEALTHY.
 4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, or `ExitedBeforeReady`.
 5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
 6. `svc.end().await` — cancel a running `onRun`, run `onExit`, exit the Environments, delete the working directory.
@@ -56,7 +56,7 @@ openjd_sessions                 — crate root (most public items re-exported he
 │   ├── env_script              — EnvironmentScriptRunner
 │   └── step_script             — StepScriptRunner
 ├── service_session             — ServiceSession, ServiceSessionConfig, ServiceSessionState,
-│                                 ServiceReadiness, ServiceRunExit (RFC 0009)
+│                                 ServiceHealth, ServiceUnhealthy, ServiceRunExit (RFC 0009)
 ├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier
 ├── session_user                — SessionUser trait, PosixSessionUser, WindowsSessionUser
 ├── tempdir                     — TempDir, StickyBitPolicy, openjd_temp_dir
@@ -90,9 +90,9 @@ pub const session::DEFAULT_CANCEL_NOTIFY_PERIOD_SECS: u64 = 5;
 /// table: 300 seconds). RFC 0009.
 pub const service_session::SERVICE_EXIT_DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Default `timeout` of one `onReadinessCheck` invocation (RFC 0009
+/// Default `timeout` of one `onHealthCheck` invocation (RFC 0009
 /// `<ServiceActions>` defaults table: 30 seconds).
-pub const service_session::SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+pub const service_session::SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 ```
 
 ## Entry Points
@@ -421,7 +421,7 @@ pub struct SessionConfig {
     /// runner that merges several Sessions' logs into one stream, as
     /// `openjd run` does for a Job's Service Sessions (`Service <name>`).
     /// A concurrently running action's tag follows it (`[Service Files]
-    /// [onReadinessCheck] …`), and each section banner of the session
+    /// [onHealthCheck] …`), and each section banner of the session
     /// becomes one tagged line instead of four. Default `None`: records
     /// are exactly as before. See logging.md "LogTag".
     pub log_tag: Option<String>,
@@ -546,7 +546,7 @@ pub enum ActionMessage {
     /// redaction set, env var set. REDACTED_ENV_VARS extension.
     RedactedEnv { name: String, value: String },
     /// `openjd_service_ready: <message>` — RFC 0009 (`SERVICE`). Honored
-    /// only from a Service's `onRun` under a `STDOUT` readiness check;
+    /// only from a Service's `onRun` under a `STDOUT` health check;
     /// `Session` ignores it from every other action.
     ServiceReady(String),
     /// Internal signal (emitted from ActionFilter when a malformed
@@ -623,27 +623,45 @@ pub enum ServiceSessionState {
 impl Display for ServiceSessionState;  // CREATED, ENTERED, RUNNING, EXITED, START_FAILED, ENDED
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServiceReadiness {
+pub enum ServiceHealth {
+    /// Phase 1: no probe has passed yet.
     Pending,
-    /// READY. `message` is the `openjd_service_ready` text for a STDOUT check.
-    Ready { message: Option<String> },
-    /// `timeoutSeconds` elapsed since launch; onRun may still be running.
+    /// READY (phase 2). `message` is the `openjd_service_ready` text for a
+    /// STDOUT check; `failed_probes` the consecutive failures since the last
+    /// success (below `failureThreshold`). Re-sent on the watch when the
+    /// count changes.
+    Ready { message: Option<String>, failed_probes: u64 },
+    /// `readyTimeoutSeconds` elapsed since launch; onRun may still be running.
     TimedOut,
-    /// onRun exited before the check passed.
+    /// onRun exited before a probe passed.
     ExitedBeforeReady,
+    /// `failureThreshold` consecutive probes failed after READY; the runtime
+    /// has canceled onRun with its cancelation method (constraint 11).
+    Unhealthy(ServiceUnhealthy),
 }
-impl ServiceReadiness {
-    pub fn is_terminal(&self) -> bool;   // !Pending
-    pub fn is_ready(&self) -> bool;
+impl ServiceHealth {
+    pub fn is_terminal(&self) -> bool;   // !Pending — what wait_ready() returns on
+    pub fn is_ready(&self) -> bool;      // Ready only
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceUnhealthy {
+    pub failed_probes: u64,        // == failure_threshold
+    pub failure_threshold: u64,
+    pub last_failure: String,      // what the last failed probe reported
+}
+impl Display for ServiceUnhealthy; // "N consecutive health probes failed (failureThreshold: T); last probe: <last_failure>"
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceRunExit {
     pub state: ActionState,            // Success | Failed | Canceled | Timeout
     pub exit_code: Option<i32>,
     /// Requested through `cancel_run` / `end` / the cancel handle — not an
-    /// instance failure.
+    /// instance failure. `false` for an exit the health check forced.
     pub canceled: bool,
+    /// `Some` when the health check canceled onRun on UNHEALTHY — an
+    /// instance failure (also set when the caller's cancel raced it).
+    pub unhealthy: Option<ServiceUnhealthy>,
     /// `openjd_fail` text, or why the action could not run.
     pub fail_message: Option<String>,
     /// Captured onRun output when `SessionConfig.debug_collect_stdout`.
@@ -655,7 +673,7 @@ pub struct ServiceSession { /* private */ }
 impl ServiceSession {
     /// Validate the endpoint assignment (every declared/probed port assigned,
     /// `endpoints.name == service.name`, a COMMAND check has an
-    /// onReadinessCheck), order the assignment's ports in declaration order,
+    /// onHealthCheck), order the assignment's ports in declaration order,
     /// and create the underlying Session (working directory, cross-user helper).
     pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError>;
 
@@ -668,13 +686,13 @@ impl ServiceSession {
     /// onRun, onExit). Environment actions report via `session().action_status()`.
     pub fn action_status(&self) -> Option<ActionStatus>;
     pub fn launch_count(&self) -> u32;
-    pub fn readiness(&self) -> Option<ServiceReadiness>;            // None before first launch
+    pub fn health(&self) -> Option<ServiceHealth>;                  // None before first launch
     pub fn run_exit(&self) -> Option<ServiceRunExit>;               // None until the instance exits
-    pub fn readiness_watch(&self) -> Option<tokio::sync::watch::Receiver<ServiceReadiness>>;
+    pub fn health_watch(&self) -> Option<tokio::sync::watch::Receiver<ServiceHealth>>;
     pub fn exit_watch(&self) -> Option<tokio::sync::watch::Receiver<Option<ServiceRunExit>>>;
     /// Cancels whichever action of this Session is running in its main slot
     /// (onEnter, onRun, onExit, or an Environment action) with its own
-    /// cancelation method. A concurrent onReadinessCheck invocation runs in
+    /// cancelation method. A concurrent onHealthCheck invocation runs in
     /// its own slot and is canceled only by the runtime.
     pub fn cancel_handle(&self) -> SessionCancelHandle;
 
@@ -685,24 +703,28 @@ impl ServiceSession {
     /// onEnter. Any error → StartFailed (a start failure).
     pub async fn enter(&mut self) -> Result<(), SessionError>;
     /// Entered | Exited → Running. Launch onRun (or onWrapServiceRun) in the
-    /// background and start the readiness check; for COMMAND, also start the
-    /// onReadinessCheck driver (sequential invocations, intervalSeconds
-    /// apart, each bounded by the action's timeout, default 30 s). In Exited
+    /// background and start the health check: probes on launch and every
+    /// readinessIntervalSeconds until READY, then every healthIntervalSeconds
+    /// until failureThreshold consecutive failures make the instance
+    /// UNHEALTHY and the runtime cancels onRun; for COMMAND, also start the
+    /// onHealthCheck driver (one sequential invocation per probe, each
+    /// bounded by the action's timeout, default 30 s). In Exited
     /// this is a relaunch in the same Session (onEnter not re-run, its env
     /// vars retained). Err (state unchanged) when a wrap hook's scope cannot
     /// be built or the check's cross-user helper cannot be spawned.
     pub async fn launch(&mut self) -> Result<(), SessionError>;
     /// enter() → launch() → wait_ready().
-    pub async fn start(&mut self) -> Result<ServiceReadiness, SessionError>;
-    /// Await the terminal readiness of the current instance.
-    pub async fn wait_ready(&self) -> Result<ServiceReadiness, SessionError>;
+    pub async fn start(&mut self) -> Result<ServiceHealth, SessionError>;
+    /// Await the readiness decision of the current instance (the first
+    /// non-Pending health).
+    pub async fn wait_ready(&self) -> Result<ServiceHealth, SessionError>;
     /// Await the current instance's exit. Running → Exited.
     pub async fn wait_exit(&mut self) -> Result<ServiceRunExit, SessionError>;
     /// Cancel the running onRun with its `cancelation` method (grace capped at
     /// `time_limit`; `Some(0)` = terminate now). `false` if none is running.
     pub fn cancel_run(&self, time_limit: Option<Duration>) -> bool;
     /// Constraint 7: cancel a running onRun and await it (which cancels any
-    /// onReadinessCheck invocation in flight first); run onExit (300 s
+    /// onHealthCheck invocation in flight first); run onExit (300 s
     /// default timeout) if defined and any Service action ran; exit the
     /// Environments in reverse; delete the working directory. Every step
     /// runs; the first error is returned. → Ended.
@@ -712,19 +734,19 @@ impl ServiceSession {
 impl Drop for ServiceSession;  // warns when end() was not called; stops the check driver; aborts the onRun driver task
 ```
 
-`ServiceReadiness::Ready { message: None }` is the READY value of a
-`TCP_CONNECT` or `COMMAND` check; only `STDOUT` carries a message.
+`ServiceHealth::Ready { message: None, failed_probes: 0 }` is the READY value
+of a `TCP_CONNECT` or `COMMAND` check; only `STDOUT` carries a message.
 
 When the entered Environments include a wrapping Environment (`WRAP_ACTIONS`)
 whose `runScope` includes `SERVICE`, its `onWrapServiceEnter` /
-`onWrapServiceRun` / `onWrapServiceReadinessCheck` / `onWrapServiceExit` run
+`onWrapServiceRun` / `onWrapServiceHealthCheck` / `onWrapServiceExit` run
 in place of the Service's actions (each only when the Service defines the
 corresponding action), with `WrappedAction.*` and `WrappedService.*` in
 scope. See [service-session.md](service-session.md) "Wrap hooks".
 
 Log attribution (RFC 0009 "Concurrency with `onRun`" rule 3): every record
-about `onReadinessCheck` carries the structured field `openjd_action` and the
-message prefix `[onReadinessCheck] ` (or the hook's name when wrapped);
+about `onHealthCheck` carries the structured field `openjd_action` and the
+message prefix `[onHealthCheck] ` (or the hook's name when wrapped);
 `onRun`'s records are untagged. See [logging.md](logging.md).
 
 ## Subprocess Results
@@ -1170,11 +1192,11 @@ macro_rules! session_log { /* ... */ }
 /// when `$action: Option<&str>` is `Some`: adds the structured field
 /// `openjd_action = <name>` and prefixes the message with `[<name>] `.
 /// With `None` it is exactly `session_log!`. Used for the Service Session's
-/// `onReadinessCheck`, which runs concurrently with `onRun` (RFC 0009 log
+/// `onHealthCheck`, which runs concurrently with `onRun` (RFC 0009 log
 /// attribution). See logging.md.
 ///
 /// Usage:
-///   session_action_log!(info, session_id, Some("onReadinessCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
+///   session_action_log!(info, session_id, Some("onHealthCheck"), LogContent::COMMAND_OUTPUT, "{}", line);
 #[macro_export]
 macro_rules! session_action_log { /* ... */ }
 

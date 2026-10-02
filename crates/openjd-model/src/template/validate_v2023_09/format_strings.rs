@@ -2439,8 +2439,10 @@ const SERVICE_PORT_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint:
     nullable: true,
 };
 
-/// §9.3 `timeoutSeconds` / `intervalSeconds` (`<posintstring>`): positive;
-/// whole-field `null` means the §9.3 default applies.
+/// §9.3 `readinessIntervalSeconds` / `readyTimeoutSeconds` /
+/// `healthIntervalSeconds` / `failureThreshold` (`<posintstring>`):
+/// positive; whole-field `null` means the §9.3 default applies (for a
+/// `STDOUT` check's `healthIntervalSeconds`, no heartbeat).
 const SERVICE_SECONDS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
     min: 1,
     min_msg: "must be > 0.",
@@ -2556,31 +2558,19 @@ fn validate_service_format_strings<'a>(
             );
         }
     }
-    if let Some(declared) = &svc.readiness_check {
-        let rc_path = path_field(path, "readinessCheck");
-        if let Some(timeout) = declared.timeout_seconds() {
-            validate_fs_with(
-                timeout,
-                &template_symtab,
-                template_ev,
-                &path_field(&rc_path, "timeoutSeconds"),
-                Some(&SERVICE_SECONDS_CONSTRAINT),
-                errors,
-            );
-        }
-        if let ServiceReadinessCheck::Command {
-            interval_seconds: Some(interval),
-            ..
-        } = declared
-        {
-            validate_fs_with(
-                interval,
-                &template_symtab,
-                template_ev,
-                &path_field(&rc_path, "intervalSeconds"),
-                Some(&SERVICE_SECONDS_CONSTRAINT),
-                errors,
-            );
+    if let Some(declared) = &svc.health_check {
+        let hc_path = path_field(path, "healthCheck");
+        for (name, value) in declared.numeric_fields() {
+            if let Some(value) = value {
+                validate_fs_with(
+                    value,
+                    &template_symtab,
+                    template_ev,
+                    &path_field(&hc_path, name),
+                    Some(&SERVICE_SECONDS_CONSTRAINT),
+                    errors,
+                );
+            }
         }
     }
     if let Some(attempts) = svc

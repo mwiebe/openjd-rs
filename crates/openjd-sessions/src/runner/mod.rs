@@ -123,7 +123,7 @@ pub(crate) struct ScriptRunnerBase {
     /// prefixed with `[<tag>] ` and carries an `openjd_session_tag` field —
     /// the Session's [`SessionConfig::log_tag`](crate::session::SessionConfig::log_tag),
     /// copied onto every runner the Session builds. Precedes the action
-    /// tag: `[Service Files] [onReadinessCheck] …`.
+    /// tag: `[Service Files] [onHealthCheck] …`.
     pub session_tag: Option<String>,
 }
 

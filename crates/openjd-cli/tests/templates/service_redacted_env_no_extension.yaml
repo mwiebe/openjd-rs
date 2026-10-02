@@ -10,9 +10,9 @@ jobServices:
   - name: Vault
     ports:
       - name: http
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 0
     script:

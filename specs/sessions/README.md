@@ -17,7 +17,7 @@ replaces all of that with async/await, channels, and cancellation tokens.
 | [architecture.md](architecture.md) | Crate structure, module layout, dependency graph, public API surface |
 | [public-api.md](public-api.md) | Authoritative reference for every public type, function, and re-export |
 | [session.md](session.md) | Session struct, state machine, lifecycle, environment tracking, symbol table construction |
-| [service-session.md](service-session.md) | ServiceSession (RFC 0009): Service lifecycle, `Service.*` scope, readiness checks (`TCP_CONNECT`, `STDOUT`, `COMMAND` with the concurrent `onReadinessCheck`), background `onRun`, the two action slots, log attribution, `onWrapService*` hooks, relaunch, constraint-7 teardown |
+| [service-session.md](service-session.md) | ServiceSession (RFC 0009): Service lifecycle, `Service.*` scope, the two-phase health check (`TCP_CONNECT`, `STDOUT` with its optional heartbeat, `COMMAND` with the concurrent `onHealthCheck`; readiness, then health until UNHEALTHY), background `onRun`, the two action slots, log attribution, `onWrapService*` hooks, relaunch, constraint-7 teardown |
 | [subprocess.md](subprocess.md) | Async subprocess execution, stdout streaming, signal delivery, process group isolation |
 | [action-filter.md](action-filter.md) | Parsing `openjd_*` directives from stdout, redaction, malformed command detection |
 | [action-messages.md](action-messages.md) | Real-time ActionMessage streaming via tokio mpsc channels |
@@ -65,5 +65,5 @@ Currently implements `2023-09` with extensions:
 - `EXPR` (RFC 0005)
 - `WRAP_ACTIONS` (RFC 0008)
 - `SERVICE` (RFC 0009) — single-Service Session runtime: `TCP_CONNECT`, `STDOUT`, and
-  `COMMAND` readiness (with the "Concurrency with `onRun`" rules), and the
+  `COMMAND` probes (with the "Concurrency with `onRun`" rules), and the
   `onWrapService*` hooks of a `SERVICE`-scoped wrapping Environment

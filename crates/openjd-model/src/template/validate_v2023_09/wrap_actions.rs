@@ -8,7 +8,7 @@
 //! Seven fields on `<EnvironmentActions>` are gated by the `WRAP_ACTIONS`
 //! extension:
 //! - `onWrapEnvEnter`, `onWrapTaskRun`, `onWrapEnvExit` (RFC 0008)
-//! - `onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceReadinessCheck`,
+//! - `onWrapServiceEnter`, `onWrapServiceRun`, `onWrapServiceHealthCheck`,
 //!   `onWrapServiceExit` (RFC 0009) — these additionally require `SERVICE`.
 //!
 //! When the extension is not enabled, using any of these fields is a

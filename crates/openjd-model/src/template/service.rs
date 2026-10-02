@@ -45,11 +45,11 @@ pub struct Service {
     /// names, each TCP (the default) or UDP. No two ports of the same
     /// protocol may have the same `port` number (§9 item 5.4).
     pub ports: Vec<ServicePort>,
-    /// §9.3 How readiness is determined. `None` means
-    /// `{ type: TCP_CONNECT }` on every declared TCP port; a Service none
-    /// of whose ports is TCP must declare a `STDOUT` or `COMMAND` check
-    /// (§9 item 6). See [`readiness_check`](Self::readiness_check).
-    pub readiness_check: Option<ServiceReadinessCheck>,
+    /// §9.3 How readiness and, after READY, health are determined. `None`
+    /// means `{ type: TCP_CONNECT }` on every declared TCP port; a Service
+    /// none of whose ports is TCP must declare a `STDOUT` or `COMMAND`
+    /// check (§9 item 6). See [`health_check`](Self::health_check).
+    pub health_check: Option<ServiceHealthCheck>,
     /// §9.4 What happens when `onRun` exits before the scope ends. `None`
     /// means `{ maxAttempts: 0, completedTasks: RERUN }`; see
     /// [`restart_policy`](Self::restart_policy).
@@ -63,10 +63,10 @@ pub struct Service {
 }
 
 impl Service {
-    /// The effective readiness check: the declared one, or the §9 default
+    /// The effective health check: the declared one, or the §9 default
     /// `{ type: TCP_CONNECT }` applied to every declared TCP port.
-    pub fn readiness_check(&self) -> ServiceReadinessCheck {
-        self.readiness_check.clone().unwrap_or_default()
+    pub fn health_check(&self) -> ServiceHealthCheck {
+        self.health_check.clone().unwrap_or_default()
     }
 
     /// The effective restart policy: the declared one, or the §9 default
@@ -81,7 +81,7 @@ impl Service {
     }
 
     /// The names of the declared ports whose `protocol` is `TCP`, in
-    /// declaration order — the ports a `TCP_CONNECT` readiness check
+    /// declaration order — the ports a `TCP_CONNECT` health check
     /// probes when it names none (§9 item 6, §9.3 item 2).
     pub fn tcp_port_names(&self) -> impl Iterator<Item = &str> {
         self.ports
@@ -121,7 +121,7 @@ pub struct ServicePort {
 )]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ServicePortProtocol {
-    /// A TCP port; the only kind a `TCP_CONNECT` readiness check can
+    /// A TCP port; the only kind a `TCP_CONNECT` health check can
     /// probe. The default.
     #[default]
     Tcp,
@@ -153,44 +153,95 @@ impl std::fmt::Display for ServicePortProtocol {
     }
 }
 
-/// §9.3 `<ServiceReadinessCheck>` — discriminated union on `type`.
+/// §9.3 `<ServiceHealthCheck>` — discriminated union on `type`.
+///
+/// One probe mechanism applied in two phases. Before the instance is READY
+/// the probe decides readiness: the first probe runs as soon as `onRun` is
+/// launched, one every `readinessIntervalSeconds` after it, and the first
+/// success makes the instance READY; `readyTimeoutSeconds`, measured from
+/// the launch of `onRun`, bounds the phase. After READY the probe decides
+/// health: one every `healthIntervalSeconds`, and `failureThreshold`
+/// consecutive failures make the instance UNHEALTHY — an instance failure.
 ///
 /// The numeric fields are `<posinteger> | <posintstring>` (`@fmtstring`),
 /// modeled like `<Action>.timeout`; a format string is resolved at job
-/// creation. `timeoutSeconds` is measured from the start of `onRun` and
-/// defaults to [`DEFAULT_TIMEOUT_SECONDS`](Self::DEFAULT_TIMEOUT_SECONDS).
+/// creation. The field set differs by `type`: `STDOUT` has no
+/// `readinessIntervalSeconds` (the ready line arrives when it arrives) and
+/// no default `healthIntervalSeconds` (the heartbeat is opt-in), so a
+/// `STDOUT` check that gives `readinessIntervalSeconds` is rejected as an
+/// unknown field, like `ports` on anything but `TCP_CONNECT`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase", deny_unknown_fields)]
-pub enum ServiceReadinessCheck {
-    /// READY once a TCP connection to each listed port succeeds. `ports`
-    /// may name only TCP ports and defaults to every declared TCP port.
+pub enum ServiceHealthCheck {
+    /// A probe succeeds when a TCP connection to each listed port succeeds.
+    /// `ports` may name only TCP ports and defaults to every declared TCP
+    /// port.
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         ports: Option<Vec<String>>,
-        timeout_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS`](Self::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS).
+        readiness_interval_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
+        ready_timeout_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_HEALTH_INTERVAL_SECONDS`](Self::DEFAULT_HEALTH_INTERVAL_SECONDS).
+        health_interval_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD).
+        failure_threshold: Option<FormatString>,
     },
-    /// READY once `<ServiceActions>.onReadinessCheck` exits 0 while `onRun`
-    /// is running. `intervalSeconds` (default
-    /// [`DEFAULT_COMMAND_INTERVAL_SECONDS`](Self::DEFAULT_COMMAND_INTERVAL_SECONDS))
+    /// A probe is one invocation of `<ServiceActions>.onHealthCheck`, and
+    /// succeeds when it exits 0 while `onRun` is running. Each interval
     /// separates the end of one invocation from the start of the next.
     #[serde(rename = "COMMAND")]
     Command {
-        interval_seconds: Option<FormatString>,
-        timeout_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS`](Self::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS).
+        readiness_interval_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
+        ready_timeout_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_HEALTH_INTERVAL_SECONDS`](Self::DEFAULT_HEALTH_INTERVAL_SECONDS).
+        health_interval_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD).
+        failure_threshold: Option<FormatString>,
     },
-    /// READY once `onRun` writes `openjd_service_ready: <message>` to
-    /// stdout.
+    /// A probe is an `openjd_service_ready: <message>` line on `onRun`'s
+    /// stdout. The first makes the instance READY; after READY the line is
+    /// a heartbeat only when `healthIntervalSeconds` is given (no default),
+    /// each interval without one being a failed probe. `failureThreshold`
+    /// is permitted only together with `healthIntervalSeconds` (§9.3 item 6).
     #[serde(rename = "STDOUT")]
     Stdout {
-        timeout_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
+        ready_timeout_seconds: Option<FormatString>,
+        /// No default: `None` means no heartbeat is expected.
+        health_interval_seconds: Option<FormatString>,
+        /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD);
+        /// meaningful only with `health_interval_seconds`.
+        failure_threshold: Option<FormatString>,
     },
 }
 
-impl ServiceReadinessCheck {
-    /// §9.3 default for `timeoutSeconds`, in seconds.
-    pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    /// §9.3 default for `COMMAND`'s `intervalSeconds`, in seconds.
-    pub const DEFAULT_COMMAND_INTERVAL_SECONDS: u64 = 5;
+/// The schema names of the four numeric `<ServiceHealthCheck>` fields, as
+/// [`ServiceHealthCheck::numeric_fields`] orders them.
+pub const SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4] = [
+    "readinessIntervalSeconds",
+    "readyTimeoutSeconds",
+    "healthIntervalSeconds",
+    "failureThreshold",
+];
+
+impl ServiceHealthCheck {
+    /// §9.3 item 3 default for `readinessIntervalSeconds` on a `TCP_CONNECT`
+    /// check, in seconds.
+    pub const DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64 = 1;
+    /// §9.3 item 3 default for `readinessIntervalSeconds` on a `COMMAND`
+    /// check, in seconds.
+    pub const DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64 = 5;
+    /// §9.3 item 4 default for `readyTimeoutSeconds`, in seconds.
+    pub const DEFAULT_READY_TIMEOUT_SECONDS: u64 = 300;
+    /// §9.3 item 5 default for `healthIntervalSeconds` on a `TCP_CONNECT` or
+    /// `COMMAND` check, in seconds. `STDOUT` has no default.
+    pub const DEFAULT_HEALTH_INTERVAL_SECONDS: u64 = 30;
+    /// §9.3 item 6 default for `failureThreshold`.
+    pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
 
     /// The schema value of the `type` discriminator.
     pub fn type_name(&self) -> &'static str {
@@ -201,27 +252,110 @@ impl ServiceReadinessCheck {
         }
     }
 
-    /// The `timeoutSeconds` field, whichever variant this is.
-    pub fn timeout_seconds(&self) -> Option<&FormatString> {
+    /// The `readinessIntervalSeconds` field; always `None` for `STDOUT`,
+    /// which has no such field.
+    pub fn readiness_interval_seconds(&self) -> Option<&FormatString> {
         match self {
             Self::TcpConnect {
-                timeout_seconds, ..
+                readiness_interval_seconds,
+                ..
             }
             | Self::Command {
-                timeout_seconds, ..
-            }
-            | Self::Stdout { timeout_seconds } => timeout_seconds.as_ref(),
+                readiness_interval_seconds,
+                ..
+            } => readiness_interval_seconds.as_ref(),
+            Self::Stdout { .. } => None,
         }
+    }
+
+    /// The `readyTimeoutSeconds` field, whichever variant this is.
+    pub fn ready_timeout_seconds(&self) -> Option<&FormatString> {
+        match self {
+            Self::TcpConnect {
+                ready_timeout_seconds,
+                ..
+            }
+            | Self::Command {
+                ready_timeout_seconds,
+                ..
+            }
+            | Self::Stdout {
+                ready_timeout_seconds,
+                ..
+            } => ready_timeout_seconds.as_ref(),
+        }
+    }
+
+    /// The `healthIntervalSeconds` field, whichever variant this is.
+    pub fn health_interval_seconds(&self) -> Option<&FormatString> {
+        match self {
+            Self::TcpConnect {
+                health_interval_seconds,
+                ..
+            }
+            | Self::Command {
+                health_interval_seconds,
+                ..
+            }
+            | Self::Stdout {
+                health_interval_seconds,
+                ..
+            } => health_interval_seconds.as_ref(),
+        }
+    }
+
+    /// The `failureThreshold` field, whichever variant this is.
+    pub fn failure_threshold(&self) -> Option<&FormatString> {
+        match self {
+            Self::TcpConnect {
+                failure_threshold, ..
+            }
+            | Self::Command {
+                failure_threshold, ..
+            }
+            | Self::Stdout {
+                failure_threshold, ..
+            } => failure_threshold.as_ref(),
+        }
+    }
+
+    /// The four numeric `@fmtstring` fields paired with their schema names
+    /// ([`SERVICE_HEALTH_CHECK_NUMERIC_FIELDS`] order), each `None` when
+    /// not given — or, for `readinessIntervalSeconds` on `STDOUT`, not a
+    /// field at all. Every numeric field is a `<posinteger>`, so validators
+    /// and job creation treat the four alike.
+    pub fn numeric_fields(&self) -> [(&'static str, Option<&FormatString>); 4] {
+        [
+            (
+                SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[0],
+                self.readiness_interval_seconds(),
+            ),
+            (
+                SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[1],
+                self.ready_timeout_seconds(),
+            ),
+            (
+                SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[2],
+                self.health_interval_seconds(),
+            ),
+            (
+                SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[3],
+                self.failure_threshold(),
+            ),
+        ]
     }
 }
 
-impl Default for ServiceReadinessCheck {
-    /// `{ type: TCP_CONNECT }` on every declared TCP port, with the default
-    /// timeout.
+impl Default for ServiceHealthCheck {
+    /// `{ type: TCP_CONNECT }` on every declared TCP port, with every
+    /// default.
     fn default() -> Self {
         Self::TcpConnect {
             ports: None,
-            timeout_seconds: None,
+            readiness_interval_seconds: None,
+            ready_timeout_seconds: None,
+            health_interval_seconds: None,
+            failure_threshold: None,
         }
     }
 }
@@ -304,11 +438,13 @@ pub struct ServiceActions {
     /// before the scheduler cancels it is an instance failure. No default
     /// timeout.
     pub on_run: Action,
-    /// Run repeatedly while `onRun` runs when `readinessCheck.type` is
-    /// `COMMAND`; exit 0 means READY. Must be defined if and only if the
-    /// readiness check type is `COMMAND`. Default timeout
-    /// [`ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS`](Self::ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS).
-    pub on_readiness_check: Option<Action>,
+    /// Run repeatedly while `onRun` runs when `healthCheck.type` is
+    /// `COMMAND`: before READY to decide whether the instance is ready,
+    /// afterwards to decide whether it still is; exit 0 is a successful
+    /// probe. Must be defined if and only if the health check type is
+    /// `COMMAND`. Default timeout
+    /// [`ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS`](Self::ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS).
+    pub on_health_check: Option<Action>,
     /// Cleanup run after the other actions have stopped for the last time
     /// in a Service Session. Default timeout
     /// [`ON_EXIT_DEFAULT_TIMEOUT_SECONDS`](Self::ON_EXIT_DEFAULT_TIMEOUT_SECONDS).
@@ -316,20 +452,20 @@ pub struct ServiceActions {
 }
 
 impl ServiceActions {
-    /// RFC 0009 default `timeout` for `onReadinessCheck`, in seconds; bounds
+    /// RFC 0009 default `timeout` for `onHealthCheck`, in seconds; bounds
     /// one invocation.
-    pub const ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
     /// RFC 0009 default `timeout` for `onExit`, in seconds (five minutes,
     /// as for an Environment's `onExit`).
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
 
     /// The RFC 0009 default `timeout` of the named action when the template
     /// gives none: `onEnter` and `onRun` have no default (`None`),
-    /// `onReadinessCheck` 30 seconds, `onExit` 300 seconds. Returns `None`
+    /// `onHealthCheck` 30 seconds, `onExit` 300 seconds. Returns `None`
     /// for a name that is not a `<ServiceActions>` slot.
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64> {
         match action_name {
-            "onReadinessCheck" => Some(Self::ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS),
+            "onHealthCheck" => Some(Self::ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS),
             "onExit" => Some(Self::ON_EXIT_DEFAULT_TIMEOUT_SECONDS),
             _ => None,
         }
@@ -341,7 +477,7 @@ impl ServiceActions {
         [
             ("onEnter", self.on_enter.as_ref()),
             ("onRun", Some(&self.on_run)),
-            ("onReadinessCheck", self.on_readiness_check.as_ref()),
+            ("onHealthCheck", self.on_health_check.as_ref()),
             ("onExit", self.on_exit.as_ref()),
         ]
     }
@@ -382,12 +518,15 @@ script:
     fn minimal_service_defaults() {
         let svc = parse(MINIMAL);
         assert_eq!(svc.name, "Cache");
-        assert!(svc.readiness_check.is_none());
+        assert!(svc.health_check.is_none());
         assert!(matches!(
-            svc.readiness_check(),
-            ServiceReadinessCheck::TcpConnect {
+            svc.health_check(),
+            ServiceHealthCheck::TcpConnect {
                 ports: None,
-                timeout_seconds: None
+                readiness_interval_seconds: None,
+                ready_timeout_seconds: None,
+                health_interval_seconds: None,
+                failure_threshold: None,
             }
         ));
         let policy = svc.restart_policy();
@@ -409,7 +548,7 @@ ports:
   - name: api
   - name: admin
     protocol: TCP
-readinessCheck:
+healthCheck:
   type: STDOUT
 script:
   actions:
@@ -463,10 +602,12 @@ ports:
     port: 6379
   - name: other
     port: "{{ Param.Port }}"
-readinessCheck:
+healthCheck:
   type: COMMAND
-  intervalSeconds: "{{ Param.Interval }}"
-  timeoutSeconds: 60
+  readinessIntervalSeconds: "{{ Param.Interval }}"
+  readyTimeoutSeconds: 60
+  healthIntervalSeconds: 10
+  failureThreshold: "{{ Param.Strikes }}"
 restartPolicy:
   maxAttempts: "{{ Param.Attempts }}"
   completedTasks: KEEP
@@ -474,7 +615,7 @@ script:
   actions:
     onRun:
       command: valkey-server
-    onReadinessCheck:
+    onHealthCheck:
       command: valkey-cli
 "#,
         );
@@ -483,19 +624,41 @@ script:
             svc.ports[1].port.as_ref().unwrap().raw(),
             "{{ Param.Port }}"
         );
-        match svc.readiness_check.as_ref().unwrap() {
-            ServiceReadinessCheck::Command {
-                interval_seconds,
-                timeout_seconds,
+        let check = svc.health_check.as_ref().unwrap();
+        match check {
+            ServiceHealthCheck::Command {
+                readiness_interval_seconds,
+                ready_timeout_seconds,
+                health_interval_seconds,
+                failure_threshold,
             } => {
                 assert_eq!(
-                    interval_seconds.as_ref().unwrap().raw(),
+                    readiness_interval_seconds.as_ref().unwrap().raw(),
                     "{{ Param.Interval }}"
                 );
-                assert_eq!(timeout_seconds.as_ref().unwrap().raw(), "60");
+                assert_eq!(ready_timeout_seconds.as_ref().unwrap().raw(), "60");
+                assert_eq!(health_interval_seconds.as_ref().unwrap().raw(), "10");
+                assert_eq!(
+                    failure_threshold.as_ref().unwrap().raw(),
+                    "{{ Param.Strikes }}"
+                );
             }
-            other => panic!("unexpected readiness check {other:?}"),
+            other => panic!("unexpected health check {other:?}"),
         }
+        let raws: Vec<(&str, Option<&str>)> = check
+            .numeric_fields()
+            .iter()
+            .map(|(name, fs)| (*name, fs.map(|f| f.raw())))
+            .collect();
+        assert_eq!(
+            raws,
+            vec![
+                ("readinessIntervalSeconds", Some("{{ Param.Interval }}")),
+                ("readyTimeoutSeconds", Some("60")),
+                ("healthIntervalSeconds", Some("10")),
+                ("failureThreshold", Some("{{ Param.Strikes }}")),
+            ]
+        );
         let policy = svc.restart_policy.as_ref().unwrap();
         assert_eq!(
             policy.max_attempts.as_ref().unwrap().raw(),
@@ -505,39 +668,93 @@ script:
     }
 
     #[test]
-    fn readiness_check_type_names_and_timeout_accessor() {
-        let tcp: ServiceReadinessCheck =
-            serde_saphyr::from_str("type: TCP_CONNECT\nports: [main]\ntimeoutSeconds: 10").unwrap();
+    fn health_check_type_names_and_field_accessors() {
+        let tcp: ServiceHealthCheck = serde_saphyr::from_str(
+            "type: TCP_CONNECT\nports: [main]\nreadinessIntervalSeconds: 2\nreadyTimeoutSeconds: 10",
+        )
+        .unwrap();
         assert_eq!(tcp.type_name(), "TCP_CONNECT");
-        assert_eq!(tcp.timeout_seconds().unwrap().raw(), "10");
-        let stdout: ServiceReadinessCheck = serde_saphyr::from_str("type: STDOUT").unwrap();
+        assert_eq!(tcp.readiness_interval_seconds().unwrap().raw(), "2");
+        assert_eq!(tcp.ready_timeout_seconds().unwrap().raw(), "10");
+        assert!(tcp.health_interval_seconds().is_none());
+        assert!(tcp.failure_threshold().is_none());
+        let stdout: ServiceHealthCheck =
+            serde_saphyr::from_str("type: STDOUT\nhealthIntervalSeconds: 15\nfailureThreshold: 2")
+                .unwrap();
         assert_eq!(stdout.type_name(), "STDOUT");
-        assert!(stdout.timeout_seconds().is_none());
-        let cmd: ServiceReadinessCheck = serde_saphyr::from_str("type: COMMAND").unwrap();
+        assert!(stdout.readiness_interval_seconds().is_none());
+        assert!(stdout.ready_timeout_seconds().is_none());
+        assert_eq!(stdout.health_interval_seconds().unwrap().raw(), "15");
+        assert_eq!(stdout.failure_threshold().unwrap().raw(), "2");
+        assert_eq!(
+            stdout
+                .numeric_fields()
+                .iter()
+                .map(|(n, v)| (*n, v.is_some()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("readinessIntervalSeconds", false),
+                ("readyTimeoutSeconds", false),
+                ("healthIntervalSeconds", true),
+                ("failureThreshold", true),
+            ]
+        );
+        let cmd: ServiceHealthCheck = serde_saphyr::from_str("type: COMMAND").unwrap();
         assert_eq!(cmd.type_name(), "COMMAND");
+        assert!(cmd.numeric_fields().iter().all(|(_, v)| v.is_none()));
     }
 
     #[test]
-    fn readiness_check_rejects_unknown_type_and_foreign_fields() {
-        let err = serde_saphyr::from_str::<ServiceReadinessCheck>("type: HTTP").unwrap_err();
+    fn health_check_rejects_unknown_type_and_foreign_fields() {
+        let err = serde_saphyr::from_str::<ServiceHealthCheck>("type: HTTP").unwrap_err();
         assert!(
             err.to_string().contains("unknown variant `HTTP`"),
             "got: {err}"
         );
         // `ports` belongs to TCP_CONNECT only.
-        let err = serde_saphyr::from_str::<ServiceReadinessCheck>("type: STDOUT\nports: [main]")
+        let err = serde_saphyr::from_str::<ServiceHealthCheck>("type: STDOUT\nports: [main]")
             .unwrap_err();
         assert!(
             err.to_string().contains("unknown field `ports`"),
             "got: {err}"
         );
-        // `intervalSeconds` belongs to COMMAND only.
-        let err = serde_saphyr::from_str::<ServiceReadinessCheck>(
-            "type: TCP_CONNECT\nintervalSeconds: 5",
+        // §9.3 item 3: `readinessIntervalSeconds` does not apply to STDOUT.
+        let err = serde_saphyr::from_str::<ServiceHealthCheck>(
+            "type: STDOUT\nreadinessIntervalSeconds: 1",
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("unknown field `intervalSeconds`"),
+            err.to_string()
+                .contains("unknown field `readinessIntervalSeconds`"),
+            "got: {err}"
+        );
+        // The pre-RFC field names are not properties of any form.
+        for (ty, old) in [
+            ("TCP_CONNECT", "timeoutSeconds"),
+            ("COMMAND", "intervalSeconds"),
+        ] {
+            let err =
+                serde_saphyr::from_str::<ServiceHealthCheck>(&format!("type: {ty}\n{old}: 5"))
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains(&format!("unknown field `{old}`")),
+                "got: {err}"
+            );
+        }
+    }
+
+    /// The pre-revision spelling of the property is unknown, like any other
+    /// (fixture `9.3--health-old-readiness-check-key.invalid`).
+    #[test]
+    fn readiness_check_is_not_a_service_property() {
+        let old_key = ["readiness", "Check"].concat();
+        let err = serde_saphyr::from_str::<Service>(&format!(
+            "{MINIMAL}{old_key}:\n  type: TCP_CONNECT\n"
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(&format!("unknown field `{old_key}`")),
             "got: {err}"
         );
     }
@@ -581,7 +798,7 @@ script:
         assert_eq!(ServiceActions::default_timeout_seconds("onEnter"), None);
         assert_eq!(ServiceActions::default_timeout_seconds("onRun"), None);
         assert_eq!(
-            ServiceActions::default_timeout_seconds("onReadinessCheck"),
+            ServiceActions::default_timeout_seconds("onHealthCheck"),
             Some(30)
         );
         assert_eq!(ServiceActions::default_timeout_seconds("onExit"), Some(300));
@@ -589,8 +806,17 @@ script:
             ServiceActions::default_timeout_seconds("onWrapTaskRun"),
             None
         );
-        assert_eq!(ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS, 300);
-        assert_eq!(ServiceReadinessCheck::DEFAULT_COMMAND_INTERVAL_SECONDS, 5);
+        assert_eq!(ServiceHealthCheck::DEFAULT_READY_TIMEOUT_SECONDS, 300);
+        assert_eq!(
+            ServiceHealthCheck::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS,
+            1
+        );
+        assert_eq!(
+            ServiceHealthCheck::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS,
+            5
+        );
+        assert_eq!(ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS, 30);
+        assert_eq!(ServiceHealthCheck::DEFAULT_FAILURE_THRESHOLD, 3);
         assert_eq!(ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS, 0);
     }
 

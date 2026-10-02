@@ -246,18 +246,22 @@ each seeing every Job Service and the Step Services before it. Per Service
    value (name pattern and uniqueness, bounds, attribute values) re-applied
    on the resolved values, reported at the Service's path.
 3. **Numeric `@fmtstring` fields** (§9.2 note) — `resolve_service_int`
-   resolves `port`, `readinessCheck.timeoutSeconds` / `intervalSeconds`,
-   and `restartPolicy.maxAttempts` with target type `int?`, the same target
-   pass 8 validated them with: a whole-field `null` is "not provided"
-   (`port: None`, or the §9 default — 300 s timeout, 5 s interval, 0
-   attempts); a multi-segment string concatenates and parses with
+   resolves `port`, the four `healthCheck` numeric fields
+   (`readinessIntervalSeconds`, `readyTimeoutSeconds`, `healthIntervalSeconds`,
+   `failureThreshold`), and `restartPolicy.maxAttempts` with target type
+   `int?`, the same target pass 8 validated them with: a whole-field `null`
+   is "not provided" (`port: None`, or the §9 default — readiness interval 1
+   s for `TCP_CONNECT` and 5 s for `COMMAND`, 300 s ready timeout, 30 s
+   health interval, threshold 3, 0 attempts; a `STDOUT` check's
+   `healthIntervalSeconds` has no default and resolves to `None`, meaning no
+   heartbeat is expected); a multi-segment string concatenates and parses with
    surrounding whitespace tolerated (`must be an integer.` otherwise); the
    result must lie in the field's range (`must be between 1 and 65535.`,
    `must be > 0.`, `must be >= 0.`), reported as a `ModelValidation` error
    at the field path with pass 11's wording. A resolution failure (a
    whole-field value the `int?` target rejects) is a `FormatStringError`
    whose message carries the field path. The §9 defaults also fill the
-   `readinessCheck` / `restartPolicy` objects when the template omits
+   `healthCheck` / `restartPolicy` objects when the template omits
    them, and a `TCP_CONNECT` check without `ports` is expanded to every
    declared **TCP** port (`template::Service::tcp_port_names`; §9 item 6 —
    validation has rejected a Service with none), so `job::Service` never
@@ -526,7 +530,7 @@ Environments converted:
    Service 'Cache' (JobTemplate -> jobServices[0]) in its scope, and the Service would run
    in a Session the Environment enters but cannot wrap. Declare SERVICE in
    EnvironmentTemplate[0] and either define onWrapServiceEnter, onWrapServiceRun,
-   onWrapServiceReadinessCheck, and onWrapServiceExit, or declare a runScope that excludes
+   onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope that excludes
    SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).
    ```
 

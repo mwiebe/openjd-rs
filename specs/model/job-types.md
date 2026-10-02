@@ -169,7 +169,7 @@ pub struct EnvironmentActions {
     pub on_wrap_env_exit: Option<Action>,
     pub on_wrap_service_enter: Option<Action>,             // WRAP_ACTIONS + SERVICE (RFC 0009)
     pub on_wrap_service_run: Option<Action>,
-    pub on_wrap_service_readiness_check: Option<Action>,
+    pub on_wrap_service_health_check: Option<Action>,
     pub on_wrap_service_exit: Option<Action>,
     pub on_exit: Option<Action>,
 }
@@ -343,7 +343,7 @@ pub struct Service {
     pub document: Document,                                // §1.2.2 item 2; omitted from JSON when JobTemplate
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
     pub ports: Vec<ServicePort>,                           // Declaration order
-    pub readiness_check: ServiceReadinessCheck,            // §9.3 defaults applied
+    pub health_check: ServiceHealthCheck,                  // §9.3 defaults applied
     pub restart_policy: ServiceRestartPolicy,              // §9.4 defaults applied
     pub variables: Option<HashMap<String, FormatString>>,  // Service-execution scope, unresolved
     pub script: ServiceScript,                             // Service-execution scope, unresolved
@@ -376,15 +376,34 @@ pub struct ServicePort {
 pub use template::ServicePortProtocol;                     // re-exported; see template-types.md
 
 #[serde(tag = "type")]
-pub enum ServiceReadinessCheck {
-    TcpConnect { ports: Vec<String>, timeout_seconds: u64 },   // "TCP_CONNECT"; ports = every declared TCP port when the template named none
-    Command { interval_seconds: u64, timeout_seconds: u64 },   // "COMMAND"
-    Stdout { timeout_seconds: u64 },                           // "STDOUT"
+pub enum ServiceHealthCheck {
+    TcpConnect {                                   // "TCP_CONNECT"
+        ports: Vec<String>,                        // every declared TCP port when the template named none
+        readiness_interval_seconds: u64,           // default 1
+        ready_timeout_seconds: u64,                // default 300
+        health_interval_seconds: u64,              // default 30
+        failure_threshold: u64,                    // default 3
+    },
+    Command {                                      // "COMMAND"
+        readiness_interval_seconds: u64,           // default 5
+        ready_timeout_seconds: u64,
+        health_interval_seconds: u64,
+        failure_threshold: u64,
+    },
+    Stdout {                                       // "STDOUT"
+        ready_timeout_seconds: u64,
+        health_interval_seconds: Option<u64>,      // None = no heartbeat (omitted from JSON)
+        failure_threshold: u64,                    // default 3; meaningful only with the interval
+    },
 }
 
-impl ServiceReadinessCheck {
+impl ServiceHealthCheck {
     pub fn type_name(&self) -> &'static str;
-    pub fn timeout_seconds(&self) -> u64;
+    pub fn readiness_interval_seconds(&self) -> Option<u64>;  // None for STDOUT
+    pub fn ready_timeout_seconds(&self) -> u64;
+    pub fn health_interval_seconds(&self) -> Option<u64>;     // None only for STDOUT without a heartbeat
+    pub fn failure_threshold(&self) -> u64;
+    pub fn monitors_health(&self) -> bool;                    // health_interval_seconds().is_some()
 }
 
 pub struct ServiceRestartPolicy {
@@ -401,7 +420,7 @@ pub struct ServiceScript {
 pub struct ServiceActions {
     pub on_enter: Option<Action>,
     pub on_run: Action,
-    pub on_readiness_check: Option<Action>,
+    pub on_health_check: Option<Action>,
     pub on_exit: Option<Action>,
 }
 
@@ -414,7 +433,7 @@ impl ServiceActions {
 
 The job-creation-stage fields are resolved: `<Service>.let` (evaluated into the Service's
 job-creation symbol table and transported in `resolved_symtab`), the numeric `@fmtstring`
-fields (`port`, `timeoutSeconds`, `intervalSeconds`, `maxAttempts` — resolved with target
+fields (`port`, the four `<ServiceHealthCheck>` fields, `maxAttempts` — resolved with target
 `int?`, range-checked, and defaulted per §9 when absent or `null`), and `hostRequirements`.
 `variables` and the whole `script` are `@fmtstring[host]` and stay `FormatString`s, exactly
 as an Environment's do: they reference `Session.*`, `Service.File.*`, and in-scope
@@ -457,7 +476,7 @@ through the wire format.
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); `run_scope` is `Vec<RunScope>` not `Vec<String>`; adds `resolved_symtab` |
-| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`/`timeoutSeconds`/`intervalSeconds`/`maxAttempts` are integers with defaults applied; `readiness_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString` |
+| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |
 | `template::EmbeddedFile` | `job::EmbeddedFile` | `file_type` is `FileType` enum; `end_of_line` is `Option<EndOfLine>` enum |
 | `template::CancelationMode` | `job::CancelationMode` | Both are enums with `Terminate` and `NotifyThenTerminate` variants |

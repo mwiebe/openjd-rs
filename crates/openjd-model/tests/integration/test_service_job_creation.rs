@@ -18,7 +18,7 @@ use openjd_model::job::service_symbols::{
     add_wrapped_service_symbols, build_service_symbol_table, ServiceEndpoint, ServiceEndpoints,
 };
 use openjd_model::job::{
-    self, CompletedTasksPolicy, RunScope, ServicePortProtocol, ServiceReadinessCheck,
+    self, CompletedTasksPolicy, RunScope, ServiceHealthCheck, ServicePortProtocol,
 };
 use openjd_model::{
     create_job, decode_job_template, CallerLimits, JobParameterInputValues, ModelError,
@@ -104,14 +104,23 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
     // Ports: declared without a number — the runtime allocates.
     assert_eq!(cache.port_names().collect::<Vec<_>>(), vec!["main"]);
     assert_eq!(cache.ports[0].port, None);
-    // Readiness: TCP_CONNECT with no `ports` probes every declared port.
+    // Health check: TCP_CONNECT with no `ports` probes every declared
+    // port; readinessIntervalSeconds takes its TCP_CONNECT default of 1.
     assert_eq!(
-        cache.readiness_check,
-        ServiceReadinessCheck::TcpConnect {
+        cache.health_check,
+        ServiceHealthCheck::TcpConnect {
             ports: vec!["main".to_string()],
-            timeout_seconds: 60,
+            readiness_interval_seconds: 1,
+            ready_timeout_seconds: 60,
+            health_interval_seconds: 10,
+            failure_threshold: 3,
         }
     );
+    assert_eq!(cache.health_check.readiness_interval_seconds(), Some(1));
+    assert_eq!(cache.health_check.ready_timeout_seconds(), 60);
+    assert_eq!(cache.health_check.health_interval_seconds(), Some(10));
+    assert_eq!(cache.health_check.failure_threshold(), 3);
+    assert!(cache.health_check.monitors_health());
     assert_eq!(cache.restart_policy.max_attempts, 3);
     assert_eq!(
         cache.restart_policy.completed_tasks,
@@ -137,7 +146,7 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
     assert!(on_enter.args.as_ref().unwrap()[1]
         .raw()
         .starts_with("conda create -y -p ./valkey-env"));
-    assert!(cache.script.actions.on_readiness_check.is_none());
+    assert!(cache.script.actions.on_health_check.is_none());
     assert_eq!(
         cache
             .script
@@ -167,14 +176,21 @@ fn coordinator_example_creates_a_step_service() {
     let c = &services[0];
     assert_eq!(c.name, "Coordinator");
     assert_eq!(c.port_names().collect::<Vec<_>>(), vec!["api", "metrics"]);
+    // STDOUT without healthIntervalSeconds: no heartbeat; failureThreshold
+    // takes its default but has nothing to count.
     assert_eq!(
-        c.readiness_check,
-        ServiceReadinessCheck::Stdout {
-            timeout_seconds: 120
+        c.health_check,
+        ServiceHealthCheck::Stdout {
+            ready_timeout_seconds: 120,
+            health_interval_seconds: None,
+            failure_threshold: 3,
         }
     );
-    assert_eq!(c.readiness_check.type_name(), "STDOUT");
-    assert_eq!(c.readiness_check.timeout_seconds(), 120);
+    assert_eq!(c.health_check.type_name(), "STDOUT");
+    assert_eq!(c.health_check.readiness_interval_seconds(), None);
+    assert_eq!(c.health_check.ready_timeout_seconds(), 120);
+    assert_eq!(c.health_check.health_interval_seconds(), None);
+    assert!(!c.health_check.monitors_health());
     assert_eq!(c.restart_policy.max_attempts, 1);
     assert_eq!(
         c.restart_policy.completed_tasks,
@@ -239,10 +255,12 @@ jobServices:
         port: " 0080 "
       - name: unset
         port: "{{ null }}"
-    readinessCheck:
+    healthCheck:
       type: COMMAND
-      intervalSeconds: "{{ 2 * 3 }}"
-      timeoutSeconds: "{{ null }}"
+      readinessIntervalSeconds: "{{ 2 * 3 }}"
+      readyTimeoutSeconds: "{{ null }}"
+      healthIntervalSeconds: "{{ Param.Port // 1000 }}"
+      failureThreshold: "{{ null }}"
     restartPolicy:
       maxAttempts: "{{ Param.Attempts }}"
     variables:
@@ -256,7 +274,7 @@ jobServices:
           command: valkey-server
           args: ["{{ listen }}", "{{ label }}"]
           timeout: "{{ metrics }}"
-        onReadinessCheck:
+        onHealthCheck:
           command: probe
 steps:
   - name: S
@@ -303,12 +321,14 @@ fn numeric_fields_resolve_in_the_service_let_scope() {
         ]
     );
     // A `null` whole-field expression means "not provided": the §9.3
-    // default applies.
+    // default applies (readyTimeoutSeconds 300, failureThreshold 3).
     assert_eq!(
-        cache.readiness_check,
-        ServiceReadinessCheck::Command {
-            interval_seconds: 6,
-            timeout_seconds: 300,
+        cache.health_check,
+        ServiceHealthCheck::Command {
+            readiness_interval_seconds: 6,
+            ready_timeout_seconds: 300,
+            health_interval_seconds: 7,
+            failure_threshold: 3,
         }
     );
     assert_eq!(cache.restart_policy.max_attempts, 2);
@@ -376,10 +396,13 @@ fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
         CompletedTasksPolicy::Keep
     );
     assert_eq!(
-        side.readiness_check,
-        ServiceReadinessCheck::TcpConnect {
+        side.health_check,
+        ServiceHealthCheck::TcpConnect {
             ports: vec!["p".to_string()],
-            timeout_seconds: 300,
+            readiness_interval_seconds: 1,
+            ready_timeout_seconds: 300,
+            health_interval_seconds: 30,
+            failure_threshold: 3,
         }
     );
 }
@@ -402,25 +425,158 @@ fn numeric_fields_are_range_checked_at_job_creation() {
 fn numeric_field_that_does_not_resolve_to_an_integer_fails() {
     // Multi-segment: concatenates to text and must parse.
     let tmpl = NUMERIC.replace(
-        "intervalSeconds: \"{{ 2 * 3 }}\"",
-        "intervalSeconds: \"{{ Param.Text }}x\"",
+        "readinessIntervalSeconds: \"{{ 2 * 3 }}\"",
+        "readinessIntervalSeconds: \"{{ Param.Text }}x\"",
     );
     let err = create_err(&tmpl, &[]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> readinessCheck -> intervalSeconds:\n\tmust be an integer."
+        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> healthCheck -> readinessIntervalSeconds:\n\tmust be an integer."
     );
     // Whole-field non-int against the `int?` target is a resolution error.
     let tmpl = NUMERIC.replace(
-        "intervalSeconds: \"{{ 2 * 3 }}\"",
-        "intervalSeconds: \"{{ Param.Text }}\"",
+        "readinessIntervalSeconds: \"{{ 2 * 3 }}\"",
+        "readinessIntervalSeconds: \"{{ Param.Text }}\"",
     );
     let err = create_err(&tmpl, &[("Text", "soon")]);
     assert!(
         err.starts_with(
-            "Format string error: jobServices[0] -> readinessCheck -> intervalSeconds: "
+            "Format string error: jobServices[0] -> healthCheck -> readinessIntervalSeconds: "
         ),
         "got: {err}"
+    );
+}
+
+/// §9.3 (RFC 0009): all four numeric `<ServiceHealthCheck>` fields are
+/// `@fmtstring`, resolved in the Service's job-creation scope (`Param.*` and
+/// `<Service>.let`) and range-checked (`<posinteger>`) there — the
+/// `9.3--health-numeric-fields-from-param` fixture, per form.
+#[test]
+fn health_check_numeric_fields_resolve_from_params_and_lets() {
+    fn template(health: &str, extra_actions: &str) -> String {
+        format!(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: T
+parameterDefinitions:
+  - name: Patience
+    type: INT
+    default: 60
+jobServices:
+  - name: Store
+    let:
+      - strikes = 3 if Param.Patience > 30 else 1
+    ports:
+      - name: main
+    healthCheck:
+{health}    script:
+      actions:
+        onRun:
+          command: run
+{extra_actions}steps:
+  - name: S
+    script:
+      actions:
+        onRun:
+          command: run
+"#
+        )
+    }
+    const ON_HEALTH_CHECK: &str = "        onHealthCheck:\n          command: probe\n";
+    const FOUR: &str = "      readinessIntervalSeconds: \"{{ Param.Patience // 10 }}\"\n      \
+                        readyTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
+                        healthIntervalSeconds: \"{{ Param.Patience // 2 }}\"\n      \
+                        failureThreshold: \"{{ strikes }}\"\n";
+    const THREE: &str = "      readyTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
+                         healthIntervalSeconds: \"{{ Param.Patience // 2 }}\"\n      \
+                         failureThreshold: \"{{ strikes }}\"\n";
+
+    let job = create_ok(
+        &template(&format!("      type: COMMAND\n{FOUR}"), ON_HEALTH_CHECK),
+        &[],
+    );
+    assert_eq!(
+        job.job_services.as_ref().unwrap()[0].health_check,
+        ServiceHealthCheck::Command {
+            readiness_interval_seconds: 6,
+            ready_timeout_seconds: 60,
+            health_interval_seconds: 30,
+            failure_threshold: 3,
+        }
+    );
+    // With Patience 20: strikes resolves to 1.
+    let job = create_ok(
+        &template(&format!("      type: TCP_CONNECT\n{FOUR}"), ""),
+        &[("Patience", "20")],
+    );
+    assert_eq!(
+        job.job_services.as_ref().unwrap()[0].health_check,
+        ServiceHealthCheck::TcpConnect {
+            ports: vec!["main".to_string()],
+            readiness_interval_seconds: 2,
+            ready_timeout_seconds: 20,
+            health_interval_seconds: 10,
+            failure_threshold: 1,
+        }
+    );
+    let job = create_ok(&template(&format!("      type: STDOUT\n{THREE}"), ""), &[]);
+    assert_eq!(
+        job.job_services.as_ref().unwrap()[0].health_check,
+        ServiceHealthCheck::Stdout {
+            ready_timeout_seconds: 60,
+            health_interval_seconds: Some(30),
+            failure_threshold: 3,
+        }
+    );
+    // A STDOUT heartbeat interval that resolves to null means no heartbeat.
+    let job = create_ok(
+        &template(
+            "      type: STDOUT\n      healthIntervalSeconds: \"{{ null }}\"\n",
+            "",
+        ),
+        &[],
+    );
+    assert_eq!(
+        job.job_services.as_ref().unwrap()[0].health_check,
+        ServiceHealthCheck::Stdout {
+            ready_timeout_seconds: 300,
+            health_interval_seconds: None,
+            failure_threshold: 3,
+        }
+    );
+    // Each field is range-checked once resolved (Patience 5: 5 // 10 is 0).
+    for (field, bad) in [
+        ("readinessIntervalSeconds", "{{ Param.Patience // 10 }}"),
+        ("readyTimeoutSeconds", "{{ Param.Patience - 5 }}"),
+        ("healthIntervalSeconds", "{{ -Param.Patience }}"),
+        ("failureThreshold", "{{ Param.Patience // 10 }}"),
+    ] {
+        let err = create_err(
+            &template(
+                &format!("      type: COMMAND\n      {field}: \"{bad}\"\n"),
+                ON_HEALTH_CHECK,
+            ),
+            &[("Patience", "5")],
+        );
+        assert_eq!(
+            err,
+            format!(
+                "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> \
+                 healthCheck -> {field}:\n\tmust be > 0."
+            )
+        );
+    }
+    let err = create_err(
+        &template(
+            "      type: STDOUT\n      healthIntervalSeconds: \"{{ Param.Patience - 60 }}\"\n",
+            "",
+        ),
+        &[],
+    );
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> \
+         healthCheck -> healthIntervalSeconds:\n\tmust be > 0."
     );
 }
 
@@ -577,7 +733,7 @@ jobEnvironments:
         onWrapEnvExit: { command: echo }
         onWrapServiceEnter: { command: echo, args: ["{{ WrappedService.Name }}"] }
         onWrapServiceRun: { command: echo }
-        onWrapServiceReadinessCheck: { command: echo }
+        onWrapServiceHealthCheck: { command: echo }
         onWrapServiceExit: { command: echo }
 jobServices:
   - name: A
@@ -618,7 +774,7 @@ steps:
         vec![
             "onWrapServiceEnter",
             "onWrapServiceRun",
-            "onWrapServiceReadinessCheck",
+            "onWrapServiceHealthCheck",
             "onWrapServiceExit"
         ]
     );
@@ -657,7 +813,7 @@ fn environment_without_service_fields_serializes_as_before() {
         on_wrap_env_exit: None,
         on_wrap_service_enter: None,
         on_wrap_service_run: None,
-        on_wrap_service_readiness_check: None,
+        on_wrap_service_health_check: None,
         on_wrap_service_exit: None,
         on_exit: None,
     };
@@ -699,8 +855,14 @@ fn job_with_services_round_trips_eq_and_hash() {
         serde_json::json!({ "name": "unset", "port": null })
     );
     assert_eq!(
-        svc["readinessCheck"],
-        serde_json::json!({ "type": "COMMAND", "intervalSeconds": 6, "timeoutSeconds": 300 })
+        svc["healthCheck"],
+        serde_json::json!({
+            "type": "COMMAND",
+            "readinessIntervalSeconds": 6,
+            "readyTimeoutSeconds": 300,
+            "healthIntervalSeconds": 6,
+            "failureThreshold": 3
+        })
     );
     assert_eq!(
         svc["restartPolicy"],
@@ -778,9 +940,9 @@ steps:
 // ════════════════════════════════════════════════════════════════════
 
 /// A metrics sink with a UDP `ingest` port and a TCP `api` port, both
-/// numbered by Job Parameters, with the readiness check `readiness` (a YAML
+/// numbered by Job Parameters, with the health check `health` (a YAML
 /// body indented four spaces; empty = omitted).
-fn protocol_template(readiness: &str) -> String {
+fn protocol_template(health: &str) -> String {
     format!(
         r#"
 specificationVersion: "jobtemplate-2023-09"
@@ -797,7 +959,7 @@ jobServices:
         protocol: UDP
       - name: api
         port: "{{{{ Param.Api }}}}"
-{readiness}    script:
+{health}    script:
       actions:
         onRun:
           command: sink
@@ -848,24 +1010,30 @@ fn default_tcp_connect_probes_only_the_tcp_ports() {
     let job = create_ok(&protocol_template(""), &[]);
     let svc = &job.job_services.as_ref().unwrap()[0];
     assert_eq!(
-        svc.readiness_check,
-        ServiceReadinessCheck::TcpConnect {
+        svc.health_check,
+        ServiceHealthCheck::TcpConnect {
             ports: vec!["api".to_string()],
-            timeout_seconds: 300,
+            readiness_interval_seconds: 1,
+            ready_timeout_seconds: 300,
+            health_interval_seconds: 30,
+            failure_threshold: 3,
         }
     );
     // An explicit TCP_CONNECT without `ports` defaults the same way.
     let job = create_ok(
         &protocol_template(
-            "    readinessCheck:\n      type: TCP_CONNECT\n      timeoutSeconds: 7\n",
+            "    healthCheck:\n      type: TCP_CONNECT\n      readyTimeoutSeconds: 7\n",
         ),
         &[],
     );
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].readiness_check,
-        ServiceReadinessCheck::TcpConnect {
+        job.job_services.as_ref().unwrap()[0].health_check,
+        ServiceHealthCheck::TcpConnect {
             ports: vec!["api".to_string()],
-            timeout_seconds: 7,
+            readiness_interval_seconds: 1,
+            ready_timeout_seconds: 7,
+            health_interval_seconds: 30,
+            failure_threshold: 3,
         }
     );
 }
@@ -892,7 +1060,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
         "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
     );
     // One literal and one format string are compared too.
-    let tmpl = protocol_template("    readinessCheck:\n      type: STDOUT\n").replace(
+    let tmpl = protocol_template("    healthCheck:\n      type: STDOUT\n").replace(
         "port: \"{{ Param.Ingest }}\"\n        protocol: UDP",
         "port: 9000\n        protocol: UDP",
     );

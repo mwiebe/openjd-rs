@@ -352,62 +352,103 @@ pub(super) fn instantiate_service<'a>(
         .collect::<Result<Vec<_>, ModelError>>()?;
     check_duplicate_port_numbers(&ports, &ports_path)?;
 
-    let rc_path = path_field(path, "readinessCheck");
-    let positive = 1..=i64::MAX;
-    let readiness_check = match svc.readiness_check() {
-        template::ServiceReadinessCheck::TcpConnect {
+    // §9.3 <ServiceHealthCheck>: the four numeric fields resolve alike;
+    // the defaults differ by type (readinessIntervalSeconds 1 for
+    // TCP_CONNECT and 5 for COMMAND; healthIntervalSeconds 30, or no
+    // heartbeat for STDOUT).
+    let hc_path = path_field(path, "healthCheck");
+    let declared = svc.health_check();
+    let resolve_field = |name: &'static str,
+                         value: Option<&openjd_expr::FormatString>,
+                         default: u64|
+     -> Result<u64, ModelError> {
+        resolve_service_u64(
+            value,
+            &service_symtab,
+            budgets,
+            &path_field(&hc_path, name),
+            1..=i64::MAX,
+            "must be > 0.",
+            default,
+        )
+    };
+    let ready_timeout_seconds = resolve_field(
+        "readyTimeoutSeconds",
+        declared.ready_timeout_seconds(),
+        template::ServiceHealthCheck::DEFAULT_READY_TIMEOUT_SECONDS,
+    )?;
+    let failure_threshold = resolve_field(
+        "failureThreshold",
+        declared.failure_threshold(),
+        template::ServiceHealthCheck::DEFAULT_FAILURE_THRESHOLD,
+    )?;
+    let health_check = match &declared {
+        template::ServiceHealthCheck::TcpConnect {
             ports: probed,
-            timeout_seconds,
-        } => job::ServiceReadinessCheck::TcpConnect {
+            readiness_interval_seconds,
+            health_interval_seconds,
+            ..
+        } => job::ServiceHealthCheck::TcpConnect {
             // §9 item 6 / §9.3 item 2: the default port set is every TCP
             // port; validation has rejected a Service with none.
-            ports: probed.unwrap_or_else(|| svc.tcp_port_names().map(str::to_string).collect()),
-            timeout_seconds: resolve_service_u64(
-                timeout_seconds.as_ref(),
-                &service_symtab,
-                budgets,
-                &path_field(&rc_path, "timeoutSeconds"),
-                positive.clone(),
-                "must be > 0.",
-                template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
+            ports: probed
+                .clone()
+                .unwrap_or_else(|| svc.tcp_port_names().map(str::to_string).collect()),
+            readiness_interval_seconds: resolve_field(
+                "readinessIntervalSeconds",
+                readiness_interval_seconds.as_ref(),
+                template::ServiceHealthCheck::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS,
             )?,
+            ready_timeout_seconds,
+            health_interval_seconds: resolve_field(
+                "healthIntervalSeconds",
+                health_interval_seconds.as_ref(),
+                template::ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS,
+            )?,
+            failure_threshold,
         },
-        template::ServiceReadinessCheck::Command {
-            interval_seconds,
-            timeout_seconds,
-        } => job::ServiceReadinessCheck::Command {
-            interval_seconds: resolve_service_u64(
-                interval_seconds.as_ref(),
-                &service_symtab,
-                budgets,
-                &path_field(&rc_path, "intervalSeconds"),
-                positive.clone(),
-                "must be > 0.",
-                template::ServiceReadinessCheck::DEFAULT_COMMAND_INTERVAL_SECONDS,
+        template::ServiceHealthCheck::Command {
+            readiness_interval_seconds,
+            health_interval_seconds,
+            ..
+        } => job::ServiceHealthCheck::Command {
+            readiness_interval_seconds: resolve_field(
+                "readinessIntervalSeconds",
+                readiness_interval_seconds.as_ref(),
+                template::ServiceHealthCheck::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS,
             )?,
-            timeout_seconds: resolve_service_u64(
-                timeout_seconds.as_ref(),
-                &service_symtab,
-                budgets,
-                &path_field(&rc_path, "timeoutSeconds"),
-                positive.clone(),
-                "must be > 0.",
-                template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
+            ready_timeout_seconds,
+            health_interval_seconds: resolve_field(
+                "healthIntervalSeconds",
+                health_interval_seconds.as_ref(),
+                template::ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS,
             )?,
+            failure_threshold,
         },
-        template::ServiceReadinessCheck::Stdout { timeout_seconds } => {
-            job::ServiceReadinessCheck::Stdout {
-                timeout_seconds: resolve_service_u64(
-                    timeout_seconds.as_ref(),
-                    &service_symtab,
-                    budgets,
-                    &path_field(&rc_path, "timeoutSeconds"),
-                    positive,
-                    "must be > 0.",
-                    template::ServiceReadinessCheck::DEFAULT_TIMEOUT_SECONDS,
-                )?,
-            }
-        }
+        template::ServiceHealthCheck::Stdout {
+            health_interval_seconds,
+            ..
+        } => job::ServiceHealthCheck::Stdout {
+            ready_timeout_seconds,
+            // No default: a `null` resolution, like an absent field, means
+            // no heartbeat is expected (§9.3 item 5).
+            health_interval_seconds: health_interval_seconds
+                .as_ref()
+                .map(|fs| {
+                    resolve_service_int(
+                        fs,
+                        &service_symtab,
+                        budgets,
+                        &path_field(&hc_path, "healthIntervalSeconds"),
+                        1..=i64::MAX,
+                        "must be > 0.",
+                    )
+                })
+                .transpose()?
+                .flatten()
+                .map(i64::unsigned_abs),
+            failure_threshold,
+        },
     };
 
     let policy = svc.restart_policy();
@@ -449,7 +490,7 @@ pub(super) fn instantiate_service<'a>(
         document: job::Document::JobTemplate,
         host_requirements,
         ports,
-        readiness_check,
+        health_check,
         restart_policy,
         variables: svc.variables.clone(),
         script: job::ServiceScript {
@@ -457,10 +498,10 @@ pub(super) fn instantiate_service<'a>(
             actions: job::ServiceActions {
                 on_enter: svc.script.actions.on_enter.as_ref().map(convert_action),
                 on_run: convert_action(&svc.script.actions.on_run),
-                on_readiness_check: svc
+                on_health_check: svc
                     .script
                     .actions
-                    .on_readiness_check
+                    .on_health_check
                     .as_ref()
                     .map(convert_action),
                 on_exit: svc.script.actions.on_exit.as_ref().map(convert_action),
@@ -950,9 +991,9 @@ pub fn convert_environment_with_symtab(
                 on_wrap_env_exit: s.actions.on_wrap_env_exit.as_ref().map(convert_action),
                 on_wrap_service_enter: s.actions.on_wrap_service_enter.as_ref().map(convert_action),
                 on_wrap_service_run: s.actions.on_wrap_service_run.as_ref().map(convert_action),
-                on_wrap_service_readiness_check: s
+                on_wrap_service_health_check: s
                     .actions
-                    .on_wrap_service_readiness_check
+                    .on_wrap_service_health_check
                     .as_ref()
                     .map(convert_action),
                 on_wrap_service_exit: s.actions.on_wrap_service_exit.as_ref().map(convert_action),

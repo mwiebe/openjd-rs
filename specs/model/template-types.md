@@ -206,14 +206,14 @@ pub struct Service {
     pub let_bindings: Option<Vec<String>>,               // "let" field in YAML (EXPR)
     pub host_requirements: Option<HostRequirements>,     // same type as StepTemplate's
     pub ports: Vec<ServicePort>,                         // 1–10, unique names; no two of one protocol share a number
-    pub readiness_check: Option<ServiceReadinessCheck>,  // None = { type: TCP_CONNECT } on every TCP port
+    pub health_check: Option<ServiceHealthCheck>,        // None = { type: TCP_CONNECT } on every TCP port
     pub restart_policy: Option<ServiceRestartPolicy>,    // None = { maxAttempts: 0, completedTasks: RERUN }
     pub variables: Option<HashMap<String, FormatString>>, // same schema as Environment.variables
     pub script: ServiceScript,
 }
 
 impl Service {
-    pub fn readiness_check(&self) -> ServiceReadinessCheck;  // declared, or the §9 default
+    pub fn health_check(&self) -> ServiceHealthCheck;        // declared, or the §9 default
     pub fn restart_policy(&self) -> ServiceRestartPolicy;    // declared, or the §9 default
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
     pub fn tcp_port_names(&self) -> impl Iterator<Item = &str>;  // the ports a defaulted TCP_CONNECT probes
@@ -258,7 +258,8 @@ pass 11, and [job-creation.md](job-creation.md), "Services"). A UDP port cannot 
 
 ### Numeric `@fmtstring` fields
 
-`ServicePort::port`, `ServiceReadinessCheck`'s `timeoutSeconds` and `intervalSeconds`, and
+`ServicePort::port`, `ServiceHealthCheck`'s four numeric fields (`readinessIntervalSeconds`,
+`readyTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`), and
 `ServiceRestartPolicy::max_attempts` are `<posinteger> | <posintstring>` (or `<integer> |
 <intstring>`) marked `@fmtstring`. They are modeled exactly like `<Action>.timeout`: the field
 is an `Option<FormatString>`, a YAML integer is accepted and held as its decimal text, and a
@@ -270,27 +271,65 @@ resolves every value in the `<Service>.let` scope with the same target — a `nu
 the field was not provided and the §9 default applies — and range-checks the result (see
 [job-creation.md](job-creation.md), "Services").
 
-### ServiceReadinessCheck (§9.3)
+### ServiceHealthCheck (§9.3)
 
-A discriminated union on `type`, derived with `#[serde(tag = "type", deny_unknown_fields)]`,
-so a field belonging to another variant (`ports` on `STDOUT`, `intervalSeconds` on
-`TCP_CONNECT`) is a deserialization error.
+One probe mechanism applied in two phases. Before the instance is READY the probe decides
+readiness: the first probe runs as soon as `onRun` is launched, one every
+`readinessIntervalSeconds` after it, and the first success makes the instance READY;
+`readyTimeoutSeconds`, measured from the launch of `onRun`, bounds the phase. After READY the
+probe decides health: one every `healthIntervalSeconds`, and `failureThreshold` consecutive
+failures make the instance UNHEALTHY (an instance failure — the runtime's concern; see
+`specs/sessions/service-session.md`). Intervals are measured from the end of the previous probe.
+
+A discriminated union on `type`, derived with `#[serde(tag = "type", deny_unknown_fields)]`, so
+a field belonging to another variant is a deserialization error: `ports` on anything but
+`TCP_CONNECT`, and `readinessIntervalSeconds` on `STDOUT`, whose ready line "arrives when it
+arrives" (§9.3 item 3 requires a `STDOUT` check that gives it to be rejected). The pre-revision
+spellings `timeoutSeconds` and `intervalSeconds` are unknown fields on every variant, as
+`readinessCheck` is on `<Service>` and `onReadinessCheck` on `<ServiceActions>`.
 
 ```rust
-pub enum ServiceReadinessCheck {
-    TcpConnect { ports: Option<Vec<String>>, timeout_seconds: Option<FormatString> },  // "TCP_CONNECT"; ports: TCP ports only, None = every TCP port
-    Command { interval_seconds: Option<FormatString>, timeout_seconds: Option<FormatString> }, // "COMMAND"
-    Stdout { timeout_seconds: Option<FormatString> },                                   // "STDOUT"
+pub enum ServiceHealthCheck {
+    TcpConnect {                                          // "TCP_CONNECT"
+        ports: Option<Vec<String>>,                       // TCP ports only; None = every TCP port
+        readiness_interval_seconds: Option<FormatString>, // default 1
+        ready_timeout_seconds: Option<FormatString>,      // default 300
+        health_interval_seconds: Option<FormatString>,    // default 30
+        failure_threshold: Option<FormatString>,          // default 3
+    },
+    Command {                                             // "COMMAND"
+        readiness_interval_seconds: Option<FormatString>, // default 5
+        ready_timeout_seconds: Option<FormatString>,      // default 300
+        health_interval_seconds: Option<FormatString>,    // default 30
+        failure_threshold: Option<FormatString>,          // default 3
+    },
+    Stdout {                                              // "STDOUT"
+        ready_timeout_seconds: Option<FormatString>,      // default 300
+        health_interval_seconds: Option<FormatString>,    // no default: None = no heartbeat expected
+        failure_threshold: Option<FormatString>,          // default 3; only with health_interval_seconds
+    },
 }
 
-impl ServiceReadinessCheck {
-    pub const DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    pub const DEFAULT_COMMAND_INTERVAL_SECONDS: u64 = 5;
+pub const SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4] =
+    ["readinessIntervalSeconds", "readyTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"];
+
+impl ServiceHealthCheck {
+    pub const DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64 = 1;
+    pub const DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64 = 5;
+    pub const DEFAULT_READY_TIMEOUT_SECONDS: u64 = 300;
+    pub const DEFAULT_HEALTH_INTERVAL_SECONDS: u64 = 30;   // TCP_CONNECT and COMMAND only
+    pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
     pub fn type_name(&self) -> &'static str;                 // "TCP_CONNECT" | "COMMAND" | "STDOUT"
-    pub fn timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn readiness_interval_seconds(&self) -> Option<&FormatString>;  // always None for STDOUT
+    pub fn ready_timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn health_interval_seconds(&self) -> Option<&FormatString>;
+    pub fn failure_threshold(&self) -> Option<&FormatString>;
+    /// The four fields in SERVICE_HEALTH_CHECK_NUMERIC_FIELDS order, so validators
+    /// and job creation treat them alike (every one is a <posinteger>).
+    pub fn numeric_fields(&self) -> [(&'static str, Option<&FormatString>); 4];
 }
 
-impl Default for ServiceReadinessCheck;  // TcpConnect { ports: None, timeout_seconds: None }
+impl Default for ServiceHealthCheck;  // TcpConnect with every field None
 ```
 
 ### ServiceRestartPolicy (§9.4)
@@ -332,15 +371,15 @@ pub struct ServiceScript {
 pub struct ServiceActions {
     pub on_enter: Option<Action>,
     pub on_run: Action,                          // required: the process that is the service
-    pub on_readiness_check: Option<Action>,      // iff readinessCheck.type is COMMAND
+    pub on_health_check: Option<Action>,         // iff healthCheck.type is COMMAND
     pub on_exit: Option<Action>,
 }
 
 impl ServiceActions {
-    pub const ON_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
     /// RFC 0009 `<Action>` default-timeout table: onEnter None, onRun None,
-    /// onReadinessCheck Some(30), onExit Some(300); None for any other name.
+    /// onHealthCheck Some(30), onExit Some(300); None for any other name.
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
     pub fn named_slots(&self) -> [(&'static str, Option<&Action>); 4];
     pub fn iter_named(&self) -> impl Iterator<Item = (&'static str, &Action)>;
@@ -373,16 +412,16 @@ pub struct EnvironmentActions {
     pub on_wrap_env_exit: Option<Action>,              // WRAP_ACTIONS (RFC 0008)
     pub on_wrap_service_enter: Option<Action>,         // WRAP_ACTIONS + SERVICE (RFC 0009)
     pub on_wrap_service_run: Option<Action>,           // WRAP_ACTIONS + SERVICE (RFC 0009)
-    pub on_wrap_service_readiness_check: Option<Action>, // WRAP_ACTIONS + SERVICE (RFC 0009)
+    pub on_wrap_service_health_check: Option<Action>, // WRAP_ACTIONS + SERVICE (RFC 0009)
     pub on_wrap_service_exit: Option<Action>,          // WRAP_ACTIONS + SERVICE (RFC 0009)
     pub on_exit: Option<Action>,
 }
 
 impl EnvironmentActions {
     pub const ON_EXIT_DEFAULT_TIMEOUT_SECONDS: u64 = 300;
-    pub const ON_WRAP_SERVICE_READINESS_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+    pub const ON_WRAP_SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT_SECONDS: u64 = 30;
     /// §5 timeout table: onExit/onWrapEnvExit/onWrapServiceExit → Some(300),
-    /// onWrapServiceReadinessCheck → Some(30), every other slot → None.
+    /// onWrapServiceHealthCheck → Some(30), every other slot → None.
     pub fn default_timeout_seconds(action_name: &str) -> Option<u64>;
     /// The four RFC 0009 hooks, in lifecycle order.
     pub fn service_wrap_hooks(&self) -> [(&'static str, &Option<Action>); 4];
@@ -412,8 +451,8 @@ The job-side `job::EnvironmentActions` is invoked with the same nine slots and s
 
 The wrap-hook default timeouts follow the wrapped action: `onWrapEnvExit` takes `onExit`'s 300
 seconds (sessions `env_script.rs`), and by the same rule `onWrapServiceExit` takes
-`<ServiceActions>.onExit`'s 300 seconds and `onWrapServiceReadinessCheck` takes
-`onReadinessCheck`'s 30 seconds. The spec's §5 table lists the `<ServiceActions>` defaults but
+`<ServiceActions>.onExit`'s 300 seconds and `onWrapServiceHealthCheck` takes
+`onHealthCheck`'s 30 seconds. The spec's §5 table lists the `<ServiceActions>` defaults but
 has no rows for the `onWrapService*` hooks; the values here are the analogy, recorded as
 constants for the runtime to consume.
 

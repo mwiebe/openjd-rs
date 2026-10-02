@@ -1,7 +1,7 @@
 # RFC 0009 §9.2 item 3 / §9 item 7 (conformance `service-udp-port-echo`): a
 # Job Service whose only port is `protocol: UDP` (a python datagram echo
 # listener). It cannot be probed by TCP_CONNECT, so it declares a STDOUT
-# readiness check and prints `openjd_service_ready` once bound. The Task
+# health check and prints `openjd_service_ready` once bound. The Task
 # sends a datagram to connectAddress:port and prints the echo.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
@@ -11,9 +11,9 @@ jobServices:
     ports:
       - name: dgram
         protocol: UDP
-    readinessCheck:
+    healthCheck:
       type: STDOUT
-      timeoutSeconds: 60
+      readyTimeoutSeconds: 60
     script:
       actions:
         onRun:

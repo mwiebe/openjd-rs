@@ -254,7 +254,7 @@ impl ActionFilter {
                 }
                 ActionMessageKind::ServiceReady => {
                     // RFC 0009: the message is informational; whether it is
-                    // honored (STDOUT readiness of a Service's onRun) is the
+                    // honored (the STDOUT health check of a Service's onRun) is the
                     // consumer's decision, like `Status`.
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::ServiceReady,
@@ -589,8 +589,8 @@ mod tests {
     fn action_tag_defaults_to_none_and_round_trips() {
         let mut f = ActionFilter::new("sid", true, false);
         assert_eq!(f.action_tag(), None);
-        f.set_action_tag(Some("onReadinessCheck".into()));
-        assert_eq!(f.action_tag(), Some("onReadinessCheck"));
+        f.set_action_tag(Some("onHealthCheck".into()));
+        assert_eq!(f.action_tag(), Some("onHealthCheck"));
         f.set_action_tag(None);
         assert_eq!(f.action_tag(), None);
     }
@@ -1078,7 +1078,7 @@ mod tests {
         testing_logger::setup();
         let mut f = make_filter(true, false);
         f.set_session_tag(Some("Service Vault".into()));
-        f.set_action_tag(Some("onReadinessCheck".into()));
+        f.set_action_tag(Some("onHealthCheck".into()));
         f.filter_message("openjd_redacted_env: TOKEN=hunter2", "foo");
         testing_logger::validate(|logs| {
             let warns: Vec<_> = logs
@@ -1088,7 +1088,7 @@ mod tests {
             assert_eq!(warns.len(), 1);
             assert_eq!(
                 warns[0].body,
-                "[Service Vault] [onReadinessCheck] Received openjd_redacted_env for 'TOKEN' but \
+                "[Service Vault] [onHealthCheck] Received openjd_redacted_env for 'TOKEN' but \
                  the REDACTED_ENV_VARS extension is not declared; the variable is not set."
             );
             assert!(!warns[0].body.contains("hunter2"));

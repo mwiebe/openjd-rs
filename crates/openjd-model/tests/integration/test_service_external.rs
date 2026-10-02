@@ -206,7 +206,7 @@ environment:
       onWrapEnvExit: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
       onWrapServiceEnter: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
       onWrapServiceRun: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
-      onWrapServiceReadinessCheck: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
+      onWrapServiceHealthCheck: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
       onWrapServiceExit: { command: run-in-container, args: ["{{ WrappedAction.Command }}"] }
 "#;
 
@@ -756,7 +756,7 @@ fn document_serializes_only_for_external_services() {
 // ════════════════════════════════════════════════════════════════════
 
 const WRAPPER_REMEDY: &str = "Declare SERVICE in {doc} and either define onWrapServiceEnter, \
-    onWrapServiceRun, onWrapServiceReadinessCheck, and onWrapServiceExit, or declare a runScope \
+    onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope \
     that excludes SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).";
 
 fn wrapper_message(env: &str, doc: &str, in_scope: &str) -> String {
