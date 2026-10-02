@@ -3738,6 +3738,71 @@ mod services {
         );
     }
 
+    /// RFC 0009 §9.2 item 3 / §9 item 7 (conformance
+    /// `service-udp-port-echo`): a Job Service whose only port is UDP is
+    /// allocated a UDP port on loopback, reported with a `/udp` suffix in
+    /// the endpoints line, becomes READY through its STDOUT check, and is
+    /// reached by the Tasks with datagrams to `connectAddress`:`port`.
+    #[test]
+    fn test_job_service_udp_echo() {
+        let (code, stdout, stderr) = run_service_template("service_job_udp.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'Udp' (Job scope) endpoints: "))
+            .unwrap_or_else(|| panic!("no endpoints line in:\n{stdout}"));
+        assert!(
+            line.contains("dgram -> 127.0.0.1:") && line.trim_end().ends_with("/udp"),
+            "the UDP port is suffixed /udp: {line}"
+        );
+        assert!(stdout.contains("UDP_BOUND"), "{stdout}");
+        assert!(stdout.contains("Service 'Udp' is READY"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY udp-echo:Ping-1"), "{stdout}");
+        assert!(stdout.contains("TASK_REPLY udp-echo:Ping-2"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'Udp' is READY") < pos(&stdout, "Running step 'Ping'"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Service 'Udp' stopped"), "{stdout}");
+        assert!(stdout.contains("Chunks run: 2"), "{stdout}");
+    }
+
+    /// RFC 0009 "A metrics sink with a UDP ingest port": a Job Service with
+    /// a UDP port and a TCP port and no `readinessCheck` becomes READY
+    /// through the default TCP_CONNECT, which probes the TCP port only
+    /// (§9 item 7, §9.3 item 2). The endpoints line suffixes only the UDP
+    /// port; the Task reaches both ports.
+    #[test]
+    fn test_job_service_mixed_tcp_udp_default_readiness_probes_tcp_only() {
+        let (code, stdout, stderr) = run_service_template("service_job_tcp_udp.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'Metrics' (Job scope) endpoints: "))
+            .unwrap_or_else(|| panic!("no endpoints line in:\n{stdout}"));
+        let (ingest, api) = line
+            .split_once("endpoints: ")
+            .unwrap()
+            .1
+            .split_once(", ")
+            .unwrap();
+        assert!(
+            ingest.starts_with("ingest -> 127.0.0.1:") && ingest.trim_end().ends_with("/udp"),
+            "{line}"
+        );
+        assert!(
+            api.starts_with("api -> 127.0.0.1:") && !api.contains("/udp"),
+            "{line}"
+        );
+        assert!(stdout.contains("SINK_LISTENING"), "{stdout}");
+        assert!(stdout.contains("Service 'Metrics' is READY"), "{stdout}");
+        assert!(
+            stdout.contains("TASK_REPLY COUNT=2 frame-1,frame-2"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Chunks run: 1"), "{stdout}");
+    }
+
     /// RFC 0009 example 2: a Step Service with STDOUT readiness starts
     /// (onEnter, onRun) before the Step's first Task and stops (onExit) once
     /// the Step's three Tasks are done, before the next Step runs

@@ -35,7 +35,9 @@ use std::time::Duration;
 
 use openjd_expr::function_library::FunctionLibrary;
 use openjd_model::job::service_symbols::{build_service_symbol_table, ServiceEndpoints};
-use openjd_model::job::{Action, Environment, RunScope, Service, ServiceReadinessCheck};
+use openjd_model::job::{
+    Action, Environment, RunScope, Service, ServicePortProtocol, ServiceReadinessCheck,
+};
 use openjd_model::symbol_table::SymbolTable;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
@@ -423,7 +425,7 @@ struct RunInstance {
 /// when the Service defines the corresponding action (RFC 0009
 /// `<EnvironmentActions>`). The hooks see `WrappedAction.*` as RFC 0008
 /// defines them, plus `WrappedService.Name` / `.PortNames` / `.Ports` /
-/// `.BindAddresses`.
+/// `.BindAddresses` / `.Protocols`.
 pub struct ServiceSession {
     session: Session,
     service: Service,
@@ -470,9 +472,11 @@ impl ServiceSession {
     ///
     /// Any [`Session::with_config`] error; [`SessionError::ServicePortUnassigned`]
     /// when a declared or probed port has no endpoint; [`SessionError::Runtime`]
-    /// when the endpoint assignment names a different Service, or the
-    /// readiness check type is `COMMAND` and the Service defines no
-    /// `onReadinessCheck` (model validation forbids this combination).
+    /// when the endpoint assignment names a different Service, an endpoint's
+    /// protocol differs from its port's declared `protocol`, a `TCP_CONNECT`
+    /// check names a UDP port, or the readiness check type is `COMMAND` and
+    /// the Service defines no `onReadinessCheck` (model validation forbids
+    /// the last two combinations).
     pub fn with_config(config: ServiceSessionConfig) -> Result<Self, SessionError> {
         let ServiceSessionConfig {
             session,
@@ -490,20 +494,38 @@ impl ServiceSession {
             )));
         }
         for port in &service.ports {
-            if !endpoints.ports.iter().any(|(n, _)| *n == port.name) {
+            let Some((_, endpoint)) = endpoints.ports.iter().find(|(n, _)| *n == port.name) else {
                 return Err(SessionError::ServicePortUnassigned {
                     name: service.name.clone(),
                     port: port.name.clone(),
                 });
+            };
+            // The number was allocated in the declared protocol's space
+            // (§9.2 item 3); an assignment in the other space is the
+            // scheduler's error, not the Service's.
+            if endpoint.protocol != port.protocol {
+                return Err(SessionError::Runtime(format!(
+                    "Service '{}' port '{}' is declared {} but its endpoint assignment is {}",
+                    service.name, port.name, port.protocol, endpoint.protocol
+                )));
             }
         }
         if let ServiceReadinessCheck::TcpConnect { ports, .. } = &service.readiness_check {
             for p in ports {
-                if !endpoints.ports.iter().any(|(n, _)| n == p) {
+                let Some((_, endpoint)) = endpoints.ports.iter().find(|(n, _)| n == p) else {
                     return Err(SessionError::ServicePortUnassigned {
                         name: service.name.clone(),
                         port: p.clone(),
                     });
+                };
+                // Model validation restricts TCP_CONNECT to TCP ports
+                // (§9.3 item 2).
+                if endpoint.protocol != ServicePortProtocol::Tcp {
+                    return Err(SessionError::Runtime(format!(
+                        "Service '{}': TCP_CONNECT readiness check names port '{p}', whose \
+                         protocol is {}; only TCP ports can be probed",
+                        service.name, endpoint.protocol
+                    )));
                 }
             }
         }
@@ -517,9 +539,10 @@ impl ServiceSession {
                 service.name
             )));
         }
-        // `WrappedService.PortNames` / `.Ports` / `.BindAddresses` are parallel
-        // lists in *declaration* order (Template Schemas §4.3.1): order the
-        // assignment by the Service's `ports` once, here.
+        // `WrappedService.PortNames` / `.Ports` / `.BindAddresses` /
+        // `.Protocols` are parallel lists in *declaration* order (Template
+        // Schemas §4.3.1): order the assignment by the Service's `ports`
+        // once, here.
         let mut ordered = Vec::with_capacity(endpoints.ports.len());
         for port in &service.ports {
             if let Some(i) = endpoints.ports.iter().position(|(n, _)| *n == port.name) {

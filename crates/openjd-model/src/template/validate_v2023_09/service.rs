@@ -29,9 +29,13 @@
 //!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; literal
 //!   `timeoutSeconds`/`intervalSeconds` positive; literal `maxAttempts`
 //!   non-negative; `onReadinessCheck` defined iff the readiness type is
-//!   `COMMAND`; every port a `TCP_CONNECT` check names is declared (§9.7
-//!   item 4). `description`, `variables`, `hostRequirements`, embedded files
-//!   and every `<Action>` reuse the pass-6 validators.
+//!   `COMMAND`; every port a `TCP_CONNECT` check names is declared and has
+//!   `protocol: TCP`; a Service none of whose ports is TCP declares a
+//!   `STDOUT` or `COMMAND` check (§9 item 7, §9.7 item 4); no two ports of
+//!   the same `protocol` have the same literal `port` number (§9 item 6.4,
+//!   §9.7 item 8 — format-string numbers are checked at job creation).
+//!   `description`, `variables`, `hostRequirements`, embedded files and
+//!   every `<Action>` reuse the pass-6 validators.
 //! - **`serviceEnvironments`** (§9 item 5, §9.7 items 3 and 5): each entry is
 //!   a `<Environment>` validated with the pass-6 environment validator (and
 //!   the pass-5 limits and pass-7 `endOfLine` gating a `stepEnvironments`
@@ -380,18 +384,63 @@ fn validate_service(
         }
         validate_service_identifier(&port.name, &path_field(&port_path, "name"), limits, errors);
         if let Some(number) = &port.port {
+            let number_path = path_field(&port_path, "port");
             check_literal_int(
                 number,
-                &path_field(&port_path, "port"),
+                &number_path,
                 1..=65535,
                 "must be between 1 and 65535.",
                 errors,
             );
+            // §9 item 6.4 / §9.7 item 8: the same literal number twice in
+            // one protocol's space. Format-string numbers are compared at
+            // job creation, once resolved.
+            if let Some(n) = literal_int(number) {
+                if let Some(earlier) = service.ports[..i].iter().find(|p| {
+                    p.protocol == port.protocol && p.port.as_ref().and_then(literal_int) == Some(n)
+                }) {
+                    errors.add(
+                        &number_path,
+                        format!(
+                            "{} port {n} is also used by port '{}'; two ports with the same \
+                             protocol must not have the same port number.",
+                            port.protocol, earlier.name
+                        ),
+                    );
+                }
+            }
         }
     }
+    let protocol_of = |name: &str| {
+        service
+            .ports
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| p.protocol)
+    };
+    let has_tcp_port = service.tcp_port_names().next().is_some();
 
     // §9.3 <ServiceReadinessCheck>
     let readiness = service.readiness_check();
+    // §9 item 7 / §9.7 item 4: TCP_CONNECT, given or defaulted, needs a TCP
+    // port to probe. (An empty `ports` list is already reported above.)
+    if !service.ports.is_empty()
+        && !has_tcp_port
+        && matches!(readiness, ServiceReadinessCheck::TcpConnect { .. })
+    {
+        let which = if service.readiness_check.is_some() {
+            "a TCP_CONNECT readiness check"
+        } else {
+            "the default TCP_CONNECT readiness check"
+        };
+        errors.add(
+            &path_field(path, "readinessCheck"),
+            format!(
+                "{which} has no TCP port to probe: none of the Service's ports has protocol \
+                 TCP, so a readinessCheck of type STDOUT or COMMAND is required."
+            ),
+        );
+    }
     if let Some(declared) = &service.readiness_check {
         let rc_path = path_field(path, "readinessCheck");
         if let Some(timeout) = declared.timeout_seconds() {
@@ -412,13 +461,22 @@ fn validate_service(
                 if probed.is_empty() {
                     errors.add(&probed_path, "if provided, must not be empty.");
                 }
-                // §9.7 item 4: every port a TCP_CONNECT check names is declared.
+                // §9.7 item 4: every port a TCP_CONNECT check names is
+                // declared and has protocol TCP (§9.3 item 2).
                 for (i, name) in probed.iter().enumerate() {
-                    if !port_names.contains(name.as_str()) {
-                        errors.add(
+                    match protocol_of(name) {
+                        None => errors.add(
                             &path_index(&probed_path, i),
                             format!("references undeclared port '{name}'."),
-                        );
+                        ),
+                        Some(ServicePortProtocol::Tcp) => {}
+                        Some(protocol) => errors.add(
+                            &path_index(&probed_path, i),
+                            format!(
+                                "port '{name}' has protocol {protocol} and cannot be probed by a \
+                                 TCP_CONNECT readiness check; only TCP ports may be named."
+                            ),
+                        ),
                     }
                 }
             }
@@ -612,6 +670,16 @@ fn validate_service_identifier(
             ),
         );
     }
+}
+
+/// The integer a numeric `@fmtstring` field holds when it carries no
+/// expression, or `None` for a format string or non-integer text.
+fn literal_int(value: &openjd_expr::FormatString) -> Option<i64> {
+    let raw = value.raw().trim();
+    if value.has_complex_expressions() || raw.contains("{{") {
+        return None;
+    }
+    raw.parse::<i64>().ok()
 }
 
 /// Check a numeric `@fmtstring` field whose value carries no expression,

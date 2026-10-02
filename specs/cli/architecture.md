@@ -128,7 +128,7 @@ their `onRun` exit channels while a Task runs, applies `restartPolicy` (relaunch
 the same Session, or a new Session with new ports when a port conflict is possible,
 restarting dependents and re-entering the Task Session's Environments when endpoints
 change), and ends every Session when its scope completes. `run/service_ports.rs`
-holds the loopback port policy. The Task Session is replaced after a
+holds the loopback port policy (TCP and UDP ports allocated each in its own space). The Task Session is replaced after a
 `completedTasks: RERUN` cancelation because a canceled action leaves a Session
 ending-only. See [run.md § Services](run.md#services-rfc-0009).
 

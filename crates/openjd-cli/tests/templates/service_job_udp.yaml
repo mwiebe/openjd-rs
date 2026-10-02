@@ -1,0 +1,58 @@
+# RFC 0009 §9.2 item 3 / §9 item 7 (conformance `service-udp-port-echo`): a
+# Job Service whose only port is `protocol: UDP` (a python datagram echo
+# listener). It cannot be probed by TCP_CONNECT, so it declares a STDOUT
+# readiness check and prints `openjd_service_ready` once bound. The Task
+# sends a datagram to connectAddress:port and prints the echo.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "JobServiceUdp"
+jobServices:
+  - name: Udp
+    ports:
+      - name: dgram
+        protocol: UDP
+    readinessCheck:
+      type: STDOUT
+      timeoutSeconds: 60
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Udp.dgram.bindAddress }}", "{{ Service.Udp.dgram.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind((host, port))
+            print("openjd_service_ready: udp bound", flush=True)
+            print("UDP_BOUND", flush=True)
+            while True:
+                data, addr = s.recvfrom(1024)
+                s.sendto(b"udp-echo:" + data, addr)
+steps:
+  - name: Ping
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: N
+          type: INT
+          range: "1-2"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.Udp.dgram.connectAddress }}", "{{ Service.Udp.dgram.port }}", "Ping-{{ Task.Param.N }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, tag = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.settimeout(10)
+            s.sendto(tag.encode(), (host, port))
+            print("TASK_REPLY", s.recv(1024).decode(), flush=True)

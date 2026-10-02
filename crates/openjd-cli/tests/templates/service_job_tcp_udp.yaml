@@ -1,0 +1,82 @@
+# RFC 0009 "A metrics sink with a UDP ingest port" adapted: a Job Service
+# with a UDP `ingest` port and a TCP `api` port and no readinessCheck. The
+# default TCP_CONNECT probes the TCP port only (§9 item 7, §9.3 item 2), so
+# the Service becomes READY once `api` accepts connections; `ingest` is
+# bound alongside it. The Task reports a datagram over UDP and reads the
+# count back over TCP.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "JobServiceTcpUdp"
+jobServices:
+  - name: Metrics
+    ports:
+      - name: ingest
+        protocol: UDP
+      - name: api
+    script:
+      actions:
+        onRun:
+          command: python
+          args:
+            - "{{ Service.File.Sink }}"
+            - "{{ Service.Metrics.ingest.bindAddress }}"
+            - "{{ Service.Metrics.ingest.port }}"
+            - "{{ Service.Metrics.api.bindAddress }}"
+            - "{{ Service.Metrics.api.port }}"
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Sink
+          type: TEXT
+          data: |
+            import socket, sys, threading
+            uhost, uport, thost, tport = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+            received = []
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.bind((uhost, uport))
+            def ingest():
+                while True:
+                    data, _ = u.recvfrom(1024)
+                    received.append(data.decode())
+            threading.Thread(target=ingest, daemon=True).start()
+            t = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            t.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            t.bind((thost, tport))
+            t.listen(16)
+            print("SINK_LISTENING", flush=True)
+            while True:
+                c, _ = t.accept()
+                c.recv(1024)
+                c.sendall(("COUNT=%d %s" % (len(received), ",".join(sorted(received)))).encode())
+                c.close()
+steps:
+  - name: Report
+    script:
+      actions:
+        onRun:
+          command: python
+          args:
+            - "{{ Task.File.Run }}"
+            - "{{ Service.Metrics.ingest.connectAddress }}"
+            - "{{ Service.Metrics.ingest.port }}"
+            - "{{ Service.Metrics.api.connectAddress }}"
+            - "{{ Service.Metrics.api.port }}"
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import socket, sys, time
+            uhost, uport, thost, tport = sys.argv[1], int(sys.argv[2]), sys.argv[3], int(sys.argv[4])
+            u = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            u.sendto(b"frame-1", (uhost, uport))
+            u.sendto(b"frame-2", (uhost, uport))
+            # Datagrams are not acknowledged; poll the TCP API until both arrive.
+            for _ in range(50):
+                c = socket.create_connection((thost, tport), timeout=10)
+                c.sendall(b"summary")
+                reply = c.recv(1024).decode()
+                c.close()
+                if reply.startswith("COUNT=2 "):
+                    break
+                time.sleep(0.1)
+            print("TASK_REPLY", reply, flush=True)

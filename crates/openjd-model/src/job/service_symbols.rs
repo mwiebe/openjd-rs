@@ -33,6 +33,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ModelError;
 use crate::template;
+use crate::template::ServicePortProtocol;
 
 /// Root of the `Service.*` scope.
 pub const SERVICE_SCOPE: &str = "Service";
@@ -78,9 +79,16 @@ pub fn service_file_key(file_name: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceEndpoint {
-    /// The TCP port number allocated (or requested via `<ServicePort>.port`)
-    /// for this port. The same number is used for binding and connecting.
+    /// The port number allocated (or requested via `<ServicePort>.port`)
+    /// for this port, in the space of [`protocol`](Self::protocol). The
+    /// same number is used for binding and connecting.
     pub port: u16,
+    /// The port's `<ServicePort>.protocol` (§9.2 item 3): the protocol the
+    /// number was allocated in and the service process binds it with.
+    /// Reported as `WrappedService.Protocols[i]`. `TCP` is the default and
+    /// omitted from JSON.
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
     /// The interface address the service process must bind to so that
     /// entities in the Service's scope can reach it (`0.0.0.0` / `::` for a
     /// distributed scheduler, `127.0.0.1` for a single-host runner).
@@ -92,7 +100,7 @@ pub struct ServiceEndpoint {
 
 /// The allocated endpoints of every port of one Service, in the Service's
 /// port declaration order — the order `WrappedService.PortNames` /
-/// `.Ports` / `.BindAddresses` are reported in.
+/// `.Ports` / `.BindAddresses` / `.Protocols` are reported in.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceEndpoints {
@@ -190,9 +198,10 @@ pub fn build_service_symbol_table(
 
 /// Seed the `WrappedService.*` group for one of the four `onWrapService*`
 /// hooks (Template Schemas §4.3.1): `WrappedService.Name` (string), and the
-/// three parallel lists `WrappedService.PortNames` (`list[string]`),
-/// `WrappedService.Ports` (`list[int]`) and `WrappedService.BindAddresses`
-/// (`list[string]`), index *i* of each describing the Service's *i*-th
+/// four parallel lists `WrappedService.PortNames` (`list[string]`),
+/// `WrappedService.Ports` (`list[int]`), `WrappedService.BindAddresses`
+/// (`list[string]`) and `WrappedService.Protocols` (`list[string]`, each
+/// `"TCP"` or `"UDP"`), index *i* of each describing the Service's *i*-th
 /// declared port.
 ///
 /// # Errors
@@ -223,6 +232,11 @@ pub fn add_wrapped_service_symbols(
         .iter()
         .map(|(_, e)| ExprValue::String(e.bind_address.clone()))
         .collect();
+    let protocols = endpoints
+        .ports
+        .iter()
+        .map(|(_, e)| ExprValue::String(e.protocol.as_str().to_string()))
+        .collect();
     symtab.set(
         &format!("{WRAPPED_SERVICE_SCOPE}.PortNames"),
         ExprValue::make_list(names, ExprType::STRING).map_err(ModelError::Expression)?,
@@ -234,6 +248,10 @@ pub fn add_wrapped_service_symbols(
     symtab.set(
         &format!("{WRAPPED_SERVICE_SCOPE}.BindAddresses"),
         ExprValue::make_list(binds, ExprType::STRING).map_err(ModelError::Expression)?,
+    )?;
+    symtab.set(
+        &format!("{WRAPPED_SERVICE_SCOPE}.Protocols"),
+        ExprValue::make_list(protocols, ExprType::STRING).map_err(ModelError::Expression)?,
     )?;
     Ok(())
 }
@@ -413,6 +431,7 @@ pub(crate) fn add_unresolved_wrapped_service_symbols(
         ("PortNames", ExprType::list(ExprType::STRING)),
         ("Ports", ExprType::list(ExprType::INT)),
         ("BindAddresses", ExprType::list(ExprType::STRING)),
+        ("Protocols", ExprType::list(ExprType::STRING)),
     ] {
         symtab.set(
             &format!("{WRAPPED_SERVICE_SCOPE}.{name}"),
@@ -434,6 +453,7 @@ mod tests {
                     "main".to_string(),
                     ServiceEndpoint {
                         port: 6379,
+                        protocol: ServicePortProtocol::Tcp,
                         bind_address: "0.0.0.0".to_string(),
                         connect_address: "cache.example".to_string(),
                     },
@@ -442,6 +462,7 @@ mod tests {
                     "metrics".to_string(),
                     ServiceEndpoint {
                         port: 9100,
+                        protocol: ServicePortProtocol::Udp,
                         bind_address: "::".to_string(),
                         connect_address: "2001:db8::5".to_string(),
                     },
@@ -487,6 +508,7 @@ mod tests {
                 "sql".to_string(),
                 ServiceEndpoint {
                     port: 5432,
+                    protocol: ServicePortProtocol::Tcp,
                     bind_address: "127.0.0.1".to_string(),
                     connect_address: "127.0.0.1".to_string(),
                 },
@@ -534,6 +556,34 @@ mod tests {
                 ExprValue::String("::".into())
             ]
         );
+        let protocols = st.get_value("WrappedService.Protocols").unwrap();
+        assert_eq!(
+            protocols.list_elements().unwrap(),
+            vec![
+                ExprValue::String("TCP".into()),
+                ExprValue::String("UDP".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn endpoint_protocol_defaults_to_tcp_and_is_omitted_from_json() {
+        let tcp: ServiceEndpoint = serde_json::from_str(
+            r#"{"port": 80, "bindAddress": "0.0.0.0", "connectAddress": "h"}"#,
+        )
+        .unwrap();
+        assert_eq!(tcp.protocol, ServicePortProtocol::Tcp);
+        assert_eq!(
+            serde_json::to_string(&tcp).unwrap(),
+            r#"{"port":80,"bindAddress":"0.0.0.0","connectAddress":"h"}"#
+        );
+        let udp = ServiceEndpoint {
+            protocol: ServicePortProtocol::Udp,
+            ..tcp
+        };
+        let json = serde_json::to_string(&udp).unwrap();
+        assert!(json.contains(r#""protocol":"UDP""#), "{json}");
+        assert_eq!(serde_json::from_str::<ServiceEndpoint>(&json).unwrap(), udp);
     }
 
     #[test]
@@ -582,6 +632,7 @@ mod tests {
             ports: vec![job::ServicePort {
                 name: "p".into(),
                 port: None,
+                protocol: ServicePortProtocol::Tcp,
             }],
             readiness_check: job::ServiceReadinessCheck::Stdout { timeout_seconds: 1 },
             restart_policy: job::ServiceRestartPolicy {

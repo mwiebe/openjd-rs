@@ -50,12 +50,14 @@ pub struct Service {
     /// for a Step Service, the Step's Step Environments; `runScope` must not
     /// be provided (the effective scope is `[SERVICE]`).
     pub service_environments: Option<Vec<Environment>>,
-    /// §9.2 The named TCP ports the Service exposes: 1–10 entries with
-    /// unique names.
+    /// §9.2 The named ports the Service exposes: 1–10 entries with unique
+    /// names, each TCP (the default) or UDP. No two ports of the same
+    /// protocol may have the same `port` number (§9 item 6.4).
     pub ports: Vec<ServicePort>,
     /// §9.3 How readiness is determined. `None` means
-    /// `{ type: TCP_CONNECT }` on every declared port; see
-    /// [`readiness_check`](Self::readiness_check).
+    /// `{ type: TCP_CONNECT }` on every declared TCP port; a Service none
+    /// of whose ports is TCP must declare a `STDOUT` or `COMMAND` check
+    /// (§9 item 7). See [`readiness_check`](Self::readiness_check).
     pub readiness_check: Option<ServiceReadinessCheck>,
     /// §9.4 What happens when `onRun` exits before the scope ends. `None`
     /// means `{ maxAttempts: 0, completedTasks: RERUN }`; see
@@ -71,7 +73,7 @@ pub struct Service {
 
 impl Service {
     /// The effective readiness check: the declared one, or the §9 default
-    /// `{ type: TCP_CONNECT }` applied to every declared port.
+    /// `{ type: TCP_CONNECT }` applied to every declared TCP port.
     pub fn readiness_check(&self) -> ServiceReadinessCheck {
         self.readiness_check.clone().unwrap_or_default()
     }
@@ -86,21 +88,78 @@ impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str> {
         self.ports.iter().map(|p| p.name.as_str())
     }
+
+    /// The names of the declared ports whose `protocol` is `TCP`, in
+    /// declaration order — the ports a `TCP_CONNECT` readiness check
+    /// probes when it names none (§9 item 7, §9.3 item 2).
+    pub fn tcp_port_names(&self) -> impl Iterator<Item = &str> {
+        self.ports
+            .iter()
+            .filter(|p| p.protocol == ServicePortProtocol::Tcp)
+            .map(|p| p.name.as_str())
+    }
 }
 
-/// §9.2 `<ServicePort>` — one named TCP port of a Service.
+/// §9.2 `<ServicePort>` — one named port of a Service.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServicePort {
     /// The second component of `Service.<service>.<port>.*` references. An
     /// identifier other than `File`, unique within the Service.
     pub name: String,
-    /// `<posinteger> | <posintstring>` (`@fmtstring`): a specific TCP port
-    /// number (1–65535) the Service requires on its host. When absent the
-    /// runtime allocates a port. Modeled like `<Action>.timeout`: an
-    /// integer is accepted and held as its decimal text; a format string is
+    /// `<posinteger> | <posintstring>` (`@fmtstring`): a specific port
+    /// number (1–65535), in the space of the port's `protocol`, that the
+    /// Service requires on its host. When absent the runtime allocates a
+    /// port of that protocol. Modeled like `<Action>.timeout`: an integer
+    /// is accepted and held as its decimal text; a format string is
     /// resolved at job creation.
     pub port: Option<FormatString>,
+    /// §9.2 item 3: the transport protocol the service process binds the
+    /// port with and the scheduler publishes or forwards it as. Not a
+    /// format string. Default `TCP`.
+    #[serde(default)]
+    pub protocol: ServicePortProtocol,
+}
+
+/// §9.2 item 3 `<ServicePort>.protocol` — the transport protocol of one
+/// port. TCP and UDP port numbers are separate spaces: a number is
+/// requested or allocated in the space of this protocol, and two ports may
+/// share a number when their protocols differ.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ServicePortProtocol {
+    /// A TCP port; the only kind a `TCP_CONNECT` readiness check can
+    /// probe. The default.
+    #[default]
+    Tcp,
+    /// A UDP port. It cannot be probed by `TCP_CONNECT`.
+    Udp,
+}
+
+impl ServicePortProtocol {
+    /// The schema spelling of this value (`"TCP"` / `"UDP"`), also the
+    /// value reported in `WrappedService.Protocols`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+        }
+    }
+
+    /// Whether this is the default protocol, for
+    /// `#[serde(skip_serializing_if)]` on a serialized Job.
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+impl std::fmt::Display for ServicePortProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// §9.3 `<ServiceReadinessCheck>` — discriminated union on `type`.
@@ -113,7 +172,7 @@ pub struct ServicePort {
 #[serde(tag = "type", rename_all_fields = "camelCase", deny_unknown_fields)]
 pub enum ServiceReadinessCheck {
     /// READY once a TCP connection to each listed port succeeds. `ports`
-    /// defaults to every declared port.
+    /// may name only TCP ports and defaults to every declared TCP port.
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         ports: Option<Vec<String>>,
@@ -166,7 +225,7 @@ impl ServiceReadinessCheck {
 }
 
 impl Default for ServiceReadinessCheck {
-    /// `{ type: TCP_CONNECT }` on every declared port, with the default
+    /// `{ type: TCP_CONNECT }` on every declared TCP port, with the default
     /// timeout.
     fn default() -> Self {
         Self::TcpConnect {
@@ -345,6 +404,62 @@ script:
         assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Rerun);
         assert_eq!(svc.port_names().collect::<Vec<_>>(), vec!["main"]);
         assert_eq!(svc.ports[0].port, None);
+        assert_eq!(svc.ports[0].protocol, ServicePortProtocol::Tcp);
+    }
+
+    #[test]
+    fn port_protocol_parses_and_defaults_to_tcp() {
+        let svc = parse(
+            r#"
+name: Metrics
+ports:
+  - name: ingest
+    protocol: UDP
+  - name: api
+  - name: admin
+    protocol: TCP
+readinessCheck:
+  type: STDOUT
+script:
+  actions:
+    onRun:
+      command: sink
+"#,
+        );
+        let protocols: Vec<ServicePortProtocol> = svc.ports.iter().map(|p| p.protocol).collect();
+        assert_eq!(
+            protocols,
+            vec![
+                ServicePortProtocol::Udp,
+                ServicePortProtocol::Tcp,
+                ServicePortProtocol::Tcp
+            ]
+        );
+        assert_eq!(
+            svc.tcp_port_names().collect::<Vec<_>>(),
+            vec!["api", "admin"]
+        );
+        assert_eq!(ServicePortProtocol::default(), ServicePortProtocol::Tcp);
+        assert_eq!(ServicePortProtocol::Tcp.as_str(), "TCP");
+        assert_eq!(ServicePortProtocol::Udp.as_str(), "UDP");
+        assert_eq!(ServicePortProtocol::Udp.to_string(), "UDP");
+        assert!(ServicePortProtocol::Tcp.is_default());
+        assert!(!ServicePortProtocol::Udp.is_default());
+    }
+
+    #[test]
+    fn port_protocol_is_a_case_sensitive_literal() {
+        for bad in ["udp", "SCTP", "{{ Param.Proto }}"] {
+            let err = serde_saphyr::from_str::<ServicePort>(&format!(
+                "name: ingest\nprotocol: \"{bad}\""
+            ))
+            .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("unknown variant `{bad}`")),
+                "got: {err}"
+            );
+        }
     }
 
     #[test]

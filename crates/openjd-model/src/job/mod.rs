@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{EndOfLine, FileType};
 
 use crate::template::RangeConstraint;
-pub use crate::template::{CompletedTasksPolicy, RunScope};
+pub use crate::template::{CompletedTasksPolicy, RunScope, ServicePortProtocol};
 use crate::types::JobParameterType;
 
 /// Hash the entries of a string-keyed map sorted by key, so that maps
@@ -466,23 +466,30 @@ impl Service {
 pub struct ServicePort {
     /// The second component of `Service.<service>.<port>.*` references.
     pub name: String,
-    /// The specific TCP port the Service requires on its host, or `None`
-    /// when the runtime allocates one. Resolved from the template's
-    /// `@fmtstring`; a whole-field `null` resolution is `None`.
+    /// The specific port number, in the space of [`protocol`](Self::protocol),
+    /// the Service requires on its host, or `None` when the runtime
+    /// allocates one. Resolved from the template's `@fmtstring`; a
+    /// whole-field `null` resolution is `None`.
     pub port: Option<u16>,
+    /// §9.2 item 3: the transport protocol of the port, `TCP` (the
+    /// default, omitted from JSON) or `UDP`. The runtime requests or
+    /// allocates the number in this protocol's space and publishes or
+    /// forwards the port as it.
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
 }
 
 /// An instantiated `<ServiceReadinessCheck>` (§9.3), with the defaults
 /// applied: `timeoutSeconds` 300, `intervalSeconds` 5, and a `TCP_CONNECT`
-/// check without `ports` probing every declared port.
+/// check without `ports` probing every declared TCP port.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all_fields = "camelCase")]
 pub enum ServiceReadinessCheck {
     /// READY once a TCP connection to each of `ports` succeeds.
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
-        /// The port names to probe — every declared port when the template
-        /// named none.
+        /// The names of the TCP ports to probe — every declared TCP port
+        /// when the template named none (§9 item 7, §9.3 item 2).
         ports: Vec<String>,
         timeout_seconds: u64,
     },
