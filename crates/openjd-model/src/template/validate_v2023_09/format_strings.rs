@@ -2439,7 +2439,7 @@ const SERVICE_PORT_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint:
     nullable: true,
 };
 
-/// §9.3 `readinessIntervalSeconds` / `readyTimeoutSeconds` /
+/// §9.3 `readinessIntervalSeconds` / `readinessTimeoutSeconds` /
 /// `healthIntervalSeconds` / `failureThreshold` (`<posintstring>`):
 /// positive; whole-field `null` means the §9.3 default applies (for a
 /// `STDOUT` check's `healthIntervalSeconds`, no heartbeat).

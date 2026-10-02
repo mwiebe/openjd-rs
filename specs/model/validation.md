@@ -269,7 +269,7 @@ range, `timeout` / `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` /
 | Condition | Message |
 |---|---|
 | `Task.*` at a Service site | `Task.* is not available within a Service.` |
-| job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readyTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`) |
+| job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`) |
 | the site is an Environment with `SERVICE` in its (effective) `runScope` | `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` |
 | `<svc>` is declared later in the referencing Service's own list | `Service 'Backend' is declared later in jobServices than 'Proxy'; a Service may reference only itself and earlier Services.` (`stepServices` / `services` for the other lists) |
 | `<svc>` is a Step Service not in scope here | `Service 'Counter' is a Step Service of step 'Count' and is not in scope in step 'After'.` (`in Job Environment 'E'` / `in Service 'B'` for those sites) |
@@ -424,7 +424,7 @@ deferring it to job submission or the worker. Two stages of checking:
 | `notifyPeriodInSeconds` (Template Schemas §5.3.2, FB1) | `int?` | soft cap: 100 chars | coerced integer > 0, ≤ 600; `null` = unset |
 | cancelation `mode` (FB1 deferred, Template Schemas §5.3) | `string?` | ≤ 21 chars (longest valid value) | `TERMINATE` / `NOTIFY_THEN_TERMINATE`; `null` = cancelation unset |
 | Service `port` (SERVICE, Template Schemas §9.2) | `int?` | soft cap: 100 chars | coerced integer in 1–65535; `null` = runtime allocates |
-| Service `readinessIntervalSeconds` / `readyTimeoutSeconds` / `healthIntervalSeconds` / `failureThreshold` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default (STDOUT `healthIntervalSeconds`: no heartbeat) |
+| Service `readinessIntervalSeconds` / `readinessTimeoutSeconds` / `healthIntervalSeconds` / `failureThreshold` (SERVICE, §9.3) | `int?` | soft cap: 100 chars | coerced integer > 0; `null` = §9.3 default (STDOUT `healthIntervalSeconds`: no heartbeat) |
 | Service `maxAttempts` (SERVICE, §9.4) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = 0 |
 | chunks `defaultTaskCount` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int` | soft cap: 100 chars | coerced integer ≥ 1 |
 | chunks `targetRuntimeSeconds` (TASK_CHUNKING, Template Schemas §3.4.1.5) | `int?` | soft cap: 100 chars | coerced integer ≥ 0; `null` = unset |
@@ -655,7 +655,7 @@ Validates or rejects features gated behind `SERVICE` (RFC 0009, Template Schemas
   expression (a format string is type-checked and, when static, range-checked by pass 8, and
   resolved and range-checked at job creation, like `<Action>.timeout`):
   `port` `must be between 1 and 65535.`; each of `healthCheck.readinessIntervalSeconds`,
-  `healthCheck.readyTimeoutSeconds`, `healthCheck.healthIntervalSeconds`, and
+  `healthCheck.readinessTimeoutSeconds`, `healthCheck.healthIntervalSeconds`, and
   `healthCheck.failureThreshold` `must be > 0.`; `restartPolicy.maxAttempts` `must be >= 0.`;
   any of them `must be an integer.` when the text does not parse.
 - **Health-check consistency** (§9.3 items 3 and 6, §9.6 item 3, §9.7 item 4):

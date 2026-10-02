@@ -19,7 +19,7 @@ jobServices:
     healthCheck:
       type: COMMAND
       readinessIntervalSeconds: 1
-      readyTimeoutSeconds: 60
+      readinessTimeoutSeconds: 60
       healthIntervalSeconds: 1
       failureThreshold: 2
     restartPolicy:

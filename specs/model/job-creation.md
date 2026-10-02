@@ -247,7 +247,7 @@ each seeing every Job Service and the Step Services before it. Per Service
    on the resolved values, reported at the Service's path.
 3. **Numeric `@fmtstring` fields** (§9.2 note) — `resolve_service_int`
    resolves `port`, the four `healthCheck` numeric fields
-   (`readinessIntervalSeconds`, `readyTimeoutSeconds`, `healthIntervalSeconds`,
+   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`,
    `failureThreshold`), and `restartPolicy.maxAttempts` with target type
    `int?`, the same target pass 8 validated them with: a whole-field `null`
    is "not provided" (`port: None`, or the §9 default — readiness interval 1

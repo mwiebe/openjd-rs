@@ -15,7 +15,7 @@ jobServices:
       - name: main
     healthCheck:
       type: TCP_CONNECT
-      readyTimeoutSeconds: 60
+      readinessTimeoutSeconds: 60
     restartPolicy:
       maxAttempts: 1
       completedTasks: KEEP

@@ -631,7 +631,7 @@ pub enum ServiceHealth {
     /// success (below `failureThreshold`). Re-sent on the watch when the
     /// count changes.
     Ready { message: Option<String>, failed_probes: u64 },
-    /// `readyTimeoutSeconds` elapsed since launch; onRun may still be running.
+    /// `readinessTimeoutSeconds` elapsed since launch; onRun may still be running.
     TimedOut,
     /// onRun exited before a probe passed.
     ExitedBeforeReady,

@@ -517,7 +517,7 @@ fn service(name: &str, on_run: Action) -> Service {
             protocol: ServicePortProtocol::Tcp,
         }],
         health_check: ServiceHealthCheck::Stdout {
-            ready_timeout_seconds: 30,
+            readiness_timeout_seconds: 30,
             health_interval_seconds: None,
             failure_threshold: 3,
         },

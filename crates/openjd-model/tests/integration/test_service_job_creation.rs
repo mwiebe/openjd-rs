@@ -111,13 +111,13 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
         ServiceHealthCheck::TcpConnect {
             ports: vec!["main".to_string()],
             readiness_interval_seconds: 1,
-            ready_timeout_seconds: 60,
+            readiness_timeout_seconds: 60,
             health_interval_seconds: 10,
             failure_threshold: 3,
         }
     );
     assert_eq!(cache.health_check.readiness_interval_seconds(), Some(1));
-    assert_eq!(cache.health_check.ready_timeout_seconds(), 60);
+    assert_eq!(cache.health_check.readiness_timeout_seconds(), 60);
     assert_eq!(cache.health_check.health_interval_seconds(), Some(10));
     assert_eq!(cache.health_check.failure_threshold(), 3);
     assert!(cache.health_check.monitors_health());
@@ -181,14 +181,14 @@ fn coordinator_example_creates_a_step_service() {
     assert_eq!(
         c.health_check,
         ServiceHealthCheck::Stdout {
-            ready_timeout_seconds: 120,
+            readiness_timeout_seconds: 120,
             health_interval_seconds: None,
             failure_threshold: 3,
         }
     );
     assert_eq!(c.health_check.type_name(), "STDOUT");
     assert_eq!(c.health_check.readiness_interval_seconds(), None);
-    assert_eq!(c.health_check.ready_timeout_seconds(), 120);
+    assert_eq!(c.health_check.readiness_timeout_seconds(), 120);
     assert_eq!(c.health_check.health_interval_seconds(), None);
     assert!(!c.health_check.monitors_health());
     assert_eq!(c.restart_policy.max_attempts, 1);
@@ -258,7 +258,7 @@ jobServices:
     healthCheck:
       type: COMMAND
       readinessIntervalSeconds: "{{ 2 * 3 }}"
-      readyTimeoutSeconds: "{{ null }}"
+      readinessTimeoutSeconds: "{{ null }}"
       healthIntervalSeconds: "{{ Param.Port // 1000 }}"
       failureThreshold: "{{ null }}"
     restartPolicy:
@@ -321,12 +321,12 @@ fn numeric_fields_resolve_in_the_service_let_scope() {
         ]
     );
     // A `null` whole-field expression means "not provided": the §9.3
-    // default applies (readyTimeoutSeconds 300, failureThreshold 3).
+    // default applies (readinessTimeoutSeconds 300, failureThreshold 3).
     assert_eq!(
         cache.health_check,
         ServiceHealthCheck::Command {
             readiness_interval_seconds: 6,
-            ready_timeout_seconds: 300,
+            readiness_timeout_seconds: 300,
             health_interval_seconds: 7,
             failure_threshold: 3,
         }
@@ -400,7 +400,7 @@ fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
         ServiceHealthCheck::TcpConnect {
             ports: vec!["p".to_string()],
             readiness_interval_seconds: 1,
-            ready_timeout_seconds: 300,
+            readiness_timeout_seconds: 300,
             health_interval_seconds: 30,
             failure_threshold: 3,
         }
@@ -484,10 +484,10 @@ jobServices:
     }
     const ON_HEALTH_CHECK: &str = "        onHealthCheck:\n          command: probe\n";
     const FOUR: &str = "      readinessIntervalSeconds: \"{{ Param.Patience // 10 }}\"\n      \
-                        readyTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
+                        readinessTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
                         healthIntervalSeconds: \"{{ Param.Patience // 2 }}\"\n      \
                         failureThreshold: \"{{ strikes }}\"\n";
-    const THREE: &str = "      readyTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
+    const THREE: &str = "      readinessTimeoutSeconds: \"{{ Param.Patience }}\"\n      \
                          healthIntervalSeconds: \"{{ Param.Patience // 2 }}\"\n      \
                          failureThreshold: \"{{ strikes }}\"\n";
 
@@ -499,7 +499,7 @@ jobServices:
         job.job_services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Command {
             readiness_interval_seconds: 6,
-            ready_timeout_seconds: 60,
+            readiness_timeout_seconds: 60,
             health_interval_seconds: 30,
             failure_threshold: 3,
         }
@@ -514,7 +514,7 @@ jobServices:
         ServiceHealthCheck::TcpConnect {
             ports: vec!["main".to_string()],
             readiness_interval_seconds: 2,
-            ready_timeout_seconds: 20,
+            readiness_timeout_seconds: 20,
             health_interval_seconds: 10,
             failure_threshold: 1,
         }
@@ -523,7 +523,7 @@ jobServices:
     assert_eq!(
         job.job_services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Stdout {
-            ready_timeout_seconds: 60,
+            readiness_timeout_seconds: 60,
             health_interval_seconds: Some(30),
             failure_threshold: 3,
         }
@@ -539,7 +539,7 @@ jobServices:
     assert_eq!(
         job.job_services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Stdout {
-            ready_timeout_seconds: 300,
+            readiness_timeout_seconds: 300,
             health_interval_seconds: None,
             failure_threshold: 3,
         }
@@ -547,7 +547,7 @@ jobServices:
     // Each field is range-checked once resolved (Patience 5: 5 // 10 is 0).
     for (field, bad) in [
         ("readinessIntervalSeconds", "{{ Param.Patience // 10 }}"),
-        ("readyTimeoutSeconds", "{{ Param.Patience - 5 }}"),
+        ("readinessTimeoutSeconds", "{{ Param.Patience - 5 }}"),
         ("healthIntervalSeconds", "{{ -Param.Patience }}"),
         ("failureThreshold", "{{ Param.Patience // 10 }}"),
     ] {
@@ -859,7 +859,7 @@ fn job_with_services_round_trips_eq_and_hash() {
         serde_json::json!({
             "type": "COMMAND",
             "readinessIntervalSeconds": 6,
-            "readyTimeoutSeconds": 300,
+            "readinessTimeoutSeconds": 300,
             "healthIntervalSeconds": 6,
             "failureThreshold": 3
         })
@@ -1014,7 +1014,7 @@ fn default_tcp_connect_probes_only_the_tcp_ports() {
         ServiceHealthCheck::TcpConnect {
             ports: vec!["api".to_string()],
             readiness_interval_seconds: 1,
-            ready_timeout_seconds: 300,
+            readiness_timeout_seconds: 300,
             health_interval_seconds: 30,
             failure_threshold: 3,
         }
@@ -1022,7 +1022,7 @@ fn default_tcp_connect_probes_only_the_tcp_ports() {
     // An explicit TCP_CONNECT without `ports` defaults the same way.
     let job = create_ok(
         &protocol_template(
-            "    healthCheck:\n      type: TCP_CONNECT\n      readyTimeoutSeconds: 7\n",
+            "    healthCheck:\n      type: TCP_CONNECT\n      readinessTimeoutSeconds: 7\n",
         ),
         &[],
     );
@@ -1031,7 +1031,7 @@ fn default_tcp_connect_probes_only_the_tcp_ports() {
         ServiceHealthCheck::TcpConnect {
             ports: vec!["api".to_string()],
             readiness_interval_seconds: 1,
-            ready_timeout_seconds: 7,
+            readiness_timeout_seconds: 7,
             health_interval_seconds: 30,
             failure_threshold: 3,
         }

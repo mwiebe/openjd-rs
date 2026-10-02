@@ -372,9 +372,9 @@ pub(super) fn instantiate_service<'a>(
             default,
         )
     };
-    let ready_timeout_seconds = resolve_field(
-        "readyTimeoutSeconds",
-        declared.ready_timeout_seconds(),
+    let readiness_timeout_seconds = resolve_field(
+        "readinessTimeoutSeconds",
+        declared.readiness_timeout_seconds(),
         template::ServiceHealthCheck::DEFAULT_READY_TIMEOUT_SECONDS,
     )?;
     let failure_threshold = resolve_field(
@@ -399,7 +399,7 @@ pub(super) fn instantiate_service<'a>(
                 readiness_interval_seconds.as_ref(),
                 template::ServiceHealthCheck::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS,
             )?,
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             health_interval_seconds: resolve_field(
                 "healthIntervalSeconds",
                 health_interval_seconds.as_ref(),
@@ -417,7 +417,7 @@ pub(super) fn instantiate_service<'a>(
                 readiness_interval_seconds.as_ref(),
                 template::ServiceHealthCheck::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS,
             )?,
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             health_interval_seconds: resolve_field(
                 "healthIntervalSeconds",
                 health_interval_seconds.as_ref(),
@@ -429,7 +429,7 @@ pub(super) fn instantiate_service<'a>(
             health_interval_seconds,
             ..
         } => job::ServiceHealthCheck::Stdout {
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             // No default: a `null` resolution, like an absent field, means
             // no heartbeat is expected (§9.3 item 5).
             health_interval_seconds: health_interval_seconds

@@ -177,7 +177,7 @@ pub enum ServiceHealth {
         /// Always 0 for a `STDOUT` check without `healthIntervalSeconds`.
         failed_probes: u64,
     },
-    /// `readyTimeoutSeconds` elapsed (measured from launch) before a probe
+    /// `readinessTimeoutSeconds` elapsed (measured from launch) before a probe
     /// passed. `onRun` may still be running; the caller cancels it with
     /// [`ServiceSession::cancel_run`] before relaunching or ending.
     TimedOut,
@@ -278,8 +278,8 @@ pub struct ServiceRunExit {
 #[derive(Debug, Clone)]
 struct HealthPlan {
     probe: ProbePlan,
-    /// `readyTimeoutSeconds`, measured from launch.
-    ready_timeout: Duration,
+    /// `readinessTimeoutSeconds`, measured from launch.
+    readiness_timeout: Duration,
     /// `healthIntervalSeconds`: the pause between the end of one probe and
     /// the start of the next after READY. `None` for a `STDOUT` check
     /// without a heartbeat: the instance is not monitored after READY.
@@ -329,9 +329,9 @@ impl HealthPlan {
     /// One line describing the plan for the launch log.
     fn describe(&self) -> String {
         let mut s = format!(
-            "Health check: {} (readyTimeoutSeconds {}",
+            "Health check: {} (readinessTimeoutSeconds {}",
             self.type_name(),
-            self.ready_timeout.as_secs()
+            self.readiness_timeout.as_secs()
         );
         if let Some(i) = self.readiness_interval() {
             s.push_str(&format!(", readinessIntervalSeconds {}", i.as_secs()));
@@ -914,7 +914,7 @@ impl ServiceSession {
     /// The health check runs in two phases (RFC 0009 `<ServiceHealthCheck>`).
     /// Before READY the first probe runs as soon as `onRun` is launched and
     /// one more `readinessIntervalSeconds` after each failure, until one
-    /// succeeds while `onRun` is running (READY), `readyTimeoutSeconds`
+    /// succeeds while `onRun` is running (READY), `readinessTimeoutSeconds`
     /// elapses, or `onRun` exits. After READY a probe runs every
     /// `healthIntervalSeconds`; `failureThreshold` consecutive failures make
     /// the instance UNHEALTHY, on which the runtime cancels `onRun` with its
@@ -1371,7 +1371,7 @@ impl ServiceSession {
         };
         Ok(HealthPlan {
             probe,
-            ready_timeout: Duration::from_secs(check.ready_timeout_seconds()),
+            readiness_timeout: Duration::from_secs(check.readiness_timeout_seconds()),
             health_interval: check.health_interval_seconds().map(Duration::from_secs),
             failure_threshold: check.failure_threshold(),
         })
@@ -1843,8 +1843,8 @@ impl HealthTracker<'_> {
         });
     }
 
-    /// Phase 1 ended without READY: `readyTimeoutSeconds` elapsed.
-    fn set_timed_out(&mut self, ready_timeout: Duration) {
+    /// Phase 1 ended without READY: `readinessTimeoutSeconds` elapsed.
+    fn set_timed_out(&mut self, readiness_timeout: Duration) {
         self.phase = HealthPhase::Stopped;
         session_log!(
             error,
@@ -1852,7 +1852,7 @@ impl HealthTracker<'_> {
             LogContent::PROCESS_CONTROL,
             "Service '{}' did not become READY within {}s ({} health check)",
             self.service_name,
-            ready_timeout.as_secs(),
+            readiness_timeout.as_secs(),
             self.check_type
         );
         let _ = self.health_tx.send(ServiceHealth::TimedOut);
@@ -2100,7 +2100,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
 
     // The ready timeout is measured from launch (RFC 0009 §9.3 item 4)
     // and runs continuously, including while a probe is in progress.
-    let deadline = tokio::time::sleep(plan.ready_timeout);
+    let deadline = tokio::time::sleep(plan.readiness_timeout);
     tokio::pin!(deadline);
     let is_stdout = matches!(plan.probe, ProbePlan::Stdout);
 
@@ -2257,7 +2257,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                     }
                 }
                 _ = &mut deadline, if tracker.is_pending() && result.is_none() => {
-                    tracker.set_timed_out(plan.ready_timeout);
+                    tracker.set_timed_out(plan.readiness_timeout);
                     // An invocation in flight is canceled: the decision is
                     // terminal and the check never runs again.
                     probe = None;
@@ -2622,7 +2622,7 @@ mod tests {
             probe: ProbePlan::Command {
                 readiness_interval: Duration::from_secs(5),
             },
-            ready_timeout: Duration::from_secs(7),
+            readiness_timeout: Duration::from_secs(7),
             health_interval: Some(Duration::from_secs(30)),
             failure_threshold: 3,
         };
@@ -2630,12 +2630,12 @@ mod tests {
         assert_eq!(cmd.readiness_interval(), Some(Duration::from_secs(5)));
         assert_eq!(
             cmd.describe(),
-            "Health check: COMMAND (readyTimeoutSeconds 7, readinessIntervalSeconds 5, \
+            "Health check: COMMAND (readinessTimeoutSeconds 7, readinessIntervalSeconds 5, \
              healthIntervalSeconds 30, failureThreshold 3)"
         );
         let out = HealthPlan {
             probe: ProbePlan::Stdout,
-            ready_timeout: Duration::from_secs(9),
+            readiness_timeout: Duration::from_secs(9),
             health_interval: None,
             failure_threshold: 3,
         };
@@ -2643,7 +2643,7 @@ mod tests {
         assert_eq!(out.readiness_interval(), None);
         assert_eq!(
             out.describe(),
-            "Health check: STDOUT (readyTimeoutSeconds 9, no heartbeat after READY)"
+            "Health check: STDOUT (readinessTimeoutSeconds 9, no heartbeat after READY)"
         );
         let beat = HealthPlan {
             health_interval: Some(Duration::from_secs(15)),
@@ -2652,7 +2652,7 @@ mod tests {
         };
         assert_eq!(
             beat.describe(),
-            "Health check: STDOUT (readyTimeoutSeconds 9, healthIntervalSeconds 15, \
+            "Health check: STDOUT (readinessTimeoutSeconds 9, healthIntervalSeconds 15, \
              failureThreshold 2)"
         );
         let tcp = HealthPlan {
@@ -2660,7 +2660,7 @@ mod tests {
                 targets: vec![],
                 readiness_interval: Duration::from_secs(1),
             },
-            ready_timeout: Duration::from_secs(11),
+            readiness_timeout: Duration::from_secs(11),
             health_interval: Some(Duration::from_secs(30)),
             failure_threshold: 3,
         };

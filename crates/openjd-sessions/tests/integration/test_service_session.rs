@@ -65,11 +65,11 @@ fn sh_ntt(script: &str, notify_secs: u64) -> Action {
 
 /// A `TCP_CONNECT` check with the spec defaults (readiness interval 1 s,
 /// health interval 30 s, threshold 3) and the given ready timeout.
-fn tcp_check(ports: &[&str], ready_timeout_seconds: u64) -> ServiceHealthCheck {
+fn tcp_check(ports: &[&str], readiness_timeout_seconds: u64) -> ServiceHealthCheck {
     ServiceHealthCheck::TcpConnect {
         ports: ports.iter().map(|p| p.to_string()).collect(),
         readiness_interval_seconds: 1,
-        ready_timeout_seconds,
+        readiness_timeout_seconds,
         health_interval_seconds: 30,
         failure_threshold: 3,
     }
@@ -85,16 +85,16 @@ fn tcp_health_check(
     ServiceHealthCheck::TcpConnect {
         ports: ports.iter().map(|p| p.to_string()).collect(),
         readiness_interval_seconds: 1,
-        ready_timeout_seconds: 300,
+        readiness_timeout_seconds: 300,
         health_interval_seconds,
         failure_threshold,
     }
 }
 
 /// A `STDOUT` check without a heartbeat.
-fn stdout_check(ready_timeout_seconds: u64) -> ServiceHealthCheck {
+fn stdout_check(readiness_timeout_seconds: u64) -> ServiceHealthCheck {
     ServiceHealthCheck::Stdout {
-        ready_timeout_seconds,
+        readiness_timeout_seconds,
         health_interval_seconds: None,
         failure_threshold: 3,
     }
@@ -107,7 +107,7 @@ fn stdout_heartbeat_check(
     failure_threshold: u64,
 ) -> ServiceHealthCheck {
     ServiceHealthCheck::Stdout {
-        ready_timeout_seconds: 300,
+        readiness_timeout_seconds: 300,
         health_interval_seconds: Some(health_interval_seconds),
         failure_threshold,
     }
@@ -117,11 +117,11 @@ fn stdout_heartbeat_check(
 /// and the spec's health defaults (30 s, threshold 3).
 fn command_check(
     readiness_interval_seconds: u64,
-    ready_timeout_seconds: u64,
+    readiness_timeout_seconds: u64,
 ) -> ServiceHealthCheck {
     ServiceHealthCheck::Command {
         readiness_interval_seconds,
-        ready_timeout_seconds,
+        readiness_timeout_seconds,
         health_interval_seconds: 30,
         failure_threshold: 3,
     }
@@ -135,7 +135,7 @@ fn command_health_check(
 ) -> ServiceHealthCheck {
     ServiceHealthCheck::Command {
         readiness_interval_seconds: 1,
-        ready_timeout_seconds: 300,
+        readiness_timeout_seconds: 300,
         health_interval_seconds,
         failure_threshold,
     }
@@ -478,7 +478,7 @@ async fn tcp_connect_readiness_becomes_ready_then_cancel_and_end() {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
         assert!(bodies.contains(&"--------- Starting Service: svc"));
         assert!(bodies.contains(&"--------- Service onRun: svc (launch 1)"));
-        assert!(bodies.contains(&"Health check: TCP_CONNECT (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
+        assert!(bodies.contains(&"Health check: TCP_CONNECT (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
         assert!(bodies.contains(&"Service 'svc' is READY"));
         assert!(bodies.contains(&"Canceling Service 'svc' onRun"));
         assert!(
@@ -1778,7 +1778,7 @@ async fn command_readiness_succeeds_on_third_attempt_and_check_stops_after_ready
 
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies.contains(&"Health check: COMMAND (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
+        assert!(bodies.contains(&"Health check: COMMAND (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"));
         // Rule 3: the check's output is tagged, onRun's is not.
         assert!(bodies.contains(&"[onHealthCheck] attempt 1"), "{bodies:?}");
         assert!(bodies.contains(&"[onHealthCheck] attempt 2"));
@@ -2364,7 +2364,7 @@ async fn command_health_failures_reach_threshold_and_cancel_on_run() {
 
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies.contains(&"Health check: COMMAND (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Health check: COMMAND (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"));
         assert!(bodies.contains(&"Service 'svc' is READY"));
         assert!(
             bodies.contains(
@@ -2612,7 +2612,7 @@ async fn stdout_heartbeat_missed_is_unhealthy() {
 
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies.contains(&"Health check: STDOUT (readyTimeoutSeconds 300, healthIntervalSeconds 1, failureThreshold 2)"));
+        assert!(bodies.contains(&"Health check: STDOUT (readinessTimeoutSeconds 300, healthIntervalSeconds 1, failureThreshold 2)"));
         assert!(bodies.contains(&"Service 'svc' is READY: beat 1"));
         assert!(bodies.contains(
             &"Service 'svc' health probe failed (1 of 2): no openjd_service_ready line within 1s"
@@ -2720,8 +2720,9 @@ async fn stdout_without_interval_ignores_silence_after_ready() {
     ss.end().await.unwrap();
     testing_logger::validate(|logs| {
         let bodies: Vec<&str> = logs.iter().map(|l| l.body.as_str()).collect();
-        assert!(bodies
-            .contains(&"Health check: STDOUT (readyTimeoutSeconds 300, no heartbeat after READY)"));
+        assert!(bodies.contains(
+            &"Health check: STDOUT (readinessTimeoutSeconds 300, no heartbeat after READY)"
+        ));
         assert!(!bodies.iter().any(|b| b.contains("health probe failed")));
     });
 }

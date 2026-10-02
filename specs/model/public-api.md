@@ -512,24 +512,24 @@ pub enum template::ServiceHealthCheck {
     TcpConnect {
         ports: Option<Vec<String>>,
         readiness_interval_seconds: Option<FormatString>,
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         health_interval_seconds: Option<FormatString>,
         failure_threshold: Option<FormatString>,
     },
     Command {
         readiness_interval_seconds: Option<FormatString>,
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         health_interval_seconds: Option<FormatString>,
         failure_threshold: Option<FormatString>,
     },
     Stdout {
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         health_interval_seconds: Option<FormatString>,
         failure_threshold: Option<FormatString>,
     },
 }
 
-/// `["readinessIntervalSeconds", "readyTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"]`
+/// `["readinessIntervalSeconds", "readinessTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"]`
 pub const template::SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4];
 
 impl template::ServiceHealthCheck {
@@ -540,7 +540,7 @@ impl template::ServiceHealthCheck {
     pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
     pub fn type_name(&self) -> &'static str;
     pub fn readiness_interval_seconds(&self) -> Option<&FormatString>;  // None for STDOUT
-    pub fn ready_timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn readiness_timeout_seconds(&self) -> Option<&FormatString>;
     pub fn health_interval_seconds(&self) -> Option<&FormatString>;
     pub fn failure_threshold(&self) -> Option<&FormatString>;
     /// The four fields, named, in SERVICE_HEALTH_CHECK_NUMERIC_FIELDS order.
@@ -1081,20 +1081,20 @@ pub enum job::ServiceHealthCheck {
     TcpConnect {
         ports: Vec<String>,
         readiness_interval_seconds: u64,
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: u64,
         failure_threshold: u64,
     },
     #[serde(rename = "COMMAND")]
     Command {
         readiness_interval_seconds: u64,
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: u64,
         failure_threshold: u64,
     },
     #[serde(rename = "STDOUT")]
     Stdout {
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         /// `None` = no heartbeat expected (omitted from JSON).
         health_interval_seconds: Option<u64>,
         failure_threshold: u64,
@@ -1104,7 +1104,7 @@ pub enum job::ServiceHealthCheck {
 impl job::ServiceHealthCheck {
     pub fn type_name(&self) -> &'static str;
     pub fn readiness_interval_seconds(&self) -> Option<u64>;  // None for STDOUT
-    pub fn ready_timeout_seconds(&self) -> u64;
+    pub fn readiness_timeout_seconds(&self) -> u64;
     pub fn health_interval_seconds(&self) -> Option<u64>;
     pub fn failure_threshold(&self) -> u64;
     /// `health_interval_seconds().is_some()`

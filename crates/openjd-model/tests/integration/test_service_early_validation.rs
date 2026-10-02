@@ -77,7 +77,7 @@ jobServices:
         port: {port}
     healthCheck:
       type: TCP_CONNECT
-      readyTimeoutSeconds: {timeout}
+      readinessTimeoutSeconds: {timeout}
     restartPolicy:
       maxAttempts: {max_attempts}
     variables:
@@ -146,10 +146,10 @@ fn let_bound_values_are_resolved_and_range_checked() {
 }
 
 #[test]
-fn ready_timeout_seconds_zero_is_rejected_at_validation() {
+fn readiness_timeout_seconds_zero_is_rejected_at_validation() {
     job_err(
         &job(OK_PORT, r#""{{ 0 }}""#, OK_ATTEMPTS, OK_VAR, OK_ARG),
-        &["jobServices[0] -> healthCheck -> readyTimeoutSeconds:\n\tmust be > 0."],
+        &["jobServices[0] -> healthCheck -> readinessTimeoutSeconds:\n\tmust be > 0."],
     );
 }
 

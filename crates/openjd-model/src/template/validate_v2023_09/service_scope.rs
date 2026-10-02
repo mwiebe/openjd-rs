@@ -254,7 +254,7 @@ fn job_creation_field(path: &[PathElement]) -> Option<&'static str> {
         Some("notifyPeriodInSeconds") => Some("notifyPeriodInSeconds"),
         Some("port") if fields.contains(&"ports") => Some("port"),
         Some("readinessIntervalSeconds") => Some("readinessIntervalSeconds"),
-        Some("readyTimeoutSeconds") => Some("readyTimeoutSeconds"),
+        Some("readinessTimeoutSeconds") => Some("readinessTimeoutSeconds"),
         Some("healthIntervalSeconds") => Some("healthIntervalSeconds"),
         Some("failureThreshold") => Some("failureThreshold"),
         Some("maxAttempts") => Some("maxAttempts"),

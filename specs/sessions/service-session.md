@@ -270,9 +270,9 @@ is READY. Under wrapping, the action name in these lines is the hook's
 ## `launch()` — the background `onRun` driver
 
 Allowed in `Entered` and `Exited`. Banner `Service onRun: <name> (launch N)`
-and `Health check: <TYPE> (readyTimeoutSeconds N[, readinessIntervalSeconds
+and `Health check: <TYPE> (readinessTimeoutSeconds N[, readinessIntervalSeconds
 N], healthIntervalSeconds N, failureThreshold N)` — or, for a `STDOUT` check
-without a heartbeat, `Health check: STDOUT (readyTimeoutSeconds N, no
+without a heartbeat, `Health check: STDOUT (readinessTimeoutSeconds N, no
 heartbeat after READY)`. Steps:
 
 1. Reclaim the previous driver, if any (restores the cross-user helper).
@@ -343,7 +343,7 @@ from launch and its expiry is reported as `state: Timeout` (Template Schemas
 pub enum ServiceHealth {
     Pending,                                               // phase 1: no probe has passed
     Ready { message: Option<String>, failed_probes: u64 }, // phase 2; message = STDOUT ready text; failed_probes < failureThreshold
-    TimedOut,                                              // readyTimeoutSeconds elapsed; onRun may still run
+    TimedOut,                                              // readinessTimeoutSeconds elapsed; onRun may still run
     ExitedBeforeReady,                                     // onRun exited first
     Unhealthy(ServiceUnhealthy),                           // failureThreshold reached; onRun canceled by the runtime
 }
@@ -366,7 +366,7 @@ One probe mechanism, two phases (RFC `<ServiceHealthCheck>`). **Phase 1
 failed probe logs `Service '<name>' is not yet READY: <why>` and the next
 starts `readinessIntervalSeconds` (model default 1 for `TCP_CONNECT`, 5 for
 `COMMAND`) after it ends; the first success makes the instance READY (`Ready
-{ failed_probes: 0 }`) iff `onRun` is still running. `readyTimeoutSeconds`
+{ failed_probes: 0 }`) iff `onRun` is still running. `readinessTimeoutSeconds`
 (model default 300) is measured from launch and runs continuously, including
 while a probe is in progress. **Phase 2 (health):** a probe starts
 `healthIntervalSeconds` (model default 30) after the previous one ends. A

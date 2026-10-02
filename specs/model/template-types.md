@@ -259,7 +259,7 @@ pass 11, and [job-creation.md](job-creation.md), "Services"). A UDP port cannot 
 ### Numeric `@fmtstring` fields
 
 `ServicePort::port`, `ServiceHealthCheck`'s four numeric fields (`readinessIntervalSeconds`,
-`readyTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`), and
+`readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`), and
 `ServiceRestartPolicy::max_attempts` are `<posinteger> | <posintstring>` (or `<integer> |
 <intstring>`) marked `@fmtstring`. They are modeled exactly like `<Action>.timeout`: the field
 is an `Option<FormatString>`, a YAML integer is accepted and held as its decimal text, and a
@@ -276,7 +276,7 @@ the field was not provided and the §9 default applies — and range-checks the 
 One probe mechanism applied in two phases. Before the instance is READY the probe decides
 readiness: the first probe runs as soon as `onRun` is launched, one every
 `readinessIntervalSeconds` after it, and the first success makes the instance READY;
-`readyTimeoutSeconds`, measured from the launch of `onRun`, bounds the phase. After READY the
+`readinessTimeoutSeconds`, measured from the launch of `onRun`, bounds the phase. After READY the
 probe decides health: one every `healthIntervalSeconds`, and `failureThreshold` consecutive
 failures make the instance UNHEALTHY (an instance failure — the runtime's concern; see
 `specs/sessions/service-session.md`). Intervals are measured from the end of the previous probe.
@@ -293,25 +293,25 @@ pub enum ServiceHealthCheck {
     TcpConnect {                                          // "TCP_CONNECT"
         ports: Option<Vec<String>>,                       // TCP ports only; None = every TCP port
         readiness_interval_seconds: Option<FormatString>, // default 1
-        ready_timeout_seconds: Option<FormatString>,      // default 300
+        readiness_timeout_seconds: Option<FormatString>,      // default 300
         health_interval_seconds: Option<FormatString>,    // default 30
         failure_threshold: Option<FormatString>,          // default 3
     },
     Command {                                             // "COMMAND"
         readiness_interval_seconds: Option<FormatString>, // default 5
-        ready_timeout_seconds: Option<FormatString>,      // default 300
+        readiness_timeout_seconds: Option<FormatString>,      // default 300
         health_interval_seconds: Option<FormatString>,    // default 30
         failure_threshold: Option<FormatString>,          // default 3
     },
     Stdout {                                              // "STDOUT"
-        ready_timeout_seconds: Option<FormatString>,      // default 300
+        readiness_timeout_seconds: Option<FormatString>,      // default 300
         health_interval_seconds: Option<FormatString>,    // no default: None = no heartbeat expected
         failure_threshold: Option<FormatString>,          // default 3; only with health_interval_seconds
     },
 }
 
 pub const SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4] =
-    ["readinessIntervalSeconds", "readyTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"];
+    ["readinessIntervalSeconds", "readinessTimeoutSeconds", "healthIntervalSeconds", "failureThreshold"];
 
 impl ServiceHealthCheck {
     pub const DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64 = 1;
@@ -321,7 +321,7 @@ impl ServiceHealthCheck {
     pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
     pub fn type_name(&self) -> &'static str;                 // "TCP_CONNECT" | "COMMAND" | "STDOUT"
     pub fn readiness_interval_seconds(&self) -> Option<&FormatString>;  // always None for STDOUT
-    pub fn ready_timeout_seconds(&self) -> Option<&FormatString>;
+    pub fn readiness_timeout_seconds(&self) -> Option<&FormatString>;
     pub fn health_interval_seconds(&self) -> Option<&FormatString>;
     pub fn failure_threshold(&self) -> Option<&FormatString>;
     /// The four fields in SERVICE_HEALTH_CHECK_NUMERIC_FIELDS order, so validators
