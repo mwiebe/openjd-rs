@@ -2644,13 +2644,10 @@ impl Session {
 
     /// The active wrapping Environment's `onWrapService*` hooks, when the
     /// entered stack contains a wrapping Environment whose `runScope`
-    /// includes `SERVICE` (RFC 0009 "`<EnvironmentActions>`"). The stack a
-    /// Service Session enters is the scope's `SERVICE`-scoped Environments
-    /// followed by the Service's `serviceEnvironments`, whose `run_scope` is
-    /// `None` (effective `[SERVICE]`), so a wrapping Service Environment is
-    /// found here like any other. `None` when no wrapping Environment is
-    /// entered or its `runScope` excludes `SERVICE` (such an Environment is
-    /// not entered in a Service Session, so this is a defensive check).
+    /// includes `SERVICE` (RFC 0009 "`<EnvironmentActions>`"). `None` when
+    /// no wrapping Environment is entered or its `runScope` excludes
+    /// `SERVICE` (such an Environment is not entered in a Service Session,
+    /// so this is a defensive check).
     pub(crate) fn service_wrap_hooks(&self) -> Option<ServiceWrapHooks> {
         let id = self.active_wrap_env_id()?;
         let env = self.environments.get(id)?;

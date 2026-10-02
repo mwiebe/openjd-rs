@@ -512,7 +512,6 @@ fn service(name: &str, on_run: Action) -> Service {
         description: None,
         document: Default::default(),
         host_requirements: None,
-        service_environments: None,
         ports: vec![ServicePort {
             name: "main".into(),
             port: None,

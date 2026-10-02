@@ -17,13 +17,6 @@ jobServices:
       amounts:
         - name: amount.worker.memory
           min: 8192
-    serviceEnvironments:
-      - name: ValkeyConda
-        script:
-          actions:
-            onEnter:
-              command: bash
-              args: ["-c", "conda create -y -p ./valkey-env -c conda-forge valkey && echo openjd_env: PATH=$PWD/valkey-env/bin:$PATH"]
     ports:
       - name: main
     readinessCheck:
@@ -34,6 +27,10 @@ jobServices:
       completedTasks: KEEP
     script:
       actions:
+        # onEnter runs once per Service Session; the Tasks never see this Conda environment.
+        onEnter:
+          command: bash
+          args: ["-c", "conda create -y -p ./valkey-env -c conda-forge valkey && echo openjd_env: PATH=$PWD/valkey-env/bin:$PATH"]
         # onRun is the long-lived action: its process IS the service.
         onRun:
           command: valkey-server

@@ -26,7 +26,7 @@
 //! The rules, in the order they are tried for a declared `Service.<svc>`:
 //!
 //! 1. `Task.*` inside a Service (its actions, `variables`, `let`,
-//!    embedded files, `serviceEnvironments`): *Task.\* is not available
+//!    embedded files): *Task.\* is not available
 //!    within a Service.* (§9 item 3.)
 //! 2. The site is a job-creation-time field (`hostRequirements`, a `let`
 //!    list, a `parameterSpace` range, an action `timeout` /
@@ -79,8 +79,7 @@ struct Decl<'a> {
 enum Site<'a> {
     /// A Step's `script` (its Tasks' scope).
     Task { step: usize, step_name: &'a str },
-    /// A Service's own session-scope fields: `variables`, `script`, and its
-    /// `serviceEnvironments` (which share the Service's scope).
+    /// A Service's own session-scope fields: `variables` and `script`.
     Service {
         decl: DeclSite<'a>,
         service_name: &'a str,

@@ -32,7 +32,7 @@ instead of Tasks. Its entry point is [`ServiceSession`] (below), which
 composes a `Session`:
 
 1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
-2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, then the Service's own `serviceEnvironments`, run `onEnter` (an error is a *start failure*).
+2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
 3. `svc.launch().await?` — launch `onRun` in the background and start the readiness check (for `COMMAND`, the concurrent `onReadinessCheck` invocations).
 4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, or `ExitedBeforeReady`.
 5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
@@ -590,22 +590,18 @@ pub struct ServiceSessionConfig {
     /// As for a Task Session: session id, job parameter values, path mapping
     /// rules, user, callback, os_env_vars, limits, …
     pub session: SessionConfig,
-    /// The Service whose actions this Session runs. Its
-    /// `service_environments` are entered after `environments`, with the
-    /// Service's own `Service.*` scope (`bindAddress` included).
+    /// The Service whose actions this Session runs.
     pub service: openjd_model::job::Service,
     /// The scope's Environments in entry order (Job's, then the Step's for a
     /// Step Service). Only those with `runs_in(RunScope::Service)` are entered.
-    /// The Service's `serviceEnvironments` are not listed here; they come from
-    /// `service`.
     pub environments: Vec<openjd_model::job::Environment>,
     /// The document profile of each entry of `environments`, index for index,
     /// for one from a document other than the Service's own: `Some(p)` enters
     /// it through `Session::enter_environment_with_profile`; `None`, or an
     /// index past the end, uses the Session's profile (`session.profile` — the
     /// Service's own document's, which also governs its actions, `variables`,
-    /// `let`, embedded files and `serviceEnvironments`). Empty when every
-    /// scope Environment shares the Service's document.
+    /// `let` and embedded files). Empty when every scope Environment shares
+    /// the Service's document.
     pub environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
     /// The caller's assignment for every declared port (`port`, `bindAddress`,
     /// `connectAddress`). Port allocation is the caller's policy.
@@ -683,10 +679,8 @@ impl ServiceSession {
     pub fn cancel_handle(&self) -> SessionCancelHandle;
 
     // Lifecycle
-    /// Created → Entered. Enter the SERVICE-scoped Environments, then the
-    /// Service's `serviceEnvironments` in order (each with its resolved_symtab
-    /// plus the Service's own Service.* endpoints); build the Service symbol
-    /// table (Param.*, Session.*, Service.*, Service.File.*,
+    /// Created → Entered. Enter the SERVICE-scoped Environments; build the
+    /// Service symbol table (Param.*, Session.*, Service.*, Service.File.*,
     /// <ServiceScript>.let), path mapping, embedded files, `variables`; run
     /// onEnter. Any error → StartFailed (a start failure).
     pub async fn enter(&mut self) -> Result<(), SessionError>;

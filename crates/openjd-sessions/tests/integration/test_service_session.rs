@@ -101,7 +101,6 @@ impl ServiceBuilder {
                 description: None,
                 document: Default::default(),
                 host_requirements: None,
-                service_environments: None,
                 ports: ports
                     .iter()
                     .map(|p| ServicePort {
@@ -2481,292 +2480,15 @@ async fn task_only_wrapper_is_skipped_entirely() {
     });
 }
 
-// ────────────────────────────────────────────────────────────────────
-// serviceEnvironments (RFC 0009 §9 item 5)
-// ────────────────────────────────────────────────────────────────────
-
-/// Attach `envs` as the Service's `serviceEnvironments`.
-fn with_service_envs(mut service: Service, envs: Vec<Environment>) -> Service {
-    service.service_environments = Some(envs);
-    service
-}
-
 #[tokio::test]
-async fn service_environments_enter_after_scope_environments_and_exit_in_reverse() {
-    let root = TempDir::new().unwrap();
-    let trace = root.path().join("trace.txt");
-    let t = trace.display().to_string();
-    // Scope Environments: one entered (default runScope), one skipped.
-    let scope_env = env(
-        "JobEnv",
-        None,
-        Some(sh(&format!("echo job-enter >> {t}"))),
-        Some(sh(&format!("echo job-exit >> {t}"))),
-    );
-    let task_only = env(
-        "TaskOnly",
-        Some(vec![RunScope::Task]),
-        Some(sh(&format!("echo task-only-enter >> {t}"))),
-        Some(sh(&format!("echo task-only-exit >> {t}"))),
-    );
-    let svc_env_1 = env(
-        "Conda",
-        None,
-        Some(sh(&format!("echo conda-enter >> {t}"))),
-        Some(sh(&format!("echo conda-exit >> {t}"))),
-    );
-    let svc_env_2 = env(
-        "Tuning",
-        None,
-        Some(sh(&format!("echo tuning-enter >> {t}"))),
-        Some(sh(&format!("echo tuning-exit >> {t}"))),
-    );
-    let service = with_service_envs(
-        ServiceBuilder::new(
-            "svc",
-            &["main"],
-            sh(&format!(
-                "echo run >> {t}; echo openjd_service_ready: ok; sleep 30"
-            )),
-        )
-        .readiness(stdout_check(300))
-        .on_enter(sh(&format!("echo svc-enter >> {t}")))
-        .on_exit(sh(&format!("echo svc-exit >> {t}")))
-        .build(),
-        vec![svc_env_1, svc_env_2],
-    );
-    let mut ss = service_session(
-        &root,
-        service,
-        vec![scope_env, task_only],
-        endpoints("svc", &[("main", 5)]),
-        vec![],
-    );
-    assert!(ss.start().await.unwrap().is_ready());
-    // Scope Environments and Service Environments share one entered stack
-    // (the TASK-only one is skipped).
-    assert_eq!(ss.session().environments_entered().len(), 3);
-    ss.end().await.unwrap();
-    assert_eq!(
-        read_trace(&trace),
-        vec![
-            "job-enter",
-            "conda-enter",
-            "tuning-enter",
-            "svc-enter",
-            "run",
-            "svc-exit",
-            "tuning-exit",
-            "conda-exit",
-            "job-exit",
-        ]
-    );
-    assert!(ss.session().environments_entered().is_empty());
-}
-
-#[tokio::test]
-async fn service_environment_env_vars_reach_on_run_with_precedence() {
-    let root = TempDir::new().unwrap();
-    let port = free_port();
-    // A: scope Env < Service Env (variables) < Service variables < onEnter.
-    // B: scope Env < Service Env variables < Service variables.
-    // C: scope Env < Service Env openjd_env (onEnter).
-    // D: Service Env variables < later Service Env variables.
-    // E: only the Service Environment sets it.
-    let scope_env = env_with_vars("JobEnv", &[("A", "job"), ("B", "job"), ("C", "job")]);
-    let mut first = env(
-        "Conda",
-        None,
-        Some(sh(
-            r#"echo "conda sees A=$A B=$B C=$C"; echo openjd_env: C=conda"#,
-        )),
-        None,
-    );
-    first.variables = Some(
-        [
-            ("A", "conda"),
-            ("B", "conda"),
-            ("D", "conda"),
-            ("E", "conda"),
-        ]
-        .iter()
-        .map(|(k, v)| (k.to_string(), fs(v)))
-        .collect(),
-    );
-    let second = env_with_vars("Tuning", &[("D", "tuning")]);
-    let service = with_service_envs(
-        ServiceBuilder::new(
-            "svc",
-            &["main"],
-            sh(r#"echo "A=$A B=$B C=$C D=$D E=$E"; echo openjd_service_ready: ok; sleep 30"#),
-        )
-        .readiness(stdout_check(300))
-        .variables(&[("A", "svc"), ("B", "svc")])
-        .on_enter(sh("echo openjd_env: A=enter"))
-        .build(),
-        vec![first, second],
-    );
-    let mut ss = service_session(
-        &root,
-        service,
-        vec![scope_env],
-        endpoints("svc", &[("main", port)]),
-        vec![],
-    );
-    assert!(ss.start().await.unwrap().is_ready());
-    ss.cancel_run(Some(Duration::ZERO));
-    let exit = ss.wait_exit().await.unwrap();
-    assert_eq!(
-        lines(&exit.stdout),
-        vec![
-            "A=enter B=svc C=conda D=tuning E=conda",
-            "openjd_service_ready: ok"
-        ]
-    );
-    ss.end().await.unwrap();
-}
-
-#[tokio::test]
-async fn service_environment_resolves_own_bind_address_and_env_file() {
-    let root = TempDir::new().unwrap();
-    let port = free_port();
-    let db_port = free_port();
-    let trace = root.path().join("trace.txt");
-    let t = trace.display().to_string();
-    // The resolved_symtab job creation would attach: a Param, Job.Name, and
-    // a <Service>.let value.
-    let mut base = SymbolTable::new();
-    base.set("Job.Name", ExprValue::String("render".into()))
-        .unwrap();
-    base.set("Param.Foo", ExprValue::String("bar".into()))
-        .unwrap();
-    base.set("scale", ExprValue::Int(3)).unwrap();
-    let mut svc_env = Environment {
-        name: "Conda".into(),
-        description: None,
-        run_scope: None,
-        script: Some(EnvironmentScript {
-            let_bindings: Some(vec![
-                "url = 'tcp://' + join_host_port(Service.svc.main.connectAddress, Service.svc.main.port)".into(),
-            ]),
-            actions: EnvironmentActions {
-                on_enter: Some(Action {
-                    command: fs("sh"),
-                    args: Some(vec![
-                        fs("-c"),
-                        fs(&format!(r#"printf '%s\n' "$@" >> {t}; echo "openjd_env: CONF=$1""#)),
-                        fs("argv0"),
-                        fs("{{Env.File.conf}}"),
-                        fs("{{Service.svc.main.bindAddress}}:{{Service.svc.main.port}}"),
-                        fs("{{url}}"),
-                        fs("{{Service.db.main.connectAddress}}:{{Service.db.main.port}}"),
-                        fs("{{Job.Name}}/{{Param.Foo}}/{{scale * 2}}"),
-                        fs("{{Session.WorkingDirectory}}"),
-                    ]),
-                    timeout: None,
-                    cancelation: None,
-                }),
-                on_wrap_env_enter: None,
-                on_wrap_task_run: None,
-                on_wrap_env_exit: None,
-                on_wrap_service_enter: None,
-                on_wrap_service_run: None,
-                on_wrap_service_readiness_check: None,
-                on_wrap_service_exit: None,
-                on_exit: None,
-            },
-            embedded_files: Some(vec![EmbeddedFile {
-                name: "conf".into(),
-                file_type: FileType::Text,
-                filename: None,
-                data: Some(fs(
-                    "bind {{Service.svc.main.bindAddress}} port {{Service.svc.main.port}} db {{Service.db.main.port}}",
-                )),
-                runnable: Some(false),
-                end_of_line: None,
-            }]),
-        }),
-        variables: None,
-        resolved_symtab: Some(SerializedSymbolTable::from_symtab(&base)),
-    };
-    svc_env.variables = Some(
-        [("BIND", "{{Service.svc.main.bindAddress}}")]
-            .iter()
-            .map(|(k, v)| (k.to_string(), fs(v)))
-            .collect(),
-    );
-    let service = with_service_envs(
-        ServiceBuilder::new(
-            "svc",
-            &["main"],
-            sh(r#"echo "BIND=$BIND conf=$(cat "$CONF")"; echo openjd_service_ready: ok; sleep 30"#),
-        )
-        .readiness(stdout_check(300))
-        .build(),
-        vec![svc_env],
-    );
-    let mut config = session_config(&root, "svc-test:svc-env-symbols");
-    config.profile = Some(
-        openjd_model::ModelProfile::new(openjd_model::SpecificationRevision::V2023_09)
-            .with_extensions(
-                [
-                    openjd_model::ModelExtension::Expr,
-                    openjd_model::ModelExtension::Service,
-                ]
-                .into_iter()
-                .collect(),
-            ),
-    );
-    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
-        session: config,
-        service,
-        environments: vec![],
-        environment_profiles: vec![],
-        endpoints: endpoints("svc", &[("main", port)]),
-        in_scope_endpoints: vec![endpoints("db", &[("main", db_port)])],
-    })
-    .unwrap();
-    assert!(ss.start().await.unwrap().is_ready());
-    ss.cancel_run(Some(Duration::ZERO));
-    let exit = ss.wait_exit().await.unwrap();
-    let wd = ss.session().working_directory().display().to_string();
-    let files_dir = ss.session().files_directory().display().to_string();
-    let trace_lines = read_trace(&trace);
-    assert_eq!(trace_lines.len(), 6, "{trace_lines:?}");
-    assert!(
-        trace_lines[0].starts_with(&files_dir),
-        "Env.File.conf {:?} under {files_dir}",
-        trace_lines[0]
-    );
-    assert_eq!(
-        &trace_lines[1..],
-        &[
-            format!("127.0.0.1:{port}"),
-            format!("tcp://127.0.0.1:{port}"),
-            format!("127.0.0.1:{db_port}"),
-            "render/bar/6".to_string(),
-            wd,
-        ]
-    );
-    assert_eq!(
-        lines(&exit.stdout),
-        vec![
-            format!("BIND=127.0.0.1 conf=bind 127.0.0.1 port {port} db {db_port}").as_str(),
-            "openjd_service_ready: ok"
-        ]
-    );
-    ss.end().await.unwrap();
-}
-
-#[tokio::test]
-async fn wrapping_service_environment_wraps_the_service_actions() {
+async fn wrapping_scope_environment_wraps_inner_environments_and_the_service_actions() {
     testing_logger::setup();
     let root = TempDir::new().unwrap();
     let trace = root.path().join("trace.txt");
     let t = trace.display().to_string();
-    // A plain scope Environment, then a wrapping Service Environment
-    // (effective runScope [SERVICE]: no onWrapTaskRun), then an inner
-    // Service Environment that the wrapper's onWrapEnvEnter/Exit wrap.
+    // A plain scope Environment, then a wrapping scope Environment with
+    // runScope [SERVICE] (no onWrapTaskRun), then an inner scope
+    // Environment that the wrapper's onWrapEnvEnter/Exit wrap.
     let scope_env = env(
         "JobEnv",
         None,
@@ -2775,7 +2497,7 @@ async fn wrapping_service_environment_wraps_the_service_actions() {
     );
     let mut wrapper = service_wrap_env(
         "Container",
-        None,
+        Some(vec![RunScope::Service]),
         [
             Some(forwarding_hook("onWrapServiceEnter", &t)),
             Some(forwarding_hook("onWrapServiceRun", &t)),
@@ -2822,24 +2544,21 @@ async fn wrapping_service_environment_wraps_the_service_actions() {
         Some(sh(&format!("echo inner-enter >> {t}"))),
         Some(sh(&format!("echo inner-exit >> {t}"))),
     );
-    let service = with_service_envs(
-        ServiceBuilder::new(
-            "svc",
-            &["main", "metrics"],
-            sh(&format!(
-                "echo openjd_service_ready: up; echo run >> {t}; sleep 60"
-            )),
-        )
-        .readiness(stdout_check(300))
-        .on_enter(sh(&format!("echo svc-enter >> {t}")))
-        .on_exit(sh(&format!("echo svc-exit >> {t}")))
-        .build(),
-        vec![wrapper, inner],
-    );
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main", "metrics"],
+        sh(&format!(
+            "echo openjd_service_ready: up; echo run >> {t}; sleep 60"
+        )),
+    )
+    .readiness(stdout_check(300))
+    .on_enter(sh(&format!("echo svc-enter >> {t}")))
+    .on_exit(sh(&format!("echo svc-exit >> {t}")))
+    .build();
     let mut ss = service_session(
         &root,
         service,
-        vec![scope_env],
+        vec![scope_env, wrapper, inner],
         endpoints("svc", &[("main", 4200), ("metrics", 4201)]),
         vec![],
     );
@@ -2873,65 +2592,4 @@ async fn wrapping_service_environment_wraps_the_service_actions() {
             &"Service 'svc' onRun: running onWrapServiceRun of wrapping Environment 'Container' in its place"
         ));
     });
-}
-
-#[tokio::test]
-async fn service_environment_on_enter_failure_is_a_start_failure() {
-    let root = TempDir::new().unwrap();
-    let trace = root.path().join("trace.txt");
-    let t = trace.display().to_string();
-    let scope_env = env(
-        "JobEnv",
-        None,
-        Some(sh(&format!("echo job-enter >> {t}"))),
-        Some(sh(&format!("echo job-exit >> {t}"))),
-    );
-    let good = env(
-        "Good",
-        None,
-        Some(sh(&format!("echo good-enter >> {t}"))),
-        Some(sh(&format!("echo good-exit >> {t}"))),
-    );
-    let bad = env(
-        "Bad",
-        None,
-        Some(sh(&format!("echo bad-enter >> {t}; exit 3"))),
-        Some(sh(&format!("echo bad-exit >> {t}"))),
-    );
-    let service = with_service_envs(
-        ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
-            .on_enter(sh(&format!("echo svc-enter >> {t}")))
-            .on_exit(sh(&format!("echo svc-exit >> {t}")))
-            .build(),
-        vec![good, bad],
-    );
-    let mut ss = service_session(
-        &root,
-        service,
-        vec![scope_env],
-        endpoints("svc", &[("main", 5)]),
-        vec![],
-    );
-    let err = ss.enter().await.unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Environment 'Bad' onEnter failed: exit code: 3"
-    );
-    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
-    assert_eq!(ss.launch_count(), 0);
-    ss.end().await.unwrap();
-    // No action of the Service ran, so onExit does not; every entered
-    // Environment — scope and Service — is exited in reverse.
-    assert_eq!(
-        read_trace(&trace),
-        vec![
-            "job-enter",
-            "good-enter",
-            "bad-enter",
-            "bad-exit",
-            "good-exit",
-            "job-exit"
-        ]
-    );
-    assert_eq!(ss.state(), ServiceSessionState::Ended);
 }

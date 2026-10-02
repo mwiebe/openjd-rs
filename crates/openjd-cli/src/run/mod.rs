@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use params::*;
 use result::RunResult;
-use services::{service_label, RerunScope, ServiceFailure, ServiceManager};
+use services::{RerunScope, ServiceFailure, ServiceManager};
 
 type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<SerializedSymbolTable>;

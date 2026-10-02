@@ -28,22 +28,15 @@
 //!   a missing one it does.
 //! - **Single-layer** (constraint 2). At most one environment in the
 //!   session stack (job environments + each step's step environments) may
-//!   define any wrap hook. With `SERVICE`, the same holds for every Service
-//!   Session's stack: the scope's environments whose `runScope` includes
-//!   `SERVICE` plus the Service's own `serviceEnvironments` (RFC 0009).
+//!   define any wrap hook. A Service Session's stack is a subset of the
+//!   corresponding Task Session's (the scope's environments whose `runScope`
+//!   includes `SERVICE`), so this check covers Service Sessions too.
 //! - **EXPR prerequisite** (constraint 3). A template that lists
 //!   `WRAP_ACTIONS` in `extensions:` must also list `EXPR`.
-//!
-//! A Service's `serviceEnvironments` (RFC 0009, Template Schemas §9 item 5)
-//! carry no `runScope` and have an effective `runScope` of `[SERVICE]`, so a
-//! wrapping Service Environment must define `onWrapEnvEnter`, `onWrapEnvExit`,
-//! and the four `onWrapService*` hooks, and must not define `onWrapTaskRun`.
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::actions::EnvironmentActions;
-use crate::template::{
-    Environment, EnvironmentTemplate, JobTemplate, RunScope, Service, WrapHookScope,
-};
+use crate::template::{Environment, EnvironmentTemplate, JobTemplate, RunScope, WrapHookScope};
 use crate::types::{ModelExtension, ValidationContext};
 
 /// Which extensions govern the wrap hooks, computed once per template.
@@ -75,17 +68,6 @@ impl EffectiveRunScope {
         }
     }
 
-    /// A Service's `serviceEnvironments` entry: entered in that Service's
-    /// Session only, so `[SERVICE]` whatever it declares (§9 item 5.2; pass
-    /// 11 rejects a `runScope` written on one).
-    fn service_environment() -> Self {
-        Self {
-            task: false,
-            service: true,
-            text: "effective runScope: [SERVICE], a Service Environment".to_string(),
-        }
-    }
-
     fn includes(&self, kind: RunScope) -> bool {
         match kind {
             RunScope::Task => self.task,
@@ -100,8 +82,7 @@ impl EffectiveRunScope {
 /// rather than having to fix them one at a time. Also enforces the
 /// all-or-nothing rule (RFC 0008) or, when `SERVICE` is declared, the
 /// hooks-follow-`runScope` rule (RFC 0009) that replaces it, evaluated over
-/// `scope` — the environment's own `runScope`, or the fixed `[SERVICE]` of a
-/// Service Environment.
+/// `scope` — the environment's own `runScope`.
 fn check_environment_actions(
     actions: &EnvironmentActions,
     actions_path: &[PathElement],
@@ -292,72 +273,19 @@ fn check_env(
     gating: WrapGating,
     errors: &mut ValidationErrors,
 ) -> bool {
-    check_env_in_scope(
-        env,
-        path,
-        &EffectiveRunScope::of_environment(env),
-        gating,
-        errors,
-    )
-}
-
-/// [`check_env`] with an explicit effective `runScope`.
-fn check_env_in_scope(
-    env: &Environment,
-    path: &[PathElement],
-    scope: &EffectiveRunScope,
-    gating: WrapGating,
-    errors: &mut ValidationErrors,
-) -> bool {
     let Some(script) = &env.script else {
         return false;
     };
     let script_path = path_field(path, "script");
     let actions_path = path_field(&script_path, "actions");
-    check_environment_actions(&script.actions, &actions_path, scope, gating, errors);
+    check_environment_actions(
+        &script.actions,
+        &actions_path,
+        &EffectiveRunScope::of_environment(env),
+        gating,
+        errors,
+    );
     script.actions.has_any_wrap_hook()
-}
-
-/// True iff `env` is entered in Service Sessions and defines a wrap hook —
-/// a wrap layer every Service Session in `env`'s scope sees.
-fn wraps_service_sessions(env: &Environment) -> bool {
-    env.runs_in(RunScope::Service)
-        && env
-            .script
-            .as_ref()
-            .is_some_and(|s| s.actions.has_any_wrap_hook())
-}
-
-/// Walk one Service's `serviceEnvironments` (RFC 0009, §9 item 5) at
-/// `service_path`, each with the effective `runScope: [SERVICE]`, and apply
-/// the single-wrap-layer rule to that Service's Session: `outer_wrap_count`
-/// is the number of wrap layers the scope's environments entered in Service
-/// Sessions already contribute (job environments with `SERVICE` in their
-/// `runScope`, plus the Step's for a Step Service). Reported at the
-/// `serviceEnvironments` path only when the Service's own list contributes
-/// a layer, so two layers in `jobEnvironments` alone are reported there
-/// once and not again under every Service.
-fn check_service_environments(
-    svc: &Service,
-    service_path: &[PathElement],
-    outer_wrap_count: usize,
-    gating: WrapGating,
-    errors: &mut ValidationErrors,
-) {
-    let Some(envs) = &svc.service_environments else {
-        return;
-    };
-    let envs_path = path_field(service_path, "serviceEnvironments");
-    let scope = EffectiveRunScope::service_environment();
-    let mut own_wrap_count = 0usize;
-    for (j, env) in envs.iter().enumerate() {
-        if check_env_in_scope(env, &path_index(&envs_path, j), &scope, gating, errors) {
-            own_wrap_count += 1;
-        }
-    }
-    if gating.wrap_active && own_wrap_count > 0 && outer_wrap_count + own_wrap_count > 1 {
-        errors.add(&envs_path, SERVICE_SESSION_SINGLE_WRAP_LAYER_MSG);
-    }
 }
 
 /// Enforce the EXPR prerequisite: when `WRAP_ACTIONS` is listed in a
@@ -432,29 +360,6 @@ pub fn validate_wrap_actions_job_template(
         errors.add(&path_field(&[], "jobEnvironments"), SINGLE_WRAP_LAYER_MSG);
     }
 
-    // RFC 0009: a Job Service's Session stack is the job environments
-    // entered in Service Sessions plus its own serviceEnvironments. The
-    // Service lists are walked only with SERVICE (pass 11 rejects them
-    // otherwise, and `serviceEnvironments` exists only inside a Service).
-    let job_env_service_wrap_count = jt
-        .job_environments
-        .iter()
-        .flatten()
-        .filter(|env| wraps_service_sessions(env))
-        .count();
-    if gating.service_active {
-        let list_path = path_field(&[], "jobServices");
-        for (k, svc) in jt.job_services.iter().flatten().enumerate() {
-            check_service_environments(
-                svc,
-                &path_index(&list_path, k),
-                job_env_service_wrap_count,
-                gating,
-                errors,
-            );
-        }
-    }
-
     // 2. For each step, count its stepEnvironments' wrap envs and add the
     //    job-env total — that sum is exactly the set of wrap envs reachable
     //    in that step's session.
@@ -479,37 +384,10 @@ pub fn validate_wrap_actions_job_template(
             errors.add(&envs_path, SINGLE_WRAP_LAYER_MSG);
         }
     }
-
-    // RFC 0009: a Step Service's Session stack is the job environments and
-    // the Step's environments entered in Service Sessions, plus its own
-    // serviceEnvironments. (Separate from the loop above, which `continue`s
-    // past a Step without stepEnvironments.)
-    if gating.service_active {
-        for (i, step) in jt.steps.iter().enumerate() {
-            let Some(services) = &step.step_services else {
-                continue;
-            };
-            let outer = job_env_service_wrap_count
-                + step
-                    .step_environments
-                    .iter()
-                    .flatten()
-                    .filter(|env| wraps_service_sessions(env))
-                    .count();
-            let base = path_index(&path_field(&[], "steps"), i);
-            let list_path = path_field(&base, "stepServices");
-            for (k, svc) in services.iter().enumerate() {
-                check_service_environments(svc, &path_index(&list_path, k), outer, gating, errors);
-            }
-        }
-    }
 }
 
 const SINGLE_WRAP_LAYER_MSG: &str =
     "only one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).";
-
-const SERVICE_SESSION_SINGLE_WRAP_LAYER_MSG: &str =
-    "only one environment in a Service Session's stack (the scope's environments whose runScope includes SERVICE, then this Service's serviceEnvironments) may define any wrap hook (RFC 0008, RFC 0009).";
 
 /// Validate RFC 0008 (and RFC 0009 Service hook) constraints for an
 /// environment template.
@@ -529,24 +407,13 @@ pub fn validate_wrap_actions_environment_template(
         let env_path = path_field(&[], "environment");
         check_env(env, &env_path, gating, errors);
     }
-    // RFC 0009 §1.2.2: the document's Services' serviceEnvironments. The
-    // document's own environment, when entered in Service Sessions, is the
-    // one outer wrap layer a Service Session of this document's Services
-    // can see from this document alone.
-    if gating.service_active {
-        let outer = et.environment.as_ref().is_some_and(wraps_service_sessions) as usize;
-        let list_path = path_field(&[], "services");
-        for (k, svc) in et.services.iter().flatten().enumerate() {
-            check_service_environments(svc, &path_index(&list_path, k), outer, gating, errors);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     //! Integration tests in `tests/integration/test_wrap_actions.rs` and
-    //! `tests/integration/test_service_environments.rs` exercise the full
-    //! decode + validate pipeline against real templates. The only direct
+    //! `tests/integration/test_service.rs` exercise the full decode +
+    //! validate pipeline against real templates. The only direct
     //! unit test here is for the message-formatting helper.
 
     use super::join_names;

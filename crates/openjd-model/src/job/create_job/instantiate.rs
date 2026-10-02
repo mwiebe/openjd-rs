@@ -396,7 +396,7 @@ pub(super) fn instantiate_service<'a>(
             ports: probed,
             timeout_seconds,
         } => job::ServiceReadinessCheck::TcpConnect {
-            // §9 item 7 / §9.3 item 2: the default port set is every TCP
+            // §9 item 6 / §9.3 item 2: the default port set is every TCP
             // port; validation has rejected a Service with none.
             ports: probed.unwrap_or_else(|| svc.tcp_port_names().map(str::to_string).collect()),
             timeout_seconds: resolve_service_u64(
@@ -465,15 +465,8 @@ pub(super) fn instantiate_service<'a>(
     // Re-check the carried-forward (host-resolved) fields with the job
     // parameters bound: `variables`, every action, embedded-file `data`,
     // after evaluating `<ServiceScript>.let` into the check table.
-    let in_scope: Vec<&template::Service> = in_scope.collect();
-    let check_symtab = build_service_check_symtab(
-        svc,
-        &service_symtab,
-        has_expr,
-        ctx,
-        path,
-        in_scope.iter().copied(),
-    )?;
+    let check_symtab =
+        build_service_check_symtab(svc, &service_symtab, has_expr, ctx, path, in_scope)?;
     let mut check_errors = ValidationErrors::default();
     crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
         svc,
@@ -485,46 +478,6 @@ pub(super) fn instantiate_service<'a>(
     );
     check_errors.into_result("JobTemplate")?;
 
-    // The same re-checks for the Service's own `serviceEnvironments` (§9
-    // item 5), each against a check table with the declaring Service's own
-    // `Service.*` scope — `bindAddress` included — and its own `Env.File.*`.
-    if let Some(envs) = &svc.service_environments {
-        let mut check_errors = ValidationErrors::default();
-        let envs_path = path_field(path, "serviceEnvironments");
-        for (j, env) in envs.iter().enumerate() {
-            let env_path = path_index(&envs_path, j);
-            let env_symtab = build_service_env_check_symtab(
-                env,
-                svc,
-                &service_symtab,
-                has_expr,
-                ctx,
-                &env_path,
-                in_scope.iter().copied(),
-            )?;
-            crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
-                env,
-                &env_symtab,
-                base,
-                ctx,
-                limits.max_env_var_value_len,
-                &env_path,
-                &mut check_errors,
-            );
-        }
-        check_errors.into_result("JobTemplate")?;
-    }
-
-    // Converted like `stepEnvironments`, but — as a Job Environment is —
-    // with a `resolved_symtab` of their own, filtered from the Service's
-    // job-creation table, so a Service Session can enter them from the
-    // `job::Service` alone.
-    let service_environments = svc.service_environments.as_ref().map(|envs| {
-        envs.iter()
-            .map(|e| convert_environment_with_symtab(e, Some(&service_symtab)))
-            .collect()
-    });
-
     let converted = job::Service {
         name: svc.name.clone(),
         description: svc.description.as_ref().map(|d| d.0.clone()),
@@ -532,7 +485,6 @@ pub(super) fn instantiate_service<'a>(
         // stamps an external Service with its attachment.
         document: job::Document::JobTemplate,
         host_requirements,
-        service_environments,
         ports,
         readiness_check,
         restart_policy,
@@ -565,7 +517,7 @@ pub(super) fn instantiate_service<'a>(
     })
 }
 
-/// §9 item 6.4 / §9.7 item 8: no two ports of the same `protocol` share a
+/// §9 item 5.4 / §9.7 item 8: no two ports of the same `protocol` share a
 /// resolved `port` number. Template validation applies the same rule to
 /// literal numbers; this catches the format-string forms once resolved,
 /// reporting the later port with the same message, at `ports[i] -> port`.
@@ -695,56 +647,6 @@ fn build_service_check_symtab<'a>(
                 ctx,
                 openjd_expr::HostContext::Unresolved,
             )?;
-        }
-    }
-    Ok(symtab)
-}
-
-/// Build the check symbol table for one of a Service's `serviceEnvironments`
-/// (RFC 0009, Template Schemas §9 item 5): `base` — the Service's
-/// job-creation table (concrete `Param.*` / `RawParam.*` / `Job.Name`, for a
-/// Step Service `Step.Name` and the step-level `let` bindings, and the
-/// `<Service>.let` bindings, which §9 item 3 makes available in
-/// `serviceEnvironments` as a Step's are in `stepEnvironments`) plus `Unresolved`
-/// placeholders for `Session.*`, PATH `Param.*`, the declaring Service's own
-/// `Service.<name>.<port>.*` (with `bindAddress`), the `port` /
-/// `connectAddress` of every Service in `in_scope`, and the Environment's
-/// own `Env.File.*`, with its `<EnvironmentScript>.let` bindings evaluated
-/// in. A Service Environment is entered only in the declaring Service's
-/// Session, so unlike [`build_env_check_symtab`] the `Service.*` scope is
-/// unconditional and includes the declaring Service itself. `Task.*` and
-/// `Service.File.*` are never in scope.
-fn build_service_env_check_symtab<'a>(
-    env: &template::Environment,
-    svc: &template::Service,
-    base: &SymbolTable,
-    has_expr: bool,
-    ctx: &crate::types::ValidationContext,
-    env_path: &[PathElement],
-    in_scope: impl Iterator<Item = &'a template::Service>,
-) -> Result<SymbolTable, ModelError> {
-    let mut symtab = base.clone();
-    add_unresolved_session_symbols(&mut symtab)?;
-    crate::job::service_symbols::add_unresolved_service_symbols(&mut symtab, in_scope, Some(svc))?;
-    if let Some(script) = &env.script {
-        if let Some(files) = &script.embedded_files {
-            for f in files {
-                symtab.set(
-                    &format!("Env.File.{}", f.name),
-                    openjd_expr::ExprValue::Unresolved(openjd_expr::ExprType::PATH),
-                )?;
-            }
-        }
-        if has_expr {
-            if let Some(bindings) = &script.let_bindings {
-                evaluate_service_let_bindings(
-                    bindings,
-                    &path_field(&path_field(env_path, "script"), "let"),
-                    &mut symtab,
-                    ctx,
-                    openjd_expr::HostContext::Unresolved,
-                )?;
-            }
         }
     }
     Ok(symtab)
@@ -1859,9 +1761,7 @@ fn let_binding_symbols(bindings: &[String]) -> std::collections::HashSet<String>
 
 /// Collect all symbol names accessed by an environment's worker-resolved
 /// format strings (host-context fields plus template-scope timeouts).
-pub(crate) fn collect_env_accessed_symbols(
-    env: &job::Environment,
-) -> std::collections::HashSet<String> {
+fn collect_env_accessed_symbols(env: &job::Environment) -> std::collections::HashSet<String> {
     let mut symbols = std::collections::HashSet::new();
     if let Some(vars) = &env.variables {
         for fs in vars.values() {

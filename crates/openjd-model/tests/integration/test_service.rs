@@ -1629,6 +1629,48 @@ fn service_rejects_unknown_fields() {
     );
 }
 
+/// `serviceEnvironments` is not a `<Service>` property: the RFC rejected a
+/// Service-scoped Environment list (Rejected Ideas, "`serviceEnvironments`,
+/// a Service-scoped Environment list") in favor of provisioning in
+/// `onEnter`. It is an unknown field like any other, in a Job Template and
+/// in an Environment Template's `services`.
+#[test]
+fn service_environments_is_not_a_property() {
+    const SERVICE_ENVIRONMENTS: &str = r#"    serviceEnvironments:
+      - name: Provision
+        script:
+          actions:
+            onEnter: { command: init }
+    ports: [{name: main}]
+    script: {actions: {onRun: {command: run}}}
+"#;
+    let err = decode_job_template(
+        yaml_val(&job_with_service_body(SERVICE_ENVIRONMENTS)),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("serviceEnvironments is not a property");
+    assert!(
+        err.to_string()
+            .contains("unknown field `serviceEnvironments`"),
+        "got: {err}"
+    );
+
+    let err = decode_environment_template(
+        yaml_val(&format!(
+            "specificationVersion: environment-2023-09\nextensions: [SERVICE, EXPR]\nservices:\n  - name: Cache\n{SERVICE_ENVIRONMENTS}"
+        )),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("serviceEnvironments is not a property");
+    assert!(
+        err.to_string()
+            .contains("unknown field `serviceEnvironments`"),
+        "got: {err}"
+    );
+}
+
 #[test]
 fn service_embedded_files_follow_embedded_file_rules() {
     expect_job_err(
