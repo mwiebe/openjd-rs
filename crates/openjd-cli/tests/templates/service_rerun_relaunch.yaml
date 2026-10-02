@@ -21,7 +21,7 @@ steps:
           - name: main
         healthCheck:
           type: STDOUT
-          readyTimeoutSeconds: 60
+          readinessTimeoutSeconds: 60
         restartPolicy:
           maxAttempts: 1
           completedTasks: RERUN

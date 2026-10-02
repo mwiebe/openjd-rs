@@ -602,7 +602,7 @@ line per event, each naming the Service and its scope: endpoints
 (`Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:41235`; a UDP port's
 address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
 unsuffixed), `onRun launched
-(launch N in this Session); health check: <TYPE> (readyTimeoutSeconds N[,
+(launch N in this Session); health check: <TYPE> (readinessTimeoutSeconds N[,
 readinessIntervalSeconds N], healthIntervalSeconds N, failureThreshold N)` (or `…, no
 heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>]`,
 `is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
@@ -611,7 +611,7 @@ heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>
 Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
 (restartPolicy.maxAttempts)`, and `stopped`. The `<reason>` of a failure is one of
 `failed to start: …`, `onRun exited before becoming READY (exit code: N[; <fail
-message>])`, `did not become READY within readyTimeoutSeconds`, `onRun exited while the
+message>])`, `did not become READY within readinessTimeoutSeconds`, `onRun exited while the
 scope still had work (…)`, or `instance UNHEALTHY: <the UNHEALTHY detail>`. The
 Service's subprocess output streams through the session logger like a Task's, with the
 `[onHealthCheck]` tag the runtime adds — including the runtime's
@@ -644,7 +644,7 @@ Service 'Files' (Job scope) endpoints: main -> 127.0.0.1:41235
 [Service Files] --------- Service onEnter: Files
 [Service Files] Output:
 [Service Files] --------- Service onRun: Files (launch 1)
-Service 'Files' onRun launched (launch 1 in this Session); health check: TCP_CONNECT (readyTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)
+Service 'Files' onRun launched (launch 1 in this Session); health check: TCP_CONNECT (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)
 [Service Files] Output:
 Service 'Files' is READY
 …

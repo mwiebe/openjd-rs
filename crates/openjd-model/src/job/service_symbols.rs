@@ -602,7 +602,7 @@ mod tests {
                 protocol: ServicePortProtocol::Tcp,
             }],
             health_check: job::ServiceHealthCheck::Stdout {
-                ready_timeout_seconds: 1,
+                readiness_timeout_seconds: 1,
                 health_interval_seconds: None,
                 failure_threshold: 3,
             },

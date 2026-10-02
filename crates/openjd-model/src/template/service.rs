@@ -158,7 +158,7 @@ impl std::fmt::Display for ServicePortProtocol {
 /// One probe mechanism applied in two phases. Before the instance is READY
 /// the probe decides readiness: the first probe runs as soon as `onRun` is
 /// launched, one every `readinessIntervalSeconds` after it, and the first
-/// success makes the instance READY; `readyTimeoutSeconds`, measured from
+/// success makes the instance READY; `readinessTimeoutSeconds`, measured from
 /// the launch of `onRun`, bounds the phase. After READY the probe decides
 /// health: one every `healthIntervalSeconds`, and `failureThreshold`
 /// consecutive failures make the instance UNHEALTHY — an instance failure.
@@ -182,7 +182,7 @@ pub enum ServiceHealthCheck {
         /// Default [`DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS`](Self::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS).
         readiness_interval_seconds: Option<FormatString>,
         /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         /// Default [`DEFAULT_HEALTH_INTERVAL_SECONDS`](Self::DEFAULT_HEALTH_INTERVAL_SECONDS).
         health_interval_seconds: Option<FormatString>,
         /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD).
@@ -196,7 +196,7 @@ pub enum ServiceHealthCheck {
         /// Default [`DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS`](Self::DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS).
         readiness_interval_seconds: Option<FormatString>,
         /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         /// Default [`DEFAULT_HEALTH_INTERVAL_SECONDS`](Self::DEFAULT_HEALTH_INTERVAL_SECONDS).
         health_interval_seconds: Option<FormatString>,
         /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD).
@@ -210,7 +210,7 @@ pub enum ServiceHealthCheck {
     #[serde(rename = "STDOUT")]
     Stdout {
         /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
-        ready_timeout_seconds: Option<FormatString>,
+        readiness_timeout_seconds: Option<FormatString>,
         /// No default: `None` means no heartbeat is expected.
         health_interval_seconds: Option<FormatString>,
         /// Default [`DEFAULT_FAILURE_THRESHOLD`](Self::DEFAULT_FAILURE_THRESHOLD);
@@ -223,7 +223,7 @@ pub enum ServiceHealthCheck {
 /// [`ServiceHealthCheck::numeric_fields`] orders them.
 pub const SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4] = [
     "readinessIntervalSeconds",
-    "readyTimeoutSeconds",
+    "readinessTimeoutSeconds",
     "healthIntervalSeconds",
     "failureThreshold",
 ];
@@ -235,7 +235,7 @@ impl ServiceHealthCheck {
     /// §9.3 item 3 default for `readinessIntervalSeconds` on a `COMMAND`
     /// check, in seconds.
     pub const DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64 = 5;
-    /// §9.3 item 4 default for `readyTimeoutSeconds`, in seconds.
+    /// §9.3 item 4 default for `readinessTimeoutSeconds`, in seconds.
     pub const DEFAULT_READY_TIMEOUT_SECONDS: u64 = 300;
     /// §9.3 item 5 default for `healthIntervalSeconds` on a `TCP_CONNECT` or
     /// `COMMAND` check, in seconds. `STDOUT` has no default.
@@ -268,21 +268,21 @@ impl ServiceHealthCheck {
         }
     }
 
-    /// The `readyTimeoutSeconds` field, whichever variant this is.
-    pub fn ready_timeout_seconds(&self) -> Option<&FormatString> {
+    /// The `readinessTimeoutSeconds` field, whichever variant this is.
+    pub fn readiness_timeout_seconds(&self) -> Option<&FormatString> {
         match self {
             Self::TcpConnect {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
             }
             | Self::Command {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
             }
             | Self::Stdout {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
-            } => ready_timeout_seconds.as_ref(),
+            } => readiness_timeout_seconds.as_ref(),
         }
     }
 
@@ -332,7 +332,7 @@ impl ServiceHealthCheck {
             ),
             (
                 SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[1],
-                self.ready_timeout_seconds(),
+                self.readiness_timeout_seconds(),
             ),
             (
                 SERVICE_HEALTH_CHECK_NUMERIC_FIELDS[2],
@@ -353,7 +353,7 @@ impl Default for ServiceHealthCheck {
         Self::TcpConnect {
             ports: None,
             readiness_interval_seconds: None,
-            ready_timeout_seconds: None,
+            readiness_timeout_seconds: None,
             health_interval_seconds: None,
             failure_threshold: None,
         }
@@ -524,7 +524,7 @@ script:
             ServiceHealthCheck::TcpConnect {
                 ports: None,
                 readiness_interval_seconds: None,
-                ready_timeout_seconds: None,
+                readiness_timeout_seconds: None,
                 health_interval_seconds: None,
                 failure_threshold: None,
             }
@@ -605,7 +605,7 @@ ports:
 healthCheck:
   type: COMMAND
   readinessIntervalSeconds: "{{ Param.Interval }}"
-  readyTimeoutSeconds: 60
+  readinessTimeoutSeconds: 60
   healthIntervalSeconds: 10
   failureThreshold: "{{ Param.Strikes }}"
 restartPolicy:
@@ -628,7 +628,7 @@ script:
         match check {
             ServiceHealthCheck::Command {
                 readiness_interval_seconds,
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 health_interval_seconds,
                 failure_threshold,
             } => {
@@ -636,7 +636,7 @@ script:
                     readiness_interval_seconds.as_ref().unwrap().raw(),
                     "{{ Param.Interval }}"
                 );
-                assert_eq!(ready_timeout_seconds.as_ref().unwrap().raw(), "60");
+                assert_eq!(readiness_timeout_seconds.as_ref().unwrap().raw(), "60");
                 assert_eq!(health_interval_seconds.as_ref().unwrap().raw(), "10");
                 assert_eq!(
                     failure_threshold.as_ref().unwrap().raw(),
@@ -654,7 +654,7 @@ script:
             raws,
             vec![
                 ("readinessIntervalSeconds", Some("{{ Param.Interval }}")),
-                ("readyTimeoutSeconds", Some("60")),
+                ("readinessTimeoutSeconds", Some("60")),
                 ("healthIntervalSeconds", Some("10")),
                 ("failureThreshold", Some("{{ Param.Strikes }}")),
             ]
@@ -670,12 +670,12 @@ script:
     #[test]
     fn health_check_type_names_and_field_accessors() {
         let tcp: ServiceHealthCheck = serde_saphyr::from_str(
-            "type: TCP_CONNECT\nports: [main]\nreadinessIntervalSeconds: 2\nreadyTimeoutSeconds: 10",
+            "type: TCP_CONNECT\nports: [main]\nreadinessIntervalSeconds: 2\nreadinessTimeoutSeconds: 10",
         )
         .unwrap();
         assert_eq!(tcp.type_name(), "TCP_CONNECT");
         assert_eq!(tcp.readiness_interval_seconds().unwrap().raw(), "2");
-        assert_eq!(tcp.ready_timeout_seconds().unwrap().raw(), "10");
+        assert_eq!(tcp.readiness_timeout_seconds().unwrap().raw(), "10");
         assert!(tcp.health_interval_seconds().is_none());
         assert!(tcp.failure_threshold().is_none());
         let stdout: ServiceHealthCheck =
@@ -683,7 +683,7 @@ script:
                 .unwrap();
         assert_eq!(stdout.type_name(), "STDOUT");
         assert!(stdout.readiness_interval_seconds().is_none());
-        assert!(stdout.ready_timeout_seconds().is_none());
+        assert!(stdout.readiness_timeout_seconds().is_none());
         assert_eq!(stdout.health_interval_seconds().unwrap().raw(), "15");
         assert_eq!(stdout.failure_threshold().unwrap().raw(), "2");
         assert_eq!(
@@ -694,7 +694,7 @@ script:
                 .collect::<Vec<_>>(),
             vec![
                 ("readinessIntervalSeconds", false),
-                ("readyTimeoutSeconds", false),
+                ("readinessTimeoutSeconds", false),
                 ("healthIntervalSeconds", true),
                 ("failureThreshold", true),
             ]

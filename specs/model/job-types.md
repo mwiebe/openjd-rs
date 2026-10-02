@@ -380,18 +380,18 @@ pub enum ServiceHealthCheck {
     TcpConnect {                                   // "TCP_CONNECT"
         ports: Vec<String>,                        // every declared TCP port when the template named none
         readiness_interval_seconds: u64,           // default 1
-        ready_timeout_seconds: u64,                // default 300
+        readiness_timeout_seconds: u64,                // default 300
         health_interval_seconds: u64,              // default 30
         failure_threshold: u64,                    // default 3
     },
     Command {                                      // "COMMAND"
         readiness_interval_seconds: u64,           // default 5
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: u64,
         failure_threshold: u64,
     },
     Stdout {                                       // "STDOUT"
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: Option<u64>,      // None = no heartbeat (omitted from JSON)
         failure_threshold: u64,                    // default 3; meaningful only with the interval
     },
@@ -400,7 +400,7 @@ pub enum ServiceHealthCheck {
 impl ServiceHealthCheck {
     pub fn type_name(&self) -> &'static str;
     pub fn readiness_interval_seconds(&self) -> Option<u64>;  // None for STDOUT
-    pub fn ready_timeout_seconds(&self) -> u64;
+    pub fn readiness_timeout_seconds(&self) -> u64;
     pub fn health_interval_seconds(&self) -> Option<u64>;     // None only for STDOUT without a heartbeat
     pub fn failure_threshold(&self) -> u64;
     pub fn monitors_health(&self) -> bool;                    // health_interval_seconds().is_some()

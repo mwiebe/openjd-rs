@@ -787,7 +787,7 @@ fn path_params_available_only_in_service_variables_and_script() {
 fn numeric_fields_cannot_reference_session_or_service_values() {
     expect_job_err(
         &template(&Tmpl {
-            a_body: "ports:\n  - name: p\n    port: \"{{ Service.A.p.port }}\"\nhealthCheck:\n  type: COMMAND\n  readinessIntervalSeconds: \"{{ Session.WorkingDirectory }}\"\n  readyTimeoutSeconds: \"{{ Service.A.p.port }}\"\n  healthIntervalSeconds: \"{{ Session.WorkingDirectory }}\"\n  failureThreshold: \"{{ Service.A.p.port }}\"\nrestartPolicy:\n  maxAttempts: \"{{ Param.Dir }}\"\nscript:\n  actions:\n    onRun:\n      command: a\n    onHealthCheck:\n      command: probe",
+            a_body: "ports:\n  - name: p\n    port: \"{{ Service.A.p.port }}\"\nhealthCheck:\n  type: COMMAND\n  readinessIntervalSeconds: \"{{ Session.WorkingDirectory }}\"\n  readinessTimeoutSeconds: \"{{ Service.A.p.port }}\"\n  healthIntervalSeconds: \"{{ Session.WorkingDirectory }}\"\n  failureThreshold: \"{{ Service.A.p.port }}\"\nrestartPolicy:\n  maxAttempts: \"{{ Param.Dir }}\"\nscript:\n  actions:\n    onRun:\n      command: a\n    onHealthCheck:\n      command: probe",
             ..Default::default()
         }),
         &[
@@ -796,8 +796,8 @@ fn numeric_fields_cannot_reference_session_or_service_values() {
             &job_creation_field("port"),
             "jobServices[0] -> healthCheck -> readinessIntervalSeconds:\n\tFailed to parse interpolation expression at [",
             &undefined("Session.WorkingDirectory"),
-            "jobServices[0] -> healthCheck -> readyTimeoutSeconds:\n\tFailed to parse interpolation expression at [",
-            &job_creation_field("readyTimeoutSeconds"),
+            "jobServices[0] -> healthCheck -> readinessTimeoutSeconds:\n\tFailed to parse interpolation expression at [",
+            &job_creation_field("readinessTimeoutSeconds"),
             "jobServices[0] -> healthCheck -> healthIntervalSeconds:\n\tFailed to parse interpolation expression at [",
             "jobServices[0] -> healthCheck -> failureThreshold:\n\tFailed to parse interpolation expression at [",
             &job_creation_field("failureThreshold"),
@@ -811,14 +811,14 @@ fn numeric_fields_cannot_reference_session_or_service_values() {
 fn numeric_fields_static_resolution_is_range_checked() {
     expect_job_err(
         &template(&Tmpl {
-            a_body: "let:\n  - big = 70000\n  - neg = -1\nports:\n  - name: p\n    port: \"{{ big }}\"\nhealthCheck:\n  type: COMMAND\n  readinessIntervalSeconds: \"{{ 0 }}\"\n  readyTimeoutSeconds: \"{{ 'soon' }}\"\n  healthIntervalSeconds: \"{{ neg }}\"\n  failureThreshold: \"{{ 0 }}\"\nrestartPolicy:\n  maxAttempts: \"{{ neg }}\"\nscript:\n  actions:\n    onRun:\n      command: a\n    onHealthCheck:\n      command: probe",
+            a_body: "let:\n  - big = 70000\n  - neg = -1\nports:\n  - name: p\n    port: \"{{ big }}\"\nhealthCheck:\n  type: COMMAND\n  readinessIntervalSeconds: \"{{ 0 }}\"\n  readinessTimeoutSeconds: \"{{ 'soon' }}\"\n  healthIntervalSeconds: \"{{ neg }}\"\n  failureThreshold: \"{{ 0 }}\"\nrestartPolicy:\n  maxAttempts: \"{{ neg }}\"\nscript:\n  actions:\n    onRun:\n      command: a\n    onHealthCheck:\n      command: probe",
             ..Default::default()
         }),
         &[
             "6 validation errors for JobTemplate\n",
             "jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
             "jobServices[0] -> healthCheck -> readinessIntervalSeconds:\n\tmust be > 0.",
-            "jobServices[0] -> healthCheck -> readyTimeoutSeconds:\n\tFailed to parse interpolation expression at [",
+            "jobServices[0] -> healthCheck -> readinessTimeoutSeconds:\n\tFailed to parse interpolation expression at [",
             "jobServices[0] -> healthCheck -> healthIntervalSeconds:\n\tmust be > 0.",
             "jobServices[0] -> healthCheck -> failureThreshold:\n\tmust be > 0.",
             "jobServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0.",
@@ -826,7 +826,7 @@ fn numeric_fields_static_resolution_is_range_checked() {
     );
     // A whole-field null means "not provided" and is accepted.
     expect_job_ok(&template(&Tmpl {
-        a_body: "ports:\n  - name: p\n    port: \"{{ null }}\"\nhealthCheck:\n  type: STDOUT\n  readyTimeoutSeconds: \"{{ null }}\"\n  healthIntervalSeconds: \"{{ null }}\"\n  failureThreshold: \"{{ null }}\"\nrestartPolicy:\n  maxAttempts: \"{{ null }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
+        a_body: "ports:\n  - name: p\n    port: \"{{ null }}\"\nhealthCheck:\n  type: STDOUT\n  readinessTimeoutSeconds: \"{{ null }}\"\n  healthIntervalSeconds: \"{{ null }}\"\n  failureThreshold: \"{{ null }}\"\nrestartPolicy:\n  maxAttempts: \"{{ null }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
         ..Default::default()
     }));
 }

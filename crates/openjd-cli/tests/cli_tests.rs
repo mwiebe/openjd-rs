@@ -3848,7 +3848,7 @@ mod services {
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
             stdout.contains(
-                "health check: COMMAND (readyTimeoutSeconds 60, readinessIntervalSeconds 1, \
+                "health check: COMMAND (readinessTimeoutSeconds 60, readinessIntervalSeconds 1, \
                  healthIntervalSeconds 30, failureThreshold 3)"
             ),
             "{stdout}"
@@ -4011,7 +4011,7 @@ mod services {
         assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
             stdout.contains(
-                "health check: STDOUT (readyTimeoutSeconds 60, healthIntervalSeconds 1, \
+                "health check: STDOUT (readinessTimeoutSeconds 60, healthIntervalSeconds 1, \
                  failureThreshold 2)"
             ),
             "{stdout}"
@@ -4052,7 +4052,7 @@ mod services {
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
             stdout.contains(
-                "health check: STDOUT (readyTimeoutSeconds 60, no heartbeat after READY)"
+                "health check: STDOUT (readinessTimeoutSeconds 60, no heartbeat after READY)"
             ),
             "{stdout}"
         );

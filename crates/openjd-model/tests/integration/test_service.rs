@@ -193,13 +193,13 @@ fn minimal_service_decodes_with_spec_defaults() {
         ServiceHealthCheck::TcpConnect {
             ports,
             readiness_interval_seconds,
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             health_interval_seconds,
             failure_threshold,
         } => {
             assert!(ports.is_none());
             assert!(readiness_interval_seconds.is_none());
-            assert!(ready_timeout_seconds.is_none());
+            assert!(readiness_timeout_seconds.is_none());
             assert!(health_interval_seconds.is_none());
             assert!(failure_threshold.is_none());
         }
@@ -260,7 +260,7 @@ fn full_service_decodes_every_field() {
     healthCheck:
       type: TCP_CONNECT
       ports: [main]
-      readyTimeoutSeconds: 60
+      readinessTimeoutSeconds: 60
       healthIntervalSeconds: 10
       failureThreshold: 2
     restartPolicy:
@@ -296,7 +296,7 @@ fn full_service_decodes_every_field() {
     healthCheck:
       type: COMMAND
       readinessIntervalSeconds: 2
-      readyTimeoutSeconds: "{{ Param.Timeout }}"
+      readinessTimeoutSeconds: "{{ Param.Timeout }}"
     restartPolicy:
       maxAttempts: "{{ Param.Attempts }}"
     script:
@@ -311,7 +311,7 @@ fn full_service_decodes_every_field() {
       - name: ingest
     healthCheck:
       type: STDOUT
-      readyTimeoutSeconds: 10
+      readinessTimeoutSeconds: 10
     script:
       actions:
         onRun:
@@ -336,13 +336,13 @@ fn full_service_decodes_every_field() {
         ServiceHealthCheck::TcpConnect {
             ports,
             readiness_interval_seconds,
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             health_interval_seconds,
             failure_threshold,
         } => {
             assert_eq!(ports.as_ref().unwrap(), &["main"]);
             assert!(readiness_interval_seconds.is_none());
-            assert_eq!(ready_timeout_seconds.as_ref().unwrap().raw(), "60");
+            assert_eq!(readiness_timeout_seconds.as_ref().unwrap().raw(), "60");
             assert_eq!(health_interval_seconds.as_ref().unwrap().raw(), "10");
             assert_eq!(failure_threshold.as_ref().unwrap().raw(), "2");
         }
@@ -388,13 +388,13 @@ fn full_service_decodes_every_field() {
     match coordinator.health_check.as_ref().unwrap() {
         ServiceHealthCheck::Command {
             readiness_interval_seconds,
-            ready_timeout_seconds,
+            readiness_timeout_seconds,
             health_interval_seconds,
             failure_threshold,
         } => {
             assert_eq!(readiness_interval_seconds.as_ref().unwrap().raw(), "2");
             assert_eq!(
-                ready_timeout_seconds.as_ref().unwrap().raw(),
+                readiness_timeout_seconds.as_ref().unwrap().raw(),
                 "{{ Param.Timeout }}"
             );
             assert!(health_interval_seconds.is_none());
@@ -415,7 +415,11 @@ fn full_service_decodes_every_field() {
     let logger = &services[2];
     assert_eq!(logger.health_check().type_name(), "STDOUT");
     assert_eq!(
-        logger.health_check().ready_timeout_seconds().unwrap().raw(),
+        logger
+            .health_check()
+            .readiness_timeout_seconds()
+            .unwrap()
+            .raw(),
         "10"
     );
 }
@@ -1027,7 +1031,7 @@ fn tcp_connect_ports_if_provided_not_empty() {
 fn tcp_connect_declared_ports_accepted() {
     expect_job_ok(
         &service_with_health(
-            "      type: TCP_CONNECT\n      ports: [metrics, main]\n      readyTimeoutSeconds: 1\n",
+            "      type: TCP_CONNECT\n      ports: [metrics, main]\n      readinessTimeoutSeconds: 1\n",
             "",
         ),
         SERVICE_EXTS,
@@ -1042,14 +1046,14 @@ fn tcp_connect_declared_ports_accepted() {
 fn health_numeric_fields_must_be_positive() {
     let cases: &[(&str, &str, &str, &str)] = &[
         ("TCP_CONNECT", "", "readinessIntervalSeconds", ""),
-        ("TCP_CONNECT", "", "readyTimeoutSeconds", ""),
+        ("TCP_CONNECT", "", "readinessTimeoutSeconds", ""),
         ("TCP_CONNECT", "", "healthIntervalSeconds", ""),
         ("TCP_CONNECT", "", "failureThreshold", ""),
         ("COMMAND", ON_HEALTH_CHECK, "readinessIntervalSeconds", ""),
-        ("COMMAND", ON_HEALTH_CHECK, "readyTimeoutSeconds", ""),
+        ("COMMAND", ON_HEALTH_CHECK, "readinessTimeoutSeconds", ""),
         ("COMMAND", ON_HEALTH_CHECK, "healthIntervalSeconds", ""),
         ("COMMAND", ON_HEALTH_CHECK, "failureThreshold", ""),
-        ("STDOUT", "", "readyTimeoutSeconds", ""),
+        ("STDOUT", "", "readinessTimeoutSeconds", ""),
         ("STDOUT", "", "healthIntervalSeconds", ""),
         (
             "STDOUT",
@@ -1406,7 +1410,7 @@ fn all_udp_service_requires_stdout_or_command_health_check() {
     expect_job_err(
         &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n      - name: discovery\n        protocol: UDP\n",
-            "      type: TCP_CONNECT\n      readyTimeoutSeconds: 30\n",
+            "      type: TCP_CONNECT\n      readinessTimeoutSeconds: 30\n",
         ),
         SERVICE_EXTS,
         &[
@@ -1418,7 +1422,7 @@ fn all_udp_service_requires_stdout_or_command_health_check() {
     expect_job_ok(
         &service_with_ports_and_health(
             "      - name: ingest\n        protocol: UDP\n",
-            "      type: STDOUT\n      readyTimeoutSeconds: 60\n",
+            "      type: STDOUT\n      readinessTimeoutSeconds: 60\n",
         ),
         SERVICE_EXTS,
     );
@@ -2007,7 +2011,11 @@ fn rfc_example_valkey_shared_store_services_validate() {
     assert_eq!(cache.port_names().collect::<Vec<_>>(), vec!["main"]);
     assert_eq!(cache.health_check().type_name(), "TCP_CONNECT");
     assert_eq!(
-        cache.health_check().ready_timeout_seconds().unwrap().raw(),
+        cache
+            .health_check()
+            .readiness_timeout_seconds()
+            .unwrap()
+            .raw(),
         "60"
     );
     let policy = cache.restart_policy();
@@ -2036,7 +2044,7 @@ fn rfc_example_per_step_coordinator_services_validate() {
     assert_eq!(
         coordinator
             .health_check()
-            .ready_timeout_seconds()
+            .readiness_timeout_seconds()
             .unwrap()
             .raw(),
         "120"

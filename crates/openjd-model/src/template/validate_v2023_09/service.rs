@@ -28,7 +28,7 @@
 //! - **`<Service>` structure** (§9–§9.6): identifier names that are not
 //!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; the
 //!   literal `<ServiceHealthCheck>` numeric fields
-//!   (`readinessIntervalSeconds`, `readyTimeoutSeconds`,
+//!   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`,
 //!   `healthIntervalSeconds`, `failureThreshold`) positive; literal
 //!   `maxAttempts` non-negative; `onHealthCheck` defined iff the health
 //!   check type is `COMMAND`; every port a `TCP_CONNECT` check names is

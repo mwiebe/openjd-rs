@@ -11,7 +11,7 @@ steps:
           - name: metrics
         healthCheck:
           type: STDOUT
-          readyTimeoutSeconds: 120
+          readinessTimeoutSeconds: 120
         restartPolicy:
           maxAttempts: 1
           completedTasks: RERUN

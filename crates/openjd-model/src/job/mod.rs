@@ -467,13 +467,13 @@ pub struct ServicePort {
 
 /// An instantiated `<ServiceHealthCheck>` (§9.3), with the defaults
 /// applied: `readinessIntervalSeconds` 1 (`TCP_CONNECT`) or 5 (`COMMAND`),
-/// `readyTimeoutSeconds` 300, `healthIntervalSeconds` 30 (no default for
+/// `readinessTimeoutSeconds` 300, `healthIntervalSeconds` 30 (no default for
 /// `STDOUT`, where it is the opt-in heartbeat), `failureThreshold` 3, and a
 /// `TCP_CONNECT` check without `ports` probing every declared TCP port.
 ///
 /// One probe mechanism in two phases: before READY a probe runs on launch
 /// and every `readiness_interval_seconds`, bounded by
-/// `ready_timeout_seconds`; after READY one runs every
+/// `readiness_timeout_seconds`; after READY one runs every
 /// `health_interval_seconds`, and `failure_threshold` consecutive failures
 /// make the instance UNHEALTHY. Intervals are measured from the end of the
 /// previous probe.
@@ -487,7 +487,7 @@ pub enum ServiceHealthCheck {
         /// when the template named none (§9 item 6, §9.3 item 2).
         ports: Vec<String>,
         readiness_interval_seconds: u64,
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: u64,
         failure_threshold: u64,
     },
@@ -496,7 +496,7 @@ pub enum ServiceHealthCheck {
     #[serde(rename = "COMMAND")]
     Command {
         readiness_interval_seconds: u64,
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         health_interval_seconds: u64,
         failure_threshold: u64,
     },
@@ -505,7 +505,7 @@ pub enum ServiceHealthCheck {
     /// expected every `health_interval_seconds` when that is `Some`.
     #[serde(rename = "STDOUT")]
     Stdout {
-        ready_timeout_seconds: u64,
+        readiness_timeout_seconds: u64,
         /// The heartbeat interval, or `None` when no heartbeat is expected
         /// and the instance's health is that `onRun` is still running.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -541,21 +541,21 @@ impl ServiceHealthCheck {
         }
     }
 
-    /// The effective `readyTimeoutSeconds`, whichever variant this is.
-    pub fn ready_timeout_seconds(&self) -> u64 {
+    /// The effective `readinessTimeoutSeconds`, whichever variant this is.
+    pub fn readiness_timeout_seconds(&self) -> u64 {
         match self {
             Self::TcpConnect {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
             }
             | Self::Command {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
             }
             | Self::Stdout {
-                ready_timeout_seconds,
+                readiness_timeout_seconds,
                 ..
-            } => *ready_timeout_seconds,
+            } => *readiness_timeout_seconds,
         }
     }
 

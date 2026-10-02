@@ -219,7 +219,7 @@ enum FailureKind {
     /// `onRun` exited before a health-check probe passed — possibly a port
     /// conflict, so the relaunch begins a new Service Session (new ports).
     ExitedBeforeReady(ServiceRunExit),
-    /// `readyTimeoutSeconds` elapsed while `onRun` kept running (it has
+    /// `readinessTimeoutSeconds` elapsed while `onRun` kept running (it has
     /// been canceled and has exited by the time this is reported).
     ReadyTimedOut,
     /// `onRun` exited after READY while the scope still had work.
@@ -244,7 +244,9 @@ impl FailureKind {
                     describe_exit(exit)
                 )
             }
-            Self::ReadyTimedOut => "did not become READY within readyTimeoutSeconds".to_string(),
+            Self::ReadyTimedOut => {
+                "did not become READY within readinessTimeoutSeconds".to_string()
+            }
             Self::Exited(exit) => format!(
                 "onRun exited while the scope still had work ({})",
                 describe_exit(exit)
@@ -254,13 +256,13 @@ impl FailureKind {
     }
 }
 
-/// `<TYPE> (readyTimeoutSeconds N[, readinessIntervalSeconds N][, healthIntervalSeconds N, failureThreshold N])`
+/// `<TYPE> (readinessTimeoutSeconds N[, readinessIntervalSeconds N][, healthIntervalSeconds N, failureThreshold N])`
 /// — the effective health check, for the launch log line.
 fn describe_health_check(check: &openjd_model::job::ServiceHealthCheck) -> String {
     let mut s = format!(
-        "{} (readyTimeoutSeconds {}",
+        "{} (readinessTimeoutSeconds {}",
         check.type_name(),
-        check.ready_timeout_seconds()
+        check.readiness_timeout_seconds()
     );
     if let Some(i) = check.readiness_interval_seconds() {
         s.push_str(&format!(", readinessIntervalSeconds {i}"));
@@ -1355,7 +1357,7 @@ mod tests {
         );
         assert_eq!(
             timed_out.describe(),
-            "did not become READY within readyTimeoutSeconds"
+            "did not become READY within readinessTimeoutSeconds"
         );
         assert_eq!(
             exited.describe(),
@@ -1395,13 +1397,13 @@ mod tests {
             name: "Cache".into(),
             document: Document::JobTemplate,
             scope: ServiceScope::Step("Render".into()),
-            reason: "did not become READY within readyTimeoutSeconds; 1 of 1 relaunch(es) used"
+            reason: "did not become READY within readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
                 .into(),
         };
         assert_eq!(
             f.to_string(),
             "Service 'Cache' (Step 'Render' scope) failed: did not become READY within \
-             readyTimeoutSeconds; 1 of 1 relaunch(es) used"
+             readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
         assert_eq!(ServiceScope::Job.to_string(), "Job");
 
@@ -1414,7 +1416,7 @@ mod tests {
         assert_eq!(
             f.to_string(),
             "Service 'Cache' (from queue-cache.yaml) (Job scope) failed: did not become READY \
-             within readyTimeoutSeconds; 1 of 1 relaunch(es) used"
+             within readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
     }
 

@@ -14,7 +14,7 @@ jobServices:
       - name: main
     healthCheck:
       type: STDOUT
-      readyTimeoutSeconds: 30
+      readinessTimeoutSeconds: 30
     restartPolicy:
       maxAttempts: 2
       completedTasks: RERUN

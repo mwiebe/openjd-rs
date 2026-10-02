@@ -200,7 +200,7 @@ mod tests {
                 })
                 .collect(),
             health_check: ServiceHealthCheck::Stdout {
-                ready_timeout_seconds: 1,
+                readiness_timeout_seconds: 1,
                 health_interval_seconds: None,
                 failure_threshold: 3,
             },
