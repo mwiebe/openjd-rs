@@ -1,4 +1,4 @@
-# Interruption (Ctrl-C / SIGINT) with a Job Service running: the in-flight
+# Interruption (Ctrl-C / SIGINT) with a Service running: the in-flight
 # Task is canceled and the Service is stopped (onRun canceled, onExit run),
 # with the Service's onExit recording to the trace file.
 specificationVersion: "jobtemplate-2023-09"
@@ -7,7 +7,7 @@ name: "ServiceInterrupt"
 parameterDefinitions:
   - name: TraceFile
     type: STRING
-jobServices:
+services:
   - name: Store
     ports:
       - name: main

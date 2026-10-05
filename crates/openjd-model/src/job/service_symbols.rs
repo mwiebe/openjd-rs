@@ -163,8 +163,9 @@ pub fn add_service_symbols(
 ///
 /// `in_scope` holds every Service whose `port` and `connectAddress` the
 /// Session may reference (RFC 0009 "The `Service.*` scope": for a Task
-/// Session, the Job Services and the Step's Services; for a Service
-/// Session, the Services earlier in the start order). `declaring`, for a
+/// Session, the inline Services whose scope includes its Step and the
+/// attached Services bound to the Job Template's requirements; for a
+/// Service Session, the Services it references). `declaring`, for a
 /// Service Session, is the Service whose actions the Session runs: it
 /// additionally sees its own `bindAddress`. A Service listed in both is
 /// seeded once, with `bindAddress`.
@@ -264,10 +265,12 @@ pub fn add_wrapped_service_symbols(
 ///
 /// RFC 0009 ordering constraint 2: no action of a Service Session begins
 /// until every Service it references is READY, and Services that do not
-/// reference one another may start concurrently. A scheduler derives the
-/// start-ordering edges from this set; template validation (pass 8) has
-/// already confirmed every reference names a Service earlier in the start
-/// order, so the result is acyclic.
+/// reference one another may start concurrently. Job creation records the
+/// same set, restricted to the Service's own document, in
+/// [`Service::references`](super::Service::references); template validation
+/// has confirmed the reference graph is acyclic. This walks the instantiated
+/// Service for a caller that holds only a `job::Service` — it may name a
+/// required external Service too, which `references` never does.
 ///
 /// # Examples
 ///
@@ -279,7 +282,7 @@ pub fn add_wrapped_service_symbols(
 ///     "specificationVersion": "jobtemplate-2023-09",
 ///     "extensions": ["SERVICE", "EXPR"],
 ///     "name": "J",
-///     "jobServices": [
+///     "services": [
 ///         {"name": "A", "ports": [{"name": "p"}], "script": {"actions": {"onRun": {"command": "a"}}}},
 ///         {"name": "B", "ports": [{"name": "p"}], "script": {"actions": {"onRun": {
 ///             "command": "b", "args": ["{{ Service.A.p.port }}", "{{ Service.B.p.bindAddress }}"]}}}}
@@ -287,12 +290,13 @@ pub fn add_wrapped_service_symbols(
 ///     "steps": [{"name": "S", "script": {"actions": {"onRun": {"command": "s"}}}}]
 /// }), Some(&["SERVICE", "EXPR"]), &Default::default()).unwrap();
 /// let job = create_job(&template, &Default::default(), &template.default_validation_context()).unwrap();
-/// let services = job.job_services.as_ref().unwrap();
+/// let services = job.services.as_ref().unwrap();
 /// assert!(referenced_service_names(&services[0]).is_empty());
 /// assert_eq!(
 ///     referenced_service_names(&services[1]).into_iter().collect::<Vec<_>>(),
 ///     vec!["A".to_string()]
 /// );
+/// assert_eq!(services[1].references, vec!["A".to_string()]);
 /// ```
 #[must_use]
 pub fn referenced_service_names(service: &super::Service) -> std::collections::BTreeSet<String> {
@@ -412,6 +416,29 @@ pub(crate) fn add_unresolved_service_file_symbols(
             &service_file_key(&f.name),
             ExprValue::unresolved(ExprType::PATH),
         )?;
+    }
+    Ok(())
+}
+
+/// Seed `Unresolved` placeholders for the `Service.<name>.<port>.port`
+/// (`unresolved[int]`) and `.connectAddress` (`unresolved[string]`) of every
+/// port each `requiresServices` entry declares (Template Schemas §9.8). A
+/// required Service's `bindAddress` is never in scope, so none is seeded.
+pub(crate) fn add_unresolved_requirement_symbols<'a>(
+    symtab: &mut SymbolTable,
+    requirements: impl IntoIterator<Item = &'a template::ServiceRequirement>,
+) -> Result<(), ModelError> {
+    for req in requirements {
+        for port in &req.ports {
+            symtab.set(
+                &service_port_key(&req.name, &port.name),
+                ExprValue::unresolved(ExprType::INT),
+            )?;
+            symtab.set(
+                &service_connect_address_key(&req.name, &port.name),
+                ExprValue::unresolved(ExprType::STRING),
+            )?;
+        }
     }
     Ok(())
 }
@@ -595,6 +622,9 @@ mod tests {
             name: "Self".into(),
             description: None,
             document: job::Document::JobTemplate,
+            scope: job::ServiceScope::AllSteps,
+            references: Vec::new(),
+            dependencies: None,
             host_requirements: None,
             ports: vec![job::ServicePort {
                 name: "p".into(),

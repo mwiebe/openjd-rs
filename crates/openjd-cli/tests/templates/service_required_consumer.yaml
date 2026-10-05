@@ -1,0 +1,39 @@
+# Template Schemas §1.1 item 9, §1.2.2 item 2, §9.8: the Job Template declares
+# no Service of its own and requires `R` with port `main`. The attached
+# Environment Template that defines `R` satisfies it at submission;
+# Service.R.main.port / .connectAddress then resolve, to the attached Service's
+# endpoint, both in the Task directly and in a Job Environment's variable
+# (whose runScope defaults to [TASK] because it references Service.*).
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RequiredServiceConsumer"
+requiresServices:
+  - name: R
+    ports:
+      - name: main
+jobEnvironments:
+  - name: RClient
+    variables:
+      R_ENDPOINT: "{{ Service.R.main.connectAddress }}:{{ Service.R.main.port }}"
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Service.R.main.connectAddress }}", "{{ Service.R.main.port }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            def ask(h, p):
+                c = socket.create_connection((h, p), timeout=10)
+                reply = c.recv(64).decode()
+                c.close()
+                return reply
+            print("TASK_DIRECT", port, ask(host, port), flush=True)
+            env_host, env_port = os.environ["R_ENDPOINT"].rsplit(":", 1)
+            print("TASK_VIA_ENV", env_port, ask(env_host, int(env_port)), flush=True)
+            print("SAME_ENDPOINT", (env_host, int(env_port)) == (host, port), flush=True)

@@ -1,0 +1,80 @@
+# RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 9: Solo is
+# referenced by Step A only (scope Step A) and is stopped once A completes.
+# Flaky (completedTasks: RERUN, maxAttempts 1) is referenced by A and B (scope
+# Steps A, B); B depends on A. Flaky's first instance exits while B's Task
+# runs, which returns A to pending; Solo, whose scope includes the returned
+# Step A, is started again in a new Service Session (new launch, onExit run
+# again) when A next becomes schedulable.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RerunRestartsCompletedScope"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+  - name: MarkerFile
+    type: STRING
+services:
+  - name: Solo
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'a').write('solo launch ' + sys.argv[2] + '\\n'); print('openjd_service_ready: solo up', flush=True); time.sleep(600)", "{{ Param.TraceFile }}", "{{ Service.Solo.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('solo exit\\n')", "{{ Param.TraceFile }}"]
+  - name: Flaky
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+      readinessTimeoutSeconds: 60
+    restartPolicy:
+      maxAttempts: 1
+      completedTasks: RERUN
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.TraceFile }}", "{{ Param.MarkerFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace, marker = sys.argv[1], sys.argv[2]
+            first = not os.path.exists(marker)
+            open(marker, "a").close()
+            print("openjd_service_ready: flaky up", flush=True)
+            while True:
+                time.sleep(0.1)
+                if first and os.path.exists(trace) and "task B start" in open(trace).read():
+                    time.sleep(0.3)
+                    with open(trace, "a") as f:
+                        f.write("flaky crash\n")
+                    sys.exit(1)
+steps:
+  - name: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('task A ' + sys.argv[2] + ' ' + sys.argv[3] + '\\n')", "{{ Param.TraceFile }}", "{{ Service.Solo.main.port }}", "{{ Service.Flaky.main.port }}"]
+  - name: B
+    dependencies:
+      - dependsOn: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'a').write('task B start\\n'); time.sleep(1.5); open(sys.argv[1], 'a').write('task B done\\n')", "{{ Param.TraceFile }}", "{{ Service.Flaky.main.port }}"]
+          cancelation:
+            mode: TERMINATE

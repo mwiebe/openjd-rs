@@ -4,7 +4,7 @@
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "ReferenceChain"
-jobServices:
+services:
   - name: Back
     ports:
       - name: main

@@ -1,4 +1,4 @@
-# Two Job Services that do not reference one another start concurrently (RFC
+# Two Services that do not reference one another start concurrently (RFC
 # 0009 ordering constraint 2): each records its launch and readiness times
 # in the trace file, and each takes ~2 seconds to become READY, so the
 # launches overlap when started concurrently.
@@ -8,7 +8,7 @@ name: "ConcurrentStart"
 parameterDefinitions:
   - name: TraceFile
     type: STRING
-jobServices:
+services:
   - name: Alpha
     ports:
       - name: main

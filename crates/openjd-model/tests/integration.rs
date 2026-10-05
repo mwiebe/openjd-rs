@@ -79,8 +79,12 @@ mod test_service_environments;
 mod test_service_external;
 #[path = "integration/test_service_job_creation.rs"]
 mod test_service_job_creation;
+#[path = "integration/test_service_requirements.rs"]
+mod test_service_requirements;
 #[path = "integration/test_service_scope.rs"]
 mod test_service_scope;
+#[path = "integration/test_service_scope_rules.rs"]
+mod test_service_scope_rules;
 #[path = "integration/test_simple_action_let.rs"]
 mod test_simple_action_let;
 #[path = "integration/test_step_dependency_graph.rs"]

@@ -25,8 +25,11 @@
 //!    constraints, reuse of the `<Service>` validator), optional
 //!    `environment`, and the "at least one of" constraint.
 //!
-//! The `Service.*` format-string scope, `WrappedService.*`, and job creation
-//! of Services are later milestones; nothing here depends on them.
+//! The Environments here reference no `Service.*` value, so an absent
+//! `runScope` means every kind of Session. The reference-dependent default
+//! (`[TASK]` for an Environment that references `Service.*`, §4 item 3) is
+//! covered in `test_service_scope_rules.rs`; the `Service.*` format-string
+//! scope and `WrappedService.*` in `test_service_scope.rs`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
@@ -1250,7 +1253,7 @@ services:{MINIMAL_SERVICE}{MINIMAL_SERVICE}
 #[test]
 fn env_template_services_reuse_the_service_validator() {
     // The §9 structural checks apply to `services` exactly as to
-    // `jobServices`: the paths are rooted at `services[i]`.
+    // `services`: the paths are rooted at `services[i]`.
     expect_env_err(
         r#"
 specificationVersion: "environment-2023-09"

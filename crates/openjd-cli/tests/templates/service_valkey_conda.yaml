@@ -1,4 +1,4 @@
-# RFC 0009 "A shared Valkey store" adapted: a Job Service whose binary is
+# RFC 0009 "A shared Valkey store" adapted: a Service whose binary is
 # provisioned by its own onEnter. The RFC's onEnter creates a Conda environment
 # and puts its bin/ on PATH with openjd_env; here onEnter writes a fake
 # `valkey-server` (a python TCP listener) into a directory under the Session's
@@ -16,7 +16,7 @@ parameterDefinitions:
   - name: TraceFile
     type: STRING
 
-jobServices:
+services:
   - name: Cache
     description: "A Valkey store the Job's Tasks share to cache and coordinate."
     ports:

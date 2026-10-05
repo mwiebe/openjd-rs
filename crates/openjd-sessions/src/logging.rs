@@ -216,6 +216,30 @@ pub fn log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, ti
     }
 }
 
+/// Log a one-line note about the Session's structure — a decision a reader
+/// of the merged run log needs, such as an Environment skipped because its
+/// `runScope` excludes the Session's kind. With a tag it is a tagged
+/// `BANNER` line, `[<tag>] <text>`, so a runner that prints a tagged
+/// Session's banners shows it beside the `Entering Environment` banners it
+/// stands in for; without a tag it is `PROCESS_CONTROL`, like the rest of
+/// the Session's bookkeeping.
+pub fn log_session_note_tagged(session_id: &str, session_tag: Option<&str>, text: &str) {
+    match session_tag {
+        Some(tag) => session_tagged_log!(
+            info,
+            session_id,
+            LogTag {
+                session: Some(tag),
+                action: None
+            },
+            LogContent::BANNER,
+            "{}",
+            text
+        ),
+        None => session_log!(info, session_id, LogContent::PROCESS_CONTROL, "{}", text),
+    }
+}
+
 /// Log a section banner (major section separator).
 pub fn log_section_banner(session_id: &str, title: &str) {
     session_log!(info, session_id, LogContent::BANNER, "");

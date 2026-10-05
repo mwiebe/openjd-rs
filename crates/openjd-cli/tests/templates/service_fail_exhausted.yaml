@@ -1,4 +1,4 @@
-# A Job Service whose onRun exits before becoming READY every time. Each
+# A Service whose onRun exits before becoming READY every time. Each
 # relaunch begins a new Service Session (a port conflict cannot be ruled
 # out); after maxAttempts relaunches the Service is FAILED and the Job fails
 # before any Task runs.
@@ -8,7 +8,7 @@ name: "FailExhausted"
 parameterDefinitions:
   - name: TraceFile
     type: STRING
-jobServices:
+services:
   - name: Broken
     ports:
       - name: main

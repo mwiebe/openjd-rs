@@ -1,0 +1,69 @@
+# Template Schemas §9 item 4 / How Jobs Are Run constraint 2: Indexer has
+# `dependencies: [{dependsOn: Prepare}]`, so it starts only after Prepare's
+# Task completed. Use references Indexer (its scope is Step Use) and does NOT
+# declare a dependency on Prepare; it is listed first, so it runs after
+# Prepare only through the edge implied by its Service's dependencies.
+# Prepare's Task records whether the Indexer was up (it must not be) and
+# writes the content the Indexer serves to Use.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "DependenciesAfterStep"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+services:
+  - name: Indexer
+    dependencies:
+      - dependsOn: Prepare
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Indexer.main.bindAddress }}", "{{ Service.Indexer.main.port }}", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, trace = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            with open(trace + ".indexer", "w") as f:
+                f.write("up")
+            content = open(trace + ".prepared").read().strip()
+            print("INDEXER_READ", content, flush=True)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: indexed", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(content.encode())
+                c.close()
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import socket,sys; c=socket.create_connection((sys.argv[1], int(sys.argv[2])), timeout=10); print('USE_GOT', c.recv(128).decode(), flush=True)", "{{ Service.Indexer.main.connectAddress }}", "{{ Service.Indexer.main.port }}"]
+  - name: Prepare
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Task.File.Run }}", "{{ Param.TraceFile }}"]
+      embeddedFiles:
+        - name: Run
+          type: TEXT
+          data: |
+            import os, sys
+            trace = sys.argv[1]
+            print("INDEXER_UP_DURING_PREPARE", os.path.exists(trace + ".indexer"), flush=True)
+            with open(trace + ".prepared", "w") as f:
+                f.write("prepared-content")

@@ -1,0 +1,27 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "Frame Processing With Required Queue Cache"
+
+requiresServices:
+  - name: Cache
+    ports:
+      - name: main
+
+steps:
+  - name: ProcessFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-100"
+    script:
+      actions:
+        onRun:
+          command: process-frame
+          args:
+            - "--frame"
+            - "{{ Task.Param.Frame }}"
+            - "--valkey-host"
+            - "{{ Service.Cache.main.connectAddress }}"
+            - "--valkey-port"
+            - "{{ Service.Cache.main.port }}"

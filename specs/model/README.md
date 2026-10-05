@@ -71,29 +71,34 @@ Currently implements `2023-09` with extensions:
   Re-materialization of the wrap environment's embedded files on each task
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
-- `SERVICE` (RFC 0009) — in progress. Implemented: the `<Service>` schema
-  (`jobServices`, `stepServices`, Environment Template `services`, and the
-  §9 sub-objects), the extension gating and EXPR prerequisite, the §9.7
-  structural checks (items 3–7 as far as they concern schema), `<Environment>.runScope`
-  with the `Environment::runs_in` accessor, the four `onWrapService*` hooks and
-  the hooks-follow-`runScope` rule, and the Environment Template root changes
+- `SERVICE` (RFC 0009) — implemented. The `<Service>` schema (one `services`
+  list per document, `requiresServices` on a Job Template, the §9 sub-objects
+  incl. `dependencies` and `<ServiceRequirement>`), the extension gating and
+  EXPR prerequisite, the §9.9 structural checks, Service scope computed from
+  `Service.*` references (`template::service_scope`: the four §9.1 rules,
+  reference-cycle detection, `dependencies` against the computed scope),
+  `<Environment>.runScope` with its reference-driven default and the
+  `Environment::runs_in` accessor, the four `onWrapService*` hooks and the
+  hooks-follow-`runScope` rule, the Environment Template root changes
   (`$schema`, optional `environment`, "at least one of"); the `Service.*` /
-  `Service.File.*` format-string scope with the §9 scope rules (forward-only
-  references, the `runScope` exclusion, no `Service.*` in `hostRequirements` or
-  `<Service>.let`, §9.7 items 1–2), the `WrappedService.*` wrap-hook variables,
+  `Service.File.*` format-string scope with the §9 scope rules (inline Services
+  in scope wherever a reference may appear, required Services' declared ports,
+  the `runScope` exclusion, no `Service.*` in `hostRequirements` or
+  `<Service>.let`, §9.9 items 1–2) and their diagnostics
+  (`service_diagnostics.rs`), the `WrappedService.*` wrap-hook variables,
   pass-8 validation of every format string and `let` inside a Service, job
-  creation of Services (`job::Service`, `Job::job_services`,
-  `Step::step_services`, resolved `<Service>.let` and numeric fields, job-side
-  `runScope` / Service hooks), the runtime-facing `job::service_symbols`
-  builders, and the submission stage (`apply_environment_templates`: §1.2.2
-  external Services merged before the Job's `jobServices` and stamped with
-  their `job::Document`, the wrapping-Environment check, per-document
-  profiles via `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
-  pass 8 "Service scopes", passes 10–11, and "Submission-time check" in
+  creation of Services (`job::Service` with its computed `scope` and
+  `references`, `Job::services`, `Job::requires_services`, resolved
+  `<Service>.let` and numeric fields, job-side `runScope` / Service hooks), the
+  runtime-facing `job::service_symbols` builders, and the submission stage
+  (`apply_environment_templates`: §1.2.2 external Services merged before the
+  Job's `services` with `AllSteps` scope and stamped with their
+  `job::Document`, requirement matching with `RequirementBinding`s, the
+  wrapping-Environment check, per-document profiles via
+  `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
+  pass 8 "Service scopes", passes 10–11, and "Submission-time checks" in
   [validation.md](validation.md), "Services" and
   "apply_environment_templates" in [job-creation.md](job-creation.md), and
-  [job-types.md](job-types.md), and the scheduler-facing
-  `referenced_service_names` (the start-ordering edges of RFC 0009 constraint
-  2). Execution lives in `openjd-sessions` (`ServiceSession`) and
-  orchestration in `openjd-cli` (`openjd run`, which calls
-  `apply_environment_templates`).
+  [job-types.md](job-types.md). Execution lives in `openjd-sessions`
+  (`ServiceSession`) and orchestration in `openjd-cli` (`openjd run`, which
+  calls `apply_environment_templates`).

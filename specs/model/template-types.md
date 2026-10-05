@@ -34,13 +34,26 @@ pub struct JobTemplate {
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
-    pub job_services: Option<Vec<Service>>,                   // SERVICE extension (RFC 0009)
+    pub services: Option<Vec<Service>>,                        // SERVICE extension (RFC 0009), §1.1 item 8
+    pub requires_services: Option<Vec<ServiceRequirement>>,    // SERVICE extension (RFC 0009), §1.1 item 9
     pub steps: Vec<StepTemplate>,
+}
+
+impl JobTemplate {
+    pub fn services(&self) -> &[Service];                      // empty when absent
+    pub fn requires_services(&self) -> &[ServiceRequirement];  // empty when absent
 }
 ```
 
 Helper: `parameter_definitions_list()` returns `&[JobParameterDefinition]`, defaulting to
 an empty slice when `parameter_definitions` is `None`.
+
+`services` is the Job Template's one Service list; each Service's *scope* (the Steps whose Tasks
+depend on it) is computed from the template's `Service.*` references rather than declared (§9.1,
+see [Service scope](#service-scope-91) below), so a `<StepTemplate>` has no Service list and the
+order of `services` carries no meaning. `requiresServices` declares the external Services whose
+endpoints the template reads, with their ports (§9.8). The pre-RFC-0009 keys `jobServices` and
+`stepServices` are not properties of any type and are rejected as unknown fields at decode.
 
 ### EnvironmentTemplate (§1.2)
 
@@ -62,9 +75,11 @@ impl EnvironmentTemplate {
 
 An Environment Template defines an Environment, a list of Services (§1.2 item 6, §1.2.2
 "external Services"), or both; validation rejects a document that defines neither. `services`
-has the same list constraints as a Job Template's `jobServices` and is validated by the same
-code (pass 11). `environment` is `Option` on the wire too: an explicit `environment: null` is
-"not provided". The `$schema` property is accepted and ignored, as on the Job Template.
+has the same list constraints as a Job Template's `services` and is validated by the same code
+(pass 11), except that a Service here gives no `dependencies` (the document has no Steps) and
+`requiresServices` is not a property of this type (rejected as an unknown field). `environment`
+is `Option` on the wire too: an explicit `environment: null` is "not provided". The `$schema`
+property is accepted and ignored, as on the Job Template.
 
 ## StepTemplate (§3)
 
@@ -80,7 +95,6 @@ pub struct StepTemplate {
     pub let_bindings: Option<Vec<String>>,           // "let" field in YAML
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
-    pub step_services: Option<Vec<Service>>,          // SERVICE extension (RFC 0009)
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
     pub script: Option<StepScript>,
@@ -129,13 +143,29 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// §4 item 3: entered in Sessions of `kind`? Every kind when `runScope` is
-    /// absent; else exactly the kinds the list names (unknown names never match).
+    /// §4 item 3: entered in Sessions of `kind`? Exactly the kinds the list
+    /// names when `runScope` is given; else the default — `[TASK]` when the
+    /// Environment references `Service.*`, every kind otherwise (unknown
+    /// names never match).
     pub fn runs_in(&self, kind: RunScope) -> bool;
     /// The kinds this Environment is entered in, in `RunScope::ALL` order.
     pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_;
+    /// Any format string (variables, actions, embedded files, script `let`)
+    /// references a `Service.*` value.
+    pub fn references_service(&self) -> bool;
+    /// `runScope` is absent and defaults to `[TASK]` because of a reference.
+    pub fn default_run_scope_is_task_only(&self) -> bool;
 }
 ```
+
+**Default `runScope`** (§4 item 3). An absent `runScope` follows from the Environment's own text:
+an Environment any of whose format strings references a `Service.*` value is entered in Task
+Sessions only, as if `runScope: [TASK]` were given; any other Environment is entered in every
+kind of Session. `runs_in` and `effective_run_scope` report the effective value, so pass 8's
+`Service.*` seeding, the wrap-hook rule (pass 10), the sessions runtime, and job creation —
+which materializes the default into `job::Environment::run_scope` as `Some([Task])` — never
+re-derive it. An explicit list is exhaustive; one that includes `SERVICE` on an Environment
+referencing `Service.*` is a pass 8 error (see [validation.md](validation.md)).
 
 ### RunScope (§4 item 3 `<RunScopeName>`, `SERVICE` extension, RFC 0009)
 
@@ -160,10 +190,10 @@ for the same reason `Service::name` is a plain `String`: the spec requires an un
 `<RunScopeName>` to be rejected, and holding the raw text lets pass 11 report it with the
 element's path (`runScope[i]`) instead of as a serde `unknown variant` error with no path.
 Consumers query the effective scope through `runs_in`, so pass 8's `Service.*` scope
-exclusion and the sessions runtime's Session-kind dispatch never re-derive
-the "absent means every kind" rule. `RunScope` itself derives serde with the schema spelling,
-and `job::Environment::run_scope` carries it as `Option<Vec<RunScope>>` (re-exported from
-`job`), since validation has already rejected unrecognized names by then.
+exclusion and the sessions runtime's Session-kind dispatch never re-derive the default rule.
+`RunScope` itself derives serde with the schema spelling, and `job::Environment::run_scope`
+carries it as `Option<Vec<RunScope>>` (re-exported from `job`), since validation has already
+rejected unrecognized names by then.
 
 ### EnvironmentScript (§4.1)
 
@@ -191,19 +221,20 @@ pub struct EmbeddedFile {
 ## Service (§9, `SERVICE` extension, RFC 0009)
 
 A Service is a long-lived process with named TCP or UDP ports that a scheduler starts before any
-Task in its scope is scheduled and keeps running for the lifetime of its scope: the Job for a
-`jobServices` entry, the declaring Step for a `stepServices` entry. The types below are the
-unresolved template shapes; the `Service.*` format-string scope and the `WrappedService.*`
-wrap-hook variables are validated by pass 8 (see [validation.md](validation.md), "Service
-scopes"), the runtime-facing symbol builders live in `job::service_symbols`, and job creation
-produces `job::Service` (see [job-types.md](job-types.md) and
-[job-creation.md](job-creation.md)).
+Task of a Step in its scope is scheduled and keeps running until no such Task remains. Its
+*scope* is the set of Steps whose Tasks depend on it, computed from the template's `Service.*`
+references (§9.1, [below](#service-scope-91)). The types below are the unresolved template
+shapes; the `Service.*` format-string scope and the `WrappedService.*` wrap-hook variables are
+validated by pass 8 (see [validation.md](validation.md), "Service scopes"), the runtime-facing
+symbol builders live in `job::service_symbols`, and job creation produces `job::Service` (see
+[job-types.md](job-types.md) and [job-creation.md](job-creation.md)).
 
 ```rust
 pub struct Service {
-    pub name: String,                                    // <ServiceName> §9.1: identifier, not "File"
+    pub name: String,                                    // <ServiceName> §9.2: identifier, not "File"
     pub description: Option<Description>,
     pub let_bindings: Option<Vec<String>>,               // "let" field in YAML (EXPR)
+    pub dependencies: Option<Vec<StepDependency>>,       // §9 item 4: Steps that complete before it starts
     pub host_requirements: Option<HostRequirements>,     // same type as StepTemplate's
     pub ports: Vec<ServicePort>,                         // 1–10, unique names; no two of one protocol share a number
     pub health_check: Option<ServiceHealthCheck>,        // None = { type: TCP_CONNECT } on every TCP port
@@ -224,20 +255,97 @@ impl Service {
 identifier, length, and `File` constraints are reported with a field path by the validation
 pipeline instead of as a serde error.
 
+`dependencies` has the shape of a Step's (`dependsOn: <StepName>`): the Service starts only
+after every listed Step has completed, in addition to its other start conditions. Pass 11
+rejects an empty list, an unknown Step, a Step in the Service's own scope (a cycle), and the
+property on an Environment Template's Services (§9 item 4, §9.9 item 10).
+
 A `<Service>` has no `serviceEnvironments` property: the RFC rejected a Service-scoped
 Environment list (Rejected Ideas, "`serviceEnvironments`, a Service-scoped Environment list") in
 favor of provisioning in the Service's own `onEnter`, so the key is rejected as an unknown field
-like any other (`deny_unknown_fields`). A Service is provisioned by the Environments of its scope
-whose `runScope` includes `SERVICE` and by its `onEnter`.
+like any other (`deny_unknown_fields`). A Service belongs to no Step: it is provisioned by the
+Job's Environments whose `runScope` includes `SERVICE` and by its `onEnter`, never by a Step's
+`stepEnvironments`.
 
-### ServicePort (§9.2)
+### Service scope (§9.1)
+
+`template::service_scope` computes the scope of every Service of a Job Template from its
+`Service.<name>.*` references:
+
+```rust
+pub enum ServiceScope {               // Serialize/Deserialize: {"kind":"allSteps"} | {"kind":"steps","steps":[..]}
+    AllSteps,
+    Steps { steps: BTreeSet<String> },
+}
+impl ServiceScope {
+    pub fn steps(names) -> Self;  pub fn all_steps_default() -> Self;
+    pub fn is_all_steps(&self) -> bool;  pub fn contains(&self, step: &str) -> bool;
+    pub fn step_names(&self) -> Option<&BTreeSet<String>>;
+}
+impl Display for ServiceScope;        // "every Step" | "Step A" | "Steps A, B"
+
+pub struct ComputedServiceScope {
+    pub name: String,
+    pub scope: ServiceScope,
+    pub references: BTreeSet<String>,      // other inline Services it references (rule 3)
+    pub referencing_steps: Vec<String>,    // Steps referencing it directly (rule 1), template order
+    pub referenced_by_job_environment: bool,  // rule 2
+}
+pub struct ServiceScopes { .. }           // get(name), iter(), scope_of(name) (AllSteps for an undeclared name)
+pub struct ServiceReferenceCycle { pub path: Vec<String> }   // Display: "the Service.* references among the Services form a cycle: A -> B -> A; …"
+
+pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceReferenceCycle>;
+pub fn service_reference_cycle(services: &[Service]) -> Option<ServiceReferenceCycle>;
+pub fn step_references(step: &StepTemplate) -> BTreeSet<String>;
+pub fn environment_references(env: &Environment) -> BTreeSet<String>;
+pub fn environment_references_service(env: &Environment) -> bool;
+pub fn service_references(svc: &Service) -> BTreeSet<String>;
+```
+
+The four rules: (1) a Step whose `script` (actions, embedded files, script `let`) or
+`stepEnvironments` (variables, actions, embedded files, script `let`) references `Service.X.*`
+is in `X`'s scope; (2) when any `jobEnvironments` entry references `Service.X.*`, every Step is;
+(3) when Service `Y` references `Service.X.*`, `X`'s scope includes `Y`'s, transitively, and `Y`
+starts only after `X` is READY — the reference graph is the dependency graph and must be acyclic;
+(4) a Service nothing references has every Step in its scope. A reference to a `requiresServices`
+name is not an edge (an external Service's scope is every Step). Only the fields that may legally
+reference `Service.*` are read: a reference in a job-creation field (`let`, `hostRequirements`,
+a numeric `@fmtstring`) is a pass 8 error and places nothing in a scope. Pass 11 reports a cycle
+at `services`; job creation records each Service's scope and references on `job::Service`
+(see [job-types.md](job-types.md)).
+
+### ServiceRequirement (§9.8) and ServiceRequirementPort (§9.8.1)
+
+```rust
+pub struct ServiceRequirement {
+    pub name: String,                            // <ServiceName>; not an inline Service's name
+    pub ports: Vec<ServiceRequirementPort>,      // 1–10, unique names
+}
+impl ServiceRequirement { pub fn port_names(&self) -> impl Iterator<Item = &str>; }
+
+pub struct ServiceRequirementPort {
+    pub name: String,                            // identifier, not "File"
+    #[serde(default)]
+    pub protocol: ServicePortProtocol,           // TCP (default) | UDP
+}
+```
+
+A requirement puts `Service.<name>.<port>.port` and `.connectAddress` in scope throughout the
+Job Template for each declared port — every Step's `script` and `stepEnvironments`, every
+`jobEnvironments` entry whose effective `runScope` excludes `SERVICE`, and every inline Service
+— and never `bindAddress`. At submission `apply_environment_templates` matches it to exactly one
+attached Service of that name declaring every listed port with the same protocol (see
+[job-creation.md](job-creation.md), "Applying Environment Templates"). Permitted only in a Job
+Template.
+
+### ServicePort (§9.3)
 
 ```rust
 pub struct ServicePort {
     pub name: String,                 // identifier, not "File", unique within the Service
     pub port: Option<FormatString>,   // <posinteger> | <posintstring>, 1–65535 in the protocol's space; None = runtime allocates
     #[serde(default)]
-    pub protocol: ServicePortProtocol, // §9.2 item 3: TCP (default) | UDP; a literal, not @fmtstring
+    pub protocol: ServicePortProtocol, // §9.3 item 3: TCP (default) | UDP; a literal, not @fmtstring
 }
 
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -271,7 +379,7 @@ resolves every value in the `<Service>.let` scope with the same target — a `nu
 the field was not provided and the §9 default applies — and range-checks the result (see
 [job-creation.md](job-creation.md), "Services").
 
-### ServiceHealthCheck (§9.3)
+### ServiceHealthCheck (§9.4)
 
 One probe mechanism applied in two phases. Before the instance is READY the probe decides
 readiness: the first probe runs as soon as `onRun` is launched, one every
@@ -284,7 +392,7 @@ failures make the instance UNHEALTHY (an instance failure — the runtime's conc
 A discriminated union on `type`, derived with `#[serde(tag = "type", deny_unknown_fields)]`, so
 a field belonging to another variant is a deserialization error: `ports` on anything but
 `TCP_CONNECT`, and `readinessIntervalSeconds` on `STDOUT`, whose ready line "arrives when it
-arrives" (§9.3 item 3 requires a `STDOUT` check that gives it to be rejected). The pre-revision
+arrives" (§9.4 item 3 requires a `STDOUT` check that gives it to be rejected). The pre-revision
 spellings `timeoutSeconds` and `intervalSeconds` are unknown fields on every variant, as
 `readinessCheck` is on `<Service>` and `onReadinessCheck` on `<ServiceActions>`.
 
@@ -332,7 +440,7 @@ impl ServiceHealthCheck {
 impl Default for ServiceHealthCheck;  // TcpConnect with every field None
 ```
 
-### ServiceRestartPolicy (§9.4)
+### ServiceRestartPolicy (§9.5)
 
 ```rust
 pub struct ServiceRestartPolicy {
@@ -359,7 +467,7 @@ impl CompletedTasksPolicy {
 }
 ```
 
-### ServiceScript (§9.5) and ServiceActions (§9.6)
+### ServiceScript (§9.6) and ServiceActions (§9.7)
 
 ```rust
 pub struct ServiceScript {

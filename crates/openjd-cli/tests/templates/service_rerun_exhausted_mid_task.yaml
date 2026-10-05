@@ -10,7 +10,7 @@ name: "RerunExhaustedMidTask"
 parameterDefinitions:
   - name: TraceFile
     type: STRING
-jobServices:
+services:
   - name: Flaky
     ports:
       - name: main

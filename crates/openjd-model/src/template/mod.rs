@@ -15,6 +15,7 @@ mod host_requirements;
 mod job_template;
 mod parameters;
 mod service;
+pub mod service_scope;
 mod step;
 mod task_parameters;
 pub(crate) mod validate_v2023_09;
@@ -51,7 +52,12 @@ pub use environment::{EmbeddedFile, Environment, EnvironmentScript, RunScope};
 // service (SERVICE extension, RFC 0009)
 pub use service::{
     CompletedTasksPolicy, Service, ServiceActions, ServiceHealthCheck, ServicePort,
-    ServicePortProtocol, ServiceRestartPolicy, ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
+    ServicePortProtocol, ServiceRequirement, ServiceRequirementPort, ServiceRestartPolicy,
+    ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
+};
+pub use service_scope::{
+    compute_service_scopes, ComputedServiceScope, ServiceReferenceCycle, ServiceScope,
+    ServiceScopes,
 };
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;

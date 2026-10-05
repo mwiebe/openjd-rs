@@ -1,4 +1,4 @@
-# RFC 0009 "A metrics sink with a UDP ingest port" adapted: a Job Service
+# RFC 0009 "A metrics sink with a UDP ingest port" adapted: a Service
 # with a UDP `ingest` port and a TCP `api` port and no healthCheck. The
 # default TCP_CONNECT probes the TCP port only (§9 item 7, §9.3 item 2), so
 # the Service becomes READY once `api` accepts connections; `ingest` is
@@ -7,7 +7,7 @@
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "JobServiceTcpUdp"
-jobServices:
+services:
   - name: Metrics
     ports:
       - name: ingest

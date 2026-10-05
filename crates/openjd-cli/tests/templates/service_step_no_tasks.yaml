@@ -1,27 +1,28 @@
-# RFC 0009 constraint 10: a Step Service is not started when its Step will
-# schedule no Task (--tasks '[]'). The Service records any start in the
-# marker file, which must stay absent.
+# RFC 0009 constraint 10: a Service scoped to a Step (the Step's Task
+# references it) is not started when that Step will schedule no Task
+# (--tasks '[]'). The Service records any start in the marker file, which
+# must stay absent.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "StepNoTasks"
 parameterDefinitions:
   - name: MarkerFile
     type: STRING
+services:
+  - name: Unused
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.MarkerFile }}', 'a').write('started\\n'); print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
 steps:
   - name: Work
-    stepServices:
-      - name: Unused
-        ports:
-          - name: main
-        healthCheck:
-          type: STDOUT
-        script:
-          actions:
-            onRun:
-              command: python
-              args: ["-c", "import time; open(r'{{ Param.MarkerFile }}', 'a').write('started\\n'); print('openjd_service_ready: up', flush=True); time.sleep(600)"]
-              cancelation:
-                mode: TERMINATE
     parameterSpace:
       taskParameterDefinitions:
         - name: N
@@ -31,4 +32,4 @@ steps:
       actions:
         onRun:
           command: python
-          args: ["-c", "print('TASK', {{ Task.Param.N }})"]
+          args: ["-c", "print('TASK', {{ Task.Param.N }}, {{ Service.Unused.main.port }})"]

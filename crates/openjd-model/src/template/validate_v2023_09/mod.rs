@@ -18,7 +18,7 @@ pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
 mod service;
-mod service_scope;
+mod service_diagnostics;
 mod structure;
 mod task_chunking;
 mod wrap_actions;
@@ -202,7 +202,7 @@ pub(crate) fn validate_job_template(
     // found.
     let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings(jt, ctx, &mut errors);
-    service_scope::refine_job_template(jt, &mut errors, before_pass_8);
+    service_diagnostics::refine_job_template(jt, &mut errors, before_pass_8);
 
     // Pass 9: TASK_CHUNKING (validate or reject)
     task_chunking::validate_task_chunking(jt, ctx, &mut errors);
@@ -280,7 +280,7 @@ pub fn validate_environment_template(
     // found.
     let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings_environment_template(et, ctx, &mut errors);
-    service_scope::refine_environment_template(et, &mut errors, before_pass_8);
+    service_diagnostics::refine_environment_template(et, &mut errors, before_pass_8);
 
     // WRAP_ACTIONS gating (RFC 0008), including the RFC 0009 Service hooks
     // and the hooks-follow-runScope rule.

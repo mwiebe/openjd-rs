@@ -1,4 +1,4 @@
-# RFC 0009 example 1 adapted: a Job Service (a python TCP listener standing in
+# RFC 0009 example 1 adapted: a Service (a python TCP listener standing in
 # for valkey-server) with a TCP_CONNECT health check, consumed by the Tasks of two
 # Steps through Service.Store.main.connectAddress / .port.
 specificationVersion: "jobtemplate-2023-09"
@@ -8,7 +8,7 @@ parameterDefinitions:
   - name: TraceFile
     type: STRING
     default: ""
-jobServices:
+services:
   - name: Store
     description: "A TCP echo store shared by every Task."
     ports:

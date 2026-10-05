@@ -109,13 +109,15 @@ execute(args).await
   │   ├── preprocess_job_parameters() → param_values
   │   ├── create_job() → Job (from the Job Template alone)
   │   └── apply_environment_templates().into_combined_job() → the combined Job:
-  │       external Services ahead of jobServices, attached Environments ahead
-  │       of jobEnvironments (RFC 0009 / Template Schemas §1.2.2)
+  │       external Services ahead of the Job Template's services, attached
+  │       Environments ahead of jobEnvironments, requirement bindings kept
+  │       (RFC 0009 / Template Schemas §1.2.2)
   │
   ├── 2. SELECTION AND PREFLIGHT
   │   ├── Resolve step selection (explicit / auto-select / all)
   │   ├── Parse explicit task params and require a parameter space
-  │   ├── Determine step execution order
+  │   ├── Determine step execution order (Step dependencies plus the edges a
+  │   │   Service's `dependencies` imply for the Steps in its scope)
   │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack
   │       (jobEnvironments + one Step's stepEnvironments, which a Service
   │       Session's stack is a subset of), across the combined Job's documents
@@ -125,29 +127,32 @@ execute(args).await
   │   ├── Session::with_config() — the Task Session
   │   └── ServiceManager::new() — the scheduler side of RFC 0009 (no Session yet)
   │
-  ├── 4. JOB SERVICES AND ENVIRONMENT ENTRY
-  │   ├── Register the combined Job's Services (unless no Task will run)
-  │   ├── Readiness gate: start every Job Service, wait until READY
+  ├── 4. JOB-WIDE SERVICES AND ENVIRONMENT ENTRY
+  │   ├── Register every Service of the combined Job; activate those whose
+  │   │   scope is every Step (unless no Task will run)
+  │   ├── Readiness gate: start every active Service, wait until READY
   │   └── Enter job environments (attached, then the template's own) in the
   │       Task Session — skipping those whose runScope excludes TASK
   │
   ├── 5. STEP EXECUTION
-  │   └── For each step:
-  │       ├── Register the Step's Services (unless no Task of it will run)
-  │       ├── Readiness gate: start every Step Service, wait until READY
+  │   └── For each step not yet completed:
+  │       ├── Activate every Service whose scope includes the Step (unless no
+  │       │   Task of it will run), once its `dependencies` have completed
+  │       ├── Readiness gate: start every active Service, wait until READY
   │       ├── Enter step environments
   │       ├── Execute tasks (explicit, lazy iteration, or no-param single task),
   │       │   each behind the readiness gate and watched for Service instance failures
   │       ├── Exit step environments (reverse order)
-  │       └── Stop the Step's Services (reverse start order)
-  │       A completedTasks: RERUN relaunch returns the Step (or every Step) to
-  │       pending: the loop resumes from that Step in a new Task Session.
+  │       └── Stop every Service whose scope has no remaining Step (reference order)
+  │       A completedTasks: RERUN relaunch returns every Step in the Service's
+  │       scope, and every Step depending on one of them, to pending: the loop
+  │       resumes over the uncompleted Steps in a new Task Session.
   │
   ├── 6. ENVIRONMENT EXIT AND SERVICE STOP
   │   ├── Exit every entered environment (LIFO), including any whose
   │   │   enter action failed (cleanup guarantee)
-  │   └── Stop every Service still running (Step Services, then Job
-  │       Services, reverse start order), whatever its state
+  │   └── Stop every Service still running (a Service before any it
+  │       references), whatever its state
   │
   └── 7. RESULTS
       ├── Treat any observed interruption as a failed run
@@ -182,6 +187,12 @@ When `--run-dependencies` is set with an explicit step, `resolve_step_dependenci
 computes the transitive closure of dependencies and returns them in topological order
 (dependencies before dependents) via recursive DFS.
 
+Both orderings are computed over `with_implied_step_dependencies(job)`: a copy of the
+Job in which every Step in the scope of a Service with `dependencies` (RFC 0009 §9 item
+4) also depends on that Service's dependency Steps — its Tasks wait for the Service,
+which waits for those Steps. A cycle this introduces is reported with the step-graph
+message plus `(Step dependencies include those implied by Services' dependencies)`.
+
 ## Task Execution Modes
 
 Within a selected step, tasks execute in one of three modes:
@@ -208,11 +219,11 @@ that would exhaust memory if materialized.
 For each task:
 1. Get the next parameter set from the iterator
 2. Copy it into a `TaskParameterSet`
-3. Pass the readiness gate (every Job Service and Step Service READY — a no-op
-   without Services), then call `Session::run_task()`; the sessions crate builds
-   symbols and materializes the script
+3. Pass the readiness gate (every active Service READY — a no-op without
+   Services), then call `Session::run_task()`; the sessions crate builds symbols
+   and materializes the script
 4. Check the result and stop on failure; a Task canceled for a `RERUN` relaunch
-   ends the iteration so the Step (or Job) can start over
+   ends the iteration so the returned Steps can start over
 
 `--maximum-tasks` limits the iteration count. A value of -1 (default) means no limit.
 
@@ -373,37 +384,57 @@ Templates".
 ### Submission
 
 After `create_job`, `apply_environment_templates` folds the `--environment` templates
-into the Job: `job.job_services` is the external Services (attachment order, then
-each template's `services` order) followed by the Job Template's `jobServices`, and
-`job.job_environments` the attached Environments followed by the template's own. The
-combined `job_services` list is one start order and one stop order.
+into the Job: `job.services` is the external Services (attachment order, then each
+template's `services` order) followed by the Job Template's `services`, and
+`job.job_environments` the attached Environments followed by the template's own. Its
+`requirement_bindings` — the attached Service each `requiresServices` entry matched —
+are kept in `PreparedRun` and handed to the `ServiceManager`. A requirement that no
+attachment provides, that two provide, or whose provider lacks a port or carries it
+with another protocol is rejected before any Session exists, with the model's
+`Submission` error naming `JobTemplate -> requiresServices[i]` and the cause (see
+`specs/model/validation.md`, "Submission-time checks").
 
-**Service names are scoped to their document** (Template Schemas §1.2.2 item 2).
-An external Service may be named like a Service of the Job Template or of another
-attachment; the submission is not rejected for it. The manager identifies every
-Service by `ServiceKey { document, name }` — `job::Service::document` is
-`Document::JobTemplate` for the Job Template's own Services and the attachment (by
-index, labeled with its path) for an external one — so two `Cache`s are two
-Services with two Sessions, two sets of ports, and two readiness verdicts. Nothing
-in the run looks a Service up by name alone:
+**Scope.** Every Service of the combined Job carries the scope job creation computed
+for it (`job::Service::scope`, Template Schemas §9.1): every Step for an external
+Service, a Service a Job Environment references, or one nothing references; the set of
+Steps that reference it (directly, or through Services that reference it) otherwise.
+The manager registers all of them once and *activates* each when the run reaches its
+scope: a Service whose scope is every Step before the Task Session enters the Job's
+Environments; one scoped to some Steps when the first of them is about to run — after
+every Step in its `dependencies` has completed (a dependency outside the selection
+counts as completed, as a Step's own dependencies do under `--step`). Steps outside a
+Service's scope never wait on it. A Service is stopped once no Step still to run is in
+its scope, and returns to idle; a `RERUN` that returns one of its Steps to the queue
+activates it again, in a new Service Session (lifecycle constraint 9).
+
+**Inline Services shadow external ones** (Template Schemas §1.2.2 item 3). An
+external Service may be named like a Service of the Job Template or of another
+attachment; the submission is rejected for it only when a requirement names that name
+(the ambiguity above). The manager identifies every Service by `ServiceKey {
+document, name }` — `job::Service::document` is `Document::JobTemplate` for the Job
+Template's own Services and the attachment (by index, labeled with its path) for an
+external one — so two `Cache`s are two Services with two Sessions, two sets of ports,
+and two readiness verdicts. A name is looked up across documents in exactly one place:
 
 - A `Service.*` reference made *inside* a Service (the edges `referenced_service_names`
-  yields) names a Service of the same document — template validation seeds only the
-  document's own Services — so each referenced name is keyed with the referencing
-  Service's document for the start-ordering waves and for restarting dependents.
-- A Service Session's in-scope endpoints (constraint 2) are the READY Services
-  earlier in the start order **of its own document**: a Step Service of the Job
-  Template sees the Job Template's Job Services and the Step Services before it; an
-  external Service sees the external Services before it in the same attachment. A
-  same-named Service from another document is never seeded, so its symbols cannot
-  collide.
-- The Task Session sees, for a Task and for the Job Template's own Environments,
-  the Job Template's Services only; for an attached Environment, that attachment's
-  Services only (`RunContext::task_symtab(…, document)` with
-  `ServiceManager::task_scope_endpoints(document)`). The RFC's queue-cache
+  yields) names a Service of the same document — or, inside a Job Template Service, a
+  required external Service, which resolves to the attached Service its requirement was
+  bound to (`ServiceKey::of_binding`) unless the Job Template declares that name
+  itself. Each edge is keyed accordingly for the start-ordering waves and for
+  restarting dependents.
+- A Service Session's in-scope endpoints (constraint 2) are the READY Services it
+  references, so keyed. A same-named Service from another document is never seeded, so
+  its symbols cannot collide.
+- The Task Session sees, for a Task of Step `S` or `S`'s Step Environments, the Job
+  Template's READY Services whose scope includes `S`; for the Job Template's own Job
+  Environments, every READY inline Service; and in both cases the attached Services
+  bound to the Job Template's requirements (`Service.<requirement>.*` is the bound
+  Service's endpoints). For an attached Environment, that attachment's Services only
+  (`RunContext::task_symtab(…, document, step)` with
+  `ServiceManager::task_scope_endpoints(document, step)`). The RFC's queue-cache
   Environment therefore publishes the queue's `Cache` through `VALKEY_HOST` /
-  `VALKEY_PORT` while the Job Template's Tasks resolve `Service.Cache.*` to their
-  own.
+  `VALKEY_PORT` while the Job Template's Tasks resolve `Service.Cache.*` to their own —
+  or, with `requiresServices: [{name: Cache, …}]` and no inline `Cache`, to the queue's.
 - Log lines, the failure summary, and `failed_services` name an external Service
   with its document: `Service 'Cache' (from queue-cache.yaml)` (the path as given
   to `--environment`); the Job Template's own stay `Service 'Cache'`. See
@@ -412,31 +443,29 @@ in the run looks a Service up by name alone:
 **Documents and profiles.** Each document's strings are evaluated under its own
 extensions (Template Schemas §1.2 item 3). A Service Session's `SessionConfig::profile`
 is the profile of the Service's own document — `ServiceRunConfig::profile_for(&service.document)`:
-the Job Template's `profile` for its `jobServices` / `stepServices`, the attachment's
-entry of `attached_profiles` for an external Service — so an external Service's actions,
-`variables`, `let` and embedded files use its template's `SERVICE`
-/ `EXPR` functions whatever the Job Template declares. The scope Environments a Service
-Session enters (the combined `job_environments`, then a Step's `stepEnvironments`) each
-come from a document; `ServiceManager::set_job_services` / `set_step_services` take
-`PreparedRun::environment_documents` and fill `ServiceSessionConfig::environment_profiles`
+the Job Template's `profile` for its `services`, the attachment's entry of
+`attached_profiles` for an external Service — so an external Service's actions,
+`variables`, `let` and embedded files use its template's `SERVICE` / `EXPR` functions
+whatever the Job Template declares. The Environments a Service Session enters (the
+combined `job_environments`; never a Step's `stepEnvironments`, since a Service belongs
+to no Step) each come from a document; `ServiceManager::register` takes
+`PreparedRun::environment_documents` and fills `ServiceSessionConfig::environment_profiles`
 with `Some(profile_for(doc))` for every Job Environment whose document differs from the
-Service's (`None` for those sharing it; Step Environments always share a Step Service's
-Job Template). The Job Template's `jobEnvironments` entered in an external Service's
-Session thus keep the Job's profile, and an attached Environment entered in a Job
-Template Service's Session keeps its template's.
+Service's (`None` for those sharing it). The Job Template's `jobEnvironments` entered in
+an external Service's Session thus keep the Job's profile, and an attached Environment
+entered in a Job Template Service's Session keeps its template's.
 
-Template
-validation (per document) and `apply_environment_templates` (across documents) between
-them enforce §9.7 item 6 — a wrapping Environment whose `runScope` includes `SERVICE`
-defines all four `onWrapService*` hooks — so the CLI's wrap preflight only re-checks
-RFC 0008's single-layer rule over the combined stacks.
+Template validation (per document) and `apply_environment_templates` (across documents)
+between them enforce §9.9 item 6 — a wrapping Environment whose `runScope` includes
+`SERVICE` defines all four `onWrapService*` hooks — so the CLI's wrap preflight only
+re-checks RFC 0008's single-layer rule over the combined stacks.
 
 ### Endpoint allocation (constraint 1)
 
 `PortAllocator` (`run/service_ports.rs`) is the **local runner's** policy: every
 Service binds and is reached on the loopback interface. For each declared port it
 binds `127.0.0.1:0` with a socket of the port's `protocol` — a `TcpListener` for a
-TCP port, a `UdpSocket` for a UDP port (§9.2 item 3) — to find a free port in that
+TCP port, a `UdpSocket` for a UDP port (§9.3 item 3) — to find a free port in that
 protocol's space (or binds the requested `port` once, the same way, to confirm it is
 available), releases the socket, and records `(protocol, number)` so that no two
 Services of the run ever receive the same port of one protocol — numbers are never
@@ -454,38 +483,42 @@ opened, before any of its actions runs; a new Service Session gets new ports.
 
 Services are started by the **readiness gate** (`ServiceManager::gate`), which runs
 before the Task Session enters the Job's Environments, before each Step's
-Environments, and before every Task. Within the gate, Services not yet started are
-launched in *waves*: a Service may start when every Service it references through
+Environments, and before every Task. The gate starts the *active* Services that are
+idle, in *waves*: a Service may start when every Service it references through
 `Service.*` is READY; the references are computed from its format strings by
 `openjd_model::job::service_symbols::referenced_service_names` (variables, every
 action's command/args/timeout/cancelation, embedded-file data, and `<ServiceScript>.let`),
-each keyed with the referencing Service's document, not from list position —
-Services that do not reference one another start concurrently, each on its own tokio
-task. Job Services start first, then the Step's; a Step Service's Session is seeded
-with the endpoints of every READY Job Service and of the Step Services before it in
-the list that share its document (the "in scope" set of RFC 0009 "The `Service.*`
-scope", per document); a Job Service's with those of the same document's Job Services
-before it.
+each keyed with the referencing Service's document (or the bound attached Service, for
+a requirement) — never from list position, which carries no meaning — and Services
+that do not reference one another start concurrently, each on its own tokio task. A
+Service's Session is seeded with the endpoints of exactly the READY Services it
+references (the "in scope" set of RFC 0009 "The `Service.*` scope"), so a referenced
+Service's endpoint is always known at the referencing Session's start.
 
-Job Services are started eagerly, at job start, but only if some selected Step will
-run at least one Task; a Step's Services only if that Step will (constraint 10 — a
-`--tasks '[]'` selection runs none, and the run logs `Not starting the N Step
-Service(s) of Step '<name>': no Task of this Step will run`). A Service Session enters
-the Job's Environments (a Job Service) or the Job's then the Step's (a Step Service),
-skipping those whose `runScope` excludes `SERVICE` — the runtime does the skipping.
+A Service whose scope is every Step is activated at job start, but only if some
+selected Step will run at least one Task (constraint 10 — a `--tasks '[]'` selection
+runs none, and the run logs `Not starting the N Service(s) whose scope is every Step:
+no Task of this Job will run`); a Service scoped to some Steps is activated when the
+first Step of its scope is about to run, only if that Step will run a Task (`Not
+starting Service 'X', Service 'Y' for Step '<name>': no Task of this Step will run`),
+and only after every Step in its `dependencies` has completed (§9 item 4; the Step
+ordering guarantees it, see [Step Selection Logic](#step-selection-logic)). A Service
+Session enters the Job's Environments, skipping those whose effective `runScope`
+excludes `SERVICE` — the runtime does the skipping and logs it under the Service's tag.
 
 ### Task gating (constraint 3)
 
-No Task runs until the gate reports every registered Service READY. A Step's
-Services are registered and started when the Step is reached in dependency order
-(the existing topological loop), before the Task Session enters the Step's
-Environments. The order within a Step is therefore: Step Services start → step
-Environments entered → Tasks → step Environments exited → Step Services stopped.
-The RFC does not couple the Step's Environment exits (which belong to the Task
-Session) to the Step Services' stop; this runner exits the Environments first so that
-a TASK-scoped Environment's `onExit` can still reach the Service, mirroring the Job
-level (Job Environments exit, then Job Services stop) and the RFC's execution-order
-example.
+No Task runs until the gate reports every active Service READY. A Service scoped to
+Steps is activated and started when the first Step of its scope is reached in
+dependency order (the existing topological loop), before the Task Session enters the
+Step's Environments. The order within a Step is therefore: the Step's Services start →
+step Environments entered → Tasks → step Environments exited → Services whose scope is
+now complete stopped. The RFC does not couple the Step's Environment exits (which
+belong to the Task Session) to the Services' stop; this runner exits the Environments
+first so that a TASK-scoped Environment's `onExit` can still reach the Service,
+mirroring the Job level (Job Environments exit, then the Job-wide Services stop) and the
+RFC's execution-order example. A Service whose scope spans several Steps keeps its
+Session — and its state — across them (the RFC's coordinator example).
 
 ### Task Sessions see the endpoints
 
@@ -494,12 +527,15 @@ against: the caller's table (the Step's `resolved_symtab` for a Task or a step
 Environment, an Environment's own `resolved_symtab` for a job Environment, or the
 submission's `Param.*` table when neither exists) with
 `openjd_model::job::service_symbols::build_service_symbol_table(in_scope, None)`
-appended — the `Service.<name>.<port>.port` and `.connectAddress` of every READY Job
-Service and Step Service of the current Step **declared by the resolving entity's
-document** (`Document::JobTemplate` for a Task, a step Environment, or the Job
-Template's own job Environments; the attachment for an `--environment` template's
-Environment, recorded in `EnteredEnvironment::document` so a re-entry uses the same
-scope), never `bindAddress` (§7.3.1 scope rows 3–4). The two serialized tables are
+appended — the `Service.<name>.<port>.port` and `.connectAddress` of every READY
+Service in scope of the resolving entity: for the Job Template's entities
+(`Document::JobTemplate`), the inline Services whose scope includes the Step (a Task,
+a step Environment — `EnteredEnvironment::step`) or every inline Service (the Job
+Template's own job Environments), plus the attached Services bound to its
+`requiresServices` under the requirement's name; for an `--environment` template's
+Environment, that attachment's own Services (recorded in
+`EnteredEnvironment::document` so a re-entry uses the same scope); never
+`bindAddress` (§7.3.1 scope rows). The two serialized tables are
 concatenated entry-for-entry, so no path value is re-interpreted. Without Services
 in scope the caller's table is passed unchanged (the pre-RFC-0009 behavior,
 including `None` for job Environments).
@@ -523,24 +559,27 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
 - `completedTasks: RERUN` — the running Task is canceled through the Task Session's
   cancel handle (its own `cancelation` method), logged as `Task canceled; it returns
   to the queue (not a Task failure)` and not counted in `tasks_run` or as a failure.
-  The Step's remaining Tasks are abandoned and the Step (a Step Service) or every
-  selected Step (a Job Service) returns to pending: `run_workload` resumes from that
-  Step (or from the first), re-running completed Tasks — **only once the Service is
-  actually relaunched**: after the canceled Task's Step unwinds, `run_workload` runs
-  the readiness gate before announcing the requeue, so the restart decision (and the
-  relaunch) has settled. If the Service's attempts are exhausted it is FAILED instead,
-  the gate records the failure, and the run fails without printing `Returning every
-  completed Task …` or `New Task Session for the requeued Tasks` (the exploratory
-  report's stumble S10). Otherwise the requeue is logged (`Returning every completed
-  Task of the Job to the queue: a Job Service with completedTasks: RERUN was
-  relaunched; every Step returns to pending`, or `… of Step '<name>' …: a Step Service
-  …`) and the requeued Tasks run in a **new Task Session**
-  (`RunContext::replace_task_session`): a canceled action leaves a Session
-  ending-only ("Brittle Sessions", `specs/sessions/session.md`), and a scheduler would
-  form new Sessions for requeued Tasks anyway. The new Session re-enters the Job's
-  Environments. A Job-scope `RERUN` also stops the current Step's Services; they
-  start again, in new Service Sessions, when the Step is next scheduled ("RERUN and
-  Step dependencies").
+  The Step's remaining Tasks are abandoned and, per "`RERUN` and Step dependencies",
+  every selected Step in the Service's scope returns to pending, and with it every
+  selected Step that depends on one of them, directly or transitively
+  (`returned_steps`): `run_workload` resumes over the Steps no longer marked
+  completed, in the original order, re-running their completed Tasks — **only once the
+  Service is actually relaunched**: after the canceled Task's Step unwinds,
+  `run_workload` runs the readiness gate before announcing the requeue, so the restart
+  decision (and the relaunch) has settled. If the Service's attempts are exhausted it
+  is FAILED instead, the gate records the failure, and the run fails without printing
+  `Returning every completed Task …` or `New Task Session for the requeued Tasks` (the
+  exploratory report's stumble S10). Otherwise the requeue is logged (`Returning every
+  completed Task of Step(s) 'A', 'B' to the queue: a Service with completedTasks: RERUN
+  (scope: Steps A, B) was relaunched`, followed by `; dependent Step(s) 'C' return to
+  pending` when a Step outside the scope is returned) and the requeued Tasks run in a
+  **new Task Session** (`RunContext::replace_task_session`): a canceled action leaves a
+  Session ending-only ("Brittle Sessions", `specs/sessions/session.md`), and a
+  scheduler would form new Sessions for requeued Tasks anyway. The new Session
+  re-enters the Job's Environments. A Service that had been stopped because its scope
+  completed, and whose scope includes a returned Step, is activated again when that
+  Step is next reached and starts in a new Service Session (constraint 9); several
+  `RERUN` Services failing during one Task return the union of their scopes.
 - `completedTasks: KEEP` — the Task continues; if it fails on its own that is an
   ordinary Task failure, which the local runner (having no Task retry) treats as it
   always has: the run fails. Completed Tasks stand.
@@ -556,8 +595,8 @@ failure may be a port conflict — `onRun` exited before becoming READY — or w
 start failure (requested port unavailable, Environment `onEnter` failed, Service
 `onEnter` failed, Session could not be created). Otherwise the Service is FAILED: its
 Session is ended, the failure is recorded with its name and scope, and the scope
-fails — a Job Service fails the Job, a Step Service fails the Step; in the local
-runner either fails the run (no further Task runs, exit code 1).
+fails — every Step in it, and with it the Job when the scope is every Step; in the
+local runner either fails the run (no further Task runs, exit code 1).
 
 A relaunch that began a new Service Session changed the Service's endpoints. RFC 0009
 only guarantees a referenced endpoint at the referencing Session's start, so the
@@ -565,9 +604,9 @@ runner then (at the next gate) restarts every READY Service that references the
 replaced one, transitively, in reverse start order — ending their Sessions and
 starting them again with the new in-scope endpoints, without consuming any of their
 attempts — and exits and re-enters the Task Session's Environments that may have
-captured the old value (all of them for a Job Service, the Step's for a Step
-Service), logging `Re-entering N Environment(s): a Service they may reference has new
-endpoints`. Tasks resolve `Service.*` per Task, so they see the new value without
+captured the old value (all of them for a Service whose scope is every Step, the
+Step's for one scoped to Steps), logging `Re-entering N Environment(s): a Service they
+may reference has new endpoints`. Tasks resolve `Service.*` per Task, so they see the new value without
 further action.
 
 Not implemented: suspension (constraint 10's `KEEP`-only pause) — a single-process
@@ -575,17 +614,22 @@ runner never pauses a Job; relocation and host loss do not arise with one host.
 
 ### Stopping (constraints 4, 6, 7)
 
-When a scope completes — every Task done, or the run failing or interrupted — its
-Services are stopped in reverse start order: the Step's at the end of each Step, the
-Job's after the Task Session has exited the Job's Environments. Every Step Service is
-therefore stopped before any Job Service, and within one list reverse order stops a
-Service before any it references. Stopping is `ServiceSession::end()`: cancel `onRun`
+A Service is stopped when its scope completes — no Step still to run is in it
+(`ServiceManager::stop_completed_scopes`, after each Step, with the Steps that remain),
+or the run ends, fails, or is interrupted (`stop_all`, after the Task Session has
+exited the Job's Environments). A set of Services is stopped in reverse topological
+order of their reference graph: a Service before any Service it references, Services
+that do not reference one another in reverse registration order. A Service whose scope
+is every Step is therefore stopped only at the end of the run, after every Service
+scoped to Steps; a Service referenced by two Steps is stopped after the second of
+them, before any later Step runs. Stopping is `ServiceSession::end()`: cancel `onRun`
 with its own `cancelation` method, `onExit` (if any action ran), Environments exited
 in reverse, working directory deleted (kept under `--preserve`, with its path
-logged). A background start or relaunch in flight is cut short through the group's
+logged). A background start or relaunch in flight is cut short through the Service's
 stop token (the Service's running action is canceled through its cancel handle) and
-its Session ended the same way. A Service whose Session never started is skipped; a
-FAILED Service's Session was ended when it failed.
+its Session ended the same way; the stopped Service returns to idle, with a fresh
+token, so a later `RERUN` can start it again. A Service whose Session never started is
+skipped; a FAILED Service's Session was ended when it failed.
 
 An interruption (Ctrl-C) cancels the running Task through the shared cancellation
 token as before, and the Services through the manager: a Service Session does **not**
@@ -598,8 +642,10 @@ Session normally.
 
 Service lifecycle is logged on the run's timeline with the same banners the
 Environments use (`Starting Service: <name>` / `Stopping Service: <name>`) and one
-line per event, each naming the Service and its scope: endpoints
-(`Service 'Cache' (Job scope) endpoints: main -> 127.0.0.1:41235`; a UDP port's
+line per event, each naming the Service and its scope — `(scope: every Step)`,
+`(scope: Step Render)`, or `(scope: Steps Gather, Scatter)` (sorted Step names), the
+`Display` of `job::ServiceScope`: endpoints
+(`Service 'Cache' (scope: every Step) endpoints: main -> 127.0.0.1:41235`; a UDP port's
 address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
 unsuffixed), `onRun launched
 (launch N in this Session); health check: <TYPE> (readinessTimeoutSeconds N[,
@@ -636,8 +682,9 @@ Session's, whose banners the CLI prints itself), so a Service Session's phases r
 
 ```
 --------- Starting Service: Files                        ← the CLI's banner (4 lines)
-Service 'Files' (Job scope) endpoints: main -> 127.0.0.1:41235
+Service 'Files' (scope: every Step) endpoints: main -> 127.0.0.1:41235
 [Service Files] --------- Starting Service: Files
+[Service Files] Skipping Environment 'Client': its runScope does not include SERVICE
 [Service Files] --------- Entering Environment: Shared
 [Service Files] Output:
 [Service Files] Shared.onEnter running in a Session
@@ -660,18 +707,20 @@ narrative, not the Session's output. The Task Session carries no tag, so Task an
 Task-Session Environment output is unchanged.
 
 A FAILED Service is also
-reported on stderr (`ERROR: Service '<name>' (<scope> scope) failed: <reason>`), in
-the summary (`Failed Service: <name> (<scope> scope): <reason>`; the result message
-becomes `Service '<name>' (<scope> scope) failed: <reason>`), and as `failed_services`
-(`name`, `scope`, `reason`) in the JSON/YAML result. The exit code is 1.
+reported on stderr (`ERROR: Service '<name>' (scope: <scope>) failed: <reason>`), in
+the summary (`Failed Service: <name> (scope: <scope>): <reason>`; the result message
+becomes `Service '<name>' (scope: <scope>) failed: <reason>`), and as `failed_services`
+(`name`, `scope` — the scope text, `every Step` / `Step A` / `Steps A, B` — and
+`reason`) in the JSON/YAML result. The exit code is 1.
 
 An **external Service** (one from an `--environment` template) is named with its
 document everywhere a Service of the Job Template is named alone, so two
 same-named Services are told apart: the banners read `Starting Service: Cache (from
 queue-cache.yaml)` / `Stopping Service: Cache (from queue-cache.yaml)`, every event
 line `Service 'Cache' (from queue-cache.yaml) …`, the stderr and summary lines
-`Service 'Cache' (from queue-cache.yaml) (Job scope) failed: …` and `Failed Service:
-Cache (from queue-cache.yaml) (Job scope): …`, and the `failed_services` entry gains
+`Service 'Cache' (from queue-cache.yaml) (scope: every Step) failed: …` and `Failed
+Service: Cache (from queue-cache.yaml) (scope: every Step): …`, and the
+`failed_services` entry gains
 a `document` key holding the template's path as given on the command line (absent
 for the Job Template's own Services). The document is the label the CLI passes to
 `apply_environment_templates`, so it matches the submission-time error paths.

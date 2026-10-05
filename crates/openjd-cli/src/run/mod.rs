@@ -15,10 +15,10 @@ pub use params::parse_cli_parameters;
 use clap::Args;
 use openjd_expr::SerializedSymbolTable;
 use openjd_model::job::service_symbols::build_service_symbol_table;
-use openjd_model::job::{Document, Environment, Job, RunScope, Step};
+use openjd_model::job::{Document, Environment, Job, RunScope, ServiceScope, Step};
 use openjd_model::template::parse;
 use openjd_model::types::{JobParameterValues, ModelProfile, TaskParameterSet};
-use openjd_model::StepDependencyGraph;
+use openjd_model::{RequirementBinding, StepDependencyGraph};
 use openjd_sessions::action::ActionState;
 use openjd_sessions::path_mapping::PathMappingRule;
 use openjd_sessions::session::Session;
@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use params::*;
 use result::RunResult;
-use services::{RerunScope, ServiceFailure, ServiceManager};
+use services::{merge_scopes, ServiceFailure, ServiceManager};
 
 type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<SerializedSymbolTable>;
@@ -39,7 +39,7 @@ type EnvSymtab = Option<SerializedSymbolTable>;
 struct PreparedRun {
     /// The combined Job: `apply_environment_templates` has placed the
     /// `--environment` templates' Services before the Job Template's
-    /// `jobServices` and their Environments before its `jobEnvironments`.
+    /// `services` and their Environments before its `jobEnvironments`.
     job: Job,
     /// The document of each entry of `job.job_environments`, index for
     /// index: the attached Environments carry their template, the Job
@@ -48,6 +48,10 @@ struct PreparedRun {
     /// [`profile_for`](Self::profile_for)) which document's extension
     /// profile its format strings are evaluated with.
     environment_documents: Vec<Document>,
+    /// The attached Service each `requiresServices` entry of the Job
+    /// Template was bound to at submission (Template Schemas §1.2.2 item
+    /// 2).
+    requirement_bindings: Vec<RequirementBinding>,
     param_values: JobParameterValues,
     path_rules: Vec<PathMappingRule>,
     /// The Job Template's revision + extensions profile: the Task Session's
@@ -93,14 +97,19 @@ struct RunSelection {
     steps_to_run: Vec<usize>,
 }
 
+#[derive(Clone)]
 struct EnteredEnvironment {
     identifier: String,
     /// The Environment as entered, so it can be re-entered when the
     /// `Service.*` endpoints it may reference change.
     env: Environment,
     /// The document that declares the Environment: the only document whose
-    /// Services it may reference.
+    /// Services it may reference (plus the bound required Services, for the
+    /// Job Template's).
     document: Document,
+    /// The Step whose `stepEnvironments` this is, if any: its Task Session
+    /// sees the inline Services whose scope includes the Step.
+    step: Option<String>,
     /// That document's extension profile when it is not the Job Template's
     /// (see `RunContext::enter_environment`), kept for re-entry.
     profile: Option<ModelProfile>,
@@ -119,9 +128,9 @@ enum TaskRun {
     /// The Task ran to an exit; the duration is in seconds.
     Completed(f64),
     /// A Service with `completedTasks: RERUN` failed: the Task was canceled
-    /// (not a Task failure) and the completed Tasks of the scope return to
-    /// the queue.
-    Rerun(RerunScope),
+    /// (not a Task failure) and the completed Tasks of every Step in the
+    /// scope return to the queue.
+    Rerun(ServiceScope),
     /// The run is stopping (a Service failed, or an interruption); no Task
     /// ran.
     Aborted,
@@ -137,7 +146,8 @@ struct RunContext {
     services: ServiceManager,
     failed_services: Vec<ServiceFailure>,
     /// `entered_envs.len()` before the current Step's Environments were
-    /// entered; the level a Step-Service endpoint change refreshes down to.
+    /// entered; the level a Step-scoped Service's endpoint change refreshes
+    /// down to.
     step_env_baseline: usize,
     /// `Param.*` / `RawParam.*` for the whole submission, the base of an
     /// Environment's symbol table when it has no `resolved_symtab` of its
@@ -178,20 +188,22 @@ impl RunContext {
 
     /// The symbol table a Task Session action resolves against: `base` (or
     /// `fallback`, or the submission's `Param.*` table) with the
-    /// `Service.<name>.<port>.port` / `.connectAddress` of every READY Job
-    /// Service and Step Service **declared by `document`** layered on (RFC
-    /// 0009 "The `Service.*` scope" items 3–4; Template Schemas §1.2.2
-    /// item 2 — a Task and the Job Template's Environments see the Job
-    /// Template's Services only, an attached Environment its own
-    /// document's). Without Services in scope, `base` unchanged — the
-    /// pre-RFC-0009 behavior.
+    /// `Service.<name>.<port>.port` / `.connectAddress` of every READY
+    /// Service in scope layered on (RFC 0009 "The `Service.*` scope";
+    /// Template Schemas §1.2.2 items 2–3): for the Job Template's entities
+    /// (`Document::JobTemplate`) the inline Services whose scope includes
+    /// `step` (every READY one for a Job Environment, `step` `None`) and the
+    /// attached Services bound to its `requiresServices`; for an attached
+    /// Environment, its own document's Services. Without Services in scope,
+    /// `base` unchanged — the pre-RFC-0009 behavior.
     fn task_symtab(
         &self,
         base: Option<&SerializedSymbolTable>,
         fallback: Option<&SerializedSymbolTable>,
         document: &Document,
+        step: Option<&str>,
     ) -> Result<EnvSymtab, RunError> {
-        let in_scope = self.services.task_scope_endpoints(document);
+        let in_scope = self.services.task_scope_endpoints(document, step);
         if in_scope.is_empty() {
             return Ok(base.cloned());
         }
@@ -216,19 +228,22 @@ impl RunContext {
     }
 
     /// Enter `env`, declared by `document`, in the Task Session unless its
-    /// `runScope` excludes `TASK` (RFC 0009 `<Environment>`), layering the
-    /// `Service.*` symbols of that document's READY Services onto `symtab`
-    /// (or the Environment's own `resolved_symtab`). `profile` is that
-    /// document's extension profile: `Some` for an attached Environment
-    /// Template, whose strings are then evaluated under its own extensions
-    /// rather than the Job Template's (the Task Session's profile); `None`
-    /// for the Job Template's own Environments.
+    /// effective `runScope` excludes `TASK` (RFC 0009 `<Environment>`),
+    /// layering the `Service.*` symbols in scope (see
+    /// [`task_symtab`](Self::task_symtab); `step` names the Step for a Step
+    /// Environment) onto `symtab` (or the Environment's own
+    /// `resolved_symtab`). `profile` is that document's extension profile:
+    /// `Some` for an attached Environment Template, whose strings are then
+    /// evaluated under its own extensions rather than the Job Template's
+    /// (the Task Session's profile); `None` for the Job Template's own
+    /// Environments.
     async fn enter_environment(
         &mut self,
         env: &Environment,
         symtab: EnvSymtab,
         document: Document,
         profile: Option<&ModelProfile>,
+        step: Option<&str>,
     ) {
         if !env.runs_in(RunScope::Task) {
             println!(
@@ -238,15 +253,19 @@ impl RunContext {
             );
             return;
         }
-        let resolved =
-            match self.task_symtab(symtab.as_ref(), env.resolved_symtab.as_ref(), &document) {
-                Ok(resolved) => resolved,
-                Err(e) => {
-                    eprintln!("ERROR: Environment setup failed: {e}");
-                    self.session_failed = true;
-                    return;
-                }
-            };
+        let resolved = match self.task_symtab(
+            symtab.as_ref(),
+            env.resolved_symtab.as_ref(),
+            &document,
+            step,
+        ) {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                eprintln!("ERROR: Environment setup failed: {e}");
+                self.session_failed = true;
+                return;
+            }
+        };
         self.print_action_banner(&format!("Entering Environment: {}", env.name));
         match self
             .session
@@ -257,6 +276,7 @@ impl RunContext {
                 identifier,
                 env: env.clone(),
                 document,
+                step: step.map(str::to_string),
                 profile: profile.cloned(),
                 symtab,
                 resolved,
@@ -279,6 +299,7 @@ impl RunContext {
                             identifier: identifier.clone(),
                             env: env.clone(),
                             document,
+                            step: step.map(str::to_string),
                             profile: profile.cloned(),
                             symtab,
                             resolved,
@@ -320,33 +341,29 @@ impl RunContext {
             self.timestamp(),
             self.entered_envs.len() - baseline
         );
-        let to_reenter: Vec<(Environment, EnvSymtab, Document, Option<ModelProfile>)> = self
-            .entered_envs[baseline..]
-            .iter()
-            .map(|e| {
-                (
-                    e.env.clone(),
-                    e.symtab.clone(),
-                    e.document.clone(),
-                    e.profile.clone(),
-                )
-            })
-            .collect();
+        let to_reenter: Vec<EnteredEnvironment> = self.entered_envs[baseline..].to_vec();
         self.exit_environments_down_to(baseline).await;
-        for (env, symtab, document, profile) in to_reenter {
+        for e in to_reenter {
             if self.is_stopping() {
                 break;
             }
-            self.enter_environment(&env, symtab, document, profile.as_ref())
-                .await;
+            self.enter_environment(
+                &e.env,
+                e.symtab,
+                e.document,
+                e.profile.as_ref(),
+                e.step.as_deref(),
+            )
+            .await;
         }
     }
 
     /// RFC 0009 ordering constraint 3, the readiness gate: start every
-    /// registered Service that is not yet READY and wait for it. Records a
+    /// active Service that is not yet READY and wait for it. Records a
     /// FAILED Service as a failed run and refreshes the Task Session's
-    /// Environments when a Service's endpoints changed.
-    async fn gate_services(&mut self) -> Result<Option<RerunScope>, RunError> {
+    /// Environments when a Service's endpoints changed. Returns the Steps
+    /// whose completed Tasks a `RERUN` relaunch returned to the queue.
+    async fn gate_services(&mut self) -> Result<Option<ServiceScope>, RunError> {
         if !self.services.any_registered() {
             return Ok(None);
         }
@@ -355,7 +372,7 @@ impl RunContext {
             self.record_service_failure(failure);
             return Ok(None);
         }
-        if outcome.job_endpoints_changed {
+        if outcome.job_wide_endpoints_changed {
             self.refresh_environments_from(0).await;
         } else if outcome.step_endpoints_changed {
             let baseline = self.step_env_baseline;
@@ -408,10 +425,14 @@ impl RunContext {
         if self.is_stopping() {
             return Ok(TaskRun::Aborted);
         }
-        // A Task belongs to the Job Template: it sees that document's
-        // Services only, never an external Service's endpoint.
-        let symtab =
-            self.task_symtab(step.resolved_symtab.as_ref(), None, &Document::JobTemplate)?;
+        // A Task belongs to the Job Template: it sees the inline Services
+        // whose scope includes its Step and the bound required Services.
+        let symtab = self.task_symtab(
+            step.resolved_symtab.as_ref(),
+            None,
+            &Document::JobTemplate,
+            Some(&step.name),
+        )?;
         self.print_banner("Running Task");
         if !param_lines.is_empty() {
             println!("{}\tParameter values:", self.timestamp());
@@ -421,7 +442,7 @@ impl RunContext {
         }
         let cancel = self.session.cancel_handle();
         let task_start = Instant::now();
-        let mut rerun: Option<RerunScope> = None;
+        let mut rerun: Option<ServiceScope> = None;
         let result = {
             let Self {
                 session, services, ..
@@ -448,7 +469,7 @@ impl RunContext {
                         step.name
                     );
                     cancel.cancel(None, false);
-                    rerun = rerun.max(Some(scope));
+                    rerun = Some(merge_scopes(rerun.take(), &scope));
                     break task.await;
                 }
             }
@@ -563,6 +584,36 @@ pub async fn execute(args: RunArgs) -> Result<(), RunError> {
     execution::execute(args).await
 }
 
+/// The Job with each Service's `dependencies` folded into its Steps' (RFC
+/// 0009 §9 item 4): a Step in the scope of a Service that depends on Step
+/// `D` cannot run before `D` has completed, since its Tasks wait for the
+/// Service and the Service waits for `D`. The result orders the run so the
+/// implied edges hold; the Job's own `steps` are not changed otherwise. A
+/// Service whose scope is every Step has no `dependencies` (validation
+/// rejects it), so nothing is folded for it.
+fn with_implied_step_dependencies(job: &Job) -> Job {
+    let mut ordered = job.clone();
+    for service in job.services.iter().flatten() {
+        let Some(deps) = &service.dependencies else {
+            continue;
+        };
+        let Some(scope) = service.scope.step_names() else {
+            continue;
+        };
+        for step in ordered.steps.iter_mut().filter(|s| scope.contains(&s.name)) {
+            let existing = step.dependencies.get_or_insert_with(Vec::new);
+            for dep in deps {
+                if dep.depends_on != step.name
+                    && !existing.iter().any(|d| d.depends_on == dep.depends_on)
+                {
+                    existing.push(dep.clone());
+                }
+            }
+        }
+    }
+    ordered
+}
+
 /// Resolve step dependencies transitively, returning indices in execution order.
 fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) -> Vec<usize> {
     let step_name_to_idx: HashMap<String, usize> = job
@@ -635,6 +686,7 @@ mod tests {
                 retain_working_dir: false,
                 profile: openjd_model::ModelProfile::default(),
                 attached_profiles: Vec::new(),
+                requirement_bindings: Vec::new(),
                 cancel_token: CancellationToken::new(),
                 limits: Default::default(),
             }),

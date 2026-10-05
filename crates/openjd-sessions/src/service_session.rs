@@ -83,11 +83,10 @@ pub struct ServiceSessionConfig {
     pub session: SessionConfig,
     /// The Service whose actions this Session runs.
     pub service: Service,
-    /// The Environments of the Service's scope, in the order a Session for a
-    /// Task in that scope would enter them (a Job Service: the Job's
-    /// `jobEnvironments`; a Step Service: those followed by the Step's
-    /// `stepEnvironments`). Only those whose `runScope` includes `SERVICE`
-    /// are entered; the rest are skipped with a log line.
+    /// The Job's `jobEnvironments`, in the order a Task Session enters them
+    /// (never a Step's `stepEnvironments`: a Service belongs to no Step).
+    /// Only those whose effective `runScope` includes `SERVICE` are entered;
+    /// the rest are skipped with a log line.
     pub environments: Vec<Environment>,
     /// The document profile of each entry of
     /// [`environments`](Self::environments), index for index, for an
@@ -97,9 +96,9 @@ pub struct ServiceSessionConfig {
     /// [`Session::enter_environment_with_profile`]; `None`, or an index past
     /// the end of this list, enters it with the Session's own profile —
     /// [`session`](Self::session)`.profile`, which is the profile of the
-    /// Service's **own** document (the Job Template for a `jobServices` /
-    /// `stepServices` entry, the attached Environment Template for an
-    /// external Service) and also governs the Service's actions,
+    /// Service's **own** document (the Job Template for a `services` entry,
+    /// the attached Environment Template for an external Service) and also
+    /// governs the Service's actions,
     /// `variables`, `let` bindings, and embedded files. An empty list means
     /// every scope Environment shares the Service's document.
     pub environment_profiles: Vec<Option<openjd_model::ModelProfile>>,
@@ -797,12 +796,13 @@ impl ServiceSession {
         let environments = std::mem::take(&mut self.environments);
         for (i, env) in environments.iter().enumerate() {
             if !env.runs_in(RunScope::Service) {
-                session_log!(
-                    info,
+                crate::logging::log_session_note_tagged(
                     &sid,
-                    LogContent::PROCESS_CONTROL,
-                    "Skipping Environment '{}': its runScope does not include SERVICE",
-                    env.name
+                    self.session.log_tag(),
+                    &format!(
+                        "Skipping Environment '{}': its runScope does not include SERVICE",
+                        env.name
+                    ),
                 );
                 continue;
             }

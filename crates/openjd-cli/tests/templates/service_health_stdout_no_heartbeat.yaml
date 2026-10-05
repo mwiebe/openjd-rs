@@ -8,7 +8,7 @@
 specificationVersion: jobtemplate-2023-09
 extensions: [SERVICE, EXPR]
 name: HealthStdoutNoHeartbeat
-jobServices:
+services:
   - name: Store
     ports:
       - name: main

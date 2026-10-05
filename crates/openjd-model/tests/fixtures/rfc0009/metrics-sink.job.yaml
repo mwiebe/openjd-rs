@@ -1,0 +1,52 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "Frame Render With Metrics Sink"
+
+services:
+  - name: Metrics
+    description: "Collects frame timings over UDP; serves the aggregate over HTTP."
+    ports:
+      - name: ingest
+        protocol: UDP
+      - name: api
+    restartPolicy:
+      maxAttempts: 3
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: metrics-sink
+          args:
+            - "--udp-listen"
+            - "{{ join_host_port(Service.Metrics.ingest.bindAddress, Service.Metrics.ingest.port) }}"
+            - "--http-listen"
+            - "{{ join_host_port(Service.Metrics.api.bindAddress, Service.Metrics.api.port) }}"
+
+steps:
+  - name: RenderFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-100"
+    script:
+      actions:
+        onRun:
+          command: render-frame
+          args:
+            - "--frame"
+            - "{{ Task.Param.Frame }}"
+            - "--statsd-host"
+            - "{{ Service.Metrics.ingest.connectAddress }}"
+            - "--statsd-port"
+            - "{{ Service.Metrics.ingest.port }}"
+  - name: Report
+    dependencies:
+      - dependsOn: RenderFrames
+    script:
+      actions:
+        onRun:
+          command: curl
+          args:
+            - "-sf"
+            - "http://{{ join_host_port(Service.Metrics.api.connectAddress, Service.Metrics.api.port) }}/summary"

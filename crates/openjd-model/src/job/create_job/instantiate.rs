@@ -20,16 +20,19 @@ use openjd_expr::ExpressionError;
 use super::ranges;
 
 /// The job-wide inputs every instantiation step shares: the context's
-/// extensions and limits, the caller budgets, and the template's Job
-/// Services (whose `Service.*` symbols are in scope for every Step).
+/// extensions and limits, the caller budgets, and the template's Services
+/// and requirements (whose `Service.*` symbols are in scope for every Step).
 #[derive(Clone, Copy)]
 pub(super) struct InstantiateCtx<'a> {
     pub(super) has_expr: bool,
     pub(super) limits: &'a EffectiveLimits,
     pub(super) ctx: &'a crate::types::ValidationContext,
     pub(super) budgets: super::EvalBudgets,
-    /// The template's `jobServices`, in start order (empty when none).
-    pub(super) job_services: &'a [template::Service],
+    /// The document's `services`, in declaration order (empty when none).
+    pub(super) services: &'a [template::Service],
+    /// A Job Template's `requiresServices` (empty for an Environment
+    /// Template, or when none).
+    pub(super) requirements: &'a [template::ServiceRequirement],
 }
 
 /// Evaluate a `let` list in template scope (no PATH `Param.*`, no host
@@ -87,7 +90,8 @@ pub(super) fn instantiate_step(
         limits,
         ctx,
         budgets,
-        job_services,
+        services,
+        requirements,
     } = icx;
     let step_path = [
         PathElement::Field("steps".to_string()),
@@ -115,9 +119,9 @@ pub(super) fn instantiate_step(
     let script = script_template.as_ref().map(convert_step_script);
 
     // The Services whose `Service.*` endpoints this Step's Task Sessions
-    // may reference (RFC 0009): every Job Service and the Step's own.
-    let step_services_t: &[template::Service] = st.step_services.as_deref().unwrap_or(&[]);
-    let in_scope_services = || job_services.iter().chain(step_services_t.iter());
+    // may reference (RFC 0009): every inline Service (referencing one puts
+    // the Step in its scope) and every required Service's declared ports.
+    let in_scope_services = || services.iter();
 
     // Check symbol table for the step script's carried-forward
     // (session/task-scope) format strings: `step_symtab`'s concrete
@@ -136,6 +140,7 @@ pub(super) fn instantiate_step(
                 ctx,
                 budgets,
                 in_scope_services(),
+                requirements,
             )
         })
         .transpose()?;
@@ -191,6 +196,7 @@ pub(super) fn instantiate_step(
                 ctx,
                 budgets,
                 in_scope_services(),
+                requirements,
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
@@ -208,30 +214,6 @@ pub(super) fn instantiate_step(
         .step_environments
         .as_ref()
         .map(|envs| envs.iter().map(convert_environment).collect());
-
-    // RFC 0009 `stepServices`: instantiated in the Step's scope (Step.Name
-    // and the step-level `let` bindings are in scope), each seeing every
-    // Job Service and the Step Services before it.
-    let step_services = st
-        .step_services
-        .as_ref()
-        .map(|services| {
-            let list_path = path_field(&step_path, "stepServices");
-            services
-                .iter()
-                .enumerate()
-                .map(|(k, svc)| {
-                    instantiate_service(
-                        svc,
-                        &step_symtab,
-                        icx,
-                        &path_index(&list_path, k),
-                        job_services.iter().chain(services[..k].iter()),
-                    )
-                })
-                .collect::<Result<Vec<_>, ModelError>>()
-        })
-        .transpose()?;
 
     let dependencies = st.dependencies.as_ref().map(|deps| {
         deps.iter()
@@ -259,7 +241,6 @@ pub(super) fn instantiate_step(
         parameter_space,
         host_requirements,
         dependencies,
-        step_services,
         resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(
             &filtered_symtab,
         )),
@@ -269,15 +250,17 @@ pub(super) fn instantiate_step(
 // ── RFC 0009 Services ─────────────────────────────────────────────────
 
 /// Instantiate one `<Service>` (Template Schemas §9) at `path`
-/// (`jobServices[k]` or `steps[i] -> stepServices[k]`).
+/// (`services[k]` of the Job Template or of an attached Environment
+/// Template).
 ///
-/// `base` is the scope's job-creation symbol table — the job's for a Job
-/// Service; the Step's (with `Step.Name` and the step-level `let`
-/// bindings) for a Step Service. `in_scope` is every Service whose
-/// `Service.<name>.<port>.port` / `.connectAddress` the Service's
-/// host-resolved fields may reference: the Services earlier in its own list
-/// and, for a Step Service, every Job Service. The Service itself is seeded
-/// separately, with `bindAddress`.
+/// `base` is the job-creation symbol table (`Param.*`, `RawParam.*`,
+/// `Job.Name`). `in_scope` is every Service whose `Service.<name>.<port>.port`
+/// / `.connectAddress` the Service's host-resolved fields may reference: the
+/// other Services of its own document; the Service itself is seeded
+/// separately, with `bindAddress`, and the `requirements` of a Job Template
+/// are seeded as well. `scope` and `references` are the §9.1 results for
+/// the Service (`AllSteps` and the document-local references, for an
+/// external Service).
 ///
 /// Job-creation-stage fields resolve here: `<Service>.let` (template scope,
 /// like `<StepTemplate>.let`), the numeric `@fmtstring` fields with their
@@ -285,18 +268,22 @@ pub(super) fn instantiate_step(
 /// are `@fmtstring[host]`: they are carried forward unresolved and re-checked
 /// against a check table where `Param.*` have real values, like an
 /// Environment's.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn instantiate_service<'a>(
     svc: &template::Service,
     base: &SymbolTable,
     icx: InstantiateCtx<'_>,
     path: &[PathElement],
     in_scope: impl Iterator<Item = &'a template::Service>,
+    scope: job::ServiceScope,
+    references: Vec<String>,
 ) -> Result<job::Service, ModelError> {
     let InstantiateCtx {
         has_expr,
         limits,
         ctx,
         budgets,
+        requirements,
         ..
     } = icx;
     let mut service_symtab = base.clone();
@@ -469,8 +456,15 @@ pub(super) fn instantiate_service<'a>(
     // Re-check the carried-forward (host-resolved) fields with the job
     // parameters bound: `variables`, every action, embedded-file `data`,
     // after evaluating `<ServiceScript>.let` into the check table.
-    let check_symtab =
-        build_service_check_symtab(svc, &service_symtab, has_expr, ctx, budgets, in_scope)?;
+    let check_symtab = build_service_check_symtab(
+        svc,
+        &service_symtab,
+        has_expr,
+        ctx,
+        budgets,
+        in_scope,
+        requirements,
+    )?;
     let mut check_errors = ValidationErrors::default();
     crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
         svc,
@@ -488,6 +482,15 @@ pub(super) fn instantiate_service<'a>(
         // A Service of the Job Template until `apply_environment_templates`
         // stamps an external Service with its attachment.
         document: job::Document::JobTemplate,
+        scope,
+        references,
+        dependencies: svc.dependencies.as_ref().map(|deps| {
+            deps.iter()
+                .map(|d| job::StepDependency {
+                    depends_on: d.depends_on.clone(),
+                })
+                .collect()
+        }),
         host_requirements,
         ports,
         health_check,
@@ -637,11 +640,13 @@ fn build_service_check_symtab<'a>(
     ctx: &crate::types::ValidationContext,
     budgets: super::EvalBudgets,
     in_scope: impl Iterator<Item = &'a template::Service>,
+    requirements: &[template::ServiceRequirement],
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
     crate::job::service_symbols::add_unresolved_service_file_symbols(&mut symtab, svc)?;
     crate::job::service_symbols::add_unresolved_service_symbols(&mut symtab, in_scope, Some(svc))?;
+    crate::job::service_symbols::add_unresolved_requirement_symbols(&mut symtab, requirements)?;
     if has_expr {
         if let Some(bindings) = &svc.script.let_bindings {
             let host_profile = ctx
@@ -784,7 +789,9 @@ fn evaluate_check_let_bindings(
 ///
 /// `in_scope_services` are the Services whose `Service.<name>.<port>.port`
 /// / `.connectAddress` a Task of this Step may reference (RFC 0009): every
-/// Job Service and the Step's own `stepServices`.
+/// inline Service of the Job Template; `requirements` are its
+/// `requiresServices`, seeded the same way for their declared ports.
+#[allow(clippy::too_many_arguments)]
 fn build_task_check_symtab<'a>(
     st: &template::StepTemplate,
     script: &template::StepScript,
@@ -793,9 +800,14 @@ fn build_task_check_symtab<'a>(
     ctx: &crate::types::ValidationContext,
     budgets: super::EvalBudgets,
     in_scope_services: impl Iterator<Item = &'a template::Service>,
+    requirements: &[template::ServiceRequirement],
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
+    crate::job::service_symbols::add_unresolved_requirement_symbols(
+        &mut check_symtab,
+        requirements,
+    )?;
     crate::job::service_symbols::add_unresolved_service_symbols(
         &mut check_symtab,
         in_scope_services,
@@ -867,11 +879,11 @@ fn build_task_check_symtab<'a>(
 /// here comes from the real parameter values and would
 /// deterministically recur in every session entering the environment.
 ///
-/// `in_scope_services` are the Services in scope where the environment is
-/// defined (every Job Service, plus the Step's for a step environment);
-/// their `Service.<name>.<port>.port` / `.connectAddress` are seeded only
-/// when the environment's `runScope` excludes `SERVICE` (Template Schemas
-/// §4 item 3.2, RFC 0009).
+/// `in_scope_services` are the Services of the environment's document and
+/// `requirements` the Job Template's `requiresServices` (none for an
+/// attached Environment); their `Service.<name>.<port>.port` /
+/// `.connectAddress` are seeded only when the environment's effective
+/// `runScope` excludes `SERVICE` (Template Schemas §4 item 3.2, RFC 0009).
 pub(super) fn build_env_check_symtab<'a>(
     env: &template::Environment,
     base: &SymbolTable,
@@ -879,6 +891,7 @@ pub(super) fn build_env_check_symtab<'a>(
     ctx: &crate::types::ValidationContext,
     budgets: super::EvalBudgets,
     in_scope_services: impl Iterator<Item = &'a template::Service>,
+    requirements: &[template::ServiceRequirement],
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
@@ -888,6 +901,7 @@ pub(super) fn build_env_check_symtab<'a>(
             in_scope_services,
             None,
         )?;
+        crate::job::service_symbols::add_unresolved_requirement_symbols(&mut symtab, requirements)?;
     }
     if let Some(script) = &env.script {
         if let Some(files) = &script.embedded_files {
@@ -975,13 +989,20 @@ pub fn convert_environment_with_symtab(
         description: env.description.as_ref().map(|d| d.0.clone()),
         // Validation (pass 11) has rejected unrecognized names, so every
         // entry parses; one that does not (a directly-constructed template
-        // bypassing decode) is dropped rather than failing conversion.
-        run_scope: env.run_scope.as_ref().map(|names| {
-            names
-                .iter()
-                .filter_map(|n| n.parse::<template::RunScope>().ok())
-                .collect()
-        }),
+        // bypassing decode) is dropped rather than failing conversion. An
+        // absent `runScope` is materialized as its effective default (§4
+        // item 3): `[TASK]` when the Environment references `Service.*`,
+        // else left absent (every kind of Session).
+        run_scope: match &env.run_scope {
+            Some(names) => Some(
+                names
+                    .iter()
+                    .filter_map(|n| n.parse::<template::RunScope>().ok())
+                    .collect(),
+            ),
+            None if env.default_run_scope_is_task_only() => Some(vec![template::RunScope::Task]),
+            None => None,
+        },
         script: env.script.as_ref().map(|s| job::EnvironmentScript {
             let_bindings: s.let_bindings.clone(),
             actions: job::EnvironmentActions {
@@ -1021,8 +1042,7 @@ pub fn convert_environment_with_symtab(
 
 /// Resolve a `hostRequirements` object (a Step's, or a Service's under RFC
 /// 0009) against `symtab`. `owner_path` is the path of the object that
-/// declares it (`steps[i]`, `jobServices[k]`, `steps[i] -> stepServices[k]`)
-/// and prefixes every error path.
+/// declares it (`steps[i]`, `services[k]`) and prefixes every error path.
 fn resolve_host_requirements(
     hr: &template::HostRequirements,
     symtab: &SymbolTable,

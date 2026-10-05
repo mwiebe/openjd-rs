@@ -4,17 +4,22 @@
 
 //! Service types per spec §9 (`SERVICE` extension, RFC 0009).
 //!
-//! A Service is a long-lived process with named TCP ports that a scheduler
-//! starts before any Task in its scope is scheduled and keeps running for the
-//! lifetime of its scope (the whole Job for `jobServices`, one Step for
-//! `stepServices`). The types here are the unresolved template shapes; the
-//! `Service.*` format-string scope and job creation of Services are
-//! implemented separately.
+//! A Service is a long-lived process with named ports that a scheduler
+//! starts before any Task of a Step in its *scope* is scheduled and keeps
+//! running until no such Task remains. A Job Template declares its Services
+//! in one `services` list; each Service's scope — the set of Steps whose
+//! Tasks depend on it — is computed from the template's `Service.*`
+//! references (§9.1, [`crate::template::service_scope`]). A Job Template
+//! that reads an external Service's endpoint declares a
+//! [`ServiceRequirement`] in `requiresServices` (§9.8). The types here are
+//! the unresolved template shapes; the `Service.*` format-string scope and
+//! job creation of Services are implemented separately.
 
 use super::actions::Action;
 use super::constrained_strings::Description;
 use super::environment::EmbeddedFile;
 use super::host_requirements::HostRequirements;
+use super::step::StepDependency;
 use crate::format_string::FormatString;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -22,35 +27,41 @@ use std::collections::HashMap;
 /// §9 `<Service>` — a long-lived process with named ports, available with
 /// the `SERVICE` extension.
 ///
-/// `name` is a `<ServiceName>` (§9.1): an identifier that is not `File`.
+/// `name` is a `<ServiceName>` (§9.2): an identifier that is not `File`.
 /// It is held as a plain `String` so that the identifier constraints are
 /// reported with a field path by template validation rather than as a
 /// serde error.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Service {
-    /// §9.1 `<ServiceName>`: the first component of `Service.<name>.*`
-    /// references. Unique within its list; a Step Service must not share a
-    /// name with a Job Service.
+    /// §9.2 `<ServiceName>`: the first component of `Service.<name>.*`
+    /// references. Unique within its list and, in a Job Template, distinct
+    /// from every `requiresServices` name.
     pub name: String,
     pub description: Option<Description>,
     /// Expression bindings evaluated once at job creation (EXPR). Not in
     /// scope: `Session.*`, `Service.*`.
     #[serde(rename = "let")]
     pub let_bindings: Option<Vec<String>>,
+    /// §9 item 4 — Steps that must complete before the Service is started,
+    /// with the shape of a Step's `dependencies`. At least one element when
+    /// given; each names a Step of the same Job Template that is not in the
+    /// Service's own scope; not permitted on an Environment Template's
+    /// Services.
+    pub dependencies: Option<Vec<StepDependency>>,
     /// Requirements the service host must satisfy. Independent of the
     /// `hostRequirements` of any Step whose Tasks use the Service.
     pub host_requirements: Option<HostRequirements>,
-    /// §9.2 The named ports the Service exposes: 1–10 entries with unique
+    /// §9.3 The named ports the Service exposes: 1–10 entries with unique
     /// names, each TCP (the default) or UDP. No two ports of the same
     /// protocol may have the same `port` number (§9 item 5.4).
     pub ports: Vec<ServicePort>,
-    /// §9.3 How readiness and, after READY, health are determined. `None`
+    /// §9.4 How readiness and, after READY, health are determined. `None`
     /// means `{ type: TCP_CONNECT }` on every declared TCP port; a Service
     /// none of whose ports is TCP must declare a `STDOUT` or `COMMAND`
     /// check (§9 item 6). See [`health_check`](Self::health_check).
     pub health_check: Option<ServiceHealthCheck>,
-    /// §9.4 What happens when `onRun` exits before the scope ends. `None`
+    /// §9.5 What happens when `onRun` exits before the scope ends. `None`
     /// means `{ maxAttempts: 0, completedTasks: RERUN }`; see
     /// [`restart_policy`](Self::restart_policy).
     pub restart_policy: Option<ServiceRestartPolicy>,
@@ -58,7 +69,7 @@ pub struct Service {
     /// (same schema as `<Environment>.variables`). Not propagated to the
     /// entities in the Service's scope.
     pub variables: Option<HashMap<String, FormatString>>,
-    /// §9.5 The actions the Service runs on its host.
+    /// §9.6 The actions the Service runs on its host.
     pub script: ServiceScript,
 }
 
@@ -82,7 +93,7 @@ impl Service {
 
     /// The names of the declared ports whose `protocol` is `TCP`, in
     /// declaration order — the ports a `TCP_CONNECT` health check
-    /// probes when it names none (§9 item 6, §9.3 item 2).
+    /// probes when it names none (§9 item 6, §9.4 item 2).
     pub fn tcp_port_names(&self) -> impl Iterator<Item = &str> {
         self.ports
             .iter()
@@ -91,7 +102,7 @@ impl Service {
     }
 }
 
-/// §9.2 `<ServicePort>` — one named port of a Service.
+/// §9.3 `<ServicePort>` — one named port of a Service.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServicePort {
@@ -105,14 +116,14 @@ pub struct ServicePort {
     /// is accepted and held as its decimal text; a format string is
     /// resolved at job creation.
     pub port: Option<FormatString>,
-    /// §9.2 item 3: the transport protocol the service process binds the
+    /// §9.3 item 3: the transport protocol the service process binds the
     /// port with and the scheduler publishes or forwards it as. Not a
     /// format string. Default `TCP`.
     #[serde(default)]
     pub protocol: ServicePortProtocol,
 }
 
-/// §9.2 item 3 `<ServicePort>.protocol` — the transport protocol of one
+/// §9.3 item 3 `<ServicePort>.protocol` — the transport protocol of one
 /// port. TCP and UDP port numbers are separate spaces: a number is
 /// requested or allocated in the space of this protocol, and two ports may
 /// share a number when their protocols differ.
@@ -153,7 +164,50 @@ impl std::fmt::Display for ServicePortProtocol {
     }
 }
 
-/// §9.3 `<ServiceHealthCheck>` — discriminated union on `type`.
+/// §9.8 `<ServiceRequirement>` — one entry of a Job Template's
+/// `requiresServices`: the Job Template reads the endpoint of an external
+/// Service named `name`, declared by an attached Environment Template, on
+/// the ports listed.
+///
+/// A requirement puts `Service.<name>.<port>.port` and
+/// `Service.<name>.<port>.connectAddress` in scope throughout the Job
+/// Template for each declared port (never `bindAddress`), and at submission
+/// the scheduler matches it to exactly one attached Service with that
+/// `name` declaring every listed port with the same `protocol`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceRequirement {
+    /// §9.8 item 1: the `name` of the external Service required — a
+    /// `<ServiceName>` that no inline Service of the same Job Template
+    /// bears.
+    pub name: String,
+    /// §9.8 item 2: the ports of the Service the Job Template uses. 1–10
+    /// entries with unique names.
+    pub ports: Vec<ServiceRequirementPort>,
+}
+
+impl ServiceRequirement {
+    /// The names of the declared ports, in declaration order.
+    pub fn port_names(&self) -> impl Iterator<Item = &str> {
+        self.ports.iter().map(|p| p.name.as_str())
+    }
+}
+
+/// §9.8.1 `<ServiceRequirementPort>` — one port a requirement declares.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceRequirementPort {
+    /// The `name` of a port the external Service declares; the second
+    /// component of `Service.<service>.<port>.*` references. An identifier
+    /// other than `File`.
+    pub name: String,
+    /// The protocol the Job Template expects the port to carry; the matched
+    /// Service's port must declare the same. Default `TCP`.
+    #[serde(default)]
+    pub protocol: ServicePortProtocol,
+}
+
+/// §9.4 `<ServiceHealthCheck>` — discriminated union on `type`.
 ///
 /// One probe mechanism applied in two phases. Before the instance is READY
 /// the probe decides readiness: the first probe runs as soon as `onRun` is
@@ -206,7 +260,7 @@ pub enum ServiceHealthCheck {
     /// stdout. The first makes the instance READY; after READY the line is
     /// a heartbeat only when `healthIntervalSeconds` is given (no default),
     /// each interval without one being a failed probe. `failureThreshold`
-    /// is permitted only together with `healthIntervalSeconds` (§9.3 item 6).
+    /// is permitted only together with `healthIntervalSeconds` (§9.4 item 6).
     #[serde(rename = "STDOUT")]
     Stdout {
         /// Default [`DEFAULT_READY_TIMEOUT_SECONDS`](Self::DEFAULT_READY_TIMEOUT_SECONDS).
@@ -229,18 +283,18 @@ pub const SERVICE_HEALTH_CHECK_NUMERIC_FIELDS: [&str; 4] = [
 ];
 
 impl ServiceHealthCheck {
-    /// §9.3 item 3 default for `readinessIntervalSeconds` on a `TCP_CONNECT`
+    /// §9.4 item 3 default for `readinessIntervalSeconds` on a `TCP_CONNECT`
     /// check, in seconds.
     pub const DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS: u64 = 1;
-    /// §9.3 item 3 default for `readinessIntervalSeconds` on a `COMMAND`
+    /// §9.4 item 3 default for `readinessIntervalSeconds` on a `COMMAND`
     /// check, in seconds.
     pub const DEFAULT_COMMAND_READINESS_INTERVAL_SECONDS: u64 = 5;
-    /// §9.3 item 4 default for `readinessTimeoutSeconds`, in seconds.
+    /// §9.4 item 4 default for `readinessTimeoutSeconds`, in seconds.
     pub const DEFAULT_READY_TIMEOUT_SECONDS: u64 = 300;
-    /// §9.3 item 5 default for `healthIntervalSeconds` on a `TCP_CONNECT` or
+    /// §9.4 item 5 default for `healthIntervalSeconds` on a `TCP_CONNECT` or
     /// `COMMAND` check, in seconds. `STDOUT` has no default.
     pub const DEFAULT_HEALTH_INTERVAL_SECONDS: u64 = 30;
-    /// §9.3 item 6 default for `failureThreshold`.
+    /// §9.4 item 6 default for `failureThreshold`.
     pub const DEFAULT_FAILURE_THRESHOLD: u64 = 3;
 
     /// The schema value of the `type` discriminator.
@@ -360,7 +414,7 @@ impl Default for ServiceHealthCheck {
     }
 }
 
-/// §9.4 `<ServiceRestartPolicy>`.
+/// §9.5 `<ServiceRestartPolicy>`.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceRestartPolicy {
@@ -377,7 +431,7 @@ pub struct ServiceRestartPolicy {
 }
 
 impl ServiceRestartPolicy {
-    /// §9.4 default for `maxAttempts`: launched exactly once, never
+    /// §9.5 default for `maxAttempts`: launched exactly once, never
     /// relaunched.
     pub const DEFAULT_MAX_ATTEMPTS: i64 = 0;
 
@@ -388,7 +442,7 @@ impl ServiceRestartPolicy {
     }
 }
 
-/// §9.4 `completedTasks` — what a Service restart does to the Tasks in its
+/// §9.5 `completedTasks` — what a Service restart does to the Tasks in its
 /// scope that completed against, or were running against, the previous
 /// instance.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
@@ -413,7 +467,7 @@ impl CompletedTasksPolicy {
     }
 }
 
-/// §9.5 `<ServiceScript>`.
+/// §9.6 `<ServiceScript>`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceScript {
@@ -427,7 +481,7 @@ pub struct ServiceScript {
     pub embedded_files: Option<Vec<EmbeddedFile>>,
 }
 
-/// §9.6 `<ServiceActions>`.
+/// §9.7 `<ServiceActions>`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceActions {
@@ -718,7 +772,7 @@ script:
             err.to_string().contains("unknown field `ports`"),
             "got: {err}"
         );
-        // §9.3 item 3: `readinessIntervalSeconds` does not apply to STDOUT.
+        // §9.4 item 3: `readinessIntervalSeconds` does not apply to STDOUT.
         let err = serde_saphyr::from_str::<ServiceHealthCheck>(
             "type: STDOUT\nreadinessIntervalSeconds: 1",
         )

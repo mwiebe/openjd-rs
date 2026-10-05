@@ -217,23 +217,24 @@ budgets template validation and the session runtime apply.
 8. Attach resolved symbol table to each step
 
 `instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
-extension flags, limits, budgets, and the template's `jobServices` slice,
-which every Step's scope needs) and the template-scope `let` evaluator
-`evaluate_template_let_bindings`, which `<StepTemplate>.let` and
-`<Service>.let` both use. `resolve_host_requirements` takes the owner's
-path (`steps[i]`, `jobServices[k]`, `steps[i] -> stepServices[k]`) so the
-same code — and the same messages — serve a Step's and a Service's
-`hostRequirements`; every path it reports is built from that prefix.
+extension flags, limits, budgets, and the template's `services` and
+`requiresServices` slices, which every Step's scope needs) and the
+template-scope `let` evaluator `evaluate_template_let_bindings`, which
+`<StepTemplate>.let` and `<Service>.let` both use. `resolve_host_requirements`
+takes the owner's path (`steps[i]`, `services[k]`) so the same code — and the
+same messages — serve a Step's and a Service's `hostRequirements`; every path
+it reports is built from that prefix.
 
 #### Services (RFC 0009, Template Schemas §9)
 
-`jobServices` are instantiated in job scope before the steps (every Step's
-Task Sessions may reference them), each seeing the Services before it in the
-list; `stepServices` are instantiated inside `instantiate_step` in the
-Step's scope (`Step.Name` and the step-level `let` values are available),
-each seeing every Job Service and the Step Services before it. Per Service
-(`instantiate_service`, path `jobServices[k]` or
-`steps[i] -> stepServices[k]`):
+`services` are instantiated in job scope before the steps (every Step's Task
+Sessions may reference them), each seeing every other Service of the
+document (the reference graph's acyclicity is pass 11's concern; list order
+carries no meaning). First `compute_service_scopes` (see
+[template-types.md](template-types.md), "Service scope") computes every
+Service's scope and references from the template; a cycle cannot reach here
+(pass 11 rejected it) and is reported as a `ModelValidation` error if it
+does. Per Service (`instantiate_service`, path `services[k]`):
 
 1. **`<Service>.let`** — evaluated with `evaluate_template_let_bindings`
    into a clone of the scope's symbol table (template library, no PATH
@@ -245,7 +246,7 @@ each seeing every Job Service and the Step Services before it. Per Service
    with every check decode and pass 8 could not finish on a non-literal
    value (name pattern and uniqueness, bounds, attribute values) re-applied
    on the resolved values, reported at the Service's path.
-3. **Numeric `@fmtstring` fields** (§9.2 note) — `resolve_service_int`
+3. **Numeric `@fmtstring` fields** (§9.3 note) — `resolve_service_int`
    resolves `port`, the four `healthCheck` numeric fields
    (`readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`,
    `failureThreshold`), and `restartPolicy.maxAttempts` with target type
@@ -263,12 +264,12 @@ each seeing every Job Service and the Step Services before it. Per Service
    whose message carries the field path. The §9 defaults also fill the
    `healthCheck` / `restartPolicy` objects when the template omits
    them, and a `TCP_CONNECT` check without `ports` is expanded to every
-   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 6 —
+   declared **TCP** port (`template::Service::tcp_port_names`; §9 item 7 —
    validation has rejected a Service with none), so `job::Service` never
    needs the template defaults. Each `job::ServicePort` carries its
-   `protocol` (§9.2 item 3) unchanged from the template. Once every
-   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 5.4
-   / §9.7 item 8 to the resolved numbers: two ports with the same
+   `protocol` (§9.3 item 3) unchanged from the template. Once every
+   `port` is resolved, `check_duplicate_port_numbers` applies §9 item 6.4
+   / §9.9 item 8 to the resolved numbers: two ports with the same
    `protocol` and the same number fail at `ports[i] -> port` of the later
    one with pass 11's wording (`<TCP|UDP> port <n> is also used by port
    '<earlier>'; two ports with the same protocol must not have the same
@@ -278,25 +279,33 @@ each seeing every Job Service and the Step Services before it. Per Service
 4. **Carried-forward re-checks** — `build_service_check_symtab` extends the
    Service's table with the `Unresolved` placeholders the Service Session
    binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
-   files, its own `Service.<name>.<port>.*` including `bindAddress`, and
-   the `port` / `connectAddress` of every in-scope Service), evaluates the
+   files, its own `Service.<name>.<port>.*` including `bindAddress`, the
+   `port` / `connectAddress` of every other Service of the document and of
+   every `requiresServices` entry's declared ports), evaluates the
    `<ServiceScript>.let` bindings into it (`script let binding '<name>':
    ...` on failure), and `check_carried_forward_service` re-runs the pass
    8 constraints on `variables` (§4.4.2 length), every action's
    `command` / `args`, and embedded-file `data` — the Service counterpart
    of `check_carried_forward_environment`.
 5. **Conversion** — `variables` and `script` are carried as
-   `FormatString`s; `resolved_symtab` is `filter_symtab_for_service`
-   (the symbols those fields and `<ServiceScript>.let` reference, with the
+   `FormatString`s; `dependencies` is copied; `scope` and `references` are
+   the computed values (`AllSteps` / the document-local references for an
+   external Service); `resolved_symtab` is `filter_symtab_for_service` (the
+   symbols those fields and `<ServiceScript>.let` reference, with the
    `RawParam.*` fallback).
 
+`requiresServices` is converted field for field into `Job::requires_services`.
+
 The check symbol tables of the entities *around* a Service also change:
-`build_task_check_symtab` seeds the `port` / `connectAddress` of every Job
-Service and the Step's own Services, and `build_env_check_symtab` seeds the
-environment's in-scope Services (Job Services for a job environment, plus
-the Step's for a step environment) only when the environment's `runScope`
-excludes `SERVICE` — the same scope rules pass 8 applied, so a reference
-that validated resolves here and at run time.
+`build_task_check_symtab` seeds the `port` / `connectAddress` of every inline
+Service and of every requirement's declared ports, and
+`build_env_check_symtab` seeds the same for the Job Template's Environments
+(the document's own Services alone for an attached Environment) only when the
+environment's *effective* `runScope` excludes `SERVICE` — the same scope rules
+pass 8 applied, so a reference that validated resolves here and at run time.
+Conversion also materializes an Environment's default `runScope`: one without
+the field that references `Service.*` is converted with `run_scope:
+Some([Task])` (§4 item 3), so a runtime never re-derives the default.
 
 Environment conversion carries `runScope` (parsed to `Vec<RunScope>`) and
 the four `onWrapService*` hooks into `job::Environment`.
@@ -440,20 +449,24 @@ same submission (every template's `parameterDefinitions` merged per
 §1.2.1); and the caller's limits, applied to every template as they were
 to the Job Template.
 
-Output: `AppliedEnvironmentTemplates { external_services, environments,
-environment_documents }` — the external Services instantiated in start
-order (attachment order, then each template's `services` order), each
-stamped with its attachment as `job::Service::document`; the attached
+Output: `AppliedEnvironmentTemplates { external_services, requirement_bindings,
+environments, environment_documents }` — the external Services instantiated
+in attachment order (then each template's `services` order), each stamped
+with its attachment as `job::Service::document` and with `scope: AllSteps`;
+the `RequirementBinding { requirement, document, service }` each
+`requiresServices` entry was matched to, in requirement order; the attached
 Environments converted in attachment order (a services-only template
 contributes none); and, index for index with `environments`, the
 `job::Document` each came from (`combined_environment_documents(&job)`
 extends the list with `JobTemplate` for the Job's own, matching the
-folded `job_environments`). `into_combined_job(job)` folds them into the Job: `job_services`
+folded `job_environments`). `into_combined_job(job)` folds them into the Job: `services`
 becomes external Services followed by the Job Template's own, and
 `job_environments` the attached Environments followed by the Job
-Template's own (merge rule 1: "placed before every Service in the Job
-Template's `jobServices`; the attached Environments are placed in
-`jobEnvironments` as today"). `Job::extensions` is left as the Job
+Template's own (merge rule 1: every attached Service is provided to the Job
+with every Step in its scope; the attached Environments are placed in
+`jobEnvironments` as today). The bindings do not fold into the Job; a
+runtime keeps them to seed `Service.<requirement>.*` from the bound
+Service's endpoints. `Job::extensions` is left as the Job
 Template declared it — an extension applies to the document that lists
 it (§1.2 item 3), and every external Service and attached Environment
 carries the symbols it needs in its own `resolved_symtab`. A runtime that
@@ -482,82 +495,96 @@ index and hands each Environment's to `Session::enter_environment_with_profile`
 and the other `SERVICE`-gated functions in an attachment resolve under the
 attachment's extensions rather than the Job Template's.
 
-**Order of work.** The submission-time check runs first, against the
+**Order of work.** The two submission-time checks run first, against the
 combined Job, and every violation is reported in one `ModelValidation`
 error for the model name `Submission` (no single template is "the"
-model). Only if it passes are the Services instantiated and the
+model). Only if they pass are the Services instantiated and the
 Environments converted:
 
-1. **Merge rule 2 — Service names are scoped to their document.** Nothing
-   is rejected: an external Service may have the same `name` as a Service
-   in another attachment or in the Job Template's `jobServices` or any
-   Step's `stepServices`. Every `Service.*` reference resolves within its
-   own document (template validation, pass 8, enforces that per document),
-   so no name is ever looked up across documents; what the merge must do
-   is keep same-named Services distinct. Each external Service is stamped
-   with `document = Document::EnvironmentTemplate { index, label }` (its
-   0-based attachment index and the caller's label, if any) after
-   `instantiate_service`, while `create_job`'s own Services keep the
-   default `Document::JobTemplate`; a scheduler keys Services on
-   `(document, name)`. A repeat within one document remains a
-   template-validation error (§9.7 item 5). The combined Service list is
-   still assembled with provenance (every external Service, then the Job's
-   `jobServices`, then each Step's `stepServices`) — the wrapper check
-   below names a witness from it.
+1. **Merge rule 2 — requirement matching.** For each entry `i` of the Job
+   Template's `requiresServices`, the attached Services named like it are
+   collected across every attachment. Exactly one must exist, and it must
+   declare every port the requirement lists with the same `protocol`;
+   otherwise the error is reported at `JobTemplate -> requiresServices[i]`,
+   naming the requirement and the cause:
 
-2. **Merge rule 3 — wrapping Environments from SERVICE-less documents.**
+   ```
+   required Service 'Cache' is not provided: no Environment Template is attached (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is not provided: none of the attached Environment Templates (queue.yaml) defines a Service named 'Cache' (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is ambiguous: 2 attached Environment Templates define a Service with that name (EnvironmentTemplate[0], EnvironmentTemplate[1]); a requirement must match exactly one (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is provided by queue.yaml, which is missing port 'admin'; its ports: main (Template Schemas §1.2.2 item 2).
+   required Service 'Cache' is provided by queue.yaml, whose port 'main' has protocol UDP but the requirement declares TCP (Template Schemas §1.2.2 item 2).
+   ```
+
+   A match records `RequirementBinding { requirement, document, service }`.
+   Matching reads the requirement alone — never the Job Template's
+   references.
+
+   **Merge rule 3 — inline Services shadow external ones.** Nothing else
+   is compared across documents: an external Service may have the same
+   `name` as a Service in another attachment or in the Job Template's
+   `services` (the Job Template's references resolve to its own Service),
+   and two attachments may both declare a `Cache` when no requirement
+   names it. Each external Service is stamped with `document =
+   Document::EnvironmentTemplate { index, label }` (its 0-based attachment
+   index and the caller's label, if any) after `instantiate_service`,
+   while `create_job`'s own Services keep the default
+   `Document::JobTemplate`; a scheduler keys Services on `(document,
+   name)`. A repeat within one document remains a template-validation
+   error (§9.9 item 5). The combined Service list is still assembled with
+   provenance (every external Service, then the Job's `services`) — the
+   wrapper check below names a witness from it.
+
+2. **Merge rule 4 — wrapping Environments from SERVICE-less documents.**
    A document that does not declare `SERVICE` cannot write `runScope` or
    the `onWrapService*` hooks (both gated), so any wrapping Environment it
    defines (one with any `WRAP_ACTIONS` hook) has the default `runScope`
-   and is entered in every Service Session in its scope without being
-   able to wrap the Service. The scope of a Job Environment — the Job
-   Template's or an attached one — is every Service of the combined Job
-   (combined `jobServices` plus every Step's `stepServices`, since a Step
-   Service's Session enters the Job Environments too); a Step
-   Environment's is only its Step's `stepServices`, since a Job Service's
-   Session enters `jobEnvironments` alone. Whether a document declares `SERVICE` is read from
+   and is entered in every Service Session without being able to wrap the
+   Service. Service Sessions enter the combined Job's `jobEnvironments`
+   only, so every Service of the combined Job is in such an Environment's
+   scope when it is a Job Environment — the Job Template's or an attached
+   one — and a Step Environment is never entered by one and is not
+   checked. Whether a document declares `SERVICE` is read from
    `EnvironmentTemplate::profile()` for an attachment and `Job::extensions`
    for the Job Template. A violation is reported at the Environment
-   (`EnvironmentTemplate[i] -> environment`, `JobTemplate ->
-   jobEnvironments[i]`, or `JobTemplate -> steps[i] ->
-   stepEnvironments[j]`), naming the document as the cause and the first
-   Service in scope as the witness, with the spec's remedy:
+   (`EnvironmentTemplate[i] -> environment` or `JobTemplate ->
+   jobEnvironments[i]`), naming the document as the cause and the first
+   Service of the combined Job as the witness, with the spec's remedy:
 
    ```
    wrapping Environment 'QueueContainer' is defined by EnvironmentTemplate[0], which does
    not declare the SERVICE extension, so it has the default runScope (every kind of
    Session) and cannot define the onWrapService* hooks; but the combined Job places
-   Service 'Cache' (JobTemplate -> jobServices[0]) in its scope, and the Service would run
+   Service 'Cache' (JobTemplate -> services[0]) in its scope, and the Service would run
    in a Session the Environment enters but cannot wrap. Declare SERVICE in
    EnvironmentTemplate[0] and either define onWrapServiceEnter, onWrapServiceRun,
    onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope that excludes
-   SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).
+   SERVICE (RFC 0009, Template Schemas §1.2.2 item 4).
    ```
 
    For the Job Template the document reads `the Job Template`. Both
    directions the spec names are covered by the same walk: a queue's
    wrapper attachment with a Job that declares Services (or with another
-   attachment that does), and a Job Template wrapper — job- or step-level
-   — with an attachment that defines a Service. A document that does
-   declare `SERVICE` is not subject to this rule: pass 10's
-   hooks-follow-`runScope` rule already made its wrapper either define
-   the four hooks or exclude `SERVICE` from `runScope`. With nothing in
-   scope (no Service anywhere) a SERVICE-less wrapper is accepted exactly
-   as before RFC 0009.
+   attachment that does), and a Job Template's Job-level wrapper with an
+   attachment that defines a Service. A document that does declare
+   `SERVICE` is not subject to this rule: pass 10's hooks-follow-`runScope`
+   rule already made its wrapper either define the four hooks or exclude
+   `SERVICE` from `runScope`. With nothing in scope (no Service anywhere) a
+   SERVICE-less wrapper is accepted exactly as before RFC 0009.
 
 3. **External Services.** Each `services[k]` is instantiated with the same
-   `instantiate_service` as a `jobServices[k]` entry, in Job scope, with
-   `InstantiateCtx` built from the attachment's profile and
-   `job_services` set to that document's `services` (so the "in scope"
-   iterator is `services[..k]` — earlier Services of the same document,
-   the only ones a `Service.*` reference can name; a reference to another
-   document's Service, or a Job Template's reference to an external
-   Service, is a template-validation error and cannot reach here).
+   `instantiate_service` as a Job Template `services[k]` entry, with
+   `InstantiateCtx` built from the attachment's profile and `services` set
+   to that document's `services` (so the "in scope" iterator is the other
+   Services of the same document, the only ones a `Service.*` reference
+   there can name; no requirements), `scope: AllSteps` (every Step of the
+   Job is in an external Service's scope, §1.2.2 item 1) and `references`
+   the document-local names `service_scope::service_references` finds.
    `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
-   and the carried-forward re-checks all run as for a Job Service.
+   and the carried-forward re-checks all run as for an inline Service.
 4. **Attached Environments.** The carried-forward resolved-value checks
    run as for a `jobEnvironments` entry (`build_env_check_symtab` seeded
-   with the document's own Services, only when the Environment's
+   with the document's own Services, only when the Environment's effective
    `runScope` excludes `SERVICE`, exactly the pass 8 scope), then
    `convert_environment_with_symtab` freezes the attachment's table into
    `resolved_symtab`, and the attachment's `Document` is pushed onto

@@ -1,0 +1,53 @@
+# Template Schemas §4 item 3: a Job Environment that references Service.*
+# and declares no runScope runs in [TASK] only. XClient is entered in the
+# Task Session (its X_ENDPOINT variable reaches the Task) and skipped in X's
+# Service Session; Plain, which references no Service, keeps the default of
+# every kind and is entered in both. XClient's reference also makes X's
+# scope every Step (§9.1).
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RunScopeDefault"
+services:
+  - name: X
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.X.main.bindAddress }}", "{{ Service.X.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            print("SERVICE_SEES_X_ENDPOINT", os.environ.get("X_ENDPOINT", "UNSET"), flush=True)
+            print("SERVICE_SEES_PLAIN", os.environ.get("PLAIN_VAR", "UNSET"), flush=True)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: x up", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(b"X_SAYS_HI")
+                c.close()
+jobEnvironments:
+  - name: Plain
+    variables:
+      PLAIN_VAR: "plain-value"
+  - name: XClient
+    variables:
+      X_ENDPOINT: "{{ Service.X.main.connectAddress }}:{{ Service.X.main.port }}"
+steps:
+  - name: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,socket; h,p=os.environ['X_ENDPOINT'].rsplit(':',1); c=socket.create_connection((h,int(p)),timeout=10); print('TASK_X_ENDPOINT', p, c.recv(64).decode(), 'PLAIN', os.environ.get('PLAIN_VAR'), flush=True)"]

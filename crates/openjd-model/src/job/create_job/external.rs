@@ -10,28 +10,35 @@
 //! RFC 0009 an Environment Template contributed only an Environment, placed
 //! in the Job's `jobEnvironments` ahead of the Job Template's own; with the
 //! `SERVICE` extension it may also define `services`, which become
-//! **external Services** of every Job submitted through it. One check
-//! relates documents that only the scheduler sees together and is therefore
-//! performed here, at submission, rather than at template validation: the
-//! wrapping-Environment rule (§1.2.2 item 3) — a wrapping Environment from a
-//! document that does not declare `SERVICE` may not have a Service placed in
-//! its scope.
+//! **external Services** of every Job submitted through it, with every Step
+//! in their scope. Two checks relate documents that only the scheduler sees
+//! together and are therefore performed here, at submission, rather than at
+//! template validation (§9.9):
 //!
-//! Service names are scoped to the document that declares them (§1.2.2 item
-//! 2): an external Service may share its `name` with a Service in the Job
-//! Template or in another attachment, and nothing here rejects that. Every
-//! `Service.*` reference resolves within its own document, so each
-//! instantiated Service is stamped with its [`job::Document`] for a
+//! - the **requirement matching** rule (§1.2.2 item 2): each entry of the
+//!   Job Template's `requiresServices` matches exactly one attached Service
+//!   with its `name`, declaring every listed port with the same `protocol`;
+//! - the **wrapping-Environment** rule (§1.2.2 item 4): a wrapping
+//!   Environment from a document that does not declare `SERVICE`, placed in
+//!   the combined Job's `jobEnvironments`, may not meet any Service.
+//!
+//! Inline Services shadow external ones (§1.2.2 item 3): an external Service
+//! may share its `name` with a Service of the Job Template or of another
+//! attachment, and nothing here rejects that unless a requirement names it.
+//! A `Service.*` reference resolves within its own document — or, for a
+//! required Service, to the attached Service the requirement was bound to —
+//! so each instantiated Service is stamped with its [`job::Document`] for a
 //! scheduler to keep same-named Services distinct.
 //!
-//! [`apply_environment_templates`] runs the check against the combined Job,
-//! instantiates the external Services with each template's own profile and
-//! the merged job parameters, re-runs the carried-forward checks on each
+//! [`apply_environment_templates`] runs the checks against the combined
+//! Job, instantiates the external Services with each template's own profile
+//! and the merged job parameters, re-runs the carried-forward checks on each
 //! attached Environment, and returns the pieces the caller merges into the
 //! Job (or [`AppliedEnvironmentTemplates::into_combined_job`] merges for
-//! it).
+//! it), together with the requirement bindings.
 
 use openjd_expr::ExprValue;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{
     path_field, path_index, path_to_string, ModelError, PathElement, ValidationErrors,
@@ -99,10 +106,16 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedEnvironmentTemplates {
     /// The external Services, instantiated: in attachment order, and within
-    /// one template in its `services` order. These precede every Service in
-    /// the Job Template's `jobServices` in the combined list, which is
-    /// started and stopped as a single list.
+    /// one template in its `services` order, each with
+    /// [`ServiceScope::AllSteps`](job::ServiceScope::AllSteps). These precede
+    /// every Service in the Job Template's `services` in the combined list.
     pub external_services: Vec<job::Service>,
+    /// The attached Service each of the Job Template's `requiresServices`
+    /// entries was matched to (§1.2.2 item 2), in requirement order. A
+    /// runtime seeds `Service.<requirement>.<port>.port` /
+    /// `.connectAddress` in the Job Template's Task Sessions and Job
+    /// Environments from the bound Service's endpoints.
+    pub requirement_bindings: Vec<RequirementBinding>,
     /// The attached Environments, in attachment order, converted with each
     /// template's parameter symbol table frozen into `resolved_symtab`. A
     /// services-only template contributes none. These precede the Job
@@ -134,7 +147,7 @@ impl AppliedEnvironmentTemplates {
             .collect()
     }
 
-    /// Fold the attachments into `job`: `job_services` becomes the external
+    /// Fold the attachments into `job`: `services` becomes the external
     /// Services followed by the Job's own, and `job_environments` the
     /// attached Environments followed by the Job's own. Lists that would be
     /// empty stay `None`. `job.extensions` is left as the Job Template
@@ -142,13 +155,15 @@ impl AppliedEnvironmentTemplates {
     /// (§1.2 item 3), and each external Service and attached Environment
     /// carries its own `resolved_symtab`. Which document each Service came
     /// from survives the fold in [`job::Service::document`]; for the
-    /// Environments, keep [`combined_environment_documents`](Self::combined_environment_documents).
+    /// Environments, keep [`combined_environment_documents`](Self::combined_environment_documents),
+    /// and for the requirements
+    /// [`requirement_bindings`](Self::requirement_bindings).
     #[must_use]
     pub fn into_combined_job(self, mut job: job::Job) -> job::Job {
         if !self.external_services.is_empty() {
             let mut services = self.external_services;
-            services.extend(job.job_services.take().into_iter().flatten());
-            job.job_services = Some(services);
+            services.extend(job.services.take().into_iter().flatten());
+            job.services = Some(services);
         }
         if !self.environments.is_empty() {
             let mut envs = self.environments;
@@ -159,12 +174,25 @@ impl AppliedEnvironmentTemplates {
     }
 }
 
+/// One `requiresServices` entry of the Job Template matched to the attached
+/// Service that provides it (Template Schemas §1.2.2 item 2, §9.8).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequirementBinding {
+    /// The requirement's `name` — also the bound Service's `name`, since
+    /// matching is by name.
+    pub requirement: String,
+    /// The attached Environment Template that declares the bound Service.
+    pub document: job::Document,
+    /// The bound Service's `name` (equal to `requirement`).
+    pub service: String,
+}
+
 /// Where a Service in the combined Job comes from, for error messages.
 #[derive(Clone, Copy)]
 enum ServiceSource {
     External { doc: usize, index: usize },
     JobService(usize),
-    StepService { step: usize, index: usize },
 }
 
 /// A Service of the combined Job: its name and where it is declared.
@@ -209,20 +237,13 @@ impl Documents<'_> {
                 path_index(&path_field(&self.path(Some(doc)), "services"), index)
             }
             ServiceSource::JobService(k) => {
-                path_index(&path_field(&self.path(None), "jobServices"), k)
+                path_index(&path_field(&self.path(None), "services"), k)
             }
-            ServiceSource::StepService { step, index } => path_index(
-                &path_field(
-                    &path_index(&path_field(&self.path(None), "steps"), step),
-                    "stepServices",
-                ),
-                index,
-            ),
         }
     }
 
     /// `external Service 'X' (EnvironmentTemplate[0] -> services[1])` or
-    /// `Service 'X' (JobTemplate -> jobServices[0])`.
+    /// `Service 'X' (JobTemplate -> services[0])`.
     fn describe_service(&self, svc: &CombinedService<'_>) -> String {
         let kind = match svc.source {
             ServiceSource::External { .. } => "external Service",
@@ -256,41 +277,47 @@ impl Documents<'_> {
 ///
 /// The function:
 ///
-/// 1. Runs the one submission-time check against the **combined** Job and
+/// 1. Runs the two submission-time checks against the **combined** Job and
 ///    reports every violation at once, as a `ModelValidation` error for
 ///    `Submission` whose paths start with the document (`JobTemplate`,
 ///    `EnvironmentTemplate[i]`, or the attachment's label):
-///    - §1.2.2 item 3 — a wrapping Environment (one defining any
+///    - §1.2.2 item 2 — each entry of the Job Template's `requiresServices`
+///      matches exactly one attached Service with the same `name` (none or
+///      two or more is an error naming the documents), and that Service
+///      declares every listed port with the same `protocol` (a missing port
+///      or a protocol mismatch is an error naming the port). Reported at
+///      `JobTemplate -> requiresServices[i]`.
+///    - §1.2.2 item 4 — a wrapping Environment (one defining any
 ///      `WRAP_ACTIONS` hook) in a document that does not declare `SERVICE`
-///      has the default `runScope` and no `onWrapService*` hooks, so no
-///      Service may be placed in its scope: for a Job Environment (the Job
-///      Template's or an attached one) that is every Service of the
-///      combined `jobServices` and every Step's `stepServices`; for a Step
-///      Environment, the combined `jobServices` and that Step's
-///      `stepServices`. Reported at the Environment, naming its document as
-///      the cause, with the spec's remedy.
+///      has the default `runScope` and no `onWrapService*` hooks; Service
+///      Sessions enter the combined `jobEnvironments` only, so such an
+///      Environment there, with any Service in the combined Job, is
+///      rejected at the Environment, naming its document as the cause, with
+///      the spec's remedy. A wrapping Environment in a Step's
+///      `stepEnvironments` is never entered by a Service Session and is not
+///      checked.
 ///
-///    Service names are **not** compared across documents (§1.2.2 item 2):
-///    an external Service may be named like a Service of the Job Template
-///    or of another attachment. Each instantiated external Service carries
-///    its attachment as its [`job::Service::document`], and the Job
+///    Service names are otherwise **not** compared across documents (§1.2.2
+///    item 3): an external Service may be named like a Service of the Job
+///    Template or of another attachment. Each instantiated external Service
+///    carries its attachment as its [`job::Service::document`], and the Job
 ///    Template's own keep [`job::Document::JobTemplate`], so a scheduler
 ///    keys Services on `(document, name)`.
 /// 2. Instantiates each external Service through the same code path as a
-///    `jobServices` entry — `<Service>.let`, `hostRequirements`, the numeric
-///    `@fmtstring` fields, the carried-forward re-checks — in Job scope,
-///    seeing the Services before it in its own document (a `Service.*`
-///    reference to another document's Service is a template-validation
-///    error, so none can reach here). Errors carry the document in their
-///    path or message.
+///    `services` entry — `<Service>.let`, `hostRequirements`, the numeric
+///    `@fmtstring` fields, the carried-forward re-checks — with every Step
+///    in its scope, seeing the other Services of its own document (a
+///    `Service.*` reference to another document's Service is a
+///    template-validation error, so none can reach here). Errors carry the
+///    document in their path or message.
 /// 3. Re-runs the carried-forward resolved-value checks on each attached
 ///    Environment against a check table holding its own document's Services
-///    (when its `runScope` excludes `SERVICE`), then converts it with
-///    [`convert_environment_with_symtab`](super::convert_environment_with_symtab)
+///    (when its effective `runScope` excludes `SERVICE`), then converts it
+///    with [`convert_environment_with_symtab`](super::convert_environment_with_symtab)
 ///    and records its document in `environment_documents`.
 ///
 /// Attachments that define no Services behave exactly as before RFC 0009:
-/// their Environments are converted and the Service check has nothing to
+/// their Environments are converted and the Service checks have nothing to
 /// examine. The 10-element cap on `services` is per document (enforced at
 /// template validation); the combined list is not capped here.
 pub fn apply_environment_templates(
@@ -301,7 +328,7 @@ pub fn apply_environment_templates(
 ) -> Result<AppliedEnvironmentTemplates, ModelError> {
     let docs = Documents { attached };
 
-    // ── The combined Service list, in start order, with provenance ──
+    // ── The combined Service list, with provenance ──
     let mut combined: Vec<CombinedService<'_>> = Vec::new();
     for (doc, att) in attached.iter().enumerate() {
         for (index, svc) in att.template.services().iter().enumerate() {
@@ -312,64 +339,142 @@ pub fn apply_environment_templates(
         }
     }
     let external_count = combined.len();
-    for (k, svc) in job.job_services.iter().flatten().enumerate() {
+    for (k, svc) in job.services.iter().flatten().enumerate() {
         combined.push(CombinedService {
             name: &svc.name,
             source: ServiceSource::JobService(k),
         });
     }
-    let combined_job_services = combined.len();
-    // Step Services, grouped by step: `step_service_ranges[i]` indexes into
-    // `combined`.
-    let mut step_service_ranges: Vec<std::ops::Range<usize>> = Vec::with_capacity(job.steps.len());
-    for (step, st) in job.steps.iter().enumerate() {
-        let start = combined.len();
-        for (index, svc) in st.step_services.iter().flatten().enumerate() {
-            combined.push(CombinedService {
-                name: &svc.name,
-                source: ServiceSource::StepService { step, index },
-            });
-        }
-        step_service_ranges.push(start..combined.len());
-    }
 
     let mut errors = ValidationErrors::default();
 
-    // ── §1.2.2 item 3: wrapping Environments from SERVICE-less documents ──
+    // ── §1.2.2 item 2: requirement matching ──
+    let mut requirement_bindings = Vec::new();
+    let requirements_path = path_field(&docs.path(None), "requiresServices");
+    for (i, req) in job.requires_services.iter().flatten().enumerate() {
+        let req_path = path_index(&requirements_path, i);
+        let candidates: Vec<(usize, &crate::template::Service)> = attached
+            .iter()
+            .enumerate()
+            .flat_map(|(doc, att)| {
+                att.template
+                    .services()
+                    .iter()
+                    .filter(|s| s.name == req.name)
+                    .map(move |s| (doc, s))
+            })
+            .collect();
+        match candidates.as_slice() {
+            [] => {
+                let where_ = if attached.is_empty() {
+                    "no Environment Template is attached".to_string()
+                } else {
+                    format!(
+                        "none of the attached Environment Templates ({}) defines a Service named \
+                         '{}'",
+                        (0..attached.len())
+                            .map(|d| docs.name(Some(d)))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        req.name
+                    )
+                };
+                errors.add(
+                    &req_path,
+                    format!(
+                        "required Service '{}' is not provided: {where_} (Template Schemas \
+                         §1.2.2 item 2).",
+                        req.name
+                    ),
+                );
+            }
+            [(doc, svc)] => {
+                for port in &req.ports {
+                    match svc.ports.iter().find(|p| p.name == port.name) {
+                        None => errors.add(
+                            &req_path,
+                            format!(
+                                "required Service '{}' is provided by {}, which is missing port \
+                                 '{}'; its ports: {} (Template Schemas §1.2.2 item 2).",
+                                req.name,
+                                docs.name(Some(*doc)),
+                                port.name,
+                                svc.port_names().collect::<Vec<_>>().join(", ")
+                            ),
+                        ),
+                        Some(p) if p.protocol != port.protocol => errors.add(
+                            &req_path,
+                            format!(
+                                "required Service '{}' is provided by {}, whose port '{}' has \
+                                 protocol {} but the requirement declares {} (Template Schemas \
+                                 §1.2.2 item 2).",
+                                req.name,
+                                docs.name(Some(*doc)),
+                                port.name,
+                                p.protocol,
+                                port.protocol
+                            ),
+                        ),
+                        Some(_) => {}
+                    }
+                }
+                requirement_bindings.push(RequirementBinding {
+                    requirement: req.name.clone(),
+                    document: job::Document::environment_template(*doc, attached[*doc].label),
+                    service: svc.name.clone(),
+                });
+            }
+            many => {
+                let providers: Vec<String> =
+                    many.iter().map(|(doc, _)| docs.name(Some(*doc))).collect();
+                errors.add(
+                    &req_path,
+                    format!(
+                        "required Service '{}' is ambiguous: {} attached Environment Templates \
+                         define a Service with that name ({}); a requirement must match exactly \
+                         one (Template Schemas §1.2.2 item 2).",
+                        req.name,
+                        many.len(),
+                        providers.join(", ")
+                    ),
+                );
+            }
+        }
+    }
+
+    // ── §1.2.2 item 4: wrapping Environments from SERVICE-less documents ──
     //
     // A document that does not declare SERVICE cannot write `runScope` or
     // the `onWrapService*` hooks (both are gated), so any wrapping
-    // Environment it defines is entered in every Service Session in its
-    // scope and cannot wrap the Service. The scope of a Job Environment is
-    // every Service of the combined Job; a Step Environment's is the
-    // combined `jobServices` plus its Step's `stepServices`.
+    // Environment it defines is entered in every Service Session and cannot
+    // wrap the Service. Service Sessions enter the combined `jobEnvironments`
+    // only, so every Service of the combined Job is in such an Environment's
+    // scope; a Step Environment is never entered by one.
     let job_declares_service = job
         .extensions
         .as_ref()
         .is_some_and(|exts| exts.contains(&ModelExtension::Service));
-    let job_env_scope = || {
-        combined.iter().take(combined_job_services).chain(
-            step_service_ranges
-                .iter()
-                .flat_map(|r| combined[r.clone()].iter()),
-        )
+    let is_wrapper = |env: &job::Environment| {
+        env.script
+            .as_ref()
+            .is_some_and(|s| s.actions.has_any_wrap_hook())
     };
 
-    for (doc, att) in attached.iter().enumerate() {
-        if att
-            .template
-            .profile()
-            .has_extension(ModelExtension::Service)
-        {
-            continue;
-        }
-        if let Some(env) = att.template.environment() {
-            if env
-                .script
-                .as_ref()
-                .is_some_and(|s| s.actions.has_any_wrap_hook())
+    if let Some(first) = combined.first() {
+        for (doc, att) in attached.iter().enumerate() {
+            if att
+                .template
+                .profile()
+                .has_extension(ModelExtension::Service)
             {
-                if let Some(first) = job_env_scope().next() {
+                continue;
+            }
+            if let Some(env) = att.template.environment() {
+                if env
+                    .script
+                    .as_ref()
+                    .is_some_and(|s| s.actions.has_any_wrap_hook())
+                {
                     errors.add(
                         &path_field(&docs.path(Some(doc)), "environment"),
                         wrapper_message(&docs, &env.name, Some(doc), first),
@@ -377,39 +482,14 @@ pub fn apply_environment_templates(
                 }
             }
         }
-    }
-    if !job_declares_service {
-        let is_wrapper = |env: &job::Environment| {
-            env.script
-                .as_ref()
-                .is_some_and(|s| s.actions.has_any_wrap_hook())
-        };
-        let job_path = docs.path(None);
-        for (i, env) in job.job_environments.iter().flatten().enumerate() {
-            if is_wrapper(env) {
-                if let Some(first) = job_env_scope().next() {
+        if !job_declares_service {
+            let job_path = docs.path(None);
+            for (i, env) in job.job_environments.iter().flatten().enumerate() {
+                if is_wrapper(env) {
                     errors.add(
                         &path_index(&path_field(&job_path, "jobEnvironments"), i),
                         wrapper_message(&docs, &env.name, None, first),
                     );
-                }
-            }
-        }
-        for (step, st) in job.steps.iter().enumerate() {
-            for (j, env) in st.step_environments.iter().flatten().enumerate() {
-                if is_wrapper(env) {
-                    // A Step Environment is entered only in the Sessions of
-                    // that Step's own Services (a Job Service's Session enters
-                    // `jobEnvironments` alone), so only `stepServices` are in
-                    // its scope.
-                    let first = combined[step_service_ranges[step].clone()].iter().next();
-                    if let Some(first) = first {
-                        let step_path = path_index(&path_field(&job_path, "steps"), step);
-                        errors.add(
-                            &path_index(&path_field(&step_path, "stepEnvironments"), j),
-                            wrapper_message(&docs, &env.name, None, first),
-                        );
-                    }
                 }
             }
         }
@@ -441,20 +521,31 @@ pub fn apply_environment_templates(
             limits: &limits,
             ctx: &ctx,
             budgets,
-            job_services: services,
+            services,
+            requirements: &[],
         };
 
         let services_path = path_field(&[], "services");
+        let names: std::collections::HashSet<&str> =
+            services.iter().map(|s| s.name.as_str()).collect();
         for (k, svc) in services.iter().enumerate() {
+            // An external Service has every Step in its scope (§1.2.2 item
+            // 1) and references only Services of its own document.
+            let references = crate::template::service_scope::service_references(svc)
+                .into_iter()
+                .filter(|n| n != &svc.name && names.contains(n.as_str()))
+                .collect();
             let mut instantiated = instantiate::instantiate_service(
                 svc,
                 &symtab,
                 icx,
                 &path_index(&services_path, k),
-                services[..k].iter(),
+                services.iter(),
+                job::ServiceScope::AllSteps,
+                references,
             )
             .map_err(|e| in_document(e, &doc_path))?;
-            // §1.2.2 item 2: the Service is known by (document, name).
+            // §1.2.2 item 3: the Service is known by (document, name).
             instantiated.document = document.clone();
             external_services.push(instantiated);
         }
@@ -470,6 +561,7 @@ pub fn apply_environment_templates(
                 &ctx,
                 budgets,
                 services.iter(),
+                &[],
             )
             .map_err(|e| in_document(e, &doc_path))?;
             let mut check_errors = ValidationErrors::default();
@@ -494,14 +586,15 @@ pub fn apply_environment_templates(
 
     Ok(AppliedEnvironmentTemplates {
         external_services,
+        requirement_bindings,
         environments,
         environment_documents,
     })
 }
 
-/// The §1.2.2 item 3 message for wrapping Environment `env_name`, defined
+/// The §1.2.2 item 4 message for wrapping Environment `env_name`, defined
 /// by `doc` (`None` for the Job Template), with `in_scope` the first Service
-/// the combined Job places in its scope.
+/// of the combined Job (every Service is in a Job Environment's scope).
 fn wrapper_message(
     docs: &Documents<'_>,
     env_name: &str,
@@ -516,7 +609,7 @@ fn wrapper_message(
          Service would run in a Session the Environment enters but cannot wrap. Declare SERVICE \
          in {document} and either define onWrapServiceEnter, onWrapServiceRun, \
          onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope that excludes \
-         SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).",
+         SERVICE (RFC 0009, Template Schemas §1.2.2 item 4).",
         docs.describe_service(in_scope),
     )
 }
@@ -613,15 +706,7 @@ environment:
         };
         assert_eq!(
             docs.describe_service(&js),
-            "Service 'S' (JobTemplate -> jobServices[0])"
-        );
-        let ss = CombinedService {
-            name: "S",
-            source: ServiceSource::StepService { step: 3, index: 1 },
-        };
-        assert_eq!(
-            docs.describe_service(&ss),
-            "Service 'S' (JobTemplate -> steps[3] -> stepServices[1])"
+            "Service 'S' (JobTemplate -> services[0])"
         );
     }
 
@@ -678,10 +763,12 @@ environment:
             parameters: Default::default(),
             steps: Vec::new(),
             job_environments: None,
-            job_services: None,
+            services: None,
+            requires_services: None,
         };
         let applied = AppliedEnvironmentTemplates {
             external_services: Vec::new(),
+            requirement_bindings: Vec::new(),
             environments: Vec::new(),
             environment_documents: Vec::new(),
         };

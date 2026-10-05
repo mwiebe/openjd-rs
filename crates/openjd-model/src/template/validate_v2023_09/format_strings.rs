@@ -21,8 +21,8 @@ use openjd_expr::FormatString;
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::job::service_symbols::{
-    add_unresolved_service_file_symbols, add_unresolved_service_symbols,
-    add_unresolved_wrapped_service_symbols,
+    add_unresolved_requirement_symbols, add_unresolved_service_file_symbols,
+    add_unresolved_service_symbols, add_unresolved_wrapped_service_symbols,
 };
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
@@ -114,25 +114,28 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// Takes a parameter slice so it works for both job templates and standalone
 /// environment templates.
 ///
-/// `in_scope_services` are the Services in scope where the environment is
-/// defined (RFC 0009: every Job Service — or, in an environment template,
-/// every Service of the document — plus the Step's own for a step
-/// environment). Their `Service.<name>.<port>.port` / `.connectAddress` are
-/// added only when the environment's `runScope` excludes `SERVICE`
-/// (Template Schemas §4 item 3.2, §9.7 item 2): an environment entered in
-/// Service Sessions never sees any `Service.*` value, so a reference there
-/// surfaces as an undefined variable. `bindAddress` is never in scope in an
-/// environment.
+/// `in_scope_services` are the document's Services (RFC 0009, Template
+/// Schemas §9 scope items 3–4: every inline Service of a Job Template, or
+/// every Service of an Environment Template) and `requirements` the Job
+/// Template's `requiresServices` (§9.8). Their `Service.<name>.<port>.port`
+/// / `.connectAddress` are added only when the environment's effective
+/// `runScope` excludes `SERVICE` (§4 item 3.2, §9.9 item 2) — which it does
+/// by default for an Environment that references `Service.*`; an
+/// Environment with an explicit `runScope` including `SERVICE` never sees
+/// any `Service.*` value, so a reference there surfaces as an undefined
+/// variable. `bindAddress` is never in scope in an environment.
 fn build_session_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
     env: &Environment,
     is_step_env: bool,
     expr_active: bool,
     in_scope_services: impl Iterator<Item = &'a Service>,
+    requirements: &[ServiceRequirement],
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(params);
     if !env.runs_in(RunScope::Service) {
         add_unresolved_service_symbols(&mut symtab, in_scope_services, None).expect("symtab");
+        add_unresolved_requirement_symbols(&mut symtab, requirements).expect("symtab");
     }
     symtab
         .set(
@@ -185,26 +188,22 @@ fn build_session_scope_symtab<'a>(
 ///           Task.File.*, Job.Name, Step.Name, Env.File.* from step envs,
 ///           plus let bindings.
 ///
-/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of every Job
-/// Service and of the Step's own `stepServices` are in scope (Template
-/// Schemas §9 scope items 3–4); `bindAddress` never is.
+/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of every inline
+/// Service and of every required Service's declared ports are in scope
+/// (Template Schemas §9 scope item 3, §9.8); `bindAddress` never is. A
+/// reference from a Step's script places the Step in the Service's scope
+/// (§9.1 rule 1), so no inline Service is ever out of scope here.
 fn build_task_scope_symtab(
     jt: &JobTemplate,
     step: &StepTemplate,
     expr_active: bool,
     service_active: bool,
 ) -> SymbolTable {
+    let _ = step;
     let mut symtab = build_param_symtab(jt.parameter_definitions.as_deref());
     if service_active {
-        add_unresolved_service_symbols(
-            &mut symtab,
-            jt.job_services
-                .iter()
-                .flatten()
-                .chain(step.step_services.iter().flatten()),
-            None,
-        )
-        .expect("symtab");
+        add_unresolved_service_symbols(&mut symtab, jt.services(), None).expect("symtab");
+        add_unresolved_requirement_symbols(&mut symtab, jt.requires_services()).expect("symtab");
     }
 
     // Session scope
@@ -1580,8 +1579,9 @@ pub fn validate_format_strings(
     // without it pass 11 rejects the lists outright and nothing inside them
     // is examined.
     let service_active = p8.service_active;
-    let job_services: &[Service] = if service_active {
-        jt.job_services.as_deref().unwrap_or(&[])
+    let services: &[Service] = if service_active { jt.services() } else { &[] };
+    let requirements: &[ServiceRequirement] = if service_active {
+        jt.requires_services()
     } else {
         &[]
     };
@@ -1615,8 +1615,12 @@ pub fn validate_format_strings(
                     .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                     .expect("symtab");
                 if let Some(bindings) = &step.let_bindings {
+                    // The step-level `let` is validated (and its errors
+                    // reported) once, with the task scope below; here it is
+                    // only evaluated into the hostRequirements table.
                     let let_path = path_field(&step_path, "let");
                     let mut hr_let_names = HashSet::new();
+                    let mut discarded = ValidationErrors::default();
                     validate_let_bindings(
                         bindings,
                         &let_path,
@@ -1625,7 +1629,7 @@ pub fn validate_format_strings(
                         &mut hr_symtab,
                         &template_ev,
                         &template_profile,
-                        errors,
+                        &mut discarded,
                     );
                 }
             }
@@ -1654,14 +1658,17 @@ pub fn validate_format_strings(
                 .expect("symtab");
         }
         for (i, env) in envs.iter().enumerate() {
-            // RFC 0009: a job environment whose runScope excludes SERVICE
-            // sees every Job Service's endpoint.
+            // RFC 0009: a job environment whose effective runScope excludes
+            // SERVICE sees every inline and required Service's endpoint
+            // (and thereby makes every inline Service it references
+            // Job-wide, §9.1 rule 2).
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
                 false,
                 expr_active,
-                job_services.iter(),
+                services.iter(),
+                requirements,
             );
             // Env script let bindings: validate and evaluate into the symtab
             // if EXPR, reject if not.
@@ -1702,21 +1709,24 @@ pub fn validate_format_strings(
         }
     }
 
-    // ── Job services (RFC 0009): job scope, forward-only references ──
+    // ── Services (RFC 0009): job scope; each may reference every other
+    // Service of the document (the reference graph's acyclicity is pass
+    // 11's concern) and every required Service ──
     if service_active {
-        let list_path = path_field(&[], "jobServices");
+        let list_path = path_field(&[], "services");
         let mut base = build_template_scope_symtab(jt.parameter_definitions.as_deref());
         if expr_active {
             base.set("Job.Name", ExprValue::unresolved(ExprType::STRING))
                 .expect("symtab");
         }
-        for (k, svc) in job_services.iter().enumerate() {
+        for (k, svc) in services.iter().enumerate() {
             validate_service_format_strings(
                 svc,
                 jt.parameter_definitions.as_deref(),
                 &base,
                 &HashSet::new(),
-                job_services[..k].iter(),
+                services.iter(),
+                requirements,
                 &path_index(&list_path, k),
                 &p8,
                 errors,
@@ -1727,11 +1737,6 @@ pub fn validate_format_strings(
     // ── Steps ──
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
-        let step_services: &[Service] = if service_active {
-            step.step_services.as_deref().unwrap_or(&[])
-        } else {
-            &[]
-        };
 
         // Task parameter ranges use TEMPLATE scope (no PATH Param.*)
         if let Some(ps) = &step.parameter_space {
@@ -2123,14 +2128,17 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
-                // RFC 0009: a step environment whose runScope excludes
-                // SERVICE sees every Job Service and this Step's Services.
+                // RFC 0009: a step environment whose effective runScope
+                // excludes SERVICE sees every inline and required Service
+                // (and places the Step in each referenced inline Service's
+                // scope, §9.1 rule 1).
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,
                     true,
                     expr_active,
-                    job_services.iter().chain(step_services.iter()),
+                    services.iter(),
+                    requirements,
                 );
                 // Copy step-level let binding values (already evaluated with inferred types)
                 if expr_active {
@@ -2198,26 +2206,6 @@ pub fn validate_format_strings(
                     limits.max_env_var_value_len,
                     ctx.caller_limits.max_resolved_arg_len,
                     ctx.caller_limits.max_resolved_data_len,
-                    errors,
-                );
-            }
-        }
-
-        // Step services (RFC 0009): the Step's job-creation scope (Step.Name
-        // and step-level let bindings), seeing every Job Service and the
-        // Step Services before them.
-        if !step_services.is_empty() {
-            let list_path = path_field(&step_path, "stepServices");
-            let step_let_names = let_binding_names(step.let_bindings.as_deref());
-            for (k, svc) in step_services.iter().enumerate() {
-                validate_service_format_strings(
-                    svc,
-                    jt.parameter_definitions.as_deref(),
-                    &step_template_symtab,
-                    &step_let_names,
-                    job_services.iter().chain(step_services[..k].iter()),
-                    &path_index(&list_path, k),
-                    &p8,
                     errors,
                 );
             }
@@ -2348,7 +2336,8 @@ pub fn validate_format_strings_environment_template(
             .expect("symtab");
     }
 
-    // ── Services (RFC 0009 §1.2.2): each sees the Services before it ──
+    // ── Services (RFC 0009 §1.2.2): each sees every other Service of the
+    // document; the reference graph's acyclicity is pass 11's concern ──
     let services: &[Service] = if p8.service_active {
         et.services.as_deref().unwrap_or(&[])
     } else {
@@ -2361,7 +2350,8 @@ pub fn validate_format_strings_environment_template(
             et.parameter_definitions.as_deref(),
             &env_template_symtab,
             &HashSet::new(),
-            services[..k].iter(),
+            services.iter(),
+            &[],
             &path_index(&list_path, k),
             &p8,
             errors,
@@ -2383,6 +2373,7 @@ pub fn validate_format_strings_environment_template(
         false,
         expr_active,
         services.iter(),
+        &[],
     );
 
     // Env script let bindings: validate and evaluate into the symtab if EXPR,
@@ -2461,43 +2452,29 @@ const SERVICE_MAX_ATTEMPTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedCon
     nullable: true,
 };
 
-/// The names bound by a `let` list (the text before each `=`), for the
-/// shadowing check of a nested `let`.
-fn let_binding_names(bindings: Option<&[String]>) -> HashSet<String> {
-    bindings
-        .map(|bs| {
-            bs.iter()
-                .filter_map(|b| b.find('=').map(|eq| b[..eq].trim().to_string()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Pass 8 for one `<Service>` (RFC 0009, Template Schemas §9) at `path`
-/// (`jobServices[k]`, `steps[i] -> stepServices[k]`, or an environment
-/// template's `services[k]`).
+/// (`services[k]` of either template kind).
 ///
 /// Two scopes, following the `@fmtstring` stage annotations:
 ///
-/// - **Job-creation scope** — `base_template_symtab` (the owner's
-///   template-scope table: `Param.*` without PATH, `RawParam.*`, `Job.Name`,
-///   and for a Step Service `Step.Name` and the step-level `let` values)
+/// - **Job-creation scope** — `base_template_symtab` (the document's
+///   template-scope table: `Param.*` without PATH, `RawParam.*`, `Job.Name`)
 ///   plus the `<Service>.let` bindings. Used for `<Service>.let` itself,
-///   `hostRequirements`, the numeric `@fmtstring` fields (`port`,
-///   `timeoutSeconds`, `intervalSeconds`, `maxAttempts`; target `int?`) and
+///   `hostRequirements`, the numeric `@fmtstring` fields (`port`, the
+///   health-check seconds and threshold, `maxAttempts`; target `int?`) and
 ///   every action's `timeout` / cancelation fields. Never `Session.*`,
-///   `Service.*`, or `Task.*` (§9 item 3, §9.7 item 2).
+///   `Service.*`, `Step.*`, or `Task.*` (§9 item 3, §9.9 item 2).
 /// - **Service-execution scope** — the above plus PATH `Param.*`,
 ///   `Session.*`, this Service's `Service.File.*`, its own
 ///   `Service.<name>.<port>.*` (including `bindAddress`), the `port` /
-///   `connectAddress` of every Service in `in_scope` (the Services earlier
-///   in the same list and, for a Step Service, every Job Service), and the
+///   `connectAddress` of every other Service in `in_scope` (the document's
+///   Services) and of every `requirements` entry's declared ports, and the
 ///   `<ServiceScript>.let` bindings. Used for `variables`, every action's
-///   `command` / `args`, and embedded-file `data`. `Task.*` is never in
-///   scope within a Service.
+///   `command` / `args`, and embedded-file `data`. `Task.*` and `Step.*` are
+///   never in scope within a Service.
 ///
-/// `enclosing_let_names` are the step-level `let` names (empty for a Job
-/// Service), which neither `let` may shadow.
+/// `enclosing_let_names` are names neither `let` may shadow (none today; a
+/// Service belongs to no Step).
 #[allow(clippy::too_many_arguments)]
 fn validate_service_format_strings<'a>(
     svc: &Service,
@@ -2505,6 +2482,7 @@ fn validate_service_format_strings<'a>(
     base_template_symtab: &SymbolTable,
     enclosing_let_names: &HashSet<String>,
     in_scope: impl Iterator<Item = &'a Service> + Clone,
+    requirements: &[ServiceRequirement],
     path: &[PathElement],
     p8: &Pass8<'_>,
     errors: &mut ValidationErrors,
@@ -2617,6 +2595,7 @@ fn validate_service_format_strings<'a>(
     }
     add_unresolved_service_file_symbols(&mut session_symtab, svc).expect("symtab");
     add_unresolved_service_symbols(&mut session_symtab, in_scope, Some(svc)).expect("symtab");
+    add_unresolved_requirement_symbols(&mut session_symtab, requirements).expect("symtab");
 
     let script_path = path_field(path, "script");
     let mut script_let_names = HashSet::new();
@@ -2813,10 +2792,9 @@ fn validate_action_timing_fs(
 /// [`check_carried_forward_environment`].
 ///
 /// `symtab` is the service-execution check table: concrete `Param.*` /
-/// `RawParam.*` / `Job.Name` (and `Step.Name` for a Step Service) /
-/// step- and service-level `let` values, with `Unresolved` placeholders
-/// for `Session.*`, PATH `Param.*`, `Service.File.*`, and the in-scope
-/// `Service.<name>.<port>.*` endpoints, and the `<ServiceScript>.let`
+/// `RawParam.*` / `Job.Name` / service-level `let` values, with `Unresolved`
+/// placeholders for `Session.*`, PATH `Param.*`, `Service.File.*`, and the
+/// in-scope `Service.<name>.<port>.*` endpoints, and the `<ServiceScript>.let`
 /// bindings evaluated in.
 pub(crate) fn check_carried_forward_service(
     svc: &Service,

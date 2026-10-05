@@ -1,0 +1,18 @@
+# An Environment Template that defines `R` but does not satisfy the
+# requirement of service_required_consumer.yaml: its only port is
+# `main` with protocol UDP (the requirement declares `main`, TCP).
+# Rejected at submission (Template Schemas §1.2.2 item 2), so it never runs.
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: R
+    ports:
+      - name: main
+        protocol: UDP
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('openjd_service_ready: never', flush=True)"]

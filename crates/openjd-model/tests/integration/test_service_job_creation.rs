@@ -18,7 +18,7 @@ use openjd_model::job::service_symbols::{
     add_wrapped_service_symbols, build_service_symbol_table, ServiceEndpoint, ServiceEndpoints,
 };
 use openjd_model::job::{
-    self, CompletedTasksPolicy, RunScope, ServiceHealthCheck, ServicePortProtocol,
+    self, CompletedTasksPolicy, RunScope, ServiceHealthCheck, ServicePortProtocol, ServiceScope,
 };
 use openjd_model::{
     create_job, decode_job_template, CallerLimits, JobParameterInputValues, ModelError,
@@ -27,7 +27,7 @@ use openjd_model::{
 const EXTS: &[&str] = &["EXPR", "SERVICE", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"];
 
 const RFC_VALKEY: &str = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
-const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/per-step-coordinator.job.yaml");
+const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/step-coordinator.job.yaml");
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -93,7 +93,7 @@ fn symtab_of(st: &openjd_expr::SerializedSymbolTable) -> SymbolTable {
 #[test]
 fn valkey_example_creates_a_job_service_with_defaults_applied() {
     let job = create_ok(RFC_VALKEY, &[("FrameEnd", "10")]);
-    let services = job.job_services.as_ref().expect("jobServices");
+    let services = job.services.as_ref().expect("services");
     assert_eq!(services.len(), 1);
     let cache = &services[0];
     assert_eq!(cache.name, "Cache");
@@ -156,7 +156,11 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
             .collect::<Vec<_>>(),
         vec!["onEnter", "onRun"]
     );
-    assert!(job.steps[0].step_services.is_none());
+    // The only Step references the Service, so its scope is that Step
+    // (§9.1 item 1); it references no other Service and has no dependencies.
+    assert_eq!(cache.scope, ServiceScope::steps(["ProcessFrames"]));
+    assert!(cache.references.is_empty());
+    assert!(cache.dependencies.is_none());
     // The step script still references the Service, unresolved.
     let data = job.steps[0].script.embedded_files.as_ref().unwrap()[0]
         .data
@@ -168,13 +172,17 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
 }
 
 #[test]
-fn coordinator_example_creates_a_step_service() {
+fn coordinator_example_creates_a_service_scoped_to_one_step() {
     let job = create_ok(RFC_COORDINATOR, &[]);
-    assert!(job.job_services.is_none());
-    let services = job.steps[0].step_services.as_ref().expect("stepServices");
+    let services = job.services.as_ref().expect("services");
     assert_eq!(services.len(), 1);
     let c = &services[0];
     assert_eq!(c.name, "Coordinator");
+    // Only RenderTiles references the Service (§9.1 item 1); PrepareScene is
+    // not in its scope.
+    assert_eq!(c.scope, ServiceScope::steps(["RenderTiles"]));
+    assert!(!c.scope.contains("PrepareScene"));
+    assert!(c.references.is_empty());
     assert_eq!(c.port_names().collect::<Vec<_>>(), vec!["api", "metrics"]);
     // STDOUT without healthIntervalSeconds: no heartbeat; failureThreshold
     // takes its default but has nothing to count.
@@ -235,7 +243,7 @@ parameterDefinitions:
   - { name: Dir, type: PATH, default: tmp }
   - { name: Text, type: STRING, default: "6" }
   - { name: Amount, type: STRING, default: amount.worker.vcpu }
-jobServices:
+services:
   - name: Cache
     let:
       - metrics = Param.Port + 1000
@@ -276,25 +284,24 @@ jobServices:
           timeout: "{{ metrics }}"
         onHealthCheck:
           command: probe
+  - name: Side
+    let:
+      - tag = Job.Name + string(2)
+    ports:
+      - name: p
+    restartPolicy:
+      completedTasks: KEEP
+    variables:
+      TAG: "{{ tag }}"
+      UP: "{{ Service.Cache.main.connectAddress }}"
+    script:
+      actions:
+        onRun:
+          command: side
 steps:
   - name: S
     let:
       - n = 2
-    stepServices:
-      - name: Side
-        let:
-          - tag = Step.Name + string(n)
-        ports:
-          - name: p
-        restartPolicy:
-          completedTasks: KEEP
-        variables:
-          TAG: "{{ tag }}"
-          UP: "{{ Service.Cache.main.connectAddress }}"
-        script:
-          actions:
-            onRun:
-              command: side
     script:
       actions:
         onRun:
@@ -305,7 +312,7 @@ steps:
 #[test]
 fn numeric_fields_resolve_in_the_service_let_scope() {
     let job = create_ok(NUMERIC, &[("Port", "7000")]);
-    let cache = &job.job_services.as_ref().unwrap()[0];
+    let cache = &job.services.as_ref().unwrap()[0];
     let ports: Vec<(&str, Option<u16>)> = cache
         .ports
         .iter()
@@ -369,7 +376,7 @@ fn numeric_fields_resolve_in_the_service_let_scope() {
 #[test]
 fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
     let job = create_ok(NUMERIC, &[]);
-    let cache = &job.job_services.as_ref().unwrap()[0];
+    let cache = &job.services.as_ref().unwrap()[0];
     let st = symtab_of(cache.resolved_symtab.as_ref().unwrap());
     // `label` and `metrics` are referenced by host-resolved fields.
     assert_eq!(
@@ -384,11 +391,11 @@ fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
     assert!(st.get_value("Param.Port").is_none());
     assert!(st.get_value("Job.Name").is_none());
 
-    let side = &job.steps[0].step_services.as_ref().unwrap()[0];
+    let side = &job.services.as_ref().unwrap()[1];
     let st = symtab_of(side.resolved_symtab.as_ref().unwrap());
     assert_eq!(
         st.get_value("tag"),
-        Some(&ExprValue::String("S2".to_string()))
+        Some(&ExprValue::String("Test2".to_string()))
     );
     assert_eq!(side.restart_policy.max_attempts, 0);
     assert_eq!(
@@ -412,12 +419,12 @@ fn numeric_fields_are_range_checked_at_job_creation() {
     let err = create_err(NUMERIC, &[("Port", "70000")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."
     );
     let err = create_err(NUMERIC, &[("Attempts", "-1")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."
     );
 }
 
@@ -431,7 +438,7 @@ fn numeric_field_that_does_not_resolve_to_an_integer_fails() {
     let err = create_err(&tmpl, &[]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> healthCheck -> readinessIntervalSeconds:\n\tmust be an integer."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> healthCheck -> readinessIntervalSeconds:\n\tmust be an integer."
     );
     // Whole-field non-int against the `int?` target is a resolution error.
     let tmpl = NUMERIC.replace(
@@ -441,7 +448,7 @@ fn numeric_field_that_does_not_resolve_to_an_integer_fails() {
     let err = create_err(&tmpl, &[("Text", "soon")]);
     assert!(
         err.starts_with(
-            "Format string error: jobServices[0] -> healthCheck -> readinessIntervalSeconds: "
+            "Format string error: services[0] -> healthCheck -> readinessIntervalSeconds: "
         ),
         "got: {err}"
     );
@@ -462,7 +469,7 @@ parameterDefinitions:
   - name: Patience
     type: INT
     default: 60
-jobServices:
+services:
   - name: Store
     let:
       - strikes = 3 if Param.Patience > 30 else 1
@@ -496,7 +503,7 @@ jobServices:
         &[],
     );
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].health_check,
+        job.services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Command {
             readiness_interval_seconds: 6,
             readiness_timeout_seconds: 60,
@@ -510,7 +517,7 @@ jobServices:
         &[("Patience", "20")],
     );
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].health_check,
+        job.services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::TcpConnect {
             ports: vec!["main".to_string()],
             readiness_interval_seconds: 2,
@@ -521,7 +528,7 @@ jobServices:
     );
     let job = create_ok(&template(&format!("      type: STDOUT\n{THREE}"), ""), &[]);
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].health_check,
+        job.services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Stdout {
             readiness_timeout_seconds: 60,
             health_interval_seconds: Some(30),
@@ -537,7 +544,7 @@ jobServices:
         &[],
     );
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].health_check,
+        job.services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::Stdout {
             readiness_timeout_seconds: 300,
             health_interval_seconds: None,
@@ -561,7 +568,7 @@ jobServices:
         assert_eq!(
             err,
             format!(
-                "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> \
+                "Model validation error: 1 validation error for JobTemplate\nservices[0] -> \
                  healthCheck -> {field}:\n\tmust be > 0."
             )
         );
@@ -575,7 +582,7 @@ jobServices:
     );
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> \
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> \
          healthCheck -> healthIntervalSeconds:\n\tmust be > 0."
     );
 }
@@ -598,7 +605,7 @@ fn service_host_requirements_errors_carry_the_service_path() {
     let err = create_err(NUMERIC, &[("Amount", "amount.worker.memory")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.worker.memory'."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.worker.memory'."
     );
     let tmpl = NUMERIC.replace(
         "        - name: \"{{ Param.Amount }}\"\n          min: 1",
@@ -607,23 +614,38 @@ fn service_host_requirements_errors_carry_the_service_path() {
     let err = create_err(&tmpl, &[("Text", "beos")]);
     assert!(
         err.starts_with(
-            "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> hostRequirements -> attributes[0] -> anyOf[0]:\n\t"
+            "Model validation error: 1 validation error for JobTemplate\nservices[0] -> hostRequirements -> attributes[0] -> anyOf[0]:\n\t"
         ),
         "got: {err}"
     );
 }
 
 #[test]
-fn step_service_errors_carry_the_step_path() {
+fn second_service_errors_carry_its_index() {
     let tmpl = NUMERIC.replace(
-        "        ports:\n          - name: p\n",
-        "        ports:\n          - name: p\n            port: \"{{ Param.Port - 6379 }}\"\n",
+        "    ports:\n      - name: p\n",
+        "    ports:\n      - name: p\n        port: \"{{ Param.Port - 6379 }}\"\n",
     );
     let err = create_err(&tmpl, &[]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> stepServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."
+        "Model validation error: 1 validation error for JobTemplate\nservices[1] -> ports[0] -> port:\n\tmust be between 1 and 65535."
     );
+}
+
+/// The NUMERIC template's scopes: Step `S` references `Side`, and `Side`
+/// references `Cache`, so both are scoped to `S` (§9.1 items 1 and 3), and
+/// `Side.references` records the edge.
+#[test]
+fn numeric_template_scopes_follow_the_references() {
+    let job = create_ok(NUMERIC, &[]);
+    let services = job.services.as_ref().unwrap();
+    assert_eq!(services[0].name, "Cache");
+    assert_eq!(services[0].scope, ServiceScope::steps(["S"]));
+    assert!(services[0].references.is_empty());
+    assert_eq!(services[1].name, "Side");
+    assert_eq!(services[1].scope, ServiceScope::steps(["S"]));
+    assert_eq!(services[1].references, vec!["Cache".to_string()]);
 }
 
 #[test]
@@ -652,7 +674,7 @@ extensions: [SERVICE, EXPR]
 name: Test
 parameterDefinitions:
   - { name: Count, type: INT, default: 1 }
-jobServices:
+services:
   - name: A
     ports: [{ name: p }]
     variables:
@@ -672,7 +694,7 @@ steps:
     let err = create_err(tmpl, &[("Count", "2049")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> variables -> BIG:\n\tresolves to at least 2049 characters, exceeding the maximum of 2048."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> variables -> BIG:\n\tresolves to at least 2049 characters, exceeding the maximum of 2048."
     );
 }
 
@@ -684,7 +706,7 @@ extensions: [SERVICE, EXPR]
 name: Test
 parameterDefinitions:
   - { name: D, type: INT, default: 1 }
-jobServices:
+services:
   - name: A
     ports: [{ name: p }]
     script:
@@ -735,7 +757,7 @@ jobEnvironments:
         onWrapServiceRun: { command: echo }
         onWrapServiceHealthCheck: { command: echo }
         onWrapServiceExit: { command: echo }
-jobServices:
+services:
   - name: A
     ports: [{ name: p }]
     script:
@@ -844,7 +866,7 @@ fn hash_of<T: Hash>(v: &T) -> u64 {
 fn job_with_services_round_trips_eq_and_hash() {
     let job = create_ok(NUMERIC, &[]);
     let json = serde_json::to_value(&job).unwrap();
-    let svc = &json["jobServices"][0];
+    let svc = &json["services"][0];
     assert_eq!(svc["name"], "Cache");
     assert_eq!(
         svc["ports"][0],
@@ -874,31 +896,36 @@ fn job_with_services_round_trips_eq_and_hash() {
     );
     assert!(svc["resolvedSymTab"].is_array());
     let back: job::Service = serde_json::from_value(svc.clone()).unwrap();
-    assert_eq!(&back, &job.job_services.as_ref().unwrap()[0]);
+    assert_eq!(&back, &job.services.as_ref().unwrap()[0]);
+    assert_eq!(hash_of(&back), hash_of(&job.services.as_ref().unwrap()[0]));
     assert_eq!(
-        hash_of(&back),
-        hash_of(&job.job_services.as_ref().unwrap()[0])
+        svc["scope"],
+        serde_json::json!({ "kind": "steps", "steps": ["S"] })
     );
-    let step_svc: job::Service =
-        serde_json::from_value(json["steps"][0]["stepServices"][0].clone()).unwrap();
-    assert_eq!(&step_svc, &job.steps[0].step_services.as_ref().unwrap()[0]);
+    // No references and no dependencies: both keys are omitted.
+    assert!(svc.get("references").is_none(), "got {svc}");
+    assert!(svc.get("dependencies").is_none(), "got {svc}");
+    let side_json = &json["services"][1];
+    assert_eq!(side_json["references"], serde_json::json!(["Cache"]));
+    let side_back: job::Service = serde_json::from_value(side_json.clone()).unwrap();
+    assert_eq!(&side_back, &job.services.as_ref().unwrap()[1]);
 
     // Services created twice from the same inputs are equal and hash
     // equal; a different parameter value makes them differ. (The PATH
-    // parameter resolves against a fresh directory per call, so the Step
+    // parameter resolves against a fresh directory per call, so the `Side`
     // Service — which does not reference it — is the stable comparison.)
     let again = create_ok(NUMERIC, &[]);
-    let side = |j: &job::Job| j.steps[0].step_services.as_ref().unwrap()[0].clone();
+    let side = |j: &job::Job| j.services.as_ref().unwrap()[1].clone();
     assert_eq!(side(&job), side(&again));
     assert_eq!(hash_of(&side(&job)), hash_of(&side(&again)));
     let other = create_ok(NUMERIC, &[("Port", "7000")]);
     assert_ne!(
-        job.job_services.as_ref().unwrap()[0].ports,
-        other.job_services.as_ref().unwrap()[0].ports
+        job.services.as_ref().unwrap()[0].ports,
+        other.services.as_ref().unwrap()[0].ports
     );
 
     // `variables` equality is order-insensitive.
-    let svc = &job.job_services.as_ref().unwrap()[0];
+    let svc = &job.services.as_ref().unwrap()[0];
     let mut reordered = svc.clone();
     let mut pairs: Vec<(String, FormatString)> = svc
         .variables
@@ -927,10 +954,10 @@ steps:
           command: run
 "#;
     let job = create_ok(tmpl, &[]);
-    assert!(job.job_services.is_none());
+    assert!(job.services.is_none());
     let json = serde_json::to_value(&job).unwrap();
-    assert!(json.get("jobServices").is_none());
-    assert!(json["steps"][0].get("stepServices").is_none());
+    assert!(json.get("services").is_none());
+    assert!(json.get("requiresServices").is_none());
     let step: job::Step = serde_json::from_value(json["steps"][0].clone()).unwrap();
     assert_eq!(step, job.steps[0]);
 }
@@ -951,7 +978,7 @@ name: Test
 parameterDefinitions:
   - {{ name: Ingest, type: INT, default: 8125 }}
   - {{ name: Api, type: INT, default: 8080 }}
-jobServices:
+services:
   - name: Metrics
     ports:
       - name: ingest
@@ -976,7 +1003,7 @@ steps:
 #[test]
 fn port_protocol_is_carried_into_the_job_and_tcp_is_omitted_from_json() {
     let job = create_ok(&protocol_template(""), &[]);
-    let svc = &job.job_services.as_ref().unwrap()[0];
+    let svc = &job.services.as_ref().unwrap()[0];
     assert_eq!(
         svc.ports,
         vec![
@@ -1008,7 +1035,7 @@ fn port_protocol_is_carried_into_the_job_and_tcp_is_omitted_from_json() {
 #[test]
 fn default_tcp_connect_probes_only_the_tcp_ports() {
     let job = create_ok(&protocol_template(""), &[]);
-    let svc = &job.job_services.as_ref().unwrap()[0];
+    let svc = &job.services.as_ref().unwrap()[0];
     assert_eq!(
         svc.health_check,
         ServiceHealthCheck::TcpConnect {
@@ -1027,7 +1054,7 @@ fn default_tcp_connect_probes_only_the_tcp_ports() {
         &[],
     );
     assert_eq!(
-        job.job_services.as_ref().unwrap()[0].health_check,
+        job.services.as_ref().unwrap()[0].health_check,
         ServiceHealthCheck::TcpConnect {
             ports: vec!["api".to_string()],
             readiness_interval_seconds: 1,
@@ -1045,7 +1072,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
         &protocol_template(""),
         &[("Ingest", "5353"), ("Api", "5353")],
     );
-    let ports: Vec<Option<u16>> = job.job_services.as_ref().unwrap()[0]
+    let ports: Vec<Option<u16>> = job.services.as_ref().unwrap()[0]
         .ports
         .iter()
         .map(|p| p.port)
@@ -1057,7 +1084,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
     let err = create_err(&tmpl, &[("Ingest", "6379"), ("Api", "6379")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
     );
     // One literal and one format string are compared too.
     let tmpl = protocol_template("    healthCheck:\n      type: STDOUT\n").replace(
@@ -1071,7 +1098,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
     let err = create_err(&tmpl, &[("Api", "9000")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\njobServices[0] -> ports[1] -> port:\n\tUDP port 9000 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> ports[1] -> port:\n\tUDP port 9000 is also used by port 'ingest'; two ports with the same protocol must not have the same port number."
     );
 }
 
@@ -1082,7 +1109,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
 #[test]
 fn service_symbol_table_resolves_the_rfc_examples_format_strings() {
     let job = create_ok(RFC_VALKEY, &[("FrameEnd", "1")]);
-    let cache = &job.job_services.as_ref().unwrap()[0];
+    let cache = &job.services.as_ref().unwrap()[0];
     let endpoints = ServiceEndpoints::new(
         cache.name.clone(),
         cache
