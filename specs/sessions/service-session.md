@@ -118,20 +118,19 @@ RUNNING` (same shape as `InvalidState`).
 pub struct ServiceSessionConfig {
     pub session: SessionConfig,                 // as for a Task Session; `profile` is the Service's document's
     pub service: job::Service,
-    pub environments: Vec<job::Environment>,    // the scope's Environments, in entry order
+    pub environments: Vec<job::Environment>,    // the Job's Environments, in entry order
     pub environment_profiles: Vec<Option<ModelProfile>>, // per entry of `environments`: its document's profile when not the Service's
     pub endpoints: ServiceEndpoints,            // own ports: port, bindAddress, connectAddress
-    pub in_scope_endpoints: Vec<ServiceEndpoints>, // earlier Services (no bindAddress)
+    pub in_scope_endpoints: Vec<ServiceEndpoints>, // the Services it references (no bindAddress)
 }
 ```
 
 **Documents and profiles.** `session.profile` is the profile of the Service's
 *own* document (Template Schemas §1.2 item 3: an extension applies to the
-document that lists it): the Job Template's for a `jobServices` /
-`stepServices` entry, the attached Environment Template's for an external
-Service. It governs the Service's actions, `variables`, `<ServiceScript>.let`, and
-embedded files.
-The scope's Environments may come from other documents — an external
+document that lists it): the Job Template's for a `services` entry, the
+attached Environment Template's for an external Service. It governs the
+Service's actions, `variables`, `<ServiceScript>.let`, and embedded files.
+The Job's Environments may come from other documents — an external
 Service's Session enters the Job Template's `jobEnvironments`; a Job Template
 Service's Session enters the attached Environments — so
 `environment_profiles[i]` carries `Some(profile)` for `environments[i]` when
@@ -177,10 +176,17 @@ Banner `Starting Service: <name>`. Any error leaves the state `StartFailed`
 (a *start failure*), logs `Service '<name>' failed to start: <error>`, and
 returns it; `end()` is still required.
 
-1. **The scope's Environments** (RFC 0009 "Services run inside
-   Environments"). For each configured Environment in order: if
-   `!env.runs_in(RunScope::Service)`, log `Skipping Environment '<name>': its
-   runScope does not include SERVICE` and continue; otherwise
+1. **The Job's Environments** (RFC 0009 "Services run inside
+   Environments"; a Service belongs to no Step, so a Step's
+   `stepEnvironments` are never configured here). For each configured
+   Environment in order: if `!env.runs_in(RunScope::Service)` — its explicit
+   `runScope` excludes `SERVICE`, or it is absent and job creation
+   materialized the `[TASK]` default of an Environment that references
+   `Service.*` — log `Skipping Environment '<name>': its runScope does not
+   include SERVICE` through `logging::log_session_note_tagged` (a tagged
+   `BANNER` line under the Session's `log_tag`, so a runner that prints the
+   tagged banners shows it; `PROCESS_CONTROL` without a tag) and continue;
+   otherwise
    `Session::enter_environment_with_profile(env, env.resolved_symtab, None,
    None, environment_profiles[i])` — its own document's library when it has
    one, else the Session's. Job and Step Environments cannot reference

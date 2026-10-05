@@ -15,7 +15,7 @@ parameterDefinitions:
     type: INT
     default: 2
 
-jobServices:
+services:
   - name: Cache
     description: "A Valkey store the Job's Tasks share to cache and coordinate."
     ports:

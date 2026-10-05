@@ -7,7 +7,7 @@
 use super::constrained_strings::{Description, ExtensionName};
 use super::environment::Environment;
 use super::parameters::JobParameterDefinition;
-use super::service::Service;
+use super::service::{Service, ServiceRequirement};
 use super::step::StepTemplate;
 use crate::format_string::FormatString;
 use serde::Deserialize;
@@ -24,15 +24,34 @@ pub struct JobTemplate {
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
-    /// RFC 0009 — the Services every Task of the Job depends on. Requires
-    /// the `SERVICE` extension.
-    pub job_services: Option<Vec<Service>>,
+    /// §1.1 item 8 (RFC 0009) — the Services the Job runs, each started
+    /// before any Task of a Step in its scope and stopped once no such Task
+    /// remains. A Service's scope is computed from the template's
+    /// `Service.*` references (§9.1); list order carries no meaning.
+    /// Requires the `SERVICE` extension.
+    pub services: Option<Vec<Service>>,
+    /// §1.1 item 9 (RFC 0009) — the external Services whose endpoints this
+    /// Job Template reads directly, each with the ports it uses. Requires
+    /// the `SERVICE` extension; permitted only in a Job Template.
+    pub requires_services: Option<Vec<ServiceRequirement>>,
     pub steps: Vec<StepTemplate>,
 }
 
 impl JobTemplate {
     pub fn name(&self) -> &FormatString {
         &self.name
+    }
+
+    /// The Services this template declares, in declaration order; empty
+    /// when `services` is absent.
+    pub fn services(&self) -> &[Service] {
+        self.services.as_deref().unwrap_or_default()
+    }
+
+    /// The external Services this template requires, in declaration order;
+    /// empty when `requiresServices` is absent.
+    pub fn requires_services(&self) -> &[ServiceRequirement] {
+        self.requires_services.as_deref().unwrap_or_default()
     }
 
     pub fn description(&self) -> Option<&str> {

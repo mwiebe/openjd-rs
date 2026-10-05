@@ -4,163 +4,133 @@
 
 //! Scope-specific diagnostics for out-of-scope `Service.*` and `Task.*`
 //! references (RFC 0009 "The `Service.*` scope", Template Schemas §9 scope
-//! list, §9.7 items 1–2, §4 item 3.2, §7.3.1).
+//! list, §9.8, §9.9 items 1–2, §4 item 3.2, §7.3.1).
 //!
 //! Pass 8 validates every format string against a symbol table seeded with
 //! exactly the `Service.*` values in scope at that site, so a reference that
 //! breaks a scope rule surfaces as the expression language's generic
 //! `Undefined variable: 'Service.X.p.port'.` — sometimes with a `Did you
 //! mean` pointing at a *different* Service whose name is one edit away. The
-//! author then has to work out which of the half-dozen scope rules they hit.
+//! author then has to work out which scope rule they hit.
 //!
 //! This module runs after pass 8 has walked a document and rewrites those
-//! messages when the referenced Service **is declared somewhere in the
-//! document**: it classifies the reference site from the error's path, finds
-//! the declaration, and states the rule that keeps it out of scope. A name
-//! that is declared nowhere keeps the generic message (with its suggestion),
-//! since a typo is then the likeliest cause. Only the sentence after
-//! `Failed to parse interpolation expression at [s, e]. ` (or after
-//! `Invalid expression in let binding 'x': `) changes; the path, the
+//! messages when the referenced Service **is declared or required somewhere
+//! in the document**: it classifies the reference site from the error's
+//! path, finds the declaration, and states the rule that keeps it out of
+//! scope. A name that is declared nowhere keeps the generic message (with
+//! its suggestion), since a typo is then the likeliest cause. Only the
+//! sentence after `Failed to parse interpolation expression at [s, e]. ` (or
+//! after `Invalid expression in let binding 'x': `) changes; the path, the
 //! expression source and caret lines that follow it are untouched.
 //!
-//! The rules, in the order they are tried for a declared `Service.<svc>`:
+//! The rules, in the order they are tried for a declared or required
+//! `Service.<svc>`:
 //!
 //! 1. `Task.*` inside a Service (its actions, `variables`, `let`,
-//!    embedded files): *Task.\* is not available
-//!    within a Service.* (§9 item 3.)
+//!    embedded files): *Task.\* is not available within a Service.* (§9
+//!    item 3.)
 //! 2. The site is a job-creation-time field (`hostRequirements`, a `let`
 //!    list, a `parameterSpace` range, an action `timeout` /
 //!    `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the
 //!    four `<ServiceHealthCheck>` numeric fields): *Service.\* is not
-//!    available in
-//!    `<field>`: it is resolved at job creation, before any Service has an
-//!    endpoint.* (§3.6.2, §9.7 item 1.)
-//! 3. The site is an Environment whose `runScope` includes `SERVICE` (the
-//!    default): *Environment 'E' is entered in Service Sessions (its
+//!    available in `<field>`: it is resolved at job creation, before any
+//!    Service has an endpoint.* (§3.6.2, §9.9 items 1–2.)
+//! 3. The site is an Environment whose explicit `runScope` includes
+//!    `SERVICE`: *Environment 'E' is entered in Service Sessions (its
 //!    runScope includes SERVICE) and may not reference Service.\*; declare
 //!    runScope: [TASK] if it configures Tasks.* (§4 item 3.2.)
-//! 4. `svc` is a Step Service of another Step (or of any Step, from a Job
-//!    Environment or Job Service): *Service 'C' is a Step Service of step
-//!    'S' and is not in scope in step 'T'.* (§9 scope item 4.)
-//! 5. `svc` is later in the referencing Service's own list: *Service 'B' is
-//!    declared later in jobServices than 'A'; a Service may reference only
-//!    itself and earlier Services.* (§9 scope items 1–2.)
-//! 6. The port is not declared: *Service 'S' has no port 'mian'; declared
-//!    ports: main.*
-//! 7. `bindAddress` outside the declaring Service: *Service.P.main.bindAddress
+//! 4. The port is not declared: *Service 'S' has no port 'mian'; declared
+//!    ports: main.* — or, for a required Service, *required Service 'R'
+//!    has no port 'x'; declared ports: main.* (§9.8.)
+//! 5. `bindAddress` of a required Service: *bindAddress of required
+//!    Service 'R' is not available; use connectAddress to reach it.*
+//!    (§9.8 item 2.)
+//! 6. `bindAddress` outside the declaring Service: *Service.P.main.bindAddress
 //!    is available only within the Service 'P' itself; use connectAddress to
 //!    reach it from elsewhere.* (§7.3.1.)
 //!
-//! Anything else — an unknown value name after a declared port, a reference
-//! with too few components, `Service.File.*` — keeps the generic message.
+//! Every inline Service is in scope in every Step's script and Step
+//! Environment, every Job Environment whose `runScope` excludes `SERVICE`,
+//! and every other Service — referencing it is what places the referrer in
+//! its scope (§9.1) — so there is no "declared elsewhere" rule left to
+//! state. Anything else — an unknown value name after a declared port, a
+//! reference with too few components, `Service.File.*` — keeps the generic
+//! message.
 
 use crate::error::{PathElement, ValidationError, ValidationErrors};
 use crate::template::{Environment, EnvironmentTemplate, JobTemplate, RunScope, Service};
 
-/// Where a Service is declared in the document.
-#[derive(Clone, Copy)]
-enum DeclSite<'a> {
-    /// `jobServices[k]`, or an Environment Template's `services[k]`.
-    Job { index: usize },
-    /// `steps[step] -> stepServices[k]`.
-    Step {
-        step: usize,
-        step_name: &'a str,
-        index: usize,
-    },
+/// One Service the document knows: declared in its `services`, or required
+/// by a Job Template's `requiresServices`.
+enum Known<'a> {
+    Declared(&'a Service),
+    Required { port_names: Vec<&'a str> },
 }
 
-/// One Service declaration of the document.
-struct Decl<'a> {
-    service: &'a Service,
-    site: DeclSite<'a>,
+impl Known<'_> {
+    fn port_names(&self) -> Vec<&str> {
+        match self {
+            Self::Declared(svc) => svc.ports.iter().map(|p| p.name.as_str()).collect(),
+            Self::Required { port_names } => port_names.clone(),
+        }
+    }
 }
 
 /// The kind of entity a format string belongs to, read off the error path.
 enum Site<'a> {
     /// A Step's `script` (its Tasks' scope).
-    Task { step: usize, step_name: &'a str },
+    Task,
     /// A Service's own session-scope fields: `variables` and `script`.
-    Service {
-        decl: DeclSite<'a>,
-        service_name: &'a str,
-    },
-    /// A Job Environment (`jobEnvironments[i]`, or an Environment
-    /// Template's `environment`).
-    JobEnvironment(&'a Environment),
-    /// `steps[i] -> stepEnvironments[j]`.
-    StepEnvironment {
-        step: usize,
-        step_name: &'a str,
-        env: &'a Environment,
-    },
+    Service { service_name: &'a str },
+    /// A Job or Step Environment, or an Environment Template's
+    /// `environment`.
+    Environment(&'a Environment),
     /// A field resolved at job creation, named for the message.
     JobCreation(&'static str),
 }
 
 /// The document's declarations and lookups, over either template kind.
 struct Document<'a> {
-    decls: Vec<Decl<'a>>,
-    job_list: &'static str,
-    /// Looks a path up to its reference site.
     job_template: Option<&'a JobTemplate>,
     env_template: Option<&'a EnvironmentTemplate>,
 }
 
 impl<'a> Document<'a> {
     fn for_job_template(jt: &'a JobTemplate) -> Self {
-        let mut decls = Vec::new();
-        for (index, service) in jt.job_services.iter().flatten().enumerate() {
-            decls.push(Decl {
-                service,
-                site: DeclSite::Job { index },
-            });
-        }
-        for (step, st) in jt.steps.iter().enumerate() {
-            for (index, service) in st.step_services.iter().flatten().enumerate() {
-                decls.push(Decl {
-                    service,
-                    site: DeclSite::Step {
-                        step,
-                        step_name: &st.name,
-                        index,
-                    },
-                });
-            }
-        }
         Self {
-            decls,
-            job_list: "jobServices",
             job_template: Some(jt),
             env_template: None,
         }
     }
 
     fn for_environment_template(et: &'a EnvironmentTemplate) -> Self {
-        let decls = et
-            .services
-            .iter()
-            .flatten()
-            .enumerate()
-            .map(|(index, service)| Decl {
-                service,
-                site: DeclSite::Job { index },
-            })
-            .collect();
         Self {
-            decls,
-            job_list: "services",
             job_template: None,
             env_template: Some(et),
         }
     }
 
-    /// The declarations named `name`, in document order.
-    fn declared(&self, name: &str) -> Vec<&Decl<'a>> {
-        self.decls
+    fn services(&self) -> &'a [Service] {
+        match (self.job_template, self.env_template) {
+            (Some(jt), _) => jt.services(),
+            (None, Some(et)) => et.services(),
+            (None, None) => &[],
+        }
+    }
+
+    /// What the document knows about the Service named `name`.
+    fn known(&self, name: &str) -> Option<Known<'a>> {
+        if let Some(svc) = self.services().iter().find(|s| s.name == name) {
+            return Some(Known::Declared(svc));
+        }
+        let req = self
+            .job_template?
+            .requires_services()
             .iter()
-            .filter(|d| d.service.name == name)
-            .collect()
+            .find(|r| r.name == name)?;
+        Some(Known::Required {
+            port_names: req.port_names().collect(),
+        })
     }
 
     /// Classify the entity the error at `path` belongs to; `None` when the
@@ -176,53 +146,27 @@ impl<'a> Document<'a> {
             [Field(f), Index(i), rest @ ..] if f == "steps" => {
                 let step = self.job_template?.steps.get(*i)?;
                 match rest {
-                    [Field(g), Index(k), ..] if g == "stepServices" => {
-                        let svc = step.step_services.as_ref()?.get(*k)?;
-                        Some(Site::Service {
-                            decl: DeclSite::Step {
-                                step: *i,
-                                step_name: &step.name,
-                                index: *k,
-                            },
-                            service_name: &svc.name,
-                        })
-                    }
                     [Field(g), Index(j), ..] if g == "stepEnvironments" => {
                         let env = step.step_environments.as_ref()?.get(*j)?;
-                        Some(Site::StepEnvironment {
-                            step: *i,
-                            step_name: &step.name,
-                            env,
-                        })
+                        Some(Site::Environment(env))
                     }
-                    [Field(g), ..] if g == "script" => Some(Site::Task {
-                        step: *i,
-                        step_name: &step.name,
-                    }),
+                    [Field(g), ..] if g == "script" => Some(Site::Task),
                     _ => None,
                 }
             }
-            [Field(f), Index(k), ..] if f == "jobServices" => {
-                let svc = self.job_template?.job_services.as_ref()?.get(*k)?;
-                Some(Site::Service {
-                    decl: DeclSite::Job { index: *k },
-                    service_name: &svc.name,
-                })
-            }
             [Field(f), Index(k), ..] if f == "services" => {
-                let svc = self.env_template?.services.as_ref()?.get(*k)?;
+                let svc = self.services().get(*k)?;
                 Some(Site::Service {
-                    decl: DeclSite::Job { index: *k },
                     service_name: &svc.name,
                 })
             }
             [Field(f), Index(i), ..] if f == "jobEnvironments" => {
                 let env = self.job_template?.job_environments.as_ref()?.get(*i)?;
-                Some(Site::JobEnvironment(env))
+                Some(Site::Environment(env))
             }
-            [Field(f), ..] if f == "environment" => Some(Site::JobEnvironment(
-                self.env_template?.environment.as_ref()?,
-            )),
+            [Field(f), ..] if f == "environment" => {
+                Some(Site::Environment(self.env_template?.environment.as_ref()?))
+            }
             _ => None,
         }
     }
@@ -307,8 +251,7 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
     let svc = parts.next()?;
     let port = parts.next();
     let value = parts.next();
-    let decls = doc.declared(svc);
-    let first = decls.first()?;
+    let known = doc.known(svc)?;
 
     // Rule 2: job-creation fields never see Service.*.
     if let Site::JobCreation(field) = site {
@@ -319,12 +262,7 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
     }
 
     // Rule 3: an Environment entered in Service Sessions.
-    let env = match site {
-        Site::JobEnvironment(env) => Some(*env),
-        Site::StepEnvironment { env, .. } => Some(*env),
-        Site::Task { .. } | Site::Service { .. } | Site::JobCreation(_) => None,
-    };
-    if let Some(env) = env {
+    if let Site::Environment(env) = site {
         if env.runs_in(RunScope::Service) {
             return Some(format!(
                 "Environment '{}' is entered in Service Sessions (its runScope includes SERVICE) \
@@ -334,94 +272,39 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
         }
     }
 
-    // Is any declaration of `svc` in scope here (by name)?
-    let same_list = |d: &Decl<'_>, decl: &DeclSite<'_>| -> Option<(usize, usize)> {
-        match (d.site, decl) {
-            (DeclSite::Job { index: k }, DeclSite::Job { index }) => Some((k, *index)),
-            (
-                DeclSite::Step {
-                    step: s, index: k, ..
-                },
-                DeclSite::Step { step, index, .. },
-            ) if s == *step => Some((k, *index)),
-            _ => None,
-        }
-    };
-    let in_scope = decls.iter().find(|d| match (d.site, site) {
-        // A Job Service is in scope everywhere but in a Job Service before it.
-        (DeclSite::Job { .. }, Site::Service { decl, .. }) => match same_list(d, decl) {
-            Some((k, index)) => k <= index,
-            None => true,
-        },
-        (DeclSite::Job { .. }, _) => true,
-        // A Step Service is in scope in its Step's Tasks and Step
-        // Environments, and in the Step Services at or after it.
-        (DeclSite::Step { .. }, Site::Service { decl, .. }) => {
-            matches!(same_list(d, decl), Some((k, index)) if k <= index)
-        }
-        (DeclSite::Step { step: s, .. }, Site::Task { step, .. }) => s == *step,
-        (DeclSite::Step { step: s, .. }, Site::StepEnvironment { step, .. }) => s == *step,
-        (DeclSite::Step { .. }, Site::JobEnvironment(_) | Site::JobCreation(_)) => false,
-    });
-
-    let Some(decl) = in_scope else {
-        // Rules 4 and 5: declared, but not here.
-        if let Site::Service {
-            decl: here,
-            service_name,
-            ..
-        } = site
-        {
-            // Rule 5: later in the referencing Service's own list.
-            if decls
-                .iter()
-                .any(|d| matches!(same_list(d, here), Some((k, index)) if k > index))
-            {
-                let list = match here {
-                    DeclSite::Job { .. } => doc.job_list,
-                    DeclSite::Step { .. } => "stepServices",
-                };
-                return Some(format!(
-                    "Service '{svc}' is declared later in {list} than '{service_name}'; a Service \
-                     may reference only itself and earlier Services."
-                ));
-            }
-        }
-        // Rule 4: a Step Service seen from outside its Step.
-        let DeclSite::Step { step_name, .. } = first.site else {
-            return None;
-        };
-        let here = match site {
-            Site::Task { step_name, .. } | Site::StepEnvironment { step_name, .. } => {
-                format!("step '{step_name}'")
-            }
-            Site::JobEnvironment(env) => format!("Job Environment '{}'", env.name),
-            Site::Service { service_name, .. } => format!("Service '{service_name}'"),
-            Site::JobCreation(field) => field.to_string(),
-        };
-        return Some(format!(
-            "Service '{svc}' is a Step Service of step '{step_name}' and is not in scope in {here}."
-        ));
-    };
-
-    // Rule 6: the port.
+    // Rule 4: the port.
     let port = port?;
-    let declared_ports: Vec<&str> = decl.service.ports.iter().map(|p| p.name.as_str()).collect();
+    let declared_ports = known.port_names();
     if !declared_ports.contains(&port) {
+        let what = match known {
+            Known::Declared(_) => "Service",
+            Known::Required { .. } => "required Service",
+        };
         return Some(format!(
-            "Service '{svc}' has no port '{port}'; declared ports: {}.",
+            "{what} '{svc}' has no port '{port}'; declared ports: {}.",
             declared_ports.join(", ")
         ));
     }
 
-    // Rule 7: bindAddress outside the Service itself.
     if value == Some("bindAddress") {
-        let within = matches!(site, Site::Service { service_name, .. } if *service_name == svc);
-        if !within {
-            return Some(format!(
-                "Service.{svc}.{port}.bindAddress is available only within the Service '{svc}' \
-                 itself; use connectAddress to reach it from elsewhere."
-            ));
+        match known {
+            // Rule 5: a required Service's bindAddress is never in scope.
+            Known::Required { .. } => {
+                return Some(format!(
+                    "bindAddress of required Service '{svc}' is not available; use connectAddress \
+                     to reach it."
+                ));
+            }
+            // Rule 6: bindAddress outside the Service itself.
+            Known::Declared(_) => {
+                let within = matches!(site, Site::Service { service_name } if *service_name == svc);
+                if !within {
+                    return Some(format!(
+                        "Service.{svc}.{port}.bindAddress is available only within the Service \
+                         '{svc}' itself; use connectAddress to reach it from elsewhere."
+                    ));
+                }
+            }
         }
     }
     None
@@ -489,7 +372,7 @@ mod tests {
             Some("hostRequirements")
         );
         assert_eq!(
-            job_creation_field(&p(&["jobServices", "let"])),
+            job_creation_field(&p(&["services", "let"])),
             Some("a let binding")
         );
         assert_eq!(
@@ -498,7 +381,7 @@ mod tests {
         );
         assert_eq!(
             job_creation_field(&[
-                Field("jobServices".into()),
+                Field("services".into()),
                 Index(0),
                 Field("ports".into()),
                 Index(0),

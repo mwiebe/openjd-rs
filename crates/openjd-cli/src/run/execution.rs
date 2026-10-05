@@ -7,6 +7,7 @@
 use super::*;
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::AttachedEnvironmentTemplate;
+use std::collections::BTreeSet;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     if args.verbose {
@@ -31,6 +32,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         retain_working_dir: args.preserve,
         profile: prepared.revision_profile.clone(),
         attached_profiles: prepared.attached_profiles.clone(),
+        requirement_bindings: prepared.requirement_bindings.clone(),
         cancel_token: cancel_token.clone(),
         limits: openjd_sessions::SessionLimits::from(&crate::common::caller_limits()),
     });
@@ -56,9 +58,9 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
 
     // Once a Session exists, errors must not bypass environment cleanup —
     // nor Service teardown (RFC 0009 constraint 6: a Service whose scope
-    // completes has its Session ended whatever its state). Step Services
-    // first, then Job Services (constraint 4), after the Task Session has
-    // left their Environments.
+    // completes has its Session ended whatever its state), in reference
+    // order (constraint 4), after the Task Session has left their
+    // Environments.
     ctx.exit_environments_down_to(0).await;
     ctx.services.stop_all().await;
     ctx.record_interruption();
@@ -143,14 +145,13 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
 
     // The second stage of the submission (RFC 0009, Template Schemas
     // §1.2.2): the --environment templates' Services become external
-    // Services placed before the Job Template's jobServices (each stamped
-    // with its document — names are scoped to their document, so an
-    // external `Cache` and the Job Template's `Cache` are two Services),
-    // their Environments are placed before its jobEnvironments, and the
-    // submission-time check (a wrapping Environment from a SERVICE-less
-    // document with a Service in its scope) runs against the combined Job.
-    // Each template is labeled with its path in error messages and in the
-    // run log.
+    // Services placed before the Job Template's services (each stamped
+    // with its document — an external `Cache` and the Job Template's
+    // `Cache` are two Services), their Environments are placed before its
+    // jobEnvironments, each requiresServices entry is matched to exactly
+    // one attached Service, and the submission-time wrapper check runs
+    // against the combined Job. Each template is labeled with its path in
+    // error messages and in the run log.
     let labels: Vec<String> = args
         .environments
         .iter()
@@ -169,6 +170,7 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     )
     .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
     let environment_documents = applied.combined_environment_documents(&job);
+    let requirement_bindings = applied.requirement_bindings.clone();
     let job = applied.into_combined_job(job);
     // Each attached template keeps its own profile: its Environment and
     // Services are evaluated at run time under the extensions *it* declares
@@ -183,6 +185,7 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     Ok(PreparedRun {
         job,
         environment_documents,
+        requirement_bindings,
         param_values,
         path_rules,
         revision_profile,
@@ -241,14 +244,22 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
             .into());
         }
     }
+    // Order the Steps so that a Step in the scope of a Service with
+    // `dependencies` runs after the Steps the Service depends on (RFC 0009
+    // §9 item 4), in addition to its own dependencies.
+    let ordered = with_implied_step_dependencies(job);
     let steps_to_run = if let Some(selected_idx) = selected_step_idx {
         if args.run_dependencies {
-            resolve_step_dependencies(job, selected_idx)
+            resolve_step_dependencies(&ordered, selected_idx)
         } else {
             vec![selected_idx]
         }
     } else {
-        StepDependencyGraph::new(job)?.topo_sorted()?
+        StepDependencyGraph::new(&ordered)
+            .and_then(|g| g.topo_sorted())
+            .map_err(|e| {
+                format!("{e}\n(Step dependencies include those implied by Services' dependencies)")
+            })?
     };
 
     Ok(RunSelection {
@@ -402,14 +413,51 @@ enum StepOutcome {
     /// The Step's Tasks are done (or the run is stopping).
     Done,
     /// A Service with `completedTasks: RERUN` failed: the completed Tasks
-    /// of its scope return to the queue (the Step's, or every Step's).
-    Rerun(RerunScope),
+    /// of every Step in its scope return to the queue.
+    Rerun(ServiceScope),
 }
 
 /// How a Step's Task iteration ended.
 enum TasksOutcome {
     Done,
-    Rerun(RerunScope),
+    Rerun(ServiceScope),
+}
+
+/// The Steps a `RERUN` returns to pending (RFC 0009 "`RERUN` and Step
+/// dependencies"): every selected Step in `scope`, and every selected Step
+/// that depends on one of them, directly or transitively.
+fn returned_steps(job: &Job, scope: &ServiceScope, selected: &[usize]) -> BTreeSet<String> {
+    let mut returned: BTreeSet<String> = selected
+        .iter()
+        .map(|&i| &job.steps[i].name)
+        .filter(|name| scope.contains(name))
+        .cloned()
+        .collect();
+    loop {
+        let before = returned.len();
+        for &i in selected {
+            let step = &job.steps[i];
+            if step
+                .dependencies
+                .iter()
+                .flatten()
+                .any(|d| returned.contains(&d.depends_on))
+            {
+                returned.insert(step.name.clone());
+            }
+        }
+        if returned.len() == before {
+            return returned;
+        }
+    }
+}
+
+/// `'A'`, or `'A', 'B'`, for log lines.
+fn quoted_list<'a>(names: impl Iterator<Item = &'a String>) -> String {
+    names
+        .map(|n| format!("'{n}'"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 async fn run_workload(
@@ -419,29 +467,37 @@ async fn run_workload(
     selection: &RunSelection,
 ) -> Result<(), RunError> {
     let job = &prepared.job;
-    // RFC 0009 constraint 10: a Job whose selection schedules no Task does
-    // not start its Job Services.
-    let job_runs_tasks = selection
-        .steps_to_run
+    let steps_to_run = &selection.steps_to_run;
+    let selected: BTreeSet<String> = steps_to_run
+        .iter()
+        .map(|&i| job.steps[i].name.clone())
+        .collect();
+    // Every Service of the combined Job is registered; those whose scope is
+    // every Step are activated now (RFC 0009 constraint 10: unless the
+    // selection schedules no Task), the rest when the first Step of their
+    // scope is about to run.
+    ctx.services.register(job, &prepared.environment_documents);
+    let job_runs_tasks = steps_to_run
         .iter()
         .any(|&idx| step_runs_tasks(idx, selection));
-    let job_service_count = job.job_services.as_ref().map_or(0, Vec::len);
+    let job_wide_count = ctx.services.job_wide_count();
     if job_runs_tasks {
-        ctx.services
-            .set_job_services(job, &prepared.environment_documents);
-    } else if job_service_count > 0 {
+        ctx.services.activate_job_wide();
+    } else if job_wide_count > 0 {
         println!(
-            "{}\tNot starting the {job_service_count} Job Service(s): no Task of this Job will run",
+            "{}\tNot starting the {job_wide_count} Service(s) whose scope is every Step: no Task \
+             of this Job will run",
             ctx.timestamp()
         );
     }
 
-    // Position in `steps_to_run` to resume from after a RERUN.
-    let mut resume_from = 0;
+    // The Steps whose Tasks have completed in this run; a RERUN removes the
+    // Steps it returns to the queue.
+    let mut completed: BTreeSet<String> = BTreeSet::new();
     loop {
-        // Constraints 2–3: Job Services are READY before any Task; here,
-        // before the Task Session even enters the Job's Environments (a
-        // TASK-scoped one may reference their endpoints).
+        // Constraints 2–3: Job-wide Services are READY before any Task;
+        // here, before the Task Session even enters the Job's Environments
+        // (a TASK-scoped one may reference their endpoints).
         if !ctx.is_stopping() {
             ctx.gate_services().await?;
         }
@@ -457,34 +513,39 @@ async fn run_workload(
             // An attached Environment is evaluated under its own template's
             // profile; the Job Template's own under the Session's.
             let profile = (!document.is_job_template()).then(|| prepared.profile_for(document));
-            ctx.enter_environment(env, None, document.clone(), profile)
+            ctx.enter_environment(env, None, document.clone(), profile, None)
                 .await;
         }
 
-        let mut rerun: Option<(RerunScope, usize)> = None;
-        for (pos, &step_idx) in selection.steps_to_run.iter().enumerate() {
-            if pos < resume_from || ctx.is_stopping() {
+        let mut rerun: Option<ServiceScope> = None;
+        for (pos, &step_idx) in steps_to_run.iter().enumerate() {
+            let step = &job.steps[step_idx];
+            if completed.contains(&step.name) || ctx.is_stopping() {
                 continue;
             }
+            // The Steps still to run after this one: a Service whose scope
+            // contains none of them is stopped when this Step completes.
+            let remaining: BTreeSet<String> = steps_to_run[pos + 1..]
+                .iter()
+                .map(|&i| job.steps[i].name.clone())
+                .filter(|name| !completed.contains(name))
+                .collect();
             match execute_step(
-                ctx,
-                args,
-                prepared,
-                &job.steps[step_idx],
-                step_idx,
-                selection,
+                ctx, args, step, step_idx, selection, &completed, &selected, &remaining,
             )
             .await?
             {
-                StepOutcome::Done => {}
+                StepOutcome::Done => {
+                    completed.insert(step.name.clone());
+                }
                 StepOutcome::Rerun(scope) => {
-                    rerun = Some((scope, pos));
+                    rerun = Some(scope);
                     break;
                 }
             }
         }
         ctx.exit_environments_down_to(0).await;
-        let Some((scope, pos)) = rerun.filter(|_| !ctx.is_stopping()) else {
+        let Some(scope) = rerun.filter(|_| !ctx.is_stopping()) else {
             return Ok(());
         };
         // The requeue happens only if the Service is actually relaunched:
@@ -496,67 +557,76 @@ async fn run_workload(
         if ctx.is_stopping() {
             return Ok(());
         }
+        // "RERUN and Step dependencies": every Step in the scope returns to
+        // pending, and with it every Step that depends on one of them;
+        // dependencies are resolved again from scratch. A Service that was
+        // stopped because its scope completed, and whose scope includes a
+        // returned Step, starts again in a new Service Session when that
+        // Step is next activated.
+        let returned = returned_steps(job, &scope, steps_to_run);
+        let in_scope: Vec<&String> = returned.iter().filter(|n| scope.contains(n)).collect();
+        let dependents: Vec<&String> = returned.iter().filter(|n| !scope.contains(n)).collect();
+        let mut msg = format!(
+            "Returning every completed Task of Step(s) {} to the queue: a Service with \
+             completedTasks: RERUN {} was relaunched",
+            quoted_list(in_scope.into_iter()),
+            services::scope_label(&scope)
+        );
+        if !dependents.is_empty() {
+            msg.push_str(&format!(
+                "; dependent Step(s) {} return to pending",
+                quoted_list(dependents.into_iter())
+            ));
+        }
+        println!("{}\t{msg}", ctx.timestamp());
+        for name in &returned {
+            completed.remove(name);
+        }
         // The requeued Tasks run in a new Task Session: a canceled action
         // leaves a Session ending-only (see specs/sessions/session.md
         // "Brittle Sessions"), and a scheduler would form new Sessions for
         // requeued Tasks anyway. The new Session re-enters the Job's
         // Environments, so a TASK-scoped one re-resolves the Service's
         // (possibly new) endpoints.
-        match scope {
-            RerunScope::Job => {
-                // "RERUN and Step dependencies": every Step returns to
-                // pending and dependencies are resolved again from scratch.
-                println!(
-                    "{}\tReturning every completed Task of the Job to the queue: a Job Service \
-                     with completedTasks: RERUN was relaunched; every Step returns to pending",
-                    ctx.timestamp()
-                );
-                resume_from = 0;
-            }
-            RerunScope::Step => {
-                println!(
-                    "{}\tReturning every completed Task of Step '{}' to the queue: a Step Service \
-                     with completedTasks: RERUN was relaunched",
-                    ctx.timestamp(),
-                    job.steps[selection.steps_to_run[pos]].name
-                );
-                resume_from = pos;
-            }
-        }
         let replacement = create_session(args, prepared, ctx.cancel_token.clone())?;
         ctx.replace_task_session(replacement, args.preserve);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_step(
     ctx: &mut RunContext,
     args: &RunArgs,
-    prepared: &PreparedRun,
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
+    completed: &BTreeSet<String>,
+    selected: &BTreeSet<String>,
+    remaining: &BTreeSet<String>,
 ) -> Result<StepOutcome, RunError> {
-    let job = &prepared.job;
     println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
     let runs_tasks = step_runs_tasks(step_idx, selection);
-    let step_service_count = step.step_services.as_ref().map_or(0, Vec::len);
-    if !runs_tasks && step_service_count > 0 {
-        println!(
-            "{}\tNot starting the {step_service_count} Step Service(s) of Step '{}': no Task of \
-             this Step will run",
-            ctx.timestamp(),
-            step.name
-        );
-    }
-    // A Step Service is UNREADY from the time its Step's dependencies are
-    // satisfied (constraint 3 gates the Step's Tasks on it). It is
-    // registered here and started by the gate, before the Task Session
-    // enters the Step's Environments. A Step re-running its Tasks after a
-    // RERUN finds its Services still registered.
+    // A Service scoped to this Step (among others) is UNREADY from the time
+    // the Step is about to run and its own `dependencies` have completed
+    // (constraint 3 gates the Step's Tasks on it). It is activated here and
+    // started by the gate, before the Task Session enters the Step's
+    // Environments. A Step re-running its Tasks after a RERUN finds its
+    // Services still active, or starts them again if their scope had
+    // completed.
     if runs_tasks && !ctx.is_stopping() {
         ctx.services
-            .set_step_services(job, &prepared.environment_documents, step);
+            .activate_for_step(&step.name, completed, selected)?;
         ctx.gate_services().await?;
+    } else if !runs_tasks {
+        let inactive = ctx.services.inactive_for_step(&step.name);
+        if !inactive.is_empty() {
+            println!(
+                "{}\tNot starting {} for Step '{}': no Task of this Step will run",
+                ctx.timestamp(),
+                inactive.join(", "),
+                step.name
+            );
+        }
     }
     let environment_baseline = ctx.entered_envs.len();
     ctx.step_env_baseline = environment_baseline;
@@ -569,6 +639,7 @@ async fn execute_step(
             step.resolved_symtab.clone(),
             Document::JobTemplate,
             None,
+            Some(&step.name),
         )
         .await;
     }
@@ -581,20 +652,15 @@ async fn execute_step(
     // This unwind happens before propagating task setup/runtime errors.
     ctx.exit_environments_down_to(environment_baseline).await;
     match result? {
-        TasksOutcome::Rerun(RerunScope::Step) if !ctx.is_stopping() => {
-            // The Step's Services stay registered (the failed one is
-            // relaunching); the Step's Tasks run again from the start.
-            Ok(StepOutcome::Rerun(RerunScope::Step))
-        }
-        TasksOutcome::Rerun(RerunScope::Job) if !ctx.is_stopping() => {
-            // The Step returns to pending with every other Step; its
-            // Services stop now and start again when it is next scheduled.
-            ctx.services.stop_step_services().await;
-            Ok(StepOutcome::Rerun(RerunScope::Job))
+        TasksOutcome::Rerun(scope) if !ctx.is_stopping() => {
+            // The Services stay registered (the failed one is relaunching);
+            // the returned Steps run again from the start.
+            Ok(StepOutcome::Rerun(scope))
         }
         TasksOutcome::Done | TasksOutcome::Rerun(_) => {
-            // Constraint 6: the Step's scope is complete.
-            ctx.services.stop_step_services().await;
+            // Constraint 6: a Service whose scope has no Step left to run
+            // is stopped.
+            ctx.services.stop_completed_scopes(remaining).await;
             Ok(StepOutcome::Done)
         }
     }

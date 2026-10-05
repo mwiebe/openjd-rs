@@ -5,7 +5,7 @@
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "CommandHealthCheck"
-jobServices:
+services:
   - name: Slow
     ports:
       - name: main

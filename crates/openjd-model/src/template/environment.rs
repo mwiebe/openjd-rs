@@ -21,9 +21,10 @@ pub struct Environment {
     pub description: Option<Description>,
     /// §4 item 3 (RFC 0009) — the kinds of Session this Environment is
     /// entered in, as `<RunScopeName>`s. Requires the `SERVICE` extension.
-    /// `None` means every kind of Session. Held as plain strings so that an
-    /// unrecognized name is reported with a field path by template
-    /// validation rather than as a serde error; use
+    /// `None` means the default: `[TASK]` when the Environment references a
+    /// `Service.*` value, every kind of Session otherwise. Held as plain
+    /// strings so that an unrecognized name is reported with a field path by
+    /// template validation rather than as a serde error; use
     /// [`runs_in`](Self::runs_in) to query the effective scope.
     pub run_scope: Option<Vec<String>>,
     pub script: Option<EnvironmentScript>,
@@ -32,23 +33,40 @@ pub struct Environment {
 
 impl Environment {
     /// True iff this Environment is entered in Sessions of kind `kind` (§4
-    /// item 3, RFC 0009): every kind when `runScope` is absent, else exactly
-    /// the kinds the list names. Unrecognized names, which template
-    /// validation rejects, never match.
+    /// item 3, RFC 0009): exactly the kinds the list names when `runScope`
+    /// is given; otherwise the default, which follows the Environment's own
+    /// text — `[TASK]` when any of its format strings references a
+    /// `Service.*` value (see [`references_service`](Self::references_service)),
+    /// every kind otherwise. Unrecognized names, which template validation
+    /// rejects, never match.
     pub fn runs_in(&self, kind: RunScope) -> bool {
         match &self.run_scope {
-            None => true,
+            None => !self.default_run_scope_is_task_only() || kind == RunScope::Task,
             Some(names) => names.iter().any(|n| n == kind.as_str()),
         }
     }
 
     /// The kinds of Session this Environment is entered in, in
-    /// [`RunScope::ALL`] order: all of them when `runScope` is absent.
+    /// [`RunScope::ALL`] order: the effective `runScope` (§4 item 3).
     pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_ {
         RunScope::ALL
             .iter()
             .copied()
             .filter(move |kind| self.runs_in(*kind))
+    }
+
+    /// True when any format string of this Environment (`variables`,
+    /// actions, embedded files, script `let`) references a `Service.*`
+    /// value — the condition that makes an absent `runScope` default to
+    /// `[TASK]` (§4 item 3).
+    pub fn references_service(&self) -> bool {
+        super::service_scope::environment_references_service(self)
+    }
+
+    /// True when `runScope` is absent and defaults to `[TASK]` because the
+    /// Environment references `Service.*`.
+    pub fn default_run_scope_is_task_only(&self) -> bool {
+        self.run_scope.is_none() && self.references_service()
     }
 }
 
@@ -146,6 +164,34 @@ mod tests {
         assert!(e.runs_in(RunScope::Task));
         assert!(e.runs_in(RunScope::Service));
         assert_eq!(e.effective_run_scope().count(), 2);
+        assert!(!e.references_service());
+        assert!(!e.default_run_scope_is_task_only());
+    }
+
+    #[test]
+    fn default_follows_a_service_reference() {
+        let mut e = env(None);
+        e.variables = Some(
+            [(
+                "ADDR".to_string(),
+                FormatString::new("{{ Service.Cache.main.connectAddress }}").unwrap(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        assert!(e.references_service());
+        assert!(e.default_run_scope_is_task_only());
+        assert!(e.runs_in(RunScope::Task));
+        assert!(!e.runs_in(RunScope::Service));
+        assert_eq!(
+            e.effective_run_scope().collect::<Vec<_>>(),
+            vec![RunScope::Task]
+        );
+        // An explicit list is exhaustive and honored even with a reference
+        // (validation rejects SERVICE here; the accessor just reports it).
+        e.run_scope = Some(vec!["SERVICE".to_string()]);
+        assert!(e.runs_in(RunScope::Service));
+        assert!(!e.default_run_scope_is_task_only());
     }
 
     #[test]

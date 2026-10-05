@@ -13,7 +13,7 @@ parameterDefinitions:
     type: STRING
   - name: CounterFile
     type: STRING
-jobServices:
+services:
   - name: Back
     ports:
       - name: main

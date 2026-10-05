@@ -23,7 +23,8 @@ pub(crate) struct FailedService {
     /// Job Template. Service names are scoped to their document, so this is
     /// what tells two same-named Services apart.
     pub document: Option<String>,
-    /// `Job` or `Step '<name>'`.
+    /// The Service's scope as the run log names it: `every Step`, `Step A`,
+    /// or `Steps A, B`.
     pub scope: String,
     pub reason: String,
 }
@@ -80,7 +81,7 @@ impl std::fmt::Display for RunResult {
                 .unwrap_or_default();
             write!(
                 f,
-                "\nFailed Service: {}{origin} ({} scope): {}",
+                "\nFailed Service: {}{origin} (scope: {}): {}",
                 failed.name, failed.scope, failed.reason
             )?;
         }
@@ -110,31 +111,33 @@ mod tests {
         let own = FailedService {
             name: "Cache".into(),
             document: None,
-            scope: "Job".into(),
+            scope: "every Step".into(),
             reason: "boom".into(),
         };
         let external = FailedService {
             name: "Cache".into(),
             document: Some("queue-cache.yaml".into()),
-            scope: "Job".into(),
+            scope: "Steps A, B".into(),
             reason: "bang".into(),
         };
         let r = result(vec![own, external]);
         let text = r.to_string();
         assert!(
-            text.contains("\nFailed Service: Cache (Job scope): boom\n"),
+            text.contains("\nFailed Service: Cache (scope: every Step): boom\n"),
             "{text}"
         );
         assert!(
-            text.ends_with("\nFailed Service: Cache (from queue-cache.yaml) (Job scope): bang"),
+            text.ends_with(
+                "\nFailed Service: Cache (from queue-cache.yaml) (scope: Steps A, B): bang"
+            ),
             "{text}"
         );
         let json = r.to_json_value();
         assert_eq!(
             json["failed_services"],
             serde_json::json!([
-                {"name": "Cache", "scope": "Job", "reason": "boom"},
-                {"name": "Cache", "scope": "Job", "reason": "bang", "document": "queue-cache.yaml"},
+                {"name": "Cache", "scope": "every Step", "reason": "boom"},
+                {"name": "Cache", "scope": "Steps A, B", "reason": "bang", "document": "queue-cache.yaml"},
             ])
         );
     }

@@ -1,0 +1,32 @@
+# An Environment Template that provides the Service `R` (TCP port `main`)
+# required by service_required_consumer.yaml.
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: R
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.R.main.bindAddress }}", "{{ Service.R.main.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port = sys.argv[1], int(sys.argv[2])
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: R up", flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(b"R_SAYS_HI")
+                c.close()

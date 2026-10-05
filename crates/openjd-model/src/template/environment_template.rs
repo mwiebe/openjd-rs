@@ -34,7 +34,7 @@ pub struct EnvironmentTemplate {
     /// §1.2 item 6 (RFC 0009) — the Services this template defines, which a
     /// scheduler applies per Job with Job scope ("external Services", see
     /// §1.2.2). Requires the `SERVICE` extension; same list constraints as a
-    /// Job Template's `jobServices`.
+    /// Job Template's `services`; a Service here gives no `dependencies`.
     pub services: Option<Vec<Service>>,
 }
 

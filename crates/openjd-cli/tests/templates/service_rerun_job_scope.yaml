@@ -1,7 +1,9 @@
-# completedTasks: RERUN on a Job Service: when its first instance exits while
-# Step B's first Task runs, every Step returns to pending — Step A's completed
-# Task runs again, and Step B's Step Service (stopped when B returned to
-# pending) starts again in a new Service Session when B is next scheduled.
+# completedTasks: RERUN on a Service whose scope is every Step (a Job
+# Environment references it): when its first instance exits while Step B's
+# first Task runs, every Step returns to pending — Step A's completed Task
+# runs again, and Helper (scoped to Step B, which references it; stopped when
+# B returned to pending) starts again in a new Service Session when B is next
+# scheduled.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "RerunJobScope"
@@ -10,7 +12,7 @@ parameterDefinitions:
     type: STRING
   - name: MarkerFile
     type: STRING
-jobServices:
+services:
   - name: Shared
     ports:
       - name: main
@@ -45,6 +47,25 @@ jobServices:
                     with open(trace, "a") as f:
                         f.write("shared crash\n")
                     sys.exit(1)
+  - name: Helper
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.TraceFile }}', 'a').write('helper launch\\n'); print('openjd_service_ready: helper up', flush=True); time.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('helper exit\\n')"]
+jobEnvironments:
+  - name: SharedClient
+    variables:
+      SHARED_PORT: "{{ Service.Shared.main.port }}"
 steps:
   - name: A
     script:
@@ -66,22 +87,6 @@ steps:
   - name: B
     dependencies:
       - dependsOn: A
-    stepServices:
-      - name: Helper
-        ports:
-          - name: main
-        healthCheck:
-          type: STDOUT
-        script:
-          actions:
-            onRun:
-              command: python
-              args: ["-c", "import time; open(r'{{ Param.TraceFile }}', 'a').write('helper launch\\n'); print('openjd_service_ready: helper up', flush=True); time.sleep(600)"]
-              cancelation:
-                mode: TERMINATE
-            onExit:
-              command: python
-              args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('helper exit\\n')"]
     parameterSpace:
       taskParameterDefinitions:
         - name: N

@@ -1,43 +1,44 @@
 # RFC 0009 "Service names are scoped to their document" (Template Schemas
-# §1.2.2 item 2), Step Service variant: this Step's `stepServices` entry is
+# §1.2.2 item 2), Step-scoped variant: this template's inline Service is
 # named `Cache`, like the external Service of
-# service_same_name_queue_cache.yaml. The Task reaches its Step's `Cache`
-# through Service.Cache.main.* and the queue's through VALKEY_HOST /
-# VALKEY_PORT, and prints both replies.
+# service_same_name_queue_cache.yaml, and only Step Work references it (so its
+# scope is Step Work; Step Done, which runs after, does not). The Task reaches
+# the inline `Cache` through Service.Cache.main.* and the queue's through
+# VALKEY_HOST / VALKEY_PORT, and prints both replies.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
-name: "Step Service Named Like The Queue's"
+name: "Step-Scoped Service Named Like The Queue's"
 
+services:
+  - name: Cache
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Cache.main.bindAddress }}", "{{ Service.Cache.main.port }}", "STEP_CACHE"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys
+            host, port, payload = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            print("openjd_service_ready: step cache on", port, flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(payload.encode())
+                c.close()
 steps:
   - name: Work
-    stepServices:
-      - name: Cache
-        ports:
-          - name: main
-        healthCheck:
-          type: STDOUT
-        script:
-          actions:
-            onRun:
-              command: python
-              args: ["{{ Service.File.Serve }}", "{{ Service.Cache.main.bindAddress }}", "{{ Service.Cache.main.port }}", "STEP_CACHE"]
-              cancelation:
-                mode: TERMINATE
-          embeddedFiles:
-            - name: Serve
-              type: TEXT
-              data: |
-                import socket, sys
-                host, port, payload = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                s.bind((host, port))
-                s.listen(16)
-                print("openjd_service_ready: step cache on", port, flush=True)
-                while True:
-                    c, _ = s.accept()
-                    c.sendall(payload.encode())
-                    c.close()
     script:
       actions:
         onRun:
@@ -58,3 +59,11 @@ steps:
             print("STEP_CACHE", step_port, "SAYS", ask(step_host, step_port), flush=True)
             print("QUEUE_CACHE", env_port, "SAYS", ask(env_host, env_port), flush=True)
             print("PORTS_DIFFER", step_port != env_port, flush=True)
+  - name: Done
+    dependencies:
+      - dependsOn: Work
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('DONE_STEP_RAN', flush=True)"]

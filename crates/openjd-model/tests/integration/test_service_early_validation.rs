@@ -54,7 +54,7 @@ fn env_err(s: &str, expected: &[&str]) {
     }
 }
 
-/// A Job Template with one Job Service whose port, ready timeout,
+/// A Job Template with one Service whose port, ready timeout,
 /// restart policy, variable, and consuming Task arg are supplied by the
 /// caller, so each test varies exactly one field.
 fn job(port: &str, timeout: &str, max_attempts: &str, var: &str, task_arg: &str) -> String {
@@ -67,7 +67,7 @@ parameterDefinitions:
   - name: P
     type: INT
     default: 1
-jobServices:
+services:
   - name: Store
     let:
       - big = 70000
@@ -110,7 +110,7 @@ const OK_ARG: &str = r#""{{ Service.Store.main.port }}""#;
 fn literal_expression_port_out_of_range_is_rejected_at_validation() {
     job_err(
         &job(r#""{{ 70000 }}""#, OK_TIMEOUT, OK_ATTEMPTS, OK_VAR, OK_ARG),
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
+        &["services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
     );
 }
 
@@ -124,7 +124,7 @@ fn arithmetic_on_literals_is_folded_and_range_checked() {
             OK_VAR,
             OK_ARG,
         ),
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
+        &["services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
     );
     job_ok(&job(
         r#""{{ 8000 + 80 }}""#,
@@ -140,7 +140,7 @@ fn let_bound_values_are_resolved_and_range_checked() {
     // `big` is bound to 70000 in the Service's `let`.
     job_err(
         &job(r#""{{ big }}""#, OK_TIMEOUT, OK_ATTEMPTS, OK_VAR, OK_ARG),
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
+        &["services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
     );
     job_ok(&job(OK_PORT, OK_TIMEOUT, OK_ATTEMPTS, OK_VAR, OK_ARG));
 }
@@ -149,7 +149,7 @@ fn let_bound_values_are_resolved_and_range_checked() {
 fn readiness_timeout_seconds_zero_is_rejected_at_validation() {
     job_err(
         &job(OK_PORT, r#""{{ 0 }}""#, OK_ATTEMPTS, OK_VAR, OK_ARG),
-        &["jobServices[0] -> healthCheck -> readinessTimeoutSeconds:\n\tmust be > 0."],
+        &["services[0] -> healthCheck -> readinessTimeoutSeconds:\n\tmust be > 0."],
     );
 }
 
@@ -157,12 +157,12 @@ fn readiness_timeout_seconds_zero_is_rejected_at_validation() {
 fn max_attempts_negative_and_non_integer_are_rejected_at_validation() {
     job_err(
         &job(OK_PORT, OK_TIMEOUT, r#""{{ -1 }}""#, OK_VAR, OK_ARG),
-        &["jobServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."],
+        &["services[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."],
     );
     job_err(
         &job(OK_PORT, OK_TIMEOUT, r#""{{ 2.5 }}""#, OK_VAR, OK_ARG),
         &[
-            "jobServices[0] -> restartPolicy -> maxAttempts:",
+            "services[0] -> restartPolicy -> maxAttempts:",
             "  2.5\n  ^~~",
         ],
     );
@@ -195,7 +195,7 @@ fn service_variable_statically_too_long_is_rejected_at_validation() {
             OK_ARG,
         ),
         &[
-            "jobServices[0] -> variables -> V:\n\tresolves to at least 3000 characters, exceeding the maximum of 2048.",
+            "services[0] -> variables -> V:\n\tresolves to at least 3000 characters, exceeding the maximum of 2048.",
         ],
     );
 }

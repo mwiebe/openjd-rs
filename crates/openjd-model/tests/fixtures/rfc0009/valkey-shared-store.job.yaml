@@ -6,7 +6,7 @@ parameterDefinitions:
     type: INT
     default: 100
 
-jobServices:
+services:
   - name: Cache
     description: "A Valkey store the Job's Tasks share to cache and coordinate."
     hostRequirements:

@@ -11,7 +11,7 @@ name: HealthThresholdBlips
 parameterDefinitions:
   - name: MarkerDir
     type: PATH
-jobServices:
+services:
   - name: Store
     ports:
       - name: main

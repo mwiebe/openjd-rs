@@ -33,6 +33,7 @@ pub use job::create_job::{
     convert_environment_with_symtab, create_job, evaluate_let_bindings,
     merge_job_parameter_definitions, preprocess_job_parameters, AppliedEnvironmentTemplates,
     AttachedEnvironmentTemplate, MergedParameterDefinition, PathParameterOptions,
+    RequirementBinding,
 };
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;

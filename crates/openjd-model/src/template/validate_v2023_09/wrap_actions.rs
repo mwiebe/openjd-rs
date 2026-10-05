@@ -59,7 +59,9 @@ struct EffectiveRunScope {
 
 impl EffectiveRunScope {
     /// A Job, Step, or environment-template Environment: its `runScope` as
-    /// written, every kind when absent (Template Schemas §4 item 3).
+    /// written, or its default when absent — `[TASK]` for an Environment
+    /// that references `Service.*`, every kind otherwise (Template Schemas
+    /// §4 item 3).
     fn of_environment(env: &Environment) -> Self {
         Self {
             task: env.runs_in(RunScope::Task),
@@ -256,11 +258,16 @@ fn join_names(names: &[&str]) -> String {
     }
 }
 
-/// `runScope: [TASK]` as written, or `default: every kind of Session` when
-/// the field is absent, for error messages.
+/// `runScope: [TASK]` as written; when the field is absent, `default
+/// runScope: [TASK], since the environment references Service.*` or
+/// `default runScope: every kind of Session` (§4 item 3), for error
+/// messages.
 fn describe_run_scope(env: &Environment) -> String {
     match &env.run_scope {
         Some(names) => format!("runScope: [{}]", names.join(", ")),
+        None if env.default_run_scope_is_task_only() => {
+            "default runScope: [TASK], since the environment references Service.*".to_string()
+        }
         None => "default runScope: every kind of Session".to_string(),
     }
 }

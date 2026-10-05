@@ -168,11 +168,17 @@ never hides or splits a redacted value.
 ```rust
 pub fn log_section_banner(session_id: &str, title: &str);
 pub fn log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
+pub fn log_session_note_tagged(session_id: &str, session_tag: Option<&str>, text: &str);
 pub fn log_subsection_banner(session_id: &str, title: &str);
 ```
 
 `log_section_banner_tagged` with `Some(tag)` emits the single tagged line
 described above; with `None` it is `log_section_banner`.
+`log_session_note_tagged` is for a one-line note about the Session's
+structure that a reader of a merged log needs beside the banners — today the
+Service Session's `Skipping Environment '<name>': its runScope does not
+include SERVICE`: with a tag it is a tagged `BANNER` line `[<tag>] <text>`
+(no `--------- ` prefix), without one a `PROCESS_CONTROL` line.
 
 Emit formatted banner lines matching the Python library's output:
 

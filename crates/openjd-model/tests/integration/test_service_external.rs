@@ -8,32 +8,35 @@
 //!
 //! 1. **Merge rule 1** — the RFC's queue-cache example: the external
 //!    `Cache` Service is instantiated first, before the Job Template's own
-//!    `jobServices`, with the attachment's parameters and `Job.Name` in
+//!    `services`, with the attachment's parameters and `Job.Name` in
 //!    scope; attached Environments precede the Job's own; a submission with
 //!    several attachments orders Services by attachment then `services`
 //!    order; Environment-only attachments behave as before RFC 0009.
 //! 2. **Merge rule 2** — Service names are scoped to their document: an
-//!    external Service named like a Job Service, a Step Service, or another
-//!    attachment's Service is accepted and kept distinct through
+//!    external Service named like an inline Service, or like another
+//!    attachment's Service, is accepted and kept distinct through
 //!    `job::Service::document`; the documents of the combined Environments
 //!    are reported alongside.
-//! 3. **Merge rule 3** — the wrapping-Environment rule in both directions
+//! 3. **§1.2.2 item 4** — the wrapping-Environment rule in both directions
 //!    (a SERVICE-less wrapper attachment with a Job that declares Services;
-//!    a SERVICE-less Job Template wrapper, job- and step-level, with an
-//!    attachment that defines a Service), the non-rejection when the
+//!    a SERVICE-less Job Template Job-level wrapper with an attachment that
+//!    defines a Service), its non-application to Step Environments, the
+//!    non-rejection when the
 //!    wrapper declares `SERVICE` with the four hooks or with `runScope:
 //!    [TASK]`, and the non-rejection when nothing places a Service in scope.
-//! 4. **Scope** — an external Service sees only earlier Services of its own
-//!    document; a Job Template cannot reference an external Service by name
-//!    (template validation); an attachment cannot reference another
-//!    attachment's Service (template validation).
+//! 4. **Scope** — an external Service sees the other Services of its own
+//!    document and has every Step in its scope; a Job Template cannot
+//!    reference an external Service it does not require (template
+//!    validation); an attachment cannot reference another attachment's
+//!    Service (template validation). Requirement matching (§1.2.2 item 2)
+//!    is covered in `test_service_requirements.rs`.
 //! 5. **Per-document cap** — three documents of 10 Services each combine to
 //!    30; the cap is per document, not on the combined list.
 //! 6. **Errors from inside a document** carry the document in their path or
 //!    message, and labels replace the positional document name.
 
 use openjd_expr::ExprValue;
-use openjd_model::job::{self, CompletedTasksPolicy, RunScope};
+use openjd_model::job::{self, CompletedTasksPolicy, RunScope, ServiceScope};
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
     apply_environment_templates, create_job, decode_environment_template, decode_job_template,
@@ -46,7 +49,7 @@ const EXTS: &[&str] = &["EXPR", "SERVICE", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"];
 const RFC_QUEUE_CACHE: &str = include_str!("../fixtures/rfc0009/queue-cache.environment.yaml");
 const RFC_CONSUMER: &str = include_str!("../fixtures/rfc0009/queue-cache-consumer.job.yaml");
 const RFC_VALKEY: &str = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
-const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/per-step-coordinator.job.yaml");
+const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/step-coordinator.job.yaml");
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -272,7 +275,7 @@ fn many_services_template(prefix: &str, n: usize) -> String {
     )
 }
 
-/// A Job Template with `n` Job Services named `<prefix>0..n`.
+/// A Job Template with `n` inline Services named `<prefix>0..n`.
 fn many_job_services_job(prefix: &str, n: usize) -> String {
     let services: Vec<String> = (0..n)
         .map(|i| {
@@ -286,7 +289,7 @@ fn many_job_services_job(prefix: &str, n: usize) -> String {
         })
         .collect();
     format!(
-        "specificationVersion: \"jobtemplate-2023-09\"\nname: Many\nextensions: [SERVICE, EXPR]\njobServices:\n{}\nsteps:\n  - name: S\n    script:\n      actions:\n        onRun:\n          command: echo\n",
+        "specificationVersion: \"jobtemplate-2023-09\"\nname: Many\nextensions: [SERVICE, EXPR]\nservices:\n{}\nsteps:\n  - name: S\n    script:\n      actions:\n        onRun:\n          command: echo\n",
         services.join("\n")
     )
 }
@@ -300,13 +303,15 @@ fn rfc_queue_cache_example_merges_with_the_cache_service_first() {
     // The RFC's third example: a queue cache attachment applied to a Job
     // Template that has never heard of Services.
     let (job, applied) = submit_ok(RFC_CONSUMER, &[RFC_QUEUE_CACHE], &[]);
-    assert!(
-        job.job_services.is_none(),
-        "the consumer declares no Services"
-    );
+    assert!(job.services.is_none(), "the consumer declares no Services");
     assert_eq!(service_names(&applied.external_services), ["Cache"]);
 
     let cache = &applied.external_services[0];
+    // An external Service has every Step in its scope (§1.2.2 item 1) and
+    // is stamped with its document.
+    assert_eq!(cache.scope, ServiceScope::AllSteps);
+    assert_eq!(cache.document, job::Document::environment_template(0, None));
+    assert!(applied.requirement_bindings.is_empty());
     assert_eq!(
         cache.description.as_deref(),
         Some("A per-Job Valkey store shared by all of the Job's Tasks.")
@@ -334,11 +339,11 @@ fn rfc_queue_cache_example_merges_with_the_cache_service_first() {
     assert!(client.runs_in(RunScope::Task));
     assert!(!client.runs_in(RunScope::Service));
 
-    // Folding into the Job: the external Service becomes jobServices[0] and
+    // Folding into the Job: the external Service becomes services[0] and
     // the attached Environment jobEnvironments[0].
     let combined = applied.into_combined_job(job);
     assert_eq!(
-        service_names(combined.job_services.as_deref().unwrap()),
+        service_names(combined.services.as_deref().unwrap()),
         ["Cache"]
     );
     assert_eq!(
@@ -372,18 +377,15 @@ fn attachment_parameter_overrides_the_default_in_the_external_service() {
 }
 
 #[test]
-fn external_services_precede_the_job_templates_own_job_services() {
-    // The Valkey example declares a Job Service `Cache`; the queue attaches
+fn external_services_precede_the_job_templates_own_services() {
+    // The Valkey example declares an inline Service `Cache`; the queue attaches
     // `Metrics`. The combined list is `[Metrics, Cache]`.
     let (job, applied) = submit_ok(RFC_VALKEY, &[&service_only_template("Metrics")], &[]);
-    assert_eq!(
-        service_names(job.job_services.as_deref().unwrap()),
-        ["Cache"]
-    );
+    assert_eq!(service_names(job.services.as_deref().unwrap()), ["Cache"]);
     assert_eq!(service_names(&applied.external_services), ["Metrics"]);
     let combined = applied.into_combined_job(job);
     assert_eq!(
-        service_names(combined.job_services.as_deref().unwrap()),
+        service_names(combined.services.as_deref().unwrap()),
         ["Metrics", "Cache"]
     );
     // The Job Template's SERVICE declaration survives the merge.
@@ -403,7 +405,7 @@ fn several_attachments_order_by_attachment_then_services_order() {
     assert!(applied.environments.is_empty(), "services-only attachments");
     let combined = applied.into_combined_job(job);
     assert_eq!(
-        service_names(combined.job_services.as_deref().unwrap()),
+        service_names(combined.services.as_deref().unwrap()),
         ["A0", "A1", "B", "J0", "J1"]
     );
 }
@@ -454,7 +456,7 @@ steps:
             .collect::<Vec<_>>(),
         ["StudioSetup", "JobEnv"]
     );
-    assert!(combined.job_services.is_none(), "no Services anywhere");
+    assert!(combined.services.is_none(), "no Services anywhere");
 }
 
 #[test]
@@ -501,7 +503,7 @@ services:
 
 #[test]
 fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
-    // The Valkey example's Job Service is named `Cache`, as is the RFC's
+    // The Valkey example's inline Service is named `Cache`, as is the RFC's
     // queue-cache attachment's: two distinct Services, the external one
     // first, each known by (document, name).
     let (job, applied) = submit_ok(RFC_VALKEY, &[RFC_QUEUE_CACHE], &[]);
@@ -520,7 +522,7 @@ fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
     );
 
     let combined = applied.into_combined_job(job);
-    let services = combined.job_services.as_deref().unwrap();
+    let services = combined.services.as_deref().unwrap();
     assert_eq!(service_names(services), ["Cache", "Cache"]);
     assert_eq!(
         services[0].document,
@@ -550,23 +552,28 @@ fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
 }
 
 #[test]
-fn external_service_named_like_a_step_service_is_accepted() {
-    // The coordinator example's Step Service is `Coordinator` on steps[0];
-    // an external `Coordinator` is a different Service.
+fn external_service_named_like_an_inline_service_is_accepted() {
+    // §1.2.2 item 3: the coordinator example's inline `Coordinator` shadows
+    // an attached `Coordinator` for the Job Template's references; both run
+    // and are kept distinct by their documents. The attached one precedes
+    // the inline one in the combined Job and has every Step in its scope.
     let (job, applied) = submit_ok(
         RFC_COORDINATOR,
         &[&service_only_template("Coordinator")],
         &[],
     );
     assert_eq!(service_names(&applied.external_services), ["Coordinator"]);
+    assert!(applied.requirement_bindings.is_empty());
     let combined = applied.into_combined_job(job);
+    let services = combined.services.as_deref().unwrap();
+    assert_eq!(service_names(services), ["Coordinator", "Coordinator"]);
     assert_eq!(
-        service_names(combined.job_services.as_deref().unwrap()),
-        ["Coordinator"]
+        services[0].document,
+        job::Document::environment_template(0, None)
     );
-    let step_services = combined.steps[0].step_services.as_deref().unwrap();
-    assert_eq!(service_names(step_services), ["Coordinator"]);
-    assert_eq!(step_services[0].document, job::Document::JobTemplate);
+    assert_eq!(services[0].scope, ServiceScope::AllSteps);
+    assert_eq!(services[1].document, job::Document::JobTemplate);
+    assert_eq!(services[1].scope, ServiceScope::steps(["RenderTiles"]));
 }
 
 #[test]
@@ -672,8 +679,8 @@ steps:
 #[test]
 fn duplicates_within_one_document_are_still_rejected() {
     // The per-document rule is unchanged: a repeat within an attachment's
-    // `services` list is a template-validation error, as is a Step Service
-    // named like a Job Service of the same Job Template.
+    // `services` list, or within a Job Template's, is a template-validation
+    // error.
     let err = decode_environment_template(
         yaml_val(
             r#"
@@ -705,28 +712,27 @@ services:
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: Dup
-jobServices:
+services:
+  - name: Cache
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: serve } } }
   - name: Cache
     ports: [{ name: main }]
     script: { actions: { onRun: { command: serve } } }
 steps:
   - name: Render
-    stepServices:
-      - name: Cache
-        ports: [{ name: main }]
-        script: { actions: { onRun: { command: serve } } }
     script: { actions: { onRun: { command: echo } } }
 "#,
         ),
         Some(EXTS),
         &CallerLimits::default(),
     )
-    .expect_err("Step Service named like a Job Service")
+    .expect_err("duplicate within the Job Template's services")
     .to_string();
     assert_eq!(
         err,
         "Model validation error: 1 validation error for JobTemplate\n\
-         steps[0] -> stepServices[0]:\n\tduplicate service name: 'Cache'"
+         services[1]:\n\tduplicate service name: 'Cache'"
     );
 }
 
@@ -735,7 +741,7 @@ fn document_serializes_only_for_external_services() {
     let (job, applied) = submit_ok(RFC_VALKEY, &[RFC_QUEUE_CACHE], &[]);
     let combined = applied.into_combined_job(job);
     let value = serde_json::to_value(&combined).unwrap();
-    let services = value["jobServices"].as_array().unwrap();
+    let services = value["services"].as_array().unwrap();
     assert_eq!(
         services[0]["document"],
         serde_json::json!({"kind": "EnvironmentTemplate", "index": 0})
@@ -744,7 +750,7 @@ fn document_serializes_only_for_external_services() {
         services[1].get("document").is_none(),
         "the Job Template's own Service omits the default"
     );
-    let combined_services = combined.job_services.as_deref().unwrap();
+    let combined_services = combined.services.as_deref().unwrap();
     for (value, expected) in services.iter().zip(combined_services) {
         let round_trip: job::Service = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(&round_trip, expected);
@@ -757,7 +763,7 @@ fn document_serializes_only_for_external_services() {
 
 const WRAPPER_REMEDY: &str = "Declare SERVICE in {doc} and either define onWrapServiceEnter, \
     onWrapServiceRun, onWrapServiceHealthCheck, and onWrapServiceExit, or declare a runScope \
-    that excludes SERVICE (RFC 0009, Template Schemas §1.2.2 item 3).";
+    that excludes SERVICE (RFC 0009, Template Schemas §1.2.2 item 4).";
 
 fn wrapper_message(env: &str, doc: &str, in_scope: &str) -> String {
     format!(
@@ -772,7 +778,7 @@ fn wrapper_message(env: &str, doc: &str, in_scope: &str) -> String {
 #[test]
 fn queue_wrapper_attached_to_a_job_declaring_a_job_service_is_rejected() {
     // Direction 1: a queue's RFC 0008 wrapper template, a Job Template with
-    // `jobServices`.
+    // `services`.
     let msg = submit_err(RFC_VALKEY, &[WRAPPER_ENV_TEMPLATE], &[]);
     assert_eq!(
         msg,
@@ -782,16 +788,16 @@ fn queue_wrapper_attached_to_a_job_declaring_a_job_service_is_rejected() {
             wrapper_message(
                 "QueueContainer",
                 "EnvironmentTemplate[0]",
-                "Service 'Cache' (JobTemplate -> jobServices[0])"
+                "Service 'Cache' (JobTemplate -> services[0])"
             )
         )
     );
 }
 
 #[test]
-fn queue_wrapper_attached_to_a_job_declaring_only_step_services_is_rejected() {
-    // A Job Environment is entered by every Service Session, including a
-    // Step Service's.
+fn queue_wrapper_attached_to_a_job_whose_service_is_scoped_to_one_step_is_rejected() {
+    // A Job Environment is entered by every Service Session, including that
+    // of a Service whose scope is one Step (the coordinator example).
     let msg = submit_err(RFC_COORDINATOR, &[WRAPPER_ENV_TEMPLATE], &[]);
     assert_eq!(
         msg,
@@ -801,7 +807,7 @@ fn queue_wrapper_attached_to_a_job_declaring_only_step_services_is_rejected() {
             wrapper_message(
                 "QueueContainer",
                 "EnvironmentTemplate[0]",
-                "Service 'Coordinator' (JobTemplate -> steps[0] -> stepServices[0])"
+                "Service 'Coordinator' (JobTemplate -> services[0])"
             )
         )
     );
@@ -846,10 +852,9 @@ fn job_template_wrapper_submitted_to_a_queue_attaching_a_service_is_rejected() {
 
 #[test]
 fn job_template_step_wrapper_is_not_in_scope_of_job_services() {
-    // A Job Service's Session enters only `jobEnvironments`, so a wrapping
-    // Step Environment is never entered for an external (Job-scoped)
-    // Service and the submission is accepted. Only a Step Service of that
-    // Step would put the wrapper in a Service Session.
+    // §1.2.2 item 4, last sentence: a Service Session enters only
+    // `jobEnvironments`, so a wrapping Step Environment is never entered by
+    // one and is not subject to the check, whatever the Service's scope.
     let (_job, applied) = submit_ok(STEP_WRAPPER_JOB, &[RFC_QUEUE_CACHE], &[]);
     assert_eq!(applied.external_services.len(), 1);
 }
@@ -865,13 +870,7 @@ fn wrapper_declaring_service_with_the_four_hooks_is_accepted() {
         .actions
         .has_any_service_wrap_hook());
     assert_eq!(
-        service_names(
-            applied
-                .into_combined_job(job)
-                .job_services
-                .as_deref()
-                .unwrap()
-        ),
+        service_names(applied.into_combined_job(job).services.as_deref().unwrap()),
         ["Cache"]
     );
 }
@@ -927,7 +926,7 @@ steps:
     let (job, applied) = submit_ok(T, &[RFC_QUEUE_CACHE], &[]);
     let combined = applied.into_combined_job(job);
     assert_eq!(
-        service_names(combined.job_services.as_deref().unwrap()),
+        service_names(combined.services.as_deref().unwrap()),
         ["Cache"]
     );
 }
@@ -960,9 +959,11 @@ fn same_named_service_does_not_mask_a_wrapper_violation() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn external_service_sees_earlier_services_of_its_own_document() {
-    // `Second` references `First` from the same `services` list; the
-    // reference is carried forward and its symbol is seeded for the re-check.
+fn external_service_sees_other_services_of_its_own_document() {
+    // `Second` references `First` and `First` references `Third`, declared
+    // after it (the order carries no meaning); the references are carried
+    // forward and their symbols seeded for the re-check. Every external
+    // Service has every Step in its scope (§1.2.2 item 1).
     const T: &str = r#"
 specificationVersion: "environment-2023-09"
 extensions: [SERVICE, EXPR]
@@ -977,12 +978,33 @@ services:
     script:
       actions:
         onRun: { command: proxy, args: ["{{ Service.First.main.connectAddress }}:{{ Service.First.main.port }}"] }
+  - name: Third
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: serve }
 "#;
-    let (_, applied) = submit_ok(PLAIN_JOB, &[T], &[]);
+    let t = T.replace(
+        "        onRun: { command: serve }\n  - name: Second",
+        "        onRun: { command: serve, args: [\"{{ Service.Third.main.port }}\"] }\n  - name: Second",
+    );
+    let (_, applied) = submit_ok(PLAIN_JOB, &[&t], &[]);
     assert_eq!(
         service_names(&applied.external_services),
-        ["First", "Second"]
+        ["First", "Second", "Third"]
     );
+    for svc in &applied.external_services {
+        assert_eq!(svc.scope, ServiceScope::AllSteps, "{}", svc.name);
+    }
+    assert_eq!(
+        applied.external_services[0].references,
+        vec!["Third".to_string()]
+    );
+    assert_eq!(
+        applied.external_services[1].references,
+        vec!["First".to_string()]
+    );
+    assert!(applied.external_services[2].references.is_empty());
 }
 
 #[test]
@@ -1057,14 +1079,14 @@ fn attached_environment_sees_its_own_documents_services_for_the_recheck() {
 
 #[test]
 fn the_ten_service_cap_is_per_document_not_on_the_combined_list() {
-    // Two attachments of 10 Services each plus a Job Template with 10 Job
+    // Two attachments of 10 Services each plus a Job Template with 10 inline
     // Services: 30 Services in the combined list, each document at the cap.
     let a = many_services_template("A", 10);
     let b = many_services_template("B", 10);
     let (job, applied) = submit_ok(&many_job_services_job("J", 10), &[&a, &b], &[]);
     assert_eq!(applied.external_services.len(), 20);
     let combined = applied.into_combined_job(job);
-    let names = service_names(combined.job_services.as_deref().unwrap());
+    let names = service_names(combined.services.as_deref().unwrap());
     assert_eq!(names.len(), 30);
     assert_eq!(names[0], "A0");
     assert_eq!(names[10], "B0");

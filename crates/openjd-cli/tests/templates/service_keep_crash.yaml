@@ -1,4 +1,4 @@
-# Instance failure with completedTasks: KEEP. The Job Service's first onRun
+# Instance failure with completedTasks: KEEP. The Service's first onRun
 # instance exits shortly after "task 1 done" appears in the trace, while
 # Task 2 runs. Running Tasks continue (Task 2 does not need the Service and
 # completes normally), completed Tasks keep their results, and the Service is
@@ -11,7 +11,7 @@ parameterDefinitions:
     type: STRING
   - name: MarkerFile
     type: STRING
-jobServices:
+services:
   - name: Flaky
     ports:
       - name: main

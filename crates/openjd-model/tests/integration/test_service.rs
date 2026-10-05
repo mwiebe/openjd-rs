@@ -8,10 +8,10 @@
 //!
 //! These tests cover:
 //!
-//! 1. **Schema parse**: `jobServices`, `stepServices`, and every `<Service>`
+//! 1. **Schema parse**: `services`, `requiresServices`, and every `<Service>`
 //!    sub-object decode from YAML/JSON, with the numeric `@fmtstring` fields
 //!    accepting either an integer or a format string.
-//! 2. **Extension gating**: using `jobServices`/`stepServices` without
+//! 2. **Extension gating**: using `services`/`requiresServices` without
 //!    `SERVICE`, or declaring `SERVICE` without `EXPR`, produces a specific,
 //!    path-annotated validation error.
 //! 3. **Structural validation** (§9.7 items 3–5 and 7 as far as they concern
@@ -22,18 +22,22 @@
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
 //!    into `tests/fixtures/rfc0009/`.
 //!
-//! The `Service.*` format-string scope rules (§9.7 items 1–2) and job
-//! creation of Services are covered in `test_service_scope.rs` and
-//! `test_service_job_creation.rs`; `<Environment>.runScope`, the
+//! The `Service.*` format-string scope rules (§9 scope lists, §9.9 items
+//! 1–2) and job creation of Services are covered in `test_service_scope.rs`
+//! and `test_service_job_creation.rs`; Service scope (§9.1), reference
+//! cycles, `dependencies` and the `runScope` default in
+//! `test_service_scope_rules.rs`; `requiresServices` in
+//! `test_service_requirements.rs`; `<Environment>.runScope`, the
 //! `onWrapService*` hooks, and the Environment Template root changes in
 //! `test_service_environments.rs`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
 
+use openjd_model::template::service_scope::compute_service_scopes;
 use openjd_model::template::{
     CompletedTasksPolicy, ServiceActions, ServiceHealthCheck, ServicePortProtocol,
-    ServiceRestartPolicy,
+    ServiceRestartPolicy, ServiceScope,
 };
 use openjd_model::{
     decode_environment_template, decode_job_template, CallerLimits, ModelExtension,
@@ -46,10 +50,13 @@ const SERVICE_EXTS: &[&str] = &["EXPR", "SERVICE", "FEATURE_BUNDLE_1"];
 const NO_SERVICE_EXTS: &[&str] = &["EXPR", "FEATURE_BUNDLE_1"];
 
 const RFC_VALKEY: &str = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
-const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/per-step-coordinator.job.yaml");
+const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/step-coordinator.job.yaml");
 const RFC_QUEUE_CACHE_ENV: &str = include_str!("../fixtures/rfc0009/queue-cache.environment.yaml");
 const RFC_QUEUE_CACHE_CONSUMER: &str =
     include_str!("../fixtures/rfc0009/queue-cache-consumer.job.yaml");
+const RFC_REQUIRED_QUEUE_CACHE: &str =
+    include_str!("../fixtures/rfc0009/required-queue-cache.job.yaml");
+const RFC_METRICS_SINK: &str = include_str!("../fixtures/rfc0009/metrics-sink.job.yaml");
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -96,7 +103,7 @@ fn expect_job_ok(template: &str, allowed_exts: &[&str]) -> openjd_model::templat
     .expect("expected successful decode")
 }
 
-/// A job template whose `jobServices` holds exactly `services` (a YAML list
+/// A job template whose `services` holds exactly `services` (a YAML list
 /// body, indented two spaces) plus one trivial step. A handful of INT job
 /// parameters are defined so the numeric `@fmtstring` fields can reference
 /// them.
@@ -114,7 +121,7 @@ parameterDefinitions:
   - {{ name: MetricsPort, type: INT, default: 9100 }}
   - {{ name: Timeout, type: INT, default: 30 }}
   - {{ name: Attempts, type: INT, default: 2 }}
-jobServices:
+services:
 {services}
 steps:
   - name: S
@@ -180,7 +187,7 @@ fn service_rejected_when_caller_does_not_support_it() {
 #[test]
 fn minimal_service_decodes_with_spec_defaults() {
     let jt = expect_job_ok(&job_with_service_body(MINIMAL_SERVICE_BODY), SERVICE_EXTS);
-    let services = jt.job_services.as_ref().expect("jobServices decoded");
+    let services = jt.services.as_ref().expect("services decoded");
     assert_eq!(services.len(), 1);
     let svc = &services[0];
     assert_eq!(svc.name, "Cache");
@@ -233,7 +240,8 @@ fn minimal_service_decodes_with_spec_defaults() {
     );
     assert_eq!(ServiceActions::default_timeout_seconds("onExit"), Some(300));
 
-    assert!(jt.steps[0].step_services.is_none());
+    assert!(svc.dependencies.is_none());
+    assert!(jt.requires_services.is_none());
 }
 
 #[test]
@@ -320,7 +328,7 @@ fn full_service_decodes_every_field() {
         ),
         SERVICE_EXTS,
     );
-    let services = jt.job_services.as_ref().unwrap();
+    let services = jt.services.as_ref().unwrap();
     assert_eq!(services.len(), 3);
 
     let cache = &services[0];
@@ -424,45 +432,58 @@ fn full_service_decodes_every_field() {
     );
 }
 
+/// The pre-restructure spellings `jobServices` and `<StepTemplate>.stepServices`
+/// are not properties: the RFC has one `services` list whose scope follows
+/// the references (§9.1). Both are unknown fields at decode.
 #[test]
-fn step_services_decode_and_may_reuse_names_across_steps() {
-    // §3 item 6, note: different Steps may each define a Step Service with
-    // the same name.
-    let jt = expect_job_ok(
-        r#"
+fn job_services_and_step_services_are_unknown_fields() {
+    let err = decode_job_template(
+        yaml_val(
+            r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Test
+jobServices:
+  - name: Cache
+    ports: [{name: main}]
+    script: {actions: {onRun: {command: run}}}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: run}}}
+"#,
+        ),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("jobServices is not a property");
+    assert!(
+        err.to_string()
+            .starts_with("Validation error: 'jobtemplate-2023-09' failed checks: unknown field `jobServices`, expected one of "),
+        "got: {err}"
+    );
+    let err = decode_job_template(
+        yaml_val(
+            r#"
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: Test
 steps:
-  - name: A
+  - name: S
     stepServices:
       - name: Coordinator
         ports: [{name: api}]
         script: {actions: {onRun: {command: coordinator}}}
-    script:
-      actions:
-        onRun:
-          command: run
-  - name: B
-    stepServices:
-      - name: Coordinator
-        ports: [{name: api}]
-        script: {actions: {onRun: {command: coordinator}}}
-    script:
-      actions:
-        onRun:
-          command: run
+    script: {actions: {onRun: {command: run}}}
 "#,
-        SERVICE_EXTS,
-    );
-    assert!(jt.job_services.is_none());
-    assert_eq!(
-        jt.steps[0].step_services.as_ref().unwrap()[0].name,
-        "Coordinator"
-    );
-    assert_eq!(
-        jt.steps[1].step_services.as_ref().unwrap()[0].name,
-        "Coordinator"
+        ),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("stepServices is not a property");
+    assert!(
+        err.to_string()
+            .starts_with("Validation error: 'jobtemplate-2023-09' failed checks: unknown field `stepServices`, expected one of "),
+        "got: {err}"
     );
 }
 
@@ -487,7 +508,7 @@ fn ports_accept_integer_string_and_format_string() {
         ),
         SERVICE_EXTS,
     );
-    let ports = &jt.job_services.as_ref().unwrap()[0].ports;
+    let ports = &jt.services.as_ref().unwrap()[0].ports;
     assert_eq!(ports[0].port.as_ref().unwrap().raw(), "1");
     assert_eq!(ports[1].port.as_ref().unwrap().raw(), "65535");
     assert_eq!(ports[2].port.as_ref().unwrap().raw(), "{{ Param.P }}");
@@ -505,7 +526,7 @@ fn job_services_rejected_without_extension() {
 specificationVersion: "jobtemplate-2023-09"
 extensions: [EXPR]
 name: Test
-jobServices:
+services:
   - name: Cache
     ports: [{name: main}]
     script: {actions: {onRun: {command: valkey-server}}}
@@ -516,29 +537,29 @@ steps:
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices:\n\tjobServices requires the SERVICE extension.",
+            "services:\n\tservices requires the SERVICE extension.",
         ],
     );
 }
 
 #[test]
-fn step_services_rejected_without_extension() {
+fn requires_services_rejected_without_extension() {
     expect_job_err(
         r#"
 specificationVersion: "jobtemplate-2023-09"
+extensions: [EXPR]
 name: Test
+requiresServices:
+  - name: Cache
+    ports: [{name: main}]
 steps:
   - name: S
-    stepServices:
-      - name: Cache
-        ports: [{name: main}]
-        script: {actions: {onRun: {command: valkey-server}}}
     script: {actions: {onRun: {command: run}}}
 "#,
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "steps[0] -> stepServices:\n\tstepServices requires the SERVICE extension.",
+            "requiresServices:\n\trequiresServices requires the SERVICE extension.",
         ],
     );
 }
@@ -551,7 +572,7 @@ fn gating_error_does_not_examine_service_contents() {
         r#"
 specificationVersion: "jobtemplate-2023-09"
 name: Test
-jobServices:
+services:
   - name: File
     ports: []
     script: {actions: {onRun: {command: ""}}}
@@ -562,7 +583,7 @@ steps:
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices:\n\tjobServices requires the SERVICE extension.",
+            "services:\n\tservices requires the SERVICE extension.",
         ],
     );
 }
@@ -574,7 +595,7 @@ fn service_requires_expr_in_job_template() {
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE]
 name: Test
-jobServices:
+services:
   - name: Cache
     ports: [{name: main}]
     script: {actions: {onRun: {command: valkey-server}}}
@@ -650,7 +671,7 @@ fn job_services_must_not_be_empty() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices:\n\tmust not be empty.",
+            "services:\n\tmust not be empty.",
         ],
     );
 }
@@ -663,54 +684,7 @@ fn job_services_at_most_ten() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices:\n\tmust not contain more than 10 elements.",
-        ],
-    );
-}
-
-fn job_with_step_services(services: &str) -> String {
-    format!(
-        r#"
-specificationVersion: "jobtemplate-2023-09"
-extensions: [SERVICE, EXPR]
-name: Test
-steps:
-  - name: S
-    stepServices:
-{services}
-    script:
-      actions:
-        onRun:
-          command: run
-"#
-    )
-}
-
-#[test]
-fn step_services_must_not_be_empty() {
-    expect_job_err(
-        &job_with_step_services("      []"),
-        SERVICE_EXTS,
-        &[
-            "1 validation error for JobTemplate\n",
-            "steps[0] -> stepServices:\n\tmust not be empty.",
-        ],
-    );
-}
-
-#[test]
-fn step_services_at_most_ten() {
-    let indent = |s: String| -> String { s.lines().map(|l| format!("    {l}\n")).collect() };
-    expect_job_ok(
-        &job_with_step_services(&indent(n_services(10, "S"))),
-        SERVICE_EXTS,
-    );
-    expect_job_err(
-        &job_with_step_services(&indent(n_services(11, "S"))),
-        SERVICE_EXTS,
-        &[
-            "1 validation error for JobTemplate\n",
-            "steps[0] -> stepServices:\n\tmust not contain more than 10 elements.",
+            "services:\n\tmust not contain more than 10 elements.",
         ],
     );
 }
@@ -730,56 +704,7 @@ fn duplicate_job_service_names() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[1]:\n\tduplicate service name: 'Cache'",
-        ],
-    );
-}
-
-#[test]
-fn duplicate_step_service_names() {
-    expect_job_err(
-        &job_with_step_services(
-            r#"      - name: Coordinator
-        ports: [{name: api}]
-        script: {actions: {onRun: {command: run}}}
-      - name: Coordinator
-        ports: [{name: api}]
-        script: {actions: {onRun: {command: run}}}
-"#,
-        ),
-        SERVICE_EXTS,
-        &[
-            "1 validation error for JobTemplate\n",
-            "steps[0] -> stepServices[1]:\n\tduplicate service name: 'Coordinator'",
-        ],
-    );
-}
-
-#[test]
-fn step_service_must_not_collide_with_job_service() {
-    expect_job_err(
-        r#"
-specificationVersion: "jobtemplate-2023-09"
-extensions: [SERVICE, EXPR]
-name: Test
-jobServices:
-  - name: Cache
-    ports: [{name: main}]
-    script: {actions: {onRun: {command: run}}}
-steps:
-  - name: A
-    script: {actions: {onRun: {command: run}}}
-  - name: B
-    stepServices:
-      - name: Cache
-        ports: [{name: main}]
-        script: {actions: {onRun: {command: run}}}
-    script: {actions: {onRun: {command: run}}}
-"#,
-        SERVICE_EXTS,
-        &[
-            "1 validation error for JobTemplate\n",
-            "steps[1] -> stepServices[0]:\n\tduplicate service name: 'Cache'",
+            "services[1]:\n\tduplicate service name: 'Cache'",
         ],
     );
 }
@@ -800,7 +725,7 @@ fn service_name_must_be_identifier() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> name:\n\t'my-cache' is not a valid identifier.",
+            "services[0] -> name:\n\t'my-cache' is not a valid identifier.",
         ],
     );
     expect_job_err(
@@ -811,7 +736,7 @@ fn service_name_must_be_identifier() {
 "#,
         ),
         SERVICE_EXTS,
-        &["jobServices[0] -> name:\n\t'1cache' is not a valid identifier."],
+        &["services[0] -> name:\n\t'1cache' is not a valid identifier."],
     );
     expect_job_err(
         &job_with_services(
@@ -821,7 +746,7 @@ fn service_name_must_be_identifier() {
 "#,
         ),
         SERVICE_EXTS,
-        &["jobServices[0] -> name:\n\t'' is not a valid identifier."],
+        &["services[0] -> name:\n\t'' is not a valid identifier."],
     );
 }
 
@@ -837,7 +762,7 @@ fn service_name_must_not_be_file() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
+            "services[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
         ],
     );
 }
@@ -860,7 +785,7 @@ fn service_name_length_follows_identifier_limit() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> name:\n\texceeds 64 characters.",
+            "services[0] -> name:\n\texceeds 64 characters.",
         ],
     );
 }
@@ -882,7 +807,7 @@ fn ports_must_not_be_empty() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports:\n\tmust not be empty.",
+            "services[0] -> ports:\n\tmust not be empty.",
         ],
     );
 }
@@ -911,7 +836,7 @@ fn ports_at_most_ten() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports:\n\tmust not contain more than 10 elements.",
+            "services[0] -> ports:\n\tmust not contain more than 10 elements.",
         ],
     );
 }
@@ -923,7 +848,7 @@ fn duplicate_port_names() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[1]:\n\tduplicate port name 'main'.",
+            "services[0] -> ports[1]:\n\tduplicate port name 'main'.",
         ],
     );
 }
@@ -935,7 +860,7 @@ fn port_name_must_be_identifier_and_not_file() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[0] -> name:\n\t'main port' is not a valid identifier.",
+            "services[0] -> ports[0] -> name:\n\t'main port' is not a valid identifier.",
         ],
     );
     expect_job_err(
@@ -943,7 +868,7 @@ fn port_name_must_be_identifier_and_not_file() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
+            "services[0] -> ports[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
         ],
     );
 }
@@ -955,28 +880,28 @@ fn port_number_range() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
+            "services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
         ],
     );
     expect_job_err(
         &service_with_ports("      - name: main\n        port: 65536\n"),
         SERVICE_EXTS,
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
+        &["services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
     );
     expect_job_err(
         &service_with_ports("      - name: main\n        port: -1\n"),
         SERVICE_EXTS,
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
+        &["services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."],
     );
     expect_job_err(
         &service_with_ports("      - name: main\n        port: \"http\"\n"),
         SERVICE_EXTS,
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be an integer."],
+        &["services[0] -> ports[0] -> port:\n\tmust be an integer."],
     );
     expect_job_err(
         &service_with_ports("      - name: main\n        port: 80.5\n"),
         SERVICE_EXTS,
-        &["jobServices[0] -> ports[0] -> port:\n\tmust be an integer."],
+        &["services[0] -> ports[0] -> port:\n\tmust be an integer."],
     );
 }
 
@@ -1010,7 +935,7 @@ fn tcp_connect_ports_must_be_declared() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck -> ports[1]:\n\treferences undeclared port 'admin'.",
+            "services[0] -> healthCheck -> ports[1]:\n\treferences undeclared port 'admin'.",
         ],
     );
 }
@@ -1022,7 +947,7 @@ fn tcp_connect_ports_if_provided_not_empty() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck -> ports:\n\tif provided, must not be empty.",
+            "services[0] -> healthCheck -> ports:\n\tif provided, must not be empty.",
         ],
     );
 }
@@ -1072,7 +997,7 @@ fn health_numeric_fields_must_be_positive() {
                 SERVICE_EXTS,
                 &[
                     "1 validation error for JobTemplate\n",
-                    &format!("jobServices[0] -> healthCheck -> {field}:\n\tmust be > 0."),
+                    &format!("services[0] -> healthCheck -> {field}:\n\tmust be > 0."),
                 ],
             );
         }
@@ -1083,7 +1008,7 @@ fn health_numeric_fields_must_be_positive() {
             ),
             SERVICE_EXTS,
             &[&format!(
-                "jobServices[0] -> healthCheck -> {field}:\n\tmust be an integer."
+                "services[0] -> healthCheck -> {field}:\n\tmust be an integer."
             )],
         );
         // A format string is resolved at job creation, not checked here.
@@ -1114,7 +1039,7 @@ fn stdout_failure_threshold_requires_health_interval() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives \
+            "services[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives \
              failureThreshold only together with healthIntervalSeconds; without a heartbeat \
              interval there is no probe for it to count.",
         ],
@@ -1126,7 +1051,7 @@ fn stdout_failure_threshold_requires_health_interval() {
             "",
         ),
         SERVICE_EXTS,
-        &["jobServices[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives"],
+        &["services[0] -> healthCheck -> failureThreshold:\n\ta STDOUT health check gives"],
     );
     expect_job_ok(
         &service_with_health(
@@ -1184,7 +1109,7 @@ fn command_requires_on_health_check() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
+            "services[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
         ],
     );
 }
@@ -1197,14 +1122,14 @@ fn on_health_check_forbidden_unless_command() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
+            "services[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
         ],
     );
     // STDOUT.
     expect_job_err(
         &service_with_health("      type: STDOUT\n", ON_HEALTH_CHECK),
         SERVICE_EXTS,
-        &["jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is STDOUT."],
+        &["services[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is STDOUT."],
     );
     // The default (no healthCheck) is TCP_CONNECT.
     expect_job_err(
@@ -1214,7 +1139,7 @@ fn on_health_check_forbidden_unless_command() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
+            "services[0] -> script -> actions -> onHealthCheck:\n\tonHealthCheck must not be defined when healthCheck.type is TCP_CONNECT.",
         ],
     );
 }
@@ -1336,7 +1261,7 @@ fn port_protocol_defaults_to_tcp_and_accepts_both_literals() {
         ),
         SERVICE_EXTS,
     );
-    let svc = &jt.job_services.as_ref().unwrap()[0];
+    let svc = &jt.services.as_ref().unwrap()[0];
     let protocols: Vec<ServicePortProtocol> = svc.ports.iter().map(|p| p.protocol).collect();
     assert_eq!(
         protocols,
@@ -1382,7 +1307,7 @@ fn tcp_connect_may_not_name_a_udp_port() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck -> ports[1]:\n\tport 'ingest' has protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be named.",
+            "services[0] -> healthCheck -> ports[1]:\n\tport 'ingest' has protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be named.",
         ],
     );
     // Naming the TCP port alone is fine.
@@ -1403,7 +1328,7 @@ fn all_udp_service_requires_stdout_or_command_health_check() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck:\n\tthe default TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
+            "services[0] -> healthCheck:\n\tthe default TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
         ],
     );
     // Explicit TCP_CONNECT without `ports`: its default list is empty.
@@ -1415,7 +1340,7 @@ fn all_udp_service_requires_stdout_or_command_health_check() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> healthCheck:\n\ta TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
+            "services[0] -> healthCheck:\n\ta TCP_CONNECT health check has no TCP port to probe: none of the Service's ports has protocol TCP, so a healthCheck of type STDOUT or COMMAND is required.",
         ],
     );
     // STDOUT and COMMAND are accepted.
@@ -1453,7 +1378,7 @@ fn same_port_number_twice_in_one_protocol_is_rejected() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'main'; two ports with the same protocol must not have the same port number.",
+            "services[0] -> ports[1] -> port:\n\tTCP port 6379 is also used by port 'main'; two ports with the same protocol must not have the same port number.",
         ],
     );
     // UDP twice.
@@ -1465,7 +1390,7 @@ fn same_port_number_twice_in_one_protocol_is_rejected() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> ports[1] -> port:\n\tUDP port 8125 is also used by port 'ingest'; two ports with the same protocol must not have the same port number.",
+            "services[0] -> ports[1] -> port:\n\tUDP port 8125 is also used by port 'ingest'; two ports with the same protocol must not have the same port number.",
         ],
     );
 }
@@ -1479,7 +1404,7 @@ fn same_port_number_across_protocols_is_allowed() {
         ),
         SERVICE_EXTS,
     );
-    let svc = &jt.job_services.as_ref().unwrap()[0];
+    let svc = &jt.services.as_ref().unwrap()[0];
     assert_eq!(svc.ports[0].port.as_ref().unwrap().raw(), "5353");
     assert_eq!(svc.ports[1].port.as_ref().unwrap().raw(), "5353");
 }
@@ -1513,13 +1438,13 @@ fn max_attempts_must_be_non_negative() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0.",
+            "services[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0.",
         ],
     );
     expect_job_err(
         &service_with_restart_policy("      maxAttempts: many\n"),
         SERVICE_EXTS,
-        &["jobServices[0] -> restartPolicy -> maxAttempts:\n\tmust be an integer."],
+        &["services[0] -> restartPolicy -> maxAttempts:\n\tmust be an integer."],
     );
     expect_job_ok(
         &service_with_restart_policy("      maxAttempts: 0\n"),
@@ -1551,14 +1476,14 @@ fn completed_tasks_must_be_keep_or_rerun() {
         SERVICE_EXTS,
     );
     assert_eq!(
-        jt.job_services.as_ref().unwrap()[0]
+        jt.services.as_ref().unwrap()[0]
             .restart_policy()
             .completed_tasks(),
         CompletedTasksPolicy::Keep
     );
     let jt = expect_job_ok(&service_with_restart_policy("      {}\n"), SERVICE_EXTS);
     assert_eq!(
-        jt.job_services.as_ref().unwrap()[0]
+        jt.services.as_ref().unwrap()[0]
             .restart_policy()
             .completed_tasks(),
         CompletedTasksPolicy::Rerun
@@ -1578,7 +1503,7 @@ fn service_variables_follow_environment_variable_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> variables:\n\tif provided, must not be empty.",
+            "services[0] -> variables:\n\tif provided, must not be empty.",
         ],
     );
     expect_job_err(
@@ -1588,7 +1513,7 @@ fn service_variables_follow_environment_variable_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> variables -> 1X:\n\tvariable name '1X' cannot start with a digit.",
+            "services[0] -> variables -> 1X:\n\tvariable name '1X' cannot start with a digit.",
         ],
     );
     expect_job_err(
@@ -1597,7 +1522,7 @@ fn service_variables_follow_environment_variable_rules() {
         ),
         SERVICE_EXTS,
         &[
-            "jobServices[0] -> variables -> X:\n\tvalue contains a NUL byte, which cannot be represented in a process environment.",
+            "services[0] -> variables -> X:\n\tvalue contains a NUL byte, which cannot be represented in a process environment.",
         ],
     );
 }
@@ -1611,7 +1536,7 @@ fn service_host_requirements_follow_step_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> hostRequirements:\n\tmust have at least one of amounts or attributes.",
+            "services[0] -> hostRequirements:\n\tmust have at least one of amounts or attributes.",
         ],
     );
     expect_job_err(
@@ -1627,7 +1552,7 @@ fn service_host_requirements_follow_step_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative.",
+            "services[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative.",
         ],
     );
 }
@@ -1681,7 +1606,7 @@ steps:
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tvalue 'no' is not valid for attr.worker.preemptible.",
+            "services[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tvalue 'no' is not valid for attr.worker.preemptible.",
         ],
     );
 }
@@ -1695,7 +1620,7 @@ fn service_actions_follow_action_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onRun -> command:\n\tmust not be empty.",
+            "services[0] -> script -> actions -> onRun -> command:\n\tmust not be empty.",
         ],
     );
     expect_job_err(
@@ -1716,8 +1641,8 @@ fn service_actions_follow_action_rules() {
         SERVICE_EXTS,
         &[
             "2 validation errors for JobTemplate\n",
-            "jobServices[0] -> script -> actions -> onEnter -> args:\n\tif provided, must not be empty.",
-            "jobServices[0] -> script -> actions -> onExit:\n\ttimeout must be > 0.",
+            "services[0] -> script -> actions -> onEnter -> args:\n\tif provided, must not be empty.",
+            "services[0] -> script -> actions -> onExit:\n\ttimeout must be > 0.",
         ],
     );
 }
@@ -1835,7 +1760,7 @@ fn service_embedded_files_follow_embedded_file_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> embeddedFiles:\n\tmust not be empty.",
+            "services[0] -> script -> embeddedFiles:\n\tmust not be empty.",
         ],
     );
     expect_job_err(
@@ -1856,8 +1781,8 @@ fn service_embedded_files_follow_embedded_file_rules() {
         SERVICE_EXTS,
         &[
             "2 validation errors for JobTemplate\n",
-            "jobServices[0] -> script -> embeddedFiles[1]:\n\tduplicate embedded file name 'Run'.",
-            "jobServices[0] -> script -> embeddedFiles[1]:\n\tembedded file 'Run' is missing 'data' field.",
+            "services[0] -> script -> embeddedFiles[1]:\n\tduplicate embedded file name 'Run'.",
+            "services[0] -> script -> embeddedFiles[1]:\n\tembedded file 'Run' is missing 'data' field.",
         ],
     );
     expect_job_err(
@@ -1877,37 +1802,7 @@ fn service_embedded_files_follow_embedded_file_rules() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobServices[0] -> script -> embeddedFiles[0] -> filename:\n\tmust not contain path separators.",
-        ],
-    );
-}
-
-#[test]
-fn step_service_errors_carry_step_path() {
-    // Every per-Service check reports beneath `steps[i] -> stepServices[j]`.
-    expect_job_err(
-        &job_with_step_services(
-            r#"      - name: File
-        ports:
-          - name: api
-            port: 70000
-        healthCheck:
-          type: COMMAND
-        restartPolicy:
-          maxAttempts: -3
-        script:
-          actions:
-            onRun:
-              command: run
-"#,
-        ),
-        SERVICE_EXTS,
-        &[
-            "4 validation errors for JobTemplate\n",
-            "steps[0] -> stepServices[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references.",
-            "steps[0] -> stepServices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
-            "steps[0] -> stepServices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0.",
-            "steps[0] -> stepServices[0] -> script -> actions:\n\tonHealthCheck must be defined when healthCheck.type is COMMAND.",
+            "services[0] -> script -> embeddedFiles[0] -> filename:\n\tmust not contain path separators.",
         ],
     );
 }
@@ -1930,8 +1825,8 @@ fn errors_accumulate_across_services() {
         SERVICE_EXTS,
         &[
             "2 validation errors for JobTemplate\n",
-            "jobServices[0] -> ports[1]:\n\tduplicate port name 'main'.",
-            "jobServices[1] -> healthCheck -> ports[0]:\n\treferences undeclared port 'nope'.",
+            "services[0] -> ports[1]:\n\tduplicate port name 'main'.",
+            "services[1] -> healthCheck -> ports[0]:\n\treferences undeclared port 'nope'.",
         ],
     );
 }
@@ -1951,18 +1846,49 @@ fn expect_fixture_job_ok(fixture: &str) -> openjd_model::template::JobTemplate {
 #[test]
 fn rfc_example_valkey_shared_store_verbatim() {
     let jt = expect_fixture_job_ok(RFC_VALKEY);
-    assert_eq!(jt.job_services.as_ref().unwrap()[0].name, "Cache");
+    assert_eq!(jt.services.as_ref().unwrap()[0].name, "Cache");
 }
 
-/// The Step's `onRun` args use
-/// `join_host_port(Service.Coordinator.api.connectAddress, ...)` on a Step
-/// Service, and the Service's `onRun` uses its own `bindAddress`.
+/// `RenderTiles`'s `onRun` args use
+/// `join_host_port(Service.Coordinator.api.connectAddress, ...)`, and the
+/// Service's `onRun` uses its own `bindAddress`. Only `RenderTiles`
+/// references the Service, so its scope is that one Step (§9.1).
 #[test]
-fn rfc_example_per_step_coordinator_verbatim() {
+fn rfc_example_step_coordinator_verbatim() {
     let jt = expect_fixture_job_ok(RFC_COORDINATOR);
+    assert_eq!(jt.services.as_ref().unwrap()[0].name, "Coordinator");
+    let scopes = compute_service_scopes(&jt).unwrap();
     assert_eq!(
-        jt.steps[0].step_services.as_ref().unwrap()[0].name,
-        "Coordinator"
+        scopes.get("Coordinator").unwrap().scope,
+        ServiceScope::steps(["RenderTiles"])
+    );
+}
+
+/// `requiresServices` declares `Cache` with port `main`; the Step uses
+/// `Service.Cache.main.connectAddress` and `.port` (§1.1, §9.9).
+#[test]
+fn rfc_example_required_queue_cache_verbatim() {
+    let jt = expect_fixture_job_ok(RFC_REQUIRED_QUEUE_CACHE);
+    assert!(jt.services.is_none());
+    let reqs = jt.requires_services();
+    assert_eq!(reqs.len(), 1);
+    assert_eq!(reqs[0].name, "Cache");
+    assert_eq!(reqs[0].port_names().collect::<Vec<_>>(), vec!["main"]);
+    assert_eq!(reqs[0].ports[0].protocol, ServicePortProtocol::Tcp);
+}
+
+/// A UDP `ingest` port and a TCP `api` port; both Steps reference the
+/// Service, so its scope is both Steps.
+#[test]
+fn rfc_example_metrics_sink_verbatim() {
+    let jt = expect_fixture_job_ok(RFC_METRICS_SINK);
+    let svc = &jt.services.as_ref().unwrap()[0];
+    assert_eq!(svc.ports[0].protocol, ServicePortProtocol::Udp);
+    assert_eq!(svc.ports[1].protocol, ServicePortProtocol::Tcp);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert_eq!(
+        scopes.get("Metrics").unwrap().scope,
+        ServiceScope::steps(["RenderFrames", "Report"])
     );
 }
 
@@ -1986,7 +1912,7 @@ fn rfc_example_queue_cache_consumer_verbatim() {
     // The consumer job template does not use SERVICE at all and decodes
     // as-is, with or without the extension available.
     let jt = expect_fixture_job_ok(RFC_QUEUE_CACHE_CONSUMER);
-    assert!(jt.job_services.is_none());
+    assert!(jt.services.is_none());
     assert!(!jt.profile().has_extension(ModelExtension::Service));
     expect_job_ok(RFC_QUEUE_CACHE_CONSUMER, NO_SERVICE_EXTS);
 }
@@ -2006,7 +1932,7 @@ fn rfc_example_valkey_shared_store_services_validate() {
     // the Step script's were replaced.
     assert!(template.contains("{{ Service.Cache.main.bindAddress }}"));
     let jt = expect_fixture_job_ok(&template);
-    let cache = &jt.job_services.as_ref().unwrap()[0];
+    let cache = &jt.services.as_ref().unwrap()[0];
     assert_eq!(cache.name, "Cache");
     assert_eq!(cache.port_names().collect::<Vec<_>>(), vec!["main"]);
     assert_eq!(cache.health_check().type_name(), "TCP_CONNECT");
@@ -2028,13 +1954,13 @@ fn rfc_example_valkey_shared_store_services_validate() {
 }
 
 #[test]
-fn rfc_example_per_step_coordinator_services_validate() {
+fn rfc_example_step_coordinator_services_validate() {
     let template = RFC_COORDINATOR.replace(
         "\"http://{{ join_host_port(Service.Coordinator.api.connectAddress, Service.Coordinator.api.port) }}\"",
         "\"http://localhost:8080\"",
     );
     let jt = expect_fixture_job_ok(&template);
-    let coordinator = &jt.steps[0].step_services.as_ref().unwrap()[0];
+    let coordinator = &jt.services.as_ref().unwrap()[0];
     assert_eq!(coordinator.name, "Coordinator");
     assert_eq!(
         coordinator.port_names().collect::<Vec<_>>(),

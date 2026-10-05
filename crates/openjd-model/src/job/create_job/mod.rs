@@ -24,6 +24,7 @@ use crate::types::{JobParameterValues, ValidationContext};
 // Re-exports — preserve the existing public API
 pub use external::{
     apply_environment_templates, AppliedEnvironmentTemplates, AttachedEnvironmentTemplate,
+    RequirementBinding,
 };
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -225,39 +226,63 @@ pub fn create_job(
         })
         .collect();
 
-    let job_services_t: &[crate::template::Service] =
-        job_template.job_services.as_deref().unwrap_or(&[]);
+    let services_t: &[crate::template::Service] = job_template.services();
+    let requirements_t: &[crate::template::ServiceRequirement] = job_template.requires_services();
     let icx = instantiate::InstantiateCtx {
         has_expr,
         limits: &limits,
         ctx,
         budgets,
-        job_services: job_services_t,
+        services: services_t,
+        requirements: requirements_t,
     };
 
-    // RFC 0009 `jobServices`: instantiated in job scope before the steps,
+    // RFC 0009 `services`: instantiated in job scope before the steps,
     // since every Step's Task Sessions may reference them. Each Service
-    // sees the Services before it in the list (forward-only references).
-    let job_services = job_template
-        .job_services
+    // sees every other Service of the document, and carries the scope the
+    // template's references give it (§9.1; validation has rejected a
+    // reference cycle, so the computation cannot fail here).
+    let services = job_template
+        .services
         .as_ref()
         .map(|services| {
-            let list_path = [crate::error::PathElement::Field("jobServices".to_string())];
+            let scopes = crate::template::compute_service_scopes(job_template).map_err(|c| {
+                ModelError::ModelValidation(crate::error::ValidationErrors::single(c.to_string()))
+            })?;
+            let list_path = [crate::error::PathElement::Field("services".to_string())];
             services
                 .iter()
                 .enumerate()
                 .map(|(k, svc)| {
+                    let computed = scopes.get(&svc.name);
                     instantiate::instantiate_service(
                         svc,
                         &symtab,
                         icx,
                         &crate::error::path_index(&list_path, k),
-                        services[..k].iter(),
+                        services.iter(),
+                        computed.map_or(job::ServiceScope::AllSteps, |c| c.scope.clone()),
+                        computed.map_or_else(Vec::new, |c| c.references.iter().cloned().collect()),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+    let requires_services = job_template.requires_services.as_ref().map(|reqs| {
+        reqs.iter()
+            .map(|r| job::ServiceRequirement {
+                name: r.name.clone(),
+                ports: r
+                    .ports
+                    .iter()
+                    .map(|p| job::ServiceRequirementPort {
+                        name: p.name.clone(),
+                        protocol: p.protocol,
+                    })
+                    .collect(),
+            })
+            .collect()
+    });
 
     // Re-run the carried-forward resolved-value checks (and evaluate the
     // `let` bindings feeding them) against check symbol tables where job
@@ -272,8 +297,8 @@ pub fn create_job(
     // environments). Resolution failures that leave a step
     // uninstantiable (host requirements, parameter space) are not
     // checks: they abort immediately, reported alone. A job environment
-    // whose `runScope` excludes SERVICE also sees every Job Service's
-    // `Service.*` endpoints (RFC 0009).
+    // whose effective `runScope` excludes SERVICE also sees every inline
+    // and required Service's `Service.*` endpoints (RFC 0009).
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
@@ -288,7 +313,8 @@ pub fn create_job(
                 ctx,
                 &env_path,
                 &mut check_errors,
-                job_services_t.iter(),
+                services_t.iter(),
+                requirements_t,
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
@@ -407,6 +433,7 @@ pub fn create_job(
         parameters,
         steps,
         job_environments,
-        job_services,
+        services,
+        requires_services,
     })
 }

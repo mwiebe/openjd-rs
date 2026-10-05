@@ -39,14 +39,17 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,      // Insertion-ordered
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
-    pub job_services: Option<Vec<Service>>,              // SERVICE (RFC 0009); omitted from JSON when None
+    pub services: Option<Vec<Service>>,                  // SERVICE (RFC 0009); omitted from JSON when None
+    pub requires_services: Option<Vec<ServiceRequirement>>,  // SERVICE (RFC 0009); omitted from JSON when None
 }
 ```
 
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
-output. `job_services` is the instantiated `jobServices` list in start order (see
-[Service](#service-rfc-0009-service-extension)); it serializes only when present, so a job
-without Services has the same wire shape as before RFC 0009.
+output. `services` is the instantiated `services` list in declaration order, each entry carrying
+its computed scope (see [Service](#service-rfc-0009-service-extension)); after
+`apply_environment_templates`, the attached external Services precede the Job Template's own.
+`requires_services` is the instantiated `requiresServices` list. Both serialize only when
+present, so a job without Services has the same wire shape as before RFC 0009.
 
 ### JobParameter
 
@@ -76,15 +79,12 @@ pub struct Step {
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
-    pub step_services: Option<Vec<Service>>,             // SERVICE (RFC 0009); omitted from JSON when None
     pub resolved_symtab: Option<SerializedSymbolTable>,
 }
 ```
 
-`step_services` is the instantiated `stepServices` list in start order, each Service carrying
-its own `resolved_symtab` (a Step Service's table includes the step-level `let` values its
-host-resolved fields reference). `Step::resolved_symtab` does not include the Services'
-references.
+A Step carries no Service list: the Services whose scope includes it are those of
+`Job::services` whose `scope` contains its name.
 
 `resolved_symtab` exists to transport symbol values across the network to the worker host
 that runs the job. The worker evaluates the format strings that remain unresolved after job
@@ -340,11 +340,14 @@ pub struct StepDependency {
 pub struct Service {
     pub name: String,
     pub description: Option<String>,
-    pub document: Document,                                // §1.2.2 item 2; omitted from JSON when JobTemplate
+    pub document: Document,                                // §1.2.2 item 3; omitted from JSON when JobTemplate
+    pub scope: ServiceScope,                               // §9.1, computed; {"kind":"allSteps"} | {"kind":"steps","steps":[..]}
+    pub references: Vec<String>,                           // §9.1 rule 3: same-document Services it references; omitted when empty
+    pub dependencies: Option<Vec<StepDependency>>,         // §9 item 4; omitted from JSON when None
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
     pub ports: Vec<ServicePort>,                           // Declaration order
-    pub health_check: ServiceHealthCheck,                  // §9.3 defaults applied
-    pub restart_policy: ServiceRestartPolicy,              // §9.4 defaults applied
+    pub health_check: ServiceHealthCheck,                  // §9.4 defaults applied
+    pub restart_policy: ServiceRestartPolicy,              // §9.5 defaults applied
     pub variables: Option<HashMap<String, FormatString>>,  // Service-execution scope, unresolved
     pub script: ServiceScript,                             // Service-execution scope, unresolved
     pub resolved_symtab: Option<SerializedSymbolTable>,
@@ -352,6 +355,21 @@ pub struct Service {
 
 impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
+    pub fn port(&self, name: &str) -> Option<&ServicePort>;
+}
+
+pub use template::ServiceScope;                            // re-exported; see template-types.md "Service scope"
+
+pub struct ServiceRequirement {                            // §9.8, instantiated requiresServices entry
+    pub name: String,
+    pub ports: Vec<ServiceRequirementPort>,
+}
+impl ServiceRequirement { pub fn port_names(&self) -> impl Iterator<Item = &str>; }
+
+pub struct ServiceRequirementPort {                        // §9.8.1
+    pub name: String,
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
 }
 
 #[serde(tag = "kind")]
@@ -370,7 +388,7 @@ pub struct ServicePort {
     pub name: String,
     pub port: Option<u16>,                                 // None = runtime allocates (in `protocol`'s space)
     #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
-    pub protocol: ServicePortProtocol,                     // §9.2 item 3: TCP (default, omitted from JSON) | UDP
+    pub protocol: ServicePortProtocol,                     // §9.3 item 3: TCP (default, omitted from JSON) | UDP
 }
 
 pub use template::ServicePortProtocol;                     // re-exported; see template-types.md
@@ -442,27 +460,43 @@ and cancelation fields travel unresolved too, restricted to job-creation-stage s
 Step. `<Service>.let` itself is not carried (its values are), while `<ServiceScript>.let` is,
 for the host to evaluate.
 
+`scope` is the set of Steps whose Tasks depend on the Service (Template Schemas §9.1), computed
+by `create_job` from the template's `Service.*` references through
+`template::compute_service_scopes` — `AllSteps` for a Service a Job Environment references, one
+nothing references, or one a Job-wide Service references; `Steps { .. }` otherwise — and
+`AllSteps` for every external Service, stamped by `apply_environment_templates`. `references`
+are the names of the other Services **of the same document** the Service references (§9.1 rule
+3), sorted: a scheduler starts the Service after each is READY and stops it before any of them.
+`dependencies` are the Steps that must complete before the Service starts (§9 item 4); never set
+on an external Service. A scheduler therefore reads the lifecycle of every Service off the Job
+without re-deriving it: start before the first Task of any Step in `scope`, after `dependencies`
+and `references`; stop once no Step in `scope` has a Task left. `scope` deserializes as
+`AllSteps` when absent, so a Job serialized before scopes were recorded still loads.
+
 `document` is the document of the submission that declares the Service (Template Schemas
-§1.2.2 item 2, RFC 0009 "Service names are scoped to their document"): `Document::JobTemplate`
-for every `jobServices` / `stepServices` entry `create_job` produces, and the attached
-Environment Template (by 0-based attachment index, with the caller's label when it gave one)
-for an external Service, stamped by `apply_environment_templates`. Service names are unique
-within the list that declares them and nothing more — an external Service may be named like a
-Service of the Job Template or of another attachment — so two Services of a combined Job are
-the same Service iff `(document, name)` agree; a scheduler keys on that pair, and every
-`Service.*` reference resolves within the referencing entity's own document. `Document` is
-`Ord` so it can key a `BTreeMap`/`BTreeSet`; `Display` names the document as the
-submission-time error paths do. The field is omitted from JSON for the Job Template's own
-Services (the default on deserialization), so a Job without attachments serializes as before.
+§1.2.2 item 3, RFC 0009 "Inline Services shadow external ones"): `Document::JobTemplate` for
+every `services` entry `create_job` produces, and the attached Environment Template (by 0-based
+attachment index, with the caller's label when it gave one) for an external Service, stamped by
+`apply_environment_templates`. Service names are unique within the list that declares them and
+nothing more — an external Service may be named like a Service of the Job Template or of another
+attachment (an error only when a `requiresServices` entry names it) — so two Services of a
+combined Job are the same Service iff `(document, name)` agree; a scheduler keys on that pair. A
+`Service.*` reference resolves within the referencing entity's own document, except that the Job
+Template's references to a required Service resolve to the attached Service the requirement was
+bound to (`AppliedEnvironmentTemplates::requirement_bindings`). `Document` is `Ord` so it can
+key a `BTreeMap`/`BTreeSet`; `Display` names the document as the submission-time error paths
+do. The field is omitted from JSON for the Job Template's own Services (the default on
+deserialization), so a Job without attachments serializes as before.
 
 `resolved_symtab` is filtered like an Environment's: the symbols referenced by `variables`,
 every script action (command, args, timeout, cancelation), embedded-file `data`, and
-`<ServiceScript>.let` — which is how the `<Service>.let` values (and, for a Step Service, the
-step-level `let` values) reach the host — with the `RawParam.*` fallback for PATH parameters.
-A Service Session layers `Session.*`, `Service.File.*`, and the `Service.*` endpoints from
+`<ServiceScript>.let` — which is how the `<Service>.let` values reach the host — with the
+`RawParam.*` fallback for PATH parameters. A Service Session layers `Session.*`,
+`Service.File.*`, and the `Service.*` endpoints from
 `job::service_symbols::build_service_symbol_table` on top. The same fields, walked by
-`job::service_symbols::referenced_service_names`, give a scheduler the Services this one
-references — the edges it orders Service starts by (RFC 0009 constraint 2).
+`job::service_symbols::referenced_service_names`, give a scheduler every Service this one
+references by name — `references` restricted to its document, plus any required external
+Service.
 
 `Service` implements `PartialEq` and `Hash` with the module's invariant; `variables` hashes as
 key-sorted entries. It also implements `Deserialize`, so a created job's Services round-trip
@@ -476,7 +510,8 @@ through the wire format.
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); `run_scope` is `Vec<RunScope>` not `Vec<String>`; adds `resolved_symtab` |
-| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString` |
+| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString`; adds the computed `scope` and `references` |
+| `template::ServiceRequirement` | `job::ServiceRequirement` | Structurally identical |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |
 | `template::EmbeddedFile` | `job::EmbeddedFile` | `file_type` is `FileType` enum; `end_of_line` is `Option<EndOfLine>` enum |
 | `template::CancelationMode` | `job::CancelationMode` | Both are enums with `Terminate` and `NotifyThenTerminate` variants |

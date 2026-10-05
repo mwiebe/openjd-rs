@@ -592,8 +592,9 @@ pub struct ServiceSessionConfig {
     pub session: SessionConfig,
     /// The Service whose actions this Session runs.
     pub service: openjd_model::job::Service,
-    /// The scope's Environments in entry order (Job's, then the Step's for a
-    /// Step Service). Only those with `runs_in(RunScope::Service)` are entered.
+    /// The Job's Environments in entry order (never a Step's
+    /// `stepEnvironments`: a Service belongs to no Step). Only those with
+    /// `runs_in(RunScope::Service)` are entered.
     pub environments: Vec<openjd_model::job::Environment>,
     /// The document profile of each entry of `environments`, index for index,
     /// for one from a document other than the Service's own: `Some(p)` enters
@@ -1160,6 +1161,11 @@ pub fn logging::log_section_banner(session_id: &str, title: &str);
 /// `session_tag` is `Some` (a Session with a `log_tag`); else
 /// `log_section_banner`.
 pub fn logging::log_section_banner_tagged(session_id: &str, session_tag: Option<&str>, title: &str);
+
+/// A one-line structural note (an Environment skipped for its `runScope`):
+/// a tagged `BANNER` line `[<tag>] <text>` when `session_tag` is `Some`;
+/// else a `PROCESS_CONTROL` line.
+pub fn logging::log_session_note_tagged(session_id: &str, session_tag: Option<&str>, text: &str);
 
 /// The attribution of a log record: the Session's `log_tag` and/or the
 /// concurrently running action's name. `prefix()` is

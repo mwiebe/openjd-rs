@@ -510,6 +510,9 @@ fn service(name: &str, on_run: Action) -> Service {
         name: name.into(),
         description: None,
         document: Default::default(),
+        scope: openjd_model::job::ServiceScope::AllSteps,
+        references: Vec::new(),
+        dependencies: None,
         host_requirements: None,
         ports: vec![ServicePort {
             name: "main".into(),

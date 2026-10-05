@@ -9,31 +9,45 @@
 //! takes the scheduler's side of the split that
 //! `specs/sessions/service-session.md` describes: it allocates endpoints
 //! ([`super::service_ports`]), decides when each Service Session starts
-//! (ordering constraints 2 and 10), gates Tasks on readiness (constraint
-//! 3), watches for instance failures while Tasks run — an `onRun` exit, or
-//! an UNHEALTHY verdict from the Session's health check — and applies the
-//! restart policy ("Failure and restart"), and stops Services when their
-//! scope completes (constraints 4, 6, 7). The Service Sessions themselves
-//! are `openjd_sessions::ServiceSession`s.
+//! (ordering constraints 2 and 10, and a Service's `dependencies`), gates
+//! Tasks on readiness (constraint 3), watches for instance failures while
+//! Tasks run — an `onRun` exit, or an UNHEALTHY verdict from the Session's
+//! health check — and applies the restart policy ("Failure and restart"),
+//! and stops Services when their scope completes (constraints 4, 6, 7).
+//! The Service Sessions themselves are `openjd_sessions::ServiceSession`s.
+//!
+//! Every Service of the combined Job is registered once, with the scope job
+//! creation computed for it ([`Service::scope`], Template Schemas §9.1): a
+//! Service whose scope is every Step is started before the Task Session
+//! enters the Job's Environments and stopped at the end of the run; one
+//! scoped to some Steps is *activated* when the first of them is about to
+//! run — after every Step in its `dependencies` has completed — and stopped
+//! once no Step in its scope remains to run. Steps outside a Service's
+//! scope never wait on it. A Service stopped because its scope completed
+//! returns to idle and is started again, in a new Service Session, if a
+//! `RERUN` returns a Step of its scope to the queue.
 //!
 //! Services are keyed by [`ServiceKey`] — the document that declares a
-//! Service plus its name (Template Schemas §1.2.2 item 2: names are scoped
-//! to their document, so an external Service may be named like one of the
-//! Job Template's). A Service Session is seeded with the `Service.*`
-//! endpoints of its own document only, and a `Service.*` reference inside a
-//! Service resolves to a Service of the same document.
+//! Service plus its name (Template Schemas §1.2.2 item 3: an inline Service
+//! shadows an external one of the same name, and two attachments may both
+//! declare a `Cache`). A Service Session is seeded with the endpoints of the
+//! Services it references — of its own document, plus the attached Services
+//! bound to the Job Template's `requiresServices` for an inline Service —
+//! and a Task Session with the inline Services whose scope includes its Step
+//! and the bound required Services.
 //!
 //! See `specs/cli/run.md` § Services for the orchestration rules.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use openjd_model::job::service_symbols::{referenced_service_names, ServiceEndpoints};
-use openjd_model::job::{CompletedTasksPolicy, Document, Environment, Job, Service, Step};
+use openjd_model::job::{CompletedTasksPolicy, Document, Environment, Job, Service, ServiceScope};
 use openjd_model::types::{JobParameterValues, ModelProfile};
+use openjd_model::RequirementBinding;
 use openjd_sessions::path_mapping::PathMappingRule;
 use openjd_sessions::session::SessionConfig;
 use openjd_sessions::{
@@ -46,27 +60,8 @@ use tokio_util::sync::CancellationToken;
 use super::service_ports::{describe_endpoints, PortAllocator};
 use super::RunError;
 
-/// Which scope a Service belongs to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ServiceScope {
-    /// A Job Service (`jobServices`, including external Services from
-    /// `--environment` templates): the scope is the whole Job.
-    Job,
-    /// A Step Service (`stepServices`) of the named Step.
-    Step(String),
-}
-
-impl std::fmt::Display for ServiceScope {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Job => write!(f, "Job"),
-            Self::Step(name) => write!(f, "Step '{name}'"),
-        }
-    }
-}
-
 /// What identifies one Service of the combined Job: the document that
-/// declares it and its name (Template Schemas §1.2.2 item 2). Two Services
+/// declares it and its name (Template Schemas §1.2.2 item 3). Two Services
 /// with the same name from different documents are different Services.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct ServiceKey {
@@ -83,11 +78,20 @@ impl ServiceKey {
     }
 
     /// The Service `name` names from inside a Service of `document`: a
-    /// `Service.<name>.*` reference never crosses a document boundary.
+    /// `Service.<name>.*` reference to an inline Service never crosses a
+    /// document boundary.
     fn sibling(document: &Document, name: &str) -> Self {
         Self {
             document: document.clone(),
             name: name.to_string(),
+        }
+    }
+
+    /// The attached Service a requirement was bound to.
+    fn of_binding(binding: &RequirementBinding) -> Self {
+        Self {
+            document: binding.document.clone(),
+            name: binding.service.clone(),
         }
     }
 
@@ -115,6 +119,12 @@ pub(super) fn origin_suffix(document: &Document) -> String {
     }
 }
 
+/// `(scope: every Step)` / `(scope: Steps A, B)` — how every log line names
+/// a Service's scope.
+pub(super) fn scope_label(scope: &ServiceScope) -> String {
+    format!("(scope: {scope})")
+}
+
 /// A Service that became FAILED: its scope fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ServiceFailure {
@@ -139,20 +149,25 @@ impl std::fmt::Display for ServiceFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} ({} scope) failed: {}",
+            "{} {} failed: {}",
             self.key(),
-            self.scope,
+            scope_label(&self.scope),
             self.reason
         )
     }
 }
 
-/// How far a `completedTasks: RERUN` relaunch reaches: the Step's Tasks
-/// (a Step Service) or every Task of the Job (a Job Service).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum RerunScope {
-    Step,
-    Job,
+/// The union of two scopes: the Steps whose completed Tasks a set of `RERUN`
+/// relaunches return to the queue.
+pub(super) fn merge_scopes(a: Option<ServiceScope>, b: &ServiceScope) -> ServiceScope {
+    match (a, b) {
+        (None, b) => b.clone(),
+        (Some(ServiceScope::AllSteps), _) | (_, ServiceScope::AllSteps) => ServiceScope::AllSteps,
+        (Some(ServiceScope::Steps { steps: mut a }), ServiceScope::Steps { steps: b }) => {
+            a.extend(b.iter().cloned());
+            ServiceScope::Steps { steps: a }
+        }
+    }
 }
 
 /// The run-wide inputs every Service Session shares with the Task Session.
@@ -160,8 +175,8 @@ pub(super) struct ServiceRunConfig {
     pub job_parameter_values: JobParameterValues,
     pub path_mapping_rules: Option<Vec<PathMappingRule>>,
     pub retain_working_dir: bool,
-    /// The Job Template's profile: the profile of its `jobServices` /
-    /// `stepServices` and of its own Environments.
+    /// The Job Template's profile: the profile of its `services` and of its
+    /// own Environments.
     pub profile: ModelProfile,
     /// The `--environment` templates' profiles, by attachment index. An
     /// external Service's Session runs under its own template's profile,
@@ -169,6 +184,11 @@ pub(super) struct ServiceRunConfig {
     /// the profile of the document that declares it (Template Schemas §1.2
     /// item 3).
     pub attached_profiles: Vec<ModelProfile>,
+    /// The attached Service each `requiresServices` entry of the Job
+    /// Template was bound to at submission (§1.2.2 item 2). The Job
+    /// Template's Tasks, Environments and inline Services see
+    /// `Service.<requirement>.*` as that Service's endpoints.
+    pub requirement_bindings: Vec<RequirementBinding>,
     /// The run's interruption token. A Service Session does not share it
     /// (a token canceled while a Session is being torn down would cancel
     /// its `onExit` and Environment exits too, which constraint 7 wants
@@ -184,6 +204,13 @@ impl ServiceRunConfig {
     fn profile_for(&self, document: &Document) -> &ModelProfile {
         super::profile_for(&self.profile, &self.attached_profiles, document)
     }
+
+    /// The bound Service of the requirement named `name`, if any.
+    fn binding(&self, name: &str) -> Option<&RequirementBinding> {
+        self.requirement_bindings
+            .iter()
+            .find(|b| b.requirement == name)
+    }
 }
 
 /// What the readiness gate found.
@@ -191,21 +218,18 @@ impl ServiceRunConfig {
 pub(super) struct GateOutcome {
     /// A Service became FAILED; its scope fails.
     pub failure: Option<ServiceFailure>,
-    /// A Service with `completedTasks: RERUN` failed since the last gate, so
-    /// the completed Tasks of its scope return to the queue.
-    pub rerun: Option<RerunScope>,
-    /// A Job Service began a new Service Session (new endpoints) since the
-    /// last gate: Environments the Task Session entered may hold stale
-    /// `Service.*` values.
-    pub job_endpoints_changed: bool,
-    /// As above, for a Step Service of the current Step.
+    /// Services with `completedTasks: RERUN` failed since the last gate: the
+    /// completed Tasks of every Step in the union of their scopes return to
+    /// the queue.
+    pub rerun: Option<ServiceScope>,
+    /// A Service whose scope is every Step (or an external Service) began a
+    /// new Service Session (new endpoints) since the last gate: every
+    /// Environment the Task Session entered may hold stale `Service.*`
+    /// values.
+    pub job_wide_endpoints_changed: bool,
+    /// As above, for a Service scoped to some Steps: the current Step's
+    /// Environments may hold stale values.
     pub step_endpoints_changed: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Group {
-    Job,
-    Step,
 }
 
 /// An instance failure or start failure, as RFC 0009 "Failure and restart"
@@ -292,19 +316,20 @@ fn describe_exit(exit: &ServiceRunExit) -> String {
 /// starts or recovers the Service.
 struct Instance {
     service: Service,
-    scope: ServiceScope,
     /// `Service 'X'` or `Service 'X' (from <doc>)`, for every log line.
     label: String,
-    /// The Environments the Service Session enters (those whose `runScope`
-    /// includes `SERVICE`), in entry order.
+    /// `(scope: …)`, for every log line.
+    scope_label: String,
+    /// The Job's Environments, in entry order; the Session enters those
+    /// whose `runScope` includes `SERVICE`.
     environments: Vec<Environment>,
     /// The profile of each entry of `environments` whose document is not
     /// the Service's own (`None` for those that share it), index for index
     /// — `ServiceSessionConfig::environment_profiles`.
     environment_profiles: Vec<Option<ModelProfile>>,
-    /// Endpoints of the Services earlier in the start order, **of this
-    /// Service's own document**, that were READY when this Session was
-    /// started (a `Service.*` reference resolves within its document).
+    /// Endpoints of the Services this one references that were READY when
+    /// this Session was started: Services of its own document, and the
+    /// bound required Services for an inline Service.
     in_scope: Vec<ServiceEndpoints>,
     endpoints: Option<ServiceEndpoints>,
     session: Option<ServiceSession>,
@@ -322,33 +347,70 @@ enum Outcome {
     Ready { replaced: bool },
     /// The Service is FAILED (attempts exhausted). Its Session has ended.
     Failed(String),
-    /// The run is stopping; the Service's Session is returned for `end()`.
+    /// The Service is stopping; the Service's Session is returned for
+    /// `end()`.
     Stopped,
 }
 
 type Background = JoinHandle<(Instance, Outcome)>;
 
 enum State {
-    /// Not started (or returned to pending to be started again with new
-    /// in-scope endpoints).
-    Pending(Instance),
+    /// Not started, or stopped because its scope completed. Started by the
+    /// gate when active.
+    Idle,
     /// A background task is starting or relaunching the Service.
     Busy(Background),
     /// READY; the Session is held here and watched for an exit.
-    Ready(Instance),
+    Ready(Box<Instance>),
     /// FAILED; the Session has ended.
     Failed,
-    /// Ended because its scope completed or the run stopped.
-    Stopped,
 }
 
 struct Managed {
     key: ServiceKey,
+    service: Service,
+    scope: ServiceScope,
     policy: CompletedTasksPolicy,
-    /// The Services this one references through `Service.*` — each a
-    /// Service of the same document, by construction of the scope rules.
+    /// The Services this one references through `Service.*`: Services of
+    /// the same document, plus the bound required Services an inline
+    /// Service references.
     references: BTreeSet<ServiceKey>,
+    /// The Job's Environments (every one; the Session skips those whose
+    /// `runScope` excludes `SERVICE`).
+    environments: Vec<Environment>,
+    environment_profiles: Vec<Option<ModelProfile>>,
+    /// Whether a Step in the Service's scope is pending in the current
+    /// round: the gate starts active idle Services and leaves inactive ones
+    /// idle (constraint 10: a Service whose scope schedules no Task need
+    /// not start).
+    active: bool,
+    /// Cancels background work when the Service is stopped. Replaced when
+    /// the Service is started again from idle.
+    stop: CancellationToken,
     state: State,
+}
+
+impl Managed {
+    /// A fresh [`Instance`] for a new Service Session (constraint 9: new
+    /// host selection, new ports, new working directory).
+    fn new_instance(&self, retain_working_dir: bool) -> Instance {
+        Instance {
+            service: self.service.clone(),
+            label: self.key.to_string(),
+            scope_label: scope_label(&self.scope),
+            environments: self.environments.clone(),
+            environment_profiles: self.environment_profiles.clone(),
+            in_scope: Vec::new(),
+            endpoints: None,
+            session: None,
+            relaunches: 0,
+            retain_working_dir,
+        }
+    }
+
+    fn is_job_wide(&self) -> bool {
+        self.scope.is_all_steps()
+    }
 }
 
 struct Shared {
@@ -362,7 +424,6 @@ struct Shared {
 /// its health check declared it UNHEALTHY (on which the Service Session has
 /// already canceled `onRun`).
 pub(super) struct Detected {
-    group: Group,
     idx: usize,
     failure: InstanceFailure,
 }
@@ -393,13 +454,7 @@ impl InstanceFailure {
 /// The scheduler side of RFC 0009 for one `openjd run`.
 pub(super) struct ServiceManager {
     shared: Arc<Shared>,
-    job: Vec<Managed>,
-    step: Vec<Managed>,
-    /// Cancels background work on Job Services when they are stopped.
-    job_stop: CancellationToken,
-    /// Cancels background work on the current Step's Services when they
-    /// are stopped. Replaced for every Step.
-    step_stop: CancellationToken,
+    services: Vec<Managed>,
 }
 
 fn log_line(msg: impl std::fmt::Display) {
@@ -416,76 +471,58 @@ fn log_banner(label: &str) {
 
 impl ServiceManager {
     pub(super) fn new(config: ServiceRunConfig) -> Self {
-        let job_stop = config.cancel_token.child_token();
-        let step_stop = config.cancel_token.child_token();
         Self {
             shared: Arc::new(Shared {
                 config,
                 ports: Mutex::new(PortAllocator::default()),
                 session_counter: AtomicU32::new(0),
             }),
-            job: Vec::new(),
-            step: Vec::new(),
-            job_stop,
-            step_stop,
+            services: Vec::new(),
         }
     }
 
-    /// Register the Job's Services (the combined `jobServices`: external
-    /// Services then the Job Template's own), not yet started. Their
-    /// Sessions enter the Job's Environments.
-    ///
-    /// `environment_documents` is the document of each entry of
-    /// `job.job_environments`, index for index.
-    pub(super) fn set_job_services(&mut self, job: &Job, environment_documents: &[Document]) {
-        if !self.job.is_empty() {
+    /// Register every Service of the combined Job (`job.services`: external
+    /// Services then the Job Template's own), none started or active. Their
+    /// Sessions enter the Job's Environments (those whose `runScope`
+    /// includes `SERVICE`); `environment_documents` is the document of each
+    /// entry of `job.job_environments`, index for index.
+    pub(super) fn register(&mut self, job: &Job, environment_documents: &[Document]) {
+        if !self.services.is_empty() {
             return;
         }
         let envs: Vec<Environment> = job.job_environments.clone().unwrap_or_default();
-        for service in job.job_services.iter().flatten() {
+        for service in job.services.iter().flatten() {
+            let key = ServiceKey::of(service);
             let profiles = self.environment_profiles(service, environment_documents);
-            self.job.push(managed(
-                service,
-                ServiceScope::Job,
-                envs.clone(),
-                profiles,
-                self.shared.config.retain_working_dir,
-            ));
-        }
-    }
-
-    /// Register `step`'s Services, not yet started. Their Sessions enter the
-    /// Job's Environments followed by the Step's. A no-op while the current
-    /// Step's Services are registered (a Step re-running its Tasks keeps
-    /// them). `environment_documents` is as for
-    /// [`set_job_services`](Self::set_job_services); a Step's Environments
-    /// belong to the Job Template.
-    pub(super) fn set_step_services(
-        &mut self,
-        job: &Job,
-        environment_documents: &[Document],
-        step: &Step,
-    ) {
-        if !self.step.is_empty() {
-            return;
-        }
-        let Some(services) = &step.step_services else {
-            return;
-        };
-        let mut envs: Vec<Environment> = job.job_environments.clone().unwrap_or_default();
-        envs.extend(step.step_environments.iter().flatten().cloned());
-        self.step_stop = self.shared.config.cancel_token.child_token();
-        for service in services {
-            // Step Environments are the Job Template's: they share a Step
-            // Service's document, so they need no profile of their own.
-            let profiles = self.environment_profiles(service, environment_documents);
-            self.step.push(managed(
-                service,
-                ServiceScope::Step(step.name.clone()),
-                envs.clone(),
-                profiles,
-                self.shared.config.retain_working_dir,
-            ));
+            // A `Service.<name>.*` reference inside this Service names a
+            // Service of the same document — or, in the Job Template, a
+            // required external Service bound at submission.
+            let references = referenced_service_names(service)
+                .iter()
+                .map(|name| {
+                    match (
+                        key.document.is_job_template(),
+                        self.shared.config.binding(name),
+                    ) {
+                        (true, Some(binding)) if !service_declared(job, name) => {
+                            ServiceKey::of_binding(binding)
+                        }
+                        _ => ServiceKey::sibling(&key.document, name),
+                    }
+                })
+                .collect();
+            self.services.push(Managed {
+                key,
+                service: service.clone(),
+                scope: service.scope.clone(),
+                policy: service.restart_policy.completed_tasks,
+                references,
+                environments: envs.clone(),
+                environment_profiles: profiles,
+                active: false,
+                stop: self.shared.config.cancel_token.child_token(),
+                state: State::Idle,
+            });
         }
     }
 
@@ -509,46 +546,146 @@ impl ServiceManager {
 
     /// `true` when any Service is registered.
     pub(super) fn any_registered(&self) -> bool {
-        !self.job.is_empty() || !self.step.is_empty()
+        !self.services.is_empty()
     }
 
-    /// The endpoints an entity declared by `document` may reference in the
-    /// Task Session: the READY Job Services' and the Step's Services' of
-    /// **that document** (`port` and `connectAddress`; `bindAddress` is
-    /// never seeded here). A Task, or a Job Template Environment, passes
-    /// `Document::JobTemplate` and sees the Job Template's Services alone;
-    /// an attached Environment passes its own document and sees the
-    /// external Services it was declared with (Template Schemas §1.2.2
-    /// item 2).
-    pub(super) fn task_scope_endpoints(&self, document: &Document) -> Vec<ServiceEndpoints> {
-        self.job
+    /// The number of registered Services whose scope is every Step
+    /// (including external Services).
+    pub(super) fn job_wide_count(&self) -> usize {
+        self.services.iter().filter(|m| m.is_job_wide()).count()
+    }
+
+    /// Activate every Service whose scope is every Step (constraint 10: the
+    /// Job will schedule a Task), so the next gate starts them. Called
+    /// before the Task Session enters the Job's Environments, which may
+    /// reference them.
+    pub(super) fn activate_job_wide(&mut self) {
+        for m in self.services.iter_mut().filter(|m| m.is_job_wide()) {
+            m.active = true;
+        }
+    }
+
+    /// Activate every Service whose scope includes `step`, so the next gate
+    /// starts those not yet READY (a Service stopped because its scope had
+    /// completed starts again in a new Session, constraint 9). A Service with
+    /// `dependencies` is activated only once every listed Step has completed
+    /// (`completed`) — a listed Step outside the run's selection
+    /// (`selected`) counts as completed, as a Step's own dependencies do
+    /// under `--step` — and an error names a Service whose dependency is
+    /// selected but not yet completed, which the Step ordering prevents.
+    /// Returns the names of the Services activated.
+    pub(super) fn activate_for_step(
+        &mut self,
+        step: &str,
+        completed: &BTreeSet<String>,
+        selected: &BTreeSet<String>,
+    ) -> Result<Vec<String>, RunError> {
+        let mut activated = Vec::new();
+        for m in self.services.iter_mut() {
+            if m.active || !m.scope.contains(step) {
+                continue;
+            }
+            let unmet: Vec<&str> = m
+                .service
+                .dependencies
+                .iter()
+                .flatten()
+                .map(|d| d.depends_on.as_str())
+                .filter(|d| selected.contains(*d) && !completed.contains(*d))
+                .collect();
+            if !unmet.is_empty() {
+                return Err(format!(
+                    "{} {} cannot start before Step '{step}': it depends on Step(s) {} which \
+                     have not completed",
+                    m.key,
+                    scope_label(&m.scope),
+                    unmet
+                        .iter()
+                        .map(|d| format!("'{d}'"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+                .into());
+            }
+            m.active = true;
+            activated.push(m.key.name.clone());
+        }
+        Ok(activated)
+    }
+
+    /// The names of the registered Services whose scope includes `step` and
+    /// which are not active (will be started for it).
+    pub(super) fn inactive_for_step(&self, step: &str) -> Vec<String> {
+        self.services
             .iter()
-            .chain(self.step.iter())
+            .filter(|m| !m.active && m.scope.contains(step))
+            .map(|m| m.key.to_string())
+            .collect()
+    }
+
+    /// The endpoints an entity may reference in the Task Session (`port` and
+    /// `connectAddress`; `bindAddress` is never seeded here):
+    ///
+    /// - for `Document::JobTemplate` — a Task of `step`, a Step Environment,
+    ///   or one of the Job Template's own Job Environments (`step` `None`) —
+    ///   the READY inline Services whose scope includes the Step (every
+    ///   READY inline Service for a Job Environment) and the READY attached
+    ///   Services bound to the Job Template's `requiresServices`;
+    /// - for an attached Environment, the READY Services of its own
+    ///   document (Template Schemas §1.2.2 item 3).
+    pub(super) fn task_scope_endpoints(
+        &self,
+        document: &Document,
+        step: Option<&str>,
+    ) -> Vec<ServiceEndpoints> {
+        let mut out: Vec<ServiceEndpoints> = self
+            .services
+            .iter()
             .filter(|m| m.key.document == *document)
+            .filter(|m| step.is_none_or(|s| m.scope.contains(s)))
             .filter_map(|m| match &m.state {
                 State::Ready(inst) => inst.endpoints.clone(),
                 _ => None,
             })
-            .collect()
+            .collect();
+        if document.is_job_template() {
+            for binding in &self.shared.config.requirement_bindings {
+                let key = ServiceKey::of_binding(binding);
+                if let Some(endpoints) = self.ready_endpoints_of(&key) {
+                    out.push(endpoints);
+                }
+            }
+        }
+        out
+    }
+
+    fn ready_endpoints_of(&self, key: &ServiceKey) -> Option<ServiceEndpoints> {
+        self.services
+            .iter()
+            .find(|m| m.key == *key)
+            .and_then(|m| match &m.state {
+                State::Ready(inst) => inst.endpoints.clone(),
+                _ => None,
+            })
     }
 
     /// The readiness gate (constraint 3), run before every Task: observe
     /// any instance failure since the last gate and begin the restart decision
     /// for it; await every background start/relaunch; restart the Services
-    /// that reference one whose Session was replaced; start every Service
-    /// not yet started, in waves of Services whose referenced Services are
-    /// READY (constraint 2); repeat until every registered Service is READY,
-    /// FAILED, or stopped.
+    /// that reference one whose Session was replaced; start every active
+    /// Service not yet started, in waves of Services whose referenced
+    /// Services are READY (constraint 2); repeat until every active Service
+    /// is READY or FAILED.
     pub(super) async fn gate(&mut self) -> Result<GateOutcome, RunError> {
         let mut outcome = GateOutcome::default();
         loop {
             for detected in self.poll_failures() {
                 let (policy, scope) = self.begin_recovery(detected);
                 if policy == CompletedTasksPolicy::Rerun {
-                    outcome.rerun = outcome.rerun.max(Some(scope));
+                    outcome.rerun = Some(merge_scopes(outcome.rerun.take(), &scope));
                 }
             }
-            if !self.any_busy() && !self.any_pending() {
+            if !self.any_busy() && !self.any_startable() {
                 break;
             }
             let settled = self.await_busy(&mut outcome).await?;
@@ -564,26 +701,80 @@ impl ServiceManager {
         Ok(outcome)
     }
 
-    /// Stop the current Step's Services (constraints 4, 6, 7): cancel
-    /// background work, end every Session in reverse start order.
-    pub(super) async fn stop_step_services(&mut self) {
-        self.step_stop.cancel();
-        stop_group(&mut self.step).await;
-        self.step.clear();
+    /// Constraint 6: stop every active Service whose scope contains none of
+    /// `remaining` (the Steps still to run), in reference order — a Service
+    /// before any it references (constraint 4) — and return each to idle.
+    /// A Service whose scope is every Step is stopped only by
+    /// [`stop_all`](Self::stop_all).
+    pub(super) async fn stop_completed_scopes(&mut self, remaining: &BTreeSet<String>) {
+        let done: BTreeSet<ServiceKey> = self
+            .services
+            .iter()
+            .filter(|m| m.active && !m.is_job_wide())
+            .filter(|m| {
+                m.scope
+                    .step_names()
+                    .is_some_and(|steps| steps.is_disjoint(remaining))
+            })
+            .map(|m| m.key.clone())
+            .collect();
+        self.stop_set(&done).await;
     }
 
-    /// Stop the Job Services in reverse start order. Call after every Step
-    /// Service has stopped (constraint 4) and the Task Session has exited
-    /// the Job's Environments.
-    pub(super) async fn stop_job_services(&mut self) {
-        self.job_stop.cancel();
-        stop_group(&mut self.job).await;
-    }
-
-    /// Stop everything: the Step's Services, then the Job's.
+    /// Stop everything, in reference order (constraint 4), after the Task
+    /// Session has exited the Job's Environments.
     pub(super) async fn stop_all(&mut self) {
-        self.stop_step_services().await;
-        self.stop_job_services().await;
+        let all: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
+        self.stop_set(&all).await;
+    }
+
+    /// Stop the Services in `keys`: cancel their background work and end
+    /// their Sessions, each before any Service it references (reverse
+    /// topological order of the reference graph restricted to `keys`;
+    /// registration order breaks ties, latest first).
+    async fn stop_set(&mut self, keys: &BTreeSet<ServiceKey>) {
+        if keys.is_empty() {
+            return;
+        }
+        for m in self.services.iter().filter(|m| keys.contains(&m.key)) {
+            m.stop.cancel();
+        }
+        let mut pending: BTreeSet<ServiceKey> = keys.clone();
+        while !pending.is_empty() {
+            // Those not referenced by any other pending Service go first.
+            let referenced_by_pending: BTreeSet<ServiceKey> = self
+                .services
+                .iter()
+                .filter(|m| pending.contains(&m.key))
+                .flat_map(|m| m.references.iter().cloned())
+                .collect();
+            let mut wave: Vec<usize> = self
+                .services
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| {
+                    pending.contains(&m.key) && !referenced_by_pending.contains(&m.key)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if wave.is_empty() {
+                // Cannot happen for an acyclic reference graph; stop the rest
+                // in reverse registration order rather than spin.
+                wave = self
+                    .services
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, m)| pending.contains(&m.key))
+                    .map(|(i, _)| i)
+                    .collect();
+            }
+            wave.reverse();
+            for idx in wave {
+                let m = &mut self.services[idx];
+                pending.remove(&m.key);
+                stop_managed(m, &self.shared).await;
+            }
+        }
     }
 
     /// Resolve when a READY Service suffers an instance failure while a Task
@@ -591,70 +782,64 @@ impl ServiceManager {
     /// other than by cancelation. Pending forever when no Service is READY.
     pub(super) async fn wait_instance_failure(&self) -> Detected {
         let mut watchers: Vec<Pin<Box<dyn Future<Output = Detected> + Send>>> = Vec::new();
-        for (group, list) in [(Group::Job, &self.job), (Group::Step, &self.step)] {
-            for (idx, m) in list.iter().enumerate() {
-                let State::Ready(inst) = &m.state else {
-                    continue;
-                };
-                let Some(session) = inst.session.as_ref() else {
-                    continue;
-                };
-                let (Some(mut exit_rx), Some(mut health_rx)) =
-                    (session.exit_watch(), session.health_watch())
-                else {
-                    continue;
-                };
-                watchers.push(Box::pin(async move {
-                    loop {
-                        // UNHEALTHY is reported as soon as the health check
-                        // decides it, before the canceled onRun has exited.
-                        if let ServiceHealth::Unhealthy(u) = health_rx.borrow_and_update().clone() {
+        for (idx, m) in self.services.iter().enumerate() {
+            let State::Ready(inst) = &m.state else {
+                continue;
+            };
+            let Some(session) = inst.session.as_ref() else {
+                continue;
+            };
+            let (Some(mut exit_rx), Some(mut health_rx)) =
+                (session.exit_watch(), session.health_watch())
+            else {
+                continue;
+            };
+            watchers.push(Box::pin(async move {
+                loop {
+                    // UNHEALTHY is reported as soon as the health check
+                    // decides it, before the canceled onRun has exited.
+                    if let ServiceHealth::Unhealthy(u) = health_rx.borrow_and_update().clone() {
+                        return Detected {
+                            idx,
+                            failure: InstanceFailure::Unhealthy(u),
+                        };
+                    }
+                    let current = exit_rx.borrow_and_update().clone();
+                    match current {
+                        Some(exit) if exit.canceled => std::future::pending::<()>().await,
+                        Some(exit) => {
                             return Detected {
-                                group,
                                 idx,
-                                failure: InstanceFailure::Unhealthy(u),
-                            };
-                        }
-                        let current = exit_rx.borrow_and_update().clone();
-                        match current {
-                            Some(exit) if exit.canceled => std::future::pending::<()>().await,
-                            Some(exit) => {
-                                return Detected {
-                                    group,
-                                    idx,
-                                    failure: InstanceFailure::from_exit(exit),
-                                }
+                                failure: InstanceFailure::from_exit(exit),
                             }
-                            None => {}
                         }
-                        tokio::select! {
-                            r = exit_rx.changed() => {
-                                if r.is_err() {
+                        None => {}
+                    }
+                    tokio::select! {
+                        r = exit_rx.changed() => {
+                            if r.is_err() {
+                                return Detected {
+                                    idx,
+                                    failure: InstanceFailure::Exit(driver_lost_exit()),
+                                };
+                            }
+                        }
+                        r = health_rx.changed() => {
+                            if r.is_err() {
+                                // The driver is gone; the exit watcher
+                                // reports what happened.
+                                health_rx.mark_unchanged();
+                                if exit_rx.changed().await.is_err() {
                                     return Detected {
-                                        group,
                                         idx,
                                         failure: InstanceFailure::Exit(driver_lost_exit()),
                                     };
                                 }
                             }
-                            r = health_rx.changed() => {
-                                if r.is_err() {
-                                    // The driver is gone; the exit watcher
-                                    // reports what happened.
-                                    health_rx.mark_unchanged();
-                                    if exit_rx.changed().await.is_err() {
-                                        return Detected {
-                                            group,
-                                            idx,
-                                            failure: InstanceFailure::Exit(driver_lost_exit()),
-                                        };
-                                    }
-                                }
-                            }
                         }
                     }
-                }));
-            }
+                }
+            }));
         }
         if watchers.is_empty() {
             std::future::pending::<()>().await;
@@ -667,88 +852,69 @@ impl ServiceManager {
     /// "Failure and restart"): the Service becomes UNREADY (an UNHEALTHY
     /// instance once its canceled `onRun` has exited, which the background
     /// relaunch awaits) and its relaunch (or FAILED verdict) proceeds in the
-    /// background. Returns the Service's `completedTasks` policy and the
-    /// scope a `RERUN` reaches, so the caller can cancel and requeue Tasks.
+    /// background. Returns the Service's `completedTasks` policy and its
+    /// scope, so the caller can cancel and requeue Tasks.
     pub(super) fn begin_recovery(
         &mut self,
         detected: Detected,
-    ) -> (CompletedTasksPolicy, RerunScope) {
-        let Detected {
-            group,
-            idx,
-            failure,
-        } = detected;
-        let stop = match group {
-            Group::Job => self.job_stop.clone(),
-            Group::Step => self.step_stop.clone(),
-        };
-        let list = match group {
-            Group::Job => &mut self.job,
-            Group::Step => &mut self.step,
-        };
-        let m = &mut list[idx];
+    ) -> (CompletedTasksPolicy, ServiceScope) {
+        let Detected { idx, failure } = detected;
+        let m = &mut self.services[idx];
         let policy = m.policy;
-        let rerun_scope = match group {
-            Group::Job => RerunScope::Job,
-            Group::Step => RerunScope::Step,
-        };
+        let scope = m.scope.clone();
         if let State::Ready(inst) = std::mem::replace(&mut m.state, State::Failed) {
             if let InstanceFailure::Unhealthy(u) = &failure {
                 log_line(format!(
-                    "{} ({} scope) is UNHEALTHY: {u}",
-                    inst.label, inst.scope
+                    "{} {} is UNHEALTHY: {u}",
+                    inst.label, inst.scope_label
                 ));
             }
             let kind = failure.into_kind();
             log_line(format!(
-                "{} ({} scope) is UNREADY: {} (completedTasks: {})",
+                "{} {} is UNREADY: {} (completedTasks: {})",
                 inst.label,
-                inst.scope,
+                inst.scope_label,
                 kind.describe(),
                 policy_name(policy)
             ));
             m.state = State::Busy(tokio::spawn(start_or_recover(
-                inst,
+                *inst,
                 Some(kind),
                 self.shared.clone(),
-                stop,
+                m.stop.clone(),
             )));
         }
-        (policy, rerun_scope)
+        (policy, scope)
     }
 
     fn poll_failures(&self) -> Vec<Detected> {
         let mut out = Vec::new();
-        for (group, list) in [(Group::Job, &self.job), (Group::Step, &self.step)] {
-            for (idx, m) in list.iter().enumerate() {
-                let State::Ready(inst) = &m.state else {
-                    continue;
-                };
-                let Some(session) = inst.session.as_ref() else {
-                    continue;
-                };
-                if let Some(ServiceHealth::Unhealthy(u)) =
-                    session.health_watch().map(|rx| rx.borrow().clone())
-                {
+        for (idx, m) in self.services.iter().enumerate() {
+            let State::Ready(inst) = &m.state else {
+                continue;
+            };
+            let Some(session) = inst.session.as_ref() else {
+                continue;
+            };
+            if let Some(ServiceHealth::Unhealthy(u)) =
+                session.health_watch().map(|rx| rx.borrow().clone())
+            {
+                out.push(Detected {
+                    idx,
+                    failure: InstanceFailure::Unhealthy(u),
+                });
+                continue;
+            }
+            let Some(rx) = session.exit_watch() else {
+                continue;
+            };
+            let current = rx.borrow().clone();
+            if let Some(exit) = current {
+                if !exit.canceled {
                     out.push(Detected {
-                        group,
                         idx,
-                        failure: InstanceFailure::Unhealthy(u),
+                        failure: InstanceFailure::from_exit(exit),
                     });
-                    continue;
-                }
-                let Some(rx) = session.exit_watch() else {
-                    continue;
-                };
-                let current = rx.borrow().clone();
-                if let Some(exit) = current {
-                    if !exit.canceled {
-                        out.push(Detected {
-                            group,
-                            idx,
-                            failure: InstanceFailure::from_exit(exit),
-                        });
-                    }
                 }
             }
         }
@@ -756,17 +922,16 @@ impl ServiceManager {
     }
 
     fn any_busy(&self) -> bool {
-        self.job
+        self.services
             .iter()
-            .chain(self.step.iter())
             .any(|m| matches!(m.state, State::Busy(_)))
     }
 
-    fn any_pending(&self) -> bool {
-        self.job
+    /// An active Service that is idle: the gate has something to start.
+    fn any_startable(&self) -> bool {
+        self.services
             .iter()
-            .chain(self.step.iter())
-            .any(|m| matches!(m.state, State::Pending(_)))
+            .any(|m| m.active && matches!(m.state, State::Idle))
     }
 
     /// Await every background task. Records FAILED Services on `outcome`
@@ -774,44 +939,44 @@ impl ServiceManager {
     /// that became READY in a new Session.
     async fn await_busy(&mut self, outcome: &mut GateOutcome) -> Result<Vec<ServiceKey>, RunError> {
         let mut replaced = Vec::new();
-        for (group, list) in [(Group::Job, &mut self.job), (Group::Step, &mut self.step)] {
-            for m in list.iter_mut() {
-                if !matches!(m.state, State::Busy(_)) {
-                    continue;
-                }
-                let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
-                    unreachable!("checked above");
-                };
-                let (inst, result) = handle
-                    .await
-                    .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
-                match result {
-                    Outcome::Ready { replaced: r } => {
-                        if r {
-                            replaced.push(m.key.clone());
-                            match group {
-                                Group::Job => outcome.job_endpoints_changed = true,
-                                Group::Step => outcome.step_endpoints_changed = true,
-                            }
+        for m in self.services.iter_mut() {
+            if !matches!(m.state, State::Busy(_)) {
+                continue;
+            }
+            let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
+                unreachable!("checked above");
+            };
+            let (inst, result) = handle
+                .await
+                .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
+            match result {
+                Outcome::Ready { replaced: r } => {
+                    if r {
+                        replaced.push(m.key.clone());
+                        if m.is_job_wide() {
+                            outcome.job_wide_endpoints_changed = true;
+                        } else {
+                            outcome.step_endpoints_changed = true;
                         }
-                        m.state = State::Ready(inst);
                     }
-                    Outcome::Failed(reason) => {
-                        let failure = ServiceFailure {
-                            name: m.key.name.clone(),
-                            document: m.key.document.clone(),
-                            scope: inst.scope.clone(),
-                            reason,
-                        };
-                        eprintln!("ERROR: {failure}");
-                        outcome.failure.get_or_insert(failure);
-                        m.state = State::Failed;
-                    }
-                    Outcome::Stopped => {
-                        let mut inst = inst;
-                        end_instance(&mut inst).await;
-                        m.state = State::Stopped;
-                    }
+                    m.state = State::Ready(Box::new(inst));
+                }
+                Outcome::Failed(reason) => {
+                    let failure = ServiceFailure {
+                        name: m.key.name.clone(),
+                        document: m.key.document.clone(),
+                        scope: m.scope.clone(),
+                        reason,
+                    };
+                    eprintln!("ERROR: {failure}");
+                    outcome.failure.get_or_insert(failure);
+                    m.state = State::Failed;
+                }
+                Outcome::Stopped => {
+                    let mut inst = inst;
+                    end_instance(&mut inst).await;
+                    m.state = State::Idle;
+                    m.active = false;
                 }
             }
         }
@@ -819,11 +984,11 @@ impl ServiceManager {
     }
 
     /// Return every READY Service that (transitively) references one of
-    /// `replaced` to pending, ending its Session: its `Service.*` values for
+    /// `replaced` to idle, ending its Session: its `Service.*` values for
     /// the replaced Service are stale, and RFC 0009 constraint 2 only
     /// guarantees a referenced Service's endpoint at the referencing
     /// Session's start. Not a failure of the dependent: no attempt is
-    /// consumed. Stopped in reverse start order (constraint 4).
+    /// consumed. Stopped in reverse registration order (constraint 4).
     async fn restart_dependents(&mut self, replaced: &[ServiceKey]) {
         if replaced.is_empty() {
             return;
@@ -831,7 +996,7 @@ impl ServiceManager {
         let mut stale: BTreeSet<ServiceKey> = replaced.iter().cloned().collect();
         loop {
             let before = stale.len();
-            for m in self.job.iter().chain(self.step.iter()) {
+            for m in &self.services {
                 if matches!(m.state, State::Ready(_)) && !m.references.is_disjoint(&stale) {
                     stale.insert(m.key.clone());
                 }
@@ -840,94 +1005,73 @@ impl ServiceManager {
                 break;
             }
         }
-        for list in [&mut self.step, &mut self.job] {
-            for m in list.iter_mut().rev() {
-                if replaced.contains(&m.key) || !stale.contains(&m.key) {
-                    continue;
-                }
-                if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Failed) {
-                    log_line(format!(
-                        "{} references a Service that began a new Service Session; \
-                         restarting it with the new endpoints",
-                        m.key
-                    ));
-                    end_instance(&mut inst).await;
-                    m.state = State::Pending(inst);
-                }
+        for m in self.services.iter_mut().rev() {
+            if replaced.contains(&m.key) || !stale.contains(&m.key) {
+                continue;
+            }
+            if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Failed) {
+                log_line(format!(
+                    "{} references a Service that began a new Service Session; \
+                     restarting it with the new endpoints",
+                    m.key
+                ));
+                end_instance(&mut inst).await;
+                m.state = State::Idle;
             }
         }
     }
 
-    /// Start every pending Service: Job Services first, then the Step's, in
-    /// waves of Services whose referenced Services are all READY. Each wave
-    /// starts concurrently; the next begins when the wave has settled.
+    /// Start every active idle Service, in waves of Services whose
+    /// referenced Services are all READY. Each wave starts concurrently;
+    /// the next begins when the wave has settled.
     async fn start_pending(&mut self, outcome: &mut GateOutcome) -> Result<(), RunError> {
         loop {
-            let ready: BTreeSet<ServiceKey> = self
-                .job
+            let ready: BTreeMap<ServiceKey, ServiceEndpoints> = self
+                .services
                 .iter()
-                .chain(self.step.iter())
-                .filter(|m| matches!(m.state, State::Ready(_)))
-                .map(|m| m.key.clone())
+                .filter_map(|m| match &m.state {
+                    State::Ready(inst) => inst.endpoints.clone().map(|e| (m.key.clone(), e)),
+                    _ => None,
+                })
                 .collect();
-            let known: BTreeSet<ServiceKey> = self
-                .job
-                .iter()
-                .chain(self.step.iter())
-                .map(|m| m.key.clone())
-                .collect();
+            let known: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
             let mut spawned = false;
             let mut blocked = Vec::new();
-            for (group, stop) in [
-                (Group::Job, self.job_stop.clone()),
-                (Group::Step, self.step_stop.clone()),
-            ] {
-                // The READY Job Services' endpoints, with their documents,
-                // for seeding a Step Service's Session.
-                let job_snapshot = ready_snapshot(&self.job);
-                let list = match group {
-                    Group::Job => &mut self.job,
-                    Group::Step => &mut self.step,
-                };
-                for idx in 0..list.len() {
-                    if !matches!(list[idx].state, State::Pending(_)) {
-                        continue;
-                    }
-                    let waiting_on: Vec<&ServiceKey> = list[idx]
-                        .references
-                        .iter()
-                        .filter(|r| known.contains(*r) && !ready.contains(*r))
-                        .collect();
-                    if !waiting_on.is_empty() {
-                        blocked.push(list[idx].key.to_string());
-                        continue;
-                    }
-                    // Constraint 2: in scope are the Services earlier in the
-                    // start order — every Job Service for a Step Service,
-                    // plus the earlier entries of this list — restricted to
-                    // the Service's own document (§1.2.2 item 2: a
-                    // `Service.*` reference resolves within its document,
-                    // and two documents may both declare a `Cache`).
-                    let document = list[idx].key.document.clone();
-                    let mut in_scope = match group {
-                        Group::Job => Vec::new(),
-                        Group::Step => snapshot_endpoints(&job_snapshot, &document),
-                    };
-                    in_scope.extend(ready_endpoints(list, Some(idx), &document));
-                    let State::Pending(mut inst) =
-                        std::mem::replace(&mut list[idx].state, State::Failed)
-                    else {
-                        unreachable!("checked above");
-                    };
-                    inst.in_scope = in_scope;
-                    list[idx].state = State::Busy(tokio::spawn(start_or_recover(
-                        inst,
-                        None,
-                        self.shared.clone(),
-                        stop.clone(),
-                    )));
-                    spawned = true;
+            for idx in 0..self.services.len() {
+                let m = &self.services[idx];
+                if !m.active || !matches!(m.state, State::Idle) {
+                    continue;
                 }
+                let waiting_on: Vec<&ServiceKey> = m
+                    .references
+                    .iter()
+                    .filter(|r| known.contains(*r) && !ready.contains_key(*r))
+                    .collect();
+                if !waiting_on.is_empty() {
+                    blocked.push(m.key.to_string());
+                    continue;
+                }
+                // Constraint 2: the referenced Services are READY; their
+                // endpoints seed the Session.
+                let in_scope: Vec<ServiceEndpoints> = m
+                    .references
+                    .iter()
+                    .filter_map(|r| ready.get(r).cloned())
+                    .collect();
+                let retain = self.shared.config.retain_working_dir;
+                let m = &mut self.services[idx];
+                if m.stop.is_cancelled() {
+                    m.stop = self.shared.config.cancel_token.child_token();
+                }
+                let mut inst = m.new_instance(retain);
+                inst.in_scope = in_scope;
+                m.state = State::Busy(tokio::spawn(start_or_recover(
+                    inst,
+                    None,
+                    self.shared.clone(),
+                    m.stop.clone(),
+                )));
+                spawned = true;
             }
             if !spawned {
                 if !blocked.is_empty() && !self.any_busy() {
@@ -949,78 +1093,14 @@ impl ServiceManager {
     }
 }
 
-fn managed(
-    service: &Service,
-    scope: ServiceScope,
-    environments: Vec<Environment>,
-    environment_profiles: Vec<Option<ModelProfile>>,
-    retain_working_dir: bool,
-) -> Managed {
-    let key = ServiceKey::of(service);
-    Managed {
-        // A `Service.<name>.*` reference inside this Service names a
-        // Service of the same document (template validation seeds only
-        // the document's own Services), so each referenced name is keyed
-        // with this Service's document.
-        references: referenced_service_names(service)
-            .iter()
-            .map(|name| ServiceKey::sibling(&key.document, name))
-            .collect(),
-        key: key.clone(),
-        policy: service.restart_policy.completed_tasks,
-        state: State::Pending(Instance {
-            service: service.clone(),
-            scope,
-            label: key.to_string(),
-            environments,
-            environment_profiles,
-            in_scope: Vec::new(),
-            endpoints: None,
-            session: None,
-            relaunches: 0,
-            retain_working_dir,
-        }),
-    }
-}
-
-/// Endpoints of the READY Services of `list` declared by `document`,
-/// restricted to indices before `before` when given.
-fn ready_endpoints(
-    list: &[Managed],
-    before: Option<usize>,
-    document: &Document,
-) -> Vec<ServiceEndpoints> {
-    list.iter()
-        .take(before.unwrap_or(list.len()))
-        .filter(|m| m.key.document == *document)
-        .filter_map(|m| match &m.state {
-            State::Ready(inst) => inst.endpoints.clone(),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The READY Services' endpoints of `list` with their documents — a
-/// snapshot usable while another list is borrowed mutably.
-fn ready_snapshot(list: &[Managed]) -> Vec<(Document, ServiceEndpoints)> {
-    list.iter()
-        .filter_map(|m| match &m.state {
-            State::Ready(inst) => inst.endpoints.clone().map(|e| (m.key.document.clone(), e)),
-            _ => None,
-        })
-        .collect()
-}
-
-/// The endpoints of `snapshot` declared by `document`.
-fn snapshot_endpoints(
-    snapshot: &[(Document, ServiceEndpoints)],
-    document: &Document,
-) -> Vec<ServiceEndpoints> {
-    snapshot
+/// True when the Job Template declares an inline Service named `name` (which
+/// shadows an attached Service of the same name, Template Schemas §1.2.2
+/// item 3).
+fn service_declared(job: &Job, name: &str) -> bool {
+    job.services
         .iter()
-        .filter(|(d, _)| d == document)
-        .map(|(_, e)| e.clone())
-        .collect()
+        .flatten()
+        .any(|s| s.document.is_job_template() && s.name == name)
 }
 
 fn policy_name(policy: CompletedTasksPolicy) -> &'static str {
@@ -1041,20 +1121,20 @@ fn driver_lost_exit() -> ServiceRunExit {
     }
 }
 
-/// End every Session of `list` in reverse start order, awaiting (and
-/// thereby cutting short, through the group's stop token) any background
-/// start or relaunch first.
-async fn stop_group(list: &mut [Managed]) {
-    for m in list.iter_mut().rev() {
-        match std::mem::replace(&mut m.state, State::Stopped) {
-            State::Busy(handle) => match handle.await {
-                Ok((mut inst, _)) => end_instance(&mut inst).await,
-                Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
-            },
-            State::Ready(mut inst) | State::Pending(mut inst) => end_instance(&mut inst).await,
-            State::Failed | State::Stopped => {}
-        }
+/// End `m`'s Session, if one is live, awaiting (and thereby cutting short,
+/// through its stop token) any background start or relaunch first, and
+/// return the Service to idle.
+async fn stop_managed(m: &mut Managed, shared: &Shared) {
+    match std::mem::replace(&mut m.state, State::Idle) {
+        State::Busy(handle) => match handle.await {
+            Ok((mut inst, _)) => end_instance(&mut inst).await,
+            Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
+        },
+        State::Ready(mut inst) => end_instance(&mut inst).await,
+        State::Idle | State::Failed => {}
     }
+    m.active = false;
+    m.stop = shared.config.cancel_token.child_token();
 }
 
 /// Constraint 7: end the Service Session, if one is live.
@@ -1117,7 +1197,7 @@ fn session_config(shared: &Shared, service: &Service) -> SessionConfig {
 }
 
 /// Start the Service (when `first` is `None`) or apply the restart decision
-/// to `first` and relaunch, until it is READY, FAILED, or the group is
+/// to `first` and relaunch, until it is READY, FAILED, or the Service is
 /// stopping. Runs in a background task so Services start concurrently and a
 /// `KEEP` relaunch proceeds while Tasks continue.
 async fn start_or_recover(
@@ -1143,8 +1223,8 @@ async fn start_or_recover(
                     max_attempts
                 );
                 log_line(format!(
-                    "{} ({} scope) is FAILED: {reason}",
-                    inst.label, inst.scope
+                    "{} {} is FAILED: {reason}",
+                    inst.label, inst.scope_label
                 ));
                 end_instance(&mut inst).await;
                 return (inst, Outcome::Failed(reason));
@@ -1179,9 +1259,9 @@ async fn start_or_recover(
                     return (inst, Outcome::Stopped);
                 }
                 log_line(format!(
-                    "{} ({} scope) is UNREADY: {}",
+                    "{} {} is UNREADY: {}",
                     inst.label,
-                    inst.scope,
+                    inst.scope_label,
                     k.describe()
                 ));
                 kind = Some(k);
@@ -1192,7 +1272,7 @@ async fn start_or_recover(
 
 /// Open a Service Session if none is live (allocate endpoints, enter), then
 /// launch `onRun` and wait for the readiness verdict. `Ok(true)`: READY.
-/// `Ok(false)`: the group is stopping. `Err`: the failure to decide on.
+/// `Ok(false)`: the Service is stopping. `Err`: the failure to decide on.
 async fn launch_until_ready(
     inst: &mut Instance,
     shared: &Shared,
@@ -1211,9 +1291,9 @@ async fn launch_until_ready(
             origin_suffix(&inst.service.document)
         ));
         log_line(format!(
-            "{} ({} scope) endpoints: {}",
+            "{} {} endpoints: {}",
             inst.label,
-            inst.scope,
+            inst.scope_label,
             describe_endpoints(&endpoints)
         ));
         inst.endpoints = Some(endpoints.clone());
@@ -1291,8 +1371,8 @@ async fn launch_until_ready(
             // READY and UNHEALTHY before this task observed either: the
             // Session has canceled onRun; wait for it (step 2).
             log_line(format!(
-                "{} ({} scope) is UNHEALTHY: {u}",
-                inst.label, inst.scope
+                "{} {} is UNHEALTHY: {u}",
+                inst.label, inst.scope_label
             ));
             let _ = session.wait_exit().await;
             Err(FailureKind::Unhealthy(u))
@@ -1317,13 +1397,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rerun_scope_orders_job_above_step() {
-        assert!(RerunScope::Job > RerunScope::Step);
+    fn merge_scopes_unions_steps_and_absorbs_into_all() {
+        let a = ServiceScope::steps(["A"]);
+        let b = ServiceScope::steps(["B"]);
+        assert_eq!(merge_scopes(None, &a), a);
         assert_eq!(
-            Some(RerunScope::Step).max(Some(RerunScope::Job)),
-            Some(RerunScope::Job)
+            merge_scopes(Some(a.clone()), &b),
+            ServiceScope::steps(["A", "B"])
         );
-        assert_eq!(None.max(Some(RerunScope::Step)), Some(RerunScope::Step));
+        assert_eq!(
+            merge_scopes(Some(a.clone()), &ServiceScope::AllSteps),
+            ServiceScope::AllSteps
+        );
+        assert_eq!(
+            merge_scopes(Some(ServiceScope::AllSteps), &b),
+            ServiceScope::AllSteps
+        );
+        assert_eq!(scope_label(&ServiceScope::AllSteps), "(scope: every Step)");
+        assert_eq!(
+            scope_label(&ServiceScope::steps(["B", "A"])),
+            "(scope: Steps A, B)"
+        );
     }
 
     #[test]
@@ -1396,27 +1490,26 @@ mod tests {
         let f = ServiceFailure {
             name: "Cache".into(),
             document: Document::JobTemplate,
-            scope: ServiceScope::Step("Render".into()),
+            scope: ServiceScope::steps(["Render"]),
             reason: "did not become READY within readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
                 .into(),
         };
         assert_eq!(
             f.to_string(),
-            "Service 'Cache' (Step 'Render' scope) failed: did not become READY within \
+            "Service 'Cache' (scope: Step Render) failed: did not become READY within \
              readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
-        assert_eq!(ServiceScope::Job.to_string(), "Job");
 
         // An external Service names its document.
         let f = ServiceFailure {
             document: Document::environment_template(0, Some("queue-cache.yaml")),
-            scope: ServiceScope::Job,
+            scope: ServiceScope::AllSteps,
             ..f
         };
         assert_eq!(
             f.to_string(),
-            "Service 'Cache' (from queue-cache.yaml) (Job scope) failed: did not become READY \
-             within readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
+            "Service 'Cache' (from queue-cache.yaml) (scope: every Step) failed: did not become \
+             READY within readinessTimeoutSeconds; 1 of 1 relaunch(es) used"
         );
     }
 
@@ -1445,6 +1538,13 @@ mod tests {
                 name: "Store".into()
             }
         );
+        // A requirement resolves to the attached Service it was bound to.
+        let binding = RequirementBinding {
+            requirement: "Cache".into(),
+            document: external.document.clone(),
+            service: "Cache".into(),
+        };
+        assert_eq!(ServiceKey::of_binding(&binding), external);
         assert_eq!(origin_suffix(&Document::JobTemplate), "");
     }
 }

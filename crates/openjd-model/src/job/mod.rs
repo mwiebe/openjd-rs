@@ -41,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::{EndOfLine, FileType};
 
 use crate::template::RangeConstraint;
-pub use crate::template::{CompletedTasksPolicy, RunScope, ServicePortProtocol};
+pub use crate::template::{CompletedTasksPolicy, RunScope, ServicePortProtocol, ServiceScope};
 use crate::types::JobParameterType;
 
 /// Hash the entries of a string-keyed map sorted by key, so that maps
@@ -77,11 +77,22 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
-    /// The Job's Services (RFC 0009 `jobServices`), in start order. Each is
-    /// started before any Task of the Job is scheduled and stopped once no
-    /// Task remains. `None` when the template declares none.
+    /// The Job's Services (RFC 0009 `services`), in declaration order, each
+    /// carrying its computed [`scope`](Service::scope). A Service is started
+    /// before any Task of a Step in its scope is scheduled and stopped once
+    /// no such Task remains; attached external Services (Template Schemas
+    /// §1.2.2) precede the Job Template's own once
+    /// [`apply_environment_templates`](crate::apply_environment_templates)
+    /// has folded them in. `None` when none is declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_services: Option<Vec<Service>>,
+    pub services: Option<Vec<Service>>,
+    /// The external Services the Job Template requires (RFC 0009
+    /// `requiresServices`, Template Schemas §9.8), in declaration order.
+    /// Matched to attached Services at submission by
+    /// [`apply_environment_templates`](crate::apply_environment_templates).
+    /// `None` when none is declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requires_services: Option<Vec<ServiceRequirement>>,
 }
 
 /// Manual because `IndexMap` has no `Hash`; parameters hash as
@@ -94,7 +105,8 @@ impl Hash for Job {
         hash_map_entries(self.parameters.iter(), state);
         self.steps.hash(state);
         self.job_environments.hash(state);
-        self.job_services.hash(state);
+        self.services.hash(state);
+        self.requires_services.hash(state);
     }
 }
 
@@ -118,11 +130,6 @@ pub struct Step {
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
-    /// The Step's Services (RFC 0009 `stepServices`), in start order. Each
-    /// is started once the Step's dependencies are satisfied and before any
-    /// of its Tasks is scheduled, and is available only to this Step.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub step_services: Option<Vec<Service>>,
     /// Complete symbol table at step scope in JSON transport format.
     /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level let bindings.
     /// The session deserializes this with PathFormat::host() and layers
@@ -162,8 +169,10 @@ pub struct Environment {
     pub description: Option<String>,
     /// RFC 0009 `runScope` (Template Schemas §4 item 3): the kinds of
     /// Session this Environment is entered in. `None` means every kind;
-    /// query the effective scope with [`runs_in`](Self::runs_in). Typed
-    /// here (unlike the template side) because validation has already
+    /// query the effective scope with [`runs_in`](Self::runs_in). Job
+    /// creation materializes the default here: an Environment without
+    /// `runScope` that references `Service.*` is converted with `[TASK]`.
+    /// Typed here (unlike the template side) because validation has already
     /// rejected unrecognized names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_scope: Option<Vec<RunScope>>,
@@ -300,16 +309,19 @@ impl EnvironmentActions {
 /// The document of a submission that declares an entity: the Job Template,
 /// or one of the Environment Templates the scheduler attached to it
 /// (Template Schemas §1.2.2 "Services from Environment Templates", RFC 0009
-/// "Service names are scoped to their document").
+/// "Inline Services shadow external ones").
 ///
 /// Service names are unique within the list that declares them, and
 /// nothing more: an external Service from an attached Environment Template
 /// may share its `name` with a Service in the Job Template or in another
-/// attachment, and a scheduler must keep same-named Services from
-/// different documents distinct. A [`Service`] therefore carries the
-/// document that declares it ([`Service::document`]), so a consumer keys
-/// Services on `(document, name)`; every `Service.*` reference resolves
-/// within its own document, so no name is ever looked up across documents.
+/// attachment (an error only when a `requiresServices` entry names it), and
+/// a scheduler must keep same-named Services from different documents
+/// distinct. A [`Service`] therefore carries the document that declares it
+/// ([`Service::document`]), so a consumer keys Services on `(document,
+/// name)`. A `Service.*` reference resolves within its own document, except
+/// that a Job Template's reference to a required external Service resolves
+/// to the attached Service the requirement was bound to
+/// ([`crate::AppliedEnvironmentTemplates::requirement_bindings`]).
 ///
 /// `Display` names the document the way the submission-time error paths
 /// do: `JobTemplate`, the attachment's label when it has one (typically
@@ -366,17 +378,20 @@ impl std::fmt::Display for Document {
 }
 
 /// An instantiated Service (RFC 0009 `<Service>`, Template Schemas §9) —
-/// the result of job creation for one `jobServices` or `stepServices`
-/// entry, or for a `services` entry of an attached Environment Template
-/// (an external Service).
+/// the result of job creation for one `services` entry of the Job Template,
+/// or for a `services` entry of an attached Environment Template (an
+/// external Service).
 ///
 /// Job-creation-stage fields are resolved: the `<Service>.let` bindings
 /// (into [`resolved_symtab`](Self::resolved_symtab)), the numeric
-/// `@fmtstring` fields (`port`, `timeoutSeconds`, `intervalSeconds`,
+/// `@fmtstring` fields (`port`, the health-check seconds and threshold,
 /// `maxAttempts`, with the §9 defaults applied where the template gave
-/// none), and `hostRequirements`. `variables` and `script` are
-/// `@fmtstring[host]` and remain `FormatString`s for the Service Session to
-/// resolve, exactly like an [`Environment`]'s.
+/// none), and `hostRequirements`. The Service's [`scope`](Self::scope) and
+/// the Services it [`references`](Self::references) are computed from the
+/// template's `Service.*` references (§9.1), so a scheduler need not
+/// re-derive them. `variables` and `script` are `@fmtstring[host]` and
+/// remain `FormatString`s for the Service Session to resolve, exactly like
+/// an [`Environment`]'s.
 ///
 /// Two Services of a combined Job are the same Service iff their
 /// [`document`](Self::document) and `name` agree: names are unique within
@@ -387,13 +402,32 @@ pub struct Service {
     pub name: String,
     pub description: Option<String>,
     /// The document that declares this Service: [`Document::JobTemplate`]
-    /// for a `jobServices` / `stepServices` entry (the default, omitted
-    /// from JSON), or the attached Environment Template whose `services`
-    /// list it came from. Set by `apply_environment_templates` for
-    /// external Services. The Service's `Service.*` references, and those
-    /// made to it, resolve within this document only.
+    /// for the Job Template's own `services` (the default, omitted from
+    /// JSON), or the attached Environment Template whose `services` list it
+    /// came from. Set by `apply_environment_templates` for external
+    /// Services. The Service's `Service.*` references to other inline
+    /// Services resolve within this document.
     #[serde(default, skip_serializing_if = "Document::is_job_template")]
     pub document: Document,
+    /// The Steps whose Tasks depend on this Service (Template Schemas §9.1),
+    /// computed from the template's `Service.*` references:
+    /// [`ServiceScope::AllSteps`] for a Service a Job Environment references,
+    /// one nothing references, one a Job-wide Service references, or an
+    /// external Service. A scheduler starts the Service before the first Task
+    /// of any Step in the scope and stops it once none has a Task left.
+    #[serde(default = "ServiceScope::all_steps_default")]
+    pub scope: ServiceScope,
+    /// The names of the other Services **of the same document** this Service
+    /// references through `Service.<name>.*` (§9.1 rule 3): it starts only
+    /// after each is READY and is stopped before any of them. Sorted; never
+    /// contains the Service's own name or a required external Service's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+    /// §9 item 4: the Steps that must complete before this Service is
+    /// started, in addition to its other start conditions. Never set on an
+    /// external Service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<StepDependency>>,
     /// Resolved host requirements the service host must satisfy.
     pub host_requirements: Option<HostRequirements>,
     /// The declared ports, in declaration order.
@@ -423,6 +457,9 @@ impl Hash for Service {
         self.name.hash(state);
         self.description.hash(state);
         self.document.hash(state);
+        self.scope.hash(state);
+        self.references.hash(state);
+        self.dependencies.hash(state);
         self.host_requirements.hash(state);
         self.ports.hash(state);
         self.health_check.hash(state);
@@ -444,6 +481,45 @@ impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str> {
         self.ports.iter().map(|p| p.name.as_str())
     }
+
+    /// The declared port named `name`, if any.
+    #[must_use]
+    pub fn port(&self, name: &str) -> Option<&ServicePort> {
+        self.ports.iter().find(|p| p.name == name)
+    }
+}
+
+/// An instantiated `<ServiceRequirement>` (Template Schemas §9.8): the Job
+/// Template reads the endpoint of an external Service named `name` on the
+/// ports listed. [`apply_environment_templates`](crate::apply_environment_templates)
+/// matches it to exactly one attached Service with that `name` declaring
+/// every listed port with the same protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceRequirement {
+    /// The required Service's `name`; distinct from every inline Service's.
+    pub name: String,
+    /// The ports the Job Template uses, in declaration order.
+    pub ports: Vec<ServiceRequirementPort>,
+}
+
+impl ServiceRequirement {
+    /// The names of the declared ports, in declaration order.
+    pub fn port_names(&self) -> impl Iterator<Item = &str> {
+        self.ports.iter().map(|p| p.name.as_str())
+    }
+}
+
+/// An instantiated `<ServiceRequirementPort>` (§9.8.1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceRequirementPort {
+    /// The `name` of a port the external Service must declare.
+    pub name: String,
+    /// The protocol the port must carry; `TCP` (the default, omitted from
+    /// JSON) or `UDP`.
+    #[serde(default, skip_serializing_if = "ServicePortProtocol::is_default")]
+    pub protocol: ServicePortProtocol,
 }
 
 /// An instantiated `<ServicePort>` (§9.2).

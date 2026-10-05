@@ -5,8 +5,8 @@
 //! Pass 11: `SERVICE` — validate or reject (RFC 0009, Template Schemas §9).
 //!
 //! Four fields are gated by the `SERVICE` extension:
-//! - `jobServices` on the job template root (§1.1)
-//! - `stepServices` on `<StepTemplate>` (§3)
+//! - `services` on the job template root (§1.1 item 8)
+//! - `requiresServices` on the job template root (§1.1 item 9)
 //! - `services` on the environment template root (§1.2)
 //! - `runScope` on `<Environment>` (§4 item 3)
 //!
@@ -19,13 +19,20 @@
 //! enabled, this pass additionally enforces:
 //!
 //! - **EXPR prerequisite.** A template that lists `SERVICE` in
-//!   `extensions:` must also list `EXPR` (§9, §9.7 item 7).
-//! - **List shape.** Each Service list has 1–10 elements (§1.1 item 8, §1.2
-//!   item 6, §3 item 6).
-//! - **Name uniqueness.** Service names are unique within a list, and a Step
-//!   Service must not share a name with a Job Service. Different Steps may
-//!   reuse a Step Service name (§9.7 item 5).
-//! - **`<Service>` structure** (§9–§9.6): identifier names that are not
+//!   `extensions:` must also list `EXPR` (§9, §9.9 item 7).
+//! - **List shape.** Each `services` / `requiresServices` list has 1–10
+//!   elements (§1.1 items 8–9, §1.2).
+//! - **Name uniqueness.** Service names are unique within a list,
+//!   requirement names are unique within theirs, and no requirement bears
+//!   the name of an inline Service (§9.9 item 5).
+//! - **Reference graph.** The `Service.*` references among a document's
+//!   Services are acyclic (§9.1 rule 3, §9.9 item 9); see
+//!   [`crate::template::service_scope`].
+//! - **`dependencies`** (§9 item 4, §9.9 item 10): at least one element;
+//!   each `dependsOn` names a Step of the Job Template that is not in the
+//!   Service's own scope; not permitted on an Environment Template's
+//!   Services.
+//! - **`<Service>` structure** (§9–§9.7): identifier names that are not
 //!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; the
 //!   literal `<ServiceHealthCheck>` numeric fields
 //!   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`,
@@ -35,20 +42,23 @@
 //!   declared and has `protocol: TCP`; a Service none of whose ports is TCP
 //!   declares a `STDOUT` or `COMMAND` check; a `STDOUT` check gives
 //!   `failureThreshold` only together with `healthIntervalSeconds` (§9 item
-//!   6, §9.3 items 3 and 6, §9.7 item 4 — a `STDOUT` check's
+//!   7, §9.4 items 3 and 6, §9.9 item 4 — a `STDOUT` check's
 //!   `readinessIntervalSeconds` is rejected as an unknown field at decode,
 //!   as `ports` is on anything but `TCP_CONNECT`); no two ports of the same
-//!   `protocol` have the same literal `port` number (§9 item 5.4, §9.7 item
+//!   `protocol` have the same literal `port` number (§9 item 6.4, §9.9 item
 //!   8 — format-string numbers are checked at job creation).
 //!   `description`, `variables`, `hostRequirements`, embedded files and
 //!   every `<Action>` reuse the pass-6 validators.
-//! - **`runScope`** (§4 item 3, §9.7 item 3): at least one element, only
+//! - **`<ServiceRequirement>` structure** (§9.8): an identifier name that is
+//!   not `File`; 1–10 uniquely named ports, each an identifier other than
+//!   `File`.
+//! - **`runScope`** (§4 item 3, §9.9 item 3): at least one element, only
 //!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates.
 //!
 //! The numeric `@fmtstring` fields are modeled like `<Action>.timeout`: a
 //! value without an expression is checked here, and a format string is
 //! resolved and range-checked at job creation. Format-string *scopes*
-//! (`Service.*`, §9.7 items 1–2) and `let` bindings are validated by the
+//! (`Service.*`, §9.9 items 1–2) and `let` bindings are validated by the
 //! format-string pass, not here.
 
 use std::collections::HashSet;
@@ -59,23 +69,27 @@ use super::structure::{
 };
 use super::{EffectiveLimits, EffectiveRules};
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::template::service_scope::{
+    compute_service_scopes, service_reference_cycle, ServiceScope,
+};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
-/// §1.1 item 8 / §1.2 item 6 / §3 item 6 / §9 item 5: maximum elements in a
-/// Service list and in a Service's `ports` list.
+/// §1.1 items 8–9 / §1.2 / §9 item 6 / §9.8 item 2: maximum elements in a
+/// Service list, a requirement list, and a `ports` list.
 const MAX_SERVICES: usize = 10;
 const MAX_PORTS: usize = 10;
 
-/// §9.1 / §9.2: the name reserved for `Service.File.*` references.
+/// §9.2 / §9.3: the name reserved for `Service.File.*` references.
 const RESERVED_FILE_NAME: &str = "File";
 
 /// Validate RFC 0009 constraints for a job template.
 ///
 /// Runs regardless of whether `SERVICE` is enabled: when disabled, it
-/// rejects templates that use `jobServices`, `stepServices`, or `runScope`;
-/// when enabled, it enforces the EXPR prerequisite, validates every Service,
-/// and validates every Environment's `runScope`.
+/// rejects templates that use `services`, `requiresServices`, or `runScope`;
+/// when enabled, it enforces the EXPR prerequisite, validates every Service
+/// and requirement, the reference graph, every `dependencies` list, and
+/// every Environment's `runScope`.
 pub fn validate_services_job_template(
     jt: &JobTemplate,
     limits: &EffectiveLimits,
@@ -86,48 +100,27 @@ pub fn validate_services_job_template(
     let active = ctx.profile.has_extension(ModelExtension::Service);
     check_expr_prerequisite(ctx, errors);
 
-    let mut job_service_names: HashSet<&str> = HashSet::new();
-    if let Some(services) = &jt.job_services {
-        let list_path = path_field(&[], "jobServices");
+    let mut service_names: HashSet<&str> = HashSet::new();
+    if let Some(services) = &jt.services {
+        let list_path = path_field(&[], "services");
         if !active {
-            errors.add(&list_path, "jobServices requires the SERVICE extension.");
+            errors.add(&list_path, "services requires the SERVICE extension.");
         } else {
-            validate_service_list(
-                services,
-                &list_path,
-                &HashSet::new(),
-                limits,
-                rules,
-                ctx,
-                errors,
-            );
-            job_service_names.extend(services.iter().map(|s| s.name.as_str()));
+            validate_service_list(services, &list_path, limits, rules, ctx, errors);
+            service_names.extend(services.iter().map(|s| s.name.as_str()));
+            validate_job_template_service_graph(jt, &list_path, errors);
         }
     }
 
-    for (i, step) in jt.steps.iter().enumerate() {
-        let Some(services) = &step.step_services else {
-            continue;
-        };
-        let list_path = path_field(
-            &[PathElement::Field("steps".into()), PathElement::Index(i)],
-            "stepServices",
-        );
+    if let Some(requirements) = &jt.requires_services {
+        let list_path = path_field(&[], "requiresServices");
         if !active {
-            errors.add(&list_path, "stepServices requires the SERVICE extension.");
-        } else {
-            // §3 item 6.4: a Step Service must not share a name with a Job
-            // Service. Different Steps may reuse a name (item 6, note), so
-            // only the Job Services are carried into each Step's check.
-            validate_service_list(
-                services,
+            errors.add(
                 &list_path,
-                &job_service_names,
-                limits,
-                rules,
-                ctx,
-                errors,
+                "requiresServices requires the SERVICE extension.",
             );
+        } else {
+            validate_requirement_list(requirements, &list_path, &service_names, limits, errors);
         }
     }
 
@@ -152,9 +145,78 @@ pub fn validate_services_job_template(
     }
 }
 
+/// §9.1 rule 3 / §9.9 items 9–10 for a Job Template's `services`: the
+/// reference graph is acyclic, and each `dependencies` entry names a Step
+/// outside the Service's own scope.
+fn validate_job_template_service_graph(
+    jt: &JobTemplate,
+    list_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let scopes = match compute_service_scopes(jt) {
+        Ok(scopes) => scopes,
+        Err(cycle) => {
+            errors.add(list_path, cycle.to_string());
+            return;
+        }
+    };
+    let step_names: HashSet<&str> = jt.steps.iter().map(|s| s.name.as_str()).collect();
+    for (k, svc) in jt.services().iter().enumerate() {
+        let Some(deps) = &svc.dependencies else {
+            continue;
+        };
+        let deps_path = path_field(&path_index(list_path, k), "dependencies");
+        if deps.is_empty() {
+            errors.add(&deps_path, "must not be empty.");
+        }
+        let computed = scopes.get(&svc.name);
+        for (j, dep) in deps.iter().enumerate() {
+            let dep_path = path_field(&path_index(&deps_path, j), "dependsOn");
+            let step = dep.depends_on.as_str();
+            if !step_names.contains(step) {
+                errors.add(&dep_path, format!("references unknown Step '{step}'."));
+                continue;
+            }
+            let Some(computed) = computed else {
+                continue;
+            };
+            if computed.scope.contains(step) {
+                let why = match &computed.scope {
+                    ServiceScope::AllSteps if computed.referenced_by_job_environment => {
+                        "a Job Environment references the Service, so every Step is in its scope"
+                            .to_string()
+                    }
+                    ServiceScope::AllSteps => {
+                        "nothing references the Service, so every Step is in its scope".to_string()
+                    }
+                    ServiceScope::Steps { .. }
+                        if computed.referencing_steps.iter().any(|s| s == step) =>
+                    {
+                        format!("Step '{step}' references the Service")
+                    }
+                    ServiceScope::Steps { .. } => format!(
+                        "Step '{step}' references a Service that references '{}'",
+                        svc.name
+                    ),
+                };
+                errors.add(
+                    &dep_path,
+                    format!(
+                        "Step '{step}' is in the scope of Service '{}' ({why}); a Service cannot \
+                         depend on a Step in its own scope, which could not run until the \
+                         Service was READY.",
+                        svc.name
+                    ),
+                );
+            }
+        }
+    }
+}
+
 /// Validate RFC 0009 constraints for an environment template: the EXPR
-/// prerequisite, the `services` list (§1.2 item 6, gated and validated
-/// exactly like `jobServices`), and the Environment's `runScope`.
+/// prerequisite, the `services` list (§1.2, gated and validated exactly like
+/// a Job Template's, except that `dependencies` and `requiresServices` have
+/// no place in a document without Steps), and the Environment's `runScope`.
 pub fn validate_services_environment_template(
     et: &EnvironmentTemplate,
     limits: &EffectiveLimits,
@@ -170,15 +232,19 @@ pub fn validate_services_environment_template(
         if !active {
             errors.add(&list_path, "services requires the SERVICE extension.");
         } else {
-            validate_service_list(
-                services,
-                &list_path,
-                &HashSet::new(),
-                limits,
-                rules,
-                ctx,
-                errors,
-            );
+            validate_service_list(services, &list_path, limits, rules, ctx, errors);
+            if let Some(cycle) = service_reference_cycle(services) {
+                errors.add(&list_path, cycle.to_string());
+            }
+            for (k, svc) in services.iter().enumerate() {
+                if svc.dependencies.is_some() {
+                    errors.add(
+                        &path_field(&path_index(&list_path, k), "dependencies"),
+                        "dependencies is not permitted on a Service in an Environment Template: \
+                         the document has no Steps.",
+                    );
+                }
+            }
         }
     }
 
@@ -187,7 +253,7 @@ pub fn validate_services_environment_template(
     }
 }
 
-/// §4 item 3 / §9.7 item 3: validate one Environment's `runScope` at
+/// §4 item 3 / §9.9 item 3: validate one Environment's `runScope` at
 /// `env_path`. Without `SERVICE` the field is rejected outright; with it,
 /// the list must be non-empty, name only recognized `<RunScopeName>`s, and
 /// name each at most once. Each offending element is reported on its own
@@ -248,13 +314,11 @@ fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationError
     }
 }
 
-/// Validate one `jobServices` or `stepServices` list: its size, the
-/// uniqueness of its names (also against `outer_names`, the Job Service
-/// names when validating a Step's list), and each `<Service>`.
+/// Validate one `services` list: its size, the uniqueness of its names,
+/// and each `<Service>`.
 fn validate_service_list(
     services: &[Service],
     list_path: &[PathElement],
-    outer_names: &HashSet<&str>,
     limits: &EffectiveLimits,
     rules: &EffectiveRules,
     ctx: &ValidationContext,
@@ -272,13 +336,79 @@ fn validate_service_list(
     let mut names: HashSet<&str> = HashSet::new();
     for (i, service) in services.iter().enumerate() {
         let service_path = path_index(list_path, i);
-        if outer_names.contains(service.name.as_str()) || !names.insert(service.name.as_str()) {
+        if !names.insert(service.name.as_str()) {
             errors.add(
                 &service_path,
                 format!("duplicate service name: '{}'", service.name),
             );
         }
         validate_service(service, &service_path, limits, rules, ctx, errors);
+    }
+}
+
+/// Validate a `requiresServices` list (§1.1 item 9, §9.8): its size, the
+/// uniqueness of its names, that no name is also an inline Service's
+/// (`service_names`), and each `<ServiceRequirement>`'s ports.
+fn validate_requirement_list(
+    requirements: &[ServiceRequirement],
+    list_path: &[PathElement],
+    service_names: &HashSet<&str>,
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    if requirements.is_empty() {
+        errors.add(list_path, "must not be empty.");
+    }
+    if requirements.len() > MAX_SERVICES {
+        errors.add(
+            list_path,
+            format!("must not contain more than {MAX_SERVICES} elements."),
+        );
+    }
+    let mut names: HashSet<&str> = HashSet::new();
+    for (i, req) in requirements.iter().enumerate() {
+        let req_path = path_index(list_path, i);
+        if !names.insert(req.name.as_str()) {
+            errors.add(
+                &req_path,
+                format!("duplicate service requirement name: '{}'", req.name),
+            );
+        }
+        let name_path = path_field(&req_path, "name");
+        validate_service_identifier(&req.name, &name_path, limits, errors);
+        if service_names.contains(req.name.as_str()) {
+            errors.add(
+                &name_path,
+                format!(
+                    "'{}' is also declared in services; a Service is either declared or \
+                     required, not both.",
+                    req.name
+                ),
+            );
+        }
+        let ports_path = path_field(&req_path, "ports");
+        if req.ports.is_empty() {
+            errors.add(&ports_path, "must not be empty.");
+        }
+        if req.ports.len() > MAX_PORTS {
+            errors.add(
+                &ports_path,
+                format!("must not contain more than {MAX_PORTS} elements."),
+            );
+        }
+        let mut port_names: HashSet<&str> = HashSet::new();
+        for (j, port) in req.ports.iter().enumerate() {
+            let port_path = path_index(&ports_path, j);
+            if !port_names.insert(port.name.as_str()) {
+                errors.add(&port_path, format!("duplicate port name '{}'.", port.name));
+            }
+            validate_service_identifier(
+                &port.name,
+                &path_field(&port_path, "name"),
+                limits,
+                errors,
+            );
+        }
     }
 }
 
@@ -291,7 +421,7 @@ fn validate_service(
     ctx: &ValidationContext,
     errors: &mut ValidationErrors,
 ) {
-    // §9.1 <ServiceName>
+    // §9.2 <ServiceName>
     validate_service_identifier(&service.name, &path_field(path, "name"), limits, errors);
 
     if let Some(desc) = &service.description {
@@ -308,7 +438,7 @@ fn validate_service(
         );
     }
 
-    // §9 item 5, §9.2 <ServicePort>
+    // §9 item 6, §9.3 <ServicePort>
     let ports_path = path_field(path, "ports");
     if service.ports.is_empty() {
         errors.add(&ports_path, "must not be empty.");
@@ -335,7 +465,7 @@ fn validate_service(
                 "must be between 1 and 65535.",
                 errors,
             );
-            // §9 item 5.4 / §9.7 item 8: the same literal number twice in
+            // §9 item 6.4 / §9.9 item 8: the same literal number twice in
             // one protocol's space. Format-string numbers are compared at
             // job creation, once resolved.
             if let Some(n) = literal_int(number) {
@@ -363,9 +493,9 @@ fn validate_service(
     };
     let has_tcp_port = service.tcp_port_names().next().is_some();
 
-    // §9.3 <ServiceHealthCheck>
+    // §9.4 <ServiceHealthCheck>
     let health = service.health_check();
-    // §9 item 6 / §9.7 item 4: TCP_CONNECT, given or defaulted, needs a TCP
+    // §9 item 7 / §9.9 item 4: TCP_CONNECT, given or defaulted, needs a TCP
     // port to probe. (An empty `ports` list is already reported above.)
     if !service.ports.is_empty()
         && !has_tcp_port
@@ -386,7 +516,7 @@ fn validate_service(
     }
     if let Some(declared) = &service.health_check {
         let hc_path = path_field(path, "healthCheck");
-        // §9.3 items 3–6: every numeric field is a <posinteger>.
+        // §9.4 items 3–6: every numeric field is a <posinteger>.
         for (name, value) in declared.numeric_fields() {
             if let Some(value) = value {
                 check_literal_int(
@@ -407,8 +537,8 @@ fn validate_service(
                 if probed.is_empty() {
                     errors.add(&probed_path, "if provided, must not be empty.");
                 }
-                // §9.7 item 4: every port a TCP_CONNECT check names is
-                // declared and has protocol TCP (§9.3 item 2).
+                // §9.9 item 4: every port a TCP_CONNECT check names is
+                // declared and has protocol TCP (§9.4 item 2).
                 for (i, name) in probed.iter().enumerate() {
                     match protocol_of(name) {
                         None => errors.add(
@@ -426,7 +556,7 @@ fn validate_service(
                     }
                 }
             }
-            // §9.3 item 6 / §9.7 item 4: a STDOUT check gives
+            // §9.4 item 6 / §9.9 item 4: a STDOUT check gives
             // failureThreshold only together with healthIntervalSeconds —
             // without a heartbeat there is no probe for it to count.
             ServiceHealthCheck::Stdout {
@@ -445,7 +575,7 @@ fn validate_service(
         }
     }
 
-    // §9.4 <ServiceRestartPolicy>
+    // §9.5 <ServiceRestartPolicy>
     if let Some(policy) = &service.restart_policy {
         if let Some(attempts) = &policy.max_attempts {
             check_literal_int(
@@ -462,7 +592,7 @@ fn validate_service(
         validate_variables(vars, &path_field(path, "variables"), limits, errors);
     }
 
-    // §9.5 <ServiceScript>, §9.6 <ServiceActions>
+    // §9.6 <ServiceScript>, §9.7 <ServiceActions>
     let script_path = path_field(path, "script");
     let actions_path = path_field(&script_path, "actions");
     for (name, action) in service.script.actions.iter_named() {
@@ -474,7 +604,7 @@ fn validate_service(
             errors,
         );
     }
-    // §9.6 item 3 / §9.7 item 4: onHealthCheck iff type is COMMAND.
+    // §9.7 item 3 / §9.9 item 4: onHealthCheck iff type is COMMAND.
     let is_command = matches!(health, ServiceHealthCheck::Command { .. });
     match (&service.script.actions.on_health_check, is_command) {
         (None, true) => errors.add(
@@ -515,7 +645,7 @@ fn validate_service(
     }
 }
 
-/// §9.1 / §9.2 item 1: a Service or port name is an `<Identifier>` (§7.1)
+/// §9.2 / §9.3 item 1 / §9.8: a Service, requirement, or port name is an `<Identifier>` (§7.1)
 /// within the effective identifier length limit, and is not `File`.
 fn validate_service_identifier(
     name: &str,
