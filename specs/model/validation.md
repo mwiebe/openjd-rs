@@ -256,14 +256,19 @@ under RFC 0008. The same mechanism rejects a reference to a Service or port name
 neither declared nor required (§9.9 item 1). Nothing about `Service.*` is examined unless the
 template declares `SERVICE`; without it pass 11 rejects the lists and pass 8 never walks them.
 
-Visibility follows the declared dependencies (§9 scope list): a Step's `script` and its
-`stepEnvironments` see an inline Service's `port` / `connectAddress` only when the Step lists
-`service:<name>` in its `dependencies`, and a Service sees another only when it lists it the
-same way; a Job Environment (whose effective `runScope` excludes `SERVICE`) and an Environment
-Template's `environment` see every inline Service of their document; a required Service is
-visible everywhere a `Service.*` value may appear. The seeders take the
-`template::service_scope::listed_services(dependencies, services)` iterator at the Step and
-Service sites. Pass 8 does not decide a Service's *scope* (the Steps whose Tasks depend on it,
+Visibility follows the declared dependencies (§9 scope list, §9.8 item 2): a Step's `script`
+and its `stepEnvironments` see a Service's `port` / `connectAddress` — inline or required — only
+when the Step lists `service:<name>` in its `dependencies`, and a Service sees another only when
+it lists it the same way; a Job Environment (whose effective `runScope` excludes `SERVICE`) sees
+every inline and required Service of its Job Template with no dependency (the one exception to
+the rule: it has no `dependencies` to list one in), and an Environment Template's `environment`
+sees every Service of its document. The seeders take the
+`template::service_scope::listed_services(dependencies, services)` and
+`listed_requirements(dependencies, requirements)` iterators at the Step and Service sites.
+Listing a required Service grants access to its values and nothing more: its scope is every Step
+and it is READY before any Task runs whether or not anything lists it, and a requirement that
+nothing lists or references is accepted (unlike an unused inline Service, pass 11). Pass 8 does
+not decide a Service's *scope* (the Steps whose Tasks depend on it,
 §9.1): `template::service_scope::compute_service_scopes` computes it from the dependencies (and
 the Job Environment references, rule 3) for pass 11 (cycles, unused Services, a job-wide
 Service listing a Step) and job creation; see [template-types.md](template-types.md), "Service
@@ -297,7 +302,7 @@ order tried:
 | `Task.*` at a Service site | `Task.* is not available within a Service.` |
 | job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`) |
 | the site is an Environment with `SERVICE` in its explicit `runScope` | `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` |
-| a declared (not required) Service referenced from a Step's `script`, one of its `stepEnvironments`, or another Service, whose `dependencies` do not list `service:<svc>` | `Step 'Render' references Service.Cache.main.port but does not list service:Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service:Back in dependencies.` |
+| a declared or required Service referenced from a Step's `script`, one of its `stepEnvironments`, or another Service, whose `dependencies` do not list `service:<svc>` (§9 scope rules 2–3, §9.8 item 2) | `Step 'Render' references Service.Cache.main.port but does not list service:Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service:Back in dependencies.` |
 | the port is not declared | `Service 'Store' has no port 'mian'; declared ports: main.` — or, for a required Service, `required Service 'Cache' has no port 'admin'; declared ports: main.` |
 | `bindAddress` of a required Service | `bindAddress of required Service 'Cache' is not available; use connectAddress to reach it.` |
 | `bindAddress` outside the declaring Service | `Service.Proxy.main.bindAddress is available only within the Service 'Proxy' itself; use connectAddress to reach it from elsewhere.` |
@@ -306,10 +311,10 @@ Everything else keeps the generic message with its suggestion: a Service name de
 (a typo is then the likeliest cause — `Undefined variable: 'Service.Cash.main.connectAddress'.
 Did you mean: Service.Cache.main.connectAddress`), an unknown value name after a declared port,
 `Service.File.*`, or a reference with too few components. A Job Environment whose `runScope`
-excludes `SERVICE` and an Environment Template's `environment` see every inline Service of their
-document, and a required Service is in scope everywhere, so no rule is needed for those sites. The
-dependency is the author's statement that the entity needs the Service; a reference alone is not
-taken as one. The conformance `.invalid` fixtures check
+excludes `SERVICE` sees every inline and required Service of its document, and an Environment
+Template's `environment` sees every Service of its document, so no rule is needed for those
+sites. The dependency is the author's statement that the entity needs the Service; a reference
+alone is not taken as one, whether the Service is inline or required. The conformance `.invalid` fixtures check
 only pass/fail and are unaffected; `tests/integration/test_service_scope.rs` and
 `test_service_requirements.rs` pin the exact messages.
 
@@ -317,17 +322,18 @@ Who sees which Services (the `in_scope` iterator at each site):
 
 | Field | Services whose `port` / `connectAddress` are in scope | `bindAddress` |
 |---|---|---|
-| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | the `services` entries the Step lists as `service:<name>` in `dependencies` (`listed_services`) and every `requiresServices` entry's declared ports | never |
+| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | the `services` entries and the `requiresServices` entries the Step lists as `service:<name>` in `dependencies` (`listed_services`, `listed_requirements`; a requirement's declared ports) | never |
 | `jobEnvironments[i]` (variables, actions, embedded files, `<EnvironmentScript>.let`) — `build_session_scope_symtab` | every `services` entry (a Job Environment has no `dependencies`; referencing a Service puts every Step in its scope, §9.1 rule 3) and every requirement's declared ports, **only when the environment's effective `runScope` excludes `SERVICE`** (`!env.runs_in(RunScope::Service)`; the default follows the reference, so this only bites an explicit `runScope` that includes `SERVICE`) | never |
-| `steps[i].stepEnvironments[j]` | the `services` entries its Step lists in `dependencies` and every requirement's declared ports, under the same `runScope` condition | never |
-| `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | the other `services` entries it lists as `service:<name>` in `dependencies` (any order; pass 11 rejects a cycle) and every requirement's declared ports, plus itself | its own only |
+| `steps[i].stepEnvironments[j]` | the `services` and `requiresServices` entries its Step lists in `dependencies`, under the same `runScope` condition | never |
+| `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | the other `services` entries and the `requiresServices` entries it lists as `service:<name>` in `dependencies` (any order; pass 11 rejects a cycle), plus itself | its own only |
 | environment template `services[k]` body | the other `services` entries it lists in `dependencies`, plus itself | its own only |
 | environment template `environment` | every `services` entry, under the `runScope` condition | never |
 | any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, action `timeout` / cancelation fields, numeric Service fields | **none** — job-creation stage | never |
 
 Consequences the tests pin: list order carries no meaning (a Service may list and reference a
-later Service), a reference to an inline Service without the matching `service:` dependency is
-an error naming the fix, a dependency cycle is a pass 11 error, a wrapping Job or Step
+later Service), a reference to an inline or required Service without the matching `service:`
+dependency is an error naming the fix (a Job Environment excepted), a requirement nothing lists
+or references is accepted, a dependency cycle is a pass 11 error, a wrapping Job or Step
 environment whose explicit `runScope` includes `SERVICE` sees no `Service.*` even in its
 `onWrapService*` hooks, a required Service's `bindAddress` and undeclared ports are errors, and
 `Task.*` / `Step.*` are never seeded for a Service (§9: "`Task.*` and `Step.*` values are never
@@ -353,8 +359,8 @@ Environments a Service Session enters are the Job's, which follow the `runScope`
 - *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
   job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
   `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
-  other Service of the document it lists as `service:<name>` in its `dependencies` and of
-  every required Service's declared ports, and the
+  other Service of the document it lists as `service:<name>` in its `dependencies` — inline,
+  or a required Service's declared ports — and the
   `<ServiceScript>.let` bindings (host library; the service-level names are the enclosing
   scope). Used for `variables` (with the §4.4.2
   `max_env_var_value_len` constraint, as for an Environment), every action's `command` /

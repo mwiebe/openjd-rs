@@ -2,8 +2,10 @@
 # no Service of its own and requires `R` with port `main`. The attached
 # Environment Template that defines `R` satisfies it at submission;
 # Service.R.main.port / .connectAddress then resolve, to the attached Service's
-# endpoint, both in the Task directly and in a Job Environment's variable
-# (whose runScope defaults to [TASK] because it references Service.*).
+# endpoint, both in the Task directly — the Step lists `service:R`, which is
+# what lets it reference the required Service (§9 scope rule 3) — and in a
+# Job Environment's variable (whose runScope defaults to [TASK] because it
+# references Service.*, and which needs no dependency).
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "RequiredServiceConsumer"
@@ -17,6 +19,8 @@ jobEnvironments:
       R_ENDPOINT: "{{ Service.R.main.connectAddress }}:{{ Service.R.main.port }}"
 steps:
   - name: Use
+    dependencies:
+      - dependsOn: service:R
     script:
       actions:
         onRun:

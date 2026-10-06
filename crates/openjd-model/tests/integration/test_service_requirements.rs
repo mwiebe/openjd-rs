@@ -14,10 +14,12 @@
 //!    and every rejection; plus the §1.2.2 item 4 wrapper rule as it
 //!    concerns external Services.
 //!
-//! A required Service's `Service.R.*` values are visible throughout the Job
-//! Template whether or not anything lists `service:R`; an inline Service in
-//! these fixtures is made used by having Step `S` list it (`with_step_deps`),
-//! since an unused inline Service is rejected.
+//! A required Service's `Service.R.*` values follow the same rule as an
+//! inline Service's: a Step or Service sees them only when it lists
+//! `service:R` in its `dependencies` (`with_step_deps`), and a Job
+//! Environment sees them with no dependency. An inline Service in these
+//! fixtures is made used by having Step `S` list it, since an unused inline
+//! Service is rejected; an unused requirement is not.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
@@ -119,17 +121,18 @@ fn n_ports(n: usize) -> String {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn requirement_opens_port_and_connect_address_throughout_the_job_template() {
-    // In a Step script, a Job Environment (default runScope: [TASK]), a
-    // Step Environment, and an inline Service (§9.8 item 2). The inline
-    // `Proxy` must be listed by the Step that references it; the required
-    // `Cache` is visible everywhere without a dependency.
+fn requirement_opens_port_and_connect_address_where_listed() {
+    // In a Step script and Step Environment (the Step lists `service:Cache`),
+    // an inline Service that lists it, and a Job Environment (default
+    // runScope: [TASK]), which needs no dependency (§9 scope rules 2–4, §9.8
+    // item 2). The inline `Proxy` must likewise be listed by the Step that
+    // references it.
     let t = with_step_deps(&job(
         "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
-        "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
+        "  - name: Proxy\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
         "jobEnvironments:\n  - name: Client\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
         r#"["{{ Service.Cache.main.port }}", "{{ join_host_port(Service.Cache.main.connectAddress, Service.Cache.main.port) }}", "{{ Service.Proxy.main.port }}"]"#,
-    ), &["Proxy"])
+    ), &["Proxy", "Cache"])
     .replace(
         "  - name: S\n",
         "  - name: S\n    stepEnvironments:\n      - name: StepClient\n        variables: { P: \"{{ Service.Cache.stats.connectAddress }}\" }\n",
@@ -142,7 +145,8 @@ fn requirement_opens_port_and_connect_address_throughout_the_job_template() {
     assert_eq!(reqs[0].ports[0].protocol, ServicePortProtocol::Tcp);
     assert_eq!(reqs[0].ports[1].protocol, ServicePortProtocol::Udp);
     // The required Service is not a same-document Service: no scope is
-    // computed for it, and it is not among an inline Service's references.
+    // computed for it, and listing it is not an edge among the inline
+    // Services.
     let scopes = compute_service_scopes(&jt).unwrap();
     assert!(scopes.get("Cache").is_none());
     let proxy = scopes.get("Proxy").unwrap();
@@ -151,6 +155,135 @@ fn requirement_opens_port_and_connect_address_throughout_the_job_template() {
     // The Job Environment's default runScope is [TASK] (it references
     // Service.*).
     assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
+}
+
+#[test]
+fn step_reference_to_a_required_service_without_dependency_is_rejected() {
+    // §9 scope rule 3, §9.8 item 2, §9.9 item 1: the requirement alone does
+    // not put the Service in scope for the Step; the message names the fix,
+    // exactly as for an inline Service.
+    let err = job_err(&job(
+        CACHE_REQ,
+        "",
+        "",
+        r#"["{{ Service.Cache.main.connectAddress }}", "{{ Service.Cache.main.port }}"]"#,
+    ));
+    assert_errs(
+        &err,
+        2,
+        &[
+            "steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [",
+            "Step 'S' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "steps[0] -> script -> actions -> onRun -> args[1]:\n\tFailed to parse interpolation expression at [",
+            "Step 'S' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+        ],
+    );
+    assert!(!err.contains("Undefined variable"), "{err}");
+}
+
+#[test]
+fn step_environment_reference_to_a_required_service_without_dependency_is_rejected() {
+    // A Step Environment follows its Step's dependencies (§9 scope rule 3).
+    let t = job(CACHE_REQ, "", "", "[x]").replace(
+        "  - name: S\n",
+        "  - name: S\n    stepEnvironments:\n      - name: Tools\n        variables: { P: \"{{ Service.Cache.main.port }}\" }\n",
+    );
+    assert_errs(
+        &job_err(&t),
+        1,
+        &[
+            "steps[0] -> stepEnvironments[0] -> variables -> P:\n\tFailed to parse interpolation expression at [",
+            "Step 'S' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies.",
+        ],
+    );
+}
+
+#[test]
+fn step_reference_to_a_required_service_with_dependency_is_accepted() {
+    // Listing `service:Cache` grants access to its values and changes
+    // nothing else: the required Service has no computed scope, and the
+    // Step's Task Sessions see `port` and `connectAddress`.
+    let t = with_step_deps(
+        &job(
+            CACHE_REQ,
+            "",
+            "",
+            r#"["{{ Service.Cache.main.connectAddress }}", "{{ Service.Cache.main.port }}"]"#,
+        ),
+        &["Cache"],
+    )
+    .replace(
+        "  - name: S\n",
+        "  - name: S\n    stepEnvironments:\n      - name: Tools\n        variables: { P: \"{{ Service.Cache.main.port }}\" }\n",
+    );
+    let jt = decode_job(&t);
+    assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
+    let (job, _) = create(&jt, &[]).unwrap();
+    assert!(job.services.is_none());
+    assert_eq!(job.requires_services.as_ref().unwrap()[0].name, "Cache");
+}
+
+#[test]
+fn service_reference_to_a_required_service_without_dependency_is_rejected() {
+    // §9 scope rule 2, §9.8 item 2: an inline Service lists a required one
+    // as it would another inline Service. `S` lists `Proxy` so that `Proxy`
+    // is used.
+    let err = job_err(&with_step_deps(
+        &job(
+            CACHE_REQ,
+            "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}\" }\n    script: { actions: { onRun: { command: proxy, args: [\"{{ Service.Cache.main.port }}\"] } } }\n",
+            "",
+            "[x]",
+        ),
+        &["Proxy"],
+    ));
+    assert_errs(
+        &err,
+        2,
+        &[
+            "services[0] -> variables -> UP:\n\tFailed to parse interpolation expression at [",
+            "Service 'Proxy' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "services[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [",
+            "Service 'Proxy' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+        ],
+    );
+}
+
+#[test]
+fn job_environment_reference_to_a_required_service_needs_no_dependency() {
+    // §9 scope rule 4: the one exception — a Job Environment has no
+    // `dependencies`. Its runScope defaults to [TASK]. The Step neither
+    // lists nor references the Service.
+    let jt = decode_job(&job(
+        CACHE_REQ,
+        "",
+        "jobEnvironments:\n  - name: Client\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
+        "[x]",
+    ));
+    assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
+    assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
+}
+
+#[test]
+fn unused_requirement_is_accepted() {
+    // §9.8: a requirement nothing lists or references is not an error,
+    // unlike an unused inline Service (§9.1 rule 4); it is still matched at
+    // submission.
+    let t = job(CACHE_REQ, "", "", "[x]");
+    let jt = decode_job(&t);
+    assert_eq!(jt.requires_services()[0].name, "Cache");
+    let (created, _) = create(&jt, &[]).unwrap();
+    assert_eq!(created.requires_services.as_ref().unwrap().len(), 1);
+    let et = decode_env(&provider("Cache", "[{ name: main }]"));
+    let (_, applied) = submit(&jt, std::slice::from_ref(&et), &[]).unwrap();
+    assert_eq!(applied.requirement_bindings.len(), 1);
+    assert_eq!(
+        submit_err(&t, &[], &[]),
+        submission_err(
+            0,
+            "required Service 'Cache' is not provided: no Environment Template is attached (Template Schemas §1.2.2 item 2)."
+        )
+    );
 }
 
 #[test]
@@ -262,11 +395,10 @@ fn requirement_rejects_unknown_fields_and_protocols() {
 
 #[test]
 fn undeclared_port_of_a_required_service_is_rejected() {
-    let err = job_err(&job(
-        CACHE_REQ,
-        "",
-        "",
-        r#"["{{ Service.Cache.stats.port }}"]"#,
+    // The Step lists `service:Cache`, so the port is what is wrong.
+    let err = job_err(&with_step_deps(
+        &job(CACHE_REQ, "", "", r#"["{{ Service.Cache.stats.port }}"]"#),
+        &["Cache"],
     ));
     assert_errs(
         &err,
@@ -280,17 +412,16 @@ fn undeclared_port_of_a_required_service_is_rejected() {
 
 #[test]
 fn bind_address_of_a_required_service_is_rejected_everywhere() {
-    // In a Step script and in an inline Service alike.
-    // `S` lists `Proxy` only so that `Proxy` is used; the required `Cache`
-    // needs no dependency to be visible.
+    // In a Step script and in an inline Service alike, both of which list
+    // `service:Cache`; `S` lists `Proxy` so that `Proxy` is used.
     let err = job_err(&with_step_deps(
         &job(
             CACHE_REQ,
-            "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
+            "  - name: Proxy\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
             "",
             r#"["{{ Service.Cache.main.bindAddress }}"]"#,
         ),
-        &["Proxy"],
+        &["Proxy", "Cache"],
     ));
     assert_errs(
         &err,
@@ -410,11 +541,14 @@ fn create(
 
 #[test]
 fn job_carries_the_requirements_and_serializes_them() {
-    let t = job(
-        "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
-        "",
-        "",
-        r#"["{{ Service.Cache.main.port }}"]"#,
+    let t = with_step_deps(
+        &job(
+            "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
+            "",
+            "",
+            r#"["{{ Service.Cache.main.port }}"]"#,
+        ),
+        &["Cache"],
     );
     let jt = decode_job(&t);
     let (job, _) = create(&jt, &[]).unwrap();
@@ -519,11 +653,9 @@ fn requirement_matched_to_the_rfc_queue_cache_is_bound() {
 fn requirement_binds_to_the_one_attachment_that_provides_it() {
     // Two attachments, only the second provides `Cache`; extra ports on the
     // provider are fine.
-    let jt = decode_job(&job(
-        CACHE_REQ,
-        "",
-        "",
-        r#"["{{ Service.Cache.main.port }}"]"#,
+    let jt = decode_job(&with_step_deps(
+        &job(CACHE_REQ, "", "", r#"["{{ Service.Cache.main.port }}"]"#),
+        &["Cache"],
     ));
     let ets = [
         decode_env(&provider("Other", "[{ name: main }]")),

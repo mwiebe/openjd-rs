@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use super::actions::{Action, CancelationMode};
 use super::environment::{EmbeddedFile, Environment};
 use super::job_template::JobTemplate;
-use super::service::Service;
+use super::service::{Service, ServiceRequirement};
 use super::step::{listed_service_names, listed_step_names, StepDependency, StepTemplate};
 use crate::format_string::FormatString;
 
@@ -510,6 +510,23 @@ pub fn listed_services<'a>(
         .filter(move |svc| super::step::lists_service(dependencies, &svc.name))
 }
 
+/// The `requiresServices` entries of `requirements` that `dependencies` lists
+/// as `service:<name>` — the required Services whose
+/// `Service.<name>.<port>.port` / `.connectAddress` the listing Step or
+/// Service may reference (§9 scope rules 2–3, §9.8 item 2). Declaration
+/// order; a name no requirement declares (an inline Service, or a typo)
+/// yields nothing here. Listing a required Service grants access to its
+/// values and nothing more: its scope is every Step whether or not any
+/// entity lists it ([`ServiceScope::AllSteps`]).
+pub fn listed_requirements<'a>(
+    dependencies: Option<&'a [StepDependency]>,
+    requirements: &'a [ServiceRequirement],
+) -> impl Iterator<Item = &'a ServiceRequirement> + Clone + 'a {
+    requirements
+        .iter()
+        .filter(move |req| super::step::lists_service(dependencies, &req.name))
+}
+
 // ── Reference extraction ─────────────────────────────────────────────
 
 /// The Service names a Step references from its `script` (actions,
@@ -884,6 +901,24 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["A", "C"]);
         assert_eq!(listed_services(None, jt.services()).count(), 0);
+    }
+
+    #[test]
+    fn listed_requirements_follow_the_dependencies_list() {
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             requiresServices:\n- name: R1\n  ports: [{{name: main}}]\n- name: R2\n  \
+             ports: [{{name: main}}]\n- name: R3\n  ports: [{{name: main}}]\nservices:\n{}steps:\n{}",
+            svc("A", &[], &[]),
+            step("S1", &[], &["service:R3", "service:A", "service:R1", "service:Nope"]),
+        );
+        let jt = template(&yaml);
+        let names: Vec<&str> =
+            listed_requirements(jt.steps[0].dependencies.as_deref(), jt.requires_services())
+                .map(|r| r.name.as_str())
+                .collect();
+        assert_eq!(names, vec!["R1", "R3"]);
+        assert_eq!(listed_requirements(None, jt.requires_services()).count(), 0);
     }
 
     #[test]

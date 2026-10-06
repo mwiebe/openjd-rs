@@ -743,6 +743,14 @@ pub fn listed_services<'a>(
     dependencies: Option<&'a [StepDependency]>,
     services: &'a [template::Service],
 ) -> impl Iterator<Item = &'a template::Service> + Clone + 'a;
+/// The `requiresServices` entries that `dependencies` lists as `service:<name>`,
+/// in declaration order — the required Services whose `port` / `connectAddress`
+/// the listing Step or Service may reference (§9.8 item 2). Listing one grants
+/// access to its values and nothing more: its scope is every Step regardless.
+pub fn listed_requirements<'a>(
+    dependencies: Option<&'a [StepDependency]>,
+    requirements: &'a [template::ServiceRequirement],
+) -> impl Iterator<Item = &'a template::ServiceRequirement> + Clone + 'a;
 /// Reference extraction: not dependency edges. Used for rule 3 and for the
 /// diagnostic naming the missing `service:<name>` entry. Reachable only through
 /// `template::service_scope::*`.

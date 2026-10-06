@@ -634,7 +634,11 @@ impl ServiceManager {
     ///   or one of the Job Template's own Job Environments (`step` `None`) —
     ///   the READY inline Services whose scope includes the Step (every
     ///   READY inline Service for a Job Environment) and the READY attached
-    ///   Services bound to the Job Template's `requiresServices`;
+    ///   Services bound to the Job Template's `requiresServices` — seeded by
+    ///   scope, which is every Step, not by visibility: a Step that does
+    ///   not list `service:<requirement>` gets the symbols too, but template
+    ///   validation has already rejected any reference from it (Template
+    ///   Schemas §9 scope rule 3, §9.8 item 2);
     /// - for an attached Environment, the READY Services of its own
     ///   document (Template Schemas §1.2.2 item 3).
     pub(super) fn task_scope_endpoints(

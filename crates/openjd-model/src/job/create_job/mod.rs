@@ -325,7 +325,7 @@ pub fn create_job(
                 ctx,
                 budgets,
                 services_t.iter(),
-                requirements_t,
+                requirements_t.iter(),
             )?;
             let env_path = [
                 crate::error::PathElement::Field("jobEnvironments".to_string()),

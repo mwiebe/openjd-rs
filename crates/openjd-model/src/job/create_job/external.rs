@@ -555,7 +555,7 @@ pub fn apply_environment_templates(
                 &ctx,
                 budgets,
                 services.iter(),
-                &[],
+                std::iter::empty(),
             )
             .map_err(|e| in_document(e, &doc_path))?;
             let mut check_errors = ValidationErrors::default();

@@ -969,6 +969,7 @@ steps:
     dependencies: [{ dependsOn: \"service:R\" }, { dependsOn: \"service:X\" }]
     script: { actions: { onRun: { command: a, args: [\"{{ Service.R.main.port }}\"] } } }
   - name: B
+    dependencies: [{ dependsOn: \"service:R\" }]
     script: { actions: { onRun: { command: b, args: [\"{{ Service.R.main.connectAddress }}\"] } } }
 ";
 

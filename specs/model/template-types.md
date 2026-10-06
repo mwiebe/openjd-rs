@@ -175,7 +175,9 @@ directly (`step.dependencies.as_deref()`). `job` re-exports `DependencyTarget` a
 
 A Step's Tasks are scheduled once every listed Step has completed and every listed Service is
 READY. Listing a `requiresServices` name is valid and is satisfied when that external Service is
-READY; it does not affect any scope. Pass 6 resolves only the Step targets of a Step's
+READY; it does not affect any scope, but it is what lets the Step (or Service) reference that
+required Service's `Service.<name>.*` values, exactly as for an inline Service (§9.8 item 2;
+`listed_requirements`). Pass 6 resolves only the Step targets of a Step's
 `dependencies` (`dependency 'X' not found.`) and checks self and duplicate entries; pass 11
 resolves the Service targets (see [validation.md](validation.md)).
 
@@ -362,6 +364,8 @@ pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, Service
 pub fn service_dependency_cycle(services: &[Service]) -> Option<ServiceDependencyCycle>;
 pub fn listed_services<'a>(dependencies: Option<&'a [StepDependency]>, services: &'a [Service])
     -> impl Iterator<Item = &'a Service> + Clone + 'a;
+pub fn listed_requirements<'a>(dependencies: Option<&'a [StepDependency]>, requirements: &'a [ServiceRequirement])
+    -> impl Iterator<Item = &'a ServiceRequirement> + Clone + 'a;
 
 // Reference extraction (`template::service_scope::…`, not re-exported from `template`):
 pub fn step_references(step: &StepTemplate) -> BTreeSet<String>;
@@ -392,9 +396,12 @@ Template's Services (which have no Steps); pass 11 reports it at `services`.
 
 `listed_services` yields, in declaration order, the Services of `services` that `dependencies`
 lists as `service:<name>` — those whose `Service.<name>.<port>.*` the listing Step or Service may
-reference. Pass 8 seeds a Step's script and `stepEnvironments`, and a Service's own fields, with
-these (plus required Services), and job creation passes them as a Service's `in_scope` set; a
-required name or a typo yields nothing.
+reference; a required name or a typo yields nothing. `listed_requirements` is its counterpart over
+a Job Template's `requiresServices`: the required Services the entity lists, whose `port` /
+`connectAddress` it may reference (§9.8 item 2); an inline name or a typo yields nothing. Pass 8
+seeds a Step's script and `stepEnvironments`, and a Service's own fields, with both, and job
+creation passes them as a Step's or Service's in-scope sets. Listing a required Service grants
+access to its values and nothing more — its scope is every Step regardless.
 
 `Service.*` values are available exactly to the entities that depend on the Service, so a
 reference is never an implicit edge. The reference extraction helpers remain for the two places a
@@ -422,11 +429,17 @@ pub struct ServiceRequirementPort {
 }
 ```
 
-A requirement puts `Service.<name>.<port>.port` and `.connectAddress` in scope throughout the
-Job Template for each declared port — every Step's `script` and `stepEnvironments`, every
-`jobEnvironments` entry whose effective `runScope` excludes `SERVICE`, and every inline Service
-— and never `bindAddress`. At submission `apply_environment_templates` matches it to exactly one
-attached Service of that name declaring every listed port with the same protocol (see
+A requirement makes `Service.<name>.<port>.port` and `.connectAddress` available, for each
+declared port, under the same rule as an inline Service's ports (§9 scope rules 2–4, §9.8 item 2):
+to the `script` and `stepEnvironments` of a Step that lists `service:<name>` in its
+`dependencies`, to an inline Service that lists it, and to every `jobEnvironments` entry whose
+effective `runScope` excludes `SERVICE`, which needs no dependency. A Step or Service that
+references a required Service without listing it is rejected with the same message as for an
+inline Service (see [validation.md](validation.md), "Scope-rule diagnostics"); `bindAddress` is
+never in scope. A requirement that no Step, Service, or Job Environment lists or references is
+accepted — unlike an unused inline Service — since it may exist to be matched for a consumer that
+reaches the Service by other means. At submission `apply_environment_templates` matches it to
+exactly one attached Service of that name declaring every listed port with the same protocol (see
 [job-creation.md](job-creation.md), "Applying Environment Templates"). Permitted only in a Job
 Template.
 

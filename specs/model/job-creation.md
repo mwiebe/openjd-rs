@@ -218,7 +218,8 @@ budgets template validation and the session runtime apply.
 
 `instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
 extension flags, limits, budgets, and the template's `services` and
-`requiresServices` slices, which every Step's scope needs) and the
+`requiresServices` slices, from which each Step's and Service's in-scope sets
+are drawn) and the
 template-scope `let` evaluator `evaluate_template_let_bindings`, which
 `<StepTemplate>.let` and `<Service>.let` both use. `resolve_host_requirements`
 takes the owner's path (`steps[i]`, `services[k]`) so the same code — and the
@@ -285,8 +286,9 @@ in_scope, scope)`, path `services[k]`):
    binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
    files, its own `Service.<name>.<port>.*` including `bindAddress`, the
    `port` / `connectAddress` of every Service in `in_scope` — the Services
-   of its document it lists as `service:<name>` — and of every
-   `requiresServices` entry's declared ports), evaluates the
+   of its document it lists as `service:<name>` — and of the declared ports
+   of the `requiresServices` entries it lists,
+   `listed_requirements(svc.dependencies, requirements)`), evaluates the
    `<ServiceScript>.let` bindings into it (`script let binding '<name>':
    ...` on failure), and `check_carried_forward_service` re-runs the pass
    8 constraints on `variables` (§4.4.2 length), every action's
@@ -303,13 +305,14 @@ in_scope, scope)`, path `services[k]`):
 
 The check symbol tables of the entities *around* a Service follow the same
 dependencies. `build_task_check_symtab` seeds a Step's check table with the
-`port` / `connectAddress` of the Services the Step lists —
-`listed_services(step.dependencies, services)` — and of every requirement's
-declared ports; its `stepEnvironments` are checked by `build_env_check_symtab`
-against the same Services and requirements. A `jobEnvironments` entry is
-checked against every inline Service of the Job Template and every
-requirement (referencing a Service from a Job Environment is what puts every
-Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
+`port` / `connectAddress` of the inline and required Services the Step lists —
+`listed_services(step.dependencies, services)` and
+`listed_requirements(step.dependencies, requirements)`; its `stepEnvironments`
+are checked by `build_env_check_symtab` against the same Services and
+requirements. A `jobEnvironments` entry is checked against every inline
+Service of the Job Template and every requirement — the one site that needs
+no dependency (referencing an inline Service from a Job Environment is what
+puts every Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
 when the environment's *effective* `runScope` excludes `SERVICE` — the same
 visibility rules pass 8 applied, so a reference that validated resolves here
 and at run time.
