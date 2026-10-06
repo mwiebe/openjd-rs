@@ -1,9 +1,9 @@
 # Template Schemas §9.1 rule 1 / RFC 0009 lifecycle constraint 6: Coord is
-# referenced by Steps Scatter and Gather only, so its scope is exactly those
+# listed by Steps Scatter and Gather only, so its scope is exactly those
 # two Steps. It starts when Scatter is about to run, one instance holds the
 # state written by Scatter's three Tasks and read by Gather's Task, and it is
 # stopped (onExit run) once Gather completes -- before Unrelated, which
-# depends on Gather and does not reference it, runs. Gather records the
+# depends on Gather and does not list it, runs. Gather records the
 # endpoint in the trace file; Unrelated finds it refused.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
@@ -53,6 +53,8 @@ services:
                 c.close()
 steps:
   - name: Scatter
+    dependencies:
+      - dependsOn: "service:Coord"
     parameterSpace:
       taskParameterDefinitions:
         - name: N
@@ -79,6 +81,7 @@ steps:
   - name: Gather
     dependencies:
       - dependsOn: Scatter
+      - dependsOn: "service:Coord"
     script:
       actions:
         onRun:

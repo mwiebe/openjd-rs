@@ -1,6 +1,6 @@
 # RFC 0009 "RERUN and Step dependencies": Flaky (completedTasks: RERUN,
-# maxAttempts 1) is referenced by Steps A and B, so its scope is Steps A, B.
-# C depends on A and does not reference Flaky; B depends on C, so the order
+# maxAttempts 1) is listed by Steps A and B, so its scope is Steps A, B.
+# C depends on A and does not list Flaky; B depends on C, so the order
 # is A, C, B and Flaky stays up across C. Flaky's first instance exits while
 # B's Task runs: B's Task is canceled, A's and B's completed Tasks return to
 # the queue, and C -- which depends on A, a returned Step -- returns to
@@ -50,6 +50,8 @@ services:
                     sys.exit(1)
 steps:
   - name: A
+    dependencies:
+      - dependsOn: "service:Flaky"
     script:
       actions:
         onRun:
@@ -88,6 +90,7 @@ steps:
   - name: B
     dependencies:
       - dependsOn: C
+      - dependsOn: "service:Flaky"
     script:
       actions:
         onRun:

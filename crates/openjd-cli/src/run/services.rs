@@ -9,32 +9,36 @@
 //! takes the scheduler's side of the split that
 //! `specs/sessions/service-session.md` describes: it allocates endpoints
 //! ([`super::service_ports`]), decides when each Service Session starts
-//! (ordering constraints 2 and 10, and a Service's `dependencies`), gates
-//! Tasks on readiness (constraint 3), watches for instance failures while
-//! Tasks run — an `onRun` exit, or an UNHEALTHY verdict from the Session's
-//! health check — and applies the restart policy ("Failure and restart"),
-//! and stops Services when their scope completes (constraints 4, 6, 7).
-//! The Service Sessions themselves are `openjd_sessions::ServiceSession`s.
+//! (ordering constraints 2 and 10: after every entry of the Service's
+//! `dependencies` is satisfied — its Steps completed, its Services READY),
+//! gates Tasks on readiness (constraint 3), watches for instance failures
+//! while Tasks run — an `onRun` exit, or an UNHEALTHY verdict from the
+//! Session's health check — and applies the restart policy ("Failure and
+//! restart"), and stops Services when their scope completes (constraints 4,
+//! 6, 7). The Service Sessions themselves are
+//! `openjd_sessions::ServiceSession`s.
 //!
 //! Every Service of the combined Job is registered once, with the scope job
-//! creation computed for it ([`Service::scope`], Template Schemas §9.1): a
-//! Service whose scope is every Step is started before the Task Session
-//! enters the Job's Environments and stopped at the end of the run; one
-//! scoped to some Steps is *activated* when the first of them is about to
-//! run — after every Step in its `dependencies` has completed — and stopped
-//! once no Step in its scope remains to run. Steps outside a Service's
-//! scope never wait on it. A Service stopped because its scope completed
-//! returns to idle and is started again, in a new Service Session, if a
-//! `RERUN` returns a Step of its scope to the queue.
+//! creation computed for it from the template's `dependencies` lists
+//! ([`Service::scope`], Template Schemas §9.1): a Service whose scope is
+//! every Step is started before the Task Session enters the Job's
+//! Environments and stopped at the end of the run; one scoped to some Steps
+//! is *activated* when the first of them is about to run — after every Step
+//! in its `dependencies` has completed — and stopped once no Step in its
+//! scope remains to run. Steps outside a Service's scope never wait on it. A
+//! Service stopped because its scope completed returns to idle and is
+//! started again, in a new Service Session, if a `RERUN` returns a Step of
+//! its scope to the queue.
 //!
 //! Services are keyed by [`ServiceKey`] — the document that declares a
 //! Service plus its name (Template Schemas §1.2.2 item 3: an inline Service
 //! shadows an external one of the same name, and two attachments may both
 //! declare a `Cache`). A Service Session is seeded with the endpoints of the
-//! Services it references — of its own document, plus the attached Services
-//! bound to the Job Template's `requiresServices` for an inline Service —
-//! and a Task Session with the inline Services whose scope includes its Step
-//! and the bound required Services.
+//! Services it lists as `service:<name>` in its `dependencies` — of its own
+//! document, or the attached Service bound to the Job Template's
+//! `requiresServices` entry of that name for an inline Service — and a Task
+//! Session with the inline Services whose scope includes its Step and the
+//! bound required Services.
 //!
 //! See `specs/cli/run.md` § Services for the orchestration rules.
 
@@ -44,7 +48,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use openjd_model::job::service_symbols::{referenced_service_names, ServiceEndpoints};
+use openjd_model::job::service_symbols::ServiceEndpoints;
 use openjd_model::job::{CompletedTasksPolicy, Document, Environment, Job, Service, ServiceScope};
 use openjd_model::types::{JobParameterValues, ModelProfile};
 use openjd_model::RequirementBinding;
@@ -78,7 +82,7 @@ impl ServiceKey {
     }
 
     /// The Service `name` names from inside a Service of `document`: a
-    /// `Service.<name>.*` reference to an inline Service never crosses a
+    /// `service:<name>` dependency on an inline Service never crosses a
     /// document boundary.
     fn sibling(document: &Document, name: &str) -> Self {
         Self {
@@ -327,7 +331,7 @@ struct Instance {
     /// the Service's own (`None` for those that share it), index for index
     /// — `ServiceSessionConfig::environment_profiles`.
     environment_profiles: Vec<Option<ModelProfile>>,
-    /// Endpoints of the Services this one references that were READY when
+    /// Endpoints of the Services this one depends on that were READY when
     /// this Session was started: Services of its own document, and the
     /// bound required Services for an inline Service.
     in_scope: Vec<ServiceEndpoints>,
@@ -371,10 +375,11 @@ struct Managed {
     service: Service,
     scope: ServiceScope,
     policy: CompletedTasksPolicy,
-    /// The Services this one references through `Service.*`: Services of
-    /// the same document, plus the bound required Services an inline
-    /// Service references.
-    references: BTreeSet<ServiceKey>,
+    /// The Services this one lists as `service:<name>` in its
+    /// `dependencies` (§9 item 4): Services of the same document, plus the
+    /// bound required Services an inline Service lists. It starts after each
+    /// is READY and is stopped before any of them.
+    depends_on_services: BTreeSet<ServiceKey>,
     /// The Job's Environments (every one; the Session skips those whose
     /// `runScope` excludes `SERVICE`).
     environments: Vec<Environment>,
@@ -494,11 +499,11 @@ impl ServiceManager {
         for service in job.services.iter().flatten() {
             let key = ServiceKey::of(service);
             let profiles = self.environment_profiles(service, environment_documents);
-            // A `Service.<name>.*` reference inside this Service names a
-            // Service of the same document — or, in the Job Template, a
-            // required external Service bound at submission.
-            let references = referenced_service_names(service)
-                .iter()
+            // A `service:<name>` dependency of this Service names a Service
+            // of the same document — or, in the Job Template, a required
+            // external Service bound at submission.
+            let depends_on_services = service
+                .depends_on_services()
                 .map(|name| {
                     match (
                         key.document.is_job_template(),
@@ -516,7 +521,7 @@ impl ServiceManager {
                 service: service.clone(),
                 scope: service.scope.clone(),
                 policy: service.restart_policy.completed_tasks,
-                references,
+                depends_on_services,
                 environments: envs.clone(),
                 environment_profiles: profiles,
                 active: false,
@@ -567,13 +572,15 @@ impl ServiceManager {
 
     /// Activate every Service whose scope includes `step`, so the next gate
     /// starts those not yet READY (a Service stopped because its scope had
-    /// completed starts again in a new Session, constraint 9). A Service with
-    /// `dependencies` is activated only once every listed Step has completed
-    /// (`completed`) — a listed Step outside the run's selection
-    /// (`selected`) counts as completed, as a Step's own dependencies do
-    /// under `--step` — and an error names a Service whose dependency is
-    /// selected but not yet completed, which the Step ordering prevents.
-    /// Returns the names of the Services activated.
+    /// completed starts again in a new Session, constraint 9). A Service that
+    /// lists Steps in its `dependencies` is activated only once every listed
+    /// Step has completed (`completed`) — a listed Step outside the run's
+    /// selection (`selected`) counts as completed, as a Step's own
+    /// dependencies do under `--step` — and an error names a Service whose
+    /// Step dependency is selected but not yet completed, which the Step
+    /// ordering prevents. (Its Service dependencies are the gate's: it
+    /// starts once they are READY, constraint 2.) Returns the names of the
+    /// Services activated.
     pub(super) fn activate_for_step(
         &mut self,
         step: &str,
@@ -587,10 +594,7 @@ impl ServiceManager {
             }
             let unmet: Vec<&str> = m
                 .service
-                .dependencies
-                .iter()
-                .flatten()
-                .map(|d| d.depends_on.as_str())
+                .depends_on_steps()
                 .filter(|d| selected.contains(*d) && !completed.contains(*d))
                 .collect();
             if !unmet.is_empty() {
@@ -672,10 +676,10 @@ impl ServiceManager {
     /// The readiness gate (constraint 3), run before every Task: observe
     /// any instance failure since the last gate and begin the restart decision
     /// for it; await every background start/relaunch; restart the Services
-    /// that reference one whose Session was replaced; start every active
-    /// Service not yet started, in waves of Services whose referenced
-    /// Services are READY (constraint 2); repeat until every active Service
-    /// is READY or FAILED.
+    /// that depend on one whose Session was replaced; start every active
+    /// Service not yet started, in waves of Services whose Service
+    /// dependencies are READY (constraint 2); repeat until every active
+    /// Service is READY or FAILED.
     pub(super) async fn gate(&mut self) -> Result<GateOutcome, RunError> {
         let mut outcome = GateOutcome::default();
         loop {
@@ -702,8 +706,8 @@ impl ServiceManager {
     }
 
     /// Constraint 6: stop every active Service whose scope contains none of
-    /// `remaining` (the Steps still to run), in reference order — a Service
-    /// before any it references (constraint 4) — and return each to idle.
+    /// `remaining` (the Steps still to run), in dependency order — a Service
+    /// before any it depends on (constraint 4) — and return each to idle.
     /// A Service whose scope is every Step is stopped only by
     /// [`stop_all`](Self::stop_all).
     pub(super) async fn stop_completed_scopes(&mut self, remaining: &BTreeSet<String>) {
@@ -721,7 +725,7 @@ impl ServiceManager {
         self.stop_set(&done).await;
     }
 
-    /// Stop everything, in reference order (constraint 4), after the Task
+    /// Stop everything, in dependency order (constraint 4), after the Task
     /// Session has exited the Job's Environments.
     pub(super) async fn stop_all(&mut self) {
         let all: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
@@ -729,8 +733,8 @@ impl ServiceManager {
     }
 
     /// Stop the Services in `keys`: cancel their background work and end
-    /// their Sessions, each before any Service it references (reverse
-    /// topological order of the reference graph restricted to `keys`;
+    /// their Sessions, each before any Service it depends on (reverse
+    /// topological order of the dependency graph restricted to `keys`;
     /// registration order breaks ties, latest first).
     async fn stop_set(&mut self, keys: &BTreeSet<ServiceKey>) {
         if keys.is_empty() {
@@ -741,25 +745,25 @@ impl ServiceManager {
         }
         let mut pending: BTreeSet<ServiceKey> = keys.clone();
         while !pending.is_empty() {
-            // Those not referenced by any other pending Service go first.
-            let referenced_by_pending: BTreeSet<ServiceKey> = self
+            // Those no other pending Service depends on go first.
+            let depended_on_by_pending: BTreeSet<ServiceKey> = self
                 .services
                 .iter()
                 .filter(|m| pending.contains(&m.key))
-                .flat_map(|m| m.references.iter().cloned())
+                .flat_map(|m| m.depends_on_services.iter().cloned())
                 .collect();
             let mut wave: Vec<usize> = self
                 .services
                 .iter()
                 .enumerate()
                 .filter(|(_, m)| {
-                    pending.contains(&m.key) && !referenced_by_pending.contains(&m.key)
+                    pending.contains(&m.key) && !depended_on_by_pending.contains(&m.key)
                 })
                 .map(|(i, _)| i)
                 .collect();
             if wave.is_empty() {
-                // Cannot happen for an acyclic reference graph; stop the rest
-                // in reverse registration order rather than spin.
+                // Cannot happen for an acyclic dependency graph; stop the
+                // rest in reverse registration order rather than spin.
                 wave = self
                     .services
                     .iter()
@@ -983,10 +987,10 @@ impl ServiceManager {
         Ok(replaced)
     }
 
-    /// Return every READY Service that (transitively) references one of
+    /// Return every READY Service that (transitively) depends on one of
     /// `replaced` to idle, ending its Session: its `Service.*` values for
     /// the replaced Service are stale, and RFC 0009 constraint 2 only
-    /// guarantees a referenced Service's endpoint at the referencing
+    /// guarantees a depended-on Service's endpoint at the dependent
     /// Session's start. Not a failure of the dependent: no attempt is
     /// consumed. Stopped in reverse registration order (constraint 4).
     async fn restart_dependents(&mut self, replaced: &[ServiceKey]) {
@@ -997,7 +1001,8 @@ impl ServiceManager {
         loop {
             let before = stale.len();
             for m in &self.services {
-                if matches!(m.state, State::Ready(_)) && !m.references.is_disjoint(&stale) {
+                if matches!(m.state, State::Ready(_)) && !m.depends_on_services.is_disjoint(&stale)
+                {
                     stale.insert(m.key.clone());
                 }
             }
@@ -1011,7 +1016,7 @@ impl ServiceManager {
             }
             if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Failed) {
                 log_line(format!(
-                    "{} references a Service that began a new Service Session; \
+                    "{} depends on a Service that began a new Service Session; \
                      restarting it with the new endpoints",
                     m.key
                 ));
@@ -1021,9 +1026,9 @@ impl ServiceManager {
         }
     }
 
-    /// Start every active idle Service, in waves of Services whose
-    /// referenced Services are all READY. Each wave starts concurrently;
-    /// the next begins when the wave has settled.
+    /// Start every active idle Service, in waves of Services whose Service
+    /// dependencies are all READY (constraint 2). Each wave starts
+    /// concurrently; the next begins when the wave has settled.
     async fn start_pending(&mut self, outcome: &mut GateOutcome) -> Result<(), RunError> {
         loop {
             let ready: BTreeMap<ServiceKey, ServiceEndpoints> = self
@@ -1043,7 +1048,7 @@ impl ServiceManager {
                     continue;
                 }
                 let waiting_on: Vec<&ServiceKey> = m
-                    .references
+                    .depends_on_services
                     .iter()
                     .filter(|r| known.contains(*r) && !ready.contains_key(*r))
                     .collect();
@@ -1051,10 +1056,10 @@ impl ServiceManager {
                     blocked.push(m.key.to_string());
                     continue;
                 }
-                // Constraint 2: the referenced Services are READY; their
+                // Constraint 2: the Services it depends on are READY; their
                 // endpoints seed the Session.
                 let in_scope: Vec<ServiceEndpoints> = m
-                    .references
+                    .depends_on_services
                     .iter()
                     .filter_map(|r| ready.get(r).cloned())
                     .collect();
@@ -1076,7 +1081,7 @@ impl ServiceManager {
             if !spawned {
                 if !blocked.is_empty() && !self.any_busy() {
                     return Err(format!(
-                        "cannot order the start of Services {}: each references a Service that \
+                        "cannot order the start of Services {}: each depends on a Service that \
                          is not READY and is not starting",
                         blocked.join(", ")
                     )
@@ -1529,8 +1534,8 @@ mod tests {
             external.to_string(),
             "Service 'Cache' (from EnvironmentTemplate[1])"
         );
-        // A reference made from inside the external Service stays in its
-        // document.
+        // A `service:` dependency written inside the external Service stays
+        // in its document.
         assert_eq!(
             ServiceKey::sibling(&external.document, "Store"),
             ServiceKey {

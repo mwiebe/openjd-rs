@@ -1,6 +1,6 @@
 # RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 9: Solo is
-# referenced by Step A only (scope Step A) and is stopped once A completes.
-# Flaky (completedTasks: RERUN, maxAttempts 1) is referenced by A and B (scope
+# listed by Step A only (scope Step A) and is stopped once A completes.
+# Flaky (completedTasks: RERUN, maxAttempts 1) is listed by A and B (scope
 # Steps A, B); B depends on A. Flaky's first instance exits while B's Task
 # runs, which returns A to pending; Solo, whose scope includes the returned
 # Step A, is started again in a new Service Session (new launch, onExit run
@@ -63,6 +63,9 @@ services:
                     sys.exit(1)
 steps:
   - name: A
+    dependencies:
+      - dependsOn: "service:Flaky"
+      - dependsOn: "service:Solo"
     script:
       actions:
         onRun:
@@ -71,6 +74,7 @@ steps:
   - name: B
     dependencies:
       - dependsOn: A
+      - dependsOn: "service:Flaky"
     script:
       actions:
         onRun:

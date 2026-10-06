@@ -42,6 +42,11 @@ pub struct Job {
     pub services: Option<Vec<Service>>,                  // SERVICE (RFC 0009); omitted from JSON when None
     pub requires_services: Option<Vec<ServiceRequirement>>,  // SERVICE (RFC 0009); omitted from JSON when None
 }
+
+impl Job {
+    pub fn has_extension(&self, extension: ModelExtension) -> bool;  // `extensions` contains it
+    pub fn service_active(&self) -> bool;                            // has_extension(ModelExtension::Service)
+}
 ```
 
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
@@ -50,6 +55,10 @@ its computed scope (see [Service](#service-rfc-0009-service-extension)); after
 `apply_environment_templates`, the attached external Services precede the Job Template's own.
 `requires_services` is the instantiated `requiresServices` list. Both serialize only when
 present, so a job without Services has the same wire shape as before RFC 0009.
+
+`service_active` is the flag every reader of a `dependsOn` value passes to
+[`StepDependency::target`](#stepdependency): only a Job declaring `SERVICE` has a `service:`
+prefix to recognize.
 
 ### JobParameter
 
@@ -83,8 +92,10 @@ pub struct Step {
 }
 ```
 
-A Step carries no Service list: the Services whose scope includes it are those of
-`Job::services` whose `scope` contains its name.
+A Step carries no separate Service list. The Services it depends on are the `service:<name>`
+entries of its `dependencies` (see [StepDependency](#stepdependency)); the Services whose scope
+includes it are those of `Job::services` whose `scope` contains its name — the ones it lists,
+those a Service it lists depends on, transitively, and every Job-wide Service.
 
 `resolved_symtab` exists to transport symbol values across the network to the worker host
 that runs the job. The worker evaluates the format strings that remain unresolved after job
@@ -330,9 +341,25 @@ pub struct AttributeRequirement {
 
 ```rust
 pub struct StepDependency {
-    pub depends_on: String,
+    pub depends_on: String,                                // as written: a Step name or "service:<name>"
 }
+
+impl StepDependency {
+    pub fn target(&self, service_active: bool) -> DependencyTarget<'_>;
+}
+
+pub use template::{DependencyTarget, SERVICE_DEPENDENCY_PREFIX};  // re-exported; see template-types.md
 ```
+
+One entry of a Step's or a Service's `dependencies` (Template Schemas §3.2, §9 item 4).
+`target(service_active)` classifies it: with `service_active` (pass `Job::service_active()`) a
+value beginning `service:` is `DependencyTarget::Service(<name after the prefix>)`, satisfied when
+that Service is READY; any other value, and every value of a Job without `SERVICE`, is
+`DependencyTarget::Step(<the whole string>)`, satisfied when that Step has completed. The value is
+kept as written, so a created Job serializes its `dependencies` exactly as the template did.
+`StepDependencyGraph::new` builds its Step-to-Step graph from the `Step` targets only: when
+`job.service_active()`, `service:` entries are skipped, since the Services a Step waits for gate
+its Tasks on READY rather than ordering it among Steps.
 
 ### Service (RFC 0009, `SERVICE` extension)
 
@@ -342,8 +369,7 @@ pub struct Service {
     pub description: Option<String>,
     pub document: Document,                                // §1.2.2 item 3; omitted from JSON when JobTemplate
     pub scope: ServiceScope,                               // §9.1, computed; {"kind":"allSteps"} | {"kind":"steps","steps":[..]}
-    pub references: Vec<String>,                           // §9.1 rule 3: same-document Services it references; omitted when empty
-    pub dependencies: Option<Vec<StepDependency>>,         // §9 item 4; omitted from JSON when None
+    pub dependencies: Option<Vec<StepDependency>>,         // §9 item 4: Steps and service:<name>; omitted from JSON when None
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
     pub ports: Vec<ServicePort>,                           // Declaration order
     pub health_check: ServiceHealthCheck,                  // §9.4 defaults applied
@@ -355,6 +381,9 @@ pub struct Service {
 
 impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
+    pub fn depends_on_steps(&self) -> impl Iterator<Item = &str>;     // Step entries of `dependencies`, list order
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>;  // service:<name> entries, prefix stripped, list order
+    pub fn depends_on_service(&self, name: &str) -> bool;             // depends_on_services() contains `name`
     pub fn port(&self, name: &str) -> Option<&ServicePort>;
 }
 
@@ -461,17 +490,26 @@ Step. `<Service>.let` itself is not carried (its values are), while `<ServiceScr
 for the host to evaluate.
 
 `scope` is the set of Steps whose Tasks depend on the Service (Template Schemas §9.1), computed
-by `create_job` from the template's `Service.*` references through
-`template::compute_service_scopes` — `AllSteps` for a Service a Job Environment references, one
-nothing references, or one a Job-wide Service references; `Steps { .. }` otherwise — and
-`AllSteps` for every external Service, stamped by `apply_environment_templates`. `references`
-are the names of the other Services **of the same document** the Service references (§9.1 rule
-3), sorted: a scheduler starts the Service after each is READY and stops it before any of them.
-`dependencies` are the Steps that must complete before the Service starts (§9 item 4); never set
-on an external Service. A scheduler therefore reads the lifecycle of every Service off the Job
-without re-deriving it: start before the first Task of any Step in `scope`, after `dependencies`
-and `references`; stop once no Step in `scope` has a Task left. `scope` deserializes as
-`AllSteps` when absent, so a Job serialized before scopes were recorded still loads.
+by `create_job` from the template's `dependencies` lists through
+`template::compute_service_scopes`: the Steps that list `service:<name>` (rule 1), every Step in
+the scope of a Service that lists `service:<name>`, transitively (rule 2), and `AllSteps` for a
+Service a `jobEnvironments` entry references (rule 3) or one a Service with scope `AllSteps`
+lists. `Steps { .. }` is never empty for a Job created from a decoded template, because a Job
+Template Service with no Step in its scope is unused and rejected by validation (rule 4). Every external Service has scope
+`AllSteps`, stamped by `apply_environment_templates`.
+
+`dependencies` are the Steps and Services the Service depends on, as written (§9 item 4).
+`depends_on_steps()` yields its Step entries — the Steps that must complete before it starts;
+`depends_on_services()` yields the names of its `service:` entries — the Services that must be
+READY before it starts and that it is stopped before. A `service:` name resolves within the
+Service's own `document`: another Service of that document or, for a Job Template Service, a
+required external Service (resolved through `AppliedEnvironmentTemplates::requirement_bindings`).
+Both iterators classify entries as under `SERVICE`, the only extension under which a Service
+exists. A scheduler therefore reads the lifecycle of every Service off the Job without
+re-deriving it: start before the first Task of any Step in `scope`, once every Step of
+`depends_on_steps()` has completed and every Service of `depends_on_services()` is READY; stop
+once no Step in `scope` has a Task left, before any Service of `depends_on_services()`. `scope`
+deserializes as `AllSteps` when absent.
 
 `document` is the document of the submission that declares the Service (Template Schemas
 §1.2.2 item 3, RFC 0009 "Inline Services shadow external ones"): `Document::JobTemplate` for
@@ -493,10 +531,10 @@ every script action (command, args, timeout, cancelation), embedded-file `data`,
 `<ServiceScript>.let` — which is how the `<Service>.let` values reach the host — with the
 `RawParam.*` fallback for PATH parameters. A Service Session layers `Session.*`,
 `Service.File.*`, and the `Service.*` endpoints from
-`job::service_symbols::build_service_symbol_table` on top. The same fields, walked by
-`job::service_symbols::referenced_service_names`, give a scheduler every Service this one
-references by name — `references` restricted to its document, plus any required external
-Service.
+`job::service_symbols::build_service_symbol_table` on top, passing as `in_scope` the Services of `depends_on_services()` — plus every required
+external Service for a Job Template Service — and the Service itself as `declaring`. Validation
+rejects a `Service.<name>.*` reference to any other Service, so a scheduler needs no walk of the
+format strings to know which endpoints to bind.
 
 `Service` implements `PartialEq` and `Hash` with the module's invariant; `variables` hashes as
 key-sorted entries. It also implements `Deserialize`, so a created job's Services round-trip
@@ -510,7 +548,7 @@ through the wire format.
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); `run_scope` is `Vec<RunScope>` not `Vec<String>`; adds `resolved_symtab` |
-| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString`; adds the computed `scope` and `references` |
+| `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString`; adds the computed `scope` and `document`; `dependencies` kept as written |
 | `template::ServiceRequirement` | `job::ServiceRequirement` | Structurally identical |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |
 | `template::EmbeddedFile` | `job::EmbeddedFile` | `file_type` is `FileType` enum; `end_of_line` is `Option<EndOfLine>` enum |

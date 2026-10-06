@@ -1,0 +1,30 @@
+# Template Schemas §3.1 constraint 4 / §9.9 item 12 (RFC 0009): with SERVICE
+# declared, a Step's name may not contain `:`, so that `dependsOn:
+# service:Store` can only name a Service.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ColonStepName"
+services:
+  - name: Store
+    ports:
+      - name: main
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]
+steps:
+  - name: "service:Store"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]
+  - name: Use
+    dependencies:
+      - dependsOn: "service:Store"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]

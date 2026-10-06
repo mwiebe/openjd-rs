@@ -1,0 +1,30 @@
+# Template Schemas §9 scope rule 3 / §9.9 item 1 (RFC 0009): a Step that
+# references Service.Cache.* without listing service:Cache in its
+# dependencies is rejected; the message names the missing entry.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ReferenceWithoutDependency"
+services:
+  - name: Cache
+    ports:
+      - name: main
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]
+steps:
+  - name: Warm
+    dependencies:
+      - dependsOn: "service:Cache"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()"]
+  - name: Render
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print()", "{{ Service.Cache.main.port }}"]

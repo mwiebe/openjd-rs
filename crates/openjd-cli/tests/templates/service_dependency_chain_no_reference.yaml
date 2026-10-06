@@ -1,0 +1,72 @@
+# RFC 0009 §9 item 4 / lifecycle constraints 2 and 4 / §9.1 rule 2: a
+# Service -> Service dependency chain declared without any Service.*
+# reference. Front lists service:Mid and Mid lists service:Back; Step Use
+# lists service:Front only. Scope: Front = Use; Mid = Use (through Front);
+# Back = Use (through Mid). Start order: Back READY before Mid starts, Mid
+# READY before Front starts; stop order: Front, then Mid, then Back. Each
+# Service appends launch/exit events to the trace file.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "DependencyChainNoReference"
+parameterDefinitions:
+  - name: TraceFile
+    type: STRING
+services:
+  - name: Back
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'a').write('back launch\\n'); print('openjd_service_ready: back up', flush=True); time.sleep(600)", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('back exit\\n')", "{{ Param.TraceFile }}"]
+  - name: Mid
+    dependencies:
+      - dependsOn: "service:Back"
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'a').write('mid launch\\n'); print('openjd_service_ready: mid up', flush=True); time.sleep(600)", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('mid exit\\n')", "{{ Param.TraceFile }}"]
+  - name: Front
+    dependencies:
+      - dependsOn: "service:Mid"
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'a').write('front launch\\n'); print('openjd_service_ready: front up', flush=True); time.sleep(600)", "{{ Param.TraceFile }}"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('front exit\\n')", "{{ Param.TraceFile }}"]
+steps:
+  - name: Use
+    dependencies:
+      - dependsOn: "service:Front"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys; open(sys.argv[1], 'a').write('task\\n'); print('TASK_RAN', flush=True)", "{{ Param.TraceFile }}"]

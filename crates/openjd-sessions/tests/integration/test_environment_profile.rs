@@ -511,7 +511,6 @@ fn service(name: &str, on_run: Action) -> Service {
         description: None,
         document: Default::default(),
         scope: openjd_model::job::ServiceScope::AllSteps,
-        references: Vec::new(),
         dependencies: None,
         host_requirements: None,
         ports: vec![ServicePort {

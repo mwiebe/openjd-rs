@@ -121,7 +121,7 @@ pub struct ServiceSessionConfig {
     pub environments: Vec<job::Environment>,    // the Job's Environments, in entry order
     pub environment_profiles: Vec<Option<ModelProfile>>, // per entry of `environments`: its document's profile when not the Service's
     pub endpoints: ServiceEndpoints,            // own ports: port, bindAddress, connectAddress
-    pub in_scope_endpoints: Vec<ServiceEndpoints>, // the Services it references (no bindAddress)
+    pub in_scope_endpoints: Vec<ServiceEndpoints>, // the Services it lists as service:<name> in dependencies (no bindAddress)
 }
 ```
 
@@ -199,8 +199,8 @@ returns it; `end()` is still required.
    `RawParam.*`, `Job.Name`, `Step.Name`, `<Service>.let` values, with PATH
    parameters re-mapped for this host, plus `Session.WorkingDirectory`), then
    `openjd_model::job::service_symbols::build_service_symbol_table(in_scope,
-   Some(own))` merged in (own ports with `bindAddress`; earlier Services
-   without), then `materialize_path_mapping` (`Session.HasPathMappingRules`,
+   Some(own))` merged in (own ports with `bindAddress`; the Services it
+   depends on without), then `materialize_path_mapping` (`Session.HasPathMappingRules`,
    `Session.PathMappingRulesFile` — the rules file is written to the working
    directory), then `Service.File.*` (embedded file paths allocated under
    `EmbeddedFilesScope::Service`), then `<ServiceScript>.let` evaluated, then

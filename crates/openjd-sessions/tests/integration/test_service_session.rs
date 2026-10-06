@@ -161,7 +161,6 @@ impl ServiceBuilder {
                 description: None,
                 document: Default::default(),
                 scope: openjd_model::job::ServiceScope::AllSteps,
-                references: Vec::new(),
                 dependencies: None,
                 host_requirements: None,
                 ports: ports

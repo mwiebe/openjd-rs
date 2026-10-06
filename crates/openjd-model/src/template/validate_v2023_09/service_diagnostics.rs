@@ -39,26 +39,38 @@
 //!    `SERVICE`: *Environment 'E' is entered in Service Sessions (its
 //!    runScope includes SERVICE) and may not reference Service.\*; declare
 //!    runScope: [TASK] if it configures Tasks.* (§4 item 3.2.)
-//! 4. The port is not declared: *Service 'S' has no port 'mian'; declared
+//! 4. A declared (not required) Service referenced from a Step's `script`,
+//!    one of its `stepEnvironments`, or another Service that does not list
+//!    `service:<name>` in its `dependencies` (§9 scope rules 2–3, §9.9
+//!    item 1): *Step 'Render' references Service.Cache.main.port but does
+//!    not list service:Cache in dependencies.* — *Step 'Render' references
+//!    Service.Cache.main.port in stepEnvironments 'Tools' but does not list
+//!    service:Cache in dependencies.* — *Service 'Front' references
+//!    Service.Back.main.port but does not list service:Back in
+//!    dependencies.* The dependency is the author's statement that the
+//!    entity needs the Service; the reference alone is not taken as one.
+//! 5. The port is not declared: *Service 'S' has no port 'mian'; declared
 //!    ports: main.* — or, for a required Service, *required Service 'R'
 //!    has no port 'x'; declared ports: main.* (§9.8.)
-//! 5. `bindAddress` of a required Service: *bindAddress of required
+//! 6. `bindAddress` of a required Service: *bindAddress of required
 //!    Service 'R' is not available; use connectAddress to reach it.*
 //!    (§9.8 item 2.)
-//! 6. `bindAddress` outside the declaring Service: *Service.P.main.bindAddress
+//! 7. `bindAddress` outside the declaring Service: *Service.P.main.bindAddress
 //!    is available only within the Service 'P' itself; use connectAddress to
 //!    reach it from elsewhere.* (§7.3.1.)
 //!
-//! Every inline Service is in scope in every Step's script and Step
-//! Environment, every Job Environment whose `runScope` excludes `SERVICE`,
-//! and every other Service — referencing it is what places the referrer in
-//! its scope (§9.1) — so there is no "declared elsewhere" rule left to
-//! state. Anything else — an unknown value name after a declared port, a
-//! reference with too few components, `Service.File.*` — keeps the generic
-//! message.
+//! A Job Environment whose `runScope` excludes `SERVICE` and an Environment
+//! Template's `environment` see every inline Service of their document, and
+//! a required Service is in scope everywhere, so no rule is needed for
+//! those sites. Anything else — an unknown value name after a declared
+//! port, a reference with too few components, `Service.File.*` — keeps the
+//! generic message.
 
 use crate::error::{PathElement, ValidationError, ValidationErrors};
-use crate::template::{Environment, EnvironmentTemplate, JobTemplate, RunScope, Service};
+use crate::template::{
+    lists_service, Environment, EnvironmentTemplate, JobTemplate, RunScope, Service, StepTemplate,
+    SERVICE_DEPENDENCY_PREFIX,
+};
 
 /// One Service the document knows: declared in its `services`, or required
 /// by a Job Template's `requiresServices`.
@@ -79,12 +91,15 @@ impl Known<'_> {
 /// The kind of entity a format string belongs to, read off the error path.
 enum Site<'a> {
     /// A Step's `script` (its Tasks' scope).
-    Task,
+    Task { step: &'a StepTemplate },
     /// A Service's own session-scope fields: `variables` and `script`.
-    Service { service_name: &'a str },
+    Service { service: &'a Service },
     /// A Job or Step Environment, or an Environment Template's
-    /// `environment`.
-    Environment(&'a Environment),
+    /// `environment`; `step` is the owning Step of a Step Environment.
+    Environment {
+        env: &'a Environment,
+        step: Option<&'a StepTemplate>,
+    },
     /// A field resolved at job creation, named for the message.
     JobCreation(&'static str),
 }
@@ -148,25 +163,27 @@ impl<'a> Document<'a> {
                 match rest {
                     [Field(g), Index(j), ..] if g == "stepEnvironments" => {
                         let env = step.step_environments.as_ref()?.get(*j)?;
-                        Some(Site::Environment(env))
+                        Some(Site::Environment {
+                            env,
+                            step: Some(step),
+                        })
                     }
-                    [Field(g), ..] if g == "script" => Some(Site::Task),
+                    [Field(g), ..] if g == "script" => Some(Site::Task { step }),
                     _ => None,
                 }
             }
             [Field(f), Index(k), ..] if f == "services" => {
-                let svc = self.services().get(*k)?;
-                Some(Site::Service {
-                    service_name: &svc.name,
-                })
+                let service = self.services().get(*k)?;
+                Some(Site::Service { service })
             }
             [Field(f), Index(i), ..] if f == "jobEnvironments" => {
                 let env = self.job_template?.job_environments.as_ref()?.get(*i)?;
-                Some(Site::Environment(env))
+                Some(Site::Environment { env, step: None })
             }
-            [Field(f), ..] if f == "environment" => {
-                Some(Site::Environment(self.env_template?.environment.as_ref()?))
-            }
+            [Field(f), ..] if f == "environment" => Some(Site::Environment {
+                env: self.env_template?.environment.as_ref()?,
+                step: None,
+            }),
             _ => None,
         }
     }
@@ -262,7 +279,7 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
     }
 
     // Rule 3: an Environment entered in Service Sessions.
-    if let Site::Environment(env) = site {
+    if let Site::Environment { env, .. } = site {
         if env.runs_in(RunScope::Service) {
             return Some(format!(
                 "Environment '{}' is entered in Service Sessions (its runScope includes SERVICE) \
@@ -272,7 +289,41 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
         }
     }
 
-    // Rule 4: the port.
+    // Rule 4: a declared Service the Step or Service does not list in its
+    // dependencies.
+    if let Known::Declared(_) = known {
+        let missing = |who: String, where_: String| {
+            format!(
+                "{who} references {name}{where_} but does not list \
+                 {SERVICE_DEPENDENCY_PREFIX}{svc} in dependencies."
+            )
+        };
+        match site {
+            Site::Task { step } if !lists_service(step.dependencies.as_deref(), svc) => {
+                return Some(missing(format!("Step '{}'", step.name), String::new()));
+            }
+            Site::Environment {
+                env,
+                step: Some(step),
+            } if !lists_service(step.dependencies.as_deref(), svc) => {
+                return Some(missing(
+                    format!("Step '{}'", step.name),
+                    format!(" in stepEnvironments '{}'", env.name),
+                ));
+            }
+            Site::Service { service }
+                if service.name != svc && !lists_service(service.dependencies.as_deref(), svc) =>
+            {
+                return Some(missing(
+                    format!("Service '{}'", service.name),
+                    String::new(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    // Rule 5: the port.
     let port = port?;
     let declared_ports = known.port_names();
     if !declared_ports.contains(&port) {
@@ -288,16 +339,16 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
 
     if value == Some("bindAddress") {
         match known {
-            // Rule 5: a required Service's bindAddress is never in scope.
+            // Rule 6: a required Service's bindAddress is never in scope.
             Known::Required { .. } => {
                 return Some(format!(
                     "bindAddress of required Service '{svc}' is not available; use connectAddress \
                      to reach it."
                 ));
             }
-            // Rule 6: bindAddress outside the Service itself.
+            // Rule 7: bindAddress outside the Service itself.
             Known::Declared(_) => {
-                let within = matches!(site, Site::Service { service_name } if *service_name == svc);
+                let within = matches!(site, Site::Service { service } if service.name == svc);
                 if !within {
                     return Some(format!(
                         "Service.{svc}.{port}.bindAddress is available only within the Service \

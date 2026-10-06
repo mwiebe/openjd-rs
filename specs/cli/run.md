@@ -116,8 +116,9 @@ execute(args).await
   ├── 2. SELECTION AND PREFLIGHT
   │   ├── Resolve step selection (explicit / auto-select / all)
   │   ├── Parse explicit task params and require a parameter space
-  │   ├── Determine step execution order (Step dependencies plus the edges a
-  │   │   Service's `dependencies` imply for the Steps in its scope)
+  │   ├── Determine step execution order (the Step entries of Step dependencies,
+  │   │   plus the Step entries of a Service's `dependencies` folded into the
+  │   │   Steps in its scope; `service:` entries are the readiness gate's)
   │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack
   │       (jobEnvironments + one Step's stepEnvironments, which a Service
   │       Session's stack is a subset of), across the combined Job's documents
@@ -137,13 +138,13 @@ execute(args).await
   ├── 5. STEP EXECUTION
   │   └── For each step not yet completed:
   │       ├── Activate every Service whose scope includes the Step (unless no
-  │       │   Task of it will run), once its `dependencies` have completed
+  │       │   Task of it will run), once the Steps it lists have completed
   │       ├── Readiness gate: start every active Service, wait until READY
   │       ├── Enter step environments
   │       ├── Execute tasks (explicit, lazy iteration, or no-param single task),
   │       │   each behind the readiness gate and watched for Service instance failures
   │       ├── Exit step environments (reverse order)
-  │       └── Stop every Service whose scope has no remaining Step (reference order)
+  │       └── Stop every Service whose scope has no remaining Step (dependency order)
   │       A completedTasks: RERUN relaunch returns every Step in the Service's
   │       scope, and every Step depending on one of them, to pending: the loop
   │       resumes over the uncompleted Steps in a new Task Session.
@@ -152,7 +153,7 @@ execute(args).await
   │   ├── Exit every entered environment (LIFO), including any whose
   │   │   enter action failed (cleanup guarantee)
   │   └── Stop every Service still running (a Service before any it
-  │       references), whatever its state
+  │       depends on), whatever its state
   │
   └── 7. RESULTS
       ├── Treat any observed interruption as a failed run
@@ -185,13 +186,20 @@ The step selection has three modes:
 
 When `--run-dependencies` is set with an explicit step, `resolve_step_dependencies()`
 computes the transitive closure of dependencies and returns them in topological order
-(dependencies before dependents) via recursive DFS.
+(dependencies before dependents) via recursive DFS. With `SERVICE` (`Job::service_active()`)
+a `dependsOn: "service:<Name>"` entry names a Service, not a Step
+(`StepDependency::target(service_active).step()` is `None`), and is skipped; the
+Service it names is reached through its scope instead (see [Services](#services-rfc-0009)).
 
 Both orderings are computed over `with_implied_step_dependencies(job)`: a copy of the
-Job in which every Step in the scope of a Service with `dependencies` (RFC 0009 §9 item
-4) also depends on that Service's dependency Steps — its Tasks wait for the Service,
-which waits for those Steps. A cycle this introduces is reported with the step-graph
-message plus `(Step dependencies include those implied by Services' dependencies)`.
+Job in which every Step in the scope of a Service that lists Steps in its `dependencies`
+(RFC 0009 §9 item 4) also depends on those Steps (`job::Service::depends_on_steps()`) —
+its Tasks wait for the Service, which waits for those Steps. A Service's scope already
+includes the Steps that reach it through other Services (§9.1 rule 2), so a chain
+`Use -> service:Front -> service:Back -> Prepare` folds `Prepare` into `Use` through
+Back's scope; `service:` entries are not folded. A cycle this introduces is reported
+with the step-graph message plus `(Step dependencies include those implied by Services'
+dependencies)`.
 
 ## Task Execution Modes
 
@@ -394,16 +402,23 @@ with another protocol is rejected before any Session exists, with the model's
 `Submission` error naming `JobTemplate -> requiresServices[i]` and the cause (see
 `specs/model/validation.md`, "Submission-time checks").
 
-**Scope.** Every Service of the combined Job carries the scope job creation computed
-for it (`job::Service::scope`, Template Schemas §9.1): every Step for an external
-Service, a Service a Job Environment references, or one nothing references; the set of
-Steps that reference it (directly, or through Services that reference it) otherwise.
-The manager registers all of them once and *activates* each when the run reaches its
+**Dependencies and scope.** A Step's or a Service's `dependencies` list Steps and
+Services in one list: `dependsOn: "service:<Name>"` names a Service, any other string a
+Step (Template Schemas §3.2). A Step's Tasks are scheduled once the Steps it lists have
+completed and the Services it lists are READY; a Service starts once the Steps it lists
+have completed and the Services it lists are READY, and is stopped before any Service
+it lists. Every Service of the combined Job carries the scope job creation computed for
+it from those dependencies (`job::Service::scope`, Template Schemas §9.1): every Step
+for an external Service or a Service a Job Environment references; otherwise the Steps
+that list `service:<Name>`, together with the scope of every Service that lists it,
+transitively. (Validation rejects a Job Template Service whose scope is empty.) The
+manager registers all of them once and *activates* each when the run reaches its
 scope: a Service whose scope is every Step before the Task Session enters the Job's
 Environments; one scoped to some Steps when the first of them is about to run — after
-every Step in its `dependencies` has completed (a dependency outside the selection
-counts as completed, as a Step's own dependencies do under `--step`). Steps outside a
-Service's scope never wait on it. A Service is stopped once no Step still to run is in
+every Step it lists (`job::Service::depends_on_steps()`) has completed (a dependency
+outside the selection counts as completed, as a Step's own dependencies do under
+`--step`). A Step that lists `service:X` is in X's scope, so its Tasks wait for X
+through the readiness gate; Steps outside a Service's scope never wait on it. A Service is stopped once no Step still to run is in
 its scope, and returns to idle; a `RERUN` that returns one of its Steps to the queue
 activates it again, in a new Service Session (lifecycle constraint 9).
 
@@ -416,14 +431,15 @@ Template's own Services and the attachment (by index, labeled with its path) for
 external one — so two `Cache`s are two Services with two Sessions, two sets of ports,
 and two readiness verdicts. A name is looked up across documents in exactly one place:
 
-- A `Service.*` reference made *inside* a Service (the edges `referenced_service_names`
-  yields) names a Service of the same document — or, inside a Job Template Service, a
-  required external Service, which resolves to the attached Service its requirement was
-  bound to (`ServiceKey::of_binding`) unless the Job Template declares that name
-  itself. Each edge is keyed accordingly for the start-ordering waves and for
+- A `service:<Name>` entry in a Service's `dependencies`
+  (`job::Service::depends_on_services()`) names a Service of the same document — or,
+  in a Job Template Service, a required external Service, which resolves to the
+  attached Service its requirement was bound to (`ServiceKey::of_binding`) unless the
+  Job Template declares that name itself. Each is keyed accordingly in
+  `Managed::depends_on_services` for the start-ordering waves, the stop order, and
   restarting dependents.
 - A Service Session's in-scope endpoints (constraint 2) are the READY Services it
-  references, so keyed. A same-named Service from another document is never seeded, so
+  depends on, so keyed. A same-named Service from another document is never seeded, so
   its symbols cannot collide.
 - The Task Session sees, for a Task of Step `S` or `S`'s Step Environments, the Job
   Template's READY Services whose scope includes `S`; for the Job Template's own Job
@@ -484,16 +500,17 @@ opened, before any of its actions runs; a new Service Session gets new ports.
 Services are started by the **readiness gate** (`ServiceManager::gate`), which runs
 before the Task Session enters the Job's Environments, before each Step's
 Environments, and before every Task. The gate starts the *active* Services that are
-idle, in *waves*: a Service may start when every Service it references through
-`Service.*` is READY; the references are computed from its format strings by
-`openjd_model::job::service_symbols::referenced_service_names` (variables, every
-action's command/args/timeout/cancelation, embedded-file data, and `<ServiceScript>.let`),
-each keyed with the referencing Service's document (or the bound attached Service, for
-a requirement) — never from list position, which carries no meaning — and Services
-that do not reference one another start concurrently, each on its own tokio task. A
-Service's Session is seeded with the endpoints of exactly the READY Services it
-references (the "in scope" set of RFC 0009 "The `Service.*` scope"), so a referenced
-Service's endpoint is always known at the referencing Session's start.
+idle, in *waves*: a Service may start when every Service in its
+`depends_on_services` is READY — the `service:<Name>` entries of its `dependencies`,
+each keyed with the Service's document (or the bound attached Service, for a
+requirement), never from list position, which carries no meaning — and Services that
+do not depend on one another start concurrently, each on its own tokio task. A
+Service's Session is seeded with the endpoints of exactly the READY Services it depends
+on (the "in scope" set of RFC 0009 "The `Service.*` scope"; validation ensures a
+Service references `Service.X.*` only for an X it lists), so a depended-on Service's
+endpoint is always known at the dependent Session's start. If no active idle Service
+can start and none is starting, the gate fails the run with `cannot order the start of
+Services <names>: each depends on a Service that is not READY and is not starting`.
 
 A Service whose scope is every Step is activated at job start, but only if some
 selected Step will run at least one Task (constraint 10 — a `--tasks '[]'` selection
@@ -501,8 +518,10 @@ runs none, and the run logs `Not starting the N Service(s) whose scope is every 
 no Task of this Job will run`); a Service scoped to some Steps is activated when the
 first Step of its scope is about to run, only if that Step will run a Task (`Not
 starting Service 'X', Service 'Y' for Step '<name>': no Task of this Step will run`),
-and only after every Step in its `dependencies` has completed (§9 item 4; the Step
-ordering guarantees it, see [Step Selection Logic](#step-selection-logic)). A Service
+and only after every Step it lists has completed (§9 item 4; the Step ordering
+guarantees it, see [Step Selection Logic](#step-selection-logic) — should it not, the
+activation fails with `Service 'X' (scope: …) cannot start before Step '<name>': it
+depends on Step(s) 'D' which have not completed`). A Service
 Session enters the Job's Environments, skipping those whose effective `runScope`
 excludes `SERVICE` — the runtime does the skipping and logs it under the Service's tag.
 
@@ -599,11 +618,12 @@ fails — every Step in it, and with it the Job when the scope is every Step; in
 local runner either fails the run (no further Task runs, exit code 1).
 
 A relaunch that began a new Service Session changed the Service's endpoints. RFC 0009
-only guarantees a referenced endpoint at the referencing Session's start, so the
-runner then (at the next gate) restarts every READY Service that references the
-replaced one, transitively, in reverse start order — ending their Sessions and
-starting them again with the new in-scope endpoints, without consuming any of their
-attempts — and exits and re-enters the Task Session's Environments that may have
+only guarantees a depended-on Service's endpoint at the dependent Session's start, so
+the runner then (`restart_dependents`, at the next gate) restarts every READY Service
+that depends on the replaced one, transitively, in reverse registration order —
+logging `Service 'Front' depends on a Service that began a new Service Session;
+restarting it with the new endpoints`, ending their Sessions and starting them again
+with the new in-scope endpoints, without consuming any of their attempts — and exits and re-enters the Task Session's Environments that may have
 captured the old value (all of them for a Service whose scope is every Step, the
 Step's for one scoped to Steps), logging `Re-entering N Environment(s): a Service they
 may reference has new endpoints`. Tasks resolve `Service.*` per Task, so they see the new value without
@@ -617,12 +637,12 @@ runner never pauses a Job; relocation and host loss do not arise with one host.
 A Service is stopped when its scope completes — no Step still to run is in it
 (`ServiceManager::stop_completed_scopes`, after each Step, with the Steps that remain),
 or the run ends, fails, or is interrupted (`stop_all`, after the Task Session has
-exited the Job's Environments). A set of Services is stopped in reverse topological
-order of their reference graph: a Service before any Service it references, Services
-that do not reference one another in reverse registration order. A Service whose scope
-is every Step is therefore stopped only at the end of the run, after every Service
-scoped to Steps; a Service referenced by two Steps is stopped after the second of
-them, before any later Step runs. Stopping is `ServiceSession::end()`: cancel `onRun`
+exited the Job's Environments). A set of Services is stopped (`stop_set`) in reverse
+topological order of their dependency graph: a Service before any Service it depends
+on, Services that do not depend on one another in reverse registration order. A
+Service whose scope is every Step is therefore stopped only at the end of the run,
+after every Service scoped to Steps; a Service two Steps list is stopped after the
+second of them, before any later Step runs. Stopping is `ServiceSession::end()`: cancel `onRun`
 with its own `cancelation` method, `onExit` (if any action ran), Environments exited
 in reverse, working directory deleted (kept under `--preserve`, with its path
 logged). A background start or relaunch in flight is cut short through the Service's

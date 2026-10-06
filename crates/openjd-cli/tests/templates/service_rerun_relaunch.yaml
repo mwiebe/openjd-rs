@@ -1,5 +1,5 @@
 # Instance failure with completedTasks: RERUN. The Service is scoped to Step
-# Work (its only referencing Step). Its first onRun
+# Work (the only Step that lists it). Its first onRun
 # instance exits (code 1) shortly after it sees "task 1 done" in the trace
 # file, while Task 2 is running: the runner cancels Task 2, relaunches onRun
 # in the same Service Session (the instance had been READY, so a port
@@ -52,6 +52,8 @@ services:
                     sys.exit(1)
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Flaky"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

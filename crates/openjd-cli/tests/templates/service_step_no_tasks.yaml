@@ -1,5 +1,5 @@
-# RFC 0009 constraint 10: a Service scoped to a Step (the Step's Task
-# references it) is not started when that Step will schedule no Task
+# RFC 0009 constraint 10: a Service scoped to a Step (the Step lists it in
+# its dependencies) is not started when that Step will schedule no Task
 # (--tasks '[]'). The Service records any start in the marker file, which
 # must stay absent.
 specificationVersion: "jobtemplate-2023-09"
@@ -23,6 +23,8 @@ services:
             mode: TERMINATE
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Unused"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

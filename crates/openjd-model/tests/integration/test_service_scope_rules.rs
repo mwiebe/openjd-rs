@@ -2,33 +2,44 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Integration tests for the restructured RFC 0009 Service scope
-//! (Template Schemas §9.1), the reference-cycle rule (§1.1 item 8.4, §9.9
-//! item 9), `<Service>.dependencies` (§9 item 4, §9.9 item 10), and the
-//! reference-dependent `runScope` default (§4 item 3), at template
-//! validation and at job creation.
+//! Integration tests for the RFC 0009 declared Service dependencies: the
+//! Service scope (Template Schemas §9.1), the combined dependency graph
+//! (§3.2, §9.9), `dependsOn: "service:<name>"` on Steps and Services
+//! (§3.1 constraint 4, §3.2, §9 item 4), and the reference-dependent
+//! `runScope` default (§4 item 3), at template validation and at job
+//! creation.
 //!
-//! Scope is computed from `Service.X.*` references:
+//! Scope is computed from the `dependencies` lists, never from references:
 //!
-//! 1. a Step whose `script` or `stepEnvironments` references `X` is in
-//!    `X`'s scope;
-//! 2. a `jobEnvironments` entry referencing `X` puts every Step in it;
-//! 3. a Service `Y` referencing `X` puts `Y`'s scope inside `X`'s,
+//! 1. a Step that lists `service:X` is in `X`'s scope;
+//! 2. a Service `Y` listing `service:X` puts `Y`'s scope inside `X`'s,
 //!    transitively;
-//! 4. a Service nothing references has every Step in its scope.
+//! 3. a `jobEnvironments` entry referencing `Service.X.*` puts every Step in
+//!    `X`'s scope;
+//! 4. a Job Template Service with no Step in its scope is rejected as
+//!    unused (Environment Template Services are exempt).
+//!
+//! `Service.X.*` is visible to a Step or Service only if it lists
+//! `service:X`; required Services are visible everywhere. The Step-to-Step,
+//! Step-to-Service, Service-to-Step and Service-to-Service edges form one
+//! graph that must be acyclic. Under `SERVICE` a Step name may not contain
+//! `:`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
 
 use openjd_expr::ExprValue;
 use openjd_model::job::{self, RunScope};
-use openjd_model::template::{compute_service_scopes, JobTemplate, ServiceScope};
+use openjd_model::template::{compute_service_scopes, DependencyTarget, JobTemplate, ServiceScope};
 use openjd_model::{
     apply_environment_templates, create_job, decode_environment_template, decode_job_template,
     AttachedEnvironmentTemplate, CallerLimits, JobParameterInputValues, ModelError,
 };
 
 const EXTS: &[&str] = &["EXPR", "SERVICE", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"];
+
+const JOB_ERR: &str = "Model validation error: 1 validation error for JobTemplate\n";
+const ENV_ERR: &str = "Model validation error: 1 validation error for EnvironmentTemplate\n";
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -70,25 +81,41 @@ fn create_ok(template: &str) -> job::Job {
     create(template).expect("job creation should succeed")
 }
 
-/// One Service `name` with port `main` whose `variables` hold `vars` (a
-/// flow-mapping body, e.g. `UP: "{{ Service.B.main.port }}"`; empty for
-/// none). Indented as a `services` list item.
-fn svc(name: &str, vars: &str) -> String {
+/// A `dependencies:` line listing `deps` (empty for none), indented for a
+/// list item's body.
+fn deps(deps: &[&str]) -> String {
+    if deps.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = deps
+        .iter()
+        .map(|d| format!("{{ dependsOn: \"{d}\" }}"))
+        .collect();
+    format!("    dependencies: [{}]\n", items.join(", "))
+}
+
+/// One Service `name` with port `main`, `dependencies` `ds`, and
+/// `variables` holding `vars` (a flow-mapping body, e.g.
+/// `UP: "{{ Service.B.main.port }}"`; empty for none). Indented as a
+/// `services` list item.
+fn svc(name: &str, ds: &[&str], vars: &str) -> String {
     let vars = if vars.is_empty() {
         String::new()
     } else {
         format!("    variables: {{ {vars} }}\n")
     };
     format!(
-        "  - name: {name}\n    ports: [{{ name: main }}]\n{vars}    script:\n      actions:\n        onRun: {{ command: serve }}\n"
+        "  - name: {name}\n{}    ports: [{{ name: main }}]\n{vars}    script:\n      actions:\n        onRun: {{ command: serve }}\n",
+        deps(ds)
     )
 }
 
-/// One Step `name` whose `onRun` args are `args` (a flow sequence) with
-/// `extra` (already-indented YAML lines) after its name.
-fn step(name: &str, extra: &str, args: &str) -> String {
+/// One Step `name` with `dependencies` `ds` whose `onRun` args are `args`
+/// (a flow sequence).
+fn step(name: &str, ds: &[&str], args: &str) -> String {
     format!(
-        "  - name: {name}\n{extra}    script:\n      actions:\n        onRun:\n          command: run\n          args: {args}\n"
+        "  - name: {name}\n{}    script:\n      actions:\n        onRun:\n          command: run\n          args: {args}\n",
+        deps(ds)
     )
 }
 
@@ -97,6 +124,13 @@ fn step(name: &str, extra: &str, args: &str) -> String {
 fn job(job_envs: &str, services: &str, steps: &str) -> String {
     format!(
         "specificationVersion: \"jobtemplate-2023-09\"\nextensions: [SERVICE, EXPR, WRAP_ACTIONS]\nname: Test\n{job_envs}services:\n{services}steps:\n{steps}"
+    )
+}
+
+/// An Environment Template whose `services` list body is `services`.
+fn env_template(services: &str) -> String {
+    format!(
+        "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nservices:\n{services}"
     )
 }
 
@@ -109,22 +143,29 @@ fn scope_of(jt: &JobTemplate, name: &str) -> ServiceScope {
         .clone()
 }
 
+const CLIENT_JOB_ENV: &str =
+    "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.X.main.connectAddress }}\" }\n";
+
 // ════════════════════════════════════════════════════════════════════
-// §9.1 item 1 — a Step referencing X is in X's scope
+// §9.1 rule 1 — a Step listing service:X is in X's scope
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn step_script_reference_puts_only_that_step_in_scope() {
+fn step_listing_the_service_puts_only_that_step_in_scope() {
     let t = job(
         "",
-        &svc("X", ""),
+        &svc("X", &[], ""),
         &format!(
             "{}{}",
-            step("A", "", r#"["{{ Service.X.main.port }}"]"#),
-            step("B", "", "[b]")
+            step("A", &["service:X"], r#"["{{ Service.X.main.port }}"]"#),
+            step("B", &[], "[b]")
         ),
     );
     let jt = decode(&t);
+    let dep = &jt.steps[0].dependencies.as_ref().unwrap()[0];
+    assert_eq!(dep.target(true), DependencyTarget::Service("X"));
+    assert_eq!(dep.target(false), DependencyTarget::Step("service:X"));
+
     let scopes = compute_service_scopes(&jt).unwrap();
     let x = scopes.get("X").unwrap();
     assert_eq!(x.name, "X");
@@ -137,40 +178,68 @@ fn step_script_reference_puts_only_that_step_in_scope() {
         ["A"]
     );
     assert_eq!(x.scope.to_string(), "Step A");
-    assert_eq!(x.referencing_steps, vec!["A".to_string()]);
+    assert_eq!(x.dependent_steps, vec!["A".to_string()]);
+    assert!(x.dependent_services.is_empty());
+    assert!(x.depends_on_services.is_empty());
+    assert!(x.depends_on_steps.is_empty());
     assert!(!x.referenced_by_job_environment);
-    assert!(x.references.is_empty());
+    assert!(!x.is_unused());
     assert_eq!(scopes.scope_of("X"), ServiceScope::steps(["A"]));
+    assert_eq!(scopes.iter().count(), 1);
+    assert!(scopes.get("Nope").is_none());
 
-    // Job creation records the same scope on the job::Service.
+    // Job creation records the scope and carries the Step's dependency.
     let job = create_ok(&t);
+    assert!(job.service_active());
     let svc = &job.services.as_ref().unwrap()[0];
     assert_eq!(svc.scope, ServiceScope::steps(["A"]));
-    assert!(svc.references.is_empty());
+    assert!(svc.depends_on_services().next().is_none());
+    assert!(svc.depends_on_steps().next().is_none());
+    assert!(svc.dependencies.is_none());
+    let a_deps = job.steps[0].dependencies.as_ref().expect("dependencies");
+    assert_eq!(a_deps.len(), 1);
+    assert_eq!(a_deps[0].depends_on, "service:X");
+    assert_eq!(
+        a_deps[0].target(job.service_active()),
+        DependencyTarget::Service("X")
+    );
+    assert!(job.steps[1].dependencies.is_none());
 }
 
 #[test]
-fn step_environment_and_script_let_and_embedded_file_references_count() {
-    // §9.1 item 1: the script's actions, embedded files and `let`, and any
-    // `stepEnvironments` entry (variables, actions, embedded files, let).
+fn a_listing_step_need_not_reference_the_service() {
+    // The dependency alone places the Step in scope (no Service.* reference).
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &format!(
+            "{}{}",
+            step("A", &[], "[a]"),
+            step("B", &["service:X"], "[b]")
+        ),
+    );
+    let jt = decode(&t);
+    assert_eq!(scope_of(&jt, "X"), ServiceScope::steps(["B"]));
+}
+
+#[test]
+fn step_environment_script_let_and_embedded_file_references_need_the_dependency() {
+    // With the dependency listed, every place a Step may reference Service.*
+    // (stepEnvironments variables/let, script let, embedded files) is valid.
     let t = job(
         "",
         &format!(
             "{}{}{}{}",
-            svc("ByEnvVar", ""),
-            svc("ByEnvLet", ""),
-            svc("ByScriptLet", ""),
-            svc("ByFile", "")
+            svc("ByEnvVar", &[], ""),
+            svc("ByEnvLet", &[], ""),
+            svc("ByScriptLet", &[], ""),
+            svc("ByFile", &[], "")
         ),
         &format!(
             "{}{}{}",
-            step(
-                "Env",
-                "    stepEnvironments:\n      - name: E\n        variables: { P: \"{{ Service.ByEnvVar.main.port }}\" }\n      - name: F\n        script:\n          let: [\"u = Service.ByEnvLet.main.connectAddress\"]\n          actions:\n            onEnter: { command: echo, args: [\"{{ u }}\"] }\n",
-                "[x]"
-            ),
-            "  - name: Let\n    script:\n      let: [\"p = Service.ByScriptLet.main.port\"]\n      actions:\n        onRun: { command: run, args: [\"{{ p }}\"] }\n",
-            "  - name: File\n    script:\n      actions:\n        onRun: { command: run, args: [\"{{ Task.File.F }}\"] }\n      embeddedFiles:\n        - name: F\n          type: TEXT\n          data: \"{{ Service.ByFile.main.connectAddress }}\"\n",
+            "  - name: Env\n    dependencies: [{ dependsOn: \"service:ByEnvVar\" }, { dependsOn: \"service:ByEnvLet\" }]\n    stepEnvironments:\n      - name: E\n        variables: { P: \"{{ Service.ByEnvVar.main.port }}\" }\n      - name: F\n        script:\n          let: [\"u = Service.ByEnvLet.main.connectAddress\"]\n          actions:\n            onEnter: { command: echo, args: [\"{{ u }}\"] }\n    script:\n      actions:\n        onRun: { command: run, args: [x] }\n",
+            "  - name: Let\n    dependencies: [{ dependsOn: \"service:ByScriptLet\" }]\n    script:\n      let: [\"p = Service.ByScriptLet.main.port\"]\n      actions:\n        onRun: { command: run, args: [\"{{ p }}\"] }\n",
+            "  - name: File\n    dependencies: [{ dependsOn: \"service:ByFile\" }]\n    script:\n      actions:\n        onRun: { command: run, args: [\"{{ Task.File.F }}\"] }\n      embeddedFiles:\n        - name: F\n          type: TEXT\n          data: \"{{ Service.ByFile.main.connectAddress }}\"\n",
         ),
     );
     let jt = decode(&t);
@@ -181,15 +250,19 @@ fn step_environment_and_script_let_and_embedded_file_references_count() {
 }
 
 #[test]
-fn two_referencing_steps_are_both_in_scope() {
+fn two_listing_steps_are_both_in_scope() {
     let t = job(
         "",
-        &svc("X", ""),
+        &svc("X", &[], ""),
         &format!(
             "{}{}{}",
-            step("A", "", r#"["{{ Service.X.main.port }}"]"#),
-            step("B", "", "[b]"),
-            step("C", "", r#"["{{ Service.X.main.connectAddress }}"]"#)
+            step("A", &["service:X"], r#"["{{ Service.X.main.port }}"]"#),
+            step("B", &[], "[b]"),
+            step(
+                "C",
+                &["service:X"],
+                r#"["{{ Service.X.main.connectAddress }}"]"#
+            )
         ),
     );
     let jt = decode(&t);
@@ -197,7 +270,7 @@ fn two_referencing_steps_are_both_in_scope() {
     let x = scopes.get("X").unwrap();
     assert_eq!(x.scope, ServiceScope::steps(["A", "C"]));
     assert_eq!(x.scope.to_string(), "Steps A, C");
-    assert_eq!(x.referencing_steps, vec!["A".to_string(), "C".to_string()]);
+    assert_eq!(x.dependent_steps, vec!["A".to_string(), "C".to_string()]);
     let job = create_ok(&t);
     let json = serde_json::to_value(&job.services.as_ref().unwrap()[0]).unwrap();
     assert_eq!(
@@ -206,19 +279,127 @@ fn two_referencing_steps_are_both_in_scope() {
     );
 }
 
+#[test]
+fn own_references_need_no_dependency_and_are_not_edges() {
+    // The Service's own bindAddress / port references are always visible.
+    let t = job(
+        "",
+        &svc(
+            "X",
+            &[],
+            r#"BIND: "{{ Service.X.main.bindAddress }}", PORT: "{{ Service.X.main.port }}""#,
+        ),
+        &step("A", &["service:X"], "[a]"),
+    );
+    let jt = decode(&t);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert!(scopes.get("X").unwrap().depends_on_services.is_empty());
+    assert_eq!(scopes.get("X").unwrap().scope, ServiceScope::steps(["A"]));
+    assert!(create_ok(&t).services.unwrap()[0]
+        .depends_on_services()
+        .next()
+        .is_none());
+}
+
 // ════════════════════════════════════════════════════════════════════
-// §9.1 items 2 and 4 — every Step
+// Visibility — a reference without the dependency is rejected
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn step_script_reference_without_dependency_is_rejected() {
+    let t = job(
+        "",
+        &svc("Cache", &[], ""),
+        &format!(
+            "{}{}",
+            step("Render", &[], r#"["{{ Service.Cache.main.port }}"]"#),
+            step("Use", &["service:Cache"], "[u]")
+        ),
+    );
+    let err = job_err(&t);
+    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.contains(
+            "steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at ["
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Step 'Render' references Service.Cache.main.port but does not list service:Cache in dependencies."
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("Undefined variable"), "{err}");
+}
+
+#[test]
+fn step_environment_reference_without_dependency_is_rejected() {
+    let t = job(
+        "",
+        &svc("Cache", &[], ""),
+        &format!(
+            "{}{}",
+            "  - name: Render\n    stepEnvironments:\n      - name: Tools\n        variables: { P: \"{{ Service.Cache.main.port }}\" }\n    script:\n      actions:\n        onRun: { command: run }\n",
+            step("Use", &["service:Cache"], "[u]")
+        ),
+    );
+    let err = job_err(&t);
+    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.contains(
+            "steps[0] -> stepEnvironments[0] -> variables -> P:\n\tFailed to parse interpolation expression at ["
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies."
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn service_reference_without_dependency_is_rejected() {
+    let t = job(
+        "",
+        &format!(
+            "{}{}",
+            svc("Front", &[], r#"UP: "{{ Service.Back.main.port }}""#),
+            svc("Back", &[], "")
+        ),
+        &step("S", &["service:Front", "service:Back"], "[s]"),
+    );
+    let err = job_err(&t);
+    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.contains(
+            "services[0] -> variables -> UP:\n\tFailed to parse interpolation expression at ["
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Service 'Front' references Service.Back.main.port but does not list service:Back in dependencies."
+        ),
+        "{err}"
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// §9.1 rule 3 — a Job Environment reference puts every Step in scope
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
 fn job_environment_reference_puts_every_step_in_scope() {
     let t = job(
-        "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.X.main.connectAddress }}\" }\n",
-        &svc("X", ""),
+        CLIENT_JOB_ENV,
+        &svc("X", &[], ""),
         &format!(
             "{}{}",
-            step("A", "", r#"["{{ Service.X.main.port }}"]"#),
-            step("B", "", "[b]")
+            step("A", &["service:X"], r#"["{{ Service.X.main.port }}"]"#),
+            step("B", &[], "[b]")
         ),
     );
     let jt = decode(&t);
@@ -230,8 +411,9 @@ fn job_environment_reference_puts_every_step_in_scope() {
     assert_eq!(x.scope.step_names(), None);
     assert_eq!(x.scope.to_string(), "every Step");
     assert!(x.referenced_by_job_environment);
-    // The Step reference is still recorded.
-    assert_eq!(x.referencing_steps, vec!["A".to_string()]);
+    assert!(!x.is_unused());
+    // The Step's dependency is still recorded.
+    assert_eq!(x.dependent_steps, vec!["A".to_string()]);
 
     let job = create_ok(&t);
     let svc = &job.services.as_ref().unwrap()[0];
@@ -243,47 +425,113 @@ fn job_environment_reference_puts_every_step_in_scope() {
 }
 
 #[test]
-fn unreferenced_service_has_every_step_in_scope() {
-    let t = job("", &svc("X", ""), &step("A", "", "[a]"));
+fn job_environment_reference_alone_keeps_the_service_used() {
+    // No Step lists the Service; the Job Environment reference suffices.
+    let t = job(CLIENT_JOB_ENV, &svc("X", &[], ""), &step("A", &[], "[a]"));
     let jt = decode(&t);
     let scopes = compute_service_scopes(&jt).unwrap();
     let x = scopes.get("X").unwrap();
     assert_eq!(x.scope, ServiceScope::AllSteps);
-    assert!(x.referencing_steps.is_empty());
-    assert!(!x.referenced_by_job_environment);
-    assert_eq!(scopes.iter().count(), 1);
-    assert!(scopes.get("Nope").is_none());
+    assert!(x.dependent_steps.is_empty());
+    assert!(x.referenced_by_job_environment);
+}
+
+#[test]
+fn service_listed_by_a_job_environment_referenced_service_has_every_step() {
+    // Rule 3 then rule 2. (Not named `Y`: YAML reads a bare `Y` as a boolean.)
+    let t = job(
+        "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.Up.main.connectAddress }}\" }\n",
+        &format!(
+            "{}{}",
+            svc("X", &[], ""),
+            svc("Up", &["service:X"], r#"UP: "{{ Service.X.main.port }}""#)
+        ),
+        &step("A", &[], "[a]"),
+    );
+    let jt = decode(&t);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert!(scopes.get("Up").unwrap().referenced_by_job_environment);
+    assert!(!scopes.get("X").unwrap().referenced_by_job_environment);
+    assert_eq!(scopes.get("X").unwrap().scope, ServiceScope::AllSteps);
     assert_eq!(
-        create_ok(&t).services.unwrap()[0].scope,
-        ServiceScope::AllSteps
+        scopes.get("X").unwrap().dependent_services,
+        vec!["Up".to_string()]
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// §9.1 rule 4 — an unused Service is rejected
+// ════════════════════════════════════════════════════════════════════
+
+fn unused_message(name: &str) -> String {
+    format!(
+        "Service '{name}' is unused: no Step or Service lists 'service:{name}' in its \
+         dependencies and no Job Environment references it, so no Step is in its scope."
+    )
+}
+
+#[test]
+fn unused_service_is_rejected() {
+    let t = job(
+        "",
+        &format!("{}{}", svc("X", &[], ""), svc("Cache", &[], "")),
+        &step("A", &["service:X"], "[a]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}services[1]:\n\t{}", unused_message("Cache"))
     );
 }
 
 #[test]
-fn own_references_do_not_change_scope_or_references() {
-    // The Service's own bindAddress / port references are not edges.
+fn computed_scope_of_an_unused_service_is_empty() {
+    // compute_service_scopes reports what validation then rejects.
+    let mut jt = decode(&job(
+        "",
+        &svc("X", &[], ""),
+        &step("A", &["service:X"], "[a]"),
+    ));
+    jt.steps[0].dependencies = None;
+    let scopes = compute_service_scopes(&jt).unwrap();
+    let x = scopes.get("X").unwrap();
+    assert!(x.is_unused());
+    assert_eq!(x.scope, ServiceScope::steps(Vec::<String>::new()));
+    assert_eq!(x.scope.to_string(), "no Step");
+}
+
+#[test]
+fn service_listed_only_by_an_unused_service_is_unused_too() {
     let t = job(
         "",
-        &svc(
-            "X",
-            r#"BIND: "{{ Service.X.main.bindAddress }}", PORT: "{{ Service.X.main.port }}""#,
+        &format!(
+            "{}{}{}",
+            svc("Used", &[], ""),
+            svc("Sidecar", &["service:Back"], ""),
+            svc("Back", &[], "")
         ),
-        &step("A", "", r#"["{{ Service.X.main.port }}"]"#),
+        &step("A", &["service:Used"], "[a]"),
     );
-    let jt = decode(&t);
-    let scopes = compute_service_scopes(&jt).unwrap();
-    assert!(scopes.get("X").unwrap().references.is_empty());
-    assert_eq!(scopes.get("X").unwrap().scope, ServiceScope::steps(["A"]));
-    assert!(create_ok(&t).services.unwrap()[0].references.is_empty());
+    let err = job_err(&t);
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate\n"),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("services[1]:\n\t{}", unused_message("Sidecar"))),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("services[2]:\n\t{}", unused_message("Back"))),
+        "{err}"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §9.1 item 3 — Service-to-Service references, transitively
+// §9.1 rule 2 — Service-to-Service dependencies, transitively
 // ════════════════════════════════════════════════════════════════════
 
-/// `Front` (referenced by Step A) references `Mid`, which references
-/// `Back`; Step B references `Mid` directly. List order is the reverse of
-/// the reference order.
+/// `Front` (listed by Step A) lists `Mid`, which lists `Back`; Step B lists
+/// `Mid` directly. List order is the reverse of the dependency order.
 const CHAIN: &str = "specificationVersion: \"jobtemplate-2023-09\"
 extensions: [SERVICE, EXPR]
 name: Chain
@@ -292,24 +540,28 @@ services:
     ports: [{ name: main }]
     script: { actions: { onRun: { command: back } } }
   - name: Front
+    dependencies: [{ dependsOn: \"service:Mid\" }]
     ports: [{ name: main }]
     variables: { UP: \"{{ Service.Mid.main.connectAddress }}\" }
     script: { actions: { onRun: { command: front } } }
   - name: Mid
+    dependencies: [{ dependsOn: \"service:Back\" }]
     ports: [{ name: main }]
     variables: { UP: \"{{ Service.Back.main.port }}\" }
     script: { actions: { onRun: { command: mid } } }
 steps:
   - name: A
+    dependencies: [{ dependsOn: \"service:Front\" }]
     script: { actions: { onRun: { command: a, args: [\"{{ Service.Front.main.port }}\"] } } }
   - name: B
+    dependencies: [{ dependsOn: \"service:Mid\" }]
     script: { actions: { onRun: { command: b, args: [\"{{ Service.Mid.main.port }}\"] } } }
   - name: C
     script: { actions: { onRun: { command: c } } }
 ";
 
 #[test]
-fn referenced_service_scope_contains_the_referencing_services_transitively() {
+fn listed_service_scope_contains_the_listing_services_transitively() {
     let jt = decode(CHAIN);
     let scopes = compute_service_scopes(&jt).unwrap();
     let front = scopes.get("Front").unwrap();
@@ -318,155 +570,63 @@ fn referenced_service_scope_contains_the_referencing_services_transitively() {
     assert_eq!(front.scope, ServiceScope::steps(["A"]));
     // scope(Mid) ⊇ scope(Front) ∪ {B}.
     assert_eq!(mid.scope, ServiceScope::steps(["A", "B"]));
-    // scope(Back) ⊇ scope(Mid), though no Step references Back directly.
+    // scope(Back) ⊇ scope(Mid), though no Step lists Back directly.
     assert_eq!(back.scope, ServiceScope::steps(["A", "B"]));
-    assert!(back.referencing_steps.is_empty());
-    // `references` are the direct edges only.
-    assert_eq!(front.references.iter().collect::<Vec<_>>(), ["Mid"]);
-    assert_eq!(mid.references.iter().collect::<Vec<_>>(), ["Back"]);
-    assert!(back.references.is_empty());
+    assert!(back.dependent_steps.is_empty());
+    assert_eq!(back.dependent_services, vec!["Mid".to_string()]);
+    assert_eq!(mid.dependent_services, vec!["Front".to_string()]);
+    assert_eq!(mid.dependent_steps, vec!["B".to_string()]);
+    assert!(front.dependent_services.is_empty());
+    assert_eq!(front.dependent_steps, vec!["A".to_string()]);
+    // depends_on_services are the direct edges only.
+    assert_eq!(
+        front.depends_on_services.iter().collect::<Vec<_>>(),
+        ["Mid"]
+    );
+    assert_eq!(mid.depends_on_services.iter().collect::<Vec<_>>(), ["Back"]);
+    assert!(back.depends_on_services.is_empty());
+    assert!(front.depends_on_steps.is_empty());
 
     let job = create_ok(CHAIN);
     let services = job.services.as_ref().unwrap();
     let by_name = |n: &str| services.iter().find(|s| s.name == n).unwrap();
-    assert_eq!(by_name("Front").references, vec!["Mid".to_string()]);
-    assert_eq!(by_name("Mid").references, vec!["Back".to_string()]);
-    assert!(by_name("Back").references.is_empty());
+    assert_eq!(
+        by_name("Front").depends_on_services().collect::<Vec<_>>(),
+        vec!["Mid"]
+    );
+    assert!(by_name("Front").depends_on_service("Mid"));
+    assert!(!by_name("Front").depends_on_service("Back"));
+    assert_eq!(
+        by_name("Mid").depends_on_services().collect::<Vec<_>>(),
+        vec!["Back"]
+    );
+    assert!(by_name("Back").depends_on_services().next().is_none());
     assert_eq!(by_name("Back").scope, ServiceScope::steps(["A", "B"]));
     let json = serde_json::to_value(by_name("Front")).unwrap();
-    assert_eq!(json["references"], serde_json::json!(["Mid"]));
+    assert!(json.get("references").is_none(), "{json}");
+    assert_eq!(
+        json["dependencies"],
+        serde_json::json!([{ "dependsOn": "service:Mid" }])
+    );
     assert!(serde_json::to_value(by_name("Back"))
         .unwrap()
-        .get("references")
+        .get("dependencies")
         .is_none());
 }
 
 #[test]
-fn unreferenced_service_referencing_another_gives_it_every_step() {
-    // `Sidecar` is referenced by nothing (every Step) and references `X`,
-    // so X's scope is every Step even though only Step A references it.
-    let t = job(
-        "",
-        &format!(
-            "{}{}",
-            svc("Sidecar", r#"UP: "{{ Service.X.main.port }}""#),
-            svc("X", "")
-        ),
-        &format!(
-            "{}{}",
-            step("A", "", r#"["{{ Service.X.main.port }}"]"#),
-            step("B", "", "[b]")
-        ),
-    );
-    let jt = decode(&t);
-    assert_eq!(scope_of(&jt, "Sidecar"), ServiceScope::AllSteps);
-    assert_eq!(scope_of(&jt, "X"), ServiceScope::AllSteps);
-}
-
-#[test]
-fn service_referenced_through_a_job_environment_referenced_service() {
-    // Rule 2 then rule 3: the Job Environment references Up, Up references X.
-    // (Not named `Y`: YAML reads a bare `Y` as a boolean.)
-    let t = job(
-        "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.Up.main.connectAddress }}\" }\n",
-        &format!(
-            "{}{}",
-            svc("X", ""),
-            svc("Up", r#"UP: "{{ Service.X.main.port }}""#)
-        ),
-        &step("A", "", r#"["{{ Service.X.main.port }}"]"#),
-    );
-    let jt = decode(&t);
-    let scopes = compute_service_scopes(&jt).unwrap();
-    assert!(scopes.get("Up").unwrap().referenced_by_job_environment);
-    assert!(!scopes.get("X").unwrap().referenced_by_job_environment);
-    assert_eq!(scopes.get("X").unwrap().scope, ServiceScope::AllSteps);
-}
-
-// ════════════════════════════════════════════════════════════════════
-// §1.1 item 8.4 / §9.9 item 9 — the reference graph must be acyclic
-// ════════════════════════════════════════════════════════════════════
-
-fn cycle_message(path: &str) -> String {
-    format!(
-        "the Service.* references among the Services form a cycle: {path}; a Service may not \
-         reference a Service that (transitively) references it."
-    )
-}
-
-#[test]
-fn two_service_reference_cycle_is_rejected() {
-    let t = job(
-        "",
-        &format!(
-            "{}{}",
-            svc("A", r#"UP: "{{ Service.B.main.port }}""#),
-            svc("B", r#"UP: "{{ Service.A.main.port }}""#)
-        ),
-        &step("S", "", "[x]"),
-    );
-    assert_eq!(
-        job_err(&t),
-        format!(
-            "Model validation error: 1 validation error for JobTemplate\nservices:\n\t{}",
-            cycle_message("A -> B -> A")
-        )
-    );
-}
-
-#[test]
-fn three_service_reference_cycle_is_rejected() {
-    let t = job(
-        "",
-        &format!(
-            "{}{}{}",
-            svc("A", r#"UP: "{{ Service.B.main.port }}""#),
-            svc("B", r#"UP: "{{ Service.C.main.port }}""#),
-            svc("C", r#"UP: "{{ Service.A.main.port }}""#)
-        ),
-        &step("S", "", "[x]"),
-    );
-    assert_eq!(
-        job_err(&t),
-        format!(
-            "Model validation error: 1 validation error for JobTemplate\nservices:\n\t{}",
-            cycle_message("A -> B -> C -> A")
-        )
-    );
-}
-
-#[test]
-fn reference_cycle_in_an_environment_template_is_rejected() {
-    let t = format!(
-        "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nservices:\n{}{}",
-        svc("A", r#"UP: "{{ Service.B.main.port }}""#),
-        svc("B", r#"UP: "{{ Service.A.main.port }}""#)
-    );
-    assert_eq!(
-        env_err(&t),
-        format!(
-            "Model validation error: 1 validation error for EnvironmentTemplate\nservices:\n\t{}",
-            cycle_message("A -> B -> A")
-        )
-    );
-}
-
-#[test]
 fn a_diamond_is_not_a_cycle() {
-    // Top references Left and Right, both of which reference Bottom.
+    // Top lists Left and Right, both of which list Bottom.
     let t = job(
         "",
         &format!(
             "{}{}{}{}",
-            svc(
-                "Top",
-                r#"L: "{{ Service.Left.main.port }}", R: "{{ Service.Right.main.port }}""#
-            ),
-            svc("Left", r#"B: "{{ Service.Bottom.main.port }}""#),
-            svc("Right", r#"B: "{{ Service.Bottom.main.port }}""#),
-            svc("Bottom", "")
+            svc("Top", &["service:Left", "service:Right"], ""),
+            svc("Left", &["service:Bottom"], ""),
+            svc("Right", &["service:Bottom"], ""),
+            svc("Bottom", &[], "")
         ),
-        &step("S", "", r#"["{{ Service.Top.main.port }}"]"#),
+        &step("S", &["service:Top"], "[s]"),
     );
     let jt = decode(&t);
     let scopes = compute_service_scopes(&jt).unwrap();
@@ -474,10 +634,14 @@ fn a_diamond_is_not_a_cycle() {
         scopes
             .get("Top")
             .unwrap()
-            .references
+            .depends_on_services
             .iter()
             .collect::<Vec<_>>(),
         ["Left", "Right"]
+    );
+    assert_eq!(
+        scopes.get("Bottom").unwrap().dependent_services,
+        vec!["Left".to_string(), "Right".to_string()]
     );
     for name in ["Top", "Left", "Right", "Bottom"] {
         assert_eq!(
@@ -489,44 +653,186 @@ fn a_diamond_is_not_a_cycle() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §9 item 4 / §9.9 item 10 — <Service>.dependencies
+// Combined graph acyclicity (§3.2 constraint 3, §9.9)
 // ════════════════════════════════════════════════════════════════════
 
-/// Service `X` with `dependencies` body `deps` (indented YAML lines).
-fn svc_with_deps(deps: &str) -> String {
-    format!(
-        "  - name: X\n    dependencies:\n{deps}    ports: [{{ name: main }}]\n    script:\n      actions:\n        onRun: {{ command: serve }}\n"
-    )
-}
-
-const PREP_AND_RENDER: &str = "  - name: Prep\n    script: { actions: { onRun: { command: prep } } }\n  - name: Render\n    dependencies: [{ dependsOn: Prep }]\n    script: { actions: { onRun: { command: render, args: [\"{{ Service.X.main.port }}\"] } } }\n";
-
 #[test]
-fn dependencies_on_a_step_outside_the_scope_are_accepted_and_carried_into_the_job() {
+fn step_service_step_cycle_is_rejected() {
     let t = job(
         "",
-        &svc_with_deps("      - dependsOn: Prep\n"),
-        PREP_AND_RENDER,
+        &svc("Indexer", &["Use"], ""),
+        &step("Use", &["service:Indexer"], "[u]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}JobTemplate: dependencies contain a cycle: Use -> service:Indexer -> Use."
+        )
+    );
+}
+
+#[test]
+fn service_service_cycle_is_rejected() {
+    let t = job(
+        "",
+        &format!(
+            "{}{}",
+            svc("A", &["service:B"], ""),
+            svc("B", &["service:A"], "")
+        ),
+        &step("S", &["service:A"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}JobTemplate: dependencies contain a cycle: service:A -> service:B -> service:A.")
+    );
+}
+
+#[test]
+fn three_service_cycle_is_rejected() {
+    let t = job(
+        "",
+        &format!(
+            "{}{}{}",
+            svc("A", &["service:B"], ""),
+            svc("B", &["service:C"], ""),
+            svc("C", &["service:A"], "")
+        ),
+        &step("S", &["service:A"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}JobTemplate: dependencies contain a cycle: service:A -> service:B -> service:C -> service:A."
+        )
+    );
+}
+
+#[test]
+fn step_cycle_under_service_uses_the_combined_message() {
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &format!(
+            "{}{}",
+            step("A", &["B", "service:X"], "[a]"),
+            step("B", &["A"], "[b]")
+        ),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}JobTemplate: dependencies contain a cycle: A -> B -> A.")
+    );
+}
+
+#[test]
+fn service_depending_on_a_step_in_its_scope_is_a_cycle() {
+    // Render lists service:X and X lists Render.
+    let t = job(
+        "",
+        &svc("X", &["Render"], ""),
+        &format!(
+            "{}{}",
+            step("Prep", &[], "[p]"),
+            step("Render", &["Prep", "service:X"], "[r]")
+        ),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}JobTemplate: dependencies contain a cycle: Render -> service:X -> Render."
+        )
+    );
+}
+
+#[test]
+fn service_depending_on_a_step_in_its_transitive_scope_is_a_cycle() {
+    // Render lists Up; Up lists X; X lists Render.
+    let t = job(
+        "",
+        &format!(
+            "{}{}",
+            svc("X", &["Render"], ""),
+            svc("Up", &["service:X"], "")
+        ),
+        &step("Render", &["service:Up"], "[r]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}JobTemplate: dependencies contain a cycle: Render -> service:Up -> service:X -> Render."
+        )
+    );
+}
+
+#[test]
+fn cycle_in_an_environment_template_is_rejected() {
+    let t = env_template(&format!(
+        "{}{}",
+        svc("A", &["service:B"], ""),
+        svc("B", &["service:A"], "")
+    ));
+    assert_eq!(
+        env_err(&t),
+        format!(
+            "{ENV_ERR}services:\n\tdependencies contain a cycle: service:A -> service:B -> service:A."
+        )
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// §9 item 4 — <Service>.dependencies lists Steps and Services
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn service_dependencies_on_steps_and_services_are_carried_into_the_job() {
+    let t = job(
+        "",
+        &format!(
+            "{}{}",
+            svc(
+                "X",
+                &["Prep", "service:Db"],
+                r#"DB: "{{ Service.Db.main.port }}""#
+            ),
+            svc("Db", &[], "")
+        ),
+        &format!(
+            "{}{}",
+            step("Prep", &[], "[p]"),
+            step(
+                "Render",
+                &["Prep", "service:X"],
+                r#"["{{ Service.X.main.port }}"]"#
+            )
+        ),
     );
     let jt = decode(&t);
     let deps = jt.services.as_ref().unwrap()[0]
         .dependencies
         .as_ref()
         .unwrap();
-    assert_eq!(deps.len(), 1);
+    assert_eq!(deps.len(), 2);
     assert_eq!(deps[0].depends_on, "Prep");
-    assert_eq!(scope_of(&jt, "X"), ServiceScope::steps(["Render"]));
+    assert_eq!(deps[1].depends_on, "service:Db");
+    let scopes = compute_service_scopes(&jt).unwrap();
+    let x = scopes.get("X").unwrap();
+    assert_eq!(x.scope, ServiceScope::steps(["Render"]));
+    assert_eq!(x.depends_on_steps, vec!["Prep".to_string()]);
+    assert_eq!(x.depends_on_services.iter().collect::<Vec<_>>(), ["Db"]);
+    let db = scopes.get("Db").unwrap();
+    assert_eq!(db.scope, ServiceScope::steps(["Render"]));
+    assert_eq!(db.dependent_services, vec!["X".to_string()]);
 
     let job = create_ok(&t);
     let svc = &job.services.as_ref().unwrap()[0];
     assert_eq!(svc.scope, ServiceScope::steps(["Render"]));
-    let deps = svc.dependencies.as_ref().expect("dependencies");
-    assert_eq!(deps.len(), 1);
-    assert_eq!(deps[0].depends_on, "Prep");
+    assert_eq!(svc.depends_on_steps().collect::<Vec<_>>(), vec!["Prep"]);
+    assert_eq!(svc.depends_on_services().collect::<Vec<_>>(), vec!["Db"]);
     let json = serde_json::to_value(svc).unwrap();
     assert_eq!(
         json["dependencies"],
-        serde_json::json!([{ "dependsOn": "Prep" }])
+        serde_json::json!([{ "dependsOn": "Prep" }, { "dependsOn": "service:Db" }])
     );
     let back: job::Service = serde_json::from_value(json).unwrap();
     assert_eq!(&back, svc);
@@ -534,130 +840,240 @@ fn dependencies_on_a_step_outside_the_scope_are_accepted_and_carried_into_the_jo
 
 #[test]
 fn dependencies_must_not_be_empty() {
-    let t = job("", &svc_with_deps("      []\n"), PREP_AND_RENDER);
-    // An empty flow list on its own line.
-    let t = t.replace("    dependencies:\n      []\n", "    dependencies: []\n");
-    assert_eq!(
-        job_err(&t),
-        "Model validation error: 1 validation error for JobTemplate\n\
-         services[0] -> dependencies:\n\tmust not be empty."
-    );
-}
-
-#[test]
-fn dependencies_must_name_a_step_of_the_template() {
     let t = job(
         "",
-        &svc_with_deps("      - dependsOn: Prep\n      - dependsOn: Nope\n"),
-        PREP_AND_RENDER,
+        &svc("X", &[], "").replace("    ports:", "    dependencies: []\n    ports:"),
+        &step("S", &["service:X"], "[s]"),
     );
     assert_eq!(
         job_err(&t),
-        "Model validation error: 1 validation error for JobTemplate\n\
-         services[0] -> dependencies[1] -> dependsOn:\n\treferences unknown Step 'Nope'."
+        format!("{JOB_ERR}services[0] -> dependencies:\n\tmust not be empty.")
     );
 }
 
-fn own_scope_message(step: &str, why: &str) -> String {
-    format!(
-        "Step '{step}' is in the scope of Service 'X' ({why}); a Service cannot depend on a Step \
-         in its own scope, which could not run until the Service was READY."
-    )
-}
-
 #[test]
-fn dependency_on_a_step_in_scope_because_nothing_references_the_service() {
+fn service_dependency_on_an_unknown_step_is_rejected() {
     let t = job(
         "",
-        &svc_with_deps("      - dependsOn: Prep\n"),
-        "  - name: Prep\n    script: { actions: { onRun: { command: prep } } }\n",
-    );
-    assert_eq!(
-        job_err(&t),
-        format!(
-            "Model validation error: 1 validation error for JobTemplate\n\
-             services[0] -> dependencies[0] -> dependsOn:\n\t{}",
-            own_scope_message(
-                "Prep",
-                "nothing references the Service, so every Step is in its scope"
-            )
-        )
-    );
-}
-
-#[test]
-fn dependency_on_a_step_in_scope_because_a_job_environment_references_the_service() {
-    let t = job(
-        "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.X.main.connectAddress }}\" }\n",
-        &svc_with_deps("      - dependsOn: Prep\n"),
-        PREP_AND_RENDER,
-    );
-    assert_eq!(
-        job_err(&t),
-        format!(
-            "Model validation error: 1 validation error for JobTemplate\n\
-             services[0] -> dependencies[0] -> dependsOn:\n\t{}",
-            own_scope_message(
-                "Prep",
-                "a Job Environment references the Service, so every Step is in its scope"
-            )
-        )
-    );
-}
-
-#[test]
-fn dependency_on_a_step_that_references_the_service() {
-    let t = job(
-        "",
-        &svc_with_deps("      - dependsOn: Render\n"),
-        PREP_AND_RENDER,
-    );
-    assert_eq!(
-        job_err(&t),
-        format!(
-            "Model validation error: 1 validation error for JobTemplate\n\
-             services[0] -> dependencies[0] -> dependsOn:\n\t{}",
-            own_scope_message("Render", "Step 'Render' references the Service")
-        )
-    );
-}
-
-#[test]
-fn dependency_on_a_step_that_references_a_service_that_references_it() {
-    // Render references Up; Up references X; X depends on Render.
-    let t = job(
-        "",
+        &svc("X", &["Prep", "Nope"], ""),
         &format!(
             "{}{}",
-            svc_with_deps("      - dependsOn: Render\n"),
-            svc("Up", r#"UP: "{{ Service.X.main.port }}""#)
+            step("Prep", &[], "[p]"),
+            step("S", &["service:X"], "[s]")
         ),
-        &PREP_AND_RENDER.replace("Service.X.main.port", "Service.Up.main.port"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}services[0] -> dependencies[1]:\n\tdependency 'Nope' not found.")
+    );
+}
+
+fn unknown_service_message() -> &'static str {
+    "dependency 'service:Nope' not found: no Service of that name in services or requiresServices."
+}
+
+#[test]
+fn step_dependency_on_an_unknown_service_is_rejected() {
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &step("S", &["service:X", "service:Nope"], "[s]"),
     );
     assert_eq!(
         job_err(&t),
         format!(
-            "Model validation error: 1 validation error for JobTemplate\n\
-             services[0] -> dependencies[0] -> dependsOn:\n\t{}",
-            own_scope_message(
-                "Render",
-                "Step 'Render' references a Service that references 'X'"
-            )
+            "{JOB_ERR}steps[0] -> dependencies[1]:\n\t{}",
+            unknown_service_message()
         )
     );
 }
 
 #[test]
-fn dependencies_not_permitted_in_an_environment_template() {
-    let t = format!(
-        "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nservices:\n{}",
-        svc_with_deps("      - dependsOn: Prep\n")
+fn service_dependency_on_an_unknown_service_is_rejected() {
+    let t = job(
+        "",
+        &svc("X", &["service:Nope"], ""),
+        &step("S", &["service:X"], "[s]"),
     );
     assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}services[0] -> dependencies[0]:\n\t{}",
+            unknown_service_message()
+        )
+    );
+}
+
+#[test]
+fn duplicate_service_dependency_is_rejected() {
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &step("S", &["service:X", "service:X"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}steps[0] -> dependencies[1]:\n\tduplicate dependency 'service:X'.")
+    );
+}
+
+#[test]
+fn service_self_dependency_is_rejected() {
+    let t = job(
+        "",
+        &svc("X", &["service:X"], ""),
+        &step("S", &["service:X"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}services[0] -> dependencies[0]:\n\tcannot depend on itself.")
+    );
+}
+
+#[test]
+fn job_environment_referenced_service_listing_a_step_is_rejected() {
+    let t = job(
+        CLIENT_JOB_ENV,
+        &svc("X", &["Prep"], ""),
+        &format!("{}{}", step("Prep", &[], "[p]"), step("S", &[], "[s]")),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}services[0] -> dependencies[0]:\n\tStep 'Prep' is in the scope of Service \
+             'X' (a Job Environment references the Service, so every Step is in its scope); a \
+             Service cannot depend on a Step in its own scope, which could not run until the \
+             Service was READY."
+        )
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Required Services (requiresServices)
+// ════════════════════════════════════════════════════════════════════
+
+const REQUIRED: &str = "specificationVersion: \"jobtemplate-2023-09\"
+extensions: [SERVICE, EXPR]
+name: Required
+requiresServices:
+  - name: R
+    ports: [{ name: main }]
+services:
+  - name: X
+    dependencies: [{ dependsOn: \"service:R\" }]
+    ports: [{ name: main }]
+    variables: { R: \"{{ Service.R.main.port }}\" }
+    script: { actions: { onRun: { command: serve } } }
+steps:
+  - name: A
+    dependencies: [{ dependsOn: \"service:R\" }, { dependsOn: \"service:X\" }]
+    script: { actions: { onRun: { command: a, args: [\"{{ Service.R.main.port }}\"] } } }
+  - name: B
+    script: { actions: { onRun: { command: b, args: [\"{{ Service.R.main.connectAddress }}\"] } } }
+";
+
+#[test]
+fn depending_on_a_required_service_is_valid_and_a_no_op_for_scope() {
+    let jt = decode(REQUIRED);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    // R is external: no computed entry, and every Step is in its scope.
+    assert!(scopes.get("R").is_none());
+    assert_eq!(scopes.scope_of("R"), ServiceScope::AllSteps);
+    let x = scopes.get("X").unwrap();
+    assert_eq!(x.scope, ServiceScope::steps(["A"]));
+    // A required Service is not an edge among the inline Services.
+    assert!(x.depends_on_services.is_empty());
+
+    let job = create_ok(REQUIRED);
+    let svc = &job.services.as_ref().unwrap()[0];
+    assert_eq!(svc.scope, ServiceScope::steps(["A"]));
+    // The job::Service still lists the required Service it waits for.
+    assert_eq!(svc.depends_on_services().collect::<Vec<_>>(), vec!["R"]);
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Environment Templates — `service:` only
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn environment_template_service_may_list_a_service_of_the_same_document() {
+    let t = env_template(&format!(
+        "{}{}",
+        svc("A", &[], ""),
+        svc("B", &["service:A"], r#"UP: "{{ Service.A.main.port }}""#)
+    ));
+    let et = decode_environment_template(yaml_val(&t), Some(EXTS), &CallerLimits::default())
+        .expect("environment template should validate");
+    let b = &et.services.as_ref().unwrap()[1];
+    assert_eq!(
+        b.dependencies.as_ref().unwrap()[0].target(true),
+        DependencyTarget::Service("A")
+    );
+}
+
+#[test]
+fn environment_template_service_listing_a_step_is_rejected() {
+    let t = env_template(&svc("A", &["Prepare"], ""));
+    assert_eq!(
         env_err(&t),
-        "Model validation error: 1 validation error for EnvironmentTemplate\n\
-         services[0] -> dependencies:\n\tdependencies is not permitted on a Service in an \
-         Environment Template: the document has no Steps."
+        format!(
+            "{ENV_ERR}services[0] -> dependencies[0]:\n\tdependency 'Prepare' names a Step, but \
+             an Environment Template has no Steps; a Service here may depend only on a Service of \
+             the same document, as 'service:<name>'."
+        )
+    );
+}
+
+#[test]
+fn environment_template_unknown_service_dependency_is_rejected() {
+    let t = env_template(&svc("A", &["service:Nope"], ""));
+    assert_eq!(
+        env_err(&t),
+        format!(
+            "{ENV_ERR}services[0] -> dependencies[0]:\n\tdependency 'service:Nope' not found: no \
+             Service of that name in this document's services."
+        )
+    );
+}
+
+// ════════════════════════════════════════════════════════════════════
+// §3.1 constraint 4 — `:` in a Step name
+// ════════════════════════════════════════════════════════════════════
+
+#[test]
+fn step_name_with_colon_is_rejected_under_service() {
+    let t = job("", &svc("X", &[], ""), &step("a:b", &["service:X"], "[a]"));
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}steps[0] -> name:\n\tmust not contain ':' when the SERVICE extension is \
+             used, so that a dependsOn value beginning 'service:' can only name a Service \
+             (Template Schemas §3.1 constraint 4)."
+        )
+    );
+}
+
+#[test]
+fn step_name_with_colon_is_accepted_without_service() {
+    // Without SERVICE, `service:Prep` is an ordinary Step name.
+    let t = "specificationVersion: \"jobtemplate-2023-09\"
+name: Colons
+steps:
+  - name: \"service:Prep\"
+    script: { actions: { onRun: { command: prep } } }
+  - name: Use
+    dependencies: [{ dependsOn: \"service:Prep\" }]
+    script: { actions: { onRun: { command: use } } }
+";
+    let jt = decode(t);
+    let dep = &jt.steps[1].dependencies.as_ref().unwrap()[0];
+    assert_eq!(dep.target(false), DependencyTarget::Step("service:Prep"));
+    let job = create_ok(t);
+    assert!(!job.service_active());
+    let dep = &job.steps[1].dependencies.as_ref().unwrap()[0];
+    assert_eq!(
+        dep.target(job.service_active()),
+        DependencyTarget::Step("service:Prep")
     );
 }
 
@@ -679,6 +1095,7 @@ services:
     script: { actions: { onRun: { command: serve } } }
 steps:
   - name: S
+    dependencies: [{ dependsOn: \"service:X\" }]
     stepEnvironments:
       - name: StepClient
         script:
@@ -734,10 +1151,7 @@ fn explicit_service_run_scope_with_a_service_reference_is_still_rejected() {
         "  - name: Client\n    runScope: [SERVICE]\n    variables:",
     );
     let err = job_err(&t);
-    assert!(
-        err.starts_with("Model validation error: 1 validation error for JobTemplate\n"),
-        "{err}"
-    );
+    assert!(err.starts_with(JOB_ERR), "{err}");
     assert!(
         err.contains(
             "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at ["
@@ -754,7 +1168,7 @@ fn explicit_service_run_scope_with_a_service_reference_is_still_rejected() {
 }
 
 /// A Job Environment wrapper that references `Service.X.*` in `hook_args`
-/// of `onWrapTaskRun`, defining `hooks`.
+/// of `onWrapTaskRun`, defining `hooks`. The reference keeps `X` used.
 fn referencing_wrapper(hooks: &[&str]) -> String {
     let actions: String = hooks
         .iter()
@@ -782,6 +1196,7 @@ jobEnvironments:
     script: {{ actions: {{ onRun: {{ command: serve }} }} }}
 steps:
   - name: S
+    dependencies: [{{ dependsOn: \"service:X\" }}]
     script: {{ actions: {{ onRun: {{ command: run }} }} }}
 "
     )
@@ -859,10 +1274,7 @@ fn task_wrap_hook_required_on_a_referencing_environment_with_default_run_scope()
                 "",
             ),
     );
-    assert!(
-        err.starts_with("Model validation error: 1 validation error for JobTemplate\n"),
-        "{err}"
-    );
+    assert!(err.starts_with(JOB_ERR), "{err}");
     let head = "jobEnvironments[0] -> script -> actions:\n\ta wrapping environment whose \
                 runScope includes TASK (";
     let tail = ") must define onWrapTaskRun; missing: onWrapTaskRun (RFC 0009).";

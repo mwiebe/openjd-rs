@@ -21,9 +21,26 @@ services:
             - "{{ join_host_port(Service.Metrics.ingest.bindAddress, Service.Metrics.ingest.port) }}"
             - "--http-listen"
             - "{{ join_host_port(Service.Metrics.api.bindAddress, Service.Metrics.api.port) }}"
+  - name: Proxy
+    description: "Fronts the sink's HTTP API with authentication."
+    dependencies:
+      - dependsOn: service:Metrics
+    ports:
+      - name: http
+    script:
+      actions:
+        onRun:
+          command: auth-proxy
+          args:
+            - "--listen"
+            - "{{ join_host_port(Service.Proxy.http.bindAddress, Service.Proxy.http.port) }}"
+            - "--upstream"
+            - "http://{{ join_host_port(Service.Metrics.api.connectAddress, Service.Metrics.api.port) }}"
 
 steps:
   - name: RenderFrames
+    dependencies:
+      - dependsOn: service:Metrics
     parameterSpace:
       taskParameterDefinitions:
         - name: Frame
@@ -43,10 +60,11 @@ steps:
   - name: Report
     dependencies:
       - dependsOn: RenderFrames
+      - dependsOn: service:Proxy
     script:
       actions:
         onRun:
           command: curl
           args:
             - "-sf"
-            - "http://{{ join_host_port(Service.Metrics.api.connectAddress, Service.Metrics.api.port) }}/summary"
+            - "http://{{ join_host_port(Service.Proxy.http.connectAddress, Service.Proxy.http.port) }}/summary"

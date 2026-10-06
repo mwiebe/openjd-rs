@@ -74,21 +74,24 @@ Currently implements `2023-09` with extensions:
 - `SERVICE` (RFC 0009) — implemented. The `<Service>` schema (one `services`
   list per document, `requiresServices` on a Job Template, the §9 sub-objects
   incl. `dependencies` and `<ServiceRequirement>`), the extension gating and
-  EXPR prerequisite, the §9.9 structural checks, Service scope computed from
-  `Service.*` references (`template::service_scope`: the four §9.1 rules,
-  reference-cycle detection, `dependencies` against the computed scope),
+  EXPR prerequisite, the §9.9 structural checks, `dependsOn: service:<name>`
+  entries in Step and Service `dependencies` (`DependencyTarget`, no `:` in a
+  Step name under `SERVICE`), Service scope computed from those `dependencies`
+  (`template::service_scope`: the four §9.1 rules, cycle detection over the
+  combined Step/Service dependency graph, unused-Service rejection),
   `<Environment>.runScope` with its reference-driven default and the
   `Environment::runs_in` accessor, the four `onWrapService*` hooks and the
   hooks-follow-`runScope` rule, the Environment Template root changes
   (`$schema`, optional `environment`, "at least one of"); the `Service.*` /
-  `Service.File.*` format-string scope with the §9 scope rules (inline Services
-  in scope wherever a reference may appear, required Services' declared ports,
+  `Service.File.*` format-string scope with the §9 scope rules (an inline
+  Service visible to a Step or Service that lists it in `dependencies` and to
+  Job Environments, required Services' declared ports,
   the `runScope` exclusion, no `Service.*` in `hostRequirements` or
   `<Service>.let`, §9.9 items 1–2) and their diagnostics
   (`service_diagnostics.rs`), the `WrappedService.*` wrap-hook variables,
   pass-8 validation of every format string and `let` inside a Service, job
   creation of Services (`job::Service` with its computed `scope` and
-  `references`, `Job::services`, `Job::requires_services`, resolved
+  `dependencies`, `Job::services`, `Job::requires_services`, resolved
   `<Service>.let` and numeric fields, job-side `runScope` / Service hooks), the
   runtime-facing `job::service_symbols` builders, and the submission stage
   (`apply_environment_templates`: §1.2.2 external Services merged before the

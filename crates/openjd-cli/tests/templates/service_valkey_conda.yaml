@@ -84,6 +84,8 @@ services:
 
 steps:
   - name: ProcessFrames
+    dependencies:
+      - dependsOn: "service:Cache"
     parameterSpace:
       taskParameterDefinitions:
         - name: Frame

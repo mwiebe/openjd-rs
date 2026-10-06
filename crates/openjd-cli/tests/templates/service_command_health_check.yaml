@@ -42,6 +42,8 @@ services:
                 c.close()
 steps:
   - name: Use
+    dependencies:
+      - dependsOn: "service:Slow"
     script:
       actions:
         onRun:

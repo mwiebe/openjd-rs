@@ -1,6 +1,6 @@
 # A relaunch that begins a new Service Session (new endpoints) propagates:
 # Back's second instance exits before READY, so its third starts in a new
-# Service Session with a new port; Front, which references Back's endpoint,
+# Service Session with a new port; Front, which depends on Back and reads its endpoint,
 # is then restarted with the new value (without consuming one of its own
 # attempts), and the TASK-scoped Client Environment is re-entered so Tasks
 # see the new BACK_PORT. completedTasks: KEEP lets the Task that was running
@@ -53,6 +53,8 @@ services:
                         f.write("back crash\n")
                     sys.exit(1)
   - name: Front
+    dependencies:
+      - dependsOn: "service:Back"
     ports:
       - name: main
     healthCheck:
@@ -78,6 +80,8 @@ jobEnvironments:
           args: ["-c", "import os; open(r'{{ Param.TraceFile }}', 'a').write(f\"env enter backport {os.environ['BACK_PORT']}\\n\")"]
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Front"
     parameterSpace:
       taskParameterDefinitions:
         - name: N
