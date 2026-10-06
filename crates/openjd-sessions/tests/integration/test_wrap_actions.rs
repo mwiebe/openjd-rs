@@ -44,6 +44,7 @@ fn plain_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> E
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -83,6 +84,7 @@ fn wrap_env(
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -1391,6 +1393,7 @@ fn wrap_env_with_files(
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2115,6 +2118,7 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2209,6 +2213,7 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2520,6 +2525,7 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
     let inner = Environment {
         name: "Inner".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,

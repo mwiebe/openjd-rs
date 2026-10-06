@@ -19,11 +19,13 @@
 //! lists `service:X` in `dependencies`, and a Service sees `Service.X.*` only
 //! when it lists `service:X` (or is `X`); a reference without the dependency
 //! is reported as "... does not list service:X in dependencies." A Job
-//! Environment entered only in Task Sessions sees every inline Service. The
-//! order of `services` carries no meaning, so a Service may list one declared
-//! after it. Every inline Service of a Job Template must be used, so the
-//! shared fixture's Step lists all three Services by default. The scope
-//! computation itself is covered in `test_service_scope_rules.rs`.
+//! Environment, and an Environment Template's `environment`, see
+//! `Service.X.*` only when they list `service:X` in their own `dependencies`
+//! (§4 item 3) — the one visibility rule, with no exceptions. The order of
+//! `services` carries no meaning, so a Service may list one declared after
+//! it. Every inline Service of a Job Template must be used, so the shared
+//! fixture's Step lists all three Services by default. The scope computation
+//! itself is covered in `test_service_scope_rules.rs`.
 
 use openjd_model::job::RunScope;
 use openjd_model::template::{compute_service_scopes, ServiceScope};
@@ -498,12 +500,13 @@ fn step_action_timeout_cannot_reference_services() {
 // §4 item 3.2 / §9.7 item 2: Environments and runScope
 // ════════════════════════════════════════════════════════════════════
 
-/// §4 item 3: an Environment without `runScope` that references `Service.*`
+/// §4 item 4: an Environment without `runScope` that lists a Service (a
+/// Job Environment) or references one its Step lists (a Step Environment)
 /// defaults to `[TASK]`, so the references are in scope.
 #[test]
 fn environments_with_default_run_scope_see_services() {
     let jt = expect_job_ok(&template(&Tmpl {
-        job_env: "variables: { HOST: \"{{ Service.A.p.connectAddress }}\" }",
+        job_env: "dependencies: [{ dependsOn: \"service:A\" }]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\" }",
         step_env: "variables: { PORT: \"{{ Service.C.r.port }}\" }",
         ..Default::default()
     }));
@@ -518,15 +521,20 @@ fn environments_with_default_run_scope_see_services() {
 
 #[test]
 fn environments_with_explicit_service_run_scope_cannot_reference_services() {
+    // The reference is out of scope (§4 item 4 constraint 2), and the
+    // dependency is rejected beside it (§4 item 3 constraint 5).
     expect_job_err(
         &template(&Tmpl {
-            job_env: "runScope: [SERVICE, TASK]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\" }",
+            job_env: "dependencies: [{ dependsOn: \"service:A\" }]\nrunScope: [SERVICE, TASK]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\" }",
             ..Default::default()
         }),
         &[
-            "1 validation error for JobTemplate\n",
+            "2 validation errors for JobTemplate\n",
             "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at [",
             &env_in_service_sessions("JobEnv"),
+            "jobEnvironments[0] -> runScope:\n\tEnvironment 'JobEnv' is entered in Service Sessions \
+             (its runScope includes SERVICE) and may not depend on a Service; declare runScope: \
+             [TASK] if it configures Tasks.",
         ],
     );
 }
@@ -534,33 +542,98 @@ fn environments_with_explicit_service_run_scope_cannot_reference_services() {
 #[test]
 fn task_scoped_environments_see_services() {
     expect_job_ok(&template(&Tmpl {
-        job_env: "runScope: [TASK]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\", PORT: \"{{ Service.B.q.port }}\" }",
+        job_env: "dependencies: [{ dependsOn: \"service:A\" }, { dependsOn: \"service:B\" }]\nrunScope: [TASK]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\", PORT: \"{{ Service.B.q.port }}\" }",
         step_env: "runScope: [TASK]\nscript:\n  let:\n    - url = join_host_port(Service.C.r.connectAddress, Service.C.r.port)\n  actions:\n    onEnter:\n      command: echo\n      args: [\"{{ url }}\", \"{{ Service.A.p.port }}\", \"{{ Env.File.F }}\"]\n  embeddedFiles:\n    - name: F\n      type: TEXT\n      data: \"{{ Service.B.q.connectAddress }}\"",
         ..Default::default()
     }));
 }
 
-/// A Job Environment may reference any Service; doing so puts every Step in
-/// that Service's scope (§9.1 item 2).
+/// A Job Environment's actions, embedded files and script `let` see the
+/// Services it lists (§4 item 3).
 #[test]
-fn job_environment_reference_gives_every_step_scope() {
+fn job_environment_script_sees_the_services_it_lists() {
+    expect_job_ok(&template(&Tmpl {
+        job_env: "dependencies: [{ dependsOn: \"service:A\" }, { dependsOn: \"service:B\" }, { dependsOn: \"service:C\" }]\nscript:\n  let:\n    - url = join_host_port(Service.C.r.connectAddress, Service.C.r.port)\n  actions:\n    onEnter:\n      command: echo\n      args: [\"{{ url }}\", \"{{ Service.A.p.port }}\", \"{{ Env.File.F }}\"]\n  embeddedFiles:\n    - name: F\n      type: TEXT\n      data: \"{{ Service.B.q.connectAddress }}\"",
+        ..Default::default()
+    }));
+}
+
+/// A Job Environment may reference a Service only if it lists it; listing
+/// puts every Step in that Service's scope (§9.1 rule 3).
+#[test]
+fn job_environment_dependency_gives_every_step_scope() {
     let jt = expect_job_ok(&template(&Tmpl {
-        job_env: "runScope: [TASK]\nvariables: { PORT: \"{{ Service.C.r.port }}\" }",
+        job_env: "dependencies: [{ dependsOn: \"service:C\" }]\nrunScope: [TASK]\nvariables: { PORT: \"{{ Service.C.r.port }}\" }",
         on_run_args: r#"["{{ Service.C.r.port }}"]"#,
         ..Default::default()
     }));
     let scopes = compute_service_scopes(&jt).unwrap();
     let c = scopes.get("C").unwrap();
     assert_eq!(c.scope, ServiceScope::AllSteps);
-    assert!(c.referenced_by_job_environment);
+    assert!(c.listed_by_job_environment);
     assert_eq!(c.dependent_steps, vec!["S".to_string()]);
+}
+
+/// The one visibility rule has no exceptions: a Job Environment that
+/// references a Service it does not list is rejected with the message that
+/// names the fix (§9 scope rule 4, §9.9 item 1).
+#[test]
+fn job_environment_reference_without_dependency_is_rejected() {
+    let err = decode_job_template(
+        yaml_val(&template(&Tmpl {
+            job_env: "runScope: [TASK]\nvariables: { PORT: \"{{ Service.C.r.port }}\" }",
+            ..Default::default()
+        })),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobEnvironments[0] -> variables -> PORT:\n\tFailed to parse interpolation expression at [0, 22]. \
+         Environment 'JobEnv' references Service.C.r.port but does not list service:C in dependencies.\n  \
+         Service.C.r.port\n  ~~~~~~~~~~~~^~~~"
+    );
+}
+
+/// Listing one Service does not open another, and a required Service
+/// follows the same rule as an inline one.
+#[test]
+fn job_environment_sees_only_the_services_and_requirements_it_lists() {
+    let t = template(&Tmpl {
+        job_env: "dependencies: [{ dependsOn: \"service:A\" }]\nvariables: { A: \"{{ Service.A.p.port }}\", B: \"{{ Service.B.q.port }}\", R: \"{{ Service.R.m.port }}\" }",
+        ..Default::default()
+    })
+    .replace(
+        "jobEnvironments:",
+        "requiresServices: [{ name: R, ports: [{ name: m }] }]\njobEnvironments:",
+    );
+    expect_job_err(
+        &t,
+        &[
+            "2 validation errors for JobTemplate\n",
+            "jobEnvironments[0] -> variables -> B:\n\tFailed to parse interpolation expression at [",
+            "Environment 'JobEnv' references Service.B.q.port but does not list service:B in \
+             dependencies.",
+            "jobEnvironments[0] -> variables -> R:\n\tFailed to parse interpolation expression at [",
+            "Environment 'JobEnv' references Service.R.m.port but does not list service:R in \
+             dependencies.",
+        ],
+    );
+    // Listing the requirement opens its port and connectAddress.
+    expect_job_ok(&t.replace(
+        "dependencies: [{ dependsOn: \"service:A\" }]",
+        "dependencies: [{ dependsOn: \"service:A\" }, { dependsOn: \"service:B\" }, { dependsOn: \"service:R\" }]",
+    ));
 }
 
 #[test]
 fn task_scoped_environment_never_sees_bind_address() {
     expect_job_err(
         &template(&Tmpl {
-            job_env: "runScope: [TASK]\nvariables: { BIND: \"{{ Service.A.p.bindAddress }}\" }",
+            job_env: "dependencies: [{ dependsOn: \"service:A\" }]\nrunScope: [TASK]\nvariables: { BIND: \"{{ Service.A.p.bindAddress }}\" }",
             ..Default::default()
         }),
         &[
@@ -1132,27 +1205,64 @@ const TWO_SERVICES: &str = r#"  - name: A
 "#;
 
 #[test]
-fn env_template_environment_sees_every_service_when_task_scoped() {
+fn env_template_environment_sees_the_services_it_lists_when_task_scoped() {
     expect_env_ok(&env_template(
         TWO_SERVICES,
-        "environment:\n  name: Client\n  runScope: [TASK]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"\n    B: \"{{ Service.B.q.port }}\"\n    J: \"{{ Job.Name }}\"",
+        "environment:\n  name: Client\n  dependencies: [{ dependsOn: \"service:A\" }, { dependsOn: \"service:B\" }]\n  runScope: [TASK]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"\n    B: \"{{ Service.B.q.port }}\"\n    J: \"{{ Job.Name }}\"",
     ));
 }
 
-/// §4 item 3: the document's `environment` references `Service.*` without a
+/// §4 item 4: the document's `environment` lists a Service without a
 /// `runScope`, so it defaults to `[TASK]` and the reference is in scope.
 #[test]
 fn env_template_environment_with_default_run_scope_sees_services() {
     let et = expect_env_ok(&env_template(
         TWO_SERVICES,
-        "environment:\n  name: Client\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
+        "environment:\n  name: Client\n  dependencies: [{ dependsOn: \"service:A\" }]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
     ));
     let env = et.environment.as_ref().unwrap();
     assert!(env.run_scope.is_none());
+    assert!(env.depends_on_service());
     assert!(env.references_service());
     assert!(env.default_run_scope_is_task_only());
     assert!(env.runs_in(RunScope::Task));
     assert!(!env.runs_in(RunScope::Service));
+}
+
+/// §9 scope rule 5: an Environment Template's `environment` sees only the
+/// Services it lists; the message names the missing entry.
+#[test]
+fn env_template_environment_reference_without_dependency_is_rejected() {
+    let err = decode_environment_template(
+        yaml_val(&env_template(
+            TWO_SERVICES,
+            "environment:\n  name: Client\n  dependencies: [{ dependsOn: \"service:A\" }]\n  variables:\n    B: \"{{ Service.B.q.port }}\"",
+        )),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for EnvironmentTemplate\n\
+         environment -> variables -> B:\n\tFailed to parse interpolation expression at [0, 22]. \
+         Environment 'Client' references Service.B.q.port but does not list service:B in dependencies.\n  \
+         Service.B.q.port\n  ~~~~~~~~~~~~^~~~"
+    );
+    // With no list at all, likewise.
+    expect_env_err(
+        &env_template(
+            TWO_SERVICES,
+            "environment:\n  name: Client\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
+        ),
+        &[
+            "1 validation error for EnvironmentTemplate\n",
+            "environment -> variables -> A:\n\tFailed to parse interpolation expression at [",
+            "Environment 'Client' references Service.A.p.connectAddress but does not list \
+             service:A in dependencies.",
+        ],
+    );
 }
 
 #[test]
@@ -1160,12 +1270,15 @@ fn env_template_environment_with_explicit_service_run_scope_cannot_reference_ser
     expect_env_err(
         &env_template(
             TWO_SERVICES,
-            "environment:\n  name: Client\n  runScope: [TASK, SERVICE]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
+            "environment:\n  name: Client\n  dependencies: [{ dependsOn: \"service:A\" }]\n  runScope: [TASK, SERVICE]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
         ),
         &[
-            "1 validation error for EnvironmentTemplate\n",
+            "2 validation errors for EnvironmentTemplate\n",
             "environment -> variables -> A:\n\tFailed to parse interpolation expression at [",
             &env_in_service_sessions("Client"),
+            "environment -> runScope:\n\tEnvironment 'Client' is entered in Service Sessions (its \
+             runScope includes SERVICE) and may not depend on a Service; declare runScope: [TASK] \
+             if it configures Tasks.",
         ],
     );
 }

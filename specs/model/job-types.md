@@ -157,6 +157,7 @@ script key fails loudly instead of being silently dropped.
 pub struct Environment {
     pub name: String,
     pub description: Option<String>,
+    pub dependencies: Option<Vec<StepDependency>>,         // SERVICE (RFC 0009); the Services it lists, as written
     pub run_scope: Option<Vec<RunScope>>,                  // SERVICE (RFC 0009); None = every kind of Session
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,  // Session-scope
@@ -165,6 +166,8 @@ pub struct Environment {
 
 impl Environment {
     pub fn runs_in(&self, kind: RunScope) -> bool;         // job-side twin of template::Environment::runs_in
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>; // the `service:<name>` entries, without the prefix
+    pub fn depends_on_service(&self, name: &str) -> bool;
 }
 
 pub struct EnvironmentScript {
@@ -202,7 +205,13 @@ impl EnvironmentActions {
 `run_scope` is typed (`RunScope`, re-exported from `job` together with
 `CompletedTasksPolicy`) rather than the template side's raw strings: pass 11 has already
 rejected unrecognized names, so conversion parses each entry and a Session runtime can
-dispatch on the enum. The wrap hooks and `runScope` all use
+dispatch on the enum. `dependencies` (Template Schemas §4 item 3) is carried as written, like
+a Step's or a Service's: it is present only on a `jobEnvironments` entry or an attached
+Environment Template's `environment` (a Step Environment never has one), every entry is
+`service:<name>` naming a Service of the Environment's own document or, in the Job Template, a
+required one, and `depends_on_services` is the list a runtime seeds the Environment's
+`Service.<name>.<port>.*` symbols from — exactly the Services its format strings may reference.
+The wrap hooks, `dependencies` and `runScope` all use
 `#[serde(default, skip_serializing_if = "Option::is_none")]`, so a job without them has the
 pre-RFC wire shape and older documents deserialize.
 
@@ -493,8 +502,8 @@ for the host to evaluate.
 by `create_job` from the template's `dependencies` lists through
 `template::compute_service_scopes`: the Steps that list `service:<name>` (rule 1), every Step in
 the scope of a Service that lists `service:<name>`, transitively (rule 2), and `AllSteps` for a
-Service a `jobEnvironments` entry references (rule 3) or one a Service with scope `AllSteps`
-lists. `Steps { .. }` is never empty for a Job created from a decoded template, because a Job
+Service a `jobEnvironments` entry lists in its `dependencies` (rule 3) or one a Service with
+scope `AllSteps` lists. `Steps { .. }` is never empty for a Job created from a decoded template, because a Job
 Template Service with no Step in its scope is unused and rejected by validation (rule 4). Every external Service has scope
 `AllSteps`, stamped by `apply_environment_templates`.
 
@@ -547,7 +556,7 @@ through the wire format.
 | `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
-| `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); `run_scope` is `Vec<RunScope>` not `Vec<String>`; adds `resolved_symtab` |
+| `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); `run_scope` is `Vec<RunScope>` not `Vec<String>`; `dependencies` carried as written; adds `resolved_symtab` |
 | `template::Service` | `job::Service` | `let` evaluated into `resolved_symtab`; `port`, the `healthCheck` numeric fields, and `maxAttempts` are integers with defaults applied; `health_check`/`restart_policy` are non-optional with defaults applied; `host_requirements` resolved; `variables`/`script` remain `FormatString`; adds the computed `scope` and `document`; `dependencies` kept as written |
 | `template::ServiceRequirement` | `job::ServiceRequirement` | Structurally identical |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |

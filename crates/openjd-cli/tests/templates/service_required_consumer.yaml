@@ -4,8 +4,8 @@
 # Service.R.main.port / .connectAddress then resolve, to the attached Service's
 # endpoint, both in the Task directly — the Step lists `service:R`, which is
 # what lets it reference the required Service (§9 scope rule 3) — and in a
-# Job Environment's variable (whose runScope defaults to [TASK] because it
-# references Service.*, and which needs no dependency).
+# Job Environment's variable (which lists `service:R` too, under the same
+# rule, and whose runScope defaults to [TASK] because it depends on a Service).
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "RequiredServiceConsumer"
@@ -15,6 +15,8 @@ requiresServices:
       - name: main
 jobEnvironments:
   - name: RClient
+    dependencies:
+      - dependsOn: service:R
     variables:
       R_ENDPOINT: "{{ Service.R.main.connectAddress }}:{{ Service.R.main.port }}"
 steps:

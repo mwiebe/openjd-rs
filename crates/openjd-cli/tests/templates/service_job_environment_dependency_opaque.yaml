@@ -1,0 +1,76 @@
+# Template Schemas §4 item 3 / §9.1 rule 3: a Job Environment that lists a
+# Service in `dependencies` without referencing Service.* anywhere — an
+# opaque consumer that reaches the Service by other means — puts every Step
+# in the Service's scope. No Step lists or references Store either, yet it is
+# up for both Steps: the Service writes its endpoint to Param.EndpointFile
+# in its onRun, and each Task reads the file and connects. Opaque's runScope
+# defaults to [TASK] because it depends on a Service, so it is skipped in
+# Store's Service Session.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "JobEnvironmentDependencyOpaque"
+parameterDefinitions:
+  - name: EndpointFile
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+jobEnvironments:
+  - name: Opaque
+    dependencies:
+      - dependsOn: service:Store
+    variables:
+      OPAQUE_SEEN: "yes"
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "print('OPAQUE_ENTER')"]
+services:
+  - name: Store
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Store.main.bindAddress }}", "{{ Service.Store.main.port }}", "{{ Service.Store.main.connectAddress }}", "{{ Param.EndpointFile }}", "STORE"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import os; print('STORE_EXIT', 'OPAQUE_SEEN' in os.environ)"]
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, socket, sys
+            host, port, connect, endpoint_file, tag = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
+            print("SERVICE_SEES_OPAQUE", os.environ.get("OPAQUE_SEEN", "UNSET"), flush=True)
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, port))
+            s.listen(16)
+            with open(endpoint_file, "w") as f:
+                f.write(f"{connect} {port}")
+            print("openjd_service_ready:", tag, flush=True)
+            while True:
+                c, _ = s.accept()
+                c.sendall(tag.encode())
+                c.close()
+steps:
+  - name: First
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,socket; h,p=open(r'{{ Param.EndpointFile }}').read().split(); c=socket.create_connection((h,int(p)),timeout=10); print('FIRST_GOT', c.recv(64).decode(), 'OPAQUE', os.environ.get('OPAQUE_SEEN'), flush=True)"]
+  - name: Second
+    dependencies:
+      - dependsOn: First
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,socket; h,p=open(r'{{ Param.EndpointFile }}').read().split(); c=socket.create_connection((h,int(p)),timeout=10); print('SECOND_GOT', c.recv(64).decode(), flush=True)"]

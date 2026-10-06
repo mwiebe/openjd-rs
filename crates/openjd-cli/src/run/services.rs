@@ -106,6 +106,21 @@ impl ServiceKey {
     }
 }
 
+/// Which `Service.*` values a Task Session action may see (RFC 0009 "The
+/// `Service.*` scope"): the entity's kind decides the rule
+/// [`ServiceManager::task_scope_endpoints`] applies.
+#[derive(Clone, Copy)]
+pub(super) enum Visibility<'a> {
+    /// A Task of the named Step, or one of its Step Environments, which
+    /// follow the Step's `dependencies`: the Services whose scope includes
+    /// the Step, plus every bound requirement.
+    Step(&'a str),
+    /// A Job Environment — the Job Template's own or an attached one —
+    /// which has a `dependencies` list of its own: exactly the Services it
+    /// lists.
+    Environment(&'a Environment),
+}
+
 /// `Service 'X'`, or `Service 'X' (from <doc>)` for an external Service.
 impl std::fmt::Display for ServiceKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -627,30 +642,38 @@ impl ServiceManager {
             .collect()
     }
 
-    /// The endpoints an entity may reference in the Task Session (`port` and
-    /// `connectAddress`; `bindAddress` is never seeded here):
+    /// The endpoints an entity declared by `document` may reference in the
+    /// Task Session (`port` and `connectAddress`; `bindAddress` is never
+    /// seeded here), per `visibility`:
     ///
-    /// - for `Document::JobTemplate` — a Task of `step`, a Step Environment,
-    ///   or one of the Job Template's own Job Environments (`step` `None`) —
-    ///   the READY inline Services whose scope includes the Step (every
-    ///   READY inline Service for a Job Environment) and the READY attached
-    ///   Services bound to the Job Template's `requiresServices` — seeded by
-    ///   scope, which is every Step, not by visibility: a Step that does
-    ///   not list `service:<requirement>` gets the symbols too, but template
+    /// - [`Visibility::Step`] — a Task of the Step, or one of its Step
+    ///   Environments: the READY inline Services of the Job Template whose
+    ///   scope includes the Step, and the READY attached Services bound to
+    ///   the Job Template's `requiresServices` — seeded by scope, which is
+    ///   every Step, not by visibility: a Step that does not list
+    ///   `service:<requirement>` gets the symbols too, but template
     ///   validation has already rejected any reference from it (Template
     ///   Schemas §9 scope rule 3, §9.8 item 2);
-    /// - for an attached Environment, the READY Services of its own
-    ///   document (Template Schemas §1.2.2 item 3).
+    /// - [`Visibility::Environment`] — a Job Environment, the Job Template's
+    ///   own or an attached one: the READY Services of `document` it lists in
+    ///   its `dependencies` and, for the Job Template's own, the READY
+    ///   attached Services bound to the requirements it lists (Template
+    ///   Schemas §4 item 3, §9 scope rules 4–5, §1.2.2 item 3). A Job
+    ///   Environment that lists an inline Service has put every Step in its
+    ///   scope, so the Service is READY before the Environment is entered.
     pub(super) fn task_scope_endpoints(
         &self,
         document: &Document,
-        step: Option<&str>,
+        visibility: Visibility<'_>,
     ) -> Vec<ServiceEndpoints> {
         let mut out: Vec<ServiceEndpoints> = self
             .services
             .iter()
             .filter(|m| m.key.document == *document)
-            .filter(|m| step.is_none_or(|s| m.scope.contains(s)))
+            .filter(|m| match visibility {
+                Visibility::Step(step) => m.scope.contains(step),
+                Visibility::Environment(env) => env.depends_on_service(&m.key.name),
+            })
             .filter_map(|m| match &m.state {
                 State::Ready(inst) => inst.endpoints.clone(),
                 _ => None,
@@ -658,6 +681,13 @@ impl ServiceManager {
             .collect();
         if document.is_job_template() {
             for binding in &self.shared.config.requirement_bindings {
+                let listed = match visibility {
+                    Visibility::Step(_) => true,
+                    Visibility::Environment(env) => env.depends_on_service(&binding.requirement),
+                };
+                if !listed {
+                    continue;
+                }
                 let key = ServiceKey::of_binding(binding);
                 if let Some(endpoints) = self.ready_endpoints_of(&key) {
                     out.push(endpoints);

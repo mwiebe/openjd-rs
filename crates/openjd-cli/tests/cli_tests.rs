@@ -4885,7 +4885,7 @@ mod services {
         let new_port = port_of("back launch 3 port ");
         assert_ne!(old_port, new_port, "{lines:?}");
         assert_eq!(port_of("back launch 2 port "), old_port, "{lines:?}");
-        // Back is Job-wide (the Client Environment references it) and so is
+        // Back is Job-wide (the Client Environment lists it) and so is
         // READY before Client is entered; Front is scoped to Step Work (which
         // lists it) and starts when Work is about to run, after Client.
         let expected: Vec<String> = [
@@ -5443,13 +5443,14 @@ mod services {
         );
     }
 
-    /// Template Schemas §4 item 3: a Job Environment that references
-    /// `Service.*` and declares no `runScope` runs in `[TASK]` only. XClient
-    /// is entered in the Task Session (its variable reaches the Task) and
-    /// not in X's Service Session (X's onRun sees it unset); Plain, which
-    /// references no Service, is entered in both.
+    /// Template Schemas §4 items 3–4: a Job Environment that lists a Service
+    /// in `dependencies` and declares no `runScope` runs in `[TASK]` only.
+    /// XClient is entered in the Task Session (its variable, resolved from
+    /// the Service it lists, reaches the Task) and not in X's Service Session
+    /// (X's onRun sees it unset); Plain, which lists no Service, is entered
+    /// in both.
     #[test]
-    fn test_run_scope_default_is_task_for_an_environment_referencing_a_service() {
+    fn test_run_scope_default_is_task_for_an_environment_depending_on_a_service() {
         let (code, stdout, stderr) = run_service_template("service_run_scope_default.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
@@ -5491,6 +5492,60 @@ mod services {
             stdout.contains(
                 "[Service X] Skipping Environment 'XClient': its runScope does not include SERVICE"
             ),
+            "{stdout}"
+        );
+    }
+
+    /// Template Schemas §4 item 3 / §9.1 rule 3: a Job Environment that lists
+    /// a Service it never references — an opaque consumer that reaches the
+    /// Service by other means — puts every Step in the Service's scope. No
+    /// Step lists or references the Service either, yet it is up Job-wide:
+    /// READY before the Environment is entered (its endpoint file exists
+    /// when the first Task reads it), still up for a second Step, and
+    /// stopped once at the end. The Environment is Task-only by default, so
+    /// the Service Session never sees its variable.
+    #[test]
+    fn test_job_environment_dependency_without_reference_keeps_the_service_up_job_wide() {
+        let dir = TempDir::new().unwrap();
+        let endpoint = dir.path().join("endpoint.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_environment_dependency_opaque.yaml",
+            &["-p", &format!("EndpointFile={}", endpoint.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Store' (scope: every Step) endpoints: main -> "),
+            "{stdout}"
+        );
+        // Entered in the Task Session only, after the Service is READY and
+        // before the first Task; skipped in the Service Session.
+        assert!(stdout.contains("OPAQUE_ENTER"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "[Service Store] Skipping Environment 'Opaque': its runScope does not include \
+                 SERVICE"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service Store] SERVICE_SEES_OPAQUE UNSET"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "openjd_service_ready: STORE") < pos(&stdout, "OPAQUE_ENTER"),
+            "{stdout}"
+        );
+        // Both Tasks reach the Service through the file, with no Step
+        // listing it and the Environment's variable set.
+        assert!(stdout.contains("FIRST_GOT STORE OPAQUE yes"), "{stdout}");
+        assert!(stdout.contains("SECOND_GOT STORE"), "{stdout}");
+        assert!(
+            stdout.contains("[Service Store] STORE_EXIT False"),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("STORE_EXIT").count(), 1, "{stdout}");
+        assert!(
+            pos(&stdout, "SECOND_GOT STORE") < pos(&stdout, "[Service Store] STORE_EXIT"),
             "{stdout}"
         );
     }

@@ -404,14 +404,16 @@ with another protocol is rejected before any Session exists, with the model's
 
 **Dependencies and scope.** A Step's or a Service's `dependencies` list Steps and
 Services in one list: `dependsOn: "service:<Name>"` names a Service, any other string a
-Step (Template Schemas §3.2). A Step's Tasks are scheduled once the Steps it lists have
-completed and the Services it lists are READY; a Service starts once the Steps it lists
-have completed and the Services it lists are READY, and is stopped before any Service
-it lists. Every Service of the combined Job carries the scope job creation computed for
-it from those dependencies (`job::Service::scope`, Template Schemas §9.1): every Step
-for an external Service or a Service a Job Environment references; otherwise the Steps
-that list `service:<Name>`, together with the scope of every Service that lists it,
-transitively. (Validation rejects a Job Template Service whose scope is empty.) The
+Step (Template Schemas §3.2); a Job Environment's `dependencies` lists Services only (§4
+item 3). A Step's Tasks are scheduled once the Steps it lists have completed and the
+Services it lists are READY; a Service starts once the Steps it lists have completed and
+the Services it lists are READY, and is stopped before any Service it lists. Every
+Service of the combined Job carries the scope job creation computed for it from those
+dependencies (`job::Service::scope`, Template Schemas §9.1): every Step for an external
+Service or a Service a Job Environment lists; otherwise the Steps that list
+`service:<Name>`, together with the scope of every Service that lists it, transitively.
+A Job Environment's list changes nothing else about scheduling: the runtime never gates
+on it, since a Service it lists is Job-wide and READY before the Environment is entered. (Validation rejects a Job Template Service whose scope is empty.) The
 manager registers all of them once and *activates* each when the run reaches its
 scope: a Service whose scope is every Step before the Task Session enters the Job's
 Environments; one scoped to some Steps when the first of them is about to run — after
@@ -441,23 +443,29 @@ and two readiness verdicts. A name is looked up across documents in exactly one 
 - A Service Session's in-scope endpoints (constraint 2) are the READY Services it
   depends on, so keyed. A same-named Service from another document is never seeded, so
   its symbols cannot collide.
-- The Task Session sees, for a Task of Step `S` or `S`'s Step Environments, the Job
-  Template's READY Services whose scope includes `S`; for the Job Template's own Job
-  Environments, every READY inline Service; and in both cases the attached Services
-  bound to the Job Template's requirements (`Service.<requirement>.*` is the bound
-  Service's endpoints). For an attached Environment, that attachment's Services only
-  (`RunContext::task_symtab(…, document, step)` with
-  `ServiceManager::task_scope_endpoints(document, step)`). The RFC's queue-cache
-  Environment therefore publishes the queue's `Cache` through `VALKEY_HOST` /
-  `VALKEY_PORT` while the Job Template's Tasks resolve `Service.Cache.*` to their own —
-  or, with `requiresServices: [{name: Cache, …}]` and no inline `Cache`, to the queue's.
-  This seeding is by *scope*, not by *visibility*: a required Service's endpoints are
-  seeded into every Job Template Task Session, including a Step that does not list
-  `service:<requirement>` — which template validation forbids from referencing them
-  (Template Schemas §9 scope rule 3, §9.8 item 2; `specs/model/validation.md` "Service
-  scopes"). The wider table is harmless because no format string that reaches a
-  Session can name a symbol validation did not let it see; the runtime does not
-  re-check the dependency rule.
+- The Task Session sees, for a Task of Step `S` or `S`'s Step Environments
+  (`Visibility::Step(S)`), the Job Template's READY Services whose scope includes `S`
+  and the attached Services bound to the Job Template's requirements
+  (`Service.<requirement>.*` is the bound Service's endpoints); for a Job Environment
+  (`Visibility::Environment(env)`, the Job Template's own or an attached one), exactly
+  the READY Services of its document that it lists in its `dependencies`
+  (`job::Environment::depends_on_service`) and, for the Job Template's own, the bound
+  requirements it lists (`RunContext::task_symtab(…, document, visibility)` with
+  `ServiceManager::task_scope_endpoints(document, visibility)`). The RFC's queue-cache
+  Environment, which lists `service:Cache`, therefore publishes the queue's `Cache`
+  through `VALKEY_HOST` / `VALKEY_PORT` while the Job Template's Tasks resolve
+  `Service.Cache.*` to their own — or, with `requiresServices: [{name: Cache, …}]` and no
+  inline `Cache`, to the queue's. For a Task the seeding is by *scope*, not by
+  *visibility*: a required Service's endpoints are seeded into every Job Template Task
+  Session, including a Step that does not list `service:<requirement>` — which template
+  validation forbids from referencing them (Template Schemas §9 scope rule 3, §9.8 item
+  2; `specs/model/validation.md` "Service scopes"). The wider table is harmless because
+  no format string that reaches a Session can name a symbol validation did not let it
+  see; the runtime does not re-check the dependency rule. For a Job Environment the
+  seeding follows the list because the list is the Environment's whole relationship to
+  Services: a Job Environment that lists a Service it never references (an opaque
+  consumer) still puts every Step in the Service's scope, so the Service is up Job-wide
+  (`service_job_environment_dependency_opaque.yaml`).
 - Log lines, the failure summary, and `failed_services` name an external Service
   with its document: `Service 'Cache' (from queue-cache.yaml)` (the path as given
   to `--environment`); the Job Template's own stay `Service 'Cache'`. See
@@ -554,13 +562,13 @@ Environment, an Environment's own `resolved_symtab` for a job Environment, or th
 submission's `Param.*` table when neither exists) with
 `openjd_model::job::service_symbols::build_service_symbol_table(in_scope, None)`
 appended — the `Service.<name>.<port>.port` and `.connectAddress` of every READY
-Service in scope of the resolving entity: for the Job Template's entities
-(`Document::JobTemplate`), the inline Services whose scope includes the Step (a Task,
-a step Environment — `EnteredEnvironment::step`) or every inline Service (the Job
-Template's own job Environments), plus the attached Services bound to its
-`requiresServices` under the requirement's name; for an `--environment` template's
-Environment, that attachment's own Services (recorded in
-`EnteredEnvironment::document` so a re-entry uses the same scope); never
+Service the resolving entity may see: for a Task or a step Environment
+(`EnteredEnvironment::step` is `Some`), the Job Template's inline Services whose scope
+includes the Step plus the attached Services bound to its `requiresServices` under the
+requirement's name; for a job Environment (`step` is `None`), the Services of its
+document (`EnteredEnvironment::document`, recorded so a re-entry uses the same scope —
+`Document::JobTemplate`, or the `--environment` attachment that defines it) and, for
+the Job Template's own, the bound requirements, that its `dependencies` list; never
 `bindAddress` (§7.3.1 scope rows). The two serialized tables are
 concatenated entry-for-entry, so no path value is re-interpreted. Without Services
 in scope the caller's table is passed unchanged (the pre-RFC-0009 behavior,

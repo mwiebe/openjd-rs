@@ -29,8 +29,9 @@
 //! 1. `Task.*` inside a Service (its actions, `variables`, `let`,
 //!    embedded files): *Task.\* is not available within a Service.* (§9
 //!    item 3.)
-//! 2. The site is a job-creation-time field (`hostRequirements`, a `let`
-//!    list, a `parameterSpace` range, an action `timeout` /
+//! 2. The site is a job-creation-time field (`hostRequirements`, a
+//!    `<StepTemplate>`'s or `<Service>`'s `let` list — not a script's —, a
+//!    `parameterSpace` range, an action `timeout` /
 //!    `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the
 //!    four `<ServiceHealthCheck>` numeric fields): *Service.\* is not
 //!    available in `<field>`: it is resolved at job creation, before any
@@ -40,17 +41,21 @@
 //!    runScope includes SERVICE) and may not reference Service.\*; declare
 //!    runScope: [TASK] if it configures Tasks.* (§4 item 3.2.)
 //! 4. A Service — declared or required — referenced from a Step's `script`,
-//!    one of its `stepEnvironments`, or another Service that does not list
-//!    `service:<name>` in its `dependencies` (§9 scope rules 2–3, §9.8
+//!    one of its `stepEnvironments`, another Service, a Job Environment, or
+//!    an Environment Template's `environment` that does not list
+//!    `service:<name>` in its `dependencies` (§9 scope rules 2–5, §9.8
 //!    item 2, §9.9 item 1): *Step 'Render' references Service.Cache.main.port
 //!    but does not list service:Cache in dependencies.* — *Step 'Render'
 //!    references Service.Cache.main.port in stepEnvironments 'Tools' but
 //!    does not list service:Cache in dependencies.* — *Service 'Front'
 //!    references Service.Back.main.port but does not list service:Back in
+//!    dependencies.* — *Environment 'CacheClient' references
+//!    Service.Cache.main.port but does not list service:Cache in
 //!    dependencies.* The dependency is the author's statement that the
 //!    entity needs the Service; the reference alone is not taken as one. A
 //!    required Service follows the same rule: listing it is what grants
-//!    access to its values, though it changes nothing about scheduling.
+//!    access to its values, though it changes nothing about scheduling. A
+//!    Step Environment has no list of its own and follows its Step's.
 //! 5. The port is not declared: *Service 'S' has no port 'mian'; declared
 //!    ports: main.* — or, for a required Service, *required Service 'R'
 //!    has no port 'x'; declared ports: main.* (§9.8.)
@@ -61,13 +66,10 @@
 //!    is available only within the Service 'P' itself; use connectAddress to
 //!    reach it from elsewhere.* (§7.3.1.)
 //!
-//! A Job Environment whose `runScope` excludes `SERVICE` sees every inline
-//! and required Service of its document (the one exception to the
-//! dependency rule, since it has no `dependencies`), and an Environment
-//! Template's `environment` sees every Service of its document, so no rule
-//! is needed for those sites. Anything else — an unknown value name after a declared
-//! port, a reference with too few components, `Service.File.*` — keeps the
-//! generic message.
+//! The visibility rule has no exceptions: an entity sees a Service's values
+//! iff it lists the Service. Anything else — an unknown value name after a
+//! declared port, a reference with too few components, `Service.File.*` —
+//! keeps the generic message.
 
 use crate::error::{PathElement, ValidationError, ValidationErrors};
 use crate::template::{
@@ -202,15 +204,18 @@ fn job_creation_field(path: &[PathElement]) -> Option<&'static str> {
             PathElement::Index(_) => None,
         })
         .collect();
-    // The leaf decides for the `@fmtstring` scalars; `hostRequirements`,
-    // `let` and `parameterSpace` anywhere in the path.
+    // The leaf decides for the `@fmtstring` scalars; `hostRequirements` and
+    // `parameterSpace` anywhere in the path; `let` only outside a `script`
+    // (a `<StepTemplate>`'s or a `<Service>`'s own list, resolved at job
+    // creation — a `<StepScript>`, `<ServiceScript>` or
+    // `<EnvironmentScript>` `let` is a session-scope site).
     if fields.contains(&"hostRequirements") {
         return Some("hostRequirements");
     }
     if fields.contains(&"parameterSpace") {
         return Some("a parameterSpace range");
     }
-    if fields.contains(&"let") {
+    if fields.contains(&"let") && !fields.contains(&"script") {
         return Some("a let binding");
     }
     match fields.last().copied() {
@@ -292,8 +297,8 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
         }
     }
 
-    // Rule 4: a declared or required Service the Step or Service does not
-    // list in its dependencies.
+    // Rule 4: a declared or required Service the Step, Service, or
+    // Environment does not list in its dependencies.
     let missing = |who: String, where_: String| {
         format!(
             "{who} references {name}{where_} but does not list \
@@ -311,6 +316,14 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
             return Some(missing(
                 format!("Step '{}'", step.name),
                 format!(" in stepEnvironments '{}'", env.name),
+            ));
+        }
+        Site::Environment { env, step: None }
+            if !lists_service(env.dependencies.as_deref(), svc) =>
+        {
+            return Some(missing(
+                format!("Environment '{}'", env.name),
+                String::new(),
             ));
         }
         Site::Service { service }
@@ -426,6 +439,21 @@ mod tests {
         assert_eq!(
             job_creation_field(&p(&["services", "let"])),
             Some("a let binding")
+        );
+        assert_eq!(
+            job_creation_field(&p(&["steps", "let"])),
+            Some("a let binding")
+        );
+        // A script's `let` is a session-scope site, whatever the script.
+        assert_eq!(job_creation_field(&p(&["steps", "script", "let"])), None);
+        assert_eq!(job_creation_field(&p(&["services", "script", "let"])), None);
+        assert_eq!(
+            job_creation_field(&p(&["jobEnvironments", "script", "let"])),
+            None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["steps", "stepEnvironments", "script", "let"])),
+            None
         );
         assert_eq!(
             job_creation_field(&p(&["steps", "script", "actions", "onRun", "timeout"])),

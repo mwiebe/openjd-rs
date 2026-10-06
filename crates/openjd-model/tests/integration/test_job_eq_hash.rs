@@ -226,6 +226,7 @@ fn environment_variables_order_insensitive_eq_and_hash() {
     let env = |vars: HashMap<String, FormatString>| Environment {
         name: "E".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: Some(vars),
@@ -242,6 +243,7 @@ fn environment_no_variables_distinct_from_empty() {
     let env = |vars: Option<HashMap<String, FormatString>>| Environment {
         name: "E".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: vars,

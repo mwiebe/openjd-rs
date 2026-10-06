@@ -259,12 +259,17 @@ fn join_names(names: &[&str]) -> String {
 }
 
 /// `runScope: [TASK]` as written; when the field is absent, `default
-/// runScope: [TASK], since the environment references Service.*` or
-/// `default runScope: every kind of Session` (§4 item 3), for error
+/// runScope: [TASK], since the environment depends on a Service` (it lists
+/// one in `dependencies`), `default runScope: [TASK], since the environment
+/// references Service.*` (a Step Environment, which has no list), or
+/// `default runScope: every kind of Session` (§4 item 4), for error
 /// messages.
 fn describe_run_scope(env: &Environment) -> String {
     match &env.run_scope {
         Some(names) => format!("runScope: [{}]", names.join(", ")),
+        None if env.depends_on_service() => {
+            "default runScope: [TASK], since the environment depends on a Service".to_string()
+        }
         None if env.default_run_scope_is_task_only() => {
             "default runScope: [TASK], since the environment references Service.*".to_string()
         }

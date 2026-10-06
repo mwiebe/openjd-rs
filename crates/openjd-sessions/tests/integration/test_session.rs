@@ -42,6 +42,7 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -67,6 +68,7 @@ fn env_with_vars(name: &str, vars: HashMap<String, FormatString>) -> Environment
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: Some(vars),
@@ -487,6 +489,7 @@ async fn test_enter_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -571,6 +574,7 @@ async fn test_enter_no_action() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -628,6 +632,7 @@ async fn test_enter_environment_with_resolved_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -694,6 +699,7 @@ async fn test_exit_environment_basic() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -727,6 +733,7 @@ async fn test_exit_environment_with_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -782,6 +789,7 @@ async fn test_exit_environment_fail_run() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -912,6 +920,7 @@ async fn test_def_via_stdout_overrides_direct() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -1165,6 +1174,7 @@ async fn test_def_via_redacted_env_with_variables() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(openjd_model::job::EnvironmentScript {
             let_bindings: None,
@@ -1724,6 +1734,7 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2064,6 +2075,7 @@ async fn test_enter_environment_action_timeout_enforced() {
     let env = Environment {
         name: "timeout_env".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2111,6 +2123,7 @@ async fn test_exit_environment_action_timeout_enforced() {
     let env = Environment {
         name: "exit_timeout_env".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2239,6 +2252,7 @@ async fn test_callback_enter_env_no_script_no_vars() {
     let env = Environment {
         name: "empty".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: None,
@@ -2261,6 +2275,7 @@ async fn test_callback_exit_env_with_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2304,6 +2319,7 @@ async fn test_callback_exit_env_no_script() {
     let env = Environment {
         name: "e".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: None,
@@ -2501,6 +2517,7 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
     let env2 = Environment {
         name: "env2".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2799,6 +2816,7 @@ async fn test_redacted_env_sets_var_with_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2844,6 +2862,7 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2883,6 +2902,7 @@ async fn test_redactions_disabled_with_no_profile() {
     let env = Environment {
         name: "env1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -3659,6 +3679,7 @@ async fn test_cancel_handle_reusable_across_actions() {
     let e1 = Environment {
         name: "E1".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -3753,6 +3774,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let wrap_env = Environment {
         name: "WrapEnv".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -3781,6 +3803,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
     let inner = Environment {
         name: "Inner".into(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,

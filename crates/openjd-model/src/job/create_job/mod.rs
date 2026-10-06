@@ -296,10 +296,9 @@ pub fn create_job(
     // environments). Resolution failures that leave a step
     // uninstantiable (host requirements, parameter space) are not
     // checks: they abort immediately, reported alone. A job environment
-    // whose effective `runScope` excludes SERVICE also sees every inline
-    // and required Service's `Service.*` endpoints (RFC 0009 §9 scope rule
-    // 4: a Job Environment has no `dependencies`; referencing a Service
-    // puts every Step in its scope).
+    // also sees the `Service.*` endpoints of the inline and required
+    // Services it lists in its `dependencies` (RFC 0009 §9 scope rule 4;
+    // listing an inline Service puts every Step in its scope).
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
@@ -314,8 +313,8 @@ pub fn create_job(
                 ctx,
                 &env_path,
                 &mut check_errors,
-                services_t.iter(),
-                requirements_t.iter(),
+                crate::template::listed_services(env.dependencies.as_deref(), services_t),
+                crate::template::listed_requirements(env.dependencies.as_deref(), requirements_t),
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,

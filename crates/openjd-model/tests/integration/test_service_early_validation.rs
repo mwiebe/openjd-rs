@@ -304,6 +304,7 @@ services:
           args: ["30"]
 environment:
   name: Client
+  dependencies: [{ dependsOn: "service:Cache" }]
   runScope: [TASK]
   variables:
     CACHE_PORT: "{{ Service.Cache.main.port.upper() }}"
