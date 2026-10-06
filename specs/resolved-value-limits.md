@@ -22,7 +22,12 @@ strings under the same gate-1-lower-bound / gate-2-full-check pattern
 Two rounds of review follow-ups then closed: the #404/#407 findings
 (PR [#410](https://github.com/OpenJobDescription/openjd-rs/pull/410))
 and the evaluator's live-footprint accounting under absorbed errors
-(PR [#417](https://github.com/OpenJobDescription/openjd-rs/pull/417)).
+(PR [#417](https://github.com/OpenJobDescription/openjd-rs/pull/417)),
+then the remaining accounting gaps
+(PR [#418](https://github.com/OpenJobDescription/openjd-rs/pull/418)).
+SimpleAction steps are now validated on their desugared form at
+template validation, with diagnostics re-rooted onto the authored field
+(PR [#419](https://github.com/OpenJobDescription/openjd-rs/pull/419)).
 The gate sections below describe the behavior **as shipped**. What
 remains is the follow-up list at the
 [end of this document](#follow-ups).
@@ -587,7 +592,7 @@ mirroring whatever the submitting service set.
 - Group A enforcement is pure early detection of spec-mandated
   constraints — it can only fail templates whose every possible
   resolution already violates the spec. **Risk: none in principle**, but
-  the 1,038-test conformance suite must pass before merge; any suite
+  the conformance suite (1,139 tests as of PR #419) must pass before merge; any suite
   template that newly fails indicates either a bug in the bound or a
   genuinely-invalid suite fixture (report upstream).
 - The §4.4.2 resolved-value reading and the env-value gap fix should be
@@ -677,7 +682,8 @@ To be made alongside the implementation commits (spec/code co-evolution):
 
 Recorded after PR #404 (which completed gate 2) and extended after
 PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
-14), and PR #417 (which closed items 12, 15, 16, 17, 19). Items 1–2 are leftovers from earlier
+14), PR #417 (which closed items 12, 15, 16, 17, 19), PR #418 (which
+closed items 20–23), and PR #419 (which closed item 4). Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
 (approved with findings recorded rather than requested — none is a
@@ -686,9 +692,9 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 4, 6, 8, 11, 18.
-**Closed:** 2 (dropped), 3, 5, 7, 9, 10, 12, 13, 14, 15, 16, 17, 19, 20,
-21, 22, 23.
+**Open:** 1, 6, 8, 11, 18.
+**Closed:** 2 (dropped), 3, 4, 5, 7, 9, 10, 12, 13, 14, 15, 16, 17, 19,
+20, 21, 22, 23.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -714,7 +720,7 @@ None blocks the design; each is an independent piece of work.
    (IfExp) and `specs/model/job-creation.md` (error policy). Pinned at
    the expr level (`test_memory.rs`) and through `create_job`
    (`test_job_creation_resolved_values.rs`).
-4. **Desugar divergence between gates 1 and 2** (review finding,
+4. ~~**Desugar divergence between gates 1 and 2** (review finding,
    measured). Gate 2 checks the *desugared* SimpleAction script
    (`bash:`/`python:`/…, FEATURE_BUNDLE_1), but pass 8 only validates
    `step.script` — it never validates the synthesized
@@ -726,7 +732,15 @@ None blocks the design; each is an independent piece of work.
    pass 8 to validate the desugared script so the stages agree; also
    consider mapping the synthetic path back to the sugar field. Until
    then the "re-run exactly the checks pass 8 applies" claim does not
-   hold for SimpleAction steps.
+   hold for SimpleAction steps.~~ **Resolved**
+   (PR [#419](https://github.com/OpenJobDescription/openjd-rs/pull/419)) —
+   the preferred fix with both parts: passes 6 and 8 desugar each
+   SimpleAction field (`SimpleActionKind::desugar`) and run it through
+   the same helpers an authored `script` gets, so the stages agree by
+   construction; every diagnostic at both stages is re-rooted onto the
+   authored field (`SimpleActionKind::remap_desugared_path`), e.g.
+   `embeddedFiles[0] -> data` → `<kind> -> script`. Pinned by 28 tests
+   in `test_simple_action_validation.rs`.
 5. **Environment `let` policy asymmetry and parse-profile mismatch**
    (review finding). Two parts, the first resolved:
    - ~~An environment `let` that errors under the job-creation context
