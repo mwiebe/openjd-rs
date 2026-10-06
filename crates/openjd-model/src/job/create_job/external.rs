@@ -558,7 +558,7 @@ pub fn apply_environment_templates(
                 &env_path,
                 &mut check_errors,
                 services.iter(),
-                &[],
+                std::iter::empty(),
             )
             .map_err(|e| in_document(e, &doc_path))?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(

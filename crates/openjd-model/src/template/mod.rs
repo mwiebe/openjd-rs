@@ -59,8 +59,8 @@ pub use service::{
     ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
 };
 pub use service_scope::{
-    compute_service_scopes, listed_services, service_dependency_cycle, ComputedServiceScope,
-    ServiceDependencyCycle, ServiceScope, ServiceScopes,
+    compute_service_scopes, listed_requirements, listed_services, service_dependency_cycle,
+    ComputedServiceScope, ServiceDependencyCycle, ServiceScope, ServiceScopes,
 };
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;

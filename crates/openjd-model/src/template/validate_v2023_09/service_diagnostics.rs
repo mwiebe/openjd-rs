@@ -39,16 +39,18 @@
 //!    `SERVICE`: *Environment 'E' is entered in Service Sessions (its
 //!    runScope includes SERVICE) and may not reference Service.\*; declare
 //!    runScope: [TASK] if it configures Tasks.* (§4 item 3.2.)
-//! 4. A declared (not required) Service referenced from a Step's `script`,
+//! 4. A Service — declared or required — referenced from a Step's `script`,
 //!    one of its `stepEnvironments`, or another Service that does not list
-//!    `service:<name>` in its `dependencies` (§9 scope rules 2–3, §9.9
-//!    item 1): *Step 'Render' references Service.Cache.main.port but does
-//!    not list service:Cache in dependencies.* — *Step 'Render' references
-//!    Service.Cache.main.port in stepEnvironments 'Tools' but does not list
-//!    service:Cache in dependencies.* — *Service 'Front' references
-//!    Service.Back.main.port but does not list service:Back in
+//!    `service:<name>` in its `dependencies` (§9 scope rules 2–3, §9.8
+//!    item 2, §9.9 item 1): *Step 'Render' references Service.Cache.main.port
+//!    but does not list service:Cache in dependencies.* — *Step 'Render'
+//!    references Service.Cache.main.port in stepEnvironments 'Tools' but
+//!    does not list service:Cache in dependencies.* — *Service 'Front'
+//!    references Service.Back.main.port but does not list service:Back in
 //!    dependencies.* The dependency is the author's statement that the
-//!    entity needs the Service; the reference alone is not taken as one.
+//!    entity needs the Service; the reference alone is not taken as one. A
+//!    required Service follows the same rule: listing it is what grants
+//!    access to its values, though it changes nothing about scheduling.
 //! 5. The port is not declared: *Service 'S' has no port 'mian'; declared
 //!    ports: main.* — or, for a required Service, *required Service 'R'
 //!    has no port 'x'; declared ports: main.* (§9.8.)
@@ -59,10 +61,11 @@
 //!    is available only within the Service 'P' itself; use connectAddress to
 //!    reach it from elsewhere.* (§7.3.1.)
 //!
-//! A Job Environment whose `runScope` excludes `SERVICE` and an Environment
-//! Template's `environment` see every inline Service of their document, and
-//! a required Service is in scope everywhere, so no rule is needed for
-//! those sites. Anything else — an unknown value name after a declared
+//! A Job Environment whose `runScope` excludes `SERVICE` sees every inline
+//! and required Service of its document (the one exception to the
+//! dependency rule, since it has no `dependencies`), and an Environment
+//! Template's `environment` sees every Service of its document, so no rule
+//! is needed for those sites. Anything else — an unknown value name after a declared
 //! port, a reference with too few components, `Service.File.*` — keeps the
 //! generic message.
 
@@ -289,38 +292,36 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
         }
     }
 
-    // Rule 4: a declared Service the Step or Service does not list in its
-    // dependencies.
-    if let Known::Declared(_) = known {
-        let missing = |who: String, where_: String| {
-            format!(
-                "{who} references {name}{where_} but does not list \
-                 {SERVICE_DEPENDENCY_PREFIX}{svc} in dependencies."
-            )
-        };
-        match site {
-            Site::Task { step } if !lists_service(step.dependencies.as_deref(), svc) => {
-                return Some(missing(format!("Step '{}'", step.name), String::new()));
-            }
-            Site::Environment {
-                env,
-                step: Some(step),
-            } if !lists_service(step.dependencies.as_deref(), svc) => {
-                return Some(missing(
-                    format!("Step '{}'", step.name),
-                    format!(" in stepEnvironments '{}'", env.name),
-                ));
-            }
-            Site::Service { service }
-                if service.name != svc && !lists_service(service.dependencies.as_deref(), svc) =>
-            {
-                return Some(missing(
-                    format!("Service '{}'", service.name),
-                    String::new(),
-                ));
-            }
-            _ => {}
+    // Rule 4: a declared or required Service the Step or Service does not
+    // list in its dependencies.
+    let missing = |who: String, where_: String| {
+        format!(
+            "{who} references {name}{where_} but does not list \
+             {SERVICE_DEPENDENCY_PREFIX}{svc} in dependencies."
+        )
+    };
+    match site {
+        Site::Task { step } if !lists_service(step.dependencies.as_deref(), svc) => {
+            return Some(missing(format!("Step '{}'", step.name), String::new()));
         }
+        Site::Environment {
+            env,
+            step: Some(step),
+        } if !lists_service(step.dependencies.as_deref(), svc) => {
+            return Some(missing(
+                format!("Step '{}'", step.name),
+                format!(" in stepEnvironments '{}'", env.name),
+            ));
+        }
+        Site::Service { service }
+            if service.name != svc && !lists_service(service.dependencies.as_deref(), svc) =>
+        {
+            return Some(missing(
+                format!("Service '{}'", service.name),
+                String::new(),
+            ));
+        }
+        _ => {}
     }
 
     // Rule 5: the port.

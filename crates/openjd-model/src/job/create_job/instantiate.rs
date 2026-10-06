@@ -21,8 +21,8 @@ use super::ranges;
 
 /// The job-wide inputs every instantiation step shares: the context's
 /// extensions and limits, the caller budgets, and the template's Services
-/// (whose `Service.*` symbols are in scope for the Steps and Services that
-/// list them) and requirements (in scope everywhere).
+/// and requirements (whose `Service.*` symbols are in scope for the Steps and
+/// Services that list them, and the requirements' for every Job Environment).
 #[derive(Clone, Copy)]
 pub(super) struct InstantiateCtx<'a> {
     pub(super) has_expr: bool,
@@ -138,11 +138,13 @@ pub(super) fn instantiate_step(
     };
 
     // The Services whose `Service.*` endpoints this Step's Task Sessions
-    // may reference (RFC 0009 §9 scope rule 3): the inline Services the
-    // Step lists as `service:<name>` in its `dependencies`, plus every
-    // required Service's declared ports.
+    // may reference (RFC 0009 §9 scope rule 3, §9.8 item 2): the inline and
+    // required Services the Step lists as `service:<name>` in its
+    // `dependencies`.
     let in_scope_services =
         || crate::template::listed_services(st.dependencies.as_deref(), services);
+    let listed_requirements =
+        || crate::template::listed_requirements(st.dependencies.as_deref(), requirements);
 
     // Re-run the carried-forward format-string resolved-value checks —
     // the script's `let` bindings, the `onRun` action's
@@ -175,7 +177,7 @@ pub(super) fn instantiate_step(
             &script_path,
             target,
             in_scope_services(),
-            requirements,
+            listed_requirements(),
         )?;
         crate::template::validate_v2023_09::format_strings::check_carried_forward_step_script(
             s,
@@ -212,7 +214,7 @@ pub(super) fn instantiate_step(
                 &env_path,
                 check_errors,
                 in_scope_services(),
-                requirements,
+                listed_requirements(),
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
@@ -298,7 +300,8 @@ pub(super) fn instantiate_step(
 /// / `.connectAddress` the Service's host-resolved fields may reference: the
 /// Services of its own document it lists in its `dependencies` (§9 scope
 /// rule 2); the Service itself is seeded separately, with `bindAddress`, and
-/// the `requirements` of a Job Template are seeded as well. `scope` is the
+/// the `requirements` of a Job Template it lists are seeded as well
+/// (`listed_requirements`, §9.8 item 2). `scope` is the
 /// §9.1 result for the Service (`AllSteps` for an external Service).
 ///
 /// Job-creation-stage fields resolve here: `<Service>.let` (template scope,
@@ -502,7 +505,7 @@ pub(super) fn instantiate_service<'a>(
         ctx,
         path,
         in_scope,
-        requirements,
+        crate::template::listed_requirements(svc.dependencies.as_deref(), requirements),
     )?;
     let mut check_errors = ValidationErrors::default();
     crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
@@ -671,14 +674,14 @@ fn resolve_service_u64(
 /// `connectAddress` of every Service in `in_scope`, with the
 /// `<ServiceScript>.let` bindings evaluated in — the scope the Service
 /// Session binds at run time. `Task.*` is never in scope within a Service.
-fn build_service_check_symtab<'a>(
+fn build_service_check_symtab<'a, 'r>(
     svc: &template::Service,
     base: &SymbolTable,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     path: &[PathElement],
     in_scope: impl Iterator<Item = &'a template::Service>,
-    requirements: &[template::ServiceRequirement],
+    requirements: impl IntoIterator<Item = &'r template::ServiceRequirement>,
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
@@ -762,9 +765,10 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 /// `Unresolved` so the script's remaining checks still run.
 ///
 /// `in_scope_services` are the Services whose `Service.<name>.<port>.port`
-/// / `.connectAddress` a Task of this Step may reference (RFC 0009): every
-/// inline Service of the Job Template; `requirements` are its
-/// `requiresServices`, seeded the same way for their declared ports.
+/// / `.connectAddress` a Task of this Step may reference (RFC 0009): the
+/// inline Services the Step lists in its `dependencies`; `requirements` are
+/// the `requiresServices` entries it lists, seeded the same way for their
+/// declared ports.
 ///
 /// `Err` only for a failed symbol seed — an internal invariant (see
 /// [`add_unresolved_session_symbols`]).
@@ -778,7 +782,7 @@ fn build_task_check_symtab<'a>(
     script_path: &[PathElement],
     errors: &mut ValidationErrors,
     in_scope_services: impl Iterator<Item = &'a template::Service>,
-    requirements: &[template::ServiceRequirement],
+    requirements: impl IntoIterator<Item = &'a template::ServiceRequirement>,
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
@@ -863,11 +867,13 @@ fn build_task_check_symtab<'a>(
 /// the real parameter values and would deterministically recur in every
 /// session entering the environment.
 ///
-/// `in_scope_services` are the Services of the environment's document and
-/// `requirements` the Job Template's `requiresServices` (none for an
-/// attached Environment); their `Service.<name>.<port>.port` /
-/// `.connectAddress` are seeded only when the environment's effective
-/// `runScope` excludes `SERVICE` (Template Schemas §4 item 3.2, RFC 0009).
+/// `in_scope_services` are the Services the environment may reference and
+/// `requirements` the required Services it may (every `requiresServices`
+/// entry for a Job Environment, the ones its Step lists for a Step
+/// Environment, none for an attached Environment); their
+/// `Service.<name>.<port>.port` / `.connectAddress` are seeded only when the
+/// environment's effective `runScope` excludes `SERVICE` (Template Schemas
+/// §4 item 3.2, RFC 0009).
 pub(super) fn build_env_check_symtab<'a>(
     env: &template::Environment,
     base: &SymbolTable,
@@ -876,7 +882,7 @@ pub(super) fn build_env_check_symtab<'a>(
     env_path: &[PathElement],
     errors: &mut ValidationErrors,
     in_scope_services: impl Iterator<Item = &'a template::Service>,
-    requirements: &[template::ServiceRequirement],
+    requirements: impl IntoIterator<Item = &'a template::ServiceRequirement>,
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;

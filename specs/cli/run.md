@@ -451,6 +451,13 @@ and two readiness verdicts. A name is looked up across documents in exactly one 
   Environment therefore publishes the queue's `Cache` through `VALKEY_HOST` /
   `VALKEY_PORT` while the Job Template's Tasks resolve `Service.Cache.*` to their own —
   or, with `requiresServices: [{name: Cache, …}]` and no inline `Cache`, to the queue's.
+  This seeding is by *scope*, not by *visibility*: a required Service's endpoints are
+  seeded into every Job Template Task Session, including a Step that does not list
+  `service:<requirement>` — which template validation forbids from referencing them
+  (Template Schemas §9 scope rule 3, §9.8 item 2; `specs/model/validation.md` "Service
+  scopes"). The wider table is harmless because no format string that reaches a
+  Session can name a symbol validation did not let it see; the runtime does not
+  re-check the dependency rule.
 - Log lines, the failure summary, and `failed_services` name an external Service
   with its document: `Service 'Cache' (from queue-cache.yaml)` (the path as given
   to `--environment`); the Job Template's own stay `Service 'Cache'`. See

@@ -315,7 +315,7 @@ pub fn create_job(
                 &env_path,
                 &mut check_errors,
                 services_t.iter(),
-                requirements_t,
+                requirements_t.iter(),
             )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
