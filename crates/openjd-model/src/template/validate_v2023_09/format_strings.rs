@@ -116,20 +116,20 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 ///
 /// `in_scope_services` are the inline Services the environment may reference
 /// (RFC 0009, Template Schemas §9 scope items 3–5): for a Step Environment,
-/// the Services its Step lists in `dependencies`; for a Job Environment,
-/// every Service of the Job Template; for an Environment Template's
-/// `environment`, every Service of the document. `requirements` are the
-/// required Services (§9.8) the environment may reference under the same
-/// rule: for a Step Environment, the `requiresServices` entries its Step
-/// lists in `dependencies` (`listed_requirements`); for a Job Environment,
-/// every entry — the one site that needs no dependency (§9 scope item 4);
-/// none for an Environment Template. Their `Service.<name>.<port>.port` /
-/// `.connectAddress` are added only when the environment's effective
-/// `runScope` excludes `SERVICE` (§4 item 3.2, §9.9 item 2) — which it does
-/// by default for an Environment that references `Service.*`; an
-/// Environment with an explicit `runScope` including `SERVICE` never sees
-/// any `Service.*` value, so a reference there surfaces as an undefined
-/// variable. `bindAddress` is never in scope in an environment.
+/// the Services its Step lists in `dependencies`; for a Job Environment and
+/// for an Environment Template's `environment`, the Services of the
+/// document it lists in its own `dependencies` (`listed_services`).
+/// `requirements` are the required Services (§9.8) the environment may
+/// reference under the same rule: the `requiresServices` entries its Step
+/// (a Step Environment) or it (a Job Environment) lists in `dependencies`
+/// (`listed_requirements`); none for an Environment Template. Their
+/// `Service.<name>.<port>.port` / `.connectAddress` are added only when the
+/// environment's effective `runScope` excludes `SERVICE` (§4 item 4.2, §9.9
+/// item 2) — which it does by default for an Environment that lists or
+/// references a Service; an Environment with an explicit `runScope`
+/// including `SERVICE` never sees any `Service.*` value, so a reference
+/// there surfaces as an undefined variable. `bindAddress` is never in scope
+/// in an environment.
 fn build_session_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
     env: &Environment,
@@ -1673,19 +1673,19 @@ pub fn validate_format_strings(
                 .expect("symtab");
         }
         for (i, env) in envs.iter().enumerate() {
-            // RFC 0009 §9 scope item 4: a job environment whose effective
-            // runScope excludes SERVICE sees every inline and required
-            // Service's endpoint — it has no `dependencies` of its own (the
-            // one exception to the dependency rule), and referencing an
-            // inline Service puts every Step in that Service's scope (§9.1
-            // rule 3).
+            // RFC 0009 §9 scope item 4: a job environment sees the inline
+            // and required Services it lists in its own `dependencies`, the
+            // same rule as for a Step or a Service; listing an inline
+            // Service puts every Step in that Service's scope (§9.1 rule
+            // 3). A reference to a Service it does not list is an undefined
+            // variable, which `service_diagnostics` names the fix for.
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
                 false,
                 expr_active,
-                services.iter(),
-                requirements.iter(),
+                listed_services(env.dependencies.as_deref(), services),
+                listed_requirements(env.dependencies.as_deref(), requirements),
             );
             // Env script let bindings: validate and evaluate into the symtab
             // if EXPR, reject if not.
@@ -2383,14 +2383,14 @@ pub fn validate_format_strings_environment_template(
     };
 
     let env_path = vec![PathElement::Field("environment".into())];
-    // The environment may reference every Service of the document when its
-    // runScope excludes SERVICE (§1.2.2, §9 scope item 5).
+    // The environment may reference the Services of the document it lists
+    // in its `dependencies` (§1.2.2, §9 scope item 5).
     let mut env_symtab = build_session_scope_symtab(
         et.parameter_definitions.as_deref(),
         env,
         false,
         expr_active,
-        services.iter(),
+        listed_services(env.dependencies.as_deref(), services),
         std::iter::empty(),
     );
 

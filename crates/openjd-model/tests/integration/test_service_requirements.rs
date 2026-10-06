@@ -123,14 +123,13 @@ fn n_ports(n: usize) -> String {
 #[test]
 fn requirement_opens_port_and_connect_address_where_listed() {
     // In a Step script and Step Environment (the Step lists `service:Cache`),
-    // an inline Service that lists it, and a Job Environment (default
-    // runScope: [TASK]), which needs no dependency (§9 scope rules 2–4, §9.8
-    // item 2). The inline `Proxy` must likewise be listed by the Step that
-    // references it.
+    // an inline Service that lists it, and a Job Environment that lists it
+    // (default runScope: [TASK]) — §9 scope rules 2–4, §9.8 item 2. The
+    // inline `Proxy` must likewise be listed by the Step that references it.
     let t = with_step_deps(&job(
         "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
         "  - name: Proxy\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
-        "jobEnvironments:\n  - name: Client\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
         r#"["{{ Service.Cache.main.port }}", "{{ join_host_port(Service.Cache.main.connectAddress, Service.Cache.main.port) }}", "{{ Service.Proxy.main.port }}"]"#,
     ), &["Proxy", "Cache"])
     .replace(
@@ -152,9 +151,11 @@ fn requirement_opens_port_and_connect_address_where_listed() {
     let proxy = scopes.get("Proxy").unwrap();
     assert!(proxy.depends_on_services.is_empty());
     assert_eq!(proxy.scope, ServiceScope::steps(["S"]));
-    // The Job Environment's default runScope is [TASK] (it references
-    // Service.*).
-    assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
+    // The Job Environment's default runScope is [TASK] (it depends on a
+    // Service), and listing a required Service is not a scope edge.
+    let env = &jt.job_environments.as_ref().unwrap()[0];
+    assert!(env.default_run_scope_is_task_only());
+    assert_eq!(env.listed_services().collect::<Vec<_>>(), ["Cache"]);
 }
 
 #[test]
@@ -250,18 +251,56 @@ fn service_reference_to_a_required_service_without_dependency_is_rejected() {
 }
 
 #[test]
-fn job_environment_reference_to_a_required_service_needs_no_dependency() {
-    // §9 scope rule 4: the one exception — a Job Environment has no
-    // `dependencies`. Its runScope defaults to [TASK]. The Step neither
-    // lists nor references the Service.
+fn job_environment_reference_to_a_required_service_needs_the_dependency() {
+    // §9 scope rule 4, §9.8 item 2: a Job Environment lists the required
+    // Service like any other entity; listing it grants visibility and
+    // nothing more. Its runScope defaults to [TASK]. The Step neither lists
+    // nor references the Service.
     let jt = decode_job(&job(
+        CACHE_REQ,
+        "",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
+        "[x]",
+    ));
+    assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
+    assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
+}
+
+#[test]
+fn job_environment_reference_to_a_required_service_without_dependency_is_rejected() {
+    // The same rule and the same message shape as for a Step or a Service.
+    let err = job_err(&job(
         CACHE_REQ,
         "",
         "jobEnvironments:\n  - name: Client\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
         "[x]",
     ));
-    assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
-    assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
+    assert_errs(
+        &err,
+        2,
+        &[
+            "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at [",
+            "Environment 'Client' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "jobEnvironments[0] -> variables -> PORT:\n\tFailed to parse interpolation expression at [",
+            "Environment 'Client' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+        ],
+    );
+    assert!(!err.contains("Undefined variable"), "{err}");
+}
+
+#[test]
+fn job_environment_may_list_a_required_service_without_referencing_it() {
+    // An opaque consumer of a required Service: valid, Task-only by default,
+    // and not an error for the requirement either (§9.8).
+    let jt = decode_job(&job(
+        CACHE_REQ,
+        "",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables: { K: v }\n",
+        "[x]",
+    ));
+    let env = &jt.job_environments.as_ref().unwrap()[0];
+    assert!(env.default_run_scope_is_task_only());
+    assert!(!env.references_service());
 }
 
 #[test]

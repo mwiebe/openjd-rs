@@ -31,7 +31,7 @@ use tokio_util::sync::CancellationToken;
 
 use params::*;
 use result::RunResult;
-use services::{merge_scopes, ServiceFailure, ServiceManager};
+use services::{merge_scopes, ServiceFailure, ServiceManager, Visibility};
 
 type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<SerializedSymbolTable>;
@@ -189,21 +189,23 @@ impl RunContext {
     /// The symbol table a Task Session action resolves against: `base` (or
     /// `fallback`, or the submission's `Param.*` table) with the
     /// `Service.<name>.<port>.port` / `.connectAddress` of every READY
-    /// Service in scope layered on (RFC 0009 "The `Service.*` scope";
-    /// Template Schemas §1.2.2 items 2–3): for the Job Template's entities
-    /// (`Document::JobTemplate`) the inline Services whose scope includes
-    /// `step` (every READY one for a Job Environment, `step` `None`) and the
-    /// attached Services bound to its `requiresServices`; for an attached
-    /// Environment, its own document's Services. Without Services in scope,
-    /// `base` unchanged — the pre-RFC-0009 behavior.
+    /// Service the entity may see layered on (RFC 0009 "The `Service.*`
+    /// scope"; Template Schemas §1.2.2 items 2–3): for a Task or Step
+    /// Environment ([`Visibility::Step`]) the Job Template's inline Services
+    /// whose scope includes the Step and the attached Services bound to its
+    /// `requiresServices`; for a Job Environment
+    /// ([`Visibility::Environment`]) the Services of `document` — and, for
+    /// the Job Template's own, the bound requirements — it lists in its
+    /// `dependencies`. Without Services in scope, `base` unchanged — the
+    /// pre-RFC-0009 behavior.
     fn task_symtab(
         &self,
         base: Option<&SerializedSymbolTable>,
         fallback: Option<&SerializedSymbolTable>,
         document: &Document,
-        step: Option<&str>,
+        visibility: Visibility<'_>,
     ) -> Result<EnvSymtab, RunError> {
-        let in_scope = self.services.task_scope_endpoints(document, step);
+        let in_scope = self.services.task_scope_endpoints(document, visibility);
         if in_scope.is_empty() {
             return Ok(base.cloned());
         }
@@ -231,8 +233,10 @@ impl RunContext {
     /// effective `runScope` excludes `TASK` (RFC 0009 `<Environment>`),
     /// layering the `Service.*` symbols in scope (see
     /// [`task_symtab`](Self::task_symtab); `step` names the Step for a Step
-    /// Environment) onto `symtab` (or the Environment's own
-    /// `resolved_symtab`). `profile` is that document's extension profile:
+    /// Environment, which follows the Step's `dependencies` — a Job
+    /// Environment, `step` `None`, follows its own) onto `symtab` (or the
+    /// Environment's own `resolved_symtab`). `profile` is that document's
+    /// extension profile:
     /// `Some` for an attached Environment Template, whose strings are then
     /// evaluated under its own extensions rather than the Job Template's
     /// (the Task Session's profile); `None` for the Job Template's own
@@ -253,11 +257,12 @@ impl RunContext {
             );
             return;
         }
+        let visibility = step.map_or(Visibility::Environment(env), Visibility::Step);
         let resolved = match self.task_symtab(
             symtab.as_ref(),
             env.resolved_symtab.as_ref(),
             &document,
-            step,
+            visibility,
         ) {
             Ok(resolved) => resolved,
             Err(e) => {
@@ -431,7 +436,7 @@ impl RunContext {
             step.resolved_symtab.as_ref(),
             None,
             &Document::JobTemplate,
-            Some(&step.name),
+            Visibility::Step(&step.name),
         )?;
         self.print_banner("Running Task");
         if !param_lines.is_empty() {

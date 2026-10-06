@@ -7,29 +7,36 @@
 //! 1. a Step that lists `service:X` in its `dependencies` is in `X`'s scope;
 //! 2. when Service `Y` lists `service:X`, every Step in `Y`'s scope is in
 //!    `X`'s scope, transitively through any chain of Services;
-//! 3. when any `jobEnvironments` entry references `Service.X.*`, every Step
-//!    is in `X`'s scope — the one way a Step enters a scope without listing
-//!    a dependency, since a Job Environment has no `dependencies` of its own;
-//! 4. a Service in whose scope no Step falls is unused, and the template is
-//!    rejected naming it ([`ComputedServiceScope::is_unused`]).
+//! 3. when any `jobEnvironments` entry lists `service:X` in its
+//!    `dependencies`, every Step is in `X`'s scope — a Job Environment is
+//!    entered by every Step's Session, so a Service it depends on is one
+//!    every Step depends on;
+//! 4. a Service in whose scope no Step falls — one that no Step, Service, or
+//!    Job Environment lists — is unused, and the template is rejected naming
+//!    it ([`ComputedServiceScope::is_unused`]).
 //!
 //! The `dependencies` of a template's Steps and Services together form one
 //! graph — Step-to-Step, Step-to-Service, Service-to-Step and
 //! Service-to-Service edges — which must be acyclic (§3.2 constraint 3, §9.9
-//! item 10). [`compute_service_scopes`] applies the rules to a decoded Job
-//! Template, reporting the first cycle found as a [`ServiceDependencyCycle`];
-//! [`service_dependency_cycle`] finds a cycle among the `service:`
-//! dependencies of an Environment Template's Services, which have no Steps
-//! to depend on.
+//! item 10). A Job Environment's entries add Environment-to-Service edges
+//! that, since nothing depends on an Environment, can never close a cycle,
+//! so they take no part in cycle detection. [`compute_service_scopes`]
+//! applies the rules to a decoded Job Template, reporting the first cycle
+//! found as a [`ServiceDependencyCycle`]; [`service_dependency_cycle`] finds
+//! a cycle among the `service:` dependencies of an Environment Template's
+//! Services, which have no Steps to depend on.
 //!
-//! `Service.*` values are available exactly to the entities that depend on
-//! the Service, so a reference is never an implicit edge. The reference
+//! `Service.*` values are available exactly to the entities that list the
+//! Service — a Step, a Service, or a Job Environment — so a reference is
+//! never an implicit edge, and never an implicit dependency. The reference
 //! extraction helpers at the end of this module ([`step_references`],
 //! [`environment_references`], [`service_references`]) remain for the two
-//! places a reference does matter: rule 3, and the diagnostic that names the
-//! missing `service:<name>` entry when an entity references a Service it does
-//! not list. The scheduler side of the rules (start before any Task of a
-//! Step in scope, stop once none remains) is the runtime's.
+//! places a reference does matter: the diagnostic that names the missing
+//! `service:<name>` entry when an entity references a Service it does not
+//! list, and the `runScope` default of a Step Environment (§4 item 4),
+//! which has no list of its own. The scheduler side of the rules (start
+//! before any Task of a Step in scope, stop once none remains) is the
+//! runtime's.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -51,8 +58,9 @@ use crate::format_string::FormatString;
     rename_all_fields = "camelCase"
 )]
 pub enum ServiceScope {
-    /// Every Step of the Job: a Service a Job Environment references, one a
-    /// Job-wide Service depends on, or an external Service. The Service lives
+    /// Every Step of the Job: a Service a Job Environment lists in its
+    /// `dependencies`, one a Job-wide Service depends on, or an external
+    /// Service. The Service lives
     /// as long as the Job.
     AllSteps,
     /// Exactly these Steps, by name. The Service is started before the first
@@ -151,8 +159,9 @@ pub struct ComputedServiceScope {
     pub dependent_steps: Vec<String>,
     /// The Services that list `service:<name>` (rule 2), in template order.
     pub dependent_services: Vec<String>,
-    /// True when a `jobEnvironments` entry references the Service (rule 3).
-    pub referenced_by_job_environment: bool,
+    /// True when a `jobEnvironments` entry lists `service:<name>` in its
+    /// `dependencies` (rule 3): every Step is in the scope.
+    pub listed_by_job_environment: bool,
 }
 
 impl ComputedServiceScope {
@@ -260,8 +269,8 @@ fn edges_of<'a>(
 ///
 /// The names in `jt.requires_services` are external Services: a
 /// `service:<name>` entry naming one is not an edge of the graph and does
-/// not place anything in an inline Service's scope. Only the fields that may
-/// legally reference `Service.*` are read for rule 3 (see the module docs).
+/// not place anything in an inline Service's scope, whether a Step, a
+/// Service, or a Job Environment lists it.
 pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceDependencyCycle> {
     let services = jt.services();
     let step_names: HashSet<&str> = jt.steps.iter().map(|s| s.name.as_str()).collect();
@@ -318,11 +327,11 @@ pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, Service
             }
         }
     }
-    // Rule 3.
+    // Rule 3: the Services the Job Environments list.
     let mut job_wide: HashSet<&str> = HashSet::new();
     for env in jt.job_environments.iter().flatten() {
-        for name in environment_references(env) {
-            if let Some(key) = service_names.get(name.as_str()) {
+        for name in env.listed_services() {
+            if let Some(key) = service_names.get(name) {
                 job_wide.insert(key);
             }
         }
@@ -403,7 +412,7 @@ pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, Service
                     .get(name)
                     .map(|v| v.iter().map(|s| s.to_string()).collect())
                     .unwrap_or_default(),
-                referenced_by_job_environment: job_wide.contains(name),
+                listed_by_job_environment: job_wide.contains(name),
             },
         );
     }
@@ -498,9 +507,10 @@ fn find_cycle<'a>(graph: &[(Node<'a>, Vec<Node<'a>>)]) -> Option<ServiceDependen
 }
 
 /// The Services of `services` that `dependencies` lists as `service:<name>`
-/// — those whose `Service.<name>.<port>.*` the listing entity may reference
-/// (§9 scope rules 2–3). Declaration order; a name the list does not declare
-/// (a required Service, or a typo) yields nothing here.
+/// — those whose `Service.<name>.<port>.*` the listing Step, Service, or
+/// Environment may reference (§9 scope rules 2–5). Declaration order; a
+/// name the list does not declare (a required Service, or a typo) yields
+/// nothing here.
 pub fn listed_services<'a>(
     dependencies: Option<&'a [StepDependency]>,
     services: &'a [Service],
@@ -512,8 +522,9 @@ pub fn listed_services<'a>(
 
 /// The `requiresServices` entries of `requirements` that `dependencies` lists
 /// as `service:<name>` — the required Services whose
-/// `Service.<name>.<port>.port` / `.connectAddress` the listing Step or
-/// Service may reference (§9 scope rules 2–3, §9.8 item 2). Declaration
+/// `Service.<name>.<port>.port` / `.connectAddress` the listing Step,
+/// Service, or Job Environment may reference (§9 scope rules 2–4, §9.8 item
+/// 2). Declaration
 /// order; a name no requirement declares (an inline Service, or a typo)
 /// yields nothing here. Listing a required Service grants access to its
 /// values and nothing more: its scope is every Step whether or not any
@@ -553,8 +564,10 @@ pub fn step_references(step: &StepTemplate) -> BTreeSet<String> {
 }
 
 /// The Service names an Environment references from its `variables`,
-/// actions, embedded files and script `let` (§9.1 rule 3 for a Job
-/// Environment; the `runScope` default of §4 item 3).
+/// actions, embedded files and script `let`. A reference is not a
+/// dependency: a Job Environment must list each as `service:<name>` (§9
+/// scope rule 4), and this is how the diagnostic finds the ones it does
+/// not.
 #[must_use]
 pub fn environment_references(env: &Environment) -> BTreeSet<String> {
     let mut symbols = HashSet::new();
@@ -563,8 +576,9 @@ pub fn environment_references(env: &Environment) -> BTreeSet<String> {
 }
 
 /// True when any format string of `env` references a `Service.*` value —
-/// the condition under which an Environment without `runScope` defaults to
-/// `[TASK]` (§4 item 3).
+/// for a Step Environment, which has no `dependencies` of its own, the
+/// condition under which an absent `runScope` defaults to `[TASK]` (§4
+/// item 4).
 #[must_use]
 pub fn environment_references_service(env: &Environment) -> bool {
     let mut symbols = HashSet::new();
@@ -735,21 +749,30 @@ mod tests {
     fn four_rules_and_transitivity() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
-             jobEnvironments:\n- name: E\n  variables: {{ADDR: \"{{{{ Service.Wide.main.connectAddress }}}}\"}}\n\
+             jobEnvironments:\n- name: E\n  dependencies: [{{dependsOn: service:Wide}}]\n  \
+             variables: {{ADDR: \"{{{{ Service.Wide.main.connectAddress }}}}\"}}\n\
              services:\n{}{}{}{}steps:\n{}{}{}",
             svc("Wide", &[], &[]),
-            svc("Front", &["{{ Service.Back.main.port }}"], &["service:Back"]),
+            svc(
+                "Front",
+                &["{{ Service.Back.main.port }}"],
+                &["service:Back"]
+            ),
             svc("Back", &[], &[]),
             svc("Lonely", &[], &[]),
             step("S1", &["{{ Service.Front.main.port }}"], &["service:Front"]),
-            step("S2", &["{{ Service.Back.main.port }}"], &["S1", "service:Back"]),
+            step(
+                "S2",
+                &["{{ Service.Back.main.port }}"],
+                &["S1", "service:Back"]
+            ),
             step("S3", &[], &["S2"]),
         );
         let jt = template(&yaml);
         let scopes = compute_service_scopes(&jt).unwrap();
         // Rule 3.
         assert_eq!(scopes.scope_of("Wide"), ServiceScope::AllSteps);
-        assert!(scopes.get("Wide").unwrap().referenced_by_job_environment);
+        assert!(scopes.get("Wide").unwrap().listed_by_job_environment);
         assert!(!scopes.get("Wide").unwrap().is_unused());
         // Rule 4: nothing lists Lonely.
         let lonely = scopes.get("Lonely").unwrap();
@@ -778,9 +801,14 @@ mod tests {
     fn a_job_wide_dependent_makes_the_depended_on_service_job_wide() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
-             jobEnvironments:\n- name: E\n  variables: {{ADDR: \"{{{{ Service.Front.main.connectAddress }}}}\"}}\n\
+             jobEnvironments:\n- name: E\n  dependencies: [{{dependsOn: service:Front}}]\n  \
+             variables: {{ADDR: \"{{{{ Service.Front.main.connectAddress }}}}\"}}\n\
              services:\n{}{}steps:\n{}{}",
-            svc("Front", &["{{ Service.Back.main.port }}"], &["service:Back"]),
+            svc(
+                "Front",
+                &["{{ Service.Back.main.port }}"],
+                &["service:Back"]
+            ),
             svc("Back", &[], &[]),
             step("S1", &[], &[]),
             step("S2", &[], &[]),
@@ -788,6 +816,33 @@ mod tests {
         let scopes = compute_service_scopes(&template(&yaml)).unwrap();
         assert_eq!(scopes.scope_of("Front"), ServiceScope::AllSteps);
         assert_eq!(scopes.scope_of("Back"), ServiceScope::AllSteps);
+    }
+
+    #[test]
+    fn a_job_environment_reference_without_a_dependency_is_not_rule_3() {
+        // Listing without referencing puts every Step in scope; referencing
+        // without listing (a validation error) is not an edge, and a
+        // required Service listed by a Job Environment is not one either.
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             requiresServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
+             jobEnvironments:\n\
+             - name: Opaque\n  dependencies: [{{dependsOn: service:Listed}}, {{dependsOn: service:Ext}}]\n  \
+             variables: {{A: x}}\n\
+             - name: Stray\n  variables: {{ADDR: \"{{{{ Service.Referenced.main.connectAddress }}}}\"}}\n\
+             services:\n{}{}steps:\n{}",
+            svc("Listed", &[], &[]),
+            svc("Referenced", &[], &[]),
+            step("S1", &[], &[]),
+        );
+        let scopes = compute_service_scopes(&template(&yaml)).unwrap();
+        let listed = scopes.get("Listed").unwrap();
+        assert_eq!(listed.scope, ServiceScope::AllSteps);
+        assert!(listed.listed_by_job_environment);
+        let referenced = scopes.get("Referenced").unwrap();
+        assert!(referenced.is_unused());
+        assert!(!referenced.listed_by_job_environment);
+        assert!(scopes.get("Ext").is_none());
     }
 
     #[test]

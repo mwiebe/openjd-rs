@@ -3801,6 +3801,7 @@ mod wrap_actions_tests {
         Environment {
             name: name.to_string(),
             description: None,
+            dependencies: None,
             run_scope: None,
             script: Some(EnvironmentScript {
                 let_bindings: None,
@@ -3865,6 +3866,7 @@ mod wrap_actions_tests {
         let env = Environment {
             name: "NoScript".into(),
             description: None,
+            dependencies: None,
             run_scope: None,
             script: None,
             variables: None,

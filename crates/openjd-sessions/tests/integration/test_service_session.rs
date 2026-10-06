@@ -264,6 +264,7 @@ fn env(
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         run_scope,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -2836,6 +2837,7 @@ fn service_wrap_env(
     Environment {
         name: name.into(),
         description: None,
+        dependencies: None,
         run_scope,
         script: Some(EnvironmentScript {
             let_bindings: None,

@@ -885,6 +885,7 @@ extensions: [SERVICE, EXPR, WRAP_ACTIONS]
 name: Test
 jobEnvironments:
   - name: Client
+    dependencies: [{ dependsOn: "service:A" }]
     runScope: [TASK]
     variables:
       HOST: "{{ Service.A.p.connectAddress }}"
@@ -922,7 +923,9 @@ steps:
     assert_eq!(envs[0].run_scope, Some(vec![RunScope::Task]));
     assert!(envs[0].runs_in(RunScope::Task));
     assert!(!envs[0].runs_in(RunScope::Service));
+    assert_eq!(envs[0].depends_on_services().collect::<Vec<_>>(), ["A"]);
     assert_eq!(envs[1].run_scope, None);
+    assert!(envs[1].dependencies.is_none());
     assert!(envs[1].runs_in(RunScope::Service));
     let actions = &envs[1].script.as_ref().unwrap().actions;
     assert!(actions.has_any_service_wrap_hook());

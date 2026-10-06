@@ -395,8 +395,13 @@ impl EnvironmentTemplate {
 pub struct template::Environment {
     pub name: String,
     pub description: Option<Description>,
-    /// RFC 0009 `runScope` — requires the `SERVICE` extension. Plain
-    /// strings so an unrecognized `<RunScopeName>` is a path-annotated
+    /// RFC 0009 `dependencies` (§4 item 3) — requires the `SERVICE`
+    /// extension. The Services this Environment lists as `service:<name>`,
+    /// as written; permitted on a `jobEnvironments` entry and an Environment
+    /// Template's `environment`, never on a `stepEnvironments` entry.
+    pub dependencies: Option<Vec<StepDependency>>,
+    /// RFC 0009 `runScope` (§4 item 4) — requires the `SERVICE` extension.
+    /// Plain strings so an unrecognized `<RunScopeName>` is a path-annotated
     /// validation error; query through `runs_in`.
     pub run_scope: Option<Vec<String>>,
     pub script: Option<template::EnvironmentScript>,
@@ -404,14 +409,24 @@ pub struct template::Environment {
 }
 
 impl template::Environment {
-    /// Entered in Sessions of `kind`? Every kind when `runScope` is
-    /// absent, else exactly the kinds named; unknown names never match.
+    /// Entered in Sessions of `kind`? The effective `runScope`: exactly the
+    /// kinds named when given, else `[TASK]` when the Environment lists a
+    /// Service or references `Service.*`, every kind otherwise; unknown
+    /// names never match.
     pub fn runs_in(&self, kind: RunScope) -> bool;
     /// The kinds this Environment is entered in, in `RunScope::ALL` order.
     pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_;
+    /// The Service names `dependencies` lists as `service:<name>`, list order.
+    pub fn listed_services(&self) -> impl Iterator<Item = &str> + '_;
+    /// `dependencies` lists at least one Service.
+    pub fn depends_on_service(&self) -> bool;
+    /// Any format string references a `Service.*` value.
+    pub fn references_service(&self) -> bool;
+    /// `runScope` is absent and defaults to `[TASK]`.
+    pub fn default_run_scope_is_task_only(&self) -> bool;
 }
 
-/// §4 item 3 `<RunScopeName>`: a kind of Session (RFC 0009).
+/// §4 item 4 `<RunScopeName>`: a kind of Session (RFC 0009).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum template::RunScope {
@@ -711,7 +726,7 @@ pub struct ComputedServiceScope {
     pub depends_on_steps: Vec<String>,         // Steps it lists, list order; undeclared names kept
     pub dependent_steps: Vec<String>,          // Steps listing service:<name> (rule 1), template order
     pub dependent_services: Vec<String>,       // Services listing service:<name> (rule 2), template order
-    pub referenced_by_job_environment: bool,   // a jobEnvironments entry references it (rule 3)
+    pub listed_by_job_environment: bool,       // a jobEnvironments entry lists service:<name> (rule 3)
 }
 impl ComputedServiceScope {
     pub fn is_unused(&self) -> bool;           // scope is Steps with no Step (rule 4)
@@ -732,37 +747,40 @@ impl Display for ServiceDependencyCycle;   // "dependencies contain a cycle: Use
 
 /// Scopes of every inline Service (rules 1–3), or the first cycle among the
 /// Step→Step, Step→Service, Service→Step and Service→Service edges.
-/// `service:` entries naming a `requiresServices` entry are not edges.
+/// `service:` entries naming a `requiresServices` entry are not edges; a Job
+/// Environment's entries (rule 3) are not edges of the cycle graph either.
 pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceDependencyCycle>;
 /// A cycle among the `service:` dependencies of an Environment Template's Services.
 pub fn service_dependency_cycle(services: &[template::Service]) -> Option<ServiceDependencyCycle>;
 /// The Services of `services` that `dependencies` lists as `service:<name>`,
 /// in declaration order — those whose `Service.<name>.<port>.port` /
-/// `.connectAddress` the listing entity may reference.
+/// `.connectAddress` the listing Step, Service, or Environment may reference.
 pub fn listed_services<'a>(
     dependencies: Option<&'a [StepDependency]>,
     services: &'a [template::Service],
 ) -> impl Iterator<Item = &'a template::Service> + Clone + 'a;
 /// The `requiresServices` entries that `dependencies` lists as `service:<name>`,
 /// in declaration order — the required Services whose `port` / `connectAddress`
-/// the listing Step or Service may reference (§9.8 item 2). Listing one grants
-/// access to its values and nothing more: its scope is every Step regardless.
+/// the listing Step, Service, or Job Environment may reference (§9.8 item 2).
+/// Listing one grants access to its values and nothing more: its scope is every
+/// Step regardless.
 pub fn listed_requirements<'a>(
     dependencies: Option<&'a [StepDependency]>,
     requirements: &'a [template::ServiceRequirement],
 ) -> impl Iterator<Item = &'a template::ServiceRequirement> + Clone + 'a;
-/// Reference extraction: not dependency edges. Used for rule 3 and for the
-/// diagnostic naming the missing `service:<name>` entry. Reachable only through
-/// `template::service_scope::*`.
+/// Reference extraction: not dependency edges. Used for the diagnostic naming
+/// the missing `service:<name>` entry and for a Step Environment's `runScope`
+/// default. Reachable only through `template::service_scope::*`.
 pub fn step_references(step: &template::StepTemplate) -> BTreeSet<String>;
 pub fn environment_references(env: &template::Environment) -> BTreeSet<String>;
 pub fn environment_references_service(env: &template::Environment) -> bool;
 pub fn service_references(svc: &template::Service) -> BTreeSet<String>;
 ```
 
-`template::Environment` gains `references_service()` and `default_run_scope_is_task_only()`
-beside `runs_in` / `effective_run_scope`, which report the effective `runScope` (§4 item 3:
-`[TASK]` by default for an Environment referencing `Service.*`).
+`template::Environment` gains `listed_services()`, `depends_on_service()`,
+`references_service()` and `default_run_scope_is_task_only()` beside `runs_in` /
+`effective_run_scope`, which report the effective `runScope` (§4 item 4: `[TASK]` by default
+for an Environment that lists a Service in `dependencies` or references `Service.*`).
 
 ### Job Parameter Definitions
 
@@ -1067,6 +1085,11 @@ pub struct job::Action {
 pub struct job::Environment {
     pub name: String,
     pub description: Option<String>,
+    /// RFC 0009 `dependencies`: the Services this Environment lists as
+    /// `service:<name>`, as written (a Job Environment's or an attached
+    /// Environment Template's `environment`'s; never a Step Environment's).
+    /// Omitted from JSON when `None`.
+    pub dependencies: Option<Vec<StepDependency>>,
     /// RFC 0009 `runScope`: the kinds of Session this Environment is entered
     /// in; `None` = every kind. Omitted from JSON when `None`.
     pub run_scope: Option<Vec<RunScope>>,
@@ -1079,6 +1102,10 @@ pub struct job::Environment {
 impl job::Environment {
     /// True iff this Environment is entered in Sessions of kind `kind`.
     pub fn runs_in(&self, kind: RunScope) -> bool;
+    /// The Services listed in `dependencies`, without the `service:` prefix.
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>;
+    /// `dependencies` lists `service:<name>`.
+    pub fn depends_on_service(&self, name: &str) -> bool;
 }
 
 // Re-exported from `template` for the job-side types:

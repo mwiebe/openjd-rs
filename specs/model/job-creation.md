@@ -309,19 +309,23 @@ dependencies. `build_task_check_symtab` seeds a Step's check table with the
 `listed_services(step.dependencies, services)` and
 `listed_requirements(step.dependencies, requirements)`; its `stepEnvironments`
 are checked by `build_env_check_symtab` against the same Services and
-requirements. A `jobEnvironments` entry is checked against every inline
-Service of the Job Template and every requirement — the one site that needs
-no dependency (referencing an inline Service from a Job Environment is what
-puts every Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
+requirements. A `jobEnvironments` entry is checked against the inline
+Services and the requirements it lists in its *own* `dependencies` —
+`listed_services(env.dependencies, services)` and
+`listed_requirements(env.dependencies, requirements)` — the same rule as for
+a Step (listing an inline Service from a Job Environment is what puts every
+Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
 when the environment's *effective* `runScope` excludes `SERVICE` — the same
 visibility rules pass 8 applied, so a reference that validated resolves here
 and at run time.
 Conversion also materializes an Environment's default `runScope`: one without
-the field that references `Service.*` is converted with `run_scope:
-Some([Task])` (§4 item 3), so a runtime never re-derives the default.
+the field that lists a Service in `dependencies` (or, a Step Environment,
+references `Service.*`) is converted with `run_scope: Some([Task])` (§4 item
+4), so a runtime never re-derives the default.
 
-Environment conversion carries `runScope` (parsed to `Vec<RunScope>`) and
-the four `onWrapService*` hooks into `job::Environment`.
+Environment conversion carries `dependencies` (as written), `runScope`
+(parsed to `Vec<RunScope>`) and the four `onWrapService*` hooks into
+`job::Environment`.
 
 #### Resolved-value checks on carried-forward fields
 
@@ -601,12 +605,14 @@ Environments converted:
    and the carried-forward re-checks all run as for an inline Service.
 4. **Attached Environments.** The carried-forward resolved-value checks
    run as for a `jobEnvironments` entry (`build_env_check_symtab` seeded
-   with the document's own Services, only when the Environment's effective
-   `runScope` excludes `SERVICE`, exactly the pass 8 scope), then
-   `convert_environment_with_symtab` freezes the attachment's table into
-   `resolved_symtab`, and the attachment's `Document` is pushed onto
-   `environment_documents` so a runtime seeding `Service.*` for the
-   Environment seeds that document's Services only.
+   with the Services of the document the Environment lists in its own
+   `dependencies` — `listed_services(env.dependencies, services)` — only
+   when the Environment's effective `runScope` excludes `SERVICE`, exactly
+   the pass 8 scope), then `convert_environment_with_symtab` freezes the
+   attachment's table into `resolved_symtab` and carries the `dependencies`,
+   and the attachment's `Document` is pushed onto `environment_documents` so
+   a runtime seeding `Service.*` for the Environment seeds, of that
+   document's Services, the ones the Environment lists.
 
 Errors raised inside one document in steps 3–4 are attributed to it:
 validation errors get the document prefixed to every path and report for

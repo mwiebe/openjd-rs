@@ -1952,7 +1952,10 @@ fn rfc_example_queue_cache_environment_verbatim() {
     )
     .expect("expected successful decode");
     assert_eq!(et.services()[0].name, "Cache");
-    assert_eq!(et.environment.as_ref().unwrap().name, "CacheClient");
+    let env = et.environment.as_ref().unwrap();
+    assert_eq!(env.name, "CacheClient");
+    // The Environment lists the Service it references (§4 item 3).
+    assert_eq!(env.listed_services().collect::<Vec<_>>(), vec!["Cache"]);
 }
 
 #[test]

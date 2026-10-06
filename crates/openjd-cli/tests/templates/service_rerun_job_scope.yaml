@@ -1,5 +1,5 @@
 # completedTasks: RERUN on a Service whose scope is every Step (a Job
-# Environment references it): when its first instance exits while Step B's
+# Environment lists it): when its first instance exits while Step B's
 # first Task runs, every Step returns to pending — Step A's completed Task
 # runs again, and Helper (scoped to Step B, which lists it; stopped when
 # B returned to pending) starts again in a new Service Session when B is next
@@ -64,6 +64,8 @@ services:
           args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('helper exit\\n')"]
 jobEnvironments:
   - name: SharedClient
+    dependencies:
+      - dependsOn: service:Shared
     variables:
       SHARED_PORT: "{{ Service.Shared.main.port }}"
 steps:

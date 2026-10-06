@@ -310,11 +310,10 @@ pub fn create_job(
     // each job environment against a session-scope check symbol table,
     // where job parameters are bound to real values. A violation
     // template validation could only lower-bound is decidable here —
-    // fail at submission, not on the worker. A job environment whose
-    // effective `runScope` excludes SERVICE also sees every inline and
-    // required Service's `Service.*` endpoints (RFC 0009 §9 scope rule 4:
-    // a Job Environment has no `dependencies`; referencing a Service puts
-    // every Step in its scope).
+    // fail at submission, not on the worker. A job environment also sees
+    // the `Service.*` endpoints of the inline and required Services it
+    // lists in its `dependencies` (RFC 0009 §9 scope rule 4; listing an
+    // inline Service puts every Step in its scope).
     if let Some(envs) = &job_template.job_environments {
         let mut check_errors = crate::error::ValidationErrors::default();
         for (i, env) in envs.iter().enumerate() {
@@ -324,8 +323,8 @@ pub fn create_job(
                 has_expr,
                 ctx,
                 budgets,
-                services_t.iter(),
-                requirements_t.iter(),
+                crate::template::listed_services(env.dependencies.as_deref(), services_t),
+                crate::template::listed_requirements(env.dependencies.as_deref(), requirements_t),
             )?;
             let env_path = [
                 crate::error::PathElement::Field("jobEnvironments".to_string()),

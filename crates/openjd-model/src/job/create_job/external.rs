@@ -546,15 +546,16 @@ pub fn apply_environment_templates(
 
         if let Some(env) = att.template.environment() {
             // The same carried-forward re-checks `create_job` runs on a
-            // `jobEnvironments` entry, against this document's Services
-            // (seeded only when the Environment's runScope excludes SERVICE).
+            // `jobEnvironments` entry, against the Services of this
+            // document the Environment lists in its `dependencies` (seeded
+            // only when its runScope excludes SERVICE).
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
                 has_expr,
                 &ctx,
                 budgets,
-                services.iter(),
+                crate::template::listed_services(env.dependencies.as_deref(), services),
                 std::iter::empty(),
             )
             .map_err(|e| in_document(e, &doc_path))?;

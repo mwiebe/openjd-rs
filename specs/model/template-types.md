@@ -187,37 +187,62 @@ resolves the Service targets (see [validation.md](validation.md)).
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
-    pub run_scope: Option<Vec<String>>,       // runScope; SERVICE extension (RFC 0009)
+    pub dependencies: Option<Vec<StepDependency>>, // SERVICE extension (RFC 0009), §4 item 3
+    pub run_scope: Option<Vec<String>>,       // runScope; SERVICE extension (RFC 0009), §4 item 4
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
 
 impl Environment {
-    /// §4 item 3: entered in Sessions of `kind`? Exactly the kinds the list
+    /// §4 item 4: entered in Sessions of `kind`? Exactly the kinds the list
     /// names when `runScope` is given; else the default — `[TASK]` when the
-    /// Environment references `Service.*`, every kind otherwise (unknown
-    /// names never match).
+    /// Environment lists a Service in `dependencies` or references
+    /// `Service.*`, every kind otherwise (unknown names never match).
     pub fn runs_in(&self, kind: RunScope) -> bool;
     /// The kinds this Environment is entered in, in `RunScope::ALL` order.
     pub fn effective_run_scope(&self) -> impl Iterator<Item = RunScope> + '_;
+    /// The Service names `dependencies` lists as `service:<name>`, in list
+    /// order (a Step-name entry, a validation error, yields nothing).
+    pub fn listed_services(&self) -> impl Iterator<Item = &str> + '_;
+    /// `dependencies` lists at least one Service.
+    pub fn depends_on_service(&self) -> bool;
     /// Any format string (variables, actions, embedded files, script `let`)
     /// references a `Service.*` value.
     pub fn references_service(&self) -> bool;
-    /// `runScope` is absent and defaults to `[TASK]` because of a reference.
+    /// `runScope` is absent and defaults to `[TASK]`: a dependency or a
+    /// reference.
     pub fn default_run_scope_is_task_only(&self) -> bool;
 }
 ```
 
-**Default `runScope`** (§4 item 3). An absent `runScope` follows from the Environment's own text:
-an Environment any of whose format strings references a `Service.*` value is entered in Task
-Sessions only, as if `runScope: [TASK]` were given; any other Environment is entered in every
-kind of Session. `runs_in` and `effective_run_scope` report the effective value, so pass 8's
-`Service.*` seeding, the wrap-hook rule (pass 10), the sessions runtime, and job creation —
-which materializes the default into `job::Environment::run_scope` as `Some([Task])` — never
-re-derive it. An explicit list is exhaustive; one that includes `SERVICE` on an Environment
-referencing `Service.*` is a pass 8 error (see [validation.md](validation.md)).
+**`dependencies`** (§4 item 3, RFC 0009). The Services an Environment depends on, as
+`<StepDependency>` entries in the `service:<name>` form, held as written (like a Step's). The
+field is permitted only on a `jobEnvironments` entry and on an Environment Template's
+`environment`; a `stepEnvironments` entry follows its Step's `dependencies` and may not give a
+list of its own. Listing a Service is what makes `Service.<name>.<port>.port` /
+`.connectAddress` available to the Environment's format strings (pass 8 seeds exactly the
+listed Services — `listed_services` / `listed_requirements` over `env.dependencies` — the same
+rule as for a Step or a Service), and a Job Environment that lists an inline Service puts every
+Step in that Service's scope (§9.1 rule 3, below). Validation (pass 11) gates the field on
+`SERVICE` like `runScope`, rejects it on a Step Environment, and checks each entry (see
+[validation.md](validation.md)). Job creation carries the list onto `job::Environment`.
 
-### RunScope (§4 item 3 `<RunScopeName>`, `SERVICE` extension, RFC 0009)
+**Default `runScope`** (§4 item 4). An absent `runScope` follows from the Environment's own text:
+an Environment that lists any Service in `dependencies`, or a Step Environment (which has no
+list of its own) that references a `Service.*` value its Step lists, is entered in Task
+Sessions only, as if `runScope: [TASK]` were given; any other Environment is entered in every
+kind of Session. `default_run_scope_is_task_only` is `depends_on_service() ||
+references_service()`: the dependency is the rule for a Job Environment, the reference the
+rule for a Step Environment, and the reference check is harmless belt-and-braces for a Job
+Environment (whose reference without a dependency pass 8 rejects anyway). `runs_in` and
+`effective_run_scope` report the effective value, so pass 8's `Service.*` seeding, the
+wrap-hook rule (pass 10), the sessions runtime, and job creation — which materializes the
+default into `job::Environment::run_scope` as `Some([Task])` — never re-derive it. An explicit
+list is exhaustive; one that includes `SERVICE` on an Environment that lists a Service is a
+pass 11 error, and on one that references `Service.*` a pass 8 error (see
+[validation.md](validation.md)).
+
+### RunScope (§4 item 4 `<RunScopeName>`, `SERVICE` extension, RFC 0009)
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -315,8 +340,8 @@ empty list (`must not be empty.`), and at `services[k] -> dependencies[j]` an un
 (`dependency 'Nope' not found.`), an unknown Service (`dependency 'service:Nope' not found: no
 Service of that name in services or requiresServices.`), the Service itself (`cannot depend on
 itself.`), a duplicate entry (`duplicate dependency '…'.`), and a Step listed by a Service a Job
-Environment references (every Step is in that Service's scope, so the Step could not run until
-the Service was READY); a cycle in the combined graph is reported at the root (`dependencies
+Environment lists (every Step is in that Service's scope, so the Step could not run until the
+Service was READY); a cycle in the combined graph is reported at the root (`dependencies
 contain a cycle: <path>.`). On an Environment Template only `service:` entries naming a Service
 of the same document are valid (§9 item 4, §9.9 items 10–13).
 
@@ -330,7 +355,7 @@ Job's Environments whose `runScope` includes `SERVICE` and by its `onEnter`, nev
 ### Service scope (§9.1)
 
 `template::service_scope` computes the scope of every Service of a Job Template from the
-`dependencies` of its Steps and Services:
+`dependencies` of its Steps, Services, and Job Environments:
 
 ```rust
 pub enum ServiceScope {               // Serialize/Deserialize: {"kind":"allSteps"} | {"kind":"steps","steps":[..]}
@@ -352,7 +377,7 @@ pub struct ComputedServiceScope {
     pub depends_on_steps: Vec<String>,         // Steps it lists, list order (undeclared names kept)
     pub dependent_steps: Vec<String>,          // Steps listing `service:<name>` (rule 1), template order
     pub dependent_services: Vec<String>,       // Services listing `service:<name>` (rule 2), template order
-    pub referenced_by_job_environment: bool,   // rule 3
+    pub listed_by_job_environment: bool,       // rule 3: a `jobEnvironments` entry lists `service:<name>`
 }
 impl ComputedServiceScope {
     pub fn is_unused(&self) -> bool;           // rule 4: scope is `Steps` with no Step
@@ -376,42 +401,48 @@ pub fn service_references(svc: &Service) -> BTreeSet<String>;
 
 The four rules: (1) a Step that lists `service:X` in its `dependencies` is in `X`'s scope;
 (2) when Service `Y` lists `service:X`, every Step in `Y`'s scope is in `X`'s scope,
-transitively through any chain of Services; (3) when any `jobEnvironments` entry references
-`Service.X.*`, every Step is in `X`'s scope — the one way a Step enters a scope without listing a
-dependency, since a Job Environment has no `dependencies` of its own; (4) a Service in whose scope
-no Step falls is unused, and pass 11 rejects the template at `services[k]` naming it (`Service
-'Cache' is unused: no Step or Service lists 'service:Cache' in its dependencies and no Job
-Environment references it, so no Step is in its scope.`). A `service:` entry naming a
-`requiresServices` name is not an edge and places nothing in an inline Service's scope (an
-external Service's scope is every Step). An Environment Template's Services have every Step in
-their scope and are never unused.
+transitively through any chain of Services; (3) when any `jobEnvironments` entry lists
+`service:X` in its `dependencies`, every Step is in `X`'s scope — a Job Environment is entered
+by every Step's Session, so a Service it depends on is one every Step depends on, declared
+rather than inferred; (4) a Service in whose scope no Step falls — one that no Step, Service, or
+Job Environment lists — is unused, and pass 11 rejects the template at `services[k]` naming it
+(`Service 'Cache' is unused: no Step, Service, or Job Environment lists 'service:Cache' in its
+dependencies, so no Step is in its scope.`). A `service:` entry naming a `requiresServices`
+name is not an edge and places nothing in an inline Service's scope (an external Service's scope
+is every Step), whichever kind of entity lists it. An Environment Template's Services have every
+Step in their scope and are never unused.
 
 The `dependencies` of the template's Steps and Services form one graph — Step-to-Step,
 Step-to-Service, Service-to-Step and Service-to-Service edges — that must be acyclic (§3.2
-constraint 3, §9.9 item 10). `compute_service_scopes` reports the first cycle found as a
+constraint 3, §9.9 item 10). A Job Environment's entries add Environment-to-Service edges that,
+since nothing depends on an Environment, can never close a cycle, so they take no part in cycle
+detection. `compute_service_scopes` reports the first cycle found as a
 `ServiceDependencyCycle`, whose `path` spells each node as `dependsOn` writes it (a Step name or
 `service:<name>`) and starts and ends with the same node; pass 11 reports it at the root path.
 `service_dependency_cycle` finds a cycle among the `service:` dependencies of an Environment
 Template's Services (which have no Steps); pass 11 reports it at `services`.
 
 `listed_services` yields, in declaration order, the Services of `services` that `dependencies`
-lists as `service:<name>` — those whose `Service.<name>.<port>.*` the listing Step or Service may
-reference; a required name or a typo yields nothing. `listed_requirements` is its counterpart over
-a Job Template's `requiresServices`: the required Services the entity lists, whose `port` /
-`connectAddress` it may reference (§9.8 item 2); an inline name or a typo yields nothing. Pass 8
-seeds a Step's script and `stepEnvironments`, and a Service's own fields, with both, and job
-creation passes them as a Step's or Service's in-scope sets. Listing a required Service grants
-access to its values and nothing more — its scope is every Step regardless.
+lists as `service:<name>` — those whose `Service.<name>.<port>.*` the listing Step, Service, or
+Environment may reference; a required name or a typo yields nothing. `listed_requirements` is
+its counterpart over a Job Template's `requiresServices`: the required Services the entity lists,
+whose `port` / `connectAddress` it may reference (§9.8 item 2); an inline name or a typo yields
+nothing. Pass 8 seeds a Step's script and `stepEnvironments` (over the Step's list), a Service's
+own fields (over its list), a Job Environment (over its own list, both helpers), and an
+Environment Template's `environment` (over its own list, `listed_services` only) with them, and
+job creation passes the same sets as the entity's in-scope sets. Listing a required Service
+grants access to its values and nothing more — its scope is every Step regardless.
 
-`Service.*` values are available exactly to the entities that depend on the Service, so a
-reference is never an implicit edge. The reference extraction helpers remain for the two places a
-reference matters: rule 3 (`environment_references` on each `jobEnvironments` entry), and the
-pass 8 diagnostic (`service_diagnostics.rs`) that names the missing `service:<name>` entry when a
-Step or Service references a Service it does not list. Only the fields that may legally reference
-`Service.*` are read: a reference in a job-creation field (`let`, `hostRequirements`, a numeric
-`@fmtstring`) is a pass 8 error and places nothing in a scope. `environment_references_service`
-also drives the `runScope` default (§4 item 3). Job creation records each Service's scope on
-`job::Service` (see [job-types.md](job-types.md)).
+`Service.*` values are available exactly to the entities that list the Service, so a reference is
+never an implicit edge, and never an implicit dependency. The reference extraction helpers remain
+for the two places a reference matters: the pass 8 diagnostic (`service_diagnostics.rs`) that
+names the missing `service:<name>` entry when a Step, Service, or Environment references a
+Service it does not list, and the `runScope` default of a Step Environment (§4 item 4), which
+has no list of its own (`environment_references_service`). Only the fields that may legally
+reference `Service.*` are read: a reference in a job-creation field (a `<StepTemplate>`'s or
+`<Service>`'s `let`, `hostRequirements`, a numeric `@fmtstring`) is a pass 8 error and places
+nothing in a scope. Job creation records each Service's scope on `job::Service` (see
+[job-types.md](job-types.md)).
 
 ### ServiceRequirement (§9.8) and ServiceRequirementPort (§9.8.1)
 
@@ -432,13 +463,13 @@ pub struct ServiceRequirementPort {
 A requirement makes `Service.<name>.<port>.port` and `.connectAddress` available, for each
 declared port, under the same rule as an inline Service's ports (§9 scope rules 2–4, §9.8 item 2):
 to the `script` and `stepEnvironments` of a Step that lists `service:<name>` in its
-`dependencies`, to an inline Service that lists it, and to every `jobEnvironments` entry whose
-effective `runScope` excludes `SERVICE`, which needs no dependency. A Step or Service that
-references a required Service without listing it is rejected with the same message as for an
-inline Service (see [validation.md](validation.md), "Scope-rule diagnostics"); `bindAddress` is
-never in scope. A requirement that no Step, Service, or Job Environment lists or references is
-accepted — unlike an unused inline Service — since it may exist to be matched for a consumer that
-reaches the Service by other means. At submission `apply_environment_templates` matches it to
+`dependencies`, to an inline Service that lists it, and to a `jobEnvironments` entry that lists
+it. A Step, Service, or Job Environment that references a required Service without listing it is
+rejected with the same message as for an inline Service (see [validation.md](validation.md),
+"Scope-rule diagnostics"); `bindAddress` is never in scope. Listing a required Service grants
+visibility and nothing more: its scope is every Step whether or not anything lists it. A
+requirement that no Step, Service, or Job Environment lists is accepted — unlike an unused inline
+Service — since it may exist to be matched for a consumer that reaches the Service by other means. At submission `apply_environment_templates` matches it to
 exactly one attached Service of that name declaring every listed port with the same protocol (see
 [job-creation.md](job-creation.md), "Applying Environment Templates"). Permitted only in a Job
 Template.
@@ -659,7 +690,7 @@ pub enum WrapHookScope {
 The slots are enumerated once per struct in the `impl_environment_actions_helpers!` invocation
 (`slots: [...]`, `wrap_hooks: [...]`); the array lengths above are derived from those lists.
 The job-side `job::EnvironmentActions` is invoked with the same nine slots and seven hooks, and
-`convert_environment` carries the RFC 0009 hooks and `runScope` across (typed as
+`convert_environment` carries the RFC 0009 hooks, `dependencies` and `runScope` across (typed as
 `Vec<RunScope>` on the job side — see [job-types.md](job-types.md)).
 
 The wrap-hook default timeouts follow the wrapped action: `onWrapEnvExit` takes `onExit`'s 300

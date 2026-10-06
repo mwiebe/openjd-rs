@@ -70,6 +70,8 @@ services:
             mode: TERMINATE
 jobEnvironments:
   - name: Client
+    dependencies:
+      - dependsOn: service:Back
     runScope: [TASK]
     variables:
       BACK_PORT: "{{ Service.Back.main.port }}"

@@ -23,6 +23,7 @@ fn make_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> En
     Environment {
         name: name.to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -138,6 +139,7 @@ async fn test_env_no_script() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: None,
@@ -163,6 +165,7 @@ async fn test_env_with_embedded_files() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -209,6 +212,7 @@ async fn test_env_with_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -243,6 +247,7 @@ async fn test_env_exit_removes_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: None,
         variables: Some(vars),
@@ -508,6 +513,7 @@ async fn test_env_with_resolved_variables() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: None,
@@ -547,6 +553,7 @@ async fn test_env_let_bindings_respect_lowered_memory_budget() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: Some(vec!["x = 'a' * 100000".to_string()]),
@@ -591,6 +598,7 @@ async fn test_env_with_let_bindings_and_embedded_files() {
     let env = Environment {
         name: "test_env".to_string(),
         description: None,
+        dependencies: None,
         run_scope: None,
         script: Some(EnvironmentScript {
             let_bindings: Some(vec!["configPath = Env.File.Config".to_string()]),

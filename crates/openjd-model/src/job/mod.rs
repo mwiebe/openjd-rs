@@ -192,11 +192,23 @@ pub struct Action {
 pub struct Environment {
     pub name: String,
     pub description: Option<String>,
-    /// RFC 0009 `runScope` (Template Schemas §4 item 3): the kinds of
+    /// RFC 0009 `dependencies` (Template Schemas §4 item 3): the Services
+    /// this Environment lists as `service:<name>`, as written. Carried for a
+    /// `jobEnvironments` entry and an attached Environment Template's
+    /// `environment` (a Step Environment never has one); validation has
+    /// rejected every entry that is not a Service of the Environment's own
+    /// document or, in the Job Template, a required one. The Services
+    /// listed are exactly those whose `Service.<name>.<port>.*` the
+    /// Environment's format strings may reference, and a runtime seeds them
+    /// from this list ([`depends_on_services`](Self::depends_on_services)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependencies: Option<Vec<StepDependency>>,
+    /// RFC 0009 `runScope` (Template Schemas §4 item 4): the kinds of
     /// Session this Environment is entered in. `None` means every kind;
     /// query the effective scope with [`runs_in`](Self::runs_in). Job
     /// creation materializes the default here: an Environment without
-    /// `runScope` that references `Service.*` is converted with `[TASK]`.
+    /// `runScope` that lists a Service in `dependencies` (or, a Step
+    /// Environment, references `Service.*`) is converted with `[TASK]`.
     /// Typed here (unlike the template side) because validation has already
     /// rejected unrecognized names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -211,7 +223,7 @@ pub struct Environment {
 
 impl Environment {
     /// True iff this Environment is entered in Sessions of kind `kind`
-    /// (Template Schemas §4 item 3, RFC 0009): every kind when `runScope` is
+    /// (Template Schemas §4 item 4, RFC 0009): every kind when `runScope` is
     /// absent, else exactly the kinds the list names. The job-side
     /// counterpart of [`crate::template::Environment::runs_in`].
     #[must_use]
@@ -221,6 +233,25 @@ impl Environment {
             Some(kinds) => kinds.contains(&kind),
         }
     }
+
+    /// The Services this Environment lists in its `dependencies` as
+    /// `service:<name>` (Template Schemas §4 item 3), in list order, without
+    /// the prefix — the Services whose `port` / `connectAddress` its format
+    /// strings may reference. Empty for a Step Environment, which follows
+    /// its Step's list.
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str> {
+        self.dependencies
+            .iter()
+            .flatten()
+            .filter_map(|d| d.target(true).service())
+    }
+
+    /// True when this Environment lists `service:<name>` in its
+    /// `dependencies`.
+    #[must_use]
+    pub fn depends_on_service(&self, name: &str) -> bool {
+        self.depends_on_services().any(|n| n == name)
+    }
 }
 
 /// Manual because `HashMap` has no `Hash`; `variables` hashes as
@@ -229,6 +260,7 @@ impl Hash for Environment {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.description.hash(state);
+        self.dependencies.hash(state);
         self.run_scope.hash(state);
         self.script.hash(state);
         match &self.variables {
@@ -439,7 +471,7 @@ pub struct Service {
     /// The Steps whose Tasks depend on this Service (Template Schemas §9.1),
     /// computed from the template's `dependencies` lists: the Steps that list
     /// `service:<name>`, those in the scope of a Service that lists it, and
-    /// [`ServiceScope::AllSteps`] for a Service a Job Environment references,
+    /// [`ServiceScope::AllSteps`] for a Service a Job Environment lists,
     /// one a Job-wide Service depends on, or an external Service. A scheduler
     /// starts the Service before the first Task of any Step in the scope and
     /// stops it once none has a Task left.

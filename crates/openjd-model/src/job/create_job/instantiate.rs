@@ -21,8 +21,8 @@ use super::ranges;
 
 /// The job-wide inputs every instantiation step shares: the context's
 /// extensions and limits, the caller budgets, and the template's Services
-/// and requirements (whose `Service.*` symbols are in scope for the Steps and
-/// Services that list them, and the requirements' for every Job Environment).
+/// and requirements (whose `Service.*` symbols are in scope for the Steps,
+/// Services, and Job Environments that list them).
 #[derive(Clone, Copy)]
 pub(super) struct InstantiateCtx<'a> {
     pub(super) has_expr: bool,
@@ -885,12 +885,12 @@ fn build_task_check_symtab<'a>(
 /// deterministically recur in every session entering the environment.
 ///
 /// `in_scope_services` are the Services the environment may reference and
-/// `requirements` the required Services it may (every `requiresServices`
-/// entry for a Job Environment, the ones its Step lists for a Step
-/// Environment, none for an attached Environment); their
+/// `requirements` the required Services it may: those it lists in its own
+/// `dependencies` for a Job Environment or an attached Environment (which
+/// has no requirements), those its Step lists for a Step Environment; their
 /// `Service.<name>.<port>.port` / `.connectAddress` are seeded only when the
 /// environment's effective `runScope` excludes `SERVICE` (Template Schemas
-/// §4 item 3.2, RFC 0009).
+/// §4 item 4.2, RFC 0009).
 pub(super) fn build_env_check_symtab<'a>(
     env: &template::Environment,
     base: &SymbolTable,
@@ -994,12 +994,23 @@ pub fn convert_environment_with_symtab(
     let converted = job::Environment {
         name: env.name.clone(),
         description: env.description.as_ref().map(|d| d.0.clone()),
+        // §4 item 3: carried as written; validation (pass 11) has rejected
+        // every entry that is not `service:<name>` naming a Service the
+        // Environment may depend on.
+        dependencies: env.dependencies.as_ref().map(|deps| {
+            deps.iter()
+                .map(|d| job::StepDependency {
+                    depends_on: d.depends_on.clone(),
+                })
+                .collect()
+        }),
         // Validation (pass 11) has rejected unrecognized names, so every
         // entry parses; one that does not (a directly-constructed template
         // bypassing decode) is dropped rather than failing conversion. An
         // absent `runScope` is materialized as its effective default (§4
-        // item 3): `[TASK]` when the Environment references `Service.*`,
-        // else left absent (every kind of Session).
+        // item 4): `[TASK]` when the Environment lists a Service in
+        // `dependencies` or references `Service.*`, else left absent (every
+        // kind of Session).
         run_scope: match &env.run_scope {
             Some(names) => Some(
                 names

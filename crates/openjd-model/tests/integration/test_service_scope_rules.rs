@@ -4,26 +4,28 @@
 
 //! Integration tests for the RFC 0009 declared Service dependencies: the
 //! Service scope (Template Schemas §9.1), the combined dependency graph
-//! (§3.2, §9.9), `dependsOn: "service:<name>"` on Steps and Services
-//! (§3.1 constraint 4, §3.2, §9 item 4), and the reference-dependent
-//! `runScope` default (§4 item 3), at template validation and at job
-//! creation.
+//! (§3.2, §9.9), `dependsOn: "service:<name>"` on Steps, Services, and Job
+//! Environments (§3.1 constraint 4, §3.2, §4 item 3, §9 item 4), and the
+//! dependency-dependent `runScope` default (§4 item 4), at template
+//! validation and at job creation.
 //!
 //! Scope is computed from the `dependencies` lists, never from references:
 //!
 //! 1. a Step that lists `service:X` is in `X`'s scope;
 //! 2. a Service `Y` listing `service:X` puts `Y`'s scope inside `X`'s,
 //!    transitively;
-//! 3. a `jobEnvironments` entry referencing `Service.X.*` puts every Step in
+//! 3. a `jobEnvironments` entry listing `service:X` puts every Step in
 //!    `X`'s scope;
 //! 4. a Job Template Service with no Step in its scope is rejected as
 //!    unused (Environment Template Services are exempt).
 //!
-//! `Service.X.*` is visible to a Step or Service only if it lists
-//! `service:X`; required Services are visible everywhere. The Step-to-Step,
-//! Step-to-Service, Service-to-Step and Service-to-Service edges form one
-//! graph that must be acyclic. Under `SERVICE` a Step name may not contain
-//! `:`.
+//! `Service.X.*` is visible to a Step, Service, or Job Environment only if
+//! it lists `service:X`, whether `X` is inline or required. The
+//! Step-to-Step, Step-to-Service, Service-to-Step and Service-to-Service
+//! edges form one graph that must be acyclic; a Job Environment's entries
+//! cannot close a cycle. Under `SERVICE` a Step name may not contain `:`.
+//! The structure of an Environment's `dependencies` list itself (§4 item 3
+//! constraints) is covered in `test_service_environments.rs`.
 //!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
@@ -143,7 +145,15 @@ fn scope_of(jt: &JobTemplate, name: &str) -> ServiceScope {
         .clone()
 }
 
-const CLIENT_JOB_ENV: &str =
+/// A Job Environment that lists `service:X` and references it.
+const CLIENT_JOB_ENV: &str = "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { H: \"{{ Service.X.main.connectAddress }}\" }\n";
+
+/// A Job Environment that lists `service:X` without referencing it: an
+/// opaque consumer that reaches the Service by other means.
+const OPAQUE_JOB_ENV: &str = "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { H: h }\n";
+
+/// A Job Environment that references `Service.X.*` without listing it.
+const STRAY_JOB_ENV: &str =
     "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.X.main.connectAddress }}\" }\n";
 
 // ════════════════════════════════════════════════════════════════════
@@ -182,7 +192,7 @@ fn step_listing_the_service_puts_only_that_step_in_scope() {
     assert!(x.dependent_services.is_empty());
     assert!(x.depends_on_services.is_empty());
     assert!(x.depends_on_steps.is_empty());
-    assert!(!x.referenced_by_job_environment);
+    assert!(!x.listed_by_job_environment);
     assert!(!x.is_unused());
     assert_eq!(scopes.scope_of("X"), ServiceScope::steps(["A"]));
     assert_eq!(scopes.iter().count(), 1);
@@ -392,7 +402,7 @@ fn service_reference_without_dependency_is_rejected() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn job_environment_reference_puts_every_step_in_scope() {
+fn job_environment_dependency_puts_every_step_in_scope() {
     let t = job(
         CLIENT_JOB_ENV,
         &svc("X", &[], ""),
@@ -410,7 +420,7 @@ fn job_environment_reference_puts_every_step_in_scope() {
     assert!(x.scope.contains("B"));
     assert_eq!(x.scope.step_names(), None);
     assert_eq!(x.scope.to_string(), "every Step");
-    assert!(x.referenced_by_job_environment);
+    assert!(x.listed_by_job_environment);
     assert!(!x.is_unused());
     // The Step's dependency is still recorded.
     assert_eq!(x.dependent_steps, vec!["A".to_string()]);
@@ -425,22 +435,173 @@ fn job_environment_reference_puts_every_step_in_scope() {
 }
 
 #[test]
-fn job_environment_reference_alone_keeps_the_service_used() {
-    // No Step lists the Service; the Job Environment reference suffices.
-    let t = job(CLIENT_JOB_ENV, &svc("X", &[], ""), &step("A", &[], "[a]"));
+fn job_environment_dependency_alone_keeps_the_service_used() {
+    // No Step lists the Service and nothing references it; the Job
+    // Environment's dependency suffices (an opaque consumer).
+    let t = job(OPAQUE_JOB_ENV, &svc("X", &[], ""), &step("A", &[], "[a]"));
     let jt = decode(&t);
     let scopes = compute_service_scopes(&jt).unwrap();
     let x = scopes.get("X").unwrap();
     assert_eq!(x.scope, ServiceScope::AllSteps);
     assert!(x.dependent_steps.is_empty());
-    assert!(x.referenced_by_job_environment);
+    assert!(x.listed_by_job_environment);
+    let env = &jt.job_environments.as_ref().unwrap()[0];
+    assert!(env.depends_on_service());
+    assert!(!env.references_service());
+    assert_eq!(env.listed_services().collect::<Vec<_>>(), vec!["X"]);
+    // The dependency is carried into the Job and serialized as written.
+    let job = create_ok(&t);
+    let env = &job.job_environments.as_ref().unwrap()[0];
+    assert_eq!(env.depends_on_services().collect::<Vec<_>>(), vec!["X"]);
+    assert!(env.depends_on_service("X"));
+    assert!(!env.depends_on_service("Other"));
+    assert_eq!(
+        job.services.as_ref().unwrap()[0].scope,
+        ServiceScope::AllSteps
+    );
+    let json = serde_json::to_value(env).unwrap();
+    assert_eq!(
+        json["dependencies"],
+        serde_json::json!([{"dependsOn": "service:X"}])
+    );
+    let back: job::Environment = serde_json::from_value(json).unwrap();
+    assert_eq!(&back, env);
 }
 
 #[test]
-fn service_listed_by_a_job_environment_referenced_service_has_every_step() {
+fn job_environment_without_dependencies_serializes_none() {
+    let t = job(
+        "jobEnvironments:\n  - name: Plain\n    variables: { K: v }\n",
+        &svc("X", &[], ""),
+        &step("A", &["service:X"], "[a]"),
+    );
+    let job = create_ok(&t);
+    let env = &job.job_environments.as_ref().unwrap()[0];
+    assert!(env.dependencies.is_none());
+    assert_eq!(env.depends_on_services().count(), 0);
+    let json = serde_json::to_value(env).unwrap();
+    assert!(json.get("dependencies").is_none(), "{json}");
+    let back: job::Environment = serde_json::from_value(json).unwrap();
+    assert_eq!(&back, env);
+}
+
+#[test]
+fn job_environment_reference_without_a_dependency_is_rejected() {
+    // §9 scope rule 4 / §9.9 item 1: the reference is not taken as a
+    // dependency, and the Service is not placed in a Job-wide scope by it.
+    // Step A keeps X used so the one error is the reference's.
+    let t = job(
+        STRAY_JOB_ENV,
+        &svc("X", &[], ""),
+        &step("A", &["service:X"], "[a]"),
+    );
+    let err = job_err(&t);
+    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.contains(
+            "jobEnvironments[0] -> variables -> H:\n\tFailed to parse interpolation expression at ["
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Environment 'Client' references Service.X.main.connectAddress but does not list \
+             service:X in dependencies."
+        ),
+        "{err}"
+    );
+    assert!(err.contains("\n  Service.X.main.connectAddress\n"), "{err}");
+}
+
+#[test]
+fn job_environment_reference_without_a_dependency_leaves_the_service_unused() {
+    // The stray reference is reported, and so is the Service it failed to
+    // put in scope.
+    let t = job(STRAY_JOB_ENV, &svc("X", &[], ""), &step("A", &[], "[a]"));
+    let err = job_err(&t);
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate\n"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Environment 'Client' references Service.X.main.connectAddress but does not list \
+             service:X in dependencies."
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("services[0]:\n\t{}", unused_message("X"))),
+        "{err}"
+    );
+}
+
+#[test]
+fn job_environment_reference_in_script_without_a_dependency_is_rejected() {
+    // Actions, embedded files and `let` are sites too.
+    let t = job(
+        "jobEnvironments:\n  - name: Client\n    script:\n      let: [\"p = Service.X.main.port + 1\"]\n      actions:\n        onEnter: { command: echo, args: [\"{{ Env.File.F }}\", \"{{ p }}\"] }\n      embeddedFiles:\n        - { name: F, type: TEXT, data: \"{{ Service.X.main.connectAddress }}\" }\n",
+        &svc("X", &[], ""),
+        &step("A", &["service:X"], "[a]"),
+    );
+    let err = job_err(&t);
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate\n"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "jobEnvironments[0] -> script -> let[0]:\n\tInvalid expression in let binding 'p': \
+             Environment 'Client' references Service.X.main.port but does not list service:X in \
+             dependencies."
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "jobEnvironments[0] -> script -> embeddedFiles[0] -> data:\n\tFailed to parse \
+             interpolation expression at ["
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Environment 'Client' references Service.X.main.connectAddress but does not list \
+             service:X in dependencies."
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn job_environment_sees_only_the_services_it_lists() {
+    // Listing X does not open Z (§9 scope rule 4); the message names the
+    // missing entry for Z, and X resolves.
+    let t = job(
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { H: \"{{ Service.X.main.port }}\", Z: \"{{ Service.Z.main.port }}\" }\n",
+        &format!("{}{}", svc("X", &[], ""), svc("Z", &[], "")),
+        &step("A", &["service:Z"], "[a]"),
+    );
+    let err = job_err(&t);
+    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.contains("jobEnvironments[0] -> variables -> Z:\n\t"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "Environment 'Client' references Service.Z.main.port but does not list service:Z \
+             in dependencies."
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn service_listed_by_a_job_environment_listed_service_has_every_step() {
     // Rule 3 then rule 2. (Not named `Y`: YAML reads a bare `Y` as a boolean.)
     let t = job(
-        "jobEnvironments:\n  - name: Client\n    variables: { H: \"{{ Service.Up.main.connectAddress }}\" }\n",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Up\" }]\n    variables: { H: \"{{ Service.Up.main.connectAddress }}\" }\n",
         &format!(
             "{}{}",
             svc("X", &[], ""),
@@ -450,8 +611,8 @@ fn service_listed_by_a_job_environment_referenced_service_has_every_step() {
     );
     let jt = decode(&t);
     let scopes = compute_service_scopes(&jt).unwrap();
-    assert!(scopes.get("Up").unwrap().referenced_by_job_environment);
-    assert!(!scopes.get("X").unwrap().referenced_by_job_environment);
+    assert!(scopes.get("Up").unwrap().listed_by_job_environment);
+    assert!(!scopes.get("X").unwrap().listed_by_job_environment);
     assert_eq!(scopes.get("X").unwrap().scope, ServiceScope::AllSteps);
     assert_eq!(
         scopes.get("X").unwrap().dependent_services,
@@ -465,8 +626,8 @@ fn service_listed_by_a_job_environment_referenced_service_has_every_step() {
 
 fn unused_message(name: &str) -> String {
     format!(
-        "Service '{name}' is unused: no Step or Service lists 'service:{name}' in its \
-         dependencies and no Job Environment references it, so no Step is in its scope."
+        "Service '{name}' is unused: no Step, Service, or Job Environment lists \
+         'service:{name}' in its dependencies, so no Step is in its scope."
     )
 }
 
@@ -931,9 +1092,9 @@ fn service_self_dependency_is_rejected() {
 }
 
 #[test]
-fn job_environment_referenced_service_listing_a_step_is_rejected() {
+fn job_environment_listed_service_listing_a_step_is_rejected() {
     let t = job(
-        CLIENT_JOB_ENV,
+        OPAQUE_JOB_ENV,
         &svc("X", &["Prep"], ""),
         &format!("{}{}", step("Prep", &[], "[p]"), step("S", &[], "[s]")),
     );
@@ -941,9 +1102,41 @@ fn job_environment_referenced_service_listing_a_step_is_rejected() {
         job_err(&t),
         format!(
             "{JOB_ERR}services[0] -> dependencies[0]:\n\tStep 'Prep' is in the scope of Service \
-             'X' (a Job Environment references the Service, so every Step is in its scope); a \
+             'X' (a Job Environment lists the Service, so every Step is in its scope); a \
              Service cannot depend on a Step in its own scope, which could not run until the \
              Service was READY."
+        )
+    );
+}
+
+#[test]
+fn job_environment_dependencies_are_not_cycle_edges() {
+    // Nothing depends on an Environment, so Environment-to-Service edges
+    // never close a cycle: a Job Environment listing a Service that lists a
+    // Service is fine, and the cycle detector reports only the real cycle.
+    let t = job(
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Front\" }, { dependsOn: \"service:Back\" }]\n    variables: { H: h }\n",
+        &format!(
+            "{}{}",
+            svc("Front", &["service:Back"], ""),
+            svc("Back", &[], "")
+        ),
+        &step("A", &[], "[a]"),
+    );
+    let jt = decode(&t);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert_eq!(scopes.scope_of("Front"), ServiceScope::AllSteps);
+    assert_eq!(scopes.scope_of("Back"), ServiceScope::AllSteps);
+    assert!(scopes.get("Back").unwrap().listed_by_job_environment);
+    let cyclic = t.replace(
+        "  - name: Back\n    ports",
+        "  - name: Back\n    dependencies: [{ dependsOn: \"service:Front\" }]\n    ports",
+    );
+    assert_eq!(
+        job_err(&cyclic),
+        format!(
+            "{JOB_ERR}JobTemplate: dependencies contain a cycle: service:Front -> service:Back -> \
+             service:Front."
         )
     );
 }
@@ -964,6 +1157,10 @@ services:
     ports: [{ name: main }]
     variables: { R: \"{{ Service.R.main.port }}\" }
     script: { actions: { onRun: { command: serve } } }
+jobEnvironments:
+  - name: RClient
+    dependencies: [{ dependsOn: \"service:R\" }]
+    variables: { R: \"{{ Service.R.main.connectAddress }}\" }
 steps:
   - name: A
     dependencies: [{ dependsOn: \"service:R\" }, { dependsOn: \"service:X\" }]
@@ -977,13 +1174,17 @@ steps:
 fn depending_on_a_required_service_is_valid_and_a_no_op_for_scope() {
     let jt = decode(REQUIRED);
     let scopes = compute_service_scopes(&jt).unwrap();
-    // R is external: no computed entry, and every Step is in its scope.
+    // R is external: no computed entry, and every Step is in its scope —
+    // the Job Environment's listing it changes nothing about scope.
     assert!(scopes.get("R").is_none());
     assert_eq!(scopes.scope_of("R"), ServiceScope::AllSteps);
     let x = scopes.get("X").unwrap();
     assert_eq!(x.scope, ServiceScope::steps(["A"]));
     // A required Service is not an edge among the inline Services.
     assert!(x.depends_on_services.is_empty());
+    let env = &jt.job_environments.as_ref().unwrap()[0];
+    assert_eq!(env.listed_services().collect::<Vec<_>>(), vec!["R"]);
+    assert!(env.default_run_scope_is_task_only());
 
     let job = create_ok(REQUIRED);
     let svc = &job.services.as_ref().unwrap()[0];
@@ -1079,7 +1280,8 @@ steps:
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §4 item 3 — the runScope default follows the Environment's references
+// §4 item 4 — the runScope default follows the Environment's dependencies
+// (and, for a Step Environment, its references)
 // ════════════════════════════════════════════════════════════════════
 
 const RUN_SCOPE_DEFAULTS: &str = "specificationVersion: \"jobtemplate-2023-09\"
@@ -1087,8 +1289,12 @@ extensions: [SERVICE, EXPR]
 name: RunScopes
 jobEnvironments:
   - name: Client
+    dependencies: [{ dependsOn: \"service:X\" }]
     variables: { HOST: \"{{ Service.X.main.connectAddress }}\" }
   - name: Plain
+    variables: { K: v }
+  - name: Opaque
+    dependencies: [{ dependsOn: \"service:X\" }]
     variables: { K: v }
 services:
   - name: X
@@ -1108,11 +1314,12 @@ steps:
 ";
 
 #[test]
-fn environment_referencing_a_service_defaults_to_task_only() {
+fn environment_depending_on_a_service_defaults_to_task_only() {
     let jt = decode(RUN_SCOPE_DEFAULTS);
     let envs = jt.job_environments.as_ref().unwrap();
     let client = &envs[0];
     assert!(client.run_scope.is_none());
+    assert!(client.depends_on_service());
     assert!(client.references_service());
     assert!(client.default_run_scope_is_task_only());
     assert!(client.runs_in(RunScope::Task));
@@ -1122,37 +1329,56 @@ fn environment_referencing_a_service_defaults_to_task_only() {
         [RunScope::Task]
     );
     let plain = &envs[1];
+    assert!(!plain.depends_on_service());
     assert!(!plain.references_service());
     assert!(!plain.default_run_scope_is_task_only());
     assert!(plain.runs_in(RunScope::Task));
     assert!(plain.runs_in(RunScope::Service));
+    // The dependency alone decides: no reference needed.
+    let opaque = &envs[2];
+    assert!(opaque.depends_on_service());
+    assert!(!opaque.references_service());
+    assert!(opaque.default_run_scope_is_task_only());
+    assert!(!opaque.runs_in(RunScope::Service));
+    // A Step Environment has no list: its Step's dependency plus its own
+    // reference make it Task-only.
     let step_envs = jt.steps[0].step_environments.as_ref().unwrap();
+    assert!(!step_envs[0].depends_on_service());
+    assert!(step_envs[0].references_service());
     assert!(step_envs[0].default_run_scope_is_task_only());
     assert!(!step_envs[0].runs_in(RunScope::Service));
     assert!(step_envs[1].runs_in(RunScope::Service));
 
-    // Job creation materializes the default for the referencing ones only.
+    // Job creation materializes the default for the depending ones only.
     let job = create_ok(RUN_SCOPE_DEFAULTS);
     let envs = job.job_environments.as_ref().unwrap();
     assert_eq!(envs[0].run_scope, Some(vec![RunScope::Task]));
     assert!(!envs[0].runs_in(RunScope::Service));
     assert_eq!(envs[1].run_scope, None);
     assert!(envs[1].runs_in(RunScope::Service));
+    assert_eq!(envs[2].run_scope, Some(vec![RunScope::Task]));
     let step_envs = job.steps[0].step_environments.as_ref().unwrap();
     assert_eq!(step_envs[0].run_scope, Some(vec![RunScope::Task]));
+    assert!(step_envs[0].dependencies.is_none());
     assert_eq!(step_envs[1].run_scope, None);
     let json = serde_json::to_value(&envs[0]).unwrap();
     assert_eq!(json["runScope"], serde_json::json!(["TASK"]));
 }
 
 #[test]
-fn explicit_service_run_scope_with_a_service_reference_is_still_rejected() {
+fn explicit_service_run_scope_with_a_service_dependency_is_rejected() {
+    // §4 item 3 constraint 5 / item 4 constraint 2: the dependency alone
+    // is enough to reject SERVICE in an explicit runScope — and the
+    // reference, now out of scope, is reported by the runScope rule too.
     let t = RUN_SCOPE_DEFAULTS.replace(
-        "  - name: Client\n    variables:",
-        "  - name: Client\n    runScope: [SERVICE]\n    variables:",
+        "  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables:",
+        "  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    runScope: [SERVICE]\n    variables:",
     );
     let err = job_err(&t);
-    assert!(err.starts_with(JOB_ERR), "{err}");
+    assert!(
+        err.starts_with("Model validation error: 2 validation errors for JobTemplate\n"),
+        "{err}"
+    );
     assert!(
         err.contains(
             "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at ["
@@ -1166,10 +1392,45 @@ fn explicit_service_run_scope_with_a_service_reference_is_still_rejected() {
         ),
         "{err}"
     );
+    assert!(
+        err.contains(
+            "jobEnvironments[0] -> runScope:\n\tEnvironment 'Client' is entered in Service \
+             Sessions (its runScope includes SERVICE) and may not depend on a Service; declare \
+             runScope: [TASK] if it configures Tasks."
+        ),
+        "{err}"
+    );
+    // Without the reference the dependency is still rejected, on its own.
+    let t = RUN_SCOPE_DEFAULTS.replace(
+        "  - name: Opaque\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables:",
+        "  - name: Opaque\n    dependencies: [{ dependsOn: \"service:X\" }]\n    runScope: [TASK, SERVICE]\n    variables:",
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}jobEnvironments[2] -> runScope:\n\tEnvironment 'Opaque' is entered in \
+             Service Sessions (its runScope includes SERVICE) and may not depend on a Service; \
+             declare runScope: [TASK] if it configures Tasks."
+        )
+    );
 }
 
-/// A Job Environment wrapper that references `Service.X.*` in `hook_args`
-/// of `onWrapTaskRun`, defining `hooks`. The reference keeps `X` used.
+#[test]
+fn explicit_task_run_scope_with_a_service_dependency_is_accepted() {
+    let t = RUN_SCOPE_DEFAULTS.replace(
+        "  - name: Opaque\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables:",
+        "  - name: Opaque\n    dependencies: [{ dependsOn: \"service:X\" }]\n    runScope: [TASK]\n    variables:",
+    );
+    let jt = decode(&t);
+    let opaque = &jt.job_environments.as_ref().unwrap()[2];
+    assert!(!opaque.default_run_scope_is_task_only());
+    assert!(opaque.runs_in(RunScope::Task));
+    assert!(!opaque.runs_in(RunScope::Service));
+}
+
+/// A Job Environment wrapper that lists `service:X` and references
+/// `Service.X.*` in the args of `onWrapTaskRun`, defining `hooks`. The
+/// dependency keeps `X` used and makes the default runScope `[TASK]`.
 fn referencing_wrapper(hooks: &[&str]) -> String {
     let actions: String = hooks
         .iter()
@@ -1189,6 +1450,7 @@ extensions: [SERVICE, EXPR, WRAP_ACTIONS]
 name: Wrapped
 jobEnvironments:
   - name: Wrapper
+    dependencies: [{{ dependsOn: \"service:X\" }}]
     script:
       actions:
 {actions}services:
@@ -1239,8 +1501,8 @@ fn service_wrap_hooks_rejected_on_a_referencing_environment_with_default_run_sco
         "onWrapServiceExit",
     ] {
         // The parenthetical names the effective runScope. It must not call
-        // it "every kind of Session": this Environment references
-        // Service.*, so its default is [TASK] (§4 item 3).
+        // it "every kind of Session": this Environment depends on a
+        // Service, so its default is [TASK] (§4 item 4).
         let head = format!(
             "jobEnvironments[0] -> script -> actions -> {hook}:\n\t{hook} must not be defined: \
              this environment's runScope ("
@@ -1257,7 +1519,7 @@ fn service_wrap_hooks_rejected_on_a_referencing_environment_with_default_run_sco
         assert!(
             !described.contains("every kind of Session"),
             "{hook}: the runScope is described as {described:?}, but the default for an \
-             Environment that references Service.* is [TASK]:\n{err}"
+             Environment that depends on a Service is [TASK]:\n{err}"
         );
     }
 }
@@ -1282,18 +1544,39 @@ fn task_wrap_hook_required_on_a_referencing_environment_with_default_run_scope()
     let start = err.find(head).unwrap_or_else(|| panic!("{err}")) + head.len();
     let end = err[start..].find(tail).unwrap_or_else(|| panic!("{err}"));
     let described = &err[start..start + end];
-    // As above: the default for this Environment is [TASK], not every kind.
-    assert!(
-        !described.contains("every kind of Session"),
-        "the runScope is described as {described:?}:\n{err}"
+    // As above: the default for this Environment is [TASK], not every kind,
+    // and the message says why.
+    assert_eq!(
+        described, "default runScope: [TASK], since the environment depends on a Service",
+        "{err}"
     );
 }
 
 #[test]
-fn attached_environment_referencing_its_service_defaults_to_task_only_in_the_job() {
+fn step_environment_wrap_hook_message_names_the_reference() {
+    // A Step Environment has no list of its own: its default follows the
+    // reference to a Service its Step lists, and the message says so.
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        "  - name: S\n    dependencies: [{ dependsOn: \"service:X\" }]\n    stepEnvironments:\n      - name: W\n        script:\n          actions:\n            onWrapEnvEnter: { command: wrap, args: [\"{{ Service.X.main.port }}\"] }\n            onWrapEnvExit: { command: wrap }\n    script: { actions: { onRun: { command: run } } }\n",
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}steps[0] -> stepEnvironments[0] -> script -> actions:\n\ta wrapping \
+             environment whose runScope includes TASK (default runScope: [TASK], since the \
+             environment references Service.*) must define onWrapTaskRun; missing: onWrapTaskRun \
+             (RFC 0009)."
+        )
+    );
+}
+
+#[test]
+fn attached_environment_depending_on_its_service_defaults_to_task_only_in_the_job() {
     // The RFC's queue-cache Environment Template without its explicit
     // `runScope: [TASK]`: the default is the same, and the converted Job
-    // Environment carries it.
+    // Environment carries it — and its `dependencies`.
     let et_text = include_str!("../fixtures/rfc0009/queue-cache.environment.yaml")
         .replace("  runScope: [TASK]\n", "");
     assert!(!et_text.contains("runScope"));
@@ -1334,4 +1617,10 @@ fn attached_environment_referencing_its_service_defaults_to_task_only_in_the_job
         Some(vec![RunScope::Task])
     );
     assert!(!applied.environments[0].runs_in(RunScope::Service));
+    assert_eq!(
+        applied.environments[0]
+            .depends_on_services()
+            .collect::<Vec<_>>(),
+        vec!["Cache"]
+    );
 }
