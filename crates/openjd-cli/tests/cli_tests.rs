@@ -3701,7 +3701,7 @@ mod services {
             .unwrap_or_else(|| panic!("missing {needle:?} in output:\n{haystack}"))
     }
 
-    /// RFC 0009 example 1: a Service referenced by both Steps (scope Steps
+    /// RFC 0009 example 1: a Service listed by both Steps (scope Steps
     /// First, Second, §9.1) with a TCP_CONNECT health check is READY before
     /// the first Task, is reached by Tasks of two Steps through
     /// `Service.Store.main.connectAddress` / `.port`, and is stopped after
@@ -4074,10 +4074,10 @@ mod services {
         assert!(stdout.contains("Chunks run: 3"), "{stdout}");
     }
 
-    /// Constraint 2: a Service that references another's endpoint starts
-    /// only once the referenced Service is READY, and sees its endpoint.
+    /// Constraint 2: a Service that lists `service:Back` and reads Back's
+    /// endpoint starts only once Back is READY, and sees its endpoint.
     #[test]
-    fn test_service_referencing_an_earlier_service_starts_after_it() {
+    fn test_service_depending_on_an_earlier_service_starts_after_it() {
         let (code, stdout, stderr) = run_service_template("service_reference_chain.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
@@ -4096,7 +4096,144 @@ mod services {
         );
     }
 
-    /// Constraint 2: Services that do not reference one another start
+    /// Template Schemas §9.1 rule 1 / constraints 3 and 6: an opaque
+    /// consumer. Step Use lists `service:Sidecar` and never references
+    /// `Service.Sidecar.*`; the dependency alone puts it in the scope. The
+    /// Sidecar is READY before Use's Task runs and is stopped (onExit run)
+    /// once Use completes, before Unrelated runs.
+    #[test]
+    fn test_step_depending_on_a_service_without_referencing_it_is_in_its_scope() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("sidecar.up");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependency_without_reference.yaml",
+            &["-p", &format!("MarkerFile={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Service 'Sidecar' (scope: Step Use) endpoints: main -> "),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Service 'Sidecar' is READY") < pos(&stdout, "TASK_SEES_SIDECAR True"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "TASK_SEES_SIDECAR True") < pos(&stdout, "Stopping Service: Sidecar")
+                && pos(&stdout, "[Service Sidecar] SIDECAR_EXIT")
+                    < pos(&stdout, "Service 'Sidecar' stopped")
+                && pos(&stdout, "Service 'Sidecar' stopped")
+                    < pos(&stdout, "Running step 'Unrelated'"),
+            "the Sidecar stops once Use completes, before Unrelated:\n{stdout}"
+        );
+        assert!(stdout.contains("UNRELATED_SEES_SIDECAR False"), "{stdout}");
+        assert!(!marker.exists(), "onExit removed the marker");
+    }
+
+    /// §9 item 4 / constraints 2 and 4 / §9.1 rule 2: a Service -> Service
+    /// dependency chain declared with no `Service.*` reference. Front lists
+    /// service:Mid, Mid lists service:Back, Use lists service:Front. Scope
+    /// flows through the chain (every Service is scoped to Step Use), Back
+    /// is READY before Mid starts and Mid before Front, and they stop in
+    /// reverse: Front, Mid, Back.
+    #[test]
+    fn test_service_dependency_chain_without_references_orders_start_and_stop() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependency_chain_no_reference.yaml",
+            &["-p", &format!("TraceFile={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        for svc in ["Back", "Mid", "Front"] {
+            assert!(
+                stdout.contains(&format!(
+                    "Service '{svc}' (scope: Step Use) endpoints: main -> "
+                )),
+                "{svc} is scoped to Use through the chain:\n{stdout}"
+            );
+        }
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Mid")
+                && pos(&stdout, "Service 'Mid' is READY") < pos(&stdout, "Starting Service: Front")
+                && pos(&stdout, "Service 'Front' is READY") < pos(&stdout, "TASK_RAN"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Mid")
+                && pos(&stdout, "Stopping Service: Mid") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+        assert_eq!(
+            read_trace(&trace),
+            [
+                "back launch",
+                "mid launch",
+                "front launch",
+                "task",
+                "front exit",
+                "mid exit",
+                "back exit",
+            ]
+        );
+    }
+
+    /// Template Schemas §3.1 constraint 4 (RFC 0009): the `:` constraint on
+    /// a Step's name is gated on SERVICE. Without the extension,
+    /// `service:Store` is an ordinary Step name and `dependsOn: service:Store`
+    /// names that Step, which runs first.
+    #[test]
+    fn test_colon_in_step_name_is_a_step_name_without_service() {
+        let (code, stdout, stderr) =
+            run_service_template("service_colon_step_name_without_service.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "STORE_STEP_RAN") < pos(&stdout, "USE_STEP_RAN"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Running step 'service:Store'"), "{stdout}");
+        // `check` and `summary` agree.
+        let template = templates_dir().join("service_colon_step_name_without_service.yaml");
+        let (code, _stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_eq!(code, 0, "{stderr}");
+    }
+
+    /// Template Schemas §3.1 constraint 4 / §9.9 item 12: with SERVICE
+    /// declared a Step's name may not contain `:`.
+    #[test]
+    fn test_colon_in_step_name_is_rejected_with_service() {
+        let template = templates_dir().join("service_colon_step_name_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[0] -> name:\n\tmust not contain ':' when the SERVICE extension is used, so \
+                 that a dependsOn value beginning 'service:' can only name a Service (Template \
+                 Schemas §3.1 constraint 4)."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Template Schemas §9 scope rule 3 / §9.9 item 1: a Step that references
+    /// a Service it does not list in `dependencies` is rejected, and the
+    /// message names the missing entry.
+    #[test]
+    fn test_reference_without_dependency_is_rejected_naming_the_missing_entry() {
+        let template = templates_dir().join("service_reference_without_dependency_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[1] -> script -> actions -> onRun -> args[2]:\n\tFailed to parse \
+                 interpolation expression at [0, 29]. Step 'Render' references \
+                 Service.Cache.main.port but does not list service:Cache in dependencies."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Constraint 2: Services neither of which depends on the other start
     /// concurrently — each takes ~2 s to become READY and both launch before
     /// either is READY.
     #[test]
@@ -4329,7 +4466,7 @@ mod services {
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
 
         // Two Services named Cache, each labeled by its document in the log.
-        // Neither references the other, so they start concurrently and the
+        // Neither depends on the other, so they start concurrently and the
         // order of their endpoint lines is not fixed.
         let external = format!("Service 'Cache' (from {env_path})");
         assert!(
@@ -4412,7 +4549,7 @@ mod services {
     }
 
     /// As above, with the Job Template's same-named inline Service scoped to
-    /// Step Work (the only Step that references it): the Task's
+    /// Step Work (the only Step that lists it): the Task's
     /// `Service.Cache.*` is the inline `Cache` (inline shadows), the attached
     /// Environment's variables the queue's, and the inline `Cache` stops
     /// before Step Done, which is outside its scope.
@@ -4688,7 +4825,7 @@ mod services {
     }
 
     /// A relaunch that begins a new Service Session changes the Service's
-    /// endpoints: a Service that references it is restarted with the new
+    /// endpoints: a Service that depends on it is restarted with the new
     /// value (no attempt consumed), a TASK-scoped Environment that captured
     /// it is re-entered, and later Tasks resolve the new port. With `KEEP`,
     /// the Task running during the relaunch completes.
@@ -4722,7 +4859,7 @@ mod services {
         );
         assert!(
             stdout.contains(
-                "Service 'Front' references a Service that began a new Service Session; \
+                "Service 'Front' depends on a Service that began a new Service Session; \
                  restarting it with the new endpoints"
             ),
             "{stdout}"
@@ -4748,10 +4885,13 @@ mod services {
         let new_port = port_of("back launch 3 port ");
         assert_ne!(old_port, new_port, "{lines:?}");
         assert_eq!(port_of("back launch 2 port "), old_port, "{lines:?}");
+        // Back is Job-wide (the Client Environment references it) and so is
+        // READY before Client is entered; Front is scoped to Step Work (which
+        // lists it) and starts when Work is about to run, after Client.
         let expected: Vec<String> = [
             format!("back launch 1 port {old_port}"),
-            format!("front launch backport {old_port}"),
             format!("env enter backport {old_port}"),
+            format!("front launch backport {old_port}"),
             format!("task 1 start backport {old_port}"),
             "task 1 done".to_string(),
             format!("task 2 start backport {old_port}"),
@@ -4794,24 +4934,24 @@ mod services {
                       used (restartPolicy.maxAttempts)";
         assert!(
             stdout.contains(&format!(
-                "Service 'Broken' (scope: every Step) is FAILED: {reason}"
+                "Service 'Broken' (scope: Step Never) is FAILED: {reason}"
             )),
             "{stdout}"
         );
         assert!(
             stdout.contains(&format!(
-                "Service 'Broken' (scope: every Step) failed: {reason}"
+                "Service 'Broken' (scope: Step Never) failed: {reason}"
             )),
             "{stdout}"
         );
         assert!(
-            stderr.contains("ERROR: Service 'Broken' (scope: every Step) failed:"),
+            stderr.contains("ERROR: Service 'Broken' (scope: Step Never) failed:"),
             "{stderr}"
         );
         assert!(stdout.contains("Session ended with errors."), "{stdout}");
         assert!(
             stdout.contains(&format!(
-                "Failed Service: Broken (scope: every Step): {reason}"
+                "Failed Service: Broken (scope: Step Never): {reason}"
             )),
             "{stdout}"
         );
@@ -4911,7 +5051,7 @@ mod services {
         let value: serde_json::Value = serde_json::from_str(&stdout[json_start..]).unwrap();
         assert_eq!(value["status"], "error");
         assert_eq!(value["failed_services"][0]["name"], "Broken");
-        assert_eq!(value["failed_services"][0]["scope"], "every Step");
+        assert_eq!(value["failed_services"][0]["scope"], "Step Never");
         assert_eq!(
             value["failed_services"][0]["reason"],
             "onRun exited before becoming READY (exit code: 3); 2 of 2 relaunch(es) used \
@@ -4921,7 +5061,7 @@ mod services {
             value["message"]
                 .as_str()
                 .unwrap()
-                .starts_with("Service 'Broken' (scope: every Step) failed:"),
+                .starts_with("Service 'Broken' (scope: Step Never) failed:"),
             "{value}"
         );
     }
@@ -5083,13 +5223,13 @@ mod services {
     }
 
     /// Template Schemas §9.1 rule 1 / RFC 0009 lifecycle constraint 6:
-    /// scope by reference. Coord is referenced by Scatter and Gather, not by
+    /// scope by dependency. Coord is listed by Scatter and Gather, not by
     /// Unrelated: it starts when Scatter is about to run, one instance
     /// persists across both Steps (Gather reads what Scatter's three Tasks
     /// stored), and it is stopped — onExit run, `stopped` logged — before
     /// Unrelated's Task runs, which finds its endpoint refused.
     #[test]
-    fn test_scope_by_reference_two_of_three_steps() {
+    fn test_scope_by_dependency_two_of_three_steps() {
         let dir = TempDir::new().unwrap();
         let trace = dir.path().join("trace.txt");
         let (code, stdout, stderr) = run_service_template(
@@ -5146,8 +5286,8 @@ mod services {
 
     /// Template Schemas §9 item 4 / How Jobs Are Run constraint 2: a Service
     /// with `dependencies: [{dependsOn: Prepare}]` starts only after
-    /// Prepare's Task completed. Use — listed first, referencing the Service,
-    /// and declaring no dependency of its own — runs after Prepare through
+    /// Prepare's Task completed. Use — listed first, listing only
+    /// `service:Indexer` and no Step of its own — runs after Prepare through
     /// the Step edge the Service's dependencies imply.
     #[test]
     fn test_service_dependencies_start_after_the_listed_step() {

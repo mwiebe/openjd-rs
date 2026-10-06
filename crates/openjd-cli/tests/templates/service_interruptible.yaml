@@ -25,6 +25,8 @@ services:
           args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('service exit\\n')"]
 steps:
   - name: SleepStep
+    dependencies:
+      - dependsOn: "service:Store"
     script:
       actions:
         onRun:

@@ -44,6 +44,8 @@ services:
                 c.close()
 steps:
   - name: First
+    dependencies:
+      - dependsOn: "service:Store"
     parameterSpace:
       taskParameterDefinitions:
         - name: N
@@ -72,6 +74,7 @@ steps:
   - name: Second
     dependencies:
       - dependsOn: First
+      - dependsOn: "service:Store"
     script:
       actions:
         onRun:

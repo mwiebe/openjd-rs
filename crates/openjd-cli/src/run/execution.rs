@@ -427,6 +427,7 @@ enum TasksOutcome {
 /// dependencies"): every selected Step in `scope`, and every selected Step
 /// that depends on one of them, directly or transitively.
 fn returned_steps(job: &Job, scope: &ServiceScope, selected: &[usize]) -> BTreeSet<String> {
+    let service_active = job.service_active();
     let mut returned: BTreeSet<String> = selected
         .iter()
         .map(|&i| &job.steps[i].name)
@@ -441,7 +442,8 @@ fn returned_steps(job: &Job, scope: &ServiceScope, selected: &[usize]) -> BTreeS
                 .dependencies
                 .iter()
                 .flatten()
-                .any(|d| returned.contains(&d.depends_on))
+                .filter_map(|d| d.target(service_active).step())
+                .any(|d| returned.contains(d))
             {
                 returned.insert(step.name.clone());
             }

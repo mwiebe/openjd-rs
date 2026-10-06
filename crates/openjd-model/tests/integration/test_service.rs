@@ -20,12 +20,17 @@
 //!    of the `<Environment>`-shaped validators for `variables`,
 //!    `hostRequirements`, embedded files and `<Action>`.
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
-//!    into `tests/fixtures/rfc0009/`.
+//!    into `tests/fixtures/rfc0009/`. Each Step that uses a Service lists
+//!    it as `dependsOn: "service:<Name>"`.
+//!
+//! A Service in a Job Template with no Step in its scope is rejected as
+//! unused (§9.1), so the template builders here give their Step a
+//! `service:<Name>` dependency on every Service they declare.
 //!
 //! The `Service.*` format-string scope rules (§9 scope lists, §9.9 items
 //! 1–2) and job creation of Services are covered in `test_service_scope.rs`
-//! and `test_service_job_creation.rs`; Service scope (§9.1), reference
-//! cycles, `dependencies` and the `runScope` default in
+//! and `test_service_job_creation.rs`; Service scope (§9.1), unused
+//! Services, dependency cycles, `dependencies` and the `runScope` default in
 //! `test_service_scope_rules.rs`; `requiresServices` in
 //! `test_service_requirements.rs`; `<Environment>.runScope`, the
 //! `onWrapService*` hooks, and the Environment Template root changes in
@@ -103,11 +108,39 @@ fn expect_job_ok(template: &str, allowed_exts: &[&str]) -> openjd_model::templat
     .expect("expected successful decode")
 }
 
+/// The `dependencies` list (indented for a Step) naming every Service
+/// declared at the top level of `services` (lines `  - name: X`), so no
+/// Service is unused (§9.1). Invalid names are listed too, so the name
+/// tests see only the name error.
+fn step_dependencies_for(services: &str) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    for line in services.lines() {
+        let Some(rest) = line.strip_prefix("  - name: ") else {
+            continue;
+        };
+        let name = rest.trim().trim_matches('"');
+        if !name.is_empty() && !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("    dependencies:\n");
+    for name in names {
+        out.push_str(&format!("      - dependsOn: \"service:{name}\"\n"));
+    }
+    out
+}
+
 /// A job template whose `services` holds exactly `services` (a YAML list
-/// body, indented two spaces) plus one trivial step. A handful of INT job
+/// body, indented two spaces) plus one trivial step. The step lists every
+/// declared Service in its `dependencies`, so each Service has the step in
+/// its scope and is not rejected as unused (§9.1). A handful of INT job
 /// parameters are defined so the numeric `@fmtstring` fields can reference
 /// them.
 fn job_with_services(services: &str) -> String {
+    let deps = step_dependencies_for(services);
     format!(
         r#"
 specificationVersion: "jobtemplate-2023-09"
@@ -125,7 +158,7 @@ services:
 {services}
 steps:
   - name: S
-    script:
+{deps}    script:
       actions:
         onRun:
           command: run
@@ -601,6 +634,7 @@ services:
     script: {actions: {onRun: {command: valkey-server}}}
 steps:
   - name: S
+    dependencies: [{dependsOn: "service:Cache"}]
     script: {actions: {onRun: {command: run}}}
 "#,
         SERVICE_EXTS,
@@ -1840,9 +1874,10 @@ fn expect_fixture_job_ok(fixture: &str) -> openjd_model::template::JobTemplate {
     expect_job_ok(fixture, SERVICE_EXTS)
 }
 
-/// The Step's embedded file references `Service.Cache.main.connectAddress`
-/// and `.port`, and the Service's own `onRun` references its `bindAddress`:
-/// every `Service.*` reference in the RFC example resolves.
+/// The Step lists `service:Cache` and its embedded file references
+/// `Service.Cache.main.connectAddress` and `.port`; the Service's own
+/// `onRun` references its `bindAddress`: every `Service.*` reference in the
+/// RFC example resolves.
 #[test]
 fn rfc_example_valkey_shared_store_verbatim() {
     let jt = expect_fixture_job_ok(RFC_VALKEY);
@@ -1851,8 +1886,9 @@ fn rfc_example_valkey_shared_store_verbatim() {
 
 /// `RenderTiles`'s `onRun` args use
 /// `join_host_port(Service.Coordinator.api.connectAddress, ...)`, and the
-/// Service's `onRun` uses its own `bindAddress`. Only `RenderTiles`
-/// references the Service, so its scope is that one Step (§9.1).
+/// Service's `onRun` uses its own `bindAddress`. Only `RenderTiles` lists
+/// `service:Coordinator` in its `dependencies`, so the Service's scope is
+/// that one Step (§9.1).
 #[test]
 fn rfc_example_step_coordinator_verbatim() {
     let jt = expect_fixture_job_ok(RFC_COORDINATOR);
@@ -1864,8 +1900,9 @@ fn rfc_example_step_coordinator_verbatim() {
     );
 }
 
-/// `requiresServices` declares `Cache` with port `main`; the Step uses
-/// `Service.Cache.main.connectAddress` and `.port` (§1.1, §9.9).
+/// `requiresServices` declares `Cache` with port `main`; the Step lists
+/// `service:Cache` and uses `Service.Cache.main.connectAddress` and `.port`
+/// (§1.1, §9.9).
 #[test]
 fn rfc_example_required_queue_cache_verbatim() {
     let jt = expect_fixture_job_ok(RFC_REQUIRED_QUEUE_CACHE);
@@ -1877,19 +1914,30 @@ fn rfc_example_required_queue_cache_verbatim() {
     assert_eq!(reqs[0].ports[0].protocol, ServicePortProtocol::Tcp);
 }
 
-/// A UDP `ingest` port and a TCP `api` port; both Steps reference the
-/// Service, so its scope is both Steps.
+/// A UDP `ingest` port and a TCP `api` port, fronted by a `Proxy` Service
+/// that lists `service:Metrics`. `RenderFrames` lists `service:Metrics`;
+/// `Report` lists `service:Proxy`, so by the transitive rule (§9.1) it is in
+/// the sink's scope too: the sink's scope is both Steps, the proxy's is
+/// `Report` alone.
 #[test]
 fn rfc_example_metrics_sink_verbatim() {
     let jt = expect_fixture_job_ok(RFC_METRICS_SINK);
-    let svc = &jt.services.as_ref().unwrap()[0];
+    let services = jt.services.as_ref().unwrap();
+    let svc = &services[0];
+    assert_eq!(svc.name, "Metrics");
     assert_eq!(svc.ports[0].protocol, ServicePortProtocol::Udp);
     assert_eq!(svc.ports[1].protocol, ServicePortProtocol::Tcp);
+    assert_eq!(services[1].name, "Proxy");
     let scopes = compute_service_scopes(&jt).unwrap();
+    let metrics = scopes.get("Metrics").unwrap();
     assert_eq!(
-        scopes.get("Metrics").unwrap().scope,
+        metrics.scope,
         ServiceScope::steps(["RenderFrames", "Report"])
     );
+    assert_eq!(metrics.dependent_services, vec!["Proxy".to_string()]);
+    let proxy = scopes.get("Proxy").unwrap();
+    assert_eq!(proxy.scope, ServiceScope::steps(["Report"]));
+    assert!(proxy.depends_on_services.contains("Metrics"));
 }
 
 /// The Environment Template's `environment` (`runScope: [TASK]`) references

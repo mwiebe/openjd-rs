@@ -21,7 +21,8 @@ use super::ranges;
 
 /// The job-wide inputs every instantiation step shares: the context's
 /// extensions and limits, the caller budgets, and the template's Services
-/// and requirements (whose `Service.*` symbols are in scope for every Step).
+/// (whose `Service.*` symbols are in scope for the Steps and Services that
+/// list them) and requirements (in scope everywhere).
 #[derive(Clone, Copy)]
 pub(super) struct InstantiateCtx<'a> {
     pub(super) has_expr: bool,
@@ -119,9 +120,11 @@ pub(super) fn instantiate_step(
     let script = script_template.as_ref().map(convert_step_script);
 
     // The Services whose `Service.*` endpoints this Step's Task Sessions
-    // may reference (RFC 0009): every inline Service (referencing one puts
-    // the Step in its scope) and every required Service's declared ports.
-    let in_scope_services = || services.iter();
+    // may reference (RFC 0009 §9 scope rule 3): the inline Services the
+    // Step lists as `service:<name>` in its `dependencies`, plus every
+    // required Service's declared ports.
+    let in_scope_services =
+        || crate::template::listed_services(st.dependencies.as_deref(), services);
 
     // Check symbol table for the step script's carried-forward
     // (session/task-scope) format strings: `step_symtab`'s concrete
@@ -184,7 +187,8 @@ pub(super) fn instantiate_step(
     // The same checks for this step's environments (session scope):
     // `variables` values, every action's `command`/`args`, embedded-file
     // `data`. An Environment whose `runScope` excludes SERVICE also sees
-    // the in-scope `Service.*` endpoints (RFC 0009).
+    // the `Service.*` endpoints its Step lists (RFC 0009: a Step
+    // Environment follows its Step's dependencies).
     if let Some(envs) = &st.step_environments {
         let mut check_errors = ValidationErrors::default();
         let envs_path = path_field(&step_path, "stepEnvironments");
@@ -256,11 +260,10 @@ pub(super) fn instantiate_step(
 /// `base` is the job-creation symbol table (`Param.*`, `RawParam.*`,
 /// `Job.Name`). `in_scope` is every Service whose `Service.<name>.<port>.port`
 /// / `.connectAddress` the Service's host-resolved fields may reference: the
-/// other Services of its own document; the Service itself is seeded
-/// separately, with `bindAddress`, and the `requirements` of a Job Template
-/// are seeded as well. `scope` and `references` are the §9.1 results for
-/// the Service (`AllSteps` and the document-local references, for an
-/// external Service).
+/// Services of its own document it lists in its `dependencies` (§9 scope
+/// rule 2); the Service itself is seeded separately, with `bindAddress`, and
+/// the `requirements` of a Job Template are seeded as well. `scope` is the
+/// §9.1 result for the Service (`AllSteps` for an external Service).
 ///
 /// Job-creation-stage fields resolve here: `<Service>.let` (template scope,
 /// like `<StepTemplate>.let`), the numeric `@fmtstring` fields with their
@@ -276,7 +279,6 @@ pub(super) fn instantiate_service<'a>(
     path: &[PathElement],
     in_scope: impl Iterator<Item = &'a template::Service>,
     scope: job::ServiceScope,
-    references: Vec<String>,
 ) -> Result<job::Service, ModelError> {
     let InstantiateCtx {
         has_expr,
@@ -483,7 +485,6 @@ pub(super) fn instantiate_service<'a>(
         // stamps an external Service with its attachment.
         document: job::Document::JobTemplate,
         scope,
-        references,
         dependencies: svc.dependencies.as_ref().map(|deps| {
             deps.iter()
                 .map(|d| job::StepDependency {

@@ -49,6 +49,8 @@ services:
                     sys.exit(1)
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Flaky"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

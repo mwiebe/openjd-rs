@@ -14,6 +14,11 @@
 //!    and every rejection; plus the §1.2.2 item 4 wrapper rule as it
 //!    concerns external Services.
 //!
+//! A required Service's `Service.R.*` values are visible throughout the Job
+//! Template whether or not anything lists `service:R`; an inline Service in
+//! these fixtures is made used by having Step `S` list it (`with_step_deps`),
+//! since an unused inline Service is rejected.
+//!
 //! Error assertions follow the repo convention of asserting on the full
 //! Pydantic-style error path + message.
 
@@ -82,6 +87,20 @@ fn job(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
     )
 }
 
+/// `template` with Step `S` listing `service:<Name>` for each of `names`.
+fn with_step_deps(template: &str, names: &[&str]) -> String {
+    let deps = names
+        .iter()
+        .map(|n| format!("{{ dependsOn: \"service:{n}\" }}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    template.replacen(
+        "  - name: S\n",
+        &format!("  - name: S\n    dependencies: [{deps}]\n"),
+        1,
+    )
+}
+
 const CACHE_REQ: &str = "  - name: Cache\n    ports: [{ name: main }]\n";
 
 fn n_reqs(n: usize) -> String {
@@ -102,13 +121,15 @@ fn n_ports(n: usize) -> String {
 #[test]
 fn requirement_opens_port_and_connect_address_throughout_the_job_template() {
     // In a Step script, a Job Environment (default runScope: [TASK]), a
-    // Step Environment, and an inline Service (§9.8 item 2).
-    let t = job(
+    // Step Environment, and an inline Service (§9.8 item 2). The inline
+    // `Proxy` must be listed by the Step that references it; the required
+    // `Cache` is visible everywhere without a dependency.
+    let t = with_step_deps(&job(
         "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
         "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
         "jobEnvironments:\n  - name: Client\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
         r#"["{{ Service.Cache.main.port }}", "{{ join_host_port(Service.Cache.main.connectAddress, Service.Cache.main.port) }}", "{{ Service.Proxy.main.port }}"]"#,
-    )
+    ), &["Proxy"])
     .replace(
         "  - name: S\n",
         "  - name: S\n    stepEnvironments:\n      - name: StepClient\n        variables: { P: \"{{ Service.Cache.stats.connectAddress }}\" }\n",
@@ -125,7 +146,7 @@ fn requirement_opens_port_and_connect_address_throughout_the_job_template() {
     let scopes = compute_service_scopes(&jt).unwrap();
     assert!(scopes.get("Cache").is_none());
     let proxy = scopes.get("Proxy").unwrap();
-    assert!(proxy.references.is_empty());
+    assert!(proxy.depends_on_services.is_empty());
     assert_eq!(proxy.scope, ServiceScope::steps(["S"]));
     // The Job Environment's default runScope is [TASK] (it references
     // Service.*).
@@ -167,11 +188,14 @@ fn requirement_names_must_be_unique() {
 #[test]
 fn requirement_name_must_not_also_be_an_inline_service() {
     assert_eq!(
-        job_err(&job(
-            CACHE_REQ,
-            "  - name: Cache\n    ports: [{ name: main }]\n    script: { actions: { onRun: { command: serve } } }\n",
-            "",
-            "[x]"
+        job_err(&with_step_deps(
+            &job(
+                CACHE_REQ,
+                "  - name: Cache\n    ports: [{ name: main }]\n    script: { actions: { onRun: { command: serve } } }\n",
+                "",
+                "[x]"
+            ),
+            &["Cache"]
         )),
         "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> name:\n\t'Cache' is also declared in services; a Service is either declared or required, not both."
     );
@@ -257,11 +281,16 @@ fn undeclared_port_of_a_required_service_is_rejected() {
 #[test]
 fn bind_address_of_a_required_service_is_rejected_everywhere() {
     // In a Step script and in an inline Service alike.
-    let err = job_err(&job(
-        CACHE_REQ,
-        "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
-        "",
-        r#"["{{ Service.Cache.main.bindAddress }}"]"#,
+    // `S` lists `Proxy` only so that `Proxy` is used; the required `Cache`
+    // needs no dependency to be visible.
+    let err = job_err(&with_step_deps(
+        &job(
+            CACHE_REQ,
+            "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
+            "",
+            r#"["{{ Service.Cache.main.bindAddress }}"]"#,
+        ),
+        &["Proxy"],
     ));
     assert_errs(
         &err,
@@ -621,10 +650,19 @@ fn same_named_attachments_are_accepted_when_not_required() {
 #[test]
 fn inline_service_shadowing_an_attached_one_is_accepted() {
     // §1.2.2 item 3: the inline `Cache` is what the Job Template's
-    // references resolve to; the attached one still runs.
-    let jt = decode_job(include_str!(
-        "../fixtures/rfc0009/valkey-shared-store.job.yaml"
-    ));
+    // references resolve to (the Step lists `service:Cache`, which names
+    // the inline one); the attached one still runs.
+    let fixture = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
+    let fixture = if fixture.contains("service:Cache") {
+        fixture.to_string()
+    } else {
+        fixture.replacen(
+            "  - name: ProcessFrames\n",
+            "  - name: ProcessFrames\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n",
+            1,
+        )
+    };
+    let jt = decode_job(&fixture);
     let et = decode_env(RFC_QUEUE_CACHE);
     let (job, applied) = submit(&jt, std::slice::from_ref(&et), &[]).unwrap();
     assert!(applied.requirement_bindings.is_empty());

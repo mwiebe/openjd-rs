@@ -9,9 +9,16 @@
 //! carried-forward re-checks, `resolved_symtab`, and the job-side
 //! `Environment.run_scope` / `onWrapService*` fields. Also the runtime-facing
 //! `service_symbols` API that a Session uses to bind `Service.*`.
+//!
+//! Every Job Template here declares the dependency on each Service it uses:
+//! a Step or Service that references `Service.X.*` lists `service:X` in its
+//! `dependencies` (Template Schemas §9.1), and every inline Service is listed
+//! by at least one Step or Service, since an unused one is rejected. The
+//! scope and the job-side `depends_on_services()` follow those declarations.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::LazyLock;
 
 use openjd_expr::{ExprValue, FormatString, SymbolTable};
 use openjd_model::job::service_symbols::{
@@ -26,8 +33,44 @@ use openjd_model::{
 
 const EXTS: &[&str] = &["EXPR", "SERVICE", "FEATURE_BUNDLE_1", "WRAP_ACTIONS"];
 
-const RFC_VALKEY: &str = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
-const RFC_COORDINATOR: &str = include_str!("../fixtures/rfc0009/step-coordinator.job.yaml");
+/// The RFC's Valkey and coordinator examples. Under the declared-dependency
+/// rules the Step that uses the Service lists `service:<name>`, as the RFC's
+/// examples do; [`with_service_dependency`] adds the entry when the fixture
+/// predates it, and is a no-op once the fixture carries it.
+static RFC_VALKEY: LazyLock<String> = LazyLock::new(|| {
+    with_service_dependency(
+        include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml"),
+        "ProcessFrames",
+        "Cache",
+    )
+});
+static RFC_COORDINATOR: LazyLock<String> = LazyLock::new(|| {
+    with_service_dependency(
+        include_str!("../fixtures/rfc0009/step-coordinator.job.yaml"),
+        "RenderTiles",
+        "Coordinator",
+    )
+});
+
+/// Adds `dependsOn: service:<service>` to the `dependencies` of the Step
+/// named `step` (a top-level `  - name: <step>` entry), creating the list
+/// when the Step has none. Unchanged when the template already lists it.
+fn with_service_dependency(template: &str, step: &str, service: &str) -> String {
+    let entry = format!("      - dependsOn: service:{service}\n");
+    if template.contains(entry.trim_start()) {
+        return template.to_string();
+    }
+    let name_line = format!("  - name: {step}\n");
+    let at = template
+        .find(&name_line)
+        .unwrap_or_else(|| panic!("no Step named {step}"))
+        + name_line.len();
+    let (head, tail) = template.split_at(at);
+    match tail.strip_prefix("    dependencies:\n") {
+        Some(rest) => format!("{head}    dependencies:\n{entry}{rest}"),
+        None => format!("{head}    dependencies:\n{entry}{tail}"),
+    }
+}
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -92,7 +135,7 @@ fn symtab_of(st: &openjd_expr::SerializedSymbolTable) -> SymbolTable {
 
 #[test]
 fn valkey_example_creates_a_job_service_with_defaults_applied() {
-    let job = create_ok(RFC_VALKEY, &[("FrameEnd", "10")]);
+    let job = create_ok(&RFC_VALKEY, &[("FrameEnd", "10")]);
     let services = job.services.as_ref().expect("services");
     assert_eq!(services.len(), 1);
     let cache = &services[0];
@@ -156,10 +199,10 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
             .collect::<Vec<_>>(),
         vec!["onEnter", "onRun"]
     );
-    // The only Step references the Service, so its scope is that Step
-    // (§9.1 item 1); it references no other Service and has no dependencies.
+    // The only Step lists `service:Cache`, so its scope is that Step (§9.1
+    // item 1); the Service itself lists no dependencies.
     assert_eq!(cache.scope, ServiceScope::steps(["ProcessFrames"]));
-    assert!(cache.references.is_empty());
+    assert!(cache.depends_on_services().next().is_none());
     assert!(cache.dependencies.is_none());
     // The step script still references the Service, unresolved.
     let data = job.steps[0].script.embedded_files.as_ref().unwrap()[0]
@@ -173,16 +216,27 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
 
 #[test]
 fn coordinator_example_creates_a_service_scoped_to_one_step() {
-    let job = create_ok(RFC_COORDINATOR, &[]);
+    let job = create_ok(&RFC_COORDINATOR, &[]);
     let services = job.services.as_ref().expect("services");
     assert_eq!(services.len(), 1);
     let c = &services[0];
     assert_eq!(c.name, "Coordinator");
-    // Only RenderTiles references the Service (§9.1 item 1); PrepareScene is
-    // not in its scope.
+    // Only RenderTiles lists `service:Coordinator` (§9.1 item 1);
+    // PrepareScene, which RenderTiles also depends on, is not in its scope.
     assert_eq!(c.scope, ServiceScope::steps(["RenderTiles"]));
     assert!(!c.scope.contains("PrepareScene"));
-    assert!(c.references.is_empty());
+    assert!(c.depends_on_services().next().is_none());
+    // RenderTiles' one list names both a Step and the Service.
+    assert!(job.service_active());
+    let render = &job.steps[1];
+    assert_eq!(render.name, "RenderTiles");
+    let deps = render.dependencies.as_deref().unwrap();
+    assert_eq!(
+        deps.iter()
+            .map(|d| (d.target(true).step(), d.target(true).service()))
+            .collect::<Vec<_>>(),
+        vec![(Some("PrepareScene"), None), (None, Some("Coordinator"))]
+    );
     assert_eq!(c.port_names().collect::<Vec<_>>(), vec!["api", "metrics"]);
     // STDOUT without healthIntervalSeconds: no heartbeat; failureThreshold
     // takes its default but has nothing to count.
@@ -285,6 +339,8 @@ services:
         onHealthCheck:
           command: probe
   - name: Side
+    dependencies:
+      - dependsOn: service:Cache
     let:
       - tag = Job.Name + string(2)
     ports:
@@ -300,6 +356,8 @@ services:
           command: side
 steps:
   - name: S
+    dependencies:
+      - dependsOn: service:Side
     let:
       - n = 2
     script:
@@ -482,6 +540,8 @@ services:
           command: run
 {extra_actions}steps:
   - name: S
+    dependencies:
+      - dependsOn: service:Store
     script:
       actions:
         onRun:
@@ -633,27 +693,105 @@ fn second_service_errors_carry_its_index() {
     );
 }
 
-/// The NUMERIC template's scopes: Step `S` references `Side`, and `Side`
-/// references `Cache`, so both are scoped to `S` (§9.1 items 1 and 3), and
-/// `Side.references` records the edge.
+/// The NUMERIC template's scopes: Step `S` lists `service:Side`, so it is in
+/// `Side`'s scope (§9.1 item 1); `Side` lists `service:Cache`, so `Side`'s
+/// scope is inside `Cache`'s (§9.1 item 2) and both are scoped to `S`. The
+/// job-side `Service` keeps the declared edge: `Side` depends on `Cache`, and
+/// neither depends on a Step.
 #[test]
-fn numeric_template_scopes_follow_the_references() {
+fn numeric_template_scopes_follow_the_declared_dependencies() {
     let job = create_ok(NUMERIC, &[]);
     let services = job.services.as_ref().unwrap();
     assert_eq!(services[0].name, "Cache");
     assert_eq!(services[0].scope, ServiceScope::steps(["S"]));
-    assert!(services[0].references.is_empty());
+    assert!(services[0].depends_on_services().next().is_none());
+    assert!(services[0].depends_on_steps().next().is_none());
+    assert!(services[0].dependencies.is_none());
     assert_eq!(services[1].name, "Side");
     assert_eq!(services[1].scope, ServiceScope::steps(["S"]));
-    assert_eq!(services[1].references, vec!["Cache".to_string()]);
+    assert_eq!(
+        services[1].depends_on_services().collect::<Vec<_>>(),
+        vec!["Cache"]
+    );
+    assert!(services[1].depends_on_service("Cache"));
+    assert!(!services[1].depends_on_service("Side"));
+    assert!(services[1].depends_on_steps().next().is_none());
+    // The Step's own dependency is carried as written.
+    assert_eq!(
+        job.steps[0]
+            .dependencies
+            .as_deref()
+            .unwrap()
+            .iter()
+            .map(|d| d.depends_on.as_str())
+            .collect::<Vec<_>>(),
+        vec!["service:Side"]
+    );
+}
+
+/// A Service may list a Step and a Service in one `dependencies` list
+/// (§9 item 4). `Use` lists `service:Front`, so `Use` is in `Front`'s scope;
+/// `Front` lists `service:Back`, so `Back`'s scope contains `Front`'s
+/// (§9.1 item 2). `Front` also lists the Step `Prepare`, which is not in
+/// either scope: it must complete before `Front` starts.
+#[test]
+fn service_dependencies_on_steps_and_services_are_carried_into_the_job() {
+    let tmpl = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Test
+services:
+  - name: Back
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: back } } }
+  - name: Front
+    dependencies:
+      - dependsOn: Prepare
+      - dependsOn: service:Back
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: front, args: ["{{ Service.Back.main.connectAddress }}"] }
+steps:
+  - name: Prepare
+    script: { actions: { onRun: { command: prepare } } }
+  - name: Use
+    dependencies:
+      - dependsOn: service:Front
+    script:
+      actions:
+        onRun: { command: use, args: ["{{ Service.Front.main.port }}"] }
+"#;
+    let job = create_ok(tmpl, &[]);
+    let services = job.services.as_ref().unwrap();
+    let (back, front) = (&services[0], &services[1]);
+    assert_eq!(back.scope, ServiceScope::steps(["Use"]));
+    assert_eq!(front.scope, ServiceScope::steps(["Use"]));
+    assert!(!front.scope.contains("Prepare"));
+    assert_eq!(
+        front.depends_on_steps().collect::<Vec<_>>(),
+        vec!["Prepare"]
+    );
+    assert_eq!(
+        front.depends_on_services().collect::<Vec<_>>(),
+        vec!["Back"]
+    );
+    assert!(back.dependencies.is_none());
+    let json = serde_json::to_value(front).unwrap();
+    assert_eq!(
+        json["dependencies"],
+        serde_json::json!([{ "dependsOn": "Prepare" }, { "dependsOn": "service:Back" }])
+    );
+    let back_again: job::Service = serde_json::from_value(json).unwrap();
+    assert_eq!(&back_again, front);
 }
 
 #[test]
 fn step_host_requirements_errors_keep_their_step_path() {
     // The shared resolver now takes an owner path; the Step path is unchanged.
     let tmpl = NUMERIC.replace(
-        "  - name: S\n    let:",
-        "  - name: S\n    hostRequirements:\n      amounts:\n        - name: amount.worker.vcpu\n          min: \"{{ null }}\"\n    let:",
+        "  - name: S\n    dependencies:",
+        "  - name: S\n    hostRequirements:\n      amounts:\n        - name: amount.worker.vcpu\n          min: \"{{ null }}\"\n    dependencies:",
     );
     let err = create_err(&tmpl, &[]);
     assert_eq!(
@@ -685,6 +823,8 @@ services:
           command: a
 steps:
   - name: S
+    dependencies:
+      - dependsOn: service:A
     script:
       actions:
         onRun:
@@ -718,6 +858,8 @@ services:
           args: ["{{ x }}"]
 steps:
   - name: S
+    dependencies:
+      - dependsOn: service:A
     script:
       actions:
         onRun:
@@ -902,11 +1044,17 @@ fn job_with_services_round_trips_eq_and_hash() {
         svc["scope"],
         serde_json::json!({ "kind": "steps", "steps": ["S"] })
     );
-    // No references and no dependencies: both keys are omitted.
+    // `Cache` lists no dependencies: the key is omitted. There is no
+    // `references` key at all any more; a Service's dependencies are the
+    // ones it declares.
     assert!(svc.get("references").is_none(), "got {svc}");
     assert!(svc.get("dependencies").is_none(), "got {svc}");
     let side_json = &json["services"][1];
-    assert_eq!(side_json["references"], serde_json::json!(["Cache"]));
+    assert!(side_json.get("references").is_none(), "got {side_json}");
+    assert_eq!(
+        side_json["dependencies"],
+        serde_json::json!([{ "dependsOn": "service:Cache" }])
+    );
     let side_back: job::Service = serde_json::from_value(side_json.clone()).unwrap();
     assert_eq!(&side_back, &job.services.as_ref().unwrap()[1]);
 
@@ -992,6 +1140,8 @@ services:
           command: sink
 steps:
   - name: S
+    dependencies:
+      - dependsOn: service:Metrics
     script:
       actions:
         onRun:
@@ -1108,7 +1258,7 @@ fn format_string_port_numbers_are_checked_for_duplicates_at_job_creation() {
 
 #[test]
 fn service_symbol_table_resolves_the_rfc_examples_format_strings() {
-    let job = create_ok(RFC_VALKEY, &[("FrameEnd", "1")]);
+    let job = create_ok(&RFC_VALKEY, &[("FrameEnd", "1")]);
     let cache = &job.services.as_ref().unwrap()[0];
     let endpoints = ServiceEndpoints::new(
         cache.name.clone(),

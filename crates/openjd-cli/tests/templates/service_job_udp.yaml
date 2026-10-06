@@ -36,6 +36,8 @@ services:
                 s.sendto(b"udp-echo:" + data, addr)
 steps:
   - name: Ping
+    dependencies:
+      - dependsOn: "service:Udp"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

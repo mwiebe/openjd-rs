@@ -41,7 +41,10 @@ use serde::{Deserialize, Serialize};
 use crate::types::{EndOfLine, FileType};
 
 use crate::template::RangeConstraint;
-pub use crate::template::{CompletedTasksPolicy, RunScope, ServicePortProtocol, ServiceScope};
+pub use crate::template::{
+    CompletedTasksPolicy, DependencyTarget, RunScope, ServicePortProtocol, ServiceScope,
+    SERVICE_DEPENDENCY_PREFIX,
+};
 use crate::types::JobParameterType;
 
 /// Hash the entries of a string-keyed map sorted by key, so that maps
@@ -95,6 +98,24 @@ pub struct Job {
     pub requires_services: Option<Vec<ServiceRequirement>>,
 }
 
+impl Job {
+    /// True when the Job was created from a template declaring `extension`.
+    #[must_use]
+    pub fn has_extension(&self, extension: crate::types::ModelExtension) -> bool {
+        self.extensions
+            .as_ref()
+            .is_some_and(|exts| exts.contains(&extension))
+    }
+
+    /// True when the Job declares the `SERVICE` extension, under which a
+    /// `dependsOn` value beginning `service:` names a Service rather than a
+    /// Step (see [`StepDependency::target`]).
+    #[must_use]
+    pub fn service_active(&self) -> bool {
+        self.has_extension(crate::types::ModelExtension::Service)
+    }
+}
+
 /// Manual because `IndexMap` has no `Hash`; parameters hash as
 /// key-sorted entries to match `IndexMap`'s order-insensitive equality.
 impl Hash for Job {
@@ -129,6 +150,10 @@ pub struct Step {
     pub step_environments: Option<Vec<Environment>>,
     pub parameter_space: Option<StepParameterSpace>,
     pub host_requirements: Option<HostRequirements>,
+    /// The Steps and, with `SERVICE`, the Services this Step depends on, as
+    /// written (Template Schemas §3 item 4): the Step's Tasks are scheduled
+    /// only once every listed Step has completed and every listed Service is
+    /// READY. Classify an entry with [`StepDependency::target`].
     pub dependencies: Option<Vec<StepDependency>>,
     /// Complete symbol table at step scope in JSON transport format.
     /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level let bindings.
@@ -386,12 +411,14 @@ impl std::fmt::Display for Document {
 /// (into [`resolved_symtab`](Self::resolved_symtab)), the numeric
 /// `@fmtstring` fields (`port`, the health-check seconds and threshold,
 /// `maxAttempts`, with the §9 defaults applied where the template gave
-/// none), and `hostRequirements`. The Service's [`scope`](Self::scope) and
-/// the Services it [`references`](Self::references) are computed from the
-/// template's `Service.*` references (§9.1), so a scheduler need not
-/// re-derive them. `variables` and `script` are `@fmtstring[host]` and
-/// remain `FormatString`s for the Service Session to resolve, exactly like
-/// an [`Environment`]'s.
+/// none), and `hostRequirements`. The Service's [`scope`](Self::scope) is
+/// computed from the template's `dependencies` lists (§9.1), so a scheduler
+/// need not re-derive it; the Steps and Services this Service itself depends
+/// on are its [`dependencies`](Self::dependencies), split by kind with
+/// [`depends_on_steps`](Self::depends_on_steps) and
+/// [`depends_on_services`](Self::depends_on_services). `variables` and
+/// `script` are `@fmtstring[host]` and remain `FormatString`s for the
+/// Service Session to resolve, exactly like an [`Environment`]'s.
 ///
 /// Two Services of a combined Job are the same Service iff their
 /// [`document`](Self::document) and `name` agree: names are unique within
@@ -405,27 +432,25 @@ pub struct Service {
     /// for the Job Template's own `services` (the default, omitted from
     /// JSON), or the attached Environment Template whose `services` list it
     /// came from. Set by `apply_environment_templates` for external
-    /// Services. The Service's `Service.*` references to other inline
-    /// Services resolve within this document.
+    /// Services. A `service:<name>` dependency of this Service names a
+    /// Service of this document (or, in the Job Template, a required one).
     #[serde(default, skip_serializing_if = "Document::is_job_template")]
     pub document: Document,
     /// The Steps whose Tasks depend on this Service (Template Schemas §9.1),
-    /// computed from the template's `Service.*` references:
+    /// computed from the template's `dependencies` lists: the Steps that list
+    /// `service:<name>`, those in the scope of a Service that lists it, and
     /// [`ServiceScope::AllSteps`] for a Service a Job Environment references,
-    /// one nothing references, one a Job-wide Service references, or an
-    /// external Service. A scheduler starts the Service before the first Task
-    /// of any Step in the scope and stops it once none has a Task left.
+    /// one a Job-wide Service depends on, or an external Service. A scheduler
+    /// starts the Service before the first Task of any Step in the scope and
+    /// stops it once none has a Task left.
     #[serde(default = "ServiceScope::all_steps_default")]
     pub scope: ServiceScope,
-    /// The names of the other Services **of the same document** this Service
-    /// references through `Service.<name>.*` (§9.1 rule 3): it starts only
-    /// after each is READY and is stopped before any of them. Sorted; never
-    /// contains the Service's own name or a required external Service's.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-    /// §9 item 4: the Steps that must complete before this Service is
-    /// started, in addition to its other start conditions. Never set on an
-    /// external Service.
+    /// §9 item 4: the Steps and Services this Service depends on, as written
+    /// — a Step name, or `service:<name>` for a Service of the same document
+    /// or a required one. The Service is started only after every listed
+    /// Step has completed and every listed Service is READY, and stopped
+    /// before any Service it lists. See [`depends_on_steps`](Self::depends_on_steps)
+    /// and [`depends_on_services`](Self::depends_on_services).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<StepDependency>>,
     /// Resolved host requirements the service host must satisfy.
@@ -458,7 +483,6 @@ impl Hash for Service {
         self.description.hash(state);
         self.document.hash(state);
         self.scope.hash(state);
-        self.references.hash(state);
         self.dependencies.hash(state);
         self.host_requirements.hash(state);
         self.ports.hash(state);
@@ -480,6 +504,33 @@ impl Service {
     /// The names of the declared ports, in declaration order.
     pub fn port_names(&self) -> impl Iterator<Item = &str> {
         self.ports.iter().map(|p| p.name.as_str())
+    }
+
+    /// The Steps this Service lists in its `dependencies` (§9 item 4), in
+    /// list order: it starts only after each has completed.
+    pub fn depends_on_steps(&self) -> impl Iterator<Item = &str> {
+        self.dependencies
+            .iter()
+            .flatten()
+            .filter_map(|d| d.target(true).step())
+    }
+
+    /// The Services this Service lists in its `dependencies` as
+    /// `service:<name>` (§9 item 4), in list order, without the prefix: it
+    /// starts only after each is READY and is stopped before any of them. A
+    /// name is a Service of this Service's [`document`](Self::document) or,
+    /// in the Job Template, a required external Service.
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str> {
+        self.dependencies
+            .iter()
+            .flatten()
+            .filter_map(|d| d.target(true).service())
+    }
+
+    /// True when this Service lists `service:<name>` in its `dependencies`.
+    #[must_use]
+    pub fn depends_on_service(&self, name: &str) -> bool {
+        self.depends_on_services().any(|n| n == name)
     }
 
     /// The declared port named `name`, if any.
@@ -987,8 +1038,22 @@ pub struct AttributeRequirement {
     pub all_of: Option<Vec<String>>,
 }
 
+/// One entry of a Step's or a Service's `dependencies` (Template Schemas
+/// §3.2): a Step name or, with the `SERVICE` extension, `service:<name>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepDependency {
+    /// The value as written. See [`target`](Self::target).
     pub depends_on: String,
+}
+
+impl StepDependency {
+    /// What this entry names: with `service_active` (the Job declares
+    /// `SERVICE`, see [`Job::service_active`]) a value beginning `service:`
+    /// names the Service after the prefix; otherwise the whole string is a
+    /// Step name.
+    #[must_use]
+    pub fn target(&self, service_active: bool) -> DependencyTarget<'_> {
+        DependencyTarget::parse(&self.depends_on, service_active)
+    }
 }

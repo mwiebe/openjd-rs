@@ -46,7 +46,10 @@ pub use expr_parameters::{
     ListStringItemConstraints,
 };
 // step
-pub use step::{SimpleAction, StepDependency, StepScript, StepTemplate};
+pub use step::{
+    listed_service_names, listed_step_names, lists_service, DependencyTarget, SimpleAction,
+    StepDependency, StepScript, StepTemplate, SERVICE_DEPENDENCY_PREFIX,
+};
 // environment
 pub use environment::{EmbeddedFile, Environment, EnvironmentScript, RunScope};
 // service (SERVICE extension, RFC 0009)
@@ -56,8 +59,8 @@ pub use service::{
     ServiceScript, SERVICE_HEALTH_CHECK_NUMERIC_FIELDS,
 };
 pub use service_scope::{
-    compute_service_scopes, ComputedServiceScope, ServiceReferenceCycle, ServiceScope,
-    ServiceScopes,
+    compute_service_scopes, listed_services, service_dependency_cycle, ComputedServiceScope,
+    ServiceDependencyCycle, ServiceScope, ServiceScopes,
 };
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;

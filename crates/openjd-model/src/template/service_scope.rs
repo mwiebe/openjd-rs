@@ -1,31 +1,35 @@
-// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-// Copyright by contributors to this project.
-// SPDX-License-Identifier: (Apache-2.0 OR MIT)
-
 //! Service scope (Template Schemas §9.1, RFC 0009 "Service scope").
 //!
 //! The scope of a Service declared in a Job Template's `services` is the set
 //! of Steps whose Tasks depend on it, computed from the template's
-//! `Service.<name>.*` references:
+//! `dependencies` lists:
 //!
-//! 1. a Step whose `script` or `stepEnvironments` references `Service.X.*`
-//!    is in `X`'s scope;
-//! 2. when any `jobEnvironments` entry references `Service.X.*`, every Step
-//!    is in `X`'s scope;
-//! 3. when Service `Y` references `Service.X.*`, `X`'s scope includes `Y`'s
-//!    (transitively), and `Y` starts only after `X` is READY — so the
-//!    references among a document's Services are their dependency graph,
-//!    which must be acyclic;
-//! 4. a Service that nothing references has every Step in its scope.
+//! 1. a Step that lists `service:X` in its `dependencies` is in `X`'s scope;
+//! 2. when Service `Y` lists `service:X`, every Step in `Y`'s scope is in
+//!    `X`'s scope, transitively through any chain of Services;
+//! 3. when any `jobEnvironments` entry references `Service.X.*`, every Step
+//!    is in `X`'s scope — the one way a Step enters a scope without listing
+//!    a dependency, since a Job Environment has no `dependencies` of its own;
+//! 4. a Service in whose scope no Step falls is unused, and the template is
+//!    rejected naming it ([`ComputedServiceScope::is_unused`]).
 //!
-//! [`compute_service_scopes`] applies the rules to a decoded Job Template
-//! and [`service_reference_cycle`] finds a reference cycle in either kind of
-//! template. Both read the fields that may legally reference `Service.*`
-//! (actions, `variables`, embedded files, script-level `let`) — a reference
-//! in a job-creation-time field is rejected by the format-string pass and
-//! does not place anything in a scope. The scheduler side of the rules
-//! (start before any Task of a Step in scope, stop once none remains) is the
-//! runtime's.
+//! The `dependencies` of a template's Steps and Services together form one
+//! graph — Step-to-Step, Step-to-Service, Service-to-Step and
+//! Service-to-Service edges — which must be acyclic (§3.2 constraint 3, §9.9
+//! item 10). [`compute_service_scopes`] applies the rules to a decoded Job
+//! Template, reporting the first cycle found as a [`ServiceDependencyCycle`];
+//! [`service_dependency_cycle`] finds a cycle among the `service:`
+//! dependencies of an Environment Template's Services, which have no Steps
+//! to depend on.
+//!
+//! `Service.*` values are available exactly to the entities that depend on
+//! the Service, so a reference is never an implicit edge. The reference
+//! extraction helpers at the end of this module ([`step_references`],
+//! [`environment_references`], [`service_references`]) remain for the two
+//! places a reference does matter: rule 3, and the diagnostic that names the
+//! missing `service:<name>` entry when an entity references a Service it does
+//! not list. The scheduler side of the rules (start before any Task of a
+//! Step in scope, stop once none remains) is the runtime's.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -36,7 +40,7 @@ use super::actions::{Action, CancelationMode};
 use super::environment::{EmbeddedFile, Environment};
 use super::job_template::JobTemplate;
 use super::service::Service;
-use super::step::StepTemplate;
+use super::step::{listed_service_names, listed_step_names, StepDependency, StepTemplate};
 use crate::format_string::FormatString;
 
 /// The Steps whose Tasks depend on a Service (§9.1).
@@ -47,12 +51,13 @@ use crate::format_string::FormatString;
     rename_all_fields = "camelCase"
 )]
 pub enum ServiceScope {
-    /// Every Step of the Job: a Service a Job Environment references, one
-    /// that nothing references, one a Job-wide Service references, or an
-    /// external Service. The Service lives as long as the Job.
+    /// Every Step of the Job: a Service a Job Environment references, one a
+    /// Job-wide Service depends on, or an external Service. The Service lives
+    /// as long as the Job.
     AllSteps,
     /// Exactly these Steps, by name. The Service is started before the first
-    /// Task of any of them and stopped once none has a Task left to run.
+    /// Task of any of them and stopped once none has a Task left to run. An
+    /// empty set is an unused Service, which validation rejects.
     Steps {
         /// The Step names, sorted.
         steps: BTreeSet<String>,
@@ -105,13 +110,16 @@ impl ServiceScope {
     }
 }
 
-/// `every Step`, or `Steps A, B` — the form the run log uses.
+/// `every Step`, `Step A`, `Steps A, B`, or `no Step` — the form the run
+/// log uses.
 impl fmt::Display for ServiceScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::AllSteps => f.write_str("every Step"),
             Self::Steps { steps } => {
-                if steps.len() == 1 {
+                if steps.is_empty() {
+                    f.write_str("no Step")
+                } else if steps.len() == 1 {
                     write!(f, "Step {}", steps.iter().next().expect("one step"))
                 } else {
                     let names: Vec<&str> = steps.iter().map(String::as_str).collect();
@@ -129,16 +137,31 @@ pub struct ComputedServiceScope {
     pub name: String,
     /// The Steps whose Tasks depend on the Service.
     pub scope: ServiceScope,
-    /// The other inline Services this Service references through
-    /// `Service.<name>.*` (rule 3): it starts after each is READY and stops
-    /// before any of them. Sorted; never contains the Service itself or a
-    /// required external Service.
-    pub references: BTreeSet<String>,
-    /// The Steps that reference the Service directly from their `script` or
-    /// `stepEnvironments` (rule 1), in template order.
-    pub referencing_steps: Vec<String>,
-    /// True when a `jobEnvironments` entry references the Service (rule 2).
+    /// The other inline Services this Service lists as `service:<name>`
+    /// (§9 item 4): it starts after each is READY and stops before any of
+    /// them. Sorted; never contains the Service itself, a required external
+    /// Service, or a name the template does not declare.
+    pub depends_on_services: BTreeSet<String>,
+    /// The Steps this Service lists in its `dependencies` (§9 item 4): it
+    /// starts only after each has completed. In list order; names the
+    /// template does not declare are kept (validation reports them).
+    pub depends_on_steps: Vec<String>,
+    /// The Steps that list `service:<name>` directly (rule 1), in template
+    /// order.
+    pub dependent_steps: Vec<String>,
+    /// The Services that list `service:<name>` (rule 2), in template order.
+    pub dependent_services: Vec<String>,
+    /// True when a `jobEnvironments` entry references the Service (rule 3).
     pub referenced_by_job_environment: bool,
+}
+
+impl ComputedServiceScope {
+    /// True when no Step is in the scope (rule 4): the template must be
+    /// rejected, naming the Service.
+    #[must_use]
+    pub fn is_unused(&self) -> bool {
+        matches!(&self.scope, ServiceScope::Steps { steps } if steps.is_empty())
+    }
 }
 
 /// The scopes of every Service of a Job Template, by name.
@@ -170,106 +193,170 @@ impl ServiceScopes {
     }
 }
 
-/// A cycle among the `Service.*` references of a template's Services
-/// (§9.1 rule 3, §9.9 item 9).
+/// A cycle in the graph the `dependencies` of a template's Steps and
+/// Services form (§3.2 constraint 3, §9.9 item 10).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServiceReferenceCycle {
-    /// The Service names along the cycle, starting and ending with the same
-    /// name: `["A", "B", "A"]`.
+pub struct ServiceDependencyCycle {
+    /// The nodes along the cycle as they are written in a `dependsOn`
+    /// value — a Step name, or `service:<name>` — starting and ending with
+    /// the same node: `["Use", "service:Indexer", "Use"]`.
     pub path: Vec<String>,
 }
 
-impl fmt::Display for ServiceReferenceCycle {
+impl fmt::Display for ServiceDependencyCycle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "the Service.* references among the Services form a cycle: {}; a Service may not \
-             reference a Service that (transitively) references it.",
+            "dependencies contain a cycle: {}.",
             self.path.join(" -> ")
         )
     }
 }
 
+/// A node of the combined dependency graph, keyed as `dependsOn` writes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum Node<'a> {
+    Step(&'a str),
+    Service(&'a str),
+}
+
+impl fmt::Display for Node<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Step(name) => f.write_str(name),
+            Self::Service(name) => write!(f, "{}{name}", super::step::SERVICE_DEPENDENCY_PREFIX),
+        }
+    }
+}
+
+/// The out-edges of `deps` among the declared `steps` and `services`;
+/// unknown names and the entity itself are not edges (validation reports
+/// them separately).
+fn edges_of<'a>(
+    deps: Option<&'a [StepDependency]>,
+    this: Node<'a>,
+    steps: &HashSet<&'a str>,
+    services: &HashSet<&'a str>,
+) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    for dep in deps.into_iter().flatten() {
+        let node = match dep.target(true) {
+            super::step::DependencyTarget::Step(name) => steps.get(name).map(|n| Node::Step(n)),
+            super::step::DependencyTarget::Service(name) => {
+                services.get(name).map(|n| Node::Service(n))
+            }
+        };
+        if let Some(node) = node {
+            if node != this && !out.contains(&node) {
+                out.push(node);
+            }
+        }
+    }
+    out
+}
+
 /// Compute the scope of every Service of `jt` (§9.1), or report the first
-/// reference cycle found.
+/// cycle in the combined dependency graph of its Steps and Services.
 ///
-/// The names in `jt.requires_services` are external Services: references to
-/// them are not reference edges and do not place anything in an inline
-/// Service's scope. Only the fields that may legally reference `Service.*`
-/// are read (see the module docs).
-pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceReferenceCycle> {
+/// The names in `jt.requires_services` are external Services: a
+/// `service:<name>` entry naming one is not an edge of the graph and does
+/// not place anything in an inline Service's scope. Only the fields that may
+/// legally reference `Service.*` are read for rule 3 (see the module docs).
+pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceDependencyCycle> {
     let services = jt.services();
-    let names: HashSet<&str> = services.iter().map(|s| s.name.as_str()).collect();
-    if names.is_empty() {
+    let step_names: HashSet<&str> = jt.steps.iter().map(|s| s.name.as_str()).collect();
+    let service_names: HashSet<&str> = services.iter().map(|s| s.name.as_str()).collect();
+
+    // The combined graph, in template order (Steps, then Services).
+    let mut graph: Vec<(Node<'_>, Vec<Node<'_>>)> = Vec::new();
+    for step in &jt.steps {
+        let node = Node::Step(&step.name);
+        graph.push((
+            node,
+            edges_of(
+                step.dependencies.as_deref(),
+                node,
+                &step_names,
+                &service_names,
+            ),
+        ));
+    }
+    for svc in services {
+        let node = Node::Service(&svc.name);
+        graph.push((
+            node,
+            edges_of(
+                svc.dependencies.as_deref(),
+                node,
+                &step_names,
+                &service_names,
+            ),
+        ));
+    }
+    if let Some(cycle) = find_cycle(&graph) {
+        return Err(cycle);
+    }
+    if services.is_empty() {
         return Ok(ServiceScopes::default());
     }
 
-    // Direct references (rule 3) and the cycle check.
-    let mut references: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    for svc in services {
-        let refs: BTreeSet<String> = service_references(svc)
-            .into_iter()
-            .filter(|n| n != &svc.name && names.contains(n.as_str()))
-            .collect();
-        references.insert(&svc.name, refs);
-    }
-    if let Some(cycle) = find_cycle(services.iter().map(|s| s.name.as_str()), &references) {
-        return Err(cycle);
-    }
-    // Reverse edges: who references X.
-    let mut referenced_by: HashMap<&str, Vec<&str>> = HashMap::new();
-    for (from, refs) in &references {
-        for to in refs {
-            referenced_by
-                .entry(names_key(&names, to))
-                .or_default()
-                .push(from);
-        }
-    }
-
-    // Rules 1 and 2.
-    let mut direct_steps: HashMap<&str, Vec<String>> = HashMap::new();
-    for step in &jt.steps {
-        for name in step_references(step) {
-            if names.contains(name.as_str()) {
-                let list = direct_steps.entry(names_key(&names, &name)).or_default();
-                if !list.contains(&step.name) {
-                    list.push(step.name.clone());
-                }
+    // Reverse edges into each Service: the Steps (rule 1) and Services
+    // (rule 2) that list it.
+    let mut dependent_steps: HashMap<&str, Vec<String>> = HashMap::new();
+    let mut dependent_services: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (node, edges) in &graph {
+        for edge in edges {
+            let Node::Service(target) = edge else {
+                continue;
+            };
+            match node {
+                Node::Step(step) => dependent_steps
+                    .entry(target)
+                    .or_default()
+                    .push(step.to_string()),
+                Node::Service(svc) => dependent_services.entry(target).or_default().push(svc),
             }
         }
     }
+    // Rule 3.
     let mut job_wide: HashSet<&str> = HashSet::new();
     for env in jt.job_environments.iter().flatten() {
         for name in environment_references(env) {
-            if names.contains(name.as_str()) {
-                job_wide.insert(names_key(&names, &name));
+            if let Some(key) = service_names.get(name.as_str()) {
+                job_wide.insert(key);
             }
         }
     }
 
-    // Rule 4 and the transitive closure of rule 3, memoized over the
-    // (acyclic) referenced-by graph.
+    // Rules 1–3 with the transitive closure of rule 2, memoized over the
+    // (acyclic) dependent-services graph.
     let mut memo: HashMap<&str, ServiceScope> = HashMap::new();
     fn scope_of<'a>(
         name: &'a str,
         job_wide: &HashSet<&str>,
-        direct_steps: &HashMap<&str, Vec<String>>,
-        referenced_by: &HashMap<&str, Vec<&'a str>>,
+        dependent_steps: &HashMap<&str, Vec<String>>,
+        dependent_services: &HashMap<&str, Vec<&'a str>>,
         memo: &mut HashMap<&'a str, ServiceScope>,
     ) -> ServiceScope {
         if let Some(s) = memo.get(name) {
             return s.clone();
         }
-        let referrers = referenced_by.get(name).map(Vec::as_slice).unwrap_or(&[]);
-        let direct = direct_steps.get(name).map(Vec::as_slice).unwrap_or(&[]);
-        let scope = if job_wide.contains(name) || (referrers.is_empty() && direct.is_empty()) {
+        let scope = if job_wide.contains(name) {
             ServiceScope::AllSteps
         } else {
-            let mut steps: BTreeSet<String> = direct.iter().cloned().collect();
+            let mut steps: BTreeSet<String> = dependent_steps
+                .get(name)
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_default();
             let mut all = false;
-            for r in referrers {
-                match scope_of(r, job_wide, direct_steps, referenced_by, memo) {
+            for dependent in dependent_services.get(name).into_iter().flatten() {
+                match scope_of(
+                    dependent,
+                    job_wide,
+                    dependent_steps,
+                    dependent_services,
+                    memo,
+                ) {
                     ServiceScope::AllSteps => {
                         all = true;
                         break;
@@ -290,14 +377,32 @@ pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, Service
     let mut by_name = BTreeMap::new();
     for svc in services {
         let name = svc.name.as_str();
-        let scope = scope_of(name, &job_wide, &direct_steps, &referenced_by, &mut memo);
+        let scope = scope_of(
+            name,
+            &job_wide,
+            &dependent_steps,
+            &dependent_services,
+            &mut memo,
+        );
+        let depends_on_services = listed_service_names(svc.dependencies.as_deref())
+            .filter(|n| *n != name && service_names.contains(n))
+            .map(str::to_string)
+            .collect();
+        let depends_on_steps = listed_step_names(svc.dependencies.as_deref(), true)
+            .map(str::to_string)
+            .collect();
         by_name.insert(
             svc.name.clone(),
             ComputedServiceScope {
                 name: svc.name.clone(),
                 scope,
-                references: references.get(name).cloned().unwrap_or_default(),
-                referencing_steps: direct_steps.get(name).cloned().unwrap_or_default(),
+                depends_on_services,
+                depends_on_steps,
+                dependent_steps: dependent_steps.get(name).cloned().unwrap_or_default(),
+                dependent_services: dependent_services
+                    .get(name)
+                    .map(|v| v.iter().map(|s| s.to_string()).collect())
+                    .unwrap_or_default(),
                 referenced_by_job_environment: job_wide.contains(name),
             },
         );
@@ -305,85 +410,86 @@ pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, Service
     Ok(ServiceScopes { by_name })
 }
 
-/// The `&str` key of `names` equal to `name` (so borrowed keys outlive the
-/// owned strings they were looked up with).
-fn names_key<'a>(names: &HashSet<&'a str>, name: &str) -> &'a str {
-    names.get(name).copied().expect("caller checked membership")
-}
-
-/// Find a cycle among the `Service.*` references of `services` (any
-/// template's list), or `None` when the reference graph is acyclic.
-pub fn service_reference_cycle(services: &[Service]) -> Option<ServiceReferenceCycle> {
-    let names: HashSet<&str> = services.iter().map(|s| s.name.as_str()).collect();
-    let references: BTreeMap<&str, BTreeSet<String>> = services
+/// Find a cycle among the `service:` dependencies of `services` (an
+/// Environment Template's list, which has no Steps), or `None` when the
+/// graph is acyclic.
+pub fn service_dependency_cycle(services: &[Service]) -> Option<ServiceDependencyCycle> {
+    let service_names: HashSet<&str> = services.iter().map(|s| s.name.as_str()).collect();
+    let graph: Vec<(Node<'_>, Vec<Node<'_>>)> = services
         .iter()
         .map(|svc| {
-            let refs = service_references(svc)
-                .into_iter()
-                .filter(|n| n != &svc.name && names.contains(n.as_str()))
-                .collect();
-            (svc.name.as_str(), refs)
+            let node = Node::Service(&svc.name);
+            (
+                node,
+                edges_of(
+                    svc.dependencies.as_deref(),
+                    node,
+                    &HashSet::new(),
+                    &service_names,
+                ),
+            )
         })
         .collect();
-    find_cycle(services.iter().map(|s| s.name.as_str()), &references)
+    find_cycle(&graph)
 }
 
-/// DFS over `references` in declaration order; the first back edge found
-/// yields the cycle, spelled from the revisited node back to itself.
-fn find_cycle<'a>(
-    order: impl Iterator<Item = &'a str>,
-    references: &BTreeMap<&'a str, BTreeSet<String>>,
-) -> Option<ServiceReferenceCycle> {
+/// DFS over `graph` in declaration order; the first back edge found yields
+/// the cycle, spelled from the revisited node back to itself.
+fn find_cycle<'a>(graph: &[(Node<'a>, Vec<Node<'a>>)]) -> Option<ServiceDependencyCycle> {
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
         New,
         Open,
         Done,
     }
+    let index: HashMap<Node<'a>, usize> = graph
+        .iter()
+        .enumerate()
+        .map(|(i, (n, _))| (*n, i))
+        .collect();
     fn visit<'a>(
-        node: &'a str,
-        references: &BTreeMap<&'a str, BTreeSet<String>>,
-        marks: &mut HashMap<&'a str, Mark>,
-        stack: &mut Vec<&'a str>,
-    ) -> Option<ServiceReferenceCycle> {
-        marks.insert(node, Mark::Open);
-        stack.push(node);
-        if let Some(refs) = references.get(node) {
-            for next in refs {
-                let next_key = references
-                    .keys()
-                    .copied()
-                    .find(|k| *k == next.as_str())
-                    .expect("references are filtered to declared names");
-                match marks.get(next_key).copied().unwrap_or(Mark::New) {
-                    Mark::Done => {}
-                    Mark::Open => {
-                        let start = stack
-                            .iter()
-                            .position(|n| *n == next_key)
-                            .expect("open nodes are on the stack");
-                        let mut path: Vec<String> =
-                            stack[start..].iter().map(|s| s.to_string()).collect();
-                        path.push(next_key.to_string());
-                        return Some(ServiceReferenceCycle { path });
-                    }
-                    Mark::New => {
-                        if let Some(c) = visit(next_key, references, marks, stack) {
-                            return Some(c);
-                        }
+        at: usize,
+        graph: &[(Node<'a>, Vec<Node<'a>>)],
+        index: &HashMap<Node<'a>, usize>,
+        marks: &mut [Mark],
+        stack: &mut Vec<usize>,
+    ) -> Option<ServiceDependencyCycle> {
+        marks[at] = Mark::Open;
+        stack.push(at);
+        for next in &graph[at].1 {
+            let Some(&next_idx) = index.get(next) else {
+                continue;
+            };
+            match marks[next_idx] {
+                Mark::Done => {}
+                Mark::Open => {
+                    let start = stack
+                        .iter()
+                        .position(|n| *n == next_idx)
+                        .expect("open nodes are on the stack");
+                    let mut path: Vec<String> = stack[start..]
+                        .iter()
+                        .map(|i| graph[*i].0.to_string())
+                        .collect();
+                    path.push(graph[next_idx].0.to_string());
+                    return Some(ServiceDependencyCycle { path });
+                }
+                Mark::New => {
+                    if let Some(c) = visit(next_idx, graph, index, marks, stack) {
+                        return Some(c);
                     }
                 }
             }
         }
         stack.pop();
-        marks.insert(node, Mark::Done);
+        marks[at] = Mark::Done;
         None
     }
-    let mut marks = HashMap::new();
+    let mut marks = vec![Mark::New; graph.len()];
     let mut stack = Vec::new();
-    for name in order {
-        if marks.get(name).copied().unwrap_or(Mark::New) == Mark::New {
-            if let Some(c) = visit(name, references, &mut marks, &mut stack) {
+    for i in 0..graph.len() {
+        if marks[i] == Mark::New {
+            if let Some(c) = visit(i, graph, &index, &mut marks, &mut stack) {
                 return Some(c);
             }
         }
@@ -391,10 +497,25 @@ fn find_cycle<'a>(
     None
 }
 
+/// The Services of `services` that `dependencies` lists as `service:<name>`
+/// — those whose `Service.<name>.<port>.*` the listing entity may reference
+/// (§9 scope rules 2–3). Declaration order; a name the list does not declare
+/// (a required Service, or a typo) yields nothing here.
+pub fn listed_services<'a>(
+    dependencies: Option<&'a [StepDependency]>,
+    services: &'a [Service],
+) -> impl Iterator<Item = &'a Service> + Clone + 'a {
+    services
+        .iter()
+        .filter(move |svc| super::step::lists_service(dependencies, &svc.name))
+}
+
 // ── Reference extraction ─────────────────────────────────────────────
 
 /// The Service names a Step references from its `script` (actions,
-/// embedded files, script `let`) and `stepEnvironments` (§9.1 rule 1).
+/// embedded files, script `let`) and `stepEnvironments`. A reference is not
+/// a dependency: the Step must list each as `service:<name>` (§9 scope
+/// rule 3), and this is how the diagnostic finds the ones it does not.
 #[must_use]
 pub fn step_references(step: &StepTemplate) -> BTreeSet<String> {
     let mut symbols = HashSet::new();
@@ -415,7 +536,7 @@ pub fn step_references(step: &StepTemplate) -> BTreeSet<String> {
 }
 
 /// The Service names an Environment references from its `variables`,
-/// actions, embedded files and script `let` (§9.1 rule 2 for a Job
+/// actions, embedded files and script `let` (§9.1 rule 3 for a Job
 /// Environment; the `runScope` default of §4 item 3).
 #[must_use]
 pub fn environment_references(env: &Environment) -> BTreeSet<String> {
@@ -435,8 +556,10 @@ pub fn environment_references_service(env: &Environment) -> bool {
 }
 
 /// The Service names a Service references from its `variables`, actions,
-/// embedded files and `<ServiceScript>.let` (§9.1 rule 3), including its
-/// own name when it references itself; `Service.File.*` is not a Service.
+/// embedded files and `<ServiceScript>.let`, including its own name when it
+/// references itself; `Service.File.*` is not a Service. A reference is not
+/// a dependency (§9 scope rule 2): the Service must list each other Service
+/// as `service:<name>`.
 #[must_use]
 pub fn service_references(svc: &Service) -> BTreeSet<String> {
     let mut symbols = HashSet::new();
@@ -533,20 +656,30 @@ mod tests {
         serde_saphyr::from_str(yaml).unwrap()
     }
 
-    fn svc(name: &str, args: &[&str]) -> String {
+    fn svc(name: &str, args: &[&str], deps: &[&str]) -> String {
         let args: Vec<String> = args.iter().map(|a| format!("\"{a}\"")).collect();
+        let deps = if deps.is_empty() {
+            String::new()
+        } else {
+            let deps: Vec<String> = deps.iter().map(|d| format!("{{dependsOn: {d}}}")).collect();
+            format!("  dependencies: [{}]\n", deps.join(", "))
+        };
         format!(
-            "- name: {name}\n  ports: [{{name: main}}]\n  script:\n    actions:\n      onRun: {{command: x, args: [{}]}}\n",
+            "- name: {name}\n{deps}  ports: [{{name: main}}]\n  script:\n    actions:\n      onRun: {{command: x, args: [{}]}}\n",
             args.join(", ")
         )
     }
 
     fn step(name: &str, args: &[&str], deps: &[&str]) -> String {
         let args: Vec<String> = args.iter().map(|a| format!("\"{a}\"")).collect();
-        let deps: Vec<String> = deps.iter().map(|d| format!("{{dependsOn: {d}}}")).collect();
+        let deps = if deps.is_empty() {
+            String::new()
+        } else {
+            let deps: Vec<String> = deps.iter().map(|d| format!("{{dependsOn: {d}}}")).collect();
+            format!("  dependencies: [{}]\n", deps.join(", "))
+        };
         format!(
-            "- name: {name}\n  dependencies: [{}]\n  script:\n    actions:\n      onRun: {{command: x, args: [{}]}}\n",
-            deps.join(", "),
+            "- name: {name}\n{deps}  script:\n    actions:\n      onRun: {{command: x, args: [{}]}}\n",
             args.join(", ")
         )
     }
@@ -556,6 +689,10 @@ mod tests {
         assert_eq!(ServiceScope::AllSteps.to_string(), "every Step");
         assert_eq!(ServiceScope::steps(["B"]).to_string(), "Step B");
         assert_eq!(ServiceScope::steps(["B", "A"]).to_string(), "Steps A, B");
+        assert_eq!(
+            ServiceScope::steps::<[&str; 0], &str>([]).to_string(),
+            "no Step"
+        );
         assert!(ServiceScope::AllSteps.contains("anything"));
         assert!(ServiceScope::steps(["A"]).contains("A"));
         assert!(!ServiceScope::steps(["A"]).contains("B"));
@@ -583,41 +720,51 @@ mod tests {
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
              jobEnvironments:\n- name: E\n  variables: {{ADDR: \"{{{{ Service.Wide.main.connectAddress }}}}\"}}\n\
              services:\n{}{}{}{}steps:\n{}{}{}",
-            svc("Wide", &[]),
-            svc("Front", &["{{ Service.Back.main.port }}"]),
-            svc("Back", &[]),
-            svc("Lonely", &[]),
-            step("S1", &["{{ Service.Front.main.port }}"], &[]),
-            step("S2", &["{{ Service.Back.main.port }}"], &["S1"]),
+            svc("Wide", &[], &[]),
+            svc("Front", &["{{ Service.Back.main.port }}"], &["service:Back"]),
+            svc("Back", &[], &[]),
+            svc("Lonely", &[], &[]),
+            step("S1", &["{{ Service.Front.main.port }}"], &["service:Front"]),
+            step("S2", &["{{ Service.Back.main.port }}"], &["S1", "service:Back"]),
             step("S3", &[], &["S2"]),
         );
         let jt = template(&yaml);
         let scopes = compute_service_scopes(&jt).unwrap();
+        // Rule 3.
         assert_eq!(scopes.scope_of("Wide"), ServiceScope::AllSteps);
         assert!(scopes.get("Wide").unwrap().referenced_by_job_environment);
-        assert_eq!(scopes.scope_of("Lonely"), ServiceScope::AllSteps);
+        assert!(!scopes.get("Wide").unwrap().is_unused());
+        // Rule 4: nothing lists Lonely.
+        let lonely = scopes.get("Lonely").unwrap();
+        assert_eq!(lonely.scope, ServiceScope::steps::<[&str; 0], &str>([]));
+        assert!(lonely.is_unused());
+        // Rule 1.
         assert_eq!(scopes.scope_of("Front"), ServiceScope::steps(["S1"]));
-        // Back: S2 directly, S1 through Front.
+        // Rule 2: Back has S2 directly and S1 through Front.
         assert_eq!(scopes.scope_of("Back"), ServiceScope::steps(["S1", "S2"]));
         let front = scopes.get("Front").unwrap();
         assert_eq!(
-            front.references.iter().collect::<Vec<_>>(),
+            front.depends_on_services.iter().collect::<Vec<_>>(),
             vec![&"Back".to_string()]
         );
-        assert_eq!(front.referencing_steps, vec!["S1".to_string()]);
-        assert!(scopes.get("Back").unwrap().references.is_empty());
+        assert_eq!(front.dependent_steps, vec!["S1".to_string()]);
+        let back = scopes.get("Back").unwrap();
+        assert!(back.depends_on_services.is_empty());
+        assert_eq!(back.dependent_steps, vec!["S2".to_string()]);
+        assert_eq!(back.dependent_services, vec!["Front".to_string()]);
         // An undeclared name is treated as an external Service.
         assert_eq!(scopes.scope_of("Ext"), ServiceScope::AllSteps);
         assert_eq!(scopes.iter().count(), 4);
     }
 
     #[test]
-    fn a_job_wide_referrer_makes_the_referenced_service_job_wide() {
+    fn a_job_wide_dependent_makes_the_depended_on_service_job_wide() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             jobEnvironments:\n- name: E\n  variables: {{ADDR: \"{{{{ Service.Front.main.connectAddress }}}}\"}}\n\
              services:\n{}{}steps:\n{}{}",
-            svc("Front", &["{{ Service.Back.main.port }}"]),
-            svc("Back", &[]),
+            svc("Front", &["{{ Service.Back.main.port }}"], &["service:Back"]),
+            svc("Back", &[], &[]),
             step("S1", &[], &[]),
             step("S2", &[], &[]),
         );
@@ -627,50 +774,116 @@ mod tests {
     }
 
     #[test]
-    fn requirement_names_are_not_reference_edges() {
+    fn references_are_not_edges_and_requirement_names_are_not_dependencies() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
              requiresServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
-             services:\n{}steps:\n{}",
-            svc("Own", &["{{ Service.Ext.main.port }}"]),
-            step("S1", &["{{ Service.Ext.main.port }}"], &[]),
+             services:\n{}{}steps:\n{}{}",
+            svc("Own", &["{{ Service.Ext.main.port }}"], &["service:Ext"]),
+            svc("Other", &["{{ Service.Own.main.port }}"], &[]),
+            step("S1", &["{{ Service.Ext.main.port }}"], &["service:Own"]),
+            step("S2", &["{{ Service.Other.main.port }}"], &[]),
         );
         let scopes = compute_service_scopes(&template(&yaml)).unwrap();
-        assert!(scopes.get("Own").unwrap().references.is_empty());
-        assert_eq!(scopes.scope_of("Own"), ServiceScope::AllSteps);
+        let own = scopes.get("Own").unwrap();
+        assert!(own.depends_on_services.is_empty());
+        assert_eq!(own.scope, ServiceScope::steps(["S1"]));
+        // Other references Own and S2 references Other: neither is an edge.
+        assert!(scopes.get("Other").unwrap().is_unused());
         assert!(scopes.get("Ext").is_none());
     }
 
     #[test]
+    fn service_step_dependencies_are_recorded() {
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             services:\n{}steps:\n{}{}",
+            svc("Indexer", &[], &["Prepare", "service:Nope"]),
+            step("Prepare", &[], &[]),
+            step("Use", &[], &["Prepare", "service:Indexer"]),
+        );
+        let scopes = compute_service_scopes(&template(&yaml)).unwrap();
+        let indexer = scopes.get("Indexer").unwrap();
+        assert_eq!(indexer.depends_on_steps, vec!["Prepare".to_string()]);
+        // An unknown Service name is not an edge.
+        assert!(indexer.depends_on_services.is_empty());
+        assert_eq!(indexer.scope, ServiceScope::steps(["Use"]));
+    }
+
+    #[test]
     fn cycles_are_reported_with_their_path() {
+        // Service -> Service -> Service.
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
              services:\n{}{}{}steps:\n{}",
-            svc("A", &["{{ Service.B.main.port }}"]),
-            svc("B", &["{{ Service.C.main.port }}"]),
-            svc("C", &["{{ Service.A.main.port }}"]),
-            step("S1", &[], &[]),
+            svc("A", &[], &["service:B"]),
+            svc("B", &[], &["service:C"]),
+            svc("C", &[], &["service:A"]),
+            step("S1", &[], &["service:A"]),
         );
         let jt = template(&yaml);
         let cycle = compute_service_scopes(&jt).unwrap_err();
-        assert_eq!(cycle.path, vec!["A", "B", "C", "A"]);
+        assert_eq!(
+            cycle.path,
+            vec!["service:A", "service:B", "service:C", "service:A"]
+        );
         assert_eq!(
             cycle.to_string(),
-            "the Service.* references among the Services form a cycle: A -> B -> C -> A; a \
-             Service may not reference a Service that (transitively) references it."
+            "dependencies contain a cycle: service:A -> service:B -> service:C -> service:A."
         );
         assert_eq!(
-            service_reference_cycle(jt.services()).unwrap().path,
-            vec!["A", "B", "C", "A"]
+            service_dependency_cycle(jt.services()).unwrap().path,
+            vec!["service:A", "service:B", "service:C", "service:A"]
         );
-        // Self-references are not edges.
+        // Step -> Service -> Step.
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
              services:\n{}steps:\n{}",
-            svc("A", &["{{ Service.A.main.bindAddress }}"]),
-            step("S1", &[], &[]),
+            svc("X", &[], &["Use"]),
+            step("Use", &[], &["service:X"]),
         );
-        assert!(service_reference_cycle(template(&yaml).services()).is_none());
+        let cycle = compute_service_scopes(&template(&yaml)).unwrap_err();
+        assert_eq!(cycle.path, vec!["Use", "service:X", "Use"]);
+        // Step -> Step.
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             steps:\n{}{}",
+            step("A", &[], &["B"]),
+            step("B", &[], &["A"]),
+        );
+        let cycle = compute_service_scopes(&template(&yaml)).unwrap_err();
+        assert_eq!(
+            cycle.to_string(),
+            "dependencies contain a cycle: A -> B -> A."
+        );
+        // Self-dependencies are not edges here (validation reports them).
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             services:\n{}steps:\n{}",
+            svc("A", &[], &["service:A"]),
+            step("S1", &[], &["service:A"]),
+        );
+        let jt = template(&yaml);
+        assert!(service_dependency_cycle(jt.services()).is_none());
+        assert!(compute_service_scopes(&jt).is_ok());
+    }
+
+    #[test]
+    fn listed_services_follow_the_dependencies_list() {
+        let yaml = format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             services:\n{}{}{}steps:\n{}",
+            svc("A", &[], &[]),
+            svc("B", &[], &[]),
+            svc("C", &[], &[]),
+            step("S1", &[], &["service:C", "service:A", "service:Nope"]),
+        );
+        let jt = template(&yaml);
+        let names: Vec<&str> = listed_services(jt.steps[0].dependencies.as_deref(), jt.services())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["A", "C"]);
+        assert_eq!(listed_services(None, jt.services()).count(), 0);
     }
 
     #[test]

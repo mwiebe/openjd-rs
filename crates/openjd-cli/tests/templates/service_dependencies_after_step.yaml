@@ -1,6 +1,6 @@
 # Template Schemas §9 item 4 / How Jobs Are Run constraint 2: Indexer has
 # `dependencies: [{dependsOn: Prepare}]`, so it starts only after Prepare's
-# Task completed. Use references Indexer (its scope is Step Use) and does NOT
+# Task completed. Use lists service:Indexer (its scope is Step Use) and does NOT
 # declare a dependency on Prepare; it is listed first, so it runs after
 # Prepare only through the edge implied by its Service's dependencies.
 # Prepare's Task records whether the Indexer was up (it must not be) and
@@ -47,6 +47,8 @@ services:
                 c.close()
 steps:
   - name: Use
+    dependencies:
+      - dependsOn: "service:Indexer"
     script:
       actions:
         onRun:

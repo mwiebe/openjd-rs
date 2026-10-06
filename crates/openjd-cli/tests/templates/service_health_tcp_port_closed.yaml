@@ -55,6 +55,8 @@ services:
             time.sleep(600)
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Store"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

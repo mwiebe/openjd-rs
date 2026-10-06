@@ -1,7 +1,7 @@
 # RFC 0009 "Service names are scoped to their document" (Template Schemas
 # §1.2.2 item 2), Step-scoped variant: this template's inline Service is
 # named `Cache`, like the external Service of
-# service_same_name_queue_cache.yaml, and only Step Work references it (so its
+# service_same_name_queue_cache.yaml, and only Step Work lists it (so its
 # scope is Step Work; Step Done, which runs after, does not). The Task reaches
 # the inline `Cache` through Service.Cache.main.* and the queue's through
 # VALKEY_HOST / VALKEY_PORT, and prints both replies.
@@ -39,6 +39,8 @@ services:
                 c.close()
 steps:
   - name: Work
+    dependencies:
+      - dependsOn: "service:Cache"
     script:
       actions:
         onRun:

@@ -43,6 +43,8 @@ services:
                 c.close()
 steps:
   - name: UseSecret
+    dependencies:
+      - dependsOn: "service:Vault"
     script:
       actions:
         onRun:

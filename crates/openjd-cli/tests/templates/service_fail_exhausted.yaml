@@ -28,6 +28,8 @@ services:
           args: ["-c", "open(r'{{ Param.TraceFile }}', 'a').write('exit\\n')"]
 steps:
   - name: Never
+    dependencies:
+      - dependsOn: "service:Broken"
     script:
       actions:
         onRun:

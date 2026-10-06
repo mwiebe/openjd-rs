@@ -1,4 +1,4 @@
-# Two Services that do not reference one another start concurrently (RFC
+# Two Services neither of which depends on the other start concurrently (RFC
 # 0009 ordering constraint 2): each records its launch and readiness times
 # in the trace file, and each takes ~2 seconds to become READY, so the
 # launches overlap when started concurrently.
@@ -63,6 +63,9 @@ services:
                 time.sleep(1)
 steps:
   - name: Use
+    dependencies:
+      - dependsOn: "service:Alpha"
+      - dependsOn: "service:Beta"
     script:
       actions:
         onRun:

@@ -1,7 +1,10 @@
 # Step Dependency Graph
 
 The `step_dependency_graph` module builds and queries a directed acyclic graph of step-to-step
-dependencies from an instantiated `job::Job`.
+dependencies from an instantiated `job::Job`. Only Step-to-Step edges appear here: under the
+`SERVICE` extension a `dependsOn` value beginning `service:` names a Service (Template Schemas
+§3.2), whose readiness the scheduler gates separately, so such entries are skipped. Without
+`SERVICE` every entry is a Step name.
 
 ## Public API
 
@@ -44,8 +47,10 @@ pub struct StepDependencyEdge {
 
 1. Creates a node for each step, indexed by position in `job.steps`
 2. Builds `name_to_index` lookup map
-3. For each step's dependencies, creates edges from the dependency target to the step
-4. Errors on unknown dependency targets (step name not found)
+3. For each step's dependencies, classifies the entry with
+   `dep.target(job.service_active())` and skips a `DependencyTarget::Service` entry; for a Step
+   target, creates an edge from the dependency target to the step
+4. Errors on unknown Step targets (step name not found)
 
 ## Topological Sort
 
@@ -82,8 +87,12 @@ template order where dependency constraints allow.
 ### Cycle Detection at Two Levels
 
 Cycles are detected in two places:
-1. During template validation (Pass 3, `structure.rs`) using iterative DFS with tri-state
-   marking
+1. During template validation. Without `SERVICE`, pass 6 (`structure.rs`) checks the Step
+   graph using iterative DFS with tri-state marking (`step dependencies contain a cycle.`).
+   With `SERVICE`, the Steps' and Services' `dependencies` form one graph (Step-to-Step,
+   Step-to-Service, Service-to-Step, Service-to-Service), which pass 11 checks through
+   `compute_service_scopes`, naming the cycle (`dependencies contain a cycle: <path>.`; see
+   [template-types.md](template-types.md), "Service scope"); a Step-only cycle is one such cycle.
 2. During `topo_sorted()` using the same DFS back-edge detection algorithm
 
 The validation check catches cycles in templates before job creation. The `topo_sorted()`

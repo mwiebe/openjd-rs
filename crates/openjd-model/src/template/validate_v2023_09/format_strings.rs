@@ -114,9 +114,11 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// Takes a parameter slice so it works for both job templates and standalone
 /// environment templates.
 ///
-/// `in_scope_services` are the document's Services (RFC 0009, Template
-/// Schemas §9 scope items 3–4: every inline Service of a Job Template, or
-/// every Service of an Environment Template) and `requirements` the Job
+/// `in_scope_services` are the inline Services the environment may reference
+/// (RFC 0009, Template Schemas §9 scope items 3–5): for a Step Environment,
+/// the Services its Step lists in `dependencies`; for a Job Environment,
+/// every Service of the Job Template; for an Environment Template's
+/// `environment`, every Service of the document. `requirements` are the Job
 /// Template's `requiresServices` (§9.8). Their `Service.<name>.<port>.port`
 /// / `.connectAddress` are added only when the environment's effective
 /// `runScope` excludes `SERVICE` (§4 item 3.2, §9.9 item 2) — which it does
@@ -188,21 +190,26 @@ fn build_session_scope_symtab<'a>(
 ///           Task.File.*, Job.Name, Step.Name, Env.File.* from step envs,
 ///           plus let bindings.
 ///
-/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of every inline
-/// Service and of every required Service's declared ports are in scope
-/// (Template Schemas §9 scope item 3, §9.8); `bindAddress` never is. A
-/// reference from a Step's script places the Step in the Service's scope
-/// (§9.1 rule 1), so no inline Service is ever out of scope here.
+/// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of the inline
+/// Services the Step lists as `service:<name>` in its `dependencies`, and of
+/// every required Service's declared ports, are in scope (Template Schemas
+/// §9 scope item 3, §9.8); `bindAddress` never is. A reference to an inline
+/// Service the Step does not list surfaces as an undefined variable, which
+/// `service_diagnostics` rewrites to name the missing dependency.
 fn build_task_scope_symtab(
     jt: &JobTemplate,
     step: &StepTemplate,
     expr_active: bool,
     service_active: bool,
 ) -> SymbolTable {
-    let _ = step;
     let mut symtab = build_param_symtab(jt.parameter_definitions.as_deref());
     if service_active {
-        add_unresolved_service_symbols(&mut symtab, jt.services(), None).expect("symtab");
+        add_unresolved_service_symbols(
+            &mut symtab,
+            listed_services(step.dependencies.as_deref(), jt.services()),
+            None,
+        )
+        .expect("symtab");
         add_unresolved_requirement_symbols(&mut symtab, jt.requires_services()).expect("symtab");
     }
 
@@ -1658,10 +1665,11 @@ pub fn validate_format_strings(
                 .expect("symtab");
         }
         for (i, env) in envs.iter().enumerate() {
-            // RFC 0009: a job environment whose effective runScope excludes
-            // SERVICE sees every inline and required Service's endpoint
-            // (and thereby makes every inline Service it references
-            // Job-wide, §9.1 rule 2).
+            // RFC 0009 §9 scope item 4: a job environment whose effective
+            // runScope excludes SERVICE sees every inline and required
+            // Service's endpoint — it has no `dependencies` of its own, and
+            // referencing an inline Service puts every Step in that
+            // Service's scope (§9.1 rule 3).
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
@@ -1709,9 +1717,9 @@ pub fn validate_format_strings(
         }
     }
 
-    // ── Services (RFC 0009): job scope; each may reference every other
-    // Service of the document (the reference graph's acyclicity is pass
-    // 11's concern) and every required Service ──
+    // ── Services (RFC 0009): job scope; each may reference the Services it
+    // lists in its `dependencies` (§9 scope item 2; the dependency graph's
+    // acyclicity is pass 11's concern) and every required Service ──
     if service_active {
         let list_path = path_field(&[], "services");
         let mut base = build_template_scope_symtab(jt.parameter_definitions.as_deref());
@@ -1725,7 +1733,7 @@ pub fn validate_format_strings(
                 jt.parameter_definitions.as_deref(),
                 &base,
                 &HashSet::new(),
-                services.iter(),
+                listed_services(svc.dependencies.as_deref(), services),
                 requirements,
                 &path_index(&list_path, k),
                 &p8,
@@ -2128,16 +2136,16 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
-                // RFC 0009: a step environment whose effective runScope
-                // excludes SERVICE sees every inline and required Service
-                // (and places the Step in each referenced inline Service's
-                // scope, §9.1 rule 1).
+                // RFC 0009 §9 scope item 3: a step environment whose
+                // effective runScope excludes SERVICE follows its Step's
+                // dependencies — it sees the inline Services the Step lists,
+                // and every required Service.
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,
                     true,
                     expr_active,
-                    services.iter(),
+                    listed_services(step.dependencies.as_deref(), services),
                     requirements,
                 );
                 // Copy step-level let binding values (already evaluated with inferred types)
@@ -2336,8 +2344,9 @@ pub fn validate_format_strings_environment_template(
             .expect("symtab");
     }
 
-    // ── Services (RFC 0009 §1.2.2): each sees every other Service of the
-    // document; the reference graph's acyclicity is pass 11's concern ──
+    // ── Services (RFC 0009 §1.2.2): each sees the Services of the document
+    // it lists in its `dependencies`; the dependency graph's acyclicity is
+    // pass 11's concern ──
     let services: &[Service] = if p8.service_active {
         et.services.as_deref().unwrap_or(&[])
     } else {
@@ -2350,7 +2359,7 @@ pub fn validate_format_strings_environment_template(
             et.parameter_definitions.as_deref(),
             &env_template_symtab,
             &HashSet::new(),
-            services.iter(),
+            listed_services(svc.dependencies.as_deref(), services),
             &[],
             &path_index(&list_path, k),
             &p8,
@@ -2366,7 +2375,7 @@ pub fn validate_format_strings_environment_template(
 
     let env_path = vec![PathElement::Field("environment".into())];
     // The environment may reference every Service of the document when its
-    // runScope excludes SERVICE (§1.2.2).
+    // runScope excludes SERVICE (§1.2.2, §9 scope item 5).
     let mut env_symtab = build_session_scope_symtab(
         et.parameter_definitions.as_deref(),
         env,
@@ -2467,8 +2476,9 @@ const SERVICE_MAX_ATTEMPTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedCon
 /// - **Service-execution scope** — the above plus PATH `Param.*`,
 ///   `Session.*`, this Service's `Service.File.*`, its own
 ///   `Service.<name>.<port>.*` (including `bindAddress`), the `port` /
-///   `connectAddress` of every other Service in `in_scope` (the document's
-///   Services) and of every `requirements` entry's declared ports, and the
+///   `connectAddress` of every other Service in `in_scope` (the Services
+///   of the document this Service lists in its `dependencies`, §9 scope
+///   item 2) and of every `requirements` entry's declared ports, and the
 ///   `<ServiceScript>.let` bindings. Used for `variables`, every action's
 ///   `command` / `args`, and embedded-file `data`. `Task.*` and `Step.*` are
 ///   never in scope within a Service.

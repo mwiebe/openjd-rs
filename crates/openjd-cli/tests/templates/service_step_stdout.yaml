@@ -1,5 +1,5 @@
 # RFC 0009 example 2 adapted: a Service scoped to Step Coordinated (the only
-# Step that references it) with a STDOUT health check that owns the Step's
+# Step that lists it) with a STDOUT health check that owns the Step's
 # state. Its onEnter / onRun / onExit and the Step's Tasks append
 # to a trace file so the test can verify the lifecycle order: the Service
 # starts before the first Task, stops (onExit) once the Step's three Tasks are
@@ -54,6 +54,8 @@ services:
                 c.close()
 steps:
   - name: Coordinated
+    dependencies:
+      - dependsOn: "service:Coordinator"
     parameterSpace:
       taskParameterDefinitions:
         - name: Tile

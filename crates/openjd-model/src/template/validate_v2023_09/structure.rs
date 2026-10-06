@@ -13,7 +13,7 @@ use super::EffectiveRules;
 use crate::capabilities;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::*;
-use crate::types::ValidationContext;
+use crate::types::{ModelExtension, ValidationContext};
 
 pub fn validate_structure(
     jt: &JobTemplate,
@@ -162,6 +162,11 @@ pub fn validate_structure(
 
     // Step validation
     let all_step_names: HashSet<String> = jt.steps.iter().map(|s| s.name.clone()).collect();
+    // RFC 0009: with SERVICE, a `dependsOn` beginning `service:` names a
+    // Service; those entries are resolved by pass 11 against `services` and
+    // `requiresServices`, and the combined Step/Service graph is checked for
+    // cycles there.
+    let service_active = ctx.profile.has_extension(ModelExtension::Service);
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
@@ -201,7 +206,9 @@ pub fn validate_structure(
             errors.add(&step_path, "must have 'script' or a simple action field.");
         }
 
-        // Dependencies
+        // Dependencies (§3.2). Step targets resolve here; `service:` targets
+        // (SERVICE only) resolve in pass 11. Self-dependency and duplicates
+        // are checked for both kinds.
         if let Some(deps) = &step.dependencies {
             let deps_path = path_field(&step_path, "dependencies");
             if deps.is_empty() {
@@ -210,16 +217,13 @@ pub fn validate_structure(
             let mut dep_names = HashSet::new();
             for (j, dep) in deps.iter().enumerate() {
                 let dep_path = path_index(&deps_path, j);
-                if dep.depends_on == step.name {
-                    errors.add(&dep_path, "cannot depend on itself.");
-                }
-                if !step_names.contains(&dep.depends_on)
-                    && !all_step_names.contains(&dep.depends_on)
-                {
-                    errors.add(
-                        &dep_path,
-                        format!("dependency '{}' not found.", dep.depends_on),
-                    );
+                if let Some(target) = dep.target(service_active).step() {
+                    if target == step.name {
+                        errors.add(&dep_path, "cannot depend on itself.");
+                    }
+                    if !step_names.contains(target) && !all_step_names.contains(target) {
+                        errors.add(&dep_path, format!("dependency '{target}' not found."));
+                    }
                 }
                 if !dep_names.insert(&dep.depends_on) {
                     errors.add(
@@ -303,8 +307,12 @@ pub fn validate_structure(
         }
     }
 
-    // Cycle detection
-    detect_dependency_cycles(&jt.steps, errors);
+    // Cycle detection. With SERVICE the Steps' and Services' `dependencies`
+    // form one graph, which pass 11 checks (naming the cycle); without it
+    // only Step-to-Step edges exist.
+    if !service_active {
+        detect_dependency_cycles(&jt.steps, errors);
+    }
 
     // Environments
     if let Some(envs) = &jt.job_environments {

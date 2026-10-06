@@ -227,14 +227,18 @@ it reports is built from that prefix.
 
 #### Services (RFC 0009, Template Schemas §9)
 
-`services` are instantiated in job scope before the steps (every Step's Task
-Sessions may reference them), each seeing every other Service of the
-document (the reference graph's acyclicity is pass 11's concern; list order
-carries no meaning). First `compute_service_scopes` (see
+`services` are instantiated in job scope before the steps (the Steps in a
+Service's scope may reference it), each seeing the Services it lists in its
+`dependencies` — `listed_services(svc.dependencies, services)`, the inline
+Services named by its `service:<name>` entries, in declaration order (the
+dependency graph's acyclicity is pass 11's concern; list order carries no
+meaning). First `compute_service_scopes` (see
 [template-types.md](template-types.md), "Service scope") computes every
-Service's scope and references from the template; a cycle cannot reach here
-(pass 11 rejected it) and is reported as a `ModelValidation` error if it
-does. Per Service (`instantiate_service`, path `services[k]`):
+Service's scope from the template's `dependencies` lists and Job
+Environments; a cycle cannot reach here (pass 11 rejected it) and is
+reported as a `ModelValidation` error carrying the `ServiceDependencyCycle`
+message if it does. Per Service (`instantiate_service(svc, base, icx, path,
+in_scope, scope)`, path `services[k]`):
 
 1. **`<Service>.let`** — evaluated with `evaluate_template_let_bindings`
    into a clone of the scope's symbol table (template library, no PATH
@@ -280,29 +284,35 @@ does. Per Service (`instantiate_service`, path `services[k]`):
    Service's table with the `Unresolved` placeholders the Service Session
    binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
    files, its own `Service.<name>.<port>.*` including `bindAddress`, the
-   `port` / `connectAddress` of every other Service of the document and of
-   every `requiresServices` entry's declared ports), evaluates the
+   `port` / `connectAddress` of every Service in `in_scope` — the Services
+   of its document it lists as `service:<name>` — and of every
+   `requiresServices` entry's declared ports), evaluates the
    `<ServiceScript>.let` bindings into it (`script let binding '<name>':
    ...` on failure), and `check_carried_forward_service` re-runs the pass
    8 constraints on `variables` (§4.4.2 length), every action's
    `command` / `args`, and embedded-file `data` — the Service counterpart
    of `check_carried_forward_environment`.
 5. **Conversion** — `variables` and `script` are carried as
-   `FormatString`s; `dependencies` is copied; `scope` and `references` are
-   the computed values (`AllSteps` / the document-local references for an
-   external Service); `resolved_symtab` is `filter_symtab_for_service` (the
+   `FormatString`s; `dependencies` is copied as written (Step names and
+   `service:<name>` entries alike); `scope` is the computed value
+   (`AllSteps` for an external Service); `resolved_symtab` is `filter_symtab_for_service` (the
    symbols those fields and `<ServiceScript>.let` reference, with the
    `RawParam.*` fallback).
 
 `requiresServices` is converted field for field into `Job::requires_services`.
 
-The check symbol tables of the entities *around* a Service also change:
-`build_task_check_symtab` seeds the `port` / `connectAddress` of every inline
-Service and of every requirement's declared ports, and
-`build_env_check_symtab` seeds the same for the Job Template's Environments
-(the document's own Services alone for an attached Environment) only when the
-environment's *effective* `runScope` excludes `SERVICE` — the same scope rules
-pass 8 applied, so a reference that validated resolves here and at run time.
+The check symbol tables of the entities *around* a Service follow the same
+dependencies. `build_task_check_symtab` seeds a Step's check table with the
+`port` / `connectAddress` of the Services the Step lists —
+`listed_services(step.dependencies, services)` — and of every requirement's
+declared ports; its `stepEnvironments` are checked by `build_env_check_symtab`
+against the same Services and requirements. A `jobEnvironments` entry is
+checked against every inline Service of the Job Template and every
+requirement (referencing a Service from a Job Environment is what puts every
+Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
+when the environment's *effective* `runScope` excludes `SERVICE` — the same
+visibility rules pass 8 applied, so a reference that validated resolves here
+and at run time.
 Conversion also materializes an Environment's default `runScope`: one without
 the field that references `Service.*` is converted with `run_scope:
 Some([Task])` (§4 item 3), so a runtime never re-derives the default.
@@ -452,7 +462,11 @@ to the Job Template.
 Output: `AppliedEnvironmentTemplates { external_services, requirement_bindings,
 environments, environment_documents }` — the external Services instantiated
 in attachment order (then each template's `services` order), each stamped
-with its attachment as `job::Service::document` and with `scope: AllSteps`;
+with its attachment as `job::Service::document` and with `scope: AllSteps`,
+each instantiated seeing the Services of its own attached document it lists
+as `service:<name>` (`listed_services(svc.dependencies, services)` over that
+document's `services`), and the attached `environment` checked against every
+Service of its document;
 the `RequirementBinding { requirement, document, service }` each
 `requiresServices` entry was matched to, in requirement order; the attached
 Environments converted in attachment order (a services-only template
@@ -575,11 +589,11 @@ Environments converted:
 3. **External Services.** Each `services[k]` is instantiated with the same
    `instantiate_service` as a Job Template `services[k]` entry, with
    `InstantiateCtx` built from the attachment's profile and `services` set
-   to that document's `services` (so the "in scope" iterator is the other
-   Services of the same document, the only ones a `Service.*` reference
-   there can name; no requirements), `scope: AllSteps` (every Step of the
-   Job is in an external Service's scope, §1.2.2 item 1) and `references`
-   the document-local names `service_scope::service_references` finds.
+   to that document's `services` (no requirements), `in_scope` the
+   Services of that document it lists as `service:<name>` —
+   `listed_services(svc.dependencies, services)`, the only ones a
+   `Service.*` reference there can name — and `scope: AllSteps` (every Step
+   of the Job is in an external Service's scope, §1.2.2 item 1).
    `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
    and the carried-forward re-checks all run as for an inline Service.
 4. **Attached Environments.** The carried-forward resolved-value checks

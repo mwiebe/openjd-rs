@@ -36,12 +36,12 @@ short-circuiting), so users see all problems at once.
 | Pass | File | Purpose |
 |------|------|---------|
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
-| 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
+| 6 | `structure.rs` | Structural validation (uniqueness, required fields, Step dependencies; with SERVICE, `service:` targets and cycles are left to pass 11) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
 | 8 | `format_strings.rs`, then `service_diagnostics.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with SERVICE, the `Service.*` / `Service.File.*` / `WrappedService.*` scopes and every `<Service>`'s format strings and `let` bindings (RFC 0009). `service_diagnostics.rs` then rewrites the generic undefined-variable message of each out-of-scope `Service.*` / `Task.*` reference whose Service the document declares or requires into the scope rule it breaks |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (the three RFC 0008 hooks and, with SERVICE, the four `onWrapService*` hooks), enforce the all-or-nothing / hooks-follow-`runScope` rule, and the single-wrap-layer-per-session rule (RFC 0008, RFC 0009) |
-| 11 | `service.rs` | Gate SERVICE features (`services`, `requiresServices`, `runScope`), validate every `<Service>` and `<ServiceRequirement>` structurally, check the Service reference graph for cycles and each Service's `dependencies` against its computed scope (`template::service_scope`), and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
+| 11 | `service.rs` | Gate SERVICE features (`services`, `requiresServices`, `runScope`), validate every `<Service>` and `<ServiceRequirement>` structurally, reject a `:` in a Step name, resolve every `service:` dependency and each Service's `dependencies`, check the combined Step/Service dependency graph for cycles and every Service's computed scope (`template::service_scope`), and validate `runScope` (RFC 0009, Template Schemas §4 item 3, §9) |
 
 ### Environment template pipeline
 
@@ -72,16 +72,18 @@ checks have nothing to walk):
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
   With SERVICE (RFC 0009 §1.2.2), the document's `services` are walked first — each in Job
-  scope, seeing every other Service of the document — and the environment, when its effective
+  scope, seeing the Services of the document it lists as `service:<name>` in its
+  `dependencies` — and the environment, when its effective
   `runScope` excludes `SERVICE` (the default once it references `Service.*`), sees the `port`
   / `connectAddress` of every Service in the document (see "Service scopes" under pass 8). A
   services-only document has no environment body, so only the Services are walked.
 - **Pass 10** — WRAP_ACTIONS gating (see below), on the environment when there is one.
 - **Pass 11** — SERVICE: the EXPR prerequisite; the `services` list, gated
   (`services requires the SERVICE extension.`) and otherwise validated by the same
-  `validate_service_list` as a Job Template's, with paths rooted at `services[i]`, plus the
-  reference-cycle check and the rejection of `dependencies` (the document has no Steps); and
-  the environment's `runScope`. `requiresServices` is not a property of this document and is
+  `validate_service_list` as a Job Template's, with paths rooted at `services[i]`, plus
+  `validate_environment_template_dependencies` (each Service's `dependencies` may name only
+  another Service of this document, as `service:<name>`, since the document has no Steps, and
+  must be acyclic); and the environment's `runScope`. `requiresServices` is not a property of this document and is
   rejected at decode.
 
 ## Pass 5: Limits Enforcement
@@ -124,7 +126,12 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - No duplicate step names
 - Step name non-empty, no control characters
 - Must have `script` or exactly one simple action field (mutually exclusive)
-- Dependencies: no self-dependency, target must exist, no duplicates
+- Dependencies (§3.2): no self-dependency (`cannot depend on itself.`), no duplicates
+  (`duplicate dependency '<dependsOn>'.`, e.g. `duplicate dependency 'service:X'.`), and a Step
+  target must exist (`dependency '<step>' not found.`). With SERVICE, an entry beginning
+  `service:` (`StepDependency::target(true)` is `DependencyTarget::Service`) names a Service and
+  is resolved by pass 11; only Step targets are resolved here. Without SERVICE every entry is a
+  Step name.
 - Host requirements (`validate_host_requirements_in_context`, shared with `<Service>`):
   amounts/attributes validation, capability name patterns,
   reserved scope checks (reserved scopes: `worker`, `job`, `step`, `task`),
@@ -176,9 +183,11 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   data required; `filename` must be a single safe path component — non-empty, no
   path separators (`/` or `\`), no null characters, and not `.` or `..`
 
-**Cycle detection:**
+**Cycle detection** (without SERVICE only):
 - Iterative DFS with tri-state marking (Unvisited/Started/Completed) on the step
-  dependency graph
+  dependency graph; a cycle reports `step dependencies contain a cycle.` at the root. With
+  SERVICE the Steps' and Services' `dependencies` form one graph, which pass 11 checks and
+  whose error names the cycle, so this check is skipped.
 
 **Combination expression validation:**
 - Character allowlist, balanced parentheses, tokenization
@@ -247,12 +256,18 @@ under RFC 0008. The same mechanism rejects a reference to a Service or port name
 neither declared nor required (§9.9 item 1). Nothing about `Service.*` is examined unless the
 template declares `SERVICE`; without it pass 11 rejects the lists and pass 8 never walks them.
 
-Pass 8 does not decide a Service's *scope* (the Steps whose Tasks depend on it, §9.1): under
-the reference rules, every inline Service is in scope at every site that may legally hold a
-`Service.*` value, and the act of referencing it is what places the Step (or every Step, from a
-Job Environment) in the Service's scope. `template::service_scope::compute_service_scopes`
-computes the result for pass 11 (cycles, `dependencies`) and job creation; see
-[template-types.md](template-types.md), "Service scope".
+Visibility follows the declared dependencies (§9 scope list): a Step's `script` and its
+`stepEnvironments` see an inline Service's `port` / `connectAddress` only when the Step lists
+`service:<name>` in its `dependencies`, and a Service sees another only when it lists it the
+same way; a Job Environment (whose effective `runScope` excludes `SERVICE`) and an Environment
+Template's `environment` see every inline Service of their document; a required Service is
+visible everywhere a `Service.*` value may appear. The seeders take the
+`template::service_scope::listed_services(dependencies, services)` iterator at the Step and
+Service sites. Pass 8 does not decide a Service's *scope* (the Steps whose Tasks depend on it,
+§9.1): `template::service_scope::compute_service_scopes` computes it from the dependencies (and
+the Job Environment references, rule 3) for pass 11 (cycles, unused Services, a job-wide
+Service listing a Step) and job creation; see [template-types.md](template-types.md), "Service
+scope".
 
 #### Scope-rule diagnostics (`service_diagnostics.rs`)
 
@@ -282,6 +297,7 @@ order tried:
 | `Task.*` at a Service site | `Task.* is not available within a Service.` |
 | job-creation field | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding`, `a parameterSpace range`, `timeout`, `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`) |
 | the site is an Environment with `SERVICE` in its explicit `runScope` | `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` |
+| a declared (not required) Service referenced from a Step's `script`, one of its `stepEnvironments`, or another Service, whose `dependencies` do not list `service:<svc>` | `Step 'Render' references Service.Cache.main.port but does not list service:Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service:Back in dependencies.` |
 | the port is not declared | `Service 'Store' has no port 'mian'; declared ports: main.` — or, for a required Service, `required Service 'Cache' has no port 'admin'; declared ports: main.` |
 | `bindAddress` of a required Service | `bindAddress of required Service 'Cache' is not available; use connectAddress to reach it.` |
 | `bindAddress` outside the declaring Service | `Service.Proxy.main.bindAddress is available only within the Service 'Proxy' itself; use connectAddress to reach it from elsewhere.` |
@@ -289,9 +305,11 @@ order tried:
 Everything else keeps the generic message with its suggestion: a Service name declared nowhere
 (a typo is then the likeliest cause — `Undefined variable: 'Service.Cash.main.connectAddress'.
 Did you mean: Service.Cache.main.connectAddress`), an unknown value name after a declared port,
-`Service.File.*`, or a reference with too few components. There is no "declared elsewhere"
-rule: every inline Service is in scope wherever a `Service.*` value may appear, and referencing
-it is what places the referrer in its scope (§9.1). The conformance `.invalid` fixtures check
+`Service.File.*`, or a reference with too few components. A Job Environment whose `runScope`
+excludes `SERVICE` and an Environment Template's `environment` see every inline Service of their
+document, and a required Service is in scope everywhere, so no rule is needed for those sites. The
+dependency is the author's statement that the entity needs the Service; a reference alone is not
+taken as one. The conformance `.invalid` fixtures check
 only pass/fail and are unaffected; `tests/integration/test_service_scope.rs` and
 `test_service_requirements.rs` pin the exact messages.
 
@@ -299,16 +317,17 @@ Who sees which Services (the `in_scope` iterator at each site):
 
 | Field | Services whose `port` / `connectAddress` are in scope | `bindAddress` |
 |---|---|---|
-| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | every `services` entry (the reference puts the Step in its scope) and every `requiresServices` entry's declared ports | never |
-| `jobEnvironments[i]` (variables, actions, embedded files, `<EnvironmentScript>.let`) — `build_session_scope_symtab` | every `services` entry (the reference makes it Job-wide) and every requirement's declared ports, **only when the environment's effective `runScope` excludes `SERVICE`** (`!env.runs_in(RunScope::Service)`; the default follows the reference, so this only bites an explicit `runScope` that includes `SERVICE`) | never |
-| `steps[i].stepEnvironments[j]` | the same, under the same `runScope` condition | never |
-| `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | every other `services` entry (any order; pass 11 rejects a cycle) and every requirement's declared ports, plus itself | its own only |
-| environment template `services[k]` body | every other `services` entry plus itself | its own only |
+| step `script` (actions, embedded files, `<StepScript>.let`, `<SimpleAction>.let`) — `build_task_scope_symtab` | the `services` entries the Step lists as `service:<name>` in `dependencies` (`listed_services`) and every `requiresServices` entry's declared ports | never |
+| `jobEnvironments[i]` (variables, actions, embedded files, `<EnvironmentScript>.let`) — `build_session_scope_symtab` | every `services` entry (a Job Environment has no `dependencies`; referencing a Service puts every Step in its scope, §9.1 rule 3) and every requirement's declared ports, **only when the environment's effective `runScope` excludes `SERVICE`** (`!env.runs_in(RunScope::Service)`; the default follows the reference, so this only bites an explicit `runScope` that includes `SERVICE`) | never |
+| `steps[i].stepEnvironments[j]` | the `services` entries its Step lists in `dependencies` and every requirement's declared ports, under the same `runScope` condition | never |
+| `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | the other `services` entries it lists as `service:<name>` in `dependencies` (any order; pass 11 rejects a cycle) and every requirement's declared ports, plus itself | its own only |
+| environment template `services[k]` body | the other `services` entries it lists in `dependencies`, plus itself | its own only |
 | environment template `environment` | every `services` entry, under the `runScope` condition | never |
 | any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, action `timeout` / cancelation fields, numeric Service fields | **none** — job-creation stage | never |
 
-Consequences the tests pin: list order carries no meaning (a Service may reference a later
-Service), a reference cycle among Services is a pass 11 error, a wrapping Job or Step
+Consequences the tests pin: list order carries no meaning (a Service may list and reference a
+later Service), a reference to an inline Service without the matching `service:` dependency is
+an error naming the fix, a dependency cycle is a pass 11 error, a wrapping Job or Step
 environment whose explicit `runScope` includes `SERVICE` sees no `Service.*` even in its
 `onWrapService*` hooks, a required Service's `bindAddress` and undeclared ports are errors, and
 `Task.*` / `Step.*` are never seeded for a Service (§9: "`Task.*` and `Step.*` values are never
@@ -334,7 +353,8 @@ Environments a Service Session enters are the Job's, which follow the `runScope`
 - *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
   job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
   `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
-  other Service of the document and of every required Service's declared ports, and the
+  other Service of the document it lists as `service:<name>` in its `dependencies` and of
+  every required Service's declared ports, and the
   `<ServiceScript>.let` bindings (host library; the service-level names are the enclosing
   scope). Used for `variables` (with the §4.4.2
   `max_env_var_value_len` constraint, as for an Environment), every action's `command` /
@@ -662,23 +682,43 @@ environment template (§9.9 item 11).
   5): on the `name` field, `'<name>' is not a valid identifier.`, `exceeds
   <max_identifier_len> characters.` (64, or 512 with FEATURE_BUNDLE_1), and `must not be
   'File'; it is reserved for Service.File.* references.`
-- **Reference graph** (§9.1 rule 3, §9.9 item 9): `template::service_scope` walks the
-  `Service.<name>.*` references among the document's Services (variables, every action,
-  embedded files, `<ServiceScript>.let`; a self-reference and a reference to a required Service
-  are not edges) and reports the first cycle at `services`: `the Service.* references among
-  the Services form a cycle: A -> B -> A; a Service may not reference a Service that
-  (transitively) references it.` List order carries no meaning.
-- **`dependencies`** (§9 item 4, §9.9 item 10), job template only: `services[k] ->
-  dependencies` `must not be empty.`; on `services[k] -> dependencies[j] -> dependsOn`,
-  `references unknown Step '<step>'.`, or, when the Step is in the Service's computed scope,
-  `Step '<step>' is in the scope of Service '<svc>' (<why>); a Service cannot depend on a
-  Step in its own scope, which could not run until the Service was READY.` where `<why>` is
-  `nothing references the Service, so every Step is in its scope`, `a Job Environment
-  references the Service, so every Step is in its scope`, `Step '<step>' references the
-  Service`, or `Step '<step>' references a Service that references '<svc>'`. On an environment
-  template, `services[k] -> dependencies`: `dependencies is not permitted on a Service in an
-  Environment Template: the document has no Steps.` Not checked when the list has a cycle (the
-  scope is then undefined).
+- **Step names** (§3.1 constraint 4, §9.9 item 12; `validate_step_names`), job template only:
+  on `steps[i] -> name`, `must not contain ':' when the SERVICE extension is used, so that a
+  dependsOn value beginning 'service:' can only name a Service (Template Schemas §3.1
+  constraint 4).`
+- **Dependencies** (§3.2 constraints 1–3, §9 item 4, §9.1, §9.9 items 9–11;
+  `validate_job_template_dependencies`), job template:
+  - A Step's `service:` entries (its Step targets, self-dependency and duplicates are pass 6's):
+    on `steps[i] -> dependencies[j]`, an unknown name reports `dependency 'service:Nope' not
+    found: no Service of that name in services or requiresServices.`
+  - A Service's `dependencies`, checked wholly here: `services[k] -> dependencies` `must not be
+    empty.`; on `services[k] -> dependencies[j]`, `dependency '<step>' not found.` for an
+    unknown Step, `cannot depend on itself.` for `service:<own name>`, the unknown-Service
+    message above for an unknown `service:` name, and `duplicate dependency '<dependsOn>'.`
+  - The combined graph (Step→Step, Step→Service, Service→Step, Service→Service edges;
+    `compute_service_scopes`) must be acyclic. The first cycle is reported at the root path,
+    spelled as written in `dependsOn` values: `dependencies contain a cycle: Use ->
+    service:Indexer -> Use.` A `service:` entry naming a required Service is not an edge. When
+    there is a cycle the scopes are undefined and the two checks below are skipped. List order
+    carries no meaning.
+  - An unused Service — empty computed scope: no Step or Service lists it and no Job
+    Environment references it — reports on `services[k]`: `Service 'Cache' is unused: no Step
+    or Service lists 'service:Cache' in its dependencies and no Job Environment references it,
+    so no Step is in its scope.`
+  - A Service a Job Environment references has every Step in its scope (§9.1 rule 3), so each
+    Step it lists reports on `services[k] -> dependencies[j]`: `Step 'X' is in the scope of
+    Service 'S' (a Job Environment references the Service, so every Step is in its scope); a
+    Service cannot depend on a Step in its own scope, which could not run until the Service
+    was READY.`
+- **Dependencies, environment template** (§1.2 item 6, §3.2 constraint 4, §9 item 4;
+  `validate_environment_template_dependencies`): `services[k] -> dependencies` `must not be
+  empty.`; on `services[k] -> dependencies[j]`, a Step-name entry reports `dependency
+  'Prepare' names a Step, but an Environment Template has no Steps; a Service here may depend
+  only on a Service of the same document, as 'service:<name>'.`, an unknown name `dependency
+  'service:Nope' not found: no Service of that name in this document's services.`, plus
+  `cannot depend on itself.` and `duplicate dependency '<dependsOn>'.`; a cycle among the
+  `service:` entries (`service_dependency_cycle`) reports `dependencies contain a cycle: …` at
+  `services`. Scope is not checked: every Step of every Job is in an external Service's scope.
 - **Requirement ports** (§9.8 item 2): `requiresServices[i] -> ports` `must not be empty.` /
   `must not contain more than 10 elements.`; `duplicate port name '<name>'.` on the element;
   the identifier rules above on `ports[j] -> name`. `protocol` is the same serde enum as a

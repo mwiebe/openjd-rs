@@ -1,0 +1,46 @@
+# Template Schemas §9.1 rule 1 / RFC 0009 lifecycle constraints 3 and 6: an
+# opaque consumer. Step Use lists `service:Sidecar` in its dependencies and
+# never references Service.Sidecar.*; the dependency alone puts Use in the
+# Sidecar's scope. The Sidecar is READY before Use's Task runs (its onRun
+# records its presence in the marker file) and is stopped, with onExit run,
+# once Use completes and before Unrelated runs; the Task sees the marker, and
+# Unrelated finds it gone.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "DependencyWithoutReference"
+parameterDefinitions:
+  - name: MarkerFile
+    type: STRING
+services:
+  - name: Sidecar
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import sys,time; open(sys.argv[1], 'w').write('up'); print('openjd_service_ready: sidecar up', flush=True); time.sleep(600)", "{{ Param.MarkerFile }}"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "import os,sys; os.remove(sys.argv[1]); print('SIDECAR_EXIT', flush=True)", "{{ Param.MarkerFile }}"]
+steps:
+  - name: Use
+    dependencies:
+      - dependsOn: "service:Sidecar"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,sys; print('TASK_SEES_SIDECAR', os.path.exists(sys.argv[1]), flush=True)", "{{ Param.MarkerFile }}"]
+  - name: Unrelated
+    dependencies:
+      - dependsOn: Use
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,sys; print('UNRELATED_SEES_SIDECAR', os.path.exists(sys.argv[1]), flush=True)", "{{ Param.MarkerFile }}"]

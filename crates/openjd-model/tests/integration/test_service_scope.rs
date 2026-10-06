@@ -14,11 +14,16 @@
 //! suggestion), exactly as an out-of-scope `WrappedStep.Name` does under
 //! RFC 0008.
 //!
-//! Under the restructured design there is one `services` list; the order of
-//! the list carries no meaning (any Service may reference any other, as long
-//! as the references stay acyclic), and which Steps a Service serves is
-//! computed from the references (§9.1). The scope computation itself is
-//! covered in `test_service_scope_rules.rs`.
+//! Visibility follows declared dependencies (§9.1, Validation item 11): a
+//! Step's `script` and `stepEnvironments` see `Service.X.*` only when the Step
+//! lists `service:X` in `dependencies`, and a Service sees `Service.X.*` only
+//! when it lists `service:X` (or is `X`); a reference without the dependency
+//! is reported as "... does not list service:X in dependencies." A Job
+//! Environment entered only in Task Sessions sees every inline Service. The
+//! order of `services` carries no meaning, so a Service may list one declared
+//! after it. Every inline Service of a Job Template must be used, so the
+//! shared fixture's Step lists all three Services by default. The scope
+//! computation itself is covered in `test_service_scope_rules.rs`.
 
 use openjd_model::job::RunScope;
 use openjd_model::template::{compute_service_scopes, ServiceScope};
@@ -77,6 +82,8 @@ struct Tmpl<'a> {
     job_env: &'a str,
     step_env: &'a str,
     step_extra: &'a str,
+    /// The Services Step `S` lists as `service:<Name>` dependencies.
+    step_deps: &'a [&'a str],
     on_run_args: &'a str,
 }
 
@@ -93,6 +100,7 @@ impl Default for Tmpl<'_> {
             job_env: "variables: { K: v }",
             step_env: "variables: { K: v }",
             step_extra: "",
+            step_deps: &["A", "B", "C"],
             on_run_args: "[x]",
         }
     }
@@ -132,6 +140,7 @@ services:
 {c_body}
 steps:
   - name: S
+{step_deps}
 {step_extra}
     stepEnvironments:
       - name: StepEnv
@@ -149,7 +158,22 @@ steps:
         step_env = indent(t.step_env, 8),
         c_body = indent(t.c_body, 4),
         on_run_args = t.on_run_args,
+        step_deps = service_deps(t.step_deps, 4),
     )
+}
+
+/// A `dependencies:` line listing `service:<Name>` for each name, indented
+/// by `n` spaces (empty when `names` is empty).
+fn service_deps(names: &[&str], n: usize) -> String {
+    if names.is_empty() {
+        return String::new();
+    }
+    let items = names
+        .iter()
+        .map(|name| format!("{{ dependsOn: \"service:{name}\" }}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}dependencies: [{items}]", " ".repeat(n))
 }
 
 fn undefined(name: &str) -> String {
@@ -185,15 +209,72 @@ fn no_such_port(svc: &str, port: &str, declared: &str) -> String {
 const TASK_IN_SERVICE: &str = "Task.* is not available within a Service.";
 
 // ════════════════════════════════════════════════════════════════════
-// §9 scope list item 3 / §7.3.1: every Step sees every inline Service
+// §9 scope list item 3 / §7.3.1: a Step sees the inline Services it lists
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn step_script_sees_every_inline_service() {
+fn step_script_sees_every_inline_service_it_lists() {
     expect_job_ok(&template(&Tmpl {
         on_run_args: r#"["{{ Service.A.p.port }}", "{{ Service.B.q.connectAddress }}", "{{ join_host_port(Service.C.r.connectAddress, Service.C.r.port) }}"]"#,
         ..Default::default()
     }));
+}
+
+/// Service `A` listing `service:C` (and declaring its own port `p`).
+const A_WITH_C: &str = "ports: [{ name: p }]\ndependencies: [{ dependsOn: \"service:C\" }]\nscript:\n  actions:\n    onRun:\n      command: a";
+
+/// A Step's `script` sees `Service.X.*` only when the Step lists
+/// `service:X` in its `dependencies` (§9.1, Validation item 11).
+#[test]
+fn step_script_reference_without_dependency_is_rejected() {
+    let err = decode_job_template(
+        yaml_val(&template(&Tmpl {
+            // `A` lists `C`, so `C` is used and `S` is in its scope (§9.1
+            // item 3) — but `S` does not list `C`, so cannot see it.
+            a_body: A_WITH_C,
+            step_deps: &["A", "B"],
+            on_run_args: r#"["{{ Service.C.r.port }}"]"#,
+            ..Default::default()
+        })),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 22]. \
+         Step 'S' references Service.C.r.port but does not list service:C in dependencies.\n  \
+         Service.C.r.port\n  ~~~~~~~~~~~~^~~~"
+    );
+}
+
+/// The same rule applies to the Step's `stepEnvironments`, and the message
+/// names the Environment.
+#[test]
+fn step_environment_reference_without_dependency_is_rejected() {
+    let err = decode_job_template(
+        yaml_val(&template(&Tmpl {
+            // `A` lists `C`, so `C` is used and `S` is in its scope (§9.1
+            // item 3) — but `S` does not list `C`, so cannot see it.
+            a_body: A_WITH_C,
+            step_deps: &["A", "B"],
+            step_env: "variables: { PORT: \"{{ Service.C.r.port }}\" }",
+            ..Default::default()
+        })),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> stepEnvironments[0] -> variables -> PORT:\n\tFailed to parse interpolation expression at [0, 22]. \
+         Step 'S' references Service.C.r.port in stepEnvironments 'StepEnv' but does not list service:C in dependencies.\n  \
+         Service.C.r.port\n  ~~~~~~~~~~~~^~~~"
+    );
 }
 
 #[test]
@@ -223,10 +304,44 @@ fn step_script_never_sees_bind_address() {
     );
 }
 
-/// There are no per-Step Services any more: a second Step may reference the
-/// same Service, which then has that Step in its scope (§9.1 item 1).
+/// There are no per-Step Services: any Step may list a Service, and the
+/// Service's scope is exactly the Steps that list it (§9.1 item 1).
 #[test]
 fn another_step_may_reference_the_same_service() {
+    let tmpl = template(&Tmpl {
+        step_deps: &["A", "B", "C"],
+        ..Default::default()
+    })
+    .replace(
+        "    script:\n      actions:\n        onRun:\n          command: run\n          args: [x]\n",
+        r#"    script:
+      actions:
+        onRun:
+          command: run
+          args: ["{{ Service.C.r.port }}"]
+  - name: Other
+    dependencies: [{ dependsOn: "service:C" }]
+    script:
+      actions:
+        onRun:
+          command: run
+          args: ["{{ Service.C.r.port }}"]
+"#,
+    );
+    let jt = expect_job_ok(&tmpl);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert_eq!(
+        scopes.get("C").unwrap().scope,
+        ServiceScope::steps(["S", "Other"])
+    );
+    // A is listed by `S` only, so `Other` is not in its scope.
+    assert_eq!(scopes.get("A").unwrap().scope, ServiceScope::steps(["S"]));
+}
+
+/// A second Step that references a Service it does not list is rejected,
+/// even though another Step lists it.
+#[test]
+fn another_step_must_list_the_service_it_references() {
     let tmpl = template(&Tmpl::default()).replace(
         "    script:\n      actions:\n        onRun:\n          command: run\n          args: [x]\n",
         r#"    script:
@@ -241,14 +356,14 @@ fn another_step_may_reference_the_same_service() {
           args: ["{{ Service.C.r.port }}"]
 "#,
     );
-    let jt = expect_job_ok(&tmpl);
-    let scopes = compute_service_scopes(&jt).unwrap();
-    assert_eq!(
-        scopes.get("C").unwrap().scope,
-        ServiceScope::steps(["Other"])
+    expect_job_err(
+        &tmpl,
+        &[
+            "1 validation error for JobTemplate\n",
+            "steps[1] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 22]. \
+             Step 'Other' references Service.C.r.port but does not list service:C in dependencies.",
+        ],
     );
-    // A and B are referenced by nothing: every Step (§9.1 item 4).
-    assert_eq!(scopes.get("A").unwrap().scope, ServiceScope::AllSteps);
 }
 
 #[test]
@@ -280,7 +395,7 @@ fn service_name_typo_keeps_the_suggestion_but_a_declared_name_resolves() {
     // carries no meaning), so only the typo is reported, and the suggestion
     // is the in-scope Service it was meant to be.
     let tmpl = template(&Tmpl {
-        a_body: "ports: [{ name: p }]\nvariables:\n  UP: \"{{ Service.B.q.port }}\"\n  TYPO: \"{{ Service.Bq.q.port }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
+        a_body: "ports: [{ name: p }]\ndependencies: [{ dependsOn: \"service:B\" }]\nvariables:\n  UP: \"{{ Service.B.q.port }}\"\n  TYPO: \"{{ Service.Bq.q.port }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
         ..Default::default()
     });
     let err = decode_job_template(yaml_val(&tmpl), Some(EXTS), &CallerLimits::default())
@@ -438,7 +553,7 @@ fn job_environment_reference_gives_every_step_scope() {
     let c = scopes.get("C").unwrap();
     assert_eq!(c.scope, ServiceScope::AllSteps);
     assert!(c.referenced_by_job_environment);
-    assert_eq!(c.referencing_steps, vec!["S".to_string()]);
+    assert_eq!(c.dependent_steps, vec!["S".to_string()]);
 }
 
 #[test]
@@ -474,21 +589,47 @@ fn environment_action_timeout_cannot_reference_services() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn service_sees_itself_including_bind_address_and_other_services() {
+fn service_sees_itself_including_bind_address_and_the_services_it_lists() {
     expect_job_ok(&template(&Tmpl {
-        b_body: "ports: [{ name: q }]\nvariables:\n  BIND: \"{{ Service.B.q.bindAddress }}\"\n  SELF: \"{{ join_host_port(Service.B.q.connectAddress, Service.B.q.port) }}\"\n  UPSTREAM: \"{{ Service.A.p.connectAddress }}:{{ Service.A.p.port }}\"\nscript:\n  actions:\n    onRun:\n      command: b",
-        c_body: "ports: [{ name: r }]\nvariables:\n  OWN: \"{{ Service.C.r.bindAddress }}\"\n  JOB_A: \"{{ Service.A.p.port }}\"\n  JOB_B: \"{{ Service.B.q.connectAddress }}\"\nscript:\n  actions:\n    onRun:\n      command: c",
+        b_body: "ports: [{ name: q }]\ndependencies: [{ dependsOn: \"service:A\" }]\nvariables:\n  BIND: \"{{ Service.B.q.bindAddress }}\"\n  SELF: \"{{ join_host_port(Service.B.q.connectAddress, Service.B.q.port) }}\"\n  UPSTREAM: \"{{ Service.A.p.connectAddress }}:{{ Service.A.p.port }}\"\nscript:\n  actions:\n    onRun:\n      command: b",
+        c_body: "ports: [{ name: r }]\ndependencies: [{ dependsOn: \"service:A\" }, { dependsOn: \"service:B\" }]\nvariables:\n  OWN: \"{{ Service.C.r.bindAddress }}\"\n  JOB_A: \"{{ Service.A.p.port }}\"\n  JOB_B: \"{{ Service.B.q.connectAddress }}\"\nscript:\n  actions:\n    onRun:\n      command: c",
         ..Default::default()
     }));
 }
 
+/// A Service sees another Service only when it lists `service:<Name>`
+/// (§9 scope list item 2, Validation item 11) — not merely because both
+/// serve the same Step.
+#[test]
+fn service_reference_without_dependency_is_rejected() {
+    let err = decode_job_template(
+        yaml_val(&template(&Tmpl {
+            b_body: "ports: [{ name: q }]\nvariables:\n  UP: \"{{ Service.A.p.port }}\"\nscript:\n  actions:\n    onRun:\n      command: b",
+            ..Default::default()
+        })),
+        Some(EXTS),
+        &CallerLimits::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\n\
+         services[1] -> variables -> UP:\n\tFailed to parse interpolation expression at [0, 22]. \
+         Service 'B' references Service.A.p.port but does not list service:A in dependencies.\n  \
+         Service.A.p.port\n  ~~~~~~~~~~~~^~~~"
+    );
+}
+
 /// §1.1 item 8: the order of `services` carries no meaning, so a Service
-/// may reference one declared after it. The referenced Service's scope
-/// contains the referencing one's (§9.1 item 3).
+/// may list (and reference) one declared after it. The listed Service's
+/// scope contains the listing one's (§9.1 item 3), so `C` serves `S`
+/// although `S` does not list it.
 #[test]
 fn service_may_reference_a_later_service() {
     let jt = expect_job_ok(&template(&Tmpl {
-        a_body: "ports: [{ name: p }]\nvariables:\n  LATER: \"{{ Service.C.r.port }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
+        a_body: "ports: [{ name: p }]\ndependencies: [{ dependsOn: \"service:C\" }]\nvariables:\n  LATER: \"{{ Service.C.r.port }}\"\nscript:\n  actions:\n    onRun:\n      command: a",
+        step_deps: &["A", "B"],
         on_run_args: r#"["{{ Service.A.p.port }}"]"#,
         ..Default::default()
     }));
@@ -498,7 +639,7 @@ fn service_may_reference_a_later_service() {
         scopes
             .get("A")
             .unwrap()
-            .references
+            .depends_on_services
             .iter()
             .collect::<Vec<_>>(),
         ["C"]
@@ -510,7 +651,7 @@ fn service_may_reference_a_later_service() {
 fn service_cannot_see_another_services_bind_address() {
     expect_job_err(
         &template(&Tmpl {
-            b_body: "ports: [{ name: q }]\nvariables:\n  BIND: \"{{ Service.A.p.bindAddress }}\"\nscript:\n  actions:\n    onRun:\n      command: b",
+            b_body: "ports: [{ name: q }]\ndependencies: [{ dependsOn: \"service:A\" }]\nvariables:\n  BIND: \"{{ Service.A.p.bindAddress }}\"\nscript:\n  actions:\n    onRun:\n      command: b",
             ..Default::default()
         }),
         &[
@@ -709,11 +850,11 @@ fn service_script_let_scope() {
         a_body: "ports: [{ name: p }]\nlet:\n  - base = 'x'\nscript:\n  let:\n    - wd = Session.WorkingDirectory\n    - own = Service.A.p.bindAddress\n    - dir = Param.Dir\n    - name = base + Job.Name\n  actions:\n    onRun:\n      command: a\n      args: [\"{{ wd }}\", \"{{ own }}\", \"{{ dir }}\", \"{{ name }}\"]",
         ..Default::default()
     }));
-    // <ServiceScript>.let is resolved in the Service Session, so another
-    // Service's endpoint is in scope there (§3.6.2, §9 scope item 4), in
-    // whatever order the Services are listed.
+    // <ServiceScript>.let is resolved in the Service Session, so the
+    // endpoint of a Service it lists in `dependencies` is in scope there
+    // (§3.6.2, §9 scope item 4), in whatever order the Services are listed.
     expect_job_ok(&template(&Tmpl {
-        a_body: "ports: [{ name: p }]\nscript:\n  let:\n    - later = Service.B.q.port\n  actions:\n    onRun:\n      command: a\n      args: [\"{{ later }}\"]",
+        a_body: "ports: [{ name: p }]\ndependencies: [{ dependsOn: \"service:B\" }]\nscript:\n  let:\n    - later = Service.B.q.port\n  actions:\n    onRun:\n      command: a\n      args: [\"{{ later }}\"]",
         ..Default::default()
     }));
 }
@@ -982,6 +1123,7 @@ const TWO_SERVICES: &str = r#"  - name: A
           command: a
   - name: B
     ports: [{ name: q }]
+    dependencies: [{ dependsOn: "service:A" }]
     variables: { UP: "{{ Service.A.p.connectAddress }}" }
     script:
       actions:
@@ -1029,17 +1171,36 @@ fn env_template_environment_with_explicit_service_run_scope_cannot_reference_ser
 }
 
 /// The order of an Environment Template's `services` carries no meaning
-/// either; `Step.*` is never available in a Service.
+/// either: a Service may list and reference a later one. `Step.*` is never
+/// available in a Service.
 #[test]
 fn env_template_services_may_reference_later_ones_and_never_see_step_name() {
     expect_env_err(
         &env_template(
-            "  - name: A\n    ports: [{ name: p }]\n    let: [s = Step.Name]\n    variables: { LATER: \"{{ Service.B.q.port }}\" }\n    script:\n      actions:\n        onRun:\n          command: a\n  - name: B\n    ports: [{ name: q }]\n    script:\n      actions:\n        onRun:\n          command: b\n",
+            "  - name: A\n    ports: [{ name: p }]\n    dependencies: [{ dependsOn: \"service:B\" }]\n    let: [s = Step.Name]\n    variables: { LATER: \"{{ Service.B.q.port }}\" }\n    script:\n      actions:\n        onRun:\n          command: a\n  - name: B\n    ports: [{ name: q }]\n    script:\n      actions:\n        onRun:\n          command: b\n",
             "",
         ),
         &[
             "1 validation error for EnvironmentTemplate\n",
             "services[0] -> let[0]:\n\tInvalid expression in let binding 's': Undefined variable: 'Step.Name'.",
+        ],
+    );
+}
+
+/// An Environment Template Service sees another Service of the document
+/// only when it lists `service:<Name>`, as in a Job Template.
+#[test]
+fn env_template_service_reference_without_dependency_is_rejected() {
+    expect_env_err(
+        &env_template(
+            "  - name: A\n    ports: [{ name: p }]\n    script:\n      actions:\n        onRun:\n          command: a\n  - name: B\n    ports: [{ name: q }]\n    variables: { UP: \"{{ Service.A.p.port }}\" }\n    script:\n      actions:\n        onRun:\n          command: b\n",
+            "",
+        ),
+        &[
+            "1 validation error for EnvironmentTemplate\n",
+            "services[1] -> variables -> UP:\n\tFailed to parse interpolation expression at [0, 22]. \
+             Service 'B' references Service.A.p.port but does not list service:A in dependencies.\n  \
+             Service.A.p.port\n  ~~~~~~~~~~~~^~~~",
         ],
     );
 }

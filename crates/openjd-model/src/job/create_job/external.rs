@@ -526,23 +526,17 @@ pub fn apply_environment_templates(
         };
 
         let services_path = path_field(&[], "services");
-        let names: std::collections::HashSet<&str> =
-            services.iter().map(|s| s.name.as_str()).collect();
         for (k, svc) in services.iter().enumerate() {
             // An external Service has every Step in its scope (§1.2.2 item
-            // 1) and references only Services of its own document.
-            let references = crate::template::service_scope::service_references(svc)
-                .into_iter()
-                .filter(|n| n != &svc.name && names.contains(n.as_str()))
-                .collect();
+            // 1) and depends only on Services of its own document, which
+            // are the ones whose endpoints it may read.
             let mut instantiated = instantiate::instantiate_service(
                 svc,
                 &symtab,
                 icx,
                 &path_index(&services_path, k),
-                services.iter(),
+                crate::template::listed_services(svc.dependencies.as_deref(), services),
                 job::ServiceScope::AllSteps,
-                references,
             )
             .map_err(|e| in_document(e, &doc_path))?;
             // §1.2.2 item 3: the Service is known by (document, name).

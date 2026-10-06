@@ -231,9 +231,9 @@ pub fn create_job(
 
     // RFC 0009 `services`: instantiated in job scope before the steps,
     // since every Step's Task Sessions may reference them. Each Service
-    // sees every other Service of the document, and carries the scope the
-    // template's references give it (§9.1; validation has rejected a
-    // reference cycle, so the computation cannot fail here).
+    // sees the Services it lists in its `dependencies`, and carries the
+    // scope the template's `dependencies` lists give it (§9.1; validation
+    // has rejected a dependency cycle, so the computation cannot fail here).
     let services = job_template
         .services
         .as_ref()
@@ -252,9 +252,8 @@ pub fn create_job(
                         &symtab,
                         icx,
                         &crate::error::path_index(&list_path, k),
-                        services.iter(),
+                        crate::template::listed_services(svc.dependencies.as_deref(), services),
                         computed.map_or(job::ServiceScope::AllSteps, |c| c.scope.clone()),
-                        computed.map_or_else(Vec::new, |c| c.references.iter().cloned().collect()),
                     )
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -313,7 +312,9 @@ pub fn create_job(
     // template validation could only lower-bound is decidable here —
     // fail at submission, not on the worker. A job environment whose
     // effective `runScope` excludes SERVICE also sees every inline and
-    // required Service's `Service.*` endpoints (RFC 0009).
+    // required Service's `Service.*` endpoints (RFC 0009 §9 scope rule 4:
+    // a Job Environment has no `dependencies`; referencing a Service puts
+    // every Step in its scope).
     if let Some(envs) = &job_template.job_environments {
         let mut check_errors = crate::error::ValidationErrors::default();
         for (i, env) in envs.iter().enumerate() {

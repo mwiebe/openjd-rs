@@ -126,11 +126,107 @@ impl StepTemplate {
     }
 }
 
-/// §3.2 StepDependency
+/// The literal prefix that makes a `dependsOn` value name a Service rather
+/// than a Step under the `SERVICE` extension (§3.2, RFC 0009).
+pub const SERVICE_DEPENDENCY_PREFIX: &str = "service:";
+
+/// What a `dependsOn` value names (§3.2): a Step of the same Job Template,
+/// or, with the `SERVICE` extension, a Service the Job Template declares in
+/// `services` or requires in `requiresServices`.
+///
+/// Parsed from the raw string by [`DependencyTarget::parse`]: the `service:`
+/// prefix is recognized only when `SERVICE` is declared. In any other
+/// template `service:Cache` is an ordinary Step name (§3.1 constraint 4
+/// forbids `:` in a Step name only under `SERVICE`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DependencyTarget<'a> {
+    /// A Step, by name; satisfied when the Step has completed.
+    Step(&'a str),
+    /// A Service, by name (without the `service:` prefix); satisfied when the
+    /// Service is READY.
+    Service(&'a str),
+}
+
+impl<'a> DependencyTarget<'a> {
+    /// Classify `depends_on`: with `service_active`, a value beginning
+    /// `service:` names the Service after the prefix; otherwise, and for any
+    /// other value, the whole string is a Step name.
+    #[must_use]
+    pub fn parse(depends_on: &'a str, service_active: bool) -> Self {
+        match depends_on.strip_prefix(SERVICE_DEPENDENCY_PREFIX) {
+            Some(name) if service_active => Self::Service(name),
+            _ => Self::Step(depends_on),
+        }
+    }
+
+    /// The Step name, for a Step target.
+    #[must_use]
+    pub fn step(self) -> Option<&'a str> {
+        match self {
+            Self::Step(name) => Some(name),
+            Self::Service(_) => None,
+        }
+    }
+
+    /// The Service name (without the prefix), for a Service target.
+    #[must_use]
+    pub fn service(self) -> Option<&'a str> {
+        match self {
+            Self::Step(_) => None,
+            Self::Service(name) => Some(name),
+        }
+    }
+}
+
+/// §3.2 StepDependency: one entry of a Step's or, with `SERVICE`, a
+/// Service's `dependencies`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StepDependency {
+    /// A Step name, or `service:<ServiceName>` under the `SERVICE`
+    /// extension. See [`DependencyTarget`].
     pub depends_on: String,
+}
+
+impl StepDependency {
+    /// What this entry names; see [`DependencyTarget::parse`].
+    #[must_use]
+    pub fn target(&self, service_active: bool) -> DependencyTarget<'_> {
+        DependencyTarget::parse(&self.depends_on, service_active)
+    }
+}
+
+/// True when `dependencies` lists `service:<name>` (with `SERVICE`
+/// declared, which is the only context in which a Service exists).
+#[must_use]
+pub fn lists_service(dependencies: Option<&[StepDependency]>, name: &str) -> bool {
+    dependencies
+        .into_iter()
+        .flatten()
+        .any(|d| d.target(true) == DependencyTarget::Service(name))
+}
+
+/// The Service names `dependencies` lists as `service:<name>`, in list
+/// order (with `SERVICE` declared).
+pub fn listed_service_names(
+    dependencies: Option<&[StepDependency]>,
+) -> impl Iterator<Item = &str> + '_ {
+    dependencies
+        .into_iter()
+        .flatten()
+        .filter_map(|d| d.target(true).service())
+}
+
+/// The Step names `dependencies` lists, in list order, under `SERVICE`
+/// (`service:` entries skipped) or without it (every entry).
+pub fn listed_step_names(
+    dependencies: Option<&[StepDependency]>,
+    service_active: bool,
+) -> impl Iterator<Item = &str> + '_ {
+    dependencies
+        .into_iter()
+        .flatten()
+        .filter_map(move |d| d.target(service_active).step())
 }
 
 /// §3.5 StepScript
@@ -145,7 +241,62 @@ pub struct StepScript {
 
 #[cfg(test)]
 mod tests {
-    use super::StepTemplate;
+    use super::{
+        listed_service_names, listed_step_names, lists_service, DependencyTarget, StepDependency,
+        StepTemplate,
+    };
+
+    #[test]
+    fn dependency_target_parsing_is_gated_on_service() {
+        assert_eq!(
+            DependencyTarget::parse("service:Cache", true),
+            DependencyTarget::Service("Cache")
+        );
+        assert_eq!(
+            DependencyTarget::parse("service:Cache", false),
+            DependencyTarget::Step("service:Cache")
+        );
+        assert_eq!(
+            DependencyTarget::parse("Render", true),
+            DependencyTarget::Step("Render")
+        );
+        assert_eq!(DependencyTarget::Service("C").service(), Some("C"));
+        assert_eq!(DependencyTarget::Service("C").step(), None);
+        assert_eq!(DependencyTarget::Step("S").step(), Some("S"));
+        assert_eq!(DependencyTarget::Step("S").service(), None);
+        // An empty name after the prefix is still a Service target; the
+        // validator reports it as unknown.
+        assert_eq!(
+            DependencyTarget::parse("service:", true),
+            DependencyTarget::Service("")
+        );
+    }
+
+    #[test]
+    fn listed_names_split_by_kind() {
+        let deps: Vec<StepDependency> = ["A", "service:X", "B", "service:Y"]
+            .iter()
+            .map(|d| StepDependency {
+                depends_on: d.to_string(),
+            })
+            .collect();
+        assert!(lists_service(Some(&deps), "X"));
+        assert!(!lists_service(Some(&deps), "A"));
+        assert!(!lists_service(None, "X"));
+        assert_eq!(
+            listed_service_names(Some(&deps)).collect::<Vec<_>>(),
+            vec!["X", "Y"]
+        );
+        assert_eq!(
+            listed_step_names(Some(&deps), true).collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
+        assert_eq!(
+            listed_step_names(Some(&deps), false).collect::<Vec<_>>(),
+            vec!["A", "service:X", "B", "service:Y"]
+        );
+        assert_eq!(deps[1].target(true), DependencyTarget::Service("X"));
+    }
 
     #[test]
     fn resolve_syntax_sugar_returns_error_for_malformed_format_string() {

@@ -56,7 +56,9 @@ fn env_err(s: &str, expected: &[&str]) {
 
 /// A Job Template with one Service whose port, ready timeout,
 /// restart policy, variable, and consuming Task arg are supplied by the
-/// caller, so each test varies exactly one field.
+/// caller, so each test varies exactly one field. The Step lists
+/// `service:Store` in its `dependencies`, which both keeps the Service from
+/// being unused and makes `Service.Store.*` visible in its script (§9.1).
 fn job(port: &str, timeout: &str, max_attempts: &str, var: &str, task_arg: &str) -> String {
     format!(
         r#"
@@ -89,6 +91,8 @@ services:
           args: ["30"]
 steps:
   - name: S
+    dependencies:
+      - dependsOn: "service:Store"
     script:
       actions:
         onRun:
