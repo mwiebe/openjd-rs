@@ -697,7 +697,8 @@ Recorded after PR #404 (which completed gate 2) and extended after
 PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
 14), PR #417 (which closed items 12, 15, 16, 17, 19), PR #418 (which
 closed items 20–23), PR #419 (which closed item 4), and PR #428
-(which closed items 6, 8, 18). Items 1–2 are leftovers from earlier
+(which closed items 6, 8, 18); item 11's audit (2026-10-09) added
+items 24–31. Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
 (approved with findings recorded rather than requested — none is a
@@ -706,9 +707,9 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 11.
-**Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16,
-17, 18, 19, 20, 21, 22, 23.
+**Open:** 1, 24, 25, 26, 27, 28, 29, 30, 31.
+**Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 11 (audited), 12, 13,
+14, 15, 16, 17, 18, 19, 20, 21, 22, 23.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -898,7 +899,7 @@ out of that PR's scope. These are what remains:
     sites and the two-sided property (spend reaches `peak_memory`; no
     stale footprint; each element charged once). Documented in the
     ListComp section of `specs/expr/evaluator.md`.
-11. **Audit the remaining operators for incomplete `Unresolved`
+11. ~~**Audit the remaining operators for incomplete `Unresolved`
     propagation.** The listcomp filter was one instance of a class:
     job creation evaluates under a symbol state no other stage sees
     (`Param.*` concrete, `Task.*`/`Session.*` unresolved), so any
@@ -909,7 +910,33 @@ out of that PR's scope. These are what remains:
     concrete-input paths (subscript indices, slice bounds, method
     receivers, function-argument dispatch, comparison chains) checking
     each against an "unresolved here?" probe would close the class
-    rather than the instance.
+    rather than the instance.~~ **Audited** (2026-10-09) — two
+    independent auditors probed ~630 expressions under the three
+    symbol states (pass 8: all unresolved; gate 2: `Param.*` concrete,
+    `Task.*`/`Session.*` unresolved; run time: all concrete). Two
+    gate-2 bugs of this class were confirmed (items 24, 25), plus six
+    adjacent findings outside it (items 26–31); the fixes are tracked
+    there. Verified clean: subscript indices and slice bounds on
+    concrete and unresolved receivers, attribute/property access,
+    method calls with either side unresolved, `call_arg_targets`
+    (signature-derived, never value-derived), comparison chains and
+    membership, `eval_ifexp` absorption and union typing, comprehension
+    filters (the PR #407 fix holds), unary/binary dispatch, `eval_node`
+    target coercion, format-string concatenation and
+    `min_resolved_string_len`, and the entire function library —
+    `FunctionLibrary::call_inner` has a single generic short-circuit
+    (any top-level unresolved argument → `Unresolved(sig_return)`
+    without calling the implementation) that no function opts out of,
+    and `make_list` keeps nested `Unresolved` out of function bodies.
+    The `create_job` consumers of evaluation results (`resolve_to_f64`,
+    `resolve_string_list`, `resolve_parameter_space`,
+    `resolve_capability_name`, the job name) evaluate against
+    `step_symtab`, which holds no `Unresolved` entries. The audit's
+    probe files are kept locally, uncommitted:
+    `crates/openjd-expr/tests/audit_unresolved_nodes.rs`,
+    `crates/openjd-expr/tests/audit_unresolved_functions.rs`, and
+    `crates/openjd-model/tests/audit_unresolved_create_job.rs`; their
+    `bug_*` tests pin current behavior and flip when fixed.
 12. ~~**Mirror the budget-exemption rule wherever errors are absorbed.**
     `eval_ifexp` and `eval_boolop` now share it
     (`contains_budget_error`); any future absorption site (item 11
@@ -1168,3 +1195,138 @@ and out of its original scope; it was folded into the same PR.
     result, coexisting during the call) and the slicing tests for
     multi-byte and extreme-step cases. Documented under Preflighting
     Output Budgets in `specs/expr/function-library.md`.
+
+Items 24–31 come from the item 11 audit. Items 24 and 25 are gate-2
+rejections of the item 11 class (pass 8 accepts, run time succeeds,
+`create_job` fails), each confirmed end to end with `openjd check`
+passing and `openjd run` failing. Items 26–31 fall outside that class
+— pass-8 over-rejections, pass-8 laxness, or a typing mismatch — and
+are recorded so they are not lost. Symbol states below: `Param.L =
+[1, 2, 3]` (LIST[INT]), `Param.N = 3`, `Param.Z = 0`, `Param.S =
+'abc'`, `Param.F = 2.5`; `Task.Param.I`/`F`/`S`/`P` unresolved
+int/float/string/path.
+
+24. **`unresolved_list_from_elements` is stricter than the concrete
+    list join.** `eval_list` and `eval_listcomp` both route through
+    `unresolved_list_from_elements` (`evaluator.rs`) once any element
+    is `Unresolved`; its compatibility check accepts only identical
+    types plus top-level int/float and path/string mixing. The concrete
+    path treats all list types as mutually compatible
+    ("All list types are compatible (make_list handles inner
+    promotion)") and `types::unify_binding` lets `nulltype` yield.
+    Gate-2 rejections, all confirmed (pass 8 accepts, run time
+    succeeds):
+    - `[[] if x > 2 else [Task.Param.I] for x in Param.L]` →
+      "List literal contains incompatible types: list[int],
+      list[nulltype]" (run time: `[[2], [2], []]`-shaped).
+    - `[[x for x in Param.L if x > 100], [Task.Param.I]]` (an empty
+      concrete comprehension is `list[nulltype]`; pass 8 types it
+      `unresolved[list[int]]`), through any enclosing call
+      (`repr_json`, `flatten`, `len`). Full `create_job` diagnostic:
+      `steps[0] -> script -> actions -> onRun -> args[0]: Failed to
+      parse interpolation expression at [0, 73]. List literal contains
+      incompatible types: list[nulltype], list[int]`.
+    - `[[x] if x > 2 else [Task.Param.F] for x in Param.L]` and
+      `[Param.L if x > 2 else [Task.Param.F] for x in Param.L]` →
+      `list[float], list[int]`.
+    - `[[Task.Param.S] if x > 2 else [Task.Param.P] for x in Param.L]`
+      → `list[path], list[string]`.
+    - `[x if x > 2 else (Task.Param.I if Session.HasPathMappingRules
+      else Param.F) for x in Param.L]` → `float | int, int` (a union
+      beside one of its members).
+
+    The same helper also makes pass 8 reject valid templates (outside
+    the gate-2 class, same fix): `[[], [Task.Param.I]]`,
+    `[[Param.N], [Task.Param.F]]`, `[[Param.S], [Task.Param.P]]`,
+    `[Task.Param.I ** 2, Param.N]`, `flatten([[Task.Param.F], Param.L])`,
+    and `[Param.L, Param.L + [Task.Param.I]]` (see item 26). Fix: one
+    type-join function shared by `make_list`, `eval_list`, and this
+    helper — list types mutually compatible with inner promotion,
+    `nulltype`/`list[nulltype]` yielding to anything, a union
+    compatible if any member is — and the hoisted element type
+    computed with the same join (`[[], [Task.Param.I]]` →
+    `unresolved[list[list[int]]]`).
+25. **`eval_boolop` returns a concrete operand after an unresolved
+    one.** After the first unresolved operand, the loop still returns
+    the first later operand that would decide the result (truthy for
+    `or`, null/false for `and`), ignoring that the unresolved operand
+    may itself decide it at run time — under EXPR semantics `x or y`
+    returns `x` unless `x` is null or false. At gate 2 that later
+    operand is a concrete `Param.*` value, so a value-level failure on
+    it rejects the job. Confirmed (pass 8 accepts, run time succeeds):
+    - `10 // (Task.Param.I or Param.Z)` → "Division by zero" (also
+      end to end through `openjd run`).
+    - `Param.L[Task.Param.I or Param.N]` → "Index 3 out of bounds for
+      list of length 3"; `Param.S[Task.Param.I or Param.N]` likewise.
+    - `Session.HasPathMappingRules or Param.S` with a `bool` target →
+      "Cannot convert 'abc' to bool".
+    - `Task.Param.F or Param.F` with an `int` target → "Cannot coerce
+      float to int: 2.5 is not a whole number".
+
+    Silent variant: `"n={{ Task.Param.I or Param.N }}"` gets a
+    `StaticResolution.resolved_value` of `"n=3"` — a value run time
+    never produces — and gate 2's resolved-value checks run on it.
+    Type variant (pass 8): an operator with any unresolved operand
+    always types as `unresolved[bool]`, though it can return any
+    operand, so `(Session.HasPathMappingRules and Param.S).upper()` is
+    rejected at pass 8 but runs. Fix: once an unresolved operand has
+    been seen, never return a concrete operand; return
+    `unresolved(union of every operand type that could be returned)`,
+    keeping the `eval_speculative` value-error absorption. A concrete
+    result stays safe only when every earlier unresolved operand is
+    bool-typed and the deciding value is that same bool
+    (`Session.HasPathMappingRules and false` → `false`).
+26. **Generic list `+` leaks an unbound type variable.** `Param.L +
+    [Task.Param.I]` and `[Task.Param.I] + [Task.Param.I]` type as
+    `unresolved[list[T3]]` at both pass 8 and gate 2 — the signature's
+    `T` is never substituted from the operand types. Downstream this is
+    lax: `(Param.L + [Task.Param.I])[0].upper()` passes pass 8 and
+    gate 2 and fails at run time. It is also one cause of item 24's
+    pass-8 over-rejections, since strict equality rejects `list[T3]`
+    beside `list[int]`. Fix: bind the type variable from the operands
+    in the unresolved dispatch path (`call_inner` phase 3).
+27. **Concrete `add_list_list` does not let an empty inner list
+    yield.** `[[x for x in Param.L if x > 100]] + [[Task.Param.I]]`
+    passes pass 8 but fails at run time with "Cannot concatenate
+    list[list[nulltype]] and list[list[int]]" — the reverse direction
+    of item 24 (run time stricter than pass 8). Fix with the item 24
+    join.
+28. **Comprehension over a union-typed unresolved iterable defaults
+    its element type to INT.** `eval_listcomp`'s unresolved-iterable
+    path uses `list_element_type().unwrap_or(ExprType::INT)`
+    (`evaluator.rs`, two sites). For an iterable typed as a union of
+    list types, `list_element_type()` is `None`, so `[x.upper() for x
+    in (Param.LS if Session.HasPathMappingRules else [])]` is rejected
+    at pass 8 and gate 2 alike ("upper() is not available for int.
+    Available for: string") although it runs. Fix: derive the element
+    type as the union of the members'
+    element types.
+29. **Slicing an unresolved non-subscriptable value is accepted.** In
+    `eval_subscript`'s slice path, an unresolved receiver whose type is
+    not a list (e.g. `unresolved[int]`) falls through to
+    `ExprValue::unresolved(inner)` without error, so `Task.Param.I[1:]`
+    types as `unresolved[int]` at pass 8 and gate 2 and fails at run
+    time ("No matching signature for `__getitem__(int, int, nulltype,
+    nulltype)`"). Fix: reject a
+    non-sliceable unresolved receiver type (anything other than list,
+    string, or `range_expr`) the way a concrete one is rejected.
+30. **`re_findall` with two or more groups returns a different type
+    than it declares.** It returns `list[list[string]]` at run time,
+    but its first overload types the result `list[string]`, so pass 8
+    and gate 2 type-check downstream uses against the wrong type. Not
+    the gate-2 class — pass 8 and gate 2 agree, and where the run-time
+    type differs, run time also fails — but the declared signature is
+    wrong for multi-group patterns. Fix: a group-count-dependent return
+    type, or declare `list[string] | list[list[string]]`.
+31. **Audit coverage gaps.** Not probed by the item 11 audit, recorded
+    as open questions: `Unresolved(ANY)` placeholders bound for failed
+    `let` bindings (PR #428) flowing through operators; nullable
+    unresolved types (`unresolved[int?]`) in `and`/`or`; host-context
+    functions (`apply_path_mapping` and friends) under mixed state;
+    memory and operation budgets under mixed state; whether pass 8
+    evaluates step-level `let` with `Task.*` visible (a possible
+    undefined-name mismatch with `create_job`); the `StaticResolution`
+    lower-bound logic in `format_string.rs` (read, not probed); and
+    run time itself — simulated by all-concrete evaluation with
+    `HostContext::WithRules([])`, not executed through
+    `openjd-sessions`.
