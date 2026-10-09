@@ -28,6 +28,10 @@ then the remaining accounting gaps
 SimpleAction steps are now validated on their desugared form at
 template validation, with diagnostics re-rooted onto the authored field
 (PR [#419](https://github.com/OpenJobDescription/openjd-rs/pull/419)).
+Job creation now reports every carried-forward check failure at once,
+re-checks action timing with the parameters bound, and locates `let`
+failures by field path
+(PR [#428](https://github.com/OpenJobDescription/openjd-rs/pull/428)).
 The gate sections below describe the behavior **as shipped**. What
 remains is the follow-up list at the
 [end of this document](#follow-ups).
@@ -523,11 +527,20 @@ table as gate 1.
   `build_task_check_symtab` / `build_env_check_symtab`); environment
   script `let` bindings are evaluated into the table, and a binding
   that fails with the real parameter values fails job creation (a
-  deterministic per-session failure caught early).
+  deterministic per-session failure caught early). As of PR #428 each
+  failing binding is reported at `<scope> -> let[j]` with pass 8's
+  message, bound `Unresolved(ANY)`, and the scope keeps checking.
 - Failures are `ModelError::ModelValidation` with the field path,
   consistent with the resolved-value re-checks `create_job` already
-  performs. Violations accumulate within one scope (a step script, one
-  environment); the first failing scope stops instantiation.
+  performs. ~~Violations accumulate within one scope (a step script, one
+  environment); the first failing scope stops instantiation.~~ As of
+  PR #428 one `ValidationErrors` spans the whole template and is
+  reported once, in pass 8's order (follow-up item 6); only failures
+  that leave a step uninstantiable (host requirements, parameter
+  space) still abort immediately.
+- Action `timeout`, `notifyPeriodInSeconds`, and deferred cancelation
+  `mode` are re-checked with the parameters bound, through pass 8's
+  shared helper (PR #428, follow-up item 8).
 - **Error policy:** ~~(decided during implementation) the pass reports
   resolved-value violations and budget exceedances only. Other
   evaluation/parse errors are skipped, because `create_job` may
@@ -683,7 +696,8 @@ To be made alongside the implementation commits (spec/code co-evolution):
 Recorded after PR #404 (which completed gate 2) and extended after
 PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
 14), PR #417 (which closed items 12, 15, 16, 17, 19), PR #418 (which
-closed items 20–23), and PR #419 (which closed item 4). Items 1–2 are leftovers from earlier
+closed items 20–23), PR #419 (which closed item 4), and PR #428
+(which closed items 6, 8, 18). Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
 (approved with findings recorded rather than requested — none is a
@@ -692,9 +706,9 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 6, 8, 11, 18.
-**Closed:** 2 (dropped), 3, 4, 5, 7, 9, 10, 12, 13, 14, 15, 16, 17, 19,
-20, 21, 22, 23.
+**Open:** 1, 11.
+**Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16,
+17, 18, 19, 20, 21, 22, 23.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -763,14 +777,21 @@ None blocks the design; each is an independent piece of work.
      point for sessions/for-js. Pinned by a test asserting env and
      step-script `let` failures produce byte-identical diagnostics
      through `create_job`.
-6. **Whole-template error aggregation at gate 2** (review finding;
+6. ~~**Whole-template error aggregation at gate 2** (review finding;
    was already noted here pre-review). Three separate
    `ValidationErrors` collections each abort at their own
    `into_result`, inside the per-step closure — one step-script
    violation masks that step's environments, every later step, and all
    `jobEnvironments`. Pass 8 reports everything at once. Mechanical
    fix: thread one `ValidationErrors` through `instantiate_step` and
-   the `jobEnvironments` loop, `into_result` once.
+   the `jobEnvironments` loop, `into_result` once.~~ **Resolved**
+   (PR [#428](https://github.com/OpenJobDescription/openjd-rs/pull/428)) —
+   the mechanical fix: one `ValidationErrors` is threaded through the
+   job environments and every step (`instantiate_step` takes it as
+   `&mut`) and converted to a single `ModelValidation` once, in pass
+   8's order (`jobEnvironments`, then each step: `let`, script,
+   `stepEnvironments`). Failures that leave a step uninstantiable (host
+   requirements, parameter space) still abort immediately, alone.
 7. ~~**Silent-skip observability** (review suggestion).~~ **Resolved**
    (with item 9, by construction) — with the uniformly strict error
    policy there is no skip path left: every evaluation error surfaces,
@@ -786,7 +807,7 @@ None blocks the design; each is an independent piece of work.
    itself by exposing a masked path-format divergence (gate-2 checks
    evaluated under host format against Posix-valued symtabs, an error
    on Windows) — fixed with item 9.
-8. **Re-check deferred numeric constraints at gate 2.** Action
+8. ~~**Re-check deferred numeric constraints at gate 2.** Action
    `timeout`, `notifyPeriodInSeconds`, and the deferred cancelation
    `mode` validate at gate 1 against the template-scope symtab (params
    unresolved) and resolve on the worker. Gate 2 does not re-evaluate
@@ -794,7 +815,14 @@ None blocks the design; each is an independent piece of work.
    submitted with `T = 0` passes `create_job` and fails only at run
    time. The gate-2 pass has all the machinery to close this — extend
    its constraint table to the `Int`/`CancelationMode` constraints with
-   the gate-2 symtab.
+   the gate-2 symtab.~~ **Resolved**
+   (PR [#428](https://github.com/OpenJobDescription/openjd-rs/pull/428)) —
+   `timeout`, `notifyPeriodInSeconds`, and deferred cancelation `mode`
+   are re-checked with the parameters bound through pass 8's helper
+   (`validate_action_timing_fs`, now shared) for step `onRun`,
+   environment `onEnter`/`onExit`, and the RFC 0008 wrap hooks;
+   SimpleAction paths are re-rooted onto the sugar field.
+   `timeout: "{{ Param.T }}"` with `T = 0` now fails `create_job`.
 9. ~~**TODO: tighten the `create_job` profile contract — leniency
    justified by "the caller might strip EXPR" is a bug.**~~
    **Resolved** — merged as
@@ -985,7 +1013,7 @@ out of that PR's scope. These are what remains:
     speculative reset is the guarantee, the dispatch release is what
     makes the reported figures honest *inside* the absorbed attempt.
     Fixing it also exposed item 19.
-18. **Gate-2 `let`-binding failures carry no field path.** The
+18. ~~**Gate-2 `let`-binding failures carry no field path.** The
     check-symtab path reports `ModelError::Expression("script let
     binding '<name>': …")` with the expression and caret but no
     template path, while pass 8 reports the same defect at
@@ -998,7 +1026,17 @@ out of that PR's scope. These are what remains:
     doing so would also let the caret align to the full `name = expr`
     binding string as pass 8 and run time do (the documented deviation
     in `job-creation.md`). Noted by PR #410's independent review as a
-    pre-existing gap.
+    pre-existing gap.~~ **Resolved**
+    (PR [#428](https://github.com/OpenJobDescription/openjd-rs/pull/428),
+    with item 6) — every `let` block job creation evaluates
+    (step-level, step script, step/job environments, SimpleAction) goes
+    through pass 8's per-binding helper: failures are `ValidationErrors`
+    entries at `<scope> -> let[j]` with pass 8's message (`Invalid
+    expression in let binding '<name>': …`) and a caret aligned to the
+    full binding, closing the documented caret deviation. The failed
+    name is bound `Unresolved(ANY)` and the scope keeps checking; a
+    failed step-level binding skips only that step's host requirements
+    and parameter space.
 
 Items 19–22 come from the independent audit of the `fix/sound-absorption`
 branch (items 12, 15, 16, 17), merged as
