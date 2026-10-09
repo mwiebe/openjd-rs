@@ -110,7 +110,19 @@ which prints them to stderr and exits with code 1. Error sources:
 
 Validation errors from the model crate include structured paths (e.g.,
 `steps[0] -> script -> actions -> onRun -> command`) that help users locate the problem
-in their template file.
+in their template file. This includes the typed-deserialization failures — an unknown
+field, a missing field, a wrong type — which the model reports at the path the
+deserializer reached rather than as a bare message, and which carry a rename hint for a
+property an earlier RFC 0009 draft used (`specs/model/parsing.md` "Pass 3"):
+
+```
+ERROR: Model validation error: 1 validation error for JobTemplate
+services[0] -> readinessCheck:
+	unknown field `readinessCheck`, expected one of `name`, `description`, `let`, `dependencies`, `hostRequirements`, `ports`, `healthCheck`, `restartPolicy`, `variables`, `script`. 'readinessCheck' is not a property; the health check is 'healthCheck'.
+```
+
+Only the pre-deserialization failures (malformed YAML/JSON, a missing or unknown
+`specificationVersion`) remain path-less `Validation error: …` messages.
 
 ## Differences from Python CLI
 

@@ -3122,6 +3122,199 @@ steps:
         assert!(stdout.contains("TaskParamStep"), "stdout: {stdout}");
         assert!(stdout.contains("Total tasks: 9"), "stdout: {stdout}");
     }
+
+    /// RFC 0009: a Job Template's `services` are listed with their scope,
+    /// ports (with protocol and any pinned number), health check type and
+    /// restart policy; a Step's dependency count tells Steps from Services
+    /// and names the Services; a `requiresServices` entry is listed with
+    /// its ports and, without `--environment`, as unsatisfied.
+    #[test]
+    fn test_summary_lists_services_and_requirements() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: ServiceJob
+requiresServices:
+  - name: Cache
+    ports:
+      - name: main
+      - name: stats
+        protocol: UDP
+services:
+  - name: Coord
+    description: Hands out work items.
+    dependencies:
+      - dependsOn: Prepare
+    ports:
+      - name: api
+      - name: metrics
+        port: 9100
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxAttempts: 2
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: coord
+steps:
+  - name: Prepare
+    script:
+      actions:
+        onRun:
+          command: prep
+  - name: Work
+    dependencies:
+      - dependsOn: Prepare
+      - dependsOn: "service:Coord"
+      - dependsOn: "service:Cache"
+    script:
+      actions:
+        onRun:
+          command: work
+          args: ["{{{{ Service.Coord.api.port }}}}", "{{{{ Service.Cache.main.port }}}}"]
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["summary", path]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let expected_steps = "\
+2. 'Work' (1 total Tasks)
+  3 dependencies (1 Step, 2 Service)
+    Services: 'Coord', 'Cache'
+";
+        assert!(stdout.contains(expected_steps), "stdout: {stdout}");
+        let expected_services = "\
+--- Services in 'ServiceJob' ---
+  - Coord (scope: Step Work)
+    Hands out work items.
+    Ports: api (TCP), metrics (TCP, port 9100)
+    Health check: STDOUT
+    Restart policy: maxAttempts 2, completedTasks KEEP
+    Dependencies: 'Prepare'
+
+--- Required Services in 'ServiceJob' ---
+  - Cache (ports: main (TCP), stats (UDP)) — not satisfied: attach an Environment Template that declares it with --environment
+";
+        assert!(stdout.contains(expected_services), "stdout: {stdout}");
+
+        // The Step summary names Service dependencies and the Services in
+        // the Step's scope.
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--step", "Work"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "Dependencies (3):\n- 'Prepare'\n- Service 'Coord'\n- Service 'Cache'\n\n\
+                 Services in scope (1):\n- 'Coord'\n"
+            ),
+            "stdout: {stdout}"
+        );
+
+        // JSON: the same data, structured.
+        let (code, stdout, stderr) = run_cli(&["summary", path, "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["services"],
+            serde_json::json!([{
+                "name": "Coord",
+                "description": "Hands out work items.",
+                "scope": "Step Work",
+                "ports": [
+                    {"name": "api", "protocol": "TCP"},
+                    {"name": "metrics", "protocol": "TCP", "port": 9100}
+                ],
+                "health_check": "STDOUT",
+                "restart_policy": {"max_attempts": 2, "completed_tasks": "KEEP"},
+                "dependencies": [{"step_name": "Prepare"}]
+            }]),
+            "{value}"
+        );
+        assert_eq!(
+            value["requires_services"],
+            serde_json::json!([{
+                "name": "Cache",
+                "ports": [
+                    {"name": "main", "protocol": "TCP"},
+                    {"name": "stats", "protocol": "UDP"}
+                ]
+            }]),
+            "{value}"
+        );
+        assert_eq!(value["steps"][1]["dependencies"], 3, "{value}");
+        assert_eq!(
+            value["steps"][1]["service_dependencies"],
+            serde_json::json!(["Coord", "Cache"]),
+            "{value}"
+        );
+        let (code, stdout, _) = run_cli(&["summary", path, "--step", "Work", "--output", "json"]);
+        assert_eq!(code, 0);
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["dependencies"],
+            serde_json::json!([
+                {"step_name": "Prepare"},
+                {"service_name": "Coord"},
+                {"service_name": "Cache"}
+            ]),
+            "{value}"
+        );
+        assert_eq!(value["services"], serde_json::json!(["Coord"]), "{value}");
+    }
+
+    /// With `--environment`, the summary is of the combined Job: the
+    /// attached Service appears with its document, and the requirement it
+    /// satisfies says so.
+    #[test]
+    fn test_summary_with_environment_binds_requirements() {
+        let consumer = templates_dir().join("service_required_consumer.yaml");
+        let provider = templates_dir().join("service_required_provider.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            consumer.to_str().unwrap(),
+            "--environment",
+            provider.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(
+            stdout.contains(&format!(
+                "  - R (from {}) (scope: every Step)\n",
+                provider.display()
+            )),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "  - R (ports: main (TCP)) — satisfied by {}\n",
+                provider.display()
+            )),
+            "stdout: {stdout}"
+        );
+        let (code, stdout, _) = run_cli(&[
+            "summary",
+            consumer.to_str().unwrap(),
+            "--environment",
+            provider.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0);
+        let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            value["requires_services"][0]["satisfied_by"],
+            serde_json::json!(provider.display().to_string()),
+            "{value}"
+        );
+        assert_eq!(
+            value["services"][0]["document"],
+            serde_json::json!(provider.display().to_string()),
+            "{value}"
+        );
+    }
 }
 
 // ============================================================
@@ -3944,13 +4137,22 @@ mod services {
         let dir = TempDir::new().unwrap();
         let (code, stdout, stderr) = run_service_template(
             "service_health_threshold_blips.yaml",
-            &["-p", &format!("MarkerDir={}", dir.path().display())],
+            &[
+                "--verbose",
+                "-p",
+                &format!("MarkerDir={}", dir.path().display()),
+            ],
         );
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         for needle in [
             "[Service Store] [onHealthCheck] CHECK_BLIP 1",
             "[Service Store] [onHealthCheck] CHECK_BLIP 2",
             "[Service Store] [onHealthCheck] CHECK_OK 3",
+            // --verbose: the probe timeline, as the runtime counts it.
+            "[Service Store] Service 'Store' health probe failed (1 of 3): onHealthCheck exit code: 1",
+            "[Service Store] Service 'Store' health probe failed (2 of 3): onHealthCheck exit code: 1",
+            "[Service Store] Service 'Store' health probe ok; failure count reset from 2",
+            "[Service Store] Service 'Store' health probe ok",
             "TASK 1 INSTANCE 1 DONE",
             "TASK 2 INSTANCE 1 DONE",
             "TASK 3 INSTANCE 1 DONE",
@@ -3971,7 +4173,7 @@ mod services {
     #[test]
     fn test_health_tcp_port_closed_while_process_hangs_fails_the_job() {
         let (code, stdout, stderr) =
-            run_service_template("service_health_tcp_port_closed.yaml", &[]);
+            run_service_template("service_health_tcp_port_closed.yaml", &["--verbose"]);
         assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
         for needle in [
             "STORE_LISTENING",
@@ -3999,11 +4201,72 @@ mod services {
             stdout.contains("0 of 0 relaunch(es) used (restartPolicy.maxAttempts)"),
             "{stdout}"
         );
-        assert!(
-            stderr.contains("ERROR: Service 'Store' (scope: Step Work) failed: instance UNHEALTHY"),
-            "{stderr}"
+        // The terminal failure is stated once in the log (`is FAILED`) and
+        // once in the Results; it is not echoed to stderr.
+        assert!(!stderr.contains("ERROR: Service 'Store'"), "{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Service 'Store' (scope: Step Work) failed: instance UNHEALTHY")
+                .count(),
+            1,
+            "{stdout}"
         );
         assert!(stdout.contains("Session ended with errors."), "{stdout}");
+        // The launch line names the probed ports; the canceled instance's
+        // exit is logged after UNHEALTHY and before the FAILED verdict.
+        assert!(
+            stdout.contains(
+                "health check: TCP_CONNECT on main (readinessTimeoutSeconds 60, \
+                 readinessIntervalSeconds 1, healthIntervalSeconds 1, failureThreshold 2)"
+            ),
+            "{stdout}"
+        );
+        let canceled = "Service 'Store' onRun (launch 1) canceled; exit code: N/A";
+        assert!(
+            pos(&stdout, "is UNHEALTHY") < pos(&stdout, canceled)
+                && pos(&stdout, canceled) < pos(&stdout, "is FAILED"),
+            "{stdout}"
+        );
+        // One `Starting Service` banner — the CLI's framed one — and the
+        // Session's working directory on it.
+        assert_eq!(
+            stdout.matches("--------- Starting Service: Store").count(),
+            1,
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[Service Store] --------- Starting Service"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("[Service Store] --------- Ending Service"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'Store' working directory: "),
+            "{stdout}"
+        );
+        // --verbose: every TCP_CONNECT probe result, attributed to the
+        // Service Session — the refused connection before READY, then the
+        // refused connections after the listener closed.
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' is not yet READY: TCP connect to port 'main' \
+                 (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' health probe failed (1 of 2): TCP connect to \
+                 port 'main' (127.0.0.1:"
+            ),
+            "{stdout}"
+        );
+        // Without --verbose the probe timeline is not printed.
+        let (_, quiet, _) = run_service_template("service_health_tcp_port_closed.yaml", &[]);
+        assert!(!quiet.contains("health probe ok"), "{quiet}");
+        assert!(!quiet.contains("health probe failed"), "{quiet}");
     }
 
     /// STDOUT with `healthIntervalSeconds`: the heartbeat stops after Task
@@ -4012,9 +4275,21 @@ mod services {
     /// `service-health-stdout-heartbeat-missed`).
     #[test]
     fn test_health_stdout_heartbeat_missed_fails_the_job() {
-        let (code, stdout, stderr) =
-            run_service_template("service_health_stdout_heartbeat_missed.yaml", &[]);
+        let (code, stdout, stderr) = run_service_template(
+            "service_health_stdout_heartbeat_missed.yaml",
+            &["--verbose"],
+        );
         assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        // --verbose: each silent interval is a failed probe, attributed to
+        // the Service Session. (The heartbeat stops with Task 1, before a
+        // post-READY beat could count as a passing probe.)
+        assert!(
+            stdout.contains(
+                "[Service Store] Service 'Store' health probe failed (1 of 2): no \
+                 openjd_service_ready line within 1s"
+            ),
+            "{stdout}"
+        );
         assert!(
             stdout.contains(
                 "health check: STDOUT (readinessTimeoutSeconds 60, healthIntervalSeconds 1, \
@@ -4944,9 +5219,20 @@ mod services {
             )),
             "{stdout}"
         );
-        assert!(
-            stderr.contains("ERROR: Service 'Broken' (scope: Step Never) failed:"),
-            "{stderr}"
+        assert!(!stderr.contains("ERROR: Service 'Broken'"), "{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Service 'Broken' (scope: Step Never) failed:")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("Service 'Broken' (scope: Step Never) is FAILED:")
+                .count(),
+            1,
+            "{stdout}"
         );
         assert!(stdout.contains("Session ended with errors."), "{stdout}");
         assert!(
@@ -5319,6 +5605,53 @@ mod services {
         );
         assert!(stdout.contains("USE_GOT prepared-content"), "{stdout}");
         assert!(stdout.contains("Chunks run: 2"), "{stdout}");
+    }
+
+    /// `--step Use` without `--run-dependencies` skips Prepare, which the
+    /// Indexer depends on. The Service is started as if Prepare had
+    /// completed, and the log says so before the Service starts.
+    #[test]
+    fn test_service_step_dependency_outside_the_selection_is_logged() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependencies_after_step.yaml",
+            &[
+                "--step",
+                "Use",
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+            ],
+        );
+        // Without Prepare's file the Indexer's onRun exits before READY.
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let note = "Service 'Indexer' depends on Step(s) 'Prepare', which is not being run \
+                    (--step without --run-dependencies); starting it as if it had completed";
+        assert!(
+            pos(&stdout, "Running step 'Use'") < pos(&stdout, note)
+                && pos(&stdout, note) < pos(&stdout, "Starting Service: Indexer"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Running step 'Prepare'"), "{stdout}");
+    }
+
+    /// Two Services of the run pin the same TCP port number: the single-host
+    /// runner knows both pins before starting anything and fails before
+    /// either is launched, with the allocator's message naming the holder.
+    #[test]
+    fn test_two_services_pinning_one_port_fail_before_any_start() {
+        let (code, stdout, stderr) =
+            run_service_template("service_same_pinned_port_invalid.yaml", &[]);
+        assert_ne!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stderr.contains(
+                "Service 'B' port 'p' requests TCP port 47213, which is already allocated to \
+                 another Service of this run (Service 'A' port 'p')"
+            ),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+        assert!(!stdout.contains("is READY"), "{stdout}");
     }
 
     /// Template Schemas §1.1 item 9, §1.2.2 item 2, §9.8: `requiresServices`

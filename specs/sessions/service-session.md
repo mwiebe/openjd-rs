@@ -378,8 +378,9 @@ while a probe is in progress. **Phase 2 (health):** a probe starts
 `healthIntervalSeconds` (model default 30) after the previous one ends. A
 failure increments `failed_probes` and logs `Service '<name>' health probe
 failed (n of t): <why>` (warn); a success resets it, logging `Service
-'<name>' health probe succeeded; failure count reset from n` when it was
-non-zero. When `failed_probes` reaches `failureThreshold` (model default 3)
+'<name>' health probe ok; failure count reset from n` when it was
+non-zero and `Service '<name>' health probe ok` (debug) otherwise, so a
+consumer can show the whole probe timeline — `openjd run --verbose` does. When `failed_probes` reaches `failureThreshold` (model default 3)
 the instance is UNHEALTHY: `Service '<name>' is UNHEALTHY: <ServiceUnhealthy>`
 (error), `Unhealthy` is published, probing stops (the check driver is
 stopped), and the runtime cancels `onRun` with its own cancelation method

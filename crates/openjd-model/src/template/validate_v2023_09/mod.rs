@@ -4,7 +4,8 @@
 
 //! Template validation pipeline.
 //!
-//! Validates templates through multiple passes (passes 5–9 of the decode pipeline):
+//! Validates templates through multiple passes (passes 5–11 of the decode pipeline):
+//! - SERVICE gating (RFC 0009): the gated fields of a template that does not declare `SERVICE`, reported first
 //! - Pass 5: Enforce limits (EffectiveLimits)
 //! - Pass 6: Structural validation (EffectiveRules)
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)
@@ -188,6 +189,11 @@ pub(crate) fn validate_job_template(
     let rules = EffectiveRules::from_context(ctx);
     let mut errors = ValidationErrors::default();
 
+    // SERVICE gating (RFC 0009), first: without the extension the gated
+    // fields are the finding, and what follows from them in passes 6 and 8
+    // is left unreported as a consequence.
+    service::gate_services_job_template(jt, ctx, &mut errors);
+
     // Pass 5: Enforce limits
     limits::enforce_limits(jt, &limits, &mut errors);
 
@@ -202,7 +208,7 @@ pub(crate) fn validate_job_template(
     // found.
     let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings(jt, ctx, &mut errors);
-    service_diagnostics::refine_job_template(jt, &mut errors, before_pass_8);
+    service_diagnostics::refine_job_template(jt, ctx, &mut errors, before_pass_8);
 
     // Pass 9: TASK_CHUNKING (validate or reject)
     task_chunking::validate_task_chunking(jt, ctx, &mut errors);
@@ -224,6 +230,9 @@ pub fn validate_environment_template(
     let limits = EffectiveLimits::from_context(ctx);
     let rules = EffectiveRules::from_context(ctx);
     let mut errors = ValidationErrors::default();
+
+    // SERVICE gating (RFC 0009), first; see `validate_job_template`.
+    service::gate_services_environment_template(et, ctx, &mut errors);
 
     // Parameter definitions — environment templates have their own cap,
     // held in `limits.max_env_template_param_count` so the rule is
@@ -280,7 +289,7 @@ pub fn validate_environment_template(
     // found.
     let before_pass_8 = errors.errors.len();
     format_strings::validate_format_strings_environment_template(et, ctx, &mut errors);
-    service_diagnostics::refine_environment_template(et, &mut errors, before_pass_8);
+    service_diagnostics::refine_environment_template(et, ctx, &mut errors, before_pass_8);
 
     // WRAP_ACTIONS gating (RFC 0008), including the RFC 0009 Service hooks
     // and the hooks-follow-runScope rule.

@@ -525,8 +525,8 @@ fn required_service_values_are_not_in_an_environment_entered_in_service_sessions
         &err,
         1,
         &[
-            "jobEnvironments[0] -> variables -> H:\n\tFailed to parse interpolation expression at [",
-            "Environment 'Client' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.",
+            // Reported once, on the list; the reference is a consequence.
+            "jobEnvironments[0] -> runScope:\n\tEnvironment 'Client' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.",
         ],
     );
 }
@@ -542,9 +542,13 @@ fn requires_services_rejected_in_an_environment_template() {
     )
     .expect_err("requiresServices is permitted only in a Job Template")
     .to_string();
-    assert!(
-        err.starts_with("Validation error: 'environment-2023-09' failed checks: unknown field `requiresServices`, expected one of "),
-        "{err}"
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for EnvironmentTemplate\nrequiresServices:\n\t\
+         unknown field `requiresServices`, expected one of `specificationVersion`, `$schema`, \
+         `extensions`, `parameterDefinitions`, `environment`, `services`. 'requiresServices' is a \
+         Job Template property; an Environment Template declares the Services it provides in \
+         'services'."
     );
 }
 

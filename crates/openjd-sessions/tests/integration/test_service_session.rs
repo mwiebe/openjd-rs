@@ -2470,9 +2470,7 @@ async fn command_health_blips_below_threshold_keep_the_instance_ready() {
             .contains(&"Service 'svc' health probe failed (1 of 3): onHealthCheck exit code: 1"));
         assert!(bodies
             .contains(&"Service 'svc' health probe failed (2 of 3): onHealthCheck exit code: 1"));
-        assert!(
-            bodies.contains(&"Service 'svc' health probe succeeded; failure count reset from 2")
-        );
+        assert!(bodies.contains(&"Service 'svc' health probe ok; failure count reset from 2"));
         assert!(!bodies.iter().any(|b| b.contains("UNHEALTHY")));
     });
 }

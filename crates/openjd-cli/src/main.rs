@@ -49,8 +49,16 @@ fn format_log_timestamp() -> String {
 /// tag (`openjd_session_tag`) — a Service Session, whose banners the CLI
 /// cannot print itself since the sessions runtime enters its Environments
 /// and runs its actions internally. The Task Session has no tag; the CLI
-/// prints its banners directly, so its BANNER records stay filtered.
+/// prints its banners directly, so its BANNER records stay filtered. The
+/// Service Session's outermost banners, `Starting Service:` and `Ending
+/// Service:`, are filtered too: the CLI prints its own framed `Starting
+/// Service:` / `Stopping Service:` banners around the Session, and a second
+/// copy of each said nothing new.
 struct SessionLogger;
+
+/// The tagged Session banners the CLI's own framed banners already cover.
+const DUPLICATE_SESSION_BANNERS: &[&str] =
+    &["--------- Starting Service: ", "--------- Ending Service: "];
 
 impl Log for SessionLogger {
     fn enabled(&self, _metadata: &Metadata) -> bool {
@@ -85,9 +93,25 @@ impl Log for SessionLogger {
             let command_output = bits & u64::from(LogContent::COMMAND_OUTPUT.bits()) != 0;
             let tagged_banner =
                 v.session_tagged && bits & u64::from(LogContent::BANNER.bits()) != 0;
-            if command_output || tagged_banner {
+            // `--verbose`: a Service Session's health probe results (`health
+            // probe ok` / `health probe failed (n of m): …` / `is not yet
+            // READY: …`), which the sessions runtime records at DEBUG, WARN
+            // and INFO, so the probe timeline of a TCP_CONNECT or STDOUT
+            // check — which has no command output of its own — is visible.
+            let probe_result = v.session_tagged
+                && log::max_level() >= LevelFilter::Debug
+                && bits & u64::from(LogContent::PROCESS_CONTROL.bits()) != 0
+                && {
+                    let text = record.args().to_string();
+                    text.contains("health probe") || text.contains("is not yet READY")
+                };
+            if command_output || tagged_banner || probe_result {
+                let text = record.args().to_string();
+                if tagged_banner && DUPLICATE_SESSION_BANNERS.iter().any(|b| text.contains(b)) {
+                    return;
+                }
                 let ts = format_log_timestamp();
-                println!("{ts}\t{}", record.args());
+                println!("{ts}\t{text}");
             }
         }
     }

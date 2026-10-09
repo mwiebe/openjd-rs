@@ -6,6 +6,8 @@
 
 pub mod parse;
 
+mod decode_errors;
+
 mod actions;
 mod constrained_strings;
 mod environment;

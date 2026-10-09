@@ -76,8 +76,39 @@ Unrecognized versions produce `ModelError::UnsupportedSchema`.
 
 ### Pass 3: Serde Deserialization
 
-The value tree is deserialized into the appropriate struct via `serde_yaml::from_value`.
-All template types use `#[serde(deny_unknown_fields)]`, so unexpected fields produce errors.
+The value tree is deserialized into the appropriate struct through
+`serde_path_to_error::deserialize` (`parse::deserialize_typed`), which tracks the path the
+deserializer reaches. All template types use `#[serde(deny_unknown_fields)]`, so unexpected
+fields produce errors.
+
+**A serde failure is reported as one `ModelError::ModelValidation` error at its model path**
+(`template::decode_errors`), not as a bare `DecodeValidation` string: `steps[0] ->
+stepServices:\n\tunknown field \`stepServices\`, expected one of …`, `services[0] ->
+healthCheck:\n\tunknown field \`timeoutSeconds\`, …`, `services[0]:\n\tmissing field
+\`ports\`…`, `steps[0] -> script -> actions -> onRun -> command:\n\tinvalid type: map, expected a
+string or number`. A serde `Map { key }` segment is a `PathElement::Field`, a `Seq { index }` an
+`Index`; an `unknown field` of a struct is reported at `… -> <field>`, of an internally tagged
+enum (`healthCheck`) at the enum's own path, and a `missing field` at the struct's. serde's
+message is kept verbatim; a **rename hint** follows it on the same line for a property name an
+earlier draft of RFC 0009 used (exploratory report S9):
+
+| written | hint |
+|---|---|
+| `jobServices` (job template root) | `'jobServices' is not a property; declare Services in 'services' and put each Step in a Service's scope with 'dependsOn: service:<name>' in the Step's dependencies.` |
+| `stepServices` (a Step) | `'stepServices' is not a property; move the Service to the top-level 'services' list and add 'dependsOn: service:<name>' to this Step's dependencies.` |
+| `serviceEnvironments` (root) | `'serviceEnvironments' is not a property; a Service sets up its own host in 'onEnter', or a Job Environment with 'runScope: [SERVICE]' is entered by every Service Session.` |
+| `requiresServices` (environment template root) | `'requiresServices' is a Job Template property; an Environment Template declares the Services it provides in 'services'.` |
+| `readinessCheck` (a Service) | `'readinessCheck' is not a property; the health check is 'healthCheck'.` |
+| `onReadinessCheck` (under `actions`) | `'onReadinessCheck' is not a property; the health check action is 'onHealthCheck'.` |
+| `onWrapServiceReadinessCheck` (under `actions`) | `'onWrapServiceReadinessCheck' is not a property; the hook is 'onWrapServiceHealthCheck'.` |
+| `timeoutSeconds` / `readyTimeoutSeconds` (a health check) | `'<field>' is not a property of a health check; the time allowed to become READY is 'readinessTimeoutSeconds'.` |
+| `intervalSeconds` (a health check) | `'intervalSeconds' is not a property of a health check; use 'readinessIntervalSeconds' for probes before READY and 'healthIntervalSeconds' for probes after.` |
+| `readinessIntervalSeconds` on a `STDOUT` check | `'readinessIntervalSeconds' does not apply to a STDOUT health check: the ready line arrives when it arrives.` |
+| `missing field \`ports\`` on a Service | `A Service declares at least one port in 'ports'; a port-less background process is not a Service.` |
+
+A hint applies only at its site (`readinessCheck` on a Step gets none). The pre-pass-3
+failures — a missing or unknown `specificationVersion`, the wrong template kind — remain
+`DecodeValidation` strings.
 
 Custom deserializers handle:
 - **`ExtensionName`** — Validates regex pattern during deserialization
@@ -106,7 +137,7 @@ pass 4 with a `DecodeValidation` error. If a template does not use any extension
 
 The deserialized template is passed through the multi-pass validation pipeline
 (see [validation.md](validation.md)). Validation errors are accumulated and returned
-as a single `ModelError::DecodeValidation` or `ModelError::ModelValidation`.
+as a single `ModelError::ModelValidation`.
 
 ## Design Decisions
 

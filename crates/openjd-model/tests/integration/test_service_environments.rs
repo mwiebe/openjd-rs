@@ -261,17 +261,81 @@ fn run_scope_accepted_on_job_and_step_environments() {
     let jt = expect_job_ok(
         &job_template(
             "SERVICE, EXPR",
-            "    runScope: [TASK]\n    variables: { K: v }\n",
-            "        runScope: [SERVICE]\n        variables: { K: v }\n",
+            "    runScope: [SERVICE]\n    variables: { K: v }\n",
+            "        runScope: [TASK]\n        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
     );
     let job_env = &jt.job_environments.as_ref().unwrap()[0];
-    assert!(job_env.runs_in(RunScope::Task));
-    assert!(!job_env.runs_in(RunScope::Service));
+    assert!(!job_env.runs_in(RunScope::Task));
+    assert!(job_env.runs_in(RunScope::Service));
     let step_env = &jt.steps[0].step_environments.as_ref().unwrap()[0];
-    assert!(!step_env.runs_in(RunScope::Task));
-    assert!(step_env.runs_in(RunScope::Service));
+    assert!(step_env.runs_in(RunScope::Task));
+    assert!(!step_env.runs_in(RunScope::Service));
+}
+
+/// §4 item 4 constraint 4: a Step Environment is entered only by the Task
+/// Sessions of its Step, so its `runScope` must not include `SERVICE` —
+/// alone or alongside `TASK`. The Environment here lists no Service and
+/// references none; the list alone is the error.
+#[test]
+fn run_scope_service_on_step_environment_is_rejected() {
+    const RULE: &str =
+        "steps[0] -> stepEnvironments[0] -> runScope:\n\tmust not include SERVICE: a \
+                        Step Environment is entered only by the Task Sessions of its Step; no \
+                        Service Session enters one, so the name would select no Session \
+                        (Template Schemas §4 item 4 constraint 4).";
+    for run_scope in ["[SERVICE]", "[TASK, SERVICE]", "[SERVICE, TASK]"] {
+        expect_job_err(
+            &job_template(
+                "SERVICE, EXPR",
+                "    variables: { K: v }\n",
+                &format!("        runScope: {run_scope}\n        variables: {{ K: v }}\n"),
+            ),
+            SERVICE_EXTS,
+            &["1 validation error for JobTemplate\n", RULE],
+        );
+    }
+}
+
+/// A Step Environment whose `runScope` includes `SERVICE` *and* references
+/// `Service.*` gets the constraint-4 error alone: the reference errors
+/// would only restate a consequence, and the old wording — that the
+/// Environment "is entered in Service Sessions" — was false for a Step
+/// Environment, which never is.
+#[test]
+fn run_scope_service_on_step_environment_reports_the_list_not_each_reference() {
+    let template = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: T
+services:
+  - name: Svc
+    ports: [{ name: p }]
+    healthCheck: { type: STDOUT }
+    script: { actions: { onRun: { command: svc } } }
+steps:
+  - name: Work
+    dependencies: [{ dependsOn: "service:Svc" }]
+    stepEnvironments:
+      - name: Cfg
+        runScope: [SERVICE]
+        variables:
+          ADDR: "{{ join_host_port(Service.Svc.p.connectAddress, Service.Svc.p.port) }}"
+          PORT: "{{ Service.Svc.p.port }}"
+    script: { actions: { onRun: { command: echo, args: ["{{ Service.Svc.p.port }}"] } } }
+"#;
+    expect_job_err(
+        template,
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "steps[0] -> stepEnvironments[0] -> runScope:\n\tmust not include SERVICE: a Step \
+             Environment is entered only by the Task Sessions of its Step; no Service Session \
+             enters one, so the name would select no Session (Template Schemas §4 item 4 \
+             constraint 4).",
+        ],
+    );
 }
 
 #[test]
@@ -1265,15 +1329,18 @@ fn rule_applies_in_job_and_step_environments() {
                 actions_body(&["onWrapEnvEnter", "onWrapEnvExit"], 4)
             ),
             &format!(
-                "        runScope: [SERVICE]\n{}",
+                "        runScope: [TASK]\n{}",
                 actions_body(&all_seven(), 8)
             ),
         ),
         ALL_EXTS,
         &[
-            "3 validation errors for JobTemplate\n",
+            "6 validation errors for JobTemplate\n",
             "jobEnvironments[0] -> script -> actions:\n\ta wrapping environment whose runScope includes TASK (runScope: [TASK]) must define onWrapTaskRun; missing: onWrapTaskRun (RFC 0009).",
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapTaskRun:\n\tonWrapTaskRun must not be defined: this environment's runScope (runScope: [SERVICE]) excludes TASK (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
             // Two wrap layers in one session: the RFC 0008 single-layer rule
             // still applies alongside.
             "steps[0] -> stepEnvironments:\n\tonly one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).",
