@@ -5,6 +5,7 @@
 //! Execution phases for the `openjd run` command.
 
 use super::*;
+use openjd_model::job::Service;
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::AttachedEnvironmentTemplate;
 use std::collections::BTreeSet;
@@ -482,6 +483,22 @@ async fn run_workload(
     let job_runs_tasks = steps_to_run
         .iter()
         .any(|&idx| step_runs_tasks(idx, selection));
+    // Two Services of this run pinning one port number can never both
+    // start: fail now, before either is launched, rather than after the
+    // first is READY.
+    let may_start: Vec<Service> = job
+        .services
+        .iter()
+        .flatten()
+        .filter(|s| match &s.scope {
+            ServiceScope::AllSteps => job_runs_tasks,
+            ServiceScope::Steps { .. } => selected.iter().any(|name| s.scope.contains(name)),
+        })
+        .cloned()
+        .collect();
+    if let Err(e) = service_ports::check_requested_ports(&may_start) {
+        return Err(e.into());
+    }
     let job_wide_count = ctx.services.job_wide_count();
     if job_runs_tasks {
         ctx.services.activate_job_wide();
@@ -861,9 +878,6 @@ fn adjust_adaptive_chunk_size(
 fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
     let working_dir = ctx.session.working_directory().to_path_buf();
     println!("{}\t", ctx.timestamp());
-    for failure in &ctx.failed_services {
-        println!("{}\t{failure}", ctx.timestamp());
-    }
     if ctx.session_failed {
         println!("{}\tSession ended with errors.", ctx.timestamp());
     } else {

@@ -489,9 +489,22 @@ steps:
         &CallerLimits::default(),
     )
     .expect_err("jobServices is not a property");
+    // The serde failure is reported at its model path, with a hint for the
+    // old key (see `decode_errors`).
+    let err = err.to_string();
     assert!(
-        err.to_string()
-            .starts_with("Validation error: 'jobtemplate-2023-09' failed checks: unknown field `jobServices`, expected one of "),
+        err.starts_with(
+            "Model validation error: 1 validation error for JobTemplate\njobServices:\n\tunknown \
+             field `jobServices`, expected one of "
+        ),
+        "got: {err}"
+    );
+    assert!(
+        err.ends_with(
+            "`steps`. 'jobServices' is not a property; declare Services in 'services' and put \
+             each Step in a Service's scope with 'dependsOn: service:<name>' in the Step's \
+             dependencies."
+        ),
         "got: {err}"
     );
     let err = decode_job_template(
@@ -513,10 +526,173 @@ steps:
         &CallerLimits::default(),
     )
     .expect_err("stepServices is not a property");
+    let err = err.to_string();
     assert!(
-        err.to_string()
-            .starts_with("Validation error: 'jobtemplate-2023-09' failed checks: unknown field `stepServices`, expected one of "),
+        err.starts_with(
+            "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> \
+             stepServices:\n\tunknown field `stepServices`, expected one of "
+        ),
         "got: {err}"
+    );
+    assert!(
+        err.ends_with(
+            "`node`. 'stepServices' is not a property; move the Service to the top-level \
+             'services' list and add 'dependsOn: service:<name>' to this Step's dependencies."
+        ),
+        "got: {err}"
+    );
+}
+
+/// The remaining renamed and removed keys of earlier RFC 0009 drafts, and
+/// a Service without `ports`: each serde failure carries its model path
+/// and a hint naming the current property.
+#[test]
+fn renamed_service_keys_get_a_path_and_a_hint() {
+    let cases: [(String, &str); 7] = [
+        (
+            job_with_service_body(
+                "    ports: [{name: main}]\n    readinessCheck:\n      type: TCP_CONNECT\n    \
+                 script:\n      actions:\n        onRun:\n          command: run\n",
+            ),
+            "services[0] -> readinessCheck:\n\tunknown field `readinessCheck`, expected one of \
+             `name`, `description`, `let`, `dependencies`, `hostRequirements`, `ports`, \
+             `healthCheck`, `restartPolicy`, `variables`, `script`. 'readinessCheck' is not a \
+             property; the health check is 'healthCheck'.",
+        ),
+        (
+            service_with_health("      type: TCP_CONNECT\n      timeoutSeconds: 60\n", ""),
+            "services[0] -> healthCheck:\n\tunknown field `timeoutSeconds`, expected one of \
+             `ports`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, \
+             `healthIntervalSeconds`, `failureThreshold`. 'timeoutSeconds' is not a property of \
+             a health check; the time allowed to become READY is 'readinessTimeoutSeconds'.",
+        ),
+        (
+            service_with_health(
+                "      type: TCP_CONNECT\n      readyTimeoutSeconds: 60\n",
+                "",
+            ),
+            "services[0] -> healthCheck:\n\tunknown field `readyTimeoutSeconds`, expected one of \
+             `ports`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, \
+             `healthIntervalSeconds`, `failureThreshold`. 'readyTimeoutSeconds' is not a \
+             property of a health check; the time allowed to become READY is \
+             'readinessTimeoutSeconds'.",
+        ),
+        (
+            service_with_health(
+                "      type: COMMAND\n      intervalSeconds: 5\n",
+                ON_HEALTH_CHECK,
+            ),
+            "services[0] -> healthCheck:\n\tunknown field `intervalSeconds`, expected one of \
+             `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, \
+             `failureThreshold`. 'intervalSeconds' is not a property of a health check; use \
+             'readinessIntervalSeconds' for probes before READY and 'healthIntervalSeconds' \
+             for probes after.",
+        ),
+        (
+            service_with_health(
+                "      type: STDOUT\n      readinessIntervalSeconds: 5\n",
+                "",
+            ),
+            "services[0] -> healthCheck:\n\tunknown field `readinessIntervalSeconds`, expected \
+             one of `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`. \
+             'readinessIntervalSeconds' does not apply to a STDOUT health check: the ready line \
+             arrives when it arrives.",
+        ),
+        (
+            service_with_health(
+                "      type: COMMAND\n",
+                "        onReadinessCheck:\n          command: probe\n",
+            ),
+            "services[0] -> script -> actions -> onReadinessCheck:\n\tunknown field \
+             `onReadinessCheck`, expected one of `onEnter`, `onRun`, `onHealthCheck`, \
+             `onExit`. 'onReadinessCheck' is not a property; the health check action is \
+             'onHealthCheck'.",
+        ),
+        (
+            job_with_service_body(
+                "    script:\n      actions:\n        onRun:\n          command: run\n",
+            ),
+            "services[0]:\n\tmissing field `ports`. A Service declares at least one port in \
+             'ports'; a port-less background process is not a Service.",
+        ),
+    ];
+    for (template, expected) in cases {
+        let err = decode_job_template(
+            yaml_val(&template),
+            Some(SERVICE_EXTS),
+            &CallerLimits::default(),
+        )
+        .expect_err(expected)
+        .to_string();
+        assert_eq!(
+            err,
+            format!("Model validation error: 1 validation error for JobTemplate\n{expected}")
+        );
+    }
+    // The removed `serviceEnvironments` list and the renamed wrap hook.
+    let err = decode_job_template(
+        yaml_val(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: T\n\
+             serviceEnvironments: []\nsteps: []\n",
+        ),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("serviceEnvironments was removed")
+    .to_string();
+    assert!(
+        err.ends_with(
+            "`steps`. 'serviceEnvironments' is not a property; a Service sets up its own host in \
+             'onEnter', or a Job Environment with 'runScope: [SERVICE]' is entered by every \
+             Service Session."
+        ),
+        "{err}"
+    );
+    let err = decode_job_template(
+        yaml_val(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR, WRAP_ACTIONS]\n\
+             name: T\njobEnvironments:\n  - name: W\n    script:\n      actions:\n        \
+             onWrapServiceReadinessCheck: { command: x }\nsteps: []\n",
+        ),
+        Some(&["SERVICE", "EXPR", "WRAP_ACTIONS"]),
+        &CallerLimits::default(),
+    )
+    .expect_err("onWrapServiceReadinessCheck was renamed")
+    .to_string();
+    assert!(
+        err.starts_with(
+            "Model validation error: 1 validation error for JobTemplate\njobEnvironments[0] -> \
+             script -> actions -> onWrapServiceReadinessCheck:\n\tunknown field \
+             `onWrapServiceReadinessCheck`, expected one of "
+        ),
+        "{err}"
+    );
+    assert!(
+        err.ends_with(
+            "'onWrapServiceReadinessCheck' is not a property; the hook is \
+             'onWrapServiceHealthCheck'."
+        ),
+        "{err}"
+    );
+}
+
+/// A serde failure with no hint still carries its model path.
+#[test]
+fn serde_failures_carry_their_model_path() {
+    let err = decode_job_template(
+        yaml_val(
+            "specificationVersion: jobtemplate-2023-09\nname: T\nsteps:\n  - name: S\n    \
+             script:\n      actions:\n        onRun:\n          command: { a: 1 }\n",
+        ),
+        None,
+        &CallerLimits::default(),
+    )
+    .expect_err("a command is a string")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> script -> \
+         actions -> onRun -> command:\n\tinvalid type: map, expected a string or number"
     );
 }
 
@@ -618,6 +794,125 @@ steps:
             "1 validation error for JobTemplate\n",
             "services:\n\tservices requires the SERVICE extension.",
         ],
+    );
+}
+
+/// Without `SERVICE`, the `services` list is the finding. The Step's
+/// `dependsOn: service:Cache` — a Step name in such a template, and one
+/// that exists nowhere — and its `Service.Cache.*` references follow from
+/// the missing extension and are left unreported. The gating error comes
+/// first, ahead of every other pass's.
+#[test]
+fn gating_error_suppresses_the_errors_that_follow_from_it() {
+    const TEMPLATE: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [EXPR]
+name: Test
+jobEnvironments:
+  - name: Client
+    dependencies: [{ dependsOn: "service:Cache" }]
+    variables: { ADDR: "{{ Service.Cache.main.connectAddress }}" }
+services:
+  - name: Cache
+    ports: [{name: main}]
+    script: {actions: {onRun: {command: valkey-server}}}
+steps:
+  - name: S
+    dependencies: [{ dependsOn: "service:Cache" }]
+    script:
+      actions:
+        onRun:
+          command: run
+          args: ["{{ Service.Cache.main.port }}", "{{ Param.Missing }}"]
+"#;
+    let err = decode_job_template(
+        yaml_val(TEMPLATE),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("Expected validation error")
+    .to_string();
+    assert!(
+        err.starts_with(
+            "Model validation error: 3 validation errors for JobTemplate\n\
+             services:\n\tservices requires the SERVICE extension.\n\
+             jobEnvironments[0] -> dependencies:\n\tdependencies requires the SERVICE extension.\n"
+        ),
+        "{err}"
+    );
+    // An unrelated undefined variable is still reported.
+    assert!(
+        err.contains("steps[0] -> script -> actions -> onRun -> args[1]:\n\tFailed to parse interpolation expression at [0, 19]. Undefined variable: 'Param.Missing'."),
+        "{err}"
+    );
+    assert!(!err.contains("not found"), "{err}");
+    assert!(!err.contains("Service.Cache"), "{err}");
+}
+
+/// Without `SERVICE` and without a `services` list, `service:X` is an
+/// ordinary Step name and `Service.X.*` an ordinary unknown variable: both
+/// are reported as before, since nothing else explains them.
+#[test]
+fn without_a_services_list_the_prefix_and_references_are_ordinary_errors() {
+    expect_job_err(
+        r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [EXPR]
+name: Test
+steps:
+  - name: S
+    dependencies: [{ dependsOn: "service:Cache" }]
+    script:
+      actions:
+        onRun:
+          command: run
+          args: ["{{ Service.Cache.main.port }}"]
+"#,
+        SERVICE_EXTS,
+        &[
+            "2 validation errors for JobTemplate\n",
+            "steps[0] -> dependencies[0]:\n\tdependency 'service:Cache' not found.",
+            "steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 29]. Undefined variable: 'Service.Cache.main.port'.",
+        ],
+    );
+}
+
+/// The same for an Environment Template: the gated fields first, the
+/// references to the listed Service dropped, anything else kept.
+#[test]
+fn gating_error_suppresses_the_errors_that_follow_from_it_in_an_environment_template() {
+    let err = decode_environment_template(
+        yaml_val(
+            r#"
+specificationVersion: "environment-2023-09"
+extensions: [EXPR]
+services:
+  - name: Cache
+    ports: [{name: main}]
+    script: {actions: {onRun: {command: valkey-server}}}
+environment:
+  name: Client
+  dependencies: [{ dependsOn: "service:Cache" }]
+  runScope: [TASK]
+  variables:
+    ADDR: "{{ Service.Cache.main.connectAddress }}"
+    OTHER: "{{ Service.Other.main.port }}"
+"#,
+        ),
+        Some(SERVICE_EXTS),
+        &CallerLimits::default(),
+    )
+    .expect_err("Expected validation error")
+    .to_string();
+    assert_eq!(
+        err,
+        "Model validation error: 4 validation errors for EnvironmentTemplate\n\
+         services:\n\tservices requires the SERVICE extension.\n\
+         environment -> dependencies:\n\tdependencies requires the SERVICE extension.\n\
+         environment -> runScope:\n\trunScope requires the SERVICE extension.\n\
+         environment -> variables -> OTHER:\n\tFailed to parse interpolation expression at [0, 29]. \
+         Undefined variable: 'Service.Other.main.port'.\n  Service.Other.main.port\n  \
+         ~~~~~~~~~~~~~~~~~~~^~~~"
     );
 }
 
@@ -969,7 +1264,7 @@ fn tcp_connect_ports_must_be_declared() {
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "services[0] -> healthCheck -> ports[1]:\n\treferences undeclared port 'admin'.",
+            "services[0] -> healthCheck -> ports[1]:\n\treferences undeclared port 'admin'; declared ports: main, metrics.",
         ],
     );
 }
@@ -1860,7 +2155,7 @@ fn errors_accumulate_across_services() {
         &[
             "2 validation errors for JobTemplate\n",
             "services[0] -> ports[1]:\n\tduplicate port name 'main'.",
-            "services[1] -> healthCheck -> ports[0]:\n\treferences undeclared port 'nope'.",
+            "services[1] -> healthCheck -> ports[0]:\n\treferences undeclared port 'nope'; declared ports: main.",
         ],
     );
 }

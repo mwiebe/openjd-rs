@@ -3,9 +3,14 @@
 ## Purpose
 
 `openjd summary <path>` prints summary information about a job template: its parameters,
-steps, task counts, environments, and dependencies. It can summarize the entire job or a
+steps, task counts, environments, dependencies, and — with the `SERVICE` extension (RFC 0009)
+— its Services and required Services. It can summarize the entire job or a
 single step. The command instantiates the job (resolving parameters and creating the job
-object) to produce accurate task counts that reflect parameter space expansion.
+object) to produce accurate task counts that reflect parameter space expansion. With
+`--environment`, the attached Environment Templates are applied as `run` applies them, so the
+summary is of the combined Job: attached Environments and Services appear, and each
+`requiresServices` entry is shown with the attachment that satisfies it (an unsatisfied
+requirement is the same error `run` reports).
 
 ## Interface
 
@@ -59,10 +64,12 @@ execute(args)
   │     context: job_template.default_validation_context() with
   │     common::caller_limits() layered on — the same limits the decode
   │     ran under (see run.md § Session Configuration / check.md § Caller-Limits Policy)
+  ├── With --environment: apply_environment_templates() → combined Job +
+  │     requirement bindings (requirement name → attachment label)
   │
   └── Dispatch on --step
       ├── Some(step_name) → output_step_summary(&job, step_name, output_format)
-      └── None → output_job_summary(&job, &param_order, output_format)
+      └── None → output_job_summary(&job, &param_order, &bindings, output_format)
 ```
 
 ## Parameter Definition Order
@@ -107,8 +114,22 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
 2. **Totals** — Total steps, total tasks (sum across all steps), total environments
    (root + step environments).
 3. **Per-step details** — Name, description, task count, task parameter definitions
-   (name and type), environment count, dependency count.
-4. **Environments** — Root (job-level) and step-level environments with names and parent
+   (name and type), environment count, dependency count. With `SERVICE`, a count that
+   includes a Service dependency reads `3 dependencies (1 Step, 2 Service)` (or `1
+   dependencies (all Services)`) and is followed by `Services: 'Coord', 'Cache'`; a
+   Step-only count stays `N dependencies`.
+4. **Services** (RFC 0009) — each `services` entry (the Job Template's own, then with
+   `--environment` the attached ones, named `<name> (from <document>)`): scope (the
+   `Display` of `job::ServiceScope`: `every Step` / `Step Work` / `Steps A, B`),
+   description, `Ports: api (TCP), metrics (TCP, port 9100)` (protocol, and the pinned
+   number when the template gives one), `Health check: <TYPE>`, `Restart policy:
+   maxAttempts N, completedTasks KEEP|RERUN`, and `Dependencies: 'Prepare', Service 'Back'`
+   when it lists any.
+5. **Required Services** (RFC 0009 §9.8) — each `requiresServices` entry with its ports
+   and either `— satisfied by <document>` (the attachment `apply_environment_templates`
+   bound it to) or `— not satisfied: attach an Environment Template that declares it with
+   --environment`.
+6. **Environments** — Root (job-level) and step-level environments with names and parent
    context.
 
 ### Human-Readable Format
@@ -135,12 +156,38 @@ Total environments: 1
   1 dependencies
 ```
 
+With Services:
+
+```
+2. 'Work' (1 total Tasks)
+  3 dependencies (1 Step, 2 Service)
+    Services: 'Coord', 'Cache'
+
+
+--- Services in 'ServiceJob' ---
+  - Coord (scope: Step Work)
+    Hands out work items.
+    Ports: api (TCP), metrics (TCP, port 9100)
+    Health check: STDOUT
+    Restart policy: maxAttempts 2, completedTasks KEEP
+    Dependencies: 'Prepare'
+
+--- Required Services in 'ServiceJob' ---
+  - Cache (ports: main (TCP), stats (UDP)) — not satisfied: attach an Environment Template that declares it with --environment
+```
+
 ### JSON Format
 
 The JSON output includes a `status` and `message` field for consistency with the Python
 CLI's `OpenJDCliResult` pattern, plus structured data for all summary fields. Step
 parameter definitions are arrays of `{"name", "type"}` objects. Optional fields
-(`description`, `environments`, `dependencies`) are omitted when empty.
+(`description`, `environments`, `dependencies`) are omitted when empty. With `SERVICE`: a
+step with Service dependencies also carries `service_dependencies` (the Service names, in
+list order; `dependencies` stays the total count); the root carries `services` — each
+`{"name", "description"?, "document"?, "scope", "ports": [{"name", "protocol", "port"?}],
+"health_check", "restart_policy": {"max_attempts", "completed_tasks"}, "dependencies"?:
+[{"step_name"} | {"service_name"}]}` — and `requires_services` — each `{"name", "ports":
+[{"name", "protocol"}], "satisfied_by"?}` — when the Job has any.
 
 ### YAML Format
 
@@ -153,7 +200,10 @@ code, so they are always in sync.
 `output_step_summary()` displays details for a single step:
 
 - Total tasks, total task parameters, total environments
-- Dependencies (step names)
+- Dependencies — `'Prepare'` for a Step, `Service 'Coord'` for a Service (JSON:
+  `{"step_name"}` / `{"service_name"}` entries)
+- Services in scope — the Services whose computed scope includes the Step (RFC 0009 §9.1:
+  those it lists, those reached through them, and every Job-wide one; JSON `services`)
 - Parameter definitions (name and type)
 - Environments (name, parent step, description)
 
@@ -162,7 +212,7 @@ an error is returned with the job name for context.
 
 ## Internal Types
 
-Three private structs organize the collected summary data:
+Private structs organize the collected summary data:
 
 ```rust
 struct StepInfo {
@@ -171,8 +221,17 @@ struct StepInfo {
     total_tasks: usize,
     task_params: Vec<(String, String)>,  // (name, type_name)
     envs: Vec<String>,
-    deps: Vec<String>,
+    deps: Vec<DepInfo>,
 }
+
+struct DepInfo { name: String, is_service: bool }           // one `dependencies` entry
+struct PortInfo { name: String, protocol: String, port: Option<u16> }
+struct ServiceInfo {                                        // one `services` entry
+    name: String, description: Option<String>, document: Option<String>, scope: String,
+    ports: Vec<PortInfo>, health_check: String, max_attempts: u64, completed_tasks: String,
+    deps: Vec<DepInfo>,
+}
+struct RequirementInfo { name: String, ports: Vec<PortInfo>, satisfied_by: Option<String> }
 
 struct ParamInfo {
     name: String,

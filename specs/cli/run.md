@@ -38,7 +38,7 @@ openjd run <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [-t <KEY=VALUE>]...
 | `--no-run-dependencies` | `bool` | No | — | Explicit opt-out (default behavior) |
 | `--extensions` | `Option<String>` | No | all | Comma-separated extension names |
 | `--preserve` | `bool` | No | `false` | Keep session working directory after completion |
-| `--verbose` | `bool` | No | `false` | Enable DEBUG-level logging |
+| `--verbose` | `bool` | No | `false` | Enable DEBUG-level logging; with Services, print every health probe result (see Output) |
 | `--timestamp-format` | `String` | No | `relative` | Log timestamp format: `relative`, `local`, `utc` |
 | `--output` | `String` | No | `human-readable` | Output format: `human-readable`, `json`, `yaml` |
 
@@ -682,12 +682,19 @@ line per event, each naming the Service and its scope — `(scope: every Step)`,
 `Display` of `job::ServiceScope`: endpoints
 (`Service 'Cache' (scope: every Step) endpoints: main -> 127.0.0.1:41235`; a UDP port's
 address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
-unsuffixed), `onRun launched
-(launch N in this Session); health check: <TYPE> (readinessTimeoutSeconds N[,
-readinessIntervalSeconds N], healthIntervalSeconds N, failureThreshold N)` (or `…, no
+unsuffixed), `working directory: <path>` (the Service Session's, printed as soon as it
+is allocated — the only place the path appears unless `--preserve` keeps it), `onRun launched
+(launch N in this Session); health check: <TYPE>[ on <port>, <port>] (readinessTimeoutSeconds N[,
+readinessIntervalSeconds N], healthIntervalSeconds N, failureThreshold N)` (a `TCP_CONNECT`
+check names the ports it probes — `TCP_CONNECT on api` — since a Service with UDP ports is
+probed on its TCP ports only; or `…, no
 heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>]`,
 `is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
-<what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `Relaunching Service
+<what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `onRun (launch N) canceled;
+exit code: N/A` (or `… exited; exit code: <n>`: how the instance the runtime canceled after
+UNHEALTHY or a readiness timeout ended, logged after its exit is awaited and before the
+relaunch or FAILED line, so the old instance is seen gone before the new one starts —
+RFC 0009 "Failure and restart" step 2), `Relaunching Service
 '<name>' onRun in its Service Session (relaunch N of M): <reason>` / `… in a new
 Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
 (restartPolicy.maxAttempts)`, and `stopped`. The `<reason>` of a failure is one of
@@ -713,12 +720,15 @@ external Service — so **every line the Service Session logs is prefixed `[Serv
 tag: `[Service Files] [onHealthCheck] CHECK_OK`. A tagged Session's section
 banners collapse to one tagged line each, and the CLI's `SessionLogger` prints
 `BANNER` records that carry a session tag (it still drops the untagged Task
-Session's, whose banners the CLI prints itself), so a Service Session's phases read:
+Session's, whose banners the CLI prints itself) — except the Session's outermost
+`Starting Service:` and `Ending Service:` lines, which the CLI's own framed `Starting
+Service:` / `Stopping Service:` banners already cover and which are dropped
+(`DUPLICATE_SESSION_BANNERS`) — so a Service Session's phases read:
 
 ```
 --------- Starting Service: Files                        ← the CLI's banner (4 lines)
 Service 'Files' (scope: every Step) endpoints: main -> 127.0.0.1:41235
-[Service Files] --------- Starting Service: Files
+Service 'Files' working directory: /tmp/OpenJD/cli-1234-svc-Files-0abc…
 [Service Files] Skipping Environment 'Client': its runScope does not include SERVICE
 [Service Files] --------- Entering Environment: Shared
 [Service Files] Output:
@@ -726,12 +736,11 @@ Service 'Files' (scope: every Step) endpoints: main -> 127.0.0.1:41235
 [Service Files] --------- Service onEnter: Files
 [Service Files] Output:
 [Service Files] --------- Service onRun: Files (launch 1)
-Service 'Files' onRun launched (launch 1 in this Session); health check: TCP_CONNECT (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)
+Service 'Files' onRun launched (launch 1 in this Session); health check: TCP_CONNECT on main (readinessTimeoutSeconds 300, readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)
 [Service Files] Output:
 Service 'Files' is READY
 …
 --------- Stopping Service: Files                        ← the CLI's banner (4 lines)
-[Service Files] --------- Ending Service: Files
 [Service Files] --------- Service onExit: Files
 [Service Files] --------- Exiting Environment: Shared
 Service 'Files' stopped
@@ -741,18 +750,41 @@ The CLI's own event lines (`Service 'Files' …`) are not tagged: they are the r
 narrative, not the Session's output. The Task Session carries no tag, so Task and
 Task-Session Environment output is unchanged.
 
-A FAILED Service is also
-reported on stderr (`ERROR: Service '<name>' (scope: <scope>) failed: <reason>`), in
-the summary (`Failed Service: <name> (scope: <scope>): <reason>`; the result message
+**`--verbose` and the probe timeline.** The sessions runtime records every health probe
+result as a tagged `PROCESS_CONTROL` record — `Service '<name>' is not yet READY: <why>`
+(info, before READY), `Service '<name>' health probe ok` (debug), `Service '<name>' health
+probe ok; failure count reset from n` (info), `Service '<name>' health probe failed (n of t):
+<why>` (warn) — for every check type: a `TCP_CONNECT` connection, a `COMMAND` exit, a
+`STDOUT` heartbeat line or its missed interval. `SessionLogger` prints these only at
+`--verbose` (`log::max_level() >= Debug`), tagged `[Service <name>] …`, so the timing of a
+`TCP_CONNECT` or `STDOUT` check — which has no command output of its own — can be read off
+the log; the default log carries only the state changes (`is READY`, `is UNHEALTHY`).
+
+A FAILED Service is reported **once in the log** (`… is FAILED: <reason>`) **and once in
+the Results** (`Failed Service: <name> (scope: <scope>): <reason>`; the result message
 becomes `Service '<name>' (scope: <scope>) failed: <reason>`), and as `failed_services`
 (`name`, `scope` — the scope text, `every Step` / `Step A` / `Steps A, B` — and
-`reason`) in the JSON/YAML result. The exit code is 1.
+`reason`) in the JSON/YAML result. It is not echoed to stderr and not restated before
+`Session ended with errors.` The exit code is 1.
+
+**Before any Service starts**, the Services the selection may start are checked for two
+that pin the same `(protocol, port)` number (`service_ports::check_requested_ports`):
+template validation accepts the template (the two could be placed on different hosts),
+but the single-host runner cannot honor both and fails the run then — `Service 'B' port
+'p' requests TCP port 47200, which is already allocated to another Service of this run
+(Service 'A' port 'p')` — rather than after A is READY.
+
+**`--step` without `--run-dependencies`**, when the selected Step's Service lists a Step
+that is not being run: the Service is started as if that Step had completed, as the
+Step's own dependencies are treated, and the log says so before the Service starts —
+`Service 'Lookup' depends on Step(s) 'Prepare', which is not being run (--step without
+--run-dependencies); starting it as if it had completed`.
 
 An **external Service** (one from an `--environment` template) is named with its
 document everywhere a Service of the Job Template is named alone, so two
 same-named Services are told apart: the banners read `Starting Service: Cache (from
 queue-cache.yaml)` / `Stopping Service: Cache (from queue-cache.yaml)`, every event
-line `Service 'Cache' (from queue-cache.yaml) …`, the stderr and summary lines
+line `Service 'Cache' (from queue-cache.yaml) …`, the Results lines
 `Service 'Cache' (from queue-cache.yaml) (scope: every Step) failed: …` and `Failed
 Service: Cache (from queue-cache.yaml) (scope: every Step): …`, and the
 `failed_services` entry gains

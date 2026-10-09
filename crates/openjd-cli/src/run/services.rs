@@ -299,14 +299,17 @@ impl FailureKind {
     }
 }
 
-/// `<TYPE> (readinessTimeoutSeconds N[, readinessIntervalSeconds N][, healthIntervalSeconds N, failureThreshold N])`
+/// `<TYPE>[ on <port>, <port>] (readinessTimeoutSeconds N[, readinessIntervalSeconds N][, healthIntervalSeconds N, failureThreshold N])`
 /// — the effective health check, for the launch log line.
 fn describe_health_check(check: &openjd_model::job::ServiceHealthCheck) -> String {
-    let mut s = format!(
-        "{} (readinessTimeoutSeconds {}",
-        check.type_name(),
+    let mut s = check.type_name().to_string();
+    if let openjd_model::job::ServiceHealthCheck::TcpConnect { ports, .. } = check {
+        s.push_str(&format!(" on {}", ports.join(", ")));
+    }
+    s.push_str(&format!(
+        " (readinessTimeoutSeconds {}",
         check.readiness_timeout_seconds()
-    );
+    ));
     if let Some(i) = check.readiness_interval_seconds() {
         s.push_str(&format!(", readinessIntervalSeconds {i}"));
     }
@@ -320,9 +323,30 @@ fn describe_health_check(check: &openjd_model::job::ServiceHealthCheck) -> Strin
     s
 }
 
+/// `Service 'X' onRun (launch N) canceled; exit code: 143` — how the
+/// instance the runtime canceled (after UNHEALTHY or a readiness timeout)
+/// ended, logged before the relaunch or FAILED line so the log shows the
+/// old instance gone before the new one starts (RFC 0009 "Failure and
+/// restart" step 2, constraint 5). `exited` instead of `canceled` when the
+/// exit was the process's own.
+fn log_run_exit(label: &str, launch: u32, exit: &ServiceRunExit) {
+    let how = if exit.canceled || exit.state == openjd_sessions::ActionState::Canceled {
+        "canceled"
+    } else {
+        "exited"
+    };
+    log_line(format!(
+        "{label} onRun (launch {launch}) {how}; {}",
+        describe_exit(exit)
+    ));
+}
+
 fn describe_exit(exit: &ServiceRunExit) -> String {
     let mut s = match exit.exit_code {
         Some(code) => format!("exit code: {code}"),
+        None if exit.state == openjd_sessions::ActionState::Canceled => {
+            "exit code: N/A".to_string()
+        }
         None => format!("{}", exit.state).to_lowercase(),
     };
     if let Some(msg) = &exit.fail_message {
@@ -612,6 +636,26 @@ impl ServiceManager {
                 .depends_on_steps()
                 .filter(|d| selected.contains(*d) && !completed.contains(*d))
                 .collect();
+            // A Step dependency outside the selection (`--step` without
+            // `--run-dependencies`) is taken as completed, as a Step's own
+            // dependencies are; say so, since whatever that Step would have
+            // produced for the Service is not there.
+            let skipped: Vec<String> = m
+                .service
+                .depends_on_steps()
+                .filter(|d| !selected.contains(*d))
+                .map(|d| format!("'{d}'"))
+                .collect();
+            if !skipped.is_empty() {
+                log_line(format!(
+                    "{} depends on Step(s) {}, which {} not being run (--step without \
+                     --run-dependencies); starting it as if {} had completed",
+                    m.key,
+                    skipped.join(", "),
+                    if skipped.len() == 1 { "is" } else { "are" },
+                    if skipped.len() == 1 { "it" } else { "they" },
+                ));
+            }
             if !unmet.is_empty() {
                 return Err(format!(
                     "{} {} cannot start before Step '{step}': it depends on Step(s) {} which \
@@ -1006,7 +1050,8 @@ impl ServiceManager {
                         scope: m.scope.clone(),
                         reason,
                     };
-                    eprintln!("ERROR: {failure}");
+                    // Reported once in the log (the `is FAILED:` line
+                    // above) and once in the Results; not echoed here.
                     outcome.failure.get_or_insert(failure);
                     m.state = State::Failed;
                 }
@@ -1252,6 +1297,18 @@ async fn start_or_recover(
             return (inst, Outcome::Stopped);
         }
         if let Some(k) = kind.take() {
+            // Step 2: an UNHEALTHY instance's onRun was canceled by the
+            // runtime; its exit is awaited — and logged — before the
+            // restart decision, so the log shows the old instance gone
+            // before the relaunch or FAILED line (constraint 5).
+            if let Some(session) = inst.session.as_mut() {
+                if session.state() == ServiceSessionState::Running {
+                    let launch = session.launch_count();
+                    if let Ok(exit) = session.wait_exit().await {
+                        log_run_exit(&inst.label, launch, &exit);
+                    }
+                }
+            }
             // RFC 0009 "Failure and restart" step 3/4.
             let max_attempts = inst.service.restart_policy.max_attempts;
             if inst.relaunches >= max_attempts {
@@ -1345,6 +1402,11 @@ async fn launch_until_ready(
             in_scope_endpoints: inst.in_scope.clone(),
         })
         .map_err(|e| FailureKind::Start(e.to_string()))?;
+        log_line(format!(
+            "{} working directory: {}",
+            inst.label,
+            session.session().working_directory().display()
+        ));
         // Interruption while an Environment's onEnter or the Service's
         // onEnter runs: cancel it with its own cancelation method and let
         // enter() report the (start) failure; the stop token then ends
@@ -1364,6 +1426,7 @@ async fn launch_until_ready(
         inst.session = Some(session);
         entered.map_err(|e| FailureKind::Start(e.to_string()))?;
     }
+    let label = inst.label.clone();
     let session = inst
         .session
         .as_mut()
@@ -1374,7 +1437,10 @@ async fn launch_until_ready(
         // restart decision waits for it (RFC 0009 "Failure and restart"
         // step 2, constraint 5). The Session moves to EXITED (and reclaims
         // its driver) when the exit is awaited here.
-        let _ = session.wait_exit().await;
+        let launch = session.launch_count();
+        if let Ok(exit) = session.wait_exit().await {
+            log_run_exit(&label, launch, &exit);
+        }
     }
     if stop.is_cancelled() {
         return Ok(false);
@@ -1402,8 +1468,11 @@ async fn launch_until_ready(
         Ok(ServiceHealth::TimedOut) => {
             // RFC 0009 "Failure and restart" step 2: cancel onRun and wait
             // for it to exit before deciding.
+            let launch = session.launch_count();
             session.cancel_run(None);
-            let _ = session.wait_exit().await;
+            if let Ok(exit) = session.wait_exit().await {
+                log_run_exit(&label, launch, &exit);
+            }
             Err(FailureKind::ReadyTimedOut)
         }
         Ok(ServiceHealth::Unhealthy(u)) => {
@@ -1413,7 +1482,10 @@ async fn launch_until_ready(
                 "{} {} is UNHEALTHY: {u}",
                 inst.label, inst.scope_label
             ));
-            let _ = session.wait_exit().await;
+            let launch = session.launch_count();
+            if let Ok(exit) = session.wait_exit().await {
+                log_run_exit(&label, launch, &exit);
+            }
             Err(FailureKind::Unhealthy(u))
         }
         Ok(ServiceHealth::ExitedBeforeReady | ServiceHealth::Pending) => {

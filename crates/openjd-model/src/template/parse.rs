@@ -292,6 +292,24 @@ fn canonical_case_message(kind: &str, written: &str, canonical: &str) -> String 
     )
 }
 
+/// Pass 3: deserialize the document into its typed model, reporting a
+/// failure as one [`ModelError::ModelValidation`] error at the model path
+/// the deserializer reached — `steps[0] -> stepServices`, `services[0] ->
+/// healthCheck` — with serde's message and, for a property that RFC 0009
+/// renamed or removed, a hint (see [`super::decode_errors`]).
+fn deserialize_typed<T: serde::de::DeserializeOwned>(
+    template: serde_json::Value,
+    model_name: &str,
+) -> Result<T, ModelError> {
+    serde_path_to_error::deserialize(template).map_err(|e| {
+        let message = e.inner().to_string();
+        ModelError::ModelValidation(
+            super::decode_errors::deserialization_error(e.path(), &message)
+                .with_model_name(model_name),
+        )
+    })
+}
+
 /// Decode and validate a job template from a YAML value.
 pub fn decode_job_template(
     template: serde_json::Value,
@@ -334,9 +352,7 @@ pub fn decode_job_template(
     let jt: JobTemplate = match version.revision() {
         // Future revisions may decode into a different struct layout.
         // Making the match explicit now localizes the dispatch point.
-        SpecificationRevision::V2023_09 => serde_json::from_value(template).map_err(|e| {
-            ModelError::DecodeValidation(format!("'{version_str}' failed checks: {e}"))
-        })?,
+        SpecificationRevision::V2023_09 => deserialize_typed(template, "JobTemplate")?,
     };
 
     // Build extension set with collect-all error reporting. Any problems
@@ -402,9 +418,7 @@ pub fn decode_environment_template(
         // Future revisions may decode into a different struct layout.
         // Making the match explicit now localizes the dispatch point,
         // mirroring `decode_job_template`.
-        SpecificationRevision::V2023_09 => serde_json::from_value(template).map_err(|e| {
-            ModelError::DecodeValidation(format!("'{version_str}' failed checks: {e}"))
-        })?,
+        SpecificationRevision::V2023_09 => deserialize_typed(template, "EnvironmentTemplate")?,
     };
 
     // Build extension set with collect-all error reporting. Same helper

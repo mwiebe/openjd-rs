@@ -18,8 +18,8 @@ pub enum ModelError {
 
 | Variant | When Used |
 |---------|----------|
-| `DecodeValidation` | Structural deserialization failure: bad YAML/JSON, missing required fields, wrong types, unsupported extensions |
-| `ModelValidation` | Semantic validation failure: template parsed but violates spec rules. Contains structured `ValidationErrors` with per-field paths |
+| `DecodeValidation` | Failures with no model path: bad YAML/JSON syntax, a document that is not a map, a missing or unknown `specificationVersion`, the wrong template kind, and the job-creation-time range/parameter errors that use it |
+| `ModelValidation` | Everything with a path: a typed-deserialization failure (unknown field, missing field, invalid type — reported at the serde path with any RFC 0009 rename hint, see [parsing.md](parsing.md) "Pass 3"), unsupported extensions, and every semantic validation error. Contains structured `ValidationErrors` with per-field paths |
 | `FormatStringError` | Format string interpolation error, with optional source position for diagnostics |
 | `Expression` | Expression evaluation error (from `openjd-expr`) |
 | `Compatibility` | Parameter merge conflicts between templates |

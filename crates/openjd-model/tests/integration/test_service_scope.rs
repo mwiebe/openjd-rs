@@ -190,10 +190,14 @@ fn bind_address_outside(svc: &str, port: &str) -> String {
     )
 }
 
-fn env_in_service_sessions(env: &str) -> String {
+/// Pass 11's one-per-Environment message for an explicit `runScope` that
+/// includes `SERVICE` on an Environment that references `Service.*` (and,
+/// with `what` = "depend on or reference a Service", also lists one). The
+/// per-reference errors are dropped in its favor.
+fn env_in_service_sessions(env: &str, what: &str) -> String {
     format!(
         "Environment '{env}' is entered in Service Sessions (its runScope includes SERVICE) and \
-         may not reference Service.*; declare runScope: [TASK] if it configures Tasks."
+         may not {what}; declare runScope: [TASK] if it configures Tasks."
     )
 }
 
@@ -529,12 +533,30 @@ fn environments_with_explicit_service_run_scope_cannot_reference_services() {
             ..Default::default()
         }),
         &[
-            "2 validation errors for JobTemplate\n",
-            "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at [",
-            &env_in_service_sessions("JobEnv"),
-            "jobEnvironments[0] -> runScope:\n\tEnvironment 'JobEnv' is entered in Service Sessions \
-             (its runScope includes SERVICE) and may not depend on a Service; declare runScope: \
-             [TASK] if it configures Tasks.",
+            "1 validation error for JobTemplate\n",
+            &format!(
+                "jobEnvironments[0] -> runScope:\n\t{}",
+                env_in_service_sessions("JobEnv", "depend on or reference a Service")
+            ),
+        ],
+    );
+}
+
+/// A Job Environment that references `Service.*` with `SERVICE` in its
+/// explicit `runScope`, and lists nothing: one error, on the list.
+#[test]
+fn environment_with_explicit_service_run_scope_reports_the_list_once() {
+    expect_job_err(
+        &template(&Tmpl {
+            job_env: "runScope: [SERVICE]\nvariables: { HOST: \"{{ Service.A.p.connectAddress }}\", PORT: \"{{ Service.A.p.port }}\" }",
+            ..Default::default()
+        }),
+        &[
+            "1 validation error for JobTemplate\n",
+            &format!(
+                "jobEnvironments[0] -> runScope:\n\t{}",
+                env_in_service_sessions("JobEnv", "reference Service.*")
+            ),
         ],
     );
 }
@@ -861,7 +883,23 @@ fn service_let_cannot_see_step_name() {
             a_body: "ports: [{ name: p }]\nlet:\n  - s = Step.Name\nscript:\n  actions:\n    onRun:\n      command: a",
             ..Default::default()
         }),
-        &["services[0] -> let[0]:\n\tInvalid expression in let binding 's': Undefined variable: 'Step.Name'."],
+        &["services[0] -> let[0]:\n\tInvalid expression in let binding 's': Step.* is not available within a Service."],
+    );
+}
+
+/// `Step.*` in a Service's actions gets the same tailored message `Task.*`
+/// does (§9 item 3): the RFC states the two together.
+#[test]
+fn service_actions_cannot_see_step_name() {
+    expect_job_err(
+        &template(&Tmpl {
+            a_body: "ports: [{ name: p }]\nscript:\n  actions:\n    onRun:\n      command: a\n      args: [\"{{ Step.Name }}\"]",
+            ..Default::default()
+        }),
+        &[
+            "1 validation error for JobTemplate\n",
+            "services[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 15]. Step.* is not available within a Service.\n  Step.Name\n  ~~~~~^~~~",
+        ],
     );
 }
 
@@ -1162,9 +1200,11 @@ fn wrapping_environment_does_not_see_services_in_service_sessions() {
             ..Default::default()
         }),
         &[
-            "4 validation errors for JobTemplate\n",
-            "jobEnvironments[0] -> script -> actions -> onWrapServiceRun -> args[0]:\n\tFailed to parse interpolation expression at [",
-            &env_in_service_sessions("JobEnv"),
+            "1 validation error for JobTemplate\n",
+            &format!(
+                "jobEnvironments[0] -> runScope:\n\t{}",
+                env_in_service_sessions("JobEnv", "reference Service.*")
+            ),
         ],
     );
 }
@@ -1273,12 +1313,11 @@ fn env_template_environment_with_explicit_service_run_scope_cannot_reference_ser
             "environment:\n  name: Client\n  dependencies: [{ dependsOn: \"service:A\" }]\n  runScope: [TASK, SERVICE]\n  variables:\n    A: \"{{ Service.A.p.connectAddress }}\"",
         ),
         &[
-            "2 validation errors for EnvironmentTemplate\n",
-            "environment -> variables -> A:\n\tFailed to parse interpolation expression at [",
-            &env_in_service_sessions("Client"),
-            "environment -> runScope:\n\tEnvironment 'Client' is entered in Service Sessions (its \
-             runScope includes SERVICE) and may not depend on a Service; declare runScope: [TASK] \
-             if it configures Tasks.",
+            "1 validation error for EnvironmentTemplate\n",
+            &format!(
+                "environment -> runScope:\n\t{}",
+                env_in_service_sessions("Client", "depend on or reference a Service")
+            ),
         ],
     );
 }
@@ -1295,7 +1334,7 @@ fn env_template_services_may_reference_later_ones_and_never_see_step_name() {
         ),
         &[
             "1 validation error for EnvironmentTemplate\n",
-            "services[0] -> let[0]:\n\tInvalid expression in let binding 's': Undefined variable: 'Step.Name'.",
+            "services[0] -> let[0]:\n\tInvalid expression in let binding 's': Step.* is not available within a Service.",
         ],
     );
 }

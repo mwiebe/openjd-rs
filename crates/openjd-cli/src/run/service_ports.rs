@@ -136,6 +136,39 @@ impl PortAllocator {
     }
 }
 
+/// Before any Service starts: the first pair of `services` that request
+/// the same `(protocol, port)` number, as the error [`PortAllocator::allocate`]
+/// would raise for the second of them when it started. The allocation
+/// table lives for the whole run, so two Services pinning one number can
+/// never both start, whatever their scopes; the single-host runner knows
+/// both pins up front and fails before launching either (RFC 0009
+/// "Placement": a scheduler places Services so that their requests can be
+/// met, or rejects the Job). `Ok(())` when no two pins collide.
+pub(super) fn check_requested_ports(services: &[Service]) -> Result<(), String> {
+    let mut requested: std::collections::BTreeMap<(ServicePortProtocol, u16), String> =
+        std::collections::BTreeMap::new();
+    for service in services {
+        for declared in &service.ports {
+            let Some(port) = declared.port else {
+                continue;
+            };
+            let protocol = declared.protocol;
+            if let Some(holder) = requested.get(&(protocol, port)) {
+                return Err(format!(
+                    "Service '{}' port '{}' requests {protocol} port {port}, which is already \
+                     allocated to another Service of this run ({holder})",
+                    service.name, declared.name
+                ));
+            }
+            requested.insert(
+                (protocol, port),
+                format!("Service '{}' port '{}'", service.name, declared.name),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Bind `127.0.0.1:port` (port 0 = any free port) with a socket of
 /// `protocol`, return the bound port, and release the socket.
 fn bind_loopback(protocol: ServicePortProtocol, port: u16) -> std::io::Result<u16> {
@@ -407,6 +440,32 @@ mod tests {
         assert_eq!(
             describe_endpoints(&e),
             "main -> 127.0.0.1:1234, metrics -> 127.0.0.1:1235/udp"
+        );
+    }
+
+    #[test]
+    fn requested_port_conflicts_are_found_before_any_start() {
+        // Distinct numbers, and the same number in different protocols,
+        // are fine.
+        let ok = [
+            service("A", &[("main", Some(47200))]),
+            service("B", &[("main", Some(47201)), ("free", None)]),
+            service_with_protocols("C", &[("u", Some(47200), ServicePortProtocol::Udp)]),
+        ];
+        assert_eq!(check_requested_ports(&ok), Ok(()));
+        // The same TCP number twice: the second Service is named, as the
+        // allocator would name it when it started, plus the holder.
+        let clash = [
+            service("A", &[("main", Some(47200))]),
+            service("B", &[("api", Some(47200))]),
+        ];
+        assert_eq!(
+            check_requested_ports(&clash),
+            Err(
+                "Service 'B' port 'api' requests TCP port 47200, which is already allocated to \
+                 another Service of this run (Service 'A' port 'main')"
+                    .to_string()
+            )
         );
     }
 }

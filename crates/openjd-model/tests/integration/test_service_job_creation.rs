@@ -910,8 +910,8 @@ services:
 steps:
   - name: S
     stepEnvironments:
-      - name: SvcOnly
-        runScope: [SERVICE]
+      - name: TaskOnly
+        runScope: [TASK]
         variables: { K: v }
     script:
       actions:
@@ -957,7 +957,7 @@ steps:
         "{{ WrappedService.Name }}"
     );
     let step_env = &job.steps[0].step_environments.as_ref().unwrap()[0];
-    assert_eq!(step_env.run_scope, Some(vec![RunScope::Service]));
+    assert_eq!(step_env.run_scope, Some(vec![RunScope::Task]));
 
     // Round-trips through the job wire format.
     let json = serde_json::to_value(&envs[1]).unwrap();

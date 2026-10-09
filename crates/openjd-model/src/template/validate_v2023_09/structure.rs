@@ -167,6 +167,20 @@ pub fn validate_structure(
     // `requiresServices`, and the combined Step/Service graph is checked for
     // cycles there.
     let service_active = ctx.profile.has_extension(ModelExtension::Service);
+    // The Services a `dependsOn` could have meant, for the hint on a target
+    // that names nothing (RFC 0009 §3.2).
+    let service_names: Vec<&str> = jt
+        .services()
+        .iter()
+        .map(|s| s.name.as_str())
+        .chain(jt.requires_services().iter().map(|r| r.name.as_str()))
+        .collect();
+    // Without SERVICE, a `services` or `requiresServices` list is itself
+    // the error (pass 11 reports it); a `service:`-prefixed target that
+    // then names no Step is a consequence of the missing extension, not a
+    // finding of its own, and is left unreported.
+    let service_lists_without_extension =
+        !service_active && (jt.services.is_some() || jt.requires_services.is_some());
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
@@ -222,7 +236,17 @@ pub fn validate_structure(
                         errors.add(&dep_path, "cannot depend on itself.");
                     }
                     if !step_names.contains(target) && !all_step_names.contains(target) {
-                        errors.add(&dep_path, format!("dependency '{target}' not found."));
+                        let consequence = service_lists_without_extension
+                            && target.starts_with(SERVICE_DEPENDENCY_PREFIX);
+                        if !consequence {
+                            errors.add(
+                                &dep_path,
+                                format!(
+                                    "dependency '{target}' not found{}",
+                                    service_dependency_hint(target, service_names.iter().copied())
+                                ),
+                            );
+                        }
                     }
                 }
                 if !dep_names.insert(&dep.depends_on) {

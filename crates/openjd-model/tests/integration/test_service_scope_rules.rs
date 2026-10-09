@@ -624,10 +624,16 @@ fn service_listed_by_a_job_environment_listed_service_has_every_step() {
 // §9.1 rule 4 — an unused Service is rejected
 // ════════════════════════════════════════════════════════════════════
 
+/// §9.1 rule 4's message when nothing lists the Service.
 fn unused_message(name: &str) -> String {
+    format!("Service '{name}' is unused: no Step, Service, or Job Environment lists it.")
+}
+
+/// §9.1 rule 4's message when only another — unused — Service lists it.
+fn unused_chain_message(name: &str, lister: &str) -> String {
     format!(
-        "Service '{name}' is unused: no Step, Service, or Job Environment lists \
-         'service:{name}' in its dependencies, so no Step is in its scope."
+        "Service '{name}' is unused: no Step is in its scope (Service '{lister}' lists it, but \
+         no Step is in {lister}'s scope either)."
     )
 }
 
@@ -682,7 +688,38 @@ fn service_listed_only_by_an_unused_service_is_unused_too() {
         "{err}"
     );
     assert!(
-        err.contains(&format!("services[2]:\n\t{}", unused_message("Back"))),
+        err.contains(&format!(
+            "services[2]:\n\t{}",
+            unused_chain_message("Back", "Sidecar")
+        )),
+        "{err}"
+    );
+}
+
+/// A Service listed by two unused Services names both.
+#[test]
+fn service_listed_only_by_two_unused_services_names_both() {
+    let t = job(
+        "",
+        &format!(
+            "{}{}{}{}",
+            svc("Used", &[], ""),
+            svc("Side", &["service:Back"], ""),
+            svc("Car", &["service:Back"], ""),
+            svc("Back", &[], "")
+        ),
+        &step("A", &["service:Used"], "[a]"),
+    );
+    let err = job_err(&t);
+    assert!(
+        err.starts_with("Model validation error: 3 validation errors for JobTemplate\n"),
+        "{err}"
+    );
+    assert!(
+        err.contains(
+            "services[3]:\n\tService 'Back' is unused: no Step is in its scope (Services 'Side' \
+             and 'Car' list it, but no Step is in their scope either)."
+        ),
         "{err}"
     );
 }
@@ -1033,6 +1070,161 @@ fn unknown_service_message() -> &'static str {
     "dependency 'service:Nope' not found: no Service of that name in services or requiresServices."
 }
 
+// ── The `service:` prefix hint (RFC 0009 §3.2) ───────────────────────
+
+/// A Step's `dependsOn` that names no Step but, read as a Service name,
+/// names a declared Service: the prefix was forgotten, written in the
+/// wrong case, followed by a space, or followed by a port. Each form gets
+/// the canonical spelling; the Step's reference and the Service's scope
+/// errors follow as before.
+#[test]
+fn step_dependency_missing_the_service_prefix_gets_a_hint() {
+    for (written, expected) in [
+        ("X", "dependency 'X' not found; did you mean 'service:X'?"),
+        (
+            "Service:X",
+            "dependency 'Service:X' not found; did you mean 'service:X'?",
+        ),
+        (
+            "SERVICE:X",
+            "dependency 'SERVICE:X' not found; did you mean 'service:X'?",
+        ),
+        (
+            "service: X",
+            "dependency 'service: X' not found: no Service of that name in services or \
+             requiresServices; did you mean 'service:X'?",
+        ),
+        (
+            "service:X.main",
+            "dependency 'service:X.main' not found: no Service of that name in services or \
+             requiresServices; did you mean 'service:X'?",
+        ),
+        (
+            "Service: X.main",
+            "dependency 'Service: X.main' not found; did you mean 'service:X'?",
+        ),
+    ] {
+        let t = job(
+            "",
+            &svc("X", &[], ""),
+            &step("S", &[written], "[\"{{ Service.X.main.port }}\"]"),
+        );
+        let err = job_err(&t);
+        assert!(
+            err.starts_with("Model validation error: 3 validation errors for JobTemplate\n"),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("steps[0] -> dependencies[0]:\n\t{expected}")),
+            "{written}: {err}"
+        );
+        assert!(
+            err.contains(
+                "Step 'S' references Service.X.main.port but does not list service:X in \
+                 dependencies."
+            ),
+            "{err}"
+        );
+        assert!(
+            err.contains(&format!("services[0]:\n\t{}", unused_message("X"))),
+            "{err}"
+        );
+    }
+}
+
+/// The hint names a required Service too.
+#[test]
+fn step_dependency_missing_the_service_prefix_hints_at_a_required_service() {
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &step("S", &["service:X", "Cache"], "[s]"),
+    )
+    .replace(
+        "services:\n",
+        "requiresServices:\n  - name: Cache\n    ports: [{ name: main }]\nservices:\n",
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}steps[0] -> dependencies[1]:\n\tdependency 'Cache' not found; did you mean \
+             'service:Cache'?"
+        )
+    );
+}
+
+/// No hint when no Service matches: a plain typo is a plain `not found`.
+#[test]
+fn step_dependency_on_an_unknown_name_gets_no_hint() {
+    let t = job(
+        "",
+        &svc("X", &[], ""),
+        &step("S", &["service:X", "Y"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!("{JOB_ERR}steps[0] -> dependencies[1]:\n\tdependency 'Y' not found.")
+    );
+}
+
+/// A Service's `dependsOn` gets the same hint, in both forms.
+#[test]
+fn service_dependency_missing_the_service_prefix_gets_a_hint() {
+    // `Back`, listed by nothing that counts, is unused beside the hint.
+    let t = job(
+        "",
+        &format!("{}{}", svc("X", &["Back"], ""), svc("Back", &[], "")),
+        &step("S", &["service:X"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "Model validation error: 2 validation errors for JobTemplate\n\
+             services[0] -> dependencies[0]:\n\tdependency 'Back' not found; did you mean \
+             'service:Back'?\nservices[1]:\n\t{}",
+            unused_message("Back")
+        )
+    );
+    let t = job(
+        "",
+        &format!(
+            "{}{}",
+            svc("X", &["service:Back.main"], ""),
+            svc("Back", &[], "")
+        ),
+        &step("S", &["service:X"], "[s]"),
+    );
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "Model validation error: 2 validation errors for JobTemplate\n\
+             services[0] -> dependencies[0]:\n\tdependency 'service:Back.main' not found: no \
+             Service of that name in services or requiresServices; did you mean \
+             'service:Back'?\nservices[1]:\n\t{}",
+            unused_message("Back")
+        )
+    );
+}
+
+/// In an Environment Template a Service's `dependsOn` has only the
+/// `service:` form; a bare Service name is hinted at too.
+#[test]
+fn env_template_service_dependency_missing_the_prefix_gets_a_hint() {
+    let t = env_template(&format!(
+        "{}{}",
+        svc("X", &["Back"], ""),
+        svc("Back", &[], "")
+    ));
+    assert_eq!(
+        env_err(&t),
+        format!(
+            "{ENV_ERR}services[0] -> dependencies[0]:\n\tdependency 'Back' names a Step, but an \
+             Environment Template has no Steps; a Service here may depend only on a Service of \
+             the same document, as 'service:<name>'; did you mean 'service:Back'?"
+        )
+    );
+}
+
 #[test]
 fn step_dependency_on_an_unknown_service_is_rejected() {
     let t = job(
@@ -1369,36 +1561,20 @@ fn environment_depending_on_a_service_defaults_to_task_only() {
 fn explicit_service_run_scope_with_a_service_dependency_is_rejected() {
     // §4 item 3 constraint 5 / item 4 constraint 2: the dependency alone
     // is enough to reject SERVICE in an explicit runScope — and the
-    // reference, now out of scope, is reported by the runScope rule too.
+    // reference, now out of scope, is folded into the same error.
     let t = RUN_SCOPE_DEFAULTS.replace(
         "  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    variables:",
         "  - name: Client\n    dependencies: [{ dependsOn: \"service:X\" }]\n    runScope: [SERVICE]\n    variables:",
     );
-    let err = job_err(&t);
-    assert!(
-        err.starts_with("Model validation error: 2 validation errors for JobTemplate\n"),
-        "{err}"
-    );
-    assert!(
-        err.contains(
-            "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at ["
-        ),
-        "{err}"
-    );
-    assert!(
-        err.contains(
-            "Environment 'Client' is entered in Service Sessions (its runScope includes SERVICE) \
-             and may not reference Service.*; declare runScope: [TASK] if it configures Tasks."
-        ),
-        "{err}"
-    );
-    assert!(
-        err.contains(
-            "jobEnvironments[0] -> runScope:\n\tEnvironment 'Client' is entered in Service \
-             Sessions (its runScope includes SERVICE) and may not depend on a Service; declare \
-             runScope: [TASK] if it configures Tasks."
-        ),
-        "{err}"
+    // One error, on the list: the reference is a consequence and is not
+    // reported on its own.
+    assert_eq!(
+        job_err(&t),
+        format!(
+            "{JOB_ERR}jobEnvironments[0] -> runScope:\n\tEnvironment 'Client' is entered in \
+             Service Sessions (its runScope includes SERVICE) and may not depend on or reference \
+             a Service; declare runScope: [TASK] if it configures Tasks."
+        )
     );
     // Without the reference the dependency is still rejected, on its own.
     let t = RUN_SCOPE_DEFAULTS.replace(

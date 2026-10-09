@@ -403,6 +403,10 @@ struct ResolvedAction {
 struct RunDriverInputs {
     session_id: String,
     service_name: String,
+    /// The Session's log tag (`SessionConfig::log_tag`), prefixed to the
+    /// health probe lines so a consumer merging Sessions' logs can show a
+    /// Service's probe timeline attributed.
+    session_tag: Option<String>,
     runner: ScriptRunnerBase,
     /// The name of the action that runs as `onRun` (`onRun`, or
     /// `onWrapServiceRun` when wrapped).
@@ -1004,6 +1008,7 @@ impl ServiceSession {
         let inputs = RunDriverInputs {
             session_id: sid,
             service_name: self.service.name.clone(),
+            session_tag: self.session.log_tag().map(str::to_string),
             runner,
             action_name: run.name,
             action: run.action,
@@ -1774,6 +1779,8 @@ async fn tcp_probe(targets: &[(String, String, u16)]) -> ProbeResult {
 struct HealthTracker<'a> {
     session_id: &'a str,
     service_name: &'a str,
+    /// The Session's log tag, for the per-probe lines.
+    tag: LogTag<'a>,
     /// The name of the action running as `onRun` (`onRun`, or
     /// `onWrapServiceRun` when wrapped), for log lines.
     action_name: &'a str,
@@ -1882,16 +1889,30 @@ impl HealthTracker<'_> {
         match result {
             ProbeResult::Ok => {
                 if *failed_probes > 0 {
-                    session_log!(
+                    session_tagged_log!(
                         info,
                         self.session_id,
+                        self.tag,
                         LogContent::PROCESS_CONTROL,
-                        "Service '{}' health probe succeeded; failure count reset from {}",
+                        "Service '{}' health probe ok; failure count reset from {}",
                         self.service_name,
                         failed_probes
                     );
                     *failed_probes = 0;
                     self.publish_ready_count();
+                } else {
+                    // Every passing probe, at DEBUG: a TCP_CONNECT
+                    // connection, a COMMAND exit 0, a STDOUT heartbeat line.
+                    // A consumer that wants the probe timeline (`openjd run
+                    // --verbose`) prints these; the default log does not.
+                    session_tagged_log!(
+                        debug,
+                        self.session_id,
+                        self.tag,
+                        LogContent::PROCESS_CONTROL,
+                        "Service '{}' health probe ok",
+                        self.service_name
+                    );
                 }
                 None
             }
@@ -1917,9 +1938,10 @@ impl HealthTracker<'_> {
                         .send(ServiceHealth::Unhealthy(unhealthy.clone()));
                     Some(unhealthy)
                 } else {
-                    session_log!(
+                    session_tagged_log!(
                         warn,
                         self.session_id,
+                        self.tag,
                         LogContent::PROCESS_CONTROL,
                         "Service '{}' health probe failed ({count} of {}): {detail}",
                         self.service_name,
@@ -2071,6 +2093,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     let RunDriverInputs {
         session_id,
         service_name,
+        session_tag,
         mut runner,
         action_name,
         action,
@@ -2115,9 +2138,14 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     });
     let request_tx = check_join.is_some().then_some(&request_tx);
 
+    let tag = LogTag {
+        session: session_tag.as_deref(),
+        action: None,
+    };
     let mut tracker = HealthTracker {
         session_id: &session_id,
         service_name: &service_name,
+        tag,
         action_name,
         check_type: plan.type_name(),
         stdout_check: is_stdout,
@@ -2190,9 +2218,10 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                                 }
                             }
                             ProbeResult::Failed(detail) => {
-                                session_log!(
+                                session_tagged_log!(
                                     info,
                                     &session_id,
+                                    tag,
                                     LogContent::PROCESS_CONTROL,
                                     "Service '{}' is not yet READY: {detail}",
                                     service_name

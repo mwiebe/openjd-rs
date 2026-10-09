@@ -1,0 +1,34 @@
+# Two Services of one run pin the same TCP port number. Template validation
+# accepts this (the two could be placed on different hosts); the single-host
+# runner cannot honor both, and fails before starting either rather than
+# after A is READY.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: SamePinnedPort
+services:
+  - name: A
+    ports: [{ name: p, port: 47213 }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: a', flush=True); time.sleep(600)"]
+  - name: B
+    ports: [{ name: p, port: 47213 }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: b', flush=True); time.sleep(600)"]
+steps:
+  - name: Work
+    dependencies:
+      - dependsOn: "service:A"
+      - dependsOn: "service:B"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_MUST_NOT_RUN')"]

@@ -26,9 +26,9 @@
 //! The rules, in the order they are tried for a declared or required
 //! `Service.<svc>`:
 //!
-//! 1. `Task.*` inside a Service (its actions, `variables`, `let`,
-//!    embedded files): *Task.\* is not available within a Service.* (§9
-//!    item 3.)
+//! 1. `Task.*` or `Step.*` inside a Service (its actions, `variables`,
+//!    `let`, embedded files): *Task.\* is not available within a Service.*
+//!    / *Step.\* is not available within a Service.* (§9 item 3.)
 //! 2. The site is a job-creation-time field (`hostRequirements`, a
 //!    `<StepTemplate>`'s or `<Service>`'s `let` list — not a script's —, a
 //!    `parameterSpace` range, an action `timeout` /
@@ -37,9 +37,14 @@
 //!    available in `<field>`: it is resolved at job creation, before any
 //!    Service has an endpoint.* (§3.6.2, §9.9 items 1–2.)
 //! 3. The site is an Environment whose explicit `runScope` includes
-//!    `SERVICE`: *Environment 'E' is entered in Service Sessions (its
-//!    runScope includes SERVICE) and may not reference Service.\*; declare
-//!    runScope: [TASK] if it configures Tasks.* (§4 item 3.2.)
+//!    `SERVICE`: the error is **dropped**. Pass 11 reports the rule once,
+//!    on the `runScope` list — *Environment 'E' is entered in Service
+//!    Sessions (its runScope includes SERVICE) and may not reference
+//!    Service.\*; declare runScope: [TASK] if it configures Tasks.* for a
+//!    Job Environment (§4 item 4 constraint 2), or *must not include
+//!    SERVICE: a Step Environment is entered only by the Task Sessions of
+//!    its Step; …* for a Step Environment (constraint 4) — and each
+//!    reference is a consequence of it.
 //! 4. A Service — declared or required — referenced from a Step's `script`,
 //!    one of its `stepEnvironments`, another Service, a Job Environment, or
 //!    an Environment Template's `environment` that does not list
@@ -66,6 +71,12 @@
 //!    is available only within the Service 'P' itself; use connectAddress to
 //!    reach it from elsewhere.* (§7.3.1.)
 //!
+//! When the document does not declare `SERVICE` at all, every `Undefined
+//! variable: 'Service.<svc>…'` whose `<svc>` the document's `services` or
+//! `requiresServices` names is **dropped**: the gating pass has reported
+//! the list itself (*services requires the SERVICE extension.*), and the
+//! reference is a consequence of that.
+//!
 //! The visibility rule has no exceptions: an entity sees a Service's values
 //! iff it lists the Service. Anything else — an unknown value name after a
 //! declared port, a reference with too few components, `Service.File.*` —
@@ -76,6 +87,7 @@ use crate::template::{
     lists_service, Environment, EnvironmentTemplate, JobTemplate, RunScope, Service, StepTemplate,
     SERVICE_DEPENDENCY_PREFIX,
 };
+use crate::types::{ModelExtension, ValidationContext};
 
 /// One Service the document knows: declared in its `services`, or required
 /// by a Job Template's `requiresServices`.
@@ -249,26 +261,72 @@ fn undefined_variable_span(message: &str) -> Option<(usize, usize, &str)> {
 /// Rewrite the errors of `errors` from index `from` on that report an
 /// out-of-scope `Service.*` / `Task.*` reference whose Service (or Task
 /// scope) the document declares, per the module rules.
-fn refine(doc: &Document<'_>, errors: &mut ValidationErrors, from: usize) {
-    for err in errors.errors.iter_mut().skip(from) {
+fn refine(doc: &Document<'_>, service_active: bool, errors: &mut ValidationErrors, from: usize) {
+    let mut index = 0;
+    errors.errors.retain_mut(|err| {
+        let i = index;
+        index += 1;
+        if i < from {
+            return true;
+        }
         let Some((start, end, name)) = undefined_variable_span(&err.message) else {
-            continue;
+            return true;
         };
+        // Without the extension no Service.* value exists anywhere, and the
+        // gating pass has already reported the `services` /
+        // `requiresServices` list the name came from: a reference to one
+        // of its Services is a consequence of that, not a finding.
+        if !service_active {
+            let declared = name
+                .strip_prefix("Service.")
+                .and_then(|rest| rest.split('.').next())
+                .is_some_and(|svc| doc.known(svc).is_some());
+            return !declared;
+        }
         let Some(site) = doc.site(&err.path) else {
-            continue;
+            return true;
         };
-        let Some(reason) = reason(doc, &site, name) else {
-            continue;
-        };
-        rewrite(err, start, end, &reason);
-    }
+        let within_service =
+            matches!(err.path.first(), Some(PathElement::Field(f)) if f == "services");
+        match reason(doc, &site, name, within_service) {
+            Some(Refinement::Rewrite(reason)) => rewrite(err, start, end, &reason),
+            Some(Refinement::Drop) => return false,
+            None => {}
+        }
+        true
+    });
+}
+
+/// What [`refine`] does with one `Undefined variable` error.
+enum Refinement {
+    /// Replace the generic sentence with the scope rule it breaks.
+    Rewrite(String),
+    /// Remove the error: pass 11 reports the rule once, on the field that
+    /// breaks it, and this error is a consequence.
+    Drop,
 }
 
 /// The scope rule `name` breaks at `site`, if this module states one.
-fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
-    if name.starts_with("Task.") {
+/// `within_service` is true when the error's path is under `services`, so
+/// that a `<Service>`'s job-creation fields (`let`, `hostRequirements`)
+/// count as inside the Service for rule 1.
+fn reason(
+    doc: &Document<'_>,
+    site: &Site<'_>,
+    name: &str,
+    within_service: bool,
+) -> Option<Refinement> {
+    // Rule 1: Task.* and Step.* are never available within a Service (§9
+    // item 3): there is no Task, and no Step, in a Service Session.
+    if let Some(root) = name
+        .split_once('.')
+        .map(|(root, _)| root)
+        .filter(|root| ["Task", "Step"].contains(root))
+    {
         return match site {
-            Site::Service { .. } => Some("Task.* is not available within a Service.".to_string()),
+            Site::Service { .. } | Site::JobCreation(_) if within_service => Some(
+                Refinement::Rewrite(format!("{root}.* is not available within a Service.")),
+            ),
             _ => None,
         };
     }
@@ -280,20 +338,20 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
 
     // Rule 2: job-creation fields never see Service.*.
     if let Site::JobCreation(field) = site {
-        return Some(format!(
+        return Some(Refinement::Rewrite(format!(
             "Service.* is not available in {field}: it is resolved at job creation, before any \
              Service has an endpoint."
-        ));
+        )));
     }
 
-    // Rule 3: an Environment entered in Service Sessions.
+    // Rule 3: an Environment entered in Service Sessions (its explicit
+    // runScope includes SERVICE). Pass 11 reports that on the runScope
+    // list, once: for a Job Environment because it references Service.*,
+    // for a Step Environment because SERVICE is never allowed there (§4
+    // item 4 constraint 4). Each reference is a consequence.
     if let Site::Environment { env, .. } = site {
         if env.runs_in(RunScope::Service) {
-            return Some(format!(
-                "Environment '{}' is entered in Service Sessions (its runScope includes SERVICE) \
-                 and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.",
-                env.name
-            ));
+            return Some(Refinement::Drop);
         }
     }
 
@@ -307,32 +365,35 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
     };
     match site {
         Site::Task { step } if !lists_service(step.dependencies.as_deref(), svc) => {
-            return Some(missing(format!("Step '{}'", step.name), String::new()));
+            return Some(Refinement::Rewrite(missing(
+                format!("Step '{}'", step.name),
+                String::new(),
+            )));
         }
         Site::Environment {
             env,
             step: Some(step),
         } if !lists_service(step.dependencies.as_deref(), svc) => {
-            return Some(missing(
+            return Some(Refinement::Rewrite(missing(
                 format!("Step '{}'", step.name),
                 format!(" in stepEnvironments '{}'", env.name),
-            ));
+            )));
         }
         Site::Environment { env, step: None }
             if !lists_service(env.dependencies.as_deref(), svc) =>
         {
-            return Some(missing(
+            return Some(Refinement::Rewrite(missing(
                 format!("Environment '{}'", env.name),
                 String::new(),
-            ));
+            )));
         }
         Site::Service { service }
             if service.name != svc && !lists_service(service.dependencies.as_deref(), svc) =>
         {
-            return Some(missing(
+            return Some(Refinement::Rewrite(missing(
                 format!("Service '{}'", service.name),
                 String::new(),
-            ));
+            )));
         }
         _ => {}
     }
@@ -345,29 +406,29 @@ fn reason(doc: &Document<'_>, site: &Site<'_>, name: &str) -> Option<String> {
             Known::Declared(_) => "Service",
             Known::Required { .. } => "required Service",
         };
-        return Some(format!(
+        return Some(Refinement::Rewrite(format!(
             "{what} '{svc}' has no port '{port}'; declared ports: {}.",
             declared_ports.join(", ")
-        ));
+        )));
     }
 
     if value == Some("bindAddress") {
         match known {
             // Rule 6: a required Service's bindAddress is never in scope.
             Known::Required { .. } => {
-                return Some(format!(
+                return Some(Refinement::Rewrite(format!(
                     "bindAddress of required Service '{svc}' is not available; use connectAddress \
                      to reach it."
-                ));
+                )));
             }
             // Rule 7: bindAddress outside the Service itself.
             Known::Declared(_) => {
                 let within = matches!(site, Site::Service { service } if service.name == svc);
                 if !within {
-                    return Some(format!(
+                    return Some(Refinement::Rewrite(format!(
                         "Service.{svc}.{port}.bindAddress is available only within the Service \
                          '{svc}' itself; use connectAddress to reach it from elsewhere."
-                    ));
+                    )));
                 }
             }
         }
@@ -395,17 +456,33 @@ fn rewrite(err: &mut ValidationError, start: usize, end: usize, reason: &str) {
 
 /// Refine the out-of-scope `Service.*` / `Task.*` errors pass 8 added to
 /// `errors` (from index `from`) for job template `jt`.
-pub(crate) fn refine_job_template(jt: &JobTemplate, errors: &mut ValidationErrors, from: usize) {
-    refine(&Document::for_job_template(jt), errors, from);
+pub(crate) fn refine_job_template(
+    jt: &JobTemplate,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+    from: usize,
+) {
+    refine(
+        &Document::for_job_template(jt),
+        ctx.profile.has_extension(ModelExtension::Service),
+        errors,
+        from,
+    );
 }
 
 /// As [`refine_job_template`], for an Environment Template.
 pub(crate) fn refine_environment_template(
     et: &EnvironmentTemplate,
+    ctx: &ValidationContext,
     errors: &mut ValidationErrors,
     from: usize,
 ) {
-    refine(&Document::for_environment_template(et), errors, from);
+    refine(
+        &Document::for_environment_template(et),
+        ctx.profile.has_extension(ModelExtension::Service),
+        errors,
+        from,
+    );
 }
 
 #[cfg(test)]
