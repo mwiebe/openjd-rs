@@ -698,7 +698,8 @@ PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
 14), PR #417 (which closed items 12, 15, 16, 17, 19), PR #418 (which
 closed items 20–23), PR #419 (which closed item 4), and PR #428
 (which closed items 6, 8, 18); item 11's audit (2026-10-09) added
-items 24–31. Items 1–2 are leftovers from earlier
+items 24–31, and the audits of the item 24 fix added items 32–34.
+Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
 (approved with findings recorded rather than requested — none is a
@@ -707,7 +708,8 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 24, 25, 26, 27, 28, 29, 30, 31.
+**Open:** 1, 24 (fixed, pending PR), 25, 26, 27, 28, 29, 30, 31, 32,
+33, 34.
 **Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 11 (audited), 12, 13,
 14, 15, 16, 17, 18, 19, 20, 21, 22, 23.
 
@@ -1246,6 +1248,21 @@ int/float/string/path.
     compatible if any member is — and the hoisted element type
     computed with the same join (`[[], [Task.Param.I]]` →
     `unresolved[list[list[int]]]`).
+
+    **Fixed, pending PR** — branch `fix/unresolved-list-join`
+    (`1dbe31e2`, `fix(expr)!`): `types::join_list_element` is shared by
+    `eval_list`, `unresolved_list_from_elements`,
+    `eval_listcomp_unresolved`, and `make_list` — element-wise list
+    joins, the empty list fitting any list type, unions joining through
+    compatible members, `T?` contributing `T`, and a union's empty-list
+    member dropped from the joined result beside a typed list. Every
+    example above now passes `create_job` with its run-time type;
+    `[Param.L, Param.L + [Task.Param.I]]` remains rejected (item 26).
+    Breaking on the concrete side: `[[1], ['a']]` and `make_list` over
+    incompatible list types are now rejected (RFC 0005 rule 7), and
+    `[1, 2.0, 'a']` errors instead of panicking. Converged after four
+    implement/audit rounds; the audits surfaced items 32–34. Close this
+    item when the PR merges.
 25. **`eval_boolop` returns a concrete operand after an unresolved
     one.** After the first unresolved operand, the loop still returns
     the first later operand that would decide the result (truthy for
@@ -1330,3 +1347,37 @@ int/float/string/path.
     run time itself — simulated by all-concrete evaluation with
     `HostContext::WithRules([])`, not executed through
     `openjd-sessions`.
+
+Items 32–34 come from the independent audits of the item 24 fix
+(branch `fix/unresolved-list-join`). Each predates that fix and was
+confirmed not made worse by it. Symbol states as for items 24–31.
+
+32. **The nesting-depth check skips unresolved elements.**
+    `[[[Task.Param.I]]]` types as `unresolved[list[list[list[int]]]]`
+    at pass 8 and gate 2, while run time rejects it with "Lists may be
+    nested at most 2 levels deep". The hoisting path
+    (`unresolved_list_from_elements`) never measures the depth of an
+    `unresolved[list[…]]` element, so pass 8 is lax here — a template
+    passes `check` and `create_job` and fails on the worker. Fix: apply
+    the concrete depth limit to the element *type* when hoisting.
+33. **An empty concrete comprehension is typed differently at pass 8
+    than when evaluated.** `[x for x in Param.L if x > 100]` types as
+    `unresolved[list[int]]` at pass 8 (the body type), but evaluates
+    to `[]` — `list[nulltype]` — once `Param.L` is concrete. So
+    `[[x for x in Param.L if x > 100], ['a']]` is rejected at pass 8
+    ("list[int] and list[string]") yet accepted at gate 2 and run time
+    as `list[list[string]]`. A pass-8 over-rejection; it depends on
+    whether the filter matches, so it is value-dependent by nature.
+    Possible fix: type a filtered comprehension over an unresolved
+    iterable or filter as `list[T] | list[nulltype]` and let the item
+    24 join absorb the empty member — with care, since the same union
+    feeding a method call degrades its typing (the N1 case fixed in
+    item 24's branch by simplifying the joined result).
+34. **Element-conflict wording differs between gate 2 and run time
+    for comprehensions.** `[[x] if x > 2 else [Task.Param.S] for x in
+    Param.L]` fails at gate 2 with "List literal contains incompatible
+    types: list[string] and list[int]" but at run time with "make_list
+    expected list[string] element, got list[int]". Both stages reject,
+    so this is a diagnostics-consistency nit, not a soundness issue.
+    Fix: route the concrete comprehension's `make_list` conflict
+    through the same `incompatible_list_types_error` formatter.
