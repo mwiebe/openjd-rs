@@ -241,7 +241,7 @@ mod tests {
             },
             restart_policy: ServiceRestartPolicy {
                 max_attempts: 0,
-                completed_tasks: CompletedTasksPolicy::Rerun,
+                completed_tasks: Some(CompletedTasksPolicy::Rerun),
             },
             variables: None,
             script: ServiceScript {

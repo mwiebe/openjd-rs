@@ -1,10 +1,9 @@
 # Step Dependency Graph
 
 The `step_dependency_graph` module builds and queries a directed acyclic graph of step-to-step
-dependencies from an instantiated `job::Job`. Only Step-to-Step edges appear here: under the
-`SERVICE` extension a `dependsOn` value beginning `service:` names a Service (Template Schemas
-§3.2), whose readiness the scheduler gates separately, so such entries are skipped. Without
-`SERVICE` every entry is a Step name.
+dependencies from an instantiated `job::Job`. Only Step-to-Step edges (`dependsOn`) appear
+here: under the `SERVICE` extension a `service` entry names a Service (Template Schemas §3.2),
+whose readiness the scheduler gates separately, so such entries are skipped.
 
 ## Public API
 

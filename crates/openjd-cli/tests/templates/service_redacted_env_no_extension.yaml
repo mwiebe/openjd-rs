@@ -44,7 +44,7 @@ services:
 steps:
   - name: UseSecret
     dependencies:
-      - dependsOn: "service:Vault"
+      - service: "Vault"
     script:
       actions:
         onRun:

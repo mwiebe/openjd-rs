@@ -4,10 +4,10 @@
 
 //! Step dependency graph for instantiated jobs.
 //!
-//! Only Step-to-Step edges appear here. Under the `SERVICE` extension a
-//! `dependsOn` value beginning `service:` names a Service (Template Schemas
-//! §3.2), whose readiness the scheduler gates separately; such entries are
-//! skipped. Without `SERVICE` every entry is a Step name.
+//! Only Step-to-Step edges (`dependsOn`) appear here. Under the `SERVICE`
+//! extension a `service` entry names a Service (Template Schemas §3.2),
+//! whose readiness the scheduler gates separately; such entries are
+//! skipped.
 
 use std::collections::HashMap;
 
@@ -69,20 +69,19 @@ impl StepDependencyGraph {
             .collect();
 
         let mut edges = Vec::new();
-        let service_active = job.service_active();
 
         for (dep_idx, step) in job.steps.iter().enumerate() {
             if let Some(deps) = &step.dependencies {
                 for dep in deps {
-                    // A `service:<name>` entry gates the Step's Tasks on a
+                    // A `service: <name>` entry gates the Step's Tasks on a
                     // Service being READY; it is not a Step edge.
-                    let Some(step_name) = dep.target(service_active).step() else {
+                    let Some(step_name) = dep.step() else {
                         continue;
                     };
                     let origin_idx = *name_to_index.get(step_name).ok_or_else(|| {
                         ModelError::DecodeValidation(format!(
-                            "Step '{}' depends on unknown step '{}'",
-                            step.name, dep.depends_on
+                            "Step '{}' depends on unknown step '{step_name}'",
+                            step.name
                         ))
                     })?;
                     let edge_idx = edges.len();

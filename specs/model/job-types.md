@@ -56,9 +56,9 @@ its computed scope (see [Service](#service-rfc-0009-service-extension)); after
 `requires_services` is the instantiated `requiresServices` list. Both serialize only when
 present, so a job without Services has the same wire shape as before RFC 0009.
 
-`service_active` is the flag every reader of a `dependsOn` value passes to
-[`StepDependency::target`](#stepdependency): only a Job declaring `SERVICE` has a `service:`
-prefix to recognize.
+`service_active` is true for a Job created from a template declaring `SERVICE` — the only Job
+whose `dependencies` entries may use the `service` key and which may have `services` or
+`requires_services`.
 
 ### JobParameter
 
@@ -92,7 +92,7 @@ pub struct Step {
 }
 ```
 
-A Step carries no separate Service list. The Services it depends on are the `service:<name>`
+A Step carries no separate Service list. The Services it depends on are the `service: <name>`
 entries of its `dependencies` (see [StepDependency](#stepdependency)); the Services whose scope
 includes it are those of `Job::services` whose `scope` contains its name — the ones it lists,
 those a Service it lists depends on, transitively, and every Job-wide Service.
@@ -158,7 +158,7 @@ pub struct Environment {
     pub name: String,
     pub description: Option<String>,
     pub dependencies: Option<Vec<StepDependency>>,         // SERVICE (RFC 0009); the Services it lists, as written
-    pub run_scope: Option<Vec<RunScope>>,                  // SERVICE (RFC 0009); None = every kind of Session
+    pub run_scope: Option<Vec<RunScope>>,                  // SERVICE (RFC 0009); None = every kind of Session; a Step Environment's is Some([Task])
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,  // Session-scope
     pub resolved_symtab: Option<SerializedSymbolTable>,
@@ -166,7 +166,7 @@ pub struct Environment {
 
 impl Environment {
     pub fn runs_in(&self, kind: RunScope) -> bool;         // job-side twin of template::Environment::runs_in
-    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>; // the `service:<name>` entries, without the prefix
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>; // the `service` entries' names, list order
     pub fn depends_on_service(&self, name: &str) -> bool;
 }
 
@@ -205,10 +205,14 @@ impl EnvironmentActions {
 `run_scope` is typed (`RunScope`, re-exported from `job` together with
 `CompletedTasksPolicy`) rather than the template side's raw strings: pass 11 has already
 rejected unrecognized names, so conversion parses each entry and a Session runtime can
-dispatch on the enum. `dependencies` (Template Schemas §4 item 3) is carried as written, like
-a Step's or a Service's: it is present only on a `jobEnvironments` entry or an attached
+dispatch on the enum. Job creation materializes the default: a Job Environment that lists a
+Service in `dependencies` and gives no `runScope` is converted with `Some([Task])`, one that
+lists none with `None`; a Step Environment, which gives no `runScope` (pass 11 rejects one) and
+is entered only by the Task Sessions of its Step, is always converted with `Some([Task])`
+(`convert_step_environment`). `dependencies` (Template Schemas §4 item 3) is carried as written,
+like a Step's or a Service's: it is present only on a `jobEnvironments` entry or an attached
 Environment Template's `environment` (a Step Environment never has one), every entry is
-`service:<name>` naming a Service of the Environment's own document or, in the Job Template, a
+`service: <name>` naming a Service of the Environment's own document or, in the Job Template, a
 required one, and `depends_on_services` is the list a runtime seeds the Environment's
 `Service.<name>.<port>.*` symbols from — exactly the Services its format strings may reference.
 The wrap hooks, `dependencies` and `runScope` all use
@@ -349,26 +353,31 @@ pub struct AttributeRequirement {
 ### StepDependency
 
 ```rust
-pub struct StepDependency {
-    pub depends_on: String,                                // as written: a Step name or "service:<name>"
+pub struct StepDependency {                                // Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize
+    pub depends_on: Option<String>,                        // `dependsOn`: the Step named; omitted from JSON when None
+    pub service: Option<String>,                           // `service`: the Service named (SERVICE); omitted when None
 }
 
 impl StepDependency {
-    pub fn target(&self, service_active: bool) -> DependencyTarget<'_>;
+    pub fn on_step(name: impl Into<String>) -> Self;
+    pub fn on_service(name: impl Into<String>) -> Self;
+    pub fn target(&self) -> Option<DependencyTarget<'_>>;  // None for both keys or neither (validation rejects)
+    pub fn step(&self) -> Option<&str>;
+    pub fn service(&self) -> Option<&str>;
 }
+impl From<&template::StepDependency> for StepDependency;
 
-pub use template::{DependencyTarget, SERVICE_DEPENDENCY_PREFIX};  // re-exported; see template-types.md
+pub use template::DependencyTarget;                        // re-exported; see template-types.md
 ```
 
-One entry of a Step's or a Service's `dependencies` (Template Schemas §3.2, §9 item 4).
-`target(service_active)` classifies it: with `service_active` (pass `Job::service_active()`) a
-value beginning `service:` is `DependencyTarget::Service(<name after the prefix>)`, satisfied when
-that Service is READY; any other value, and every value of a Job without `SERVICE`, is
-`DependencyTarget::Step(<the whole string>)`, satisfied when that Step has completed. The value is
-kept as written, so a created Job serializes its `dependencies` exactly as the template did.
-`StepDependencyGraph::new` builds its Step-to-Step graph from the `Step` targets only: when
-`job.service_active()`, `service:` entries are skipped, since the Services a Step waits for gate
-its Tasks on READY rather than ordering it among Steps.
+One entry of a Step's, a Service's, or a Job Environment's `dependencies` (Template Schemas
+§3.2, §4 item 3, §9 item 4): `dependsOn: <StepName>`, satisfied when that Step has completed, or
+`service: <ServiceName>` (SERVICE extension), satisfied when that Service is READY. Template
+validation has rejected an entry giving both keys or neither, so exactly one is `Some` in a Job.
+The entry is kept as written, so a created Job serializes its `dependencies` exactly as the
+template did. `StepDependencyGraph::new` builds its Step-to-Step graph from the `dependsOn`
+entries only: `service` entries are skipped, since the Services a Step waits for gate its Tasks
+on READY rather than ordering it among Steps.
 
 ### Service (RFC 0009, `SERVICE` extension)
 
@@ -378,11 +387,11 @@ pub struct Service {
     pub description: Option<String>,
     pub document: Document,                                // §1.2.2 item 3; omitted from JSON when JobTemplate
     pub scope: ServiceScope,                               // §9.1, computed; {"kind":"allSteps"} | {"kind":"steps","steps":[..]}
-    pub dependencies: Option<Vec<StepDependency>>,         // §9 item 4: Steps and service:<name>; omitted from JSON when None
+    pub dependencies: Option<Vec<StepDependency>>,         // §9 item 4: dependsOn Steps and service Services; omitted from JSON when None
     pub host_requirements: Option<HostRequirements>,       // Resolved, like Step's
     pub ports: Vec<ServicePort>,                           // Declaration order
     pub health_check: ServiceHealthCheck,                  // §9.4 defaults applied
-    pub restart_policy: ServiceRestartPolicy,              // §9.5 defaults applied
+    pub restart_policy: ServiceRestartPolicy,              // §9.5 maxAttempts resolved; completedTasks as given
     pub variables: Option<HashMap<String, FormatString>>,  // Service-execution scope, unresolved
     pub script: ServiceScript,                             // Service-execution scope, unresolved
     pub resolved_symtab: Option<SerializedSymbolTable>,
@@ -391,7 +400,7 @@ pub struct Service {
 impl Service {
     pub fn port_names(&self) -> impl Iterator<Item = &str>;
     pub fn depends_on_steps(&self) -> impl Iterator<Item = &str>;     // Step entries of `dependencies`, list order
-    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>;  // service:<name> entries, prefix stripped, list order
+    pub fn depends_on_services(&self) -> impl Iterator<Item = &str>;  // `service` entries' names, list order
     pub fn depends_on_service(&self, name: &str) -> bool;             // depends_on_services() contains `name`
     pub fn port(&self, name: &str) -> Option<&ServicePort>;
 }
@@ -464,7 +473,13 @@ impl ServiceHealthCheck {
 
 pub struct ServiceRestartPolicy {
     pub max_attempts: u64,
-    pub completed_tasks: CompletedTasksPolicy,
+    pub completed_tasks: Option<CompletedTasksPolicy>,     // Some whenever max_attempts > 0; omitted from JSON when None
+}
+
+impl ServiceRestartPolicy {
+    pub fn completed_tasks_on_relaunch(&self) -> Option<CompletedTasksPolicy>;        // None only with max_attempts 0
+    pub fn completed_tasks_on_dependent_restart(&self) -> CompletedTasksPolicy;        // the value, or Rerun when None
+    pub fn may_be_suspended(&self) -> bool;                                             // == Some(Keep)
 }
 
 pub struct ServiceScript {
@@ -491,6 +506,14 @@ The job-creation-stage fields are resolved: `<Service>.let` (evaluated into the 
 job-creation symbol table and transported in `resolved_symtab`), the numeric `@fmtstring`
 fields (`port`, the four `<ServiceHealthCheck>` fields, `maxAttempts` — resolved with target
 `int?`, range-checked, and defaulted per §9 when absent or `null`), and `hostRequirements`.
+`completedTasks` has no default (§9.5 item 2): job creation requires it when the resolved
+`maxAttempts` is greater than 0 (a literal one was checked at template validation), so
+`completed_tasks` is `Some` for every Service that can be relaunched. It may be `None` only when
+`max_attempts` is 0, in which case no relaunch happens and the value matters only when the
+Service is stopped and started again because a Service it lists began a new Service Session —
+`completed_tasks_on_dependent_restart` reads an omitted value as `RERUN` there (RFC 0009
+"Dependents of a relaunched Service"), and `may_be_suspended` is true only for an explicit
+`KEEP` (constraint 10).
 `variables` and the whole `script` are `@fmtstring[host]` and stay `FormatString`s, exactly
 as an Environment's do: they reference `Session.*`, `Service.File.*`, and in-scope
 `Service.<name>.<port>.*` endpoints that only the Service Session can bind. Action `timeout`
@@ -500,8 +523,8 @@ for the host to evaluate.
 
 `scope` is the set of Steps whose Tasks depend on the Service (Template Schemas §9.1), computed
 by `create_job` from the template's `dependencies` lists through
-`template::compute_service_scopes`: the Steps that list `service:<name>` (rule 1), every Step in
-the scope of a Service that lists `service:<name>`, transitively (rule 2), and `AllSteps` for a
+`template::compute_service_scopes`: the Steps that list it (rule 1), every Step in the scope of
+a Service that lists it, transitively (rule 2), and `AllSteps` for a
 Service a `jobEnvironments` entry lists in its `dependencies` (rule 3) or one a Service with
 scope `AllSteps` lists. `Steps { .. }` is never empty for a Job created from a decoded template, because a Job
 Template Service with no Step in its scope is unused and rejected by validation (rule 4). Every external Service has scope
@@ -509,12 +532,11 @@ Template Service with no Step in its scope is unused and rejected by validation 
 
 `dependencies` are the Steps and Services the Service depends on, as written (§9 item 4).
 `depends_on_steps()` yields its Step entries — the Steps that must complete before it starts;
-`depends_on_services()` yields the names of its `service:` entries — the Services that must be
-READY before it starts and that it is stopped before. A `service:` name resolves within the
+`depends_on_services()` yields the names of its `service` entries — the Services that must be
+READY before it starts and that it is stopped before. A `service` name resolves within the
 Service's own `document`: another Service of that document or, for a Job Template Service, a
 required external Service (resolved through `AppliedEnvironmentTemplates::requirement_bindings`).
-Both iterators classify entries as under `SERVICE`, the only extension under which a Service
-exists. A scheduler therefore reads the lifecycle of every Service off the Job without
+A scheduler therefore reads the lifecycle of every Service off the Job without
 re-deriving it: start before the first Task of any Step in `scope`, once every Step of
 `depends_on_steps()` has completed and every Service of `depends_on_services()` is READY; stop
 once no Step in `scope` has a Task left, before any Service of `depends_on_services()`. `scope`

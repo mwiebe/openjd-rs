@@ -923,14 +923,17 @@ impl ServiceSession {
     /// `healthIntervalSeconds`; `failureThreshold` consecutive failures make
     /// the instance UNHEALTHY, on which the runtime cancels `onRun` with its
     /// cancelation method (constraint 11) and stops probing; a success
-    /// resets the count. Intervals are measured from the end of the
-    /// previous probe. For `TCP_CONNECT` a probe connects to every listed
-    /// port; for `STDOUT` the first `openjd_service_ready` line is the
-    /// readiness probe and, only when `healthIntervalSeconds` is given, each
-    /// interval without another line is a failed probe; for `COMMAND` a
-    /// probe is one `onHealthCheck` invocation (sequential, each bounded by
-    /// the action's `timeout`, default 30 s), run by the check driver this
-    /// also starts.
+    /// resets the count. For `TCP_CONNECT` and `COMMAND`, an interval is
+    /// measured from the end of the previous probe: a `TCP_CONNECT` probe
+    /// connects to every listed port; a `COMMAND` probe is one
+    /// `onHealthCheck` invocation (sequential, each bounded by the action's
+    /// `timeout`, default 30 s), run by the check driver this also starts.
+    /// For `STDOUT` the first `openjd_service_ready` line is the readiness
+    /// probe; afterwards, only when `healthIntervalSeconds` is given, the
+    /// runtime arms a deadline `healthIntervalSeconds` after the later of
+    /// READY and the most recent `openjd_service_ready` line — a line before
+    /// the deadline is a successful probe and re-arms it, and a deadline
+    /// that passes without a line is a failed probe and arms the next.
     ///
     /// Allowed in [`Entered`](ServiceSessionState::Entered) (first launch)
     /// and [`Exited`](ServiceSessionState::Exited) (relaunch within the same
@@ -2161,8 +2164,11 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     // round in flight, `next_probe` the pause before the next one (the
     // first probe runs as soon as onRun is launched, i.e. now; each later
     // one an interval after the previous ends). For STDOUT after READY with
-    // healthIntervalSeconds: `heartbeat` is the interval in which a line
-    // must arrive, restarted by each line and by each expiry.
+    // healthIntervalSeconds: `heartbeat` is the deadline armed
+    // healthIntervalSeconds after the later of READY and the most recent
+    // openjd_service_ready line — a line before it is a successful probe
+    // and re-arms it, and a deadline that passes without a line is a failed
+    // probe and arms the next (RFC 0009 `<ServiceHealthCheck>`).
     let mut probe: Option<ProbeFuture> = (!is_stdout).then(|| start_probe(&plan.probe, request_tx));
     let mut next_probe: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut heartbeat: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
@@ -2188,8 +2194,8 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                     let was_pending = tracker.is_pending();
                     if tracker.apply(msg, true) {
                         // A STDOUT probe: READY on the first line; a
-                        // heartbeat afterwards. Either (re)starts the
-                        // heartbeat interval when the check gives one.
+                        // heartbeat afterwards. Either arms the deadline
+                        // anew when the check gives an interval.
                         if let Some(interval) = plan.health_interval {
                             if tracker.is_ready() {
                                 heartbeat = Some(Box::pin(tokio::time::sleep(interval)));

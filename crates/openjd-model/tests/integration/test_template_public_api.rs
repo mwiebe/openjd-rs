@@ -147,7 +147,9 @@ fn job_template_field_access() {
 
     // StepDependency.
     let dep = &steps[1].dependencies.as_ref().unwrap()[0];
-    assert_eq!(dep.depends_on, "S0");
+    assert_eq!(dep.step(), Some("S0"));
+    assert_eq!(dep.depends_on.as_deref(), Some("S0"));
+    assert_eq!(dep.service, None);
 }
 
 #[test]

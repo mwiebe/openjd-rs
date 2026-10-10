@@ -55,7 +55,7 @@ services:
 steps:
   - name: Coordinated
     dependencies:
-      - dependsOn: "service:Coordinator"
+      - service: "Coordinator"
     parameterSpace:
       taskParameterDefinitions:
         - name: Tile

@@ -183,21 +183,20 @@ fn step_total_tasks(step: &job::Step) -> usize {
     }
 }
 
-/// A Step's `dependencies` as written, each classified as a Step or, with
-/// `SERVICE`, a Service (`service:<name>`).
-fn step_dependencies(step: &job::Step, service_active: bool) -> Vec<DepInfo> {
-    step.dependencies
-        .iter()
+/// A `dependencies` list as written, each entry a Step (`dependsOn`) or,
+/// with `SERVICE`, a Service (`service`).
+fn dependency_infos(deps: Option<&[job::StepDependency]>) -> Vec<DepInfo> {
+    deps.into_iter()
         .flatten()
-        .map(|d| match d.target(service_active) {
-            job::DependencyTarget::Step(name) => DepInfo {
+        .filter_map(|d| match d.target()? {
+            job::DependencyTarget::Step(name) => Some(DepInfo {
                 name: name.to_string(),
                 is_service: false,
-            },
-            job::DependencyTarget::Service(name) => DepInfo {
+            }),
+            job::DependencyTarget::Service(name) => Some(DepInfo {
                 name: name.to_string(),
                 is_service: true,
-            },
+            }),
         })
         .collect()
 }
@@ -234,22 +233,11 @@ fn service_summaries(job: &job::Job) -> Vec<ServiceInfo> {
             ),
             health_check: svc.health_check.type_name().to_string(),
             max_attempts: svc.restart_policy.max_attempts,
-            completed_tasks: svc.restart_policy.completed_tasks.as_str().to_string(),
-            deps: svc
-                .dependencies
-                .iter()
-                .flatten()
-                .map(|d| match d.target(true) {
-                    job::DependencyTarget::Step(name) => DepInfo {
-                        name: name.to_string(),
-                        is_service: false,
-                    },
-                    job::DependencyTarget::Service(name) => DepInfo {
-                        name: name.to_string(),
-                        is_service: true,
-                    },
-                })
-                .collect(),
+            completed_tasks: svc
+                .restart_policy
+                .completed_tasks
+                .map(|p| p.as_str().to_string()),
+            deps: dependency_infos(svc.dependencies.as_deref()),
         })
         .collect()
 }
@@ -283,7 +271,6 @@ fn output_job_summary(
     bindings: &[(String, String)],
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let service_active = job.services.is_some() || job.requires_services.is_some();
     // Collect step summaries
     let mut step_envs_info: Vec<EnvInfo> = Vec::new();
     let step_summaries: Vec<StepInfo> = job
@@ -324,7 +311,7 @@ fn output_job_summary(
                 total_tasks,
                 task_params,
                 envs,
-                deps: step_dependencies(s, service_active),
+                deps: dependency_infos(s.dependencies.as_deref()),
             }
         })
         .collect();
@@ -412,8 +399,7 @@ fn output_step_summary(
                 .collect()
         })
         .unwrap_or_default();
-    let service_active = job.services.is_some() || job.requires_services.is_some();
-    let deps = step_dependencies(step, service_active);
+    let deps = dependency_infos(step.dependencies.as_deref());
     // The Services whose scope includes this Step: those it lists, those
     // reached through them, and every Job-wide one (RFC 0009 §9.1).
     let services: Vec<String> = job
@@ -689,7 +675,8 @@ impl ServiceInfo {
         writeln!(
             f,
             "    Restart policy: maxAttempts {}, completedTasks {}",
-            self.max_attempts, self.completed_tasks
+            self.max_attempts,
+            self.completed_tasks.as_deref().unwrap_or("none")
         )?;
         if !self.deps.is_empty() {
             writeln!(
@@ -941,7 +928,9 @@ struct ServiceInfo {
     ports: Vec<PortInfo>,
     health_check: String,
     max_attempts: u64,
-    completed_tasks: String,
+    /// `KEEP` / `RERUN`, or `None` when the template gave none (allowed
+    /// only with `maxAttempts` 0).
+    completed_tasks: Option<String>,
     deps: Vec<DepInfo>,
 }
 

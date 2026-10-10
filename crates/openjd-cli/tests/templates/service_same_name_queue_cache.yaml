@@ -46,7 +46,7 @@ environment:
   name: CacheClient
   description: "Tells every Task where the queue's store is."
   dependencies:
-    - dependsOn: service:Cache
+    - service: Cache
   runScope: [TASK]
   variables:
     VALKEY_HOST: "{{ Service.Cache.main.connectAddress }}"

@@ -553,6 +553,7 @@ pub fn apply_environment_templates(
             let mut check_errors = ValidationErrors::default();
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
+                instantiate::EnvironmentKind::Job,
                 &symtab,
                 has_expr,
                 &ctx,

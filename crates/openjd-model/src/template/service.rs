@@ -62,8 +62,8 @@ pub struct Service {
     /// check (§9 item 6). See [`health_check`](Self::health_check).
     pub health_check: Option<ServiceHealthCheck>,
     /// §9.5 What happens when `onRun` exits before the scope ends. `None`
-    /// means `{ maxAttempts: 0, completedTasks: RERUN }`; see
-    /// [`restart_policy`](Self::restart_policy).
+    /// means `{ maxAttempts: 0 }`: never relaunched, and the exit fails the
+    /// scope; see [`restart_policy`](Self::restart_policy).
     pub restart_policy: Option<ServiceRestartPolicy>,
     /// Environment variables set for every action of the Service's script
     /// (same schema as `<Environment>.variables`). Not propagated to the
@@ -81,7 +81,8 @@ impl Service {
     }
 
     /// The effective restart policy: the declared one, or the §9 default
-    /// `{ maxAttempts: 0, completedTasks: RERUN }`.
+    /// `{ maxAttempts: 0 }` (no `completedTasks`, which a Service never
+    /// relaunched does not need).
     pub fn restart_policy(&self) -> ServiceRestartPolicy {
         self.restart_policy.clone().unwrap_or_default()
     }
@@ -425,8 +426,13 @@ pub struct ServiceRestartPolicy {
     /// `<Action>.timeout`; a format string is resolved at job creation.
     pub max_attempts: Option<FormatString>,
     /// What happens to completed and running Tasks when a new instance is
-    /// launched. Default `RERUN`; see
-    /// [`completed_tasks`](Self::completed_tasks).
+    /// launched. No default: required when `maxAttempts` is greater than 0
+    /// (§9.5 item 2, §9.9 item 12 — checked at template validation for a
+    /// literal `maxAttempts`, at job creation for a format string); may be
+    /// omitted when `maxAttempts` is 0, in which case it matters only when
+    /// the Service is stopped and started again because a Service it lists
+    /// began a new Service Session, where an omitted value is read as
+    /// `RERUN` (see `job::ServiceRestartPolicy`).
     pub completed_tasks: Option<CompletedTasksPolicy>,
 }
 
@@ -434,26 +440,19 @@ impl ServiceRestartPolicy {
     /// §9.5 default for `maxAttempts`: launched exactly once, never
     /// relaunched.
     pub const DEFAULT_MAX_ATTEMPTS: i64 = 0;
-
-    /// The effective `completedTasks` value, defaulting to
-    /// [`CompletedTasksPolicy::Rerun`].
-    pub fn completed_tasks(&self) -> CompletedTasksPolicy {
-        self.completed_tasks.unwrap_or_default()
-    }
 }
 
 /// §9.5 `completedTasks` — what a Service restart does to the Tasks in its
 /// scope that completed against, or were running against, the previous
 /// instance.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, serde::Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum CompletedTasksPolicy {
     /// Completed Tasks remain complete and running Tasks continue. Also
     /// declares the Service resumable (it may be suspended while idle).
     Keep,
     /// Completed Tasks are requeued and running Tasks are canceled and
-    /// requeued without counting as a Task failure. The safe default.
-    #[default]
+    /// requeued without counting as a Task failure.
     Rerun,
 }
 
@@ -585,7 +584,7 @@ script:
         ));
         let policy = svc.restart_policy();
         assert!(policy.max_attempts.is_none());
-        assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Rerun);
+        assert!(policy.completed_tasks.is_none());
         assert_eq!(svc.port_names().collect::<Vec<_>>(), vec!["main"]);
         assert_eq!(svc.ports[0].port, None);
         assert_eq!(svc.ports[0].protocol, ServicePortProtocol::Tcp);
@@ -718,7 +717,7 @@ script:
             policy.max_attempts.as_ref().unwrap().raw(),
             "{{ Param.Attempts }}"
         );
-        assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Keep);
+        assert_eq!(policy.completed_tasks, Some(CompletedTasksPolicy::Keep));
     }
 
     #[test]
@@ -815,7 +814,6 @@ script:
 
     #[test]
     fn completed_tasks_policy_spelling() {
-        assert_eq!(CompletedTasksPolicy::default(), CompletedTasksPolicy::Rerun);
         assert_eq!(CompletedTasksPolicy::Keep.as_str(), "KEEP");
         assert_eq!(CompletedTasksPolicy::Rerun.as_str(), "RERUN");
         let err =

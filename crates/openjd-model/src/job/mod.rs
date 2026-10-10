@@ -43,7 +43,6 @@ use crate::types::{EndOfLine, FileType};
 use crate::template::RangeConstraint;
 pub use crate::template::{
     CompletedTasksPolicy, DependencyTarget, RunScope, ServicePortProtocol, ServiceScope,
-    SERVICE_DEPENDENCY_PREFIX,
 };
 use crate::types::JobParameterType;
 
@@ -108,8 +107,8 @@ impl Job {
     }
 
     /// True when the Job declares the `SERVICE` extension, under which a
-    /// `dependsOn` value beginning `service:` names a Service rather than a
-    /// Step (see [`StepDependency::target`]).
+    /// [`StepDependency`] may name a Service with its `service` key and the
+    /// Job may have `services` and `requiresServices`.
     #[must_use]
     pub fn service_active(&self) -> bool {
         self.has_extension(crate::types::ModelExtension::Service)
@@ -193,7 +192,7 @@ pub struct Environment {
     pub name: String,
     pub description: Option<String>,
     /// RFC 0009 `dependencies` (Template Schemas §4 item 3): the Services
-    /// this Environment lists as `service:<name>`, as written. Carried for a
+    /// this Environment lists with the `service` key, as written. Carried for a
     /// `jobEnvironments` entry and an attached Environment Template's
     /// `environment` (a Step Environment never has one); validation has
     /// rejected every entry that is not a Service of the Environment's own
@@ -206,11 +205,12 @@ pub struct Environment {
     /// RFC 0009 `runScope` (Template Schemas §4 item 4): the kinds of
     /// Session this Environment is entered in. `None` means every kind;
     /// query the effective scope with [`runs_in`](Self::runs_in). Job
-    /// creation materializes the default here: an Environment without
-    /// `runScope` that lists a Service in `dependencies` (or, a Step
-    /// Environment, references `Service.*`) is converted with `[TASK]`.
-    /// Typed here (unlike the template side) because validation has already
-    /// rejected unrecognized names.
+    /// creation materializes the default here: a Job Environment without
+    /// `runScope` that lists a Service in `dependencies` is converted with
+    /// `[TASK]`, and a Step Environment, which gives no `runScope` and is
+    /// entered only by the Task Sessions of its Step, always is. Typed here
+    /// (unlike the template side) because validation has already rejected
+    /// unrecognized names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_scope: Option<Vec<RunScope>>,
     pub script: Option<EnvironmentScript>,
@@ -234,19 +234,19 @@ impl Environment {
         }
     }
 
-    /// The Services this Environment lists in its `dependencies` as
-    /// `service:<name>` (Template Schemas §4 item 3), in list order, without
-    /// the prefix — the Services whose `port` / `connectAddress` its format
-    /// strings may reference. Empty for a Step Environment, which follows
-    /// its Step's list.
+    /// The Services this Environment lists in its `dependencies` with the
+    /// `service` key (Template Schemas §4 item 3), in list order — the
+    /// Services whose `port` / `connectAddress` its format strings may
+    /// reference. Empty for a Step Environment, which follows its Step's
+    /// list.
     pub fn depends_on_services(&self) -> impl Iterator<Item = &str> {
         self.dependencies
             .iter()
             .flatten()
-            .filter_map(|d| d.target(true).service())
+            .filter_map(|d| d.service())
     }
 
-    /// True when this Environment lists `service:<name>` in its
+    /// True when this Environment lists `service: <name>` in its
     /// `dependencies`.
     #[must_use]
     pub fn depends_on_service(&self, name: &str) -> bool {
@@ -464,13 +464,13 @@ pub struct Service {
     /// for the Job Template's own `services` (the default, omitted from
     /// JSON), or the attached Environment Template whose `services` list it
     /// came from. Set by `apply_environment_templates` for external
-    /// Services. A `service:<name>` dependency of this Service names a
+    /// Services. A `service: <name>` dependency of this Service names a
     /// Service of this document (or, in the Job Template, a required one).
     #[serde(default, skip_serializing_if = "Document::is_job_template")]
     pub document: Document,
     /// The Steps whose Tasks depend on this Service (Template Schemas §9.1),
     /// computed from the template's `dependencies` lists: the Steps that list
-    /// `service:<name>`, those in the scope of a Service that lists it, and
+    /// it with the `service` key, those in the scope of a Service that lists it, and
     /// [`ServiceScope::AllSteps`] for a Service a Job Environment lists,
     /// one a Job-wide Service depends on, or an external Service. A scheduler
     /// starts the Service before the first Task of any Step in the scope and
@@ -478,8 +478,8 @@ pub struct Service {
     #[serde(default = "ServiceScope::all_steps_default")]
     pub scope: ServiceScope,
     /// §9 item 4: the Steps and Services this Service depends on, as written
-    /// — a Step name, or `service:<name>` for a Service of the same document
-    /// or a required one. The Service is started only after every listed
+    /// — `dependsOn: <StepName>`, or `service: <name>` for a Service of the
+    /// same document or a required one. The Service is started only after every listed
     /// Step has completed and every listed Service is READY, and stopped
     /// before any Service it lists. See [`depends_on_steps`](Self::depends_on_steps)
     /// and [`depends_on_services`](Self::depends_on_services).
@@ -491,7 +491,9 @@ pub struct Service {
     pub ports: Vec<ServicePort>,
     /// The effective health check, with the §9.3 defaults applied.
     pub health_check: ServiceHealthCheck,
-    /// The effective restart policy, with the §9.4 defaults applied.
+    /// The effective restart policy, with the §9.5 default `maxAttempts`
+    /// applied and `completedTasks` resolved (required when `maxAttempts`
+    /// is greater than 0; see [`ServiceRestartPolicy`]).
     pub restart_policy: ServiceRestartPolicy,
     /// Environment variables set for every action of the Service's script
     /// (session scope — resolved on the service host). Not propagated to
@@ -541,25 +543,22 @@ impl Service {
     /// The Steps this Service lists in its `dependencies` (§9 item 4), in
     /// list order: it starts only after each has completed.
     pub fn depends_on_steps(&self) -> impl Iterator<Item = &str> {
-        self.dependencies
-            .iter()
-            .flatten()
-            .filter_map(|d| d.target(true).step())
+        self.dependencies.iter().flatten().filter_map(|d| d.step())
     }
 
-    /// The Services this Service lists in its `dependencies` as
-    /// `service:<name>` (§9 item 4), in list order, without the prefix: it
-    /// starts only after each is READY and is stopped before any of them. A
-    /// name is a Service of this Service's [`document`](Self::document) or,
-    /// in the Job Template, a required external Service.
+    /// The Services this Service lists in its `dependencies` with the
+    /// `service` key (§9 item 4), in list order: it starts only after each
+    /// is READY and is stopped before any of them. A name is a Service of
+    /// this Service's [`document`](Self::document) or, in the Job Template,
+    /// a required external Service.
     pub fn depends_on_services(&self) -> impl Iterator<Item = &str> {
         self.dependencies
             .iter()
             .flatten()
-            .filter_map(|d| d.target(true).service())
+            .filter_map(|d| d.service())
     }
 
-    /// True when this Service lists `service:<name>` in its `dependencies`.
+    /// True when this Service lists `service: <name>` in its `dependencies`.
     #[must_use]
     pub fn depends_on_service(&self, name: &str) -> bool {
         self.depends_on_services().any(|n| n == name)
@@ -761,15 +760,56 @@ impl ServiceHealthCheck {
     }
 }
 
-/// An instantiated `<ServiceRestartPolicy>` (§9.4), with the defaults
-/// applied: `maxAttempts` 0, `completedTasks` `RERUN`.
+/// An instantiated `<ServiceRestartPolicy>` (§9.5), with `maxAttempts`
+/// resolved (default 0) and `completedTasks` as the template gave it.
+///
+/// `completedTasks` has no default. Job creation requires it when the
+/// resolved `maxAttempts` is greater than 0 (§9.5 item 2, §9.9 item 12), so
+/// a Service that can be relaunched always says what a relaunch means for
+/// its completed Tasks; a Service with `maxAttempts` 0 may omit it, and
+/// then the field matters only when the Service is stopped and started
+/// again because a Service it lists began a new Service Session — where an
+/// omitted value is read as `RERUN`
+/// ([`completed_tasks_on_dependent_restart`](Self::completed_tasks_on_dependent_restart)).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceRestartPolicy {
     /// How many times the scheduler relaunches the Service after a failure;
     /// the initial launch is not counted.
     pub max_attempts: u64,
-    pub completed_tasks: CompletedTasksPolicy,
+    /// What a new instance means for the Tasks of the scope that completed
+    /// against the previous one. `Some` whenever `max_attempts` is greater
+    /// than 0; may be `None` only when it is 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_tasks: Option<CompletedTasksPolicy>,
+}
+
+impl ServiceRestartPolicy {
+    /// The `completedTasks` that applies when the Service is relaunched
+    /// after an instance or start failure. `None` only when `max_attempts`
+    /// is 0, in which case no relaunch happens and the failure fails the
+    /// scope.
+    #[must_use]
+    pub fn completed_tasks_on_relaunch(&self) -> Option<CompletedTasksPolicy> {
+        self.completed_tasks
+    }
+
+    /// The `completedTasks` that applies when the Service is stopped and
+    /// started again because a Service it lists began a new Service
+    /// Session (RFC 0009 "Dependents of a relaunched Service"): the value
+    /// given, or `RERUN` when none was — the Service has not said that its
+    /// state survives a new instance.
+    #[must_use]
+    pub fn completed_tasks_on_dependent_restart(&self) -> CompletedTasksPolicy {
+        self.completed_tasks.unwrap_or(CompletedTasksPolicy::Rerun)
+    }
+
+    /// True when the Service may be suspended while idle (RFC 0009
+    /// constraint 10): only a Service whose `completedTasks` is `KEEP`.
+    #[must_use]
+    pub fn may_be_suspended(&self) -> bool {
+        self.completed_tasks == Some(CompletedTasksPolicy::Keep)
+    }
 }
 
 /// An instantiated `<ServiceScript>` (§9.5). `let_bindings` are the
@@ -1070,22 +1110,70 @@ pub struct AttributeRequirement {
     pub all_of: Option<Vec<String>>,
 }
 
-/// One entry of a Step's or a Service's `dependencies` (Template Schemas
-/// §3.2): a Step name or, with the `SERVICE` extension, `service:<name>`.
+/// One entry of a Step's, a Service's, or a Job Environment's
+/// `dependencies` (Template Schemas §3.2): `dependsOn: <StepName>` or, with
+/// the `SERVICE` extension, `service: <ServiceName>`. Template validation
+/// has rejected an entry giving both keys or neither, so exactly one is
+/// `Some` in a Job.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepDependency {
-    /// The value as written. See [`target`](Self::target).
-    pub depends_on: String,
+    /// The Step this entry names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depends_on: Option<String>,
+    /// The Service this entry names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
 }
 
 impl StepDependency {
-    /// What this entry names: with `service_active` (the Job declares
-    /// `SERVICE`, see [`Job::service_active`]) a value beginning `service:`
-    /// names the Service after the prefix; otherwise the whole string is a
-    /// Step name.
+    /// An entry naming the Step `name`.
     #[must_use]
-    pub fn target(&self, service_active: bool) -> DependencyTarget<'_> {
-        DependencyTarget::parse(&self.depends_on, service_active)
+    pub fn on_step(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: Some(name.into()),
+            service: None,
+        }
+    }
+
+    /// An entry naming the Service `name`.
+    #[must_use]
+    pub fn on_service(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: None,
+            service: Some(name.into()),
+        }
+    }
+
+    /// What this entry names; `None` for an entry that gives both keys or
+    /// neither (which template validation rejects).
+    #[must_use]
+    pub fn target(&self) -> Option<DependencyTarget<'_>> {
+        match (&self.depends_on, &self.service) {
+            (Some(step), None) => Some(DependencyTarget::Step(step)),
+            (None, Some(service)) => Some(DependencyTarget::Service(service)),
+            _ => None,
+        }
+    }
+
+    /// The Step this entry names, if it is a `dependsOn` entry.
+    #[must_use]
+    pub fn step(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::step)
+    }
+
+    /// The Service this entry names, if it is a `service` entry.
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::service)
+    }
+}
+
+impl From<&crate::template::StepDependency> for StepDependency {
+    fn from(dep: &crate::template::StepDependency) -> Self {
+        Self {
+            depends_on: dep.depends_on.clone(),
+            service: dep.service.clone(),
+        }
     }
 }

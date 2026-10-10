@@ -21,7 +21,7 @@
 //!    `hostRequirements`, embedded files and `<Action>`.
 //! 4. **RFC "Basic Examples"**: the templates from the RFC, copied verbatim
 //!    into `tests/fixtures/rfc0009/`. Each Step that uses a Service lists
-//!    it as `dependsOn: "service:<Name>"`.
+//!    it as `service: "<Name>"`.
 //!
 //! A Service in a Job Template with no Step in its scope is rejected as
 //! unused (§9.1), so the template builders here give their Step a
@@ -128,7 +128,7 @@ fn step_dependencies_for(services: &str) -> String {
     }
     let mut out = String::from("    dependencies:\n");
     for name in names {
-        out.push_str(&format!("      - dependsOn: \"service:{name}\"\n"));
+        out.push_str(&format!("      - service: \"{name}\"\n"));
     }
     out
 }
@@ -262,7 +262,8 @@ fn minimal_service_decodes_with_spec_defaults() {
     let policy = svc.restart_policy();
     assert!(policy.max_attempts.is_none());
     assert_eq!(ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS, 0);
-    assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Rerun);
+    // No default: a Service that is never relaunched needs no completedTasks.
+    assert_eq!(policy.completed_tasks, None);
 
     // RFC 0009 `<Action>` default-timeout table for <ServiceActions>.
     assert_eq!(ServiceActions::default_timeout_seconds("onEnter"), None);
@@ -391,7 +392,7 @@ fn full_service_decodes_every_field() {
     }
     let policy = cache.restart_policy();
     assert_eq!(policy.max_attempts.as_ref().unwrap().raw(), "3");
-    assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Keep);
+    assert_eq!(policy.completed_tasks, Some(CompletedTasksPolicy::Keep));
     assert_eq!(
         cache.variables.as_ref().unwrap()["VALKEY_LOG_LEVEL"].raw(),
         "notice"
@@ -447,10 +448,9 @@ fn full_service_decodes_every_field() {
         coordinator.restart_policy().max_attempts.unwrap().raw(),
         "{{ Param.Attempts }}"
     );
-    assert_eq!(
-        coordinator.restart_policy().completed_tasks(),
-        CompletedTasksPolicy::Rerun
-    );
+    // A format-string maxAttempts without completedTasks: the requirement
+    // is checked when the value is resolved at job creation.
+    assert_eq!(coordinator.restart_policy().completed_tasks, None);
     assert!(coordinator.script.actions.on_health_check.is_some());
 
     let logger = &services[2];
@@ -502,7 +502,7 @@ steps:
     assert!(
         err.ends_with(
             "`steps`. 'jobServices' is not a property; declare Services in 'services' and put \
-             each Step in a Service's scope with 'dependsOn: service:<name>' in the Step's \
+             each Step in a Service's scope with 'service: <name>' in the Step's \
              dependencies."
         ),
         "got: {err}"
@@ -537,7 +537,7 @@ steps:
     assert!(
         err.ends_with(
             "`node`. 'stepServices' is not a property; move the Service to the top-level \
-             'services' list and add 'dependsOn: service:<name>' to this Step's dependencies."
+             'services' list and add 'service: <name>' to this Step's dependencies."
         ),
         "got: {err}"
     );
@@ -797,11 +797,11 @@ steps:
     );
 }
 
-/// Without `SERVICE`, the `services` list is the finding. The Step's
-/// `dependsOn: service:Cache` — a Step name in such a template, and one
-/// that exists nowhere — and its `Service.Cache.*` references follow from
-/// the missing extension and are left unreported. The gating error comes
-/// first, ahead of every other pass's.
+/// Without `SERVICE`, the `services` list, the Job Environment's
+/// `dependencies` and the Step's `service` key are the findings, each
+/// gated; the `Service.Cache.*` references follow from the missing
+/// extension and are left unreported. The gating errors come first, ahead
+/// of every other pass's.
 #[test]
 fn gating_error_suppresses_the_errors_that_follow_from_it() {
     const TEMPLATE: &str = r#"
@@ -810,7 +810,7 @@ extensions: [EXPR]
 name: Test
 jobEnvironments:
   - name: Client
-    dependencies: [{ dependsOn: "service:Cache" }]
+    dependencies: [{ service: "Cache" }]
     variables: { ADDR: "{{ Service.Cache.main.connectAddress }}" }
 services:
   - name: Cache
@@ -818,7 +818,7 @@ services:
     script: {actions: {onRun: {command: valkey-server}}}
 steps:
   - name: S
-    dependencies: [{ dependsOn: "service:Cache" }]
+    dependencies: [{ service: "Cache" }]
     script:
       actions:
         onRun:
@@ -834,9 +834,10 @@ steps:
     .to_string();
     assert!(
         err.starts_with(
-            "Model validation error: 3 validation errors for JobTemplate\n\
+            "Model validation error: 4 validation errors for JobTemplate\n\
              services:\n\tservices requires the SERVICE extension.\n\
-             jobEnvironments[0] -> dependencies:\n\tdependencies requires the SERVICE extension.\n"
+             jobEnvironments[0] -> dependencies:\n\tdependencies requires the SERVICE extension.\n\
+             steps[0] -> dependencies[0] -> service:\n\tservice requires the SERVICE extension.\n"
         ),
         "{err}"
     );
@@ -849,11 +850,11 @@ steps:
     assert!(!err.contains("Service.Cache"), "{err}");
 }
 
-/// Without `SERVICE` and without a `services` list, `service:X` is an
-/// ordinary Step name and `Service.X.*` an ordinary unknown variable: both
-/// are reported as before, since nothing else explains them.
+/// Without `SERVICE` and without a `services` list, the `service` key is
+/// gated and `Service.X.*` is an ordinary unknown variable, since nothing
+/// else explains it.
 #[test]
-fn without_a_services_list_the_prefix_and_references_are_ordinary_errors() {
+fn without_a_services_list_the_key_is_gated_and_references_are_ordinary_errors() {
     expect_job_err(
         r#"
 specificationVersion: "jobtemplate-2023-09"
@@ -861,7 +862,7 @@ extensions: [EXPR]
 name: Test
 steps:
   - name: S
-    dependencies: [{ dependsOn: "service:Cache" }]
+    dependencies: [{ service: "Cache" }]
     script:
       actions:
         onRun:
@@ -871,7 +872,7 @@ steps:
         SERVICE_EXTS,
         &[
             "2 validation errors for JobTemplate\n",
-            "steps[0] -> dependencies[0]:\n\tdependency 'service:Cache' not found.",
+            "steps[0] -> dependencies[0] -> service:\n\tservice requires the SERVICE extension.",
             "steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 29]. Undefined variable: 'Service.Cache.main.port'.",
         ],
     );
@@ -892,7 +893,7 @@ services:
     script: {actions: {onRun: {command: valkey-server}}}
 environment:
   name: Client
-  dependencies: [{ dependsOn: "service:Cache" }]
+  dependencies: [{ service: "Cache" }]
   runScope: [TASK]
   variables:
     ADDR: "{{ Service.Cache.main.connectAddress }}"
@@ -929,7 +930,7 @@ services:
     script: {actions: {onRun: {command: valkey-server}}}
 steps:
   - name: S
-    dependencies: [{dependsOn: "service:Cache"}]
+    dependencies: [{service: "Cache"}]
     script: {actions: {onRun: {command: run}}}
 "#,
         SERVICE_EXTS,
@@ -1807,15 +1808,46 @@ fn completed_tasks_must_be_keep_or_rerun() {
     assert_eq!(
         jt.services.as_ref().unwrap()[0]
             .restart_policy()
-            .completed_tasks(),
-        CompletedTasksPolicy::Keep
+            .completed_tasks,
+        Some(CompletedTasksPolicy::Keep)
     );
     let jt = expect_job_ok(&service_with_restart_policy("      {}\n"), SERVICE_EXTS);
     assert_eq!(
         jt.services.as_ref().unwrap()[0]
             .restart_policy()
-            .completed_tasks(),
-        CompletedTasksPolicy::Rerun
+            .completed_tasks,
+        None
+    );
+}
+
+/// §9.5 item 2 / §9.9 item 12: a literal `maxAttempts` greater than 0
+/// without `completedTasks` is rejected at template validation, on the
+/// `restartPolicy`; 0 (explicit or the default) needs none, and a format
+/// string is checked when it is resolved at job creation.
+#[test]
+fn completed_tasks_is_required_when_max_attempts_is_positive() {
+    expect_job_err(
+        &service_with_restart_policy("      maxAttempts: 2\n"),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "services[0] -> restartPolicy:\n\tcompletedTasks must be provided when maxAttempts is \
+             greater than 0 (maxAttempts is 2): a template that allows relaunch must say what a \
+             relaunch means for completed Tasks, KEEP or RERUN (Template Schemas §9.5 item 2).",
+        ],
+    );
+    expect_job_ok(
+        &service_with_restart_policy("      maxAttempts: 2\n      completedTasks: RERUN\n"),
+        SERVICE_EXTS,
+    );
+    expect_job_ok(
+        &service_with_restart_policy("      maxAttempts: 0\n"),
+        SERVICE_EXTS,
+    );
+    // Deferred to job creation for a format string.
+    expect_job_ok(
+        &service_with_restart_policy("      maxAttempts: \"{{ Param.Attempts2 }}\"\n"),
+        SERVICE_EXTS,
     );
 }
 
@@ -2292,7 +2324,7 @@ fn rfc_example_valkey_shared_store_services_validate() {
     );
     let policy = cache.restart_policy();
     assert_eq!(policy.max_attempts.as_ref().unwrap().raw(), "3");
-    assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Keep);
+    assert_eq!(policy.completed_tasks, Some(CompletedTasksPolicy::Keep));
     assert_eq!(
         cache.script.actions.on_run.args.as_ref().unwrap()[1].raw(),
         "{{ Service.Cache.main.port }}"
@@ -2323,7 +2355,7 @@ fn rfc_example_step_coordinator_services_validate() {
     );
     let policy = coordinator.restart_policy();
     assert_eq!(policy.max_attempts.as_ref().unwrap().raw(), "1");
-    assert_eq!(policy.completed_tasks(), CompletedTasksPolicy::Rerun);
+    assert_eq!(policy.completed_tasks, Some(CompletedTasksPolicy::Rerun));
     let names: Vec<&str> = coordinator
         .script
         .actions

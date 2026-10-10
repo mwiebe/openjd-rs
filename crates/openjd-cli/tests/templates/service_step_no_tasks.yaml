@@ -24,7 +24,7 @@ services:
 steps:
   - name: Work
     dependencies:
-      - dependsOn: "service:Unused"
+      - service: "Unused"
     parameterSpace:
       taskParameterDefinitions:
         - name: N

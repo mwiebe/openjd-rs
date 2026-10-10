@@ -34,11 +34,25 @@
 //! Service plus its name (Template Schemas §1.2.2 item 3: an inline Service
 //! shadows an external one of the same name, and two attachments may both
 //! declare a `Cache`). A Service Session is seeded with the endpoints of the
-//! Services it lists as `service:<name>` in its `dependencies` — of its own
-//! document, or the attached Service bound to the Job Template's
+//! Services it lists with the `service` key in its `dependencies` — of its
+//! own document, or the attached Service bound to the Job Template's
 //! `requiresServices` entry of that name for an inline Service — and a Task
 //! Session with the inline Services whose scope includes its Step and the
 //! bound required Services.
+//!
+//! When a Service begins a new Service Session (RFC 0009 "Dependents of a
+//! relaunched Service" — locally after a start failure or an `onRun` exit
+//! before READY, which may be a port conflict), every Service that lists
+//! it, directly or transitively, holds endpoint values that are no longer
+//! valid: each is stopped, dependents before the Services they list
+//! (constraint 4), and started again in a new Service Session once every
+//! Service it lists is READY. The stop consumes none of the dependent's
+//! relaunch attempts, and its own `completedTasks` applies to its scope —
+//! the completed Tasks of its scope are returned under `RERUN` and kept
+//! under `KEEP`; a dependent that gives none (allowed only with
+//! `maxAttempts` 0) is treated as `RERUN`. A relaunch within the same
+//! Service Session keeps the same ports and requires nothing of
+//! dependents.
 //!
 //! See `specs/cli/run.md` § Services for the orchestration rules.
 
@@ -82,7 +96,7 @@ impl ServiceKey {
     }
 
     /// The Service `name` names from inside a Service of `document`: a
-    /// `service:<name>` dependency on an inline Service never crosses a
+    /// `service: <name>` dependency on an inline Service never crosses a
     /// document boundary.
     fn sibling(document: &Document, name: &str) -> Self {
         Self {
@@ -237,7 +251,9 @@ impl ServiceRunConfig {
 pub(super) struct GateOutcome {
     /// A Service became FAILED; its scope fails.
     pub failure: Option<ServiceFailure>,
-    /// Services with `completedTasks: RERUN` failed since the last gate: the
+    /// Services with `completedTasks: RERUN` failed since the last gate, or
+    /// were stopped and started again because a Service they list began a
+    /// new Service Session (`RERUN`, or no `completedTasks` given): the
     /// completed Tasks of every Step in the union of their scopes return to
     /// the queue.
     pub rerun: Option<ServiceScope>,
@@ -413,12 +429,20 @@ struct Managed {
     key: ServiceKey,
     service: Service,
     scope: ServiceScope,
-    policy: CompletedTasksPolicy,
-    /// The Services this one lists as `service:<name>` in its
+    /// The Service's `completedTasks`; `None` only when its `maxAttempts`
+    /// is 0, so a relaunch never happens (an instance failure fails the
+    /// scope) and the value matters only for a dependent restart, where it
+    /// reads as `RERUN`.
+    policy: Option<CompletedTasksPolicy>,
+    /// The Services this one lists with the `service` key in its
     /// `dependencies` (§9 item 4): Services of the same document, plus the
     /// bound required Services an inline Service lists. It starts after each
     /// is READY and is stopped before any of them.
     depends_on_services: BTreeSet<ServiceKey>,
+    /// Set while the Service is idle because a Service it lists (`Some`,
+    /// named) began a new Service Session; the gate starts it again once
+    /// its dependencies are READY and logs that it is starting again.
+    restart_after: Option<ServiceKey>,
     /// The Job's Environments (every one; the Session skips those whose
     /// `runScope` excludes `SERVICE`).
     environments: Vec<Environment>,
@@ -538,7 +562,7 @@ impl ServiceManager {
         for service in job.services.iter().flatten() {
             let key = ServiceKey::of(service);
             let profiles = self.environment_profiles(service, environment_documents);
-            // A `service:<name>` dependency of this Service names a Service
+            // A `service: <name>` dependency of this Service names a Service
             // of the same document — or, in the Job Template, a required
             // external Service bound at submission.
             let depends_on_services = service
@@ -561,6 +585,7 @@ impl ServiceManager {
                 scope: service.scope.clone(),
                 policy: service.restart_policy.completed_tasks,
                 depends_on_services,
+                restart_after: None,
                 environments: envs.clone(),
                 environment_profiles: profiles,
                 active: false,
@@ -695,7 +720,7 @@ impl ServiceManager {
     ///   scope includes the Step, and the READY attached Services bound to
     ///   the Job Template's `requiresServices` — seeded by scope, which is
     ///   every Step, not by visibility: a Step that does not list
-    ///   `service:<requirement>` gets the symbols too, but template
+    ///   `service: <requirement>` gets the symbols too, but template
     ///   validation has already rejected any reference from it (Template
     ///   Schemas §9 scope rule 3, §9.8 item 2);
     /// - [`Visibility::Environment`] — a Job Environment, the Job Template's
@@ -753,17 +778,17 @@ impl ServiceManager {
 
     /// The readiness gate (constraint 3), run before every Task: observe
     /// any instance failure since the last gate and begin the restart decision
-    /// for it; await every background start/relaunch; restart the Services
-    /// that depend on one whose Session was replaced; start every active
-    /// Service not yet started, in waves of Services whose Service
-    /// dependencies are READY (constraint 2); repeat until every active
-    /// Service is READY or FAILED.
+    /// for it; await every background start/relaunch; stop the Services
+    /// that depend on one whose Session was replaced, to start them again;
+    /// start every active Service not yet started, in waves of Services
+    /// whose Service dependencies are READY (constraint 2); repeat until
+    /// every active Service is READY or FAILED.
     pub(super) async fn gate(&mut self) -> Result<GateOutcome, RunError> {
         let mut outcome = GateOutcome::default();
         loop {
             for detected in self.poll_failures() {
                 let (policy, scope) = self.begin_recovery(detected);
-                if policy == CompletedTasksPolicy::Rerun {
+                if policy == Some(CompletedTasksPolicy::Rerun) {
                     outcome.rerun = Some(merge_scopes(outcome.rerun.take(), &scope));
                 }
             }
@@ -774,7 +799,7 @@ impl ServiceManager {
             if outcome.failure.is_some() {
                 break;
             }
-            self.restart_dependents(&settled).await;
+            self.restart_dependents(&settled, &mut outcome).await;
             self.start_pending(&mut outcome).await?;
             if outcome.failure.is_some() {
                 break;
@@ -811,9 +836,8 @@ impl ServiceManager {
     }
 
     /// Stop the Services in `keys`: cancel their background work and end
-    /// their Sessions, each before any Service it depends on (reverse
-    /// topological order of the dependency graph restricted to `keys`;
-    /// registration order breaks ties, latest first).
+    /// their Sessions, each before any Service it depends on (constraint 4;
+    /// see [`stop_order`](Self::stop_order)).
     async fn stop_set(&mut self, keys: &BTreeSet<ServiceKey>) {
         if keys.is_empty() {
             return;
@@ -821,9 +845,20 @@ impl ServiceManager {
         for m in self.services.iter().filter(|m| keys.contains(&m.key)) {
             m.stop.cancel();
         }
+        for idx in self.stop_order(keys) {
+            stop_managed(&mut self.services[idx], &self.shared).await;
+        }
+    }
+
+    /// The order in which to stop the Services in `keys` (constraint 4):
+    /// each before any Service it depends on — the reverse topological order
+    /// of the dependency graph restricted to `keys`, in waves of Services no
+    /// other pending Service depends on; registration order breaks ties,
+    /// latest first.
+    fn stop_order(&self, keys: &BTreeSet<ServiceKey>) -> Vec<usize> {
+        let mut order = Vec::with_capacity(keys.len());
         let mut pending: BTreeSet<ServiceKey> = keys.clone();
         while !pending.is_empty() {
-            // Those no other pending Service depends on go first.
             let depended_on_by_pending: BTreeSet<ServiceKey> = self
                 .services
                 .iter()
@@ -840,7 +875,7 @@ impl ServiceManager {
                 .map(|(i, _)| i)
                 .collect();
             if wave.is_empty() {
-                // Cannot happen for an acyclic dependency graph; stop the
+                // Cannot happen for an acyclic dependency graph; take the
                 // rest in reverse registration order rather than spin.
                 wave = self
                     .services
@@ -852,11 +887,11 @@ impl ServiceManager {
             }
             wave.reverse();
             for idx in wave {
-                let m = &mut self.services[idx];
-                pending.remove(&m.key);
-                stop_managed(m, &self.shared).await;
+                pending.remove(&self.services[idx].key);
+                order.push(idx);
             }
         }
+        order
     }
 
     /// Resolve when a READY Service suffers an instance failure while a Task
@@ -934,12 +969,14 @@ impl ServiceManager {
     /// "Failure and restart"): the Service becomes UNREADY (an UNHEALTHY
     /// instance once its canceled `onRun` has exited, which the background
     /// relaunch awaits) and its relaunch (or FAILED verdict) proceeds in the
-    /// background. Returns the Service's `completedTasks` policy and its
-    /// scope, so the caller can cancel and requeue Tasks.
+    /// background. Returns the Service's `completedTasks` policy (`None`
+    /// when it gave none, which only a Service with `maxAttempts` 0 may: no
+    /// relaunch follows, and the failure fails the scope) and its scope, so
+    /// the caller can cancel and requeue Tasks under `RERUN`.
     pub(super) fn begin_recovery(
         &mut self,
         detected: Detected,
-    ) -> (CompletedTasksPolicy, ServiceScope) {
+    ) -> (Option<CompletedTasksPolicy>, ServiceScope) {
         let Detected { idx, failure } = detected;
         let m = &mut self.services[idx];
         let policy = m.policy;
@@ -953,11 +990,11 @@ impl ServiceManager {
             }
             let kind = failure.into_kind();
             log_line(format!(
-                "{} {} is UNREADY: {} (completedTasks: {})",
+                "{} {} is UNREADY: {} ({})",
                 inst.label,
                 inst.scope_label,
                 kind.describe(),
-                policy_name(policy)
+                describe_policy(policy)
             ));
             m.state = State::Busy(tokio::spawn(start_or_recover(
                 *inst,
@@ -1066,42 +1103,76 @@ impl ServiceManager {
         Ok(replaced)
     }
 
-    /// Return every READY Service that (transitively) depends on one of
-    /// `replaced` to idle, ending its Session: its `Service.*` values for
-    /// the replaced Service are stale, and RFC 0009 constraint 2 only
-    /// guarantees a depended-on Service's endpoint at the dependent
-    /// Session's start. Not a failure of the dependent: no attempt is
-    /// consumed. Stopped in reverse registration order (constraint 4).
-    async fn restart_dependents(&mut self, replaced: &[ServiceKey]) {
+    /// RFC 0009 "Dependents of a relaunched Service": every Service that
+    /// lists one of `replaced` — a Service that began a new Service Session
+    /// — directly or transitively, and has a Session (READY, or starting),
+    /// holds endpoint values that are no longer valid. Each is stopped, in
+    /// the order of constraint 4 (dependents before the Services they
+    /// list), and returned to idle still active, so the gate starts it
+    /// again in a new Service Session once every Service it lists is READY.
+    /// This consumes none of the dependent's relaunch attempts, and its
+    /// `completedTasks` applies to its own scope: under `RERUN` — or when
+    /// it gave none — the completed Tasks of its scope are recorded on
+    /// `outcome` to return to the queue; under `KEEP` they stand.
+    async fn restart_dependents(&mut self, replaced: &[ServiceKey], outcome: &mut GateOutcome) {
         if replaced.is_empty() {
             return;
         }
-        let mut stale: BTreeSet<ServiceKey> = replaced.iter().cloned().collect();
+        // The dependents, each with the Service it lists whose Session was
+        // replaced (or, transitively, the stale Service it lists).
+        let mut stale: BTreeMap<ServiceKey, ServiceKey> = BTreeMap::new();
         loop {
             let before = stale.len();
             for m in &self.services {
-                if matches!(m.state, State::Ready(_)) && !m.depends_on_services.is_disjoint(&stale)
-                {
-                    stale.insert(m.key.clone());
+                if replaced.contains(&m.key) || stale.contains_key(&m.key) {
+                    continue;
+                }
+                if !matches!(m.state, State::Ready(_) | State::Busy(_)) {
+                    continue;
+                }
+                let cause = m
+                    .depends_on_services
+                    .iter()
+                    .find(|d| replaced.contains(d))
+                    .or_else(|| m.depends_on_services.iter().find(|d| stale.contains_key(d)));
+                if let Some(cause) = cause {
+                    stale.insert(m.key.clone(), cause.clone());
                 }
             }
             if stale.len() == before {
                 break;
             }
         }
-        for m in self.services.iter_mut().rev() {
-            if replaced.contains(&m.key) || !stale.contains(&m.key) {
-                continue;
+        if stale.is_empty() {
+            return;
+        }
+        let keys: BTreeSet<ServiceKey> = stale.keys().cloned().collect();
+        for idx in self.stop_order(&keys) {
+            let shared = self.shared.clone();
+            let m = &mut self.services[idx];
+            let cause = &stale[&m.key];
+            let policy = m.policy.unwrap_or(CompletedTasksPolicy::Rerun);
+            log_line(format!(
+                "{} {} is stopping: {cause} began a new Service Session ({}; no relaunch \
+                 attempt consumed)",
+                m.key,
+                scope_label(&m.scope),
+                describe_dependent_restart_policy(m.policy)
+            ));
+            if policy == CompletedTasksPolicy::Rerun {
+                outcome.rerun = Some(merge_scopes(outcome.rerun.take(), &m.scope));
             }
-            if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Failed) {
-                log_line(format!(
-                    "{} depends on a Service that began a new Service Session; \
-                     restarting it with the new endpoints",
-                    m.key
-                ));
-                end_instance(&mut inst).await;
-                m.state = State::Idle;
+            m.stop.cancel();
+            match std::mem::replace(&mut m.state, State::Idle) {
+                State::Busy(handle) => match handle.await {
+                    Ok((mut inst, _)) => end_instance(&mut inst).await,
+                    Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
+                },
+                State::Ready(mut inst) => end_instance(&mut inst).await,
+                State::Idle | State::Failed => {}
             }
+            m.stop = shared.config.cancel_token.child_token();
+            m.restart_after = Some(cause.clone());
         }
     }
 
@@ -1147,6 +1218,13 @@ impl ServiceManager {
                 if m.stop.is_cancelled() {
                     m.stop = self.shared.config.cancel_token.child_token();
                 }
+                if let Some(cause) = m.restart_after.take() {
+                    log_line(format!(
+                        "{} {} is starting again in a new Service Session: {cause} is READY",
+                        m.key,
+                        scope_label(&m.scope)
+                    ));
+                }
                 let mut inst = m.new_instance(retain);
                 inst.in_scope = in_scope;
                 m.state = State::Busy(tokio::spawn(start_or_recover(
@@ -1172,7 +1250,7 @@ impl ServiceManager {
             if outcome.failure.is_some() {
                 return Ok(());
             }
-            self.restart_dependents(&replaced).await;
+            self.restart_dependents(&replaced, outcome).await;
         }
     }
 }
@@ -1191,6 +1269,26 @@ fn policy_name(policy: CompletedTasksPolicy) -> &'static str {
     match policy {
         CompletedTasksPolicy::Keep => "KEEP",
         CompletedTasksPolicy::Rerun => "RERUN",
+    }
+}
+
+/// `completedTasks: KEEP`, or, for a Service that gave none (so its
+/// `maxAttempts` is 0 and a failure fails the scope), `completedTasks:
+/// none; maxAttempts 0`.
+fn describe_policy(policy: Option<CompletedTasksPolicy>) -> String {
+    match policy {
+        Some(p) => format!("completedTasks: {}", policy_name(p)),
+        None => "completedTasks: none; maxAttempts 0, so the failure fails the scope".to_string(),
+    }
+}
+
+/// How a dependent's `completedTasks` reads when it is stopped and started
+/// again because a Service it lists began a new Service Session: as given,
+/// or `RERUN` when none was.
+fn describe_dependent_restart_policy(policy: Option<CompletedTasksPolicy>) -> String {
+    match policy {
+        Some(p) => format!("completedTasks: {}", policy_name(p)),
+        None => "completedTasks omitted, read as RERUN".to_string(),
     }
 }
 
@@ -1550,6 +1648,22 @@ mod tests {
             failure_threshold: 2,
             last_failure: "onHealthCheck exit code: 1".into(),
         });
+        assert_eq!(
+            describe_policy(Some(CompletedTasksPolicy::Keep)),
+            "completedTasks: KEEP"
+        );
+        assert_eq!(
+            describe_policy(None),
+            "completedTasks: none; maxAttempts 0, so the failure fails the scope"
+        );
+        assert_eq!(
+            describe_dependent_restart_policy(Some(CompletedTasksPolicy::Rerun)),
+            "completedTasks: RERUN"
+        );
+        assert_eq!(
+            describe_dependent_restart_policy(None),
+            "completedTasks omitted, read as RERUN"
+        );
         assert!(start.requires_new_session());
         assert!(before.requires_new_session());
         assert!(!timed_out.requires_new_session());

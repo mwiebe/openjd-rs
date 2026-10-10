@@ -121,7 +121,7 @@ pub struct ServiceSessionConfig {
     pub environments: Vec<job::Environment>,    // the Job's Environments, in entry order
     pub environment_profiles: Vec<Option<ModelProfile>>, // per entry of `environments`: its document's profile when not the Service's
     pub endpoints: ServiceEndpoints,            // own ports: port, bindAddress, connectAddress
-    pub in_scope_endpoints: Vec<ServiceEndpoints>, // the Services it lists as service:<name> in dependencies (no bindAddress)
+    pub in_scope_endpoints: Vec<ServiceEndpoints>, // the Services it lists with the service key in dependencies (no bindAddress)
 }
 ```
 
@@ -405,11 +405,14 @@ result that arrives after probing stopped is discarded.
   `onRun`'s stdout (same `openjd_<kind>: <payload>` syntax as every message;
   `ActionFilter` parses it to `ActionMessage::ServiceReady`). The first
   makes the instance READY (`Ready { message: Some(text), .. }`). Afterwards,
-  when the check gives `healthIntervalSeconds`, the line is a heartbeat: a
-  timer of that length is (re)started by READY and by every later line, and
-  its expiry is one failed probe (`no openjd_service_ready line within Ns`)
-  that re-arms the timer; a line after a miss is a successful probe that
-  resets the count. Without `healthIntervalSeconds` the instance is not
+  when the check gives `healthIntervalSeconds`, the line is a heartbeat: the
+  runtime arms a deadline `healthIntervalSeconds` after the later of READY
+  and the most recent `openjd_service_ready` line; a line before the
+  deadline is a successful probe and re-arms it, and a deadline that passes
+  without a line is a failed probe (`no openjd_service_ready line within
+  Ns`) and arms the next; a line after a miss resets the count. (For
+  `TCP_CONNECT` and `COMMAND` an interval is instead measured from the end
+  of the previous probe.) Without `healthIntervalSeconds` the instance is not
   monitored after READY (`HealthPhase::Stopped`; its health is that `onRun`
   runs) and later lines have no effect — they are still echoed/logged like
   any directive. Under `TCP_CONNECT` and `COMMAND` the line is logged as

@@ -10,7 +10,7 @@ requiresServices:
 steps:
   - name: ProcessFrames
     dependencies:
-      - dependsOn: service:Cache
+      - service: Cache
     parameterSpace:
       taskParameterDefinitions:
         - name: Frame

@@ -74,11 +74,11 @@ static RFC_COORDINATOR: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Adds `dependsOn: service:<service>` to the `dependencies` of the Step
+/// Adds `service: <service>` to the `dependencies` of the Step
 /// named `step` (a top-level `  - name: <step>` entry), creating the list
 /// when the Step has none. Unchanged when the template already lists it.
 fn with_service_dependency(template: &str, step: &str, service: &str) -> String {
-    let entry = format!("      - dependsOn: service:{service}\n");
+    let entry = format!("      - service: {service}\n");
     if template.contains(entry.trim_start()) {
         return template.to_string();
     }
@@ -333,7 +333,7 @@ fn many_job_services_job(prefix: &str, n: usize) -> String {
         })
         .collect();
     let dependencies: String = (0..n)
-        .map(|i| format!("      - dependsOn: service:{prefix}{i}\n"))
+        .map(|i| format!("      - service: {prefix}{i}\n"))
         .collect();
     format!(
         "specificationVersion: \"jobtemplate-2023-09\"\nname: Many\nextensions: [SERVICE, EXPR]\nservices:\n{}\nsteps:\n  - name: S\n    dependencies:\n{dependencies}    script:\n      actions:\n        onRun:\n          command: echo\n",
@@ -368,7 +368,7 @@ fn rfc_queue_cache_example_merges_with_the_cache_service_first() {
     assert_eq!(cache.restart_policy.max_attempts, 3);
     assert_eq!(
         cache.restart_policy.completed_tasks,
-        CompletedTasksPolicy::Keep
+        Some(CompletedTasksPolicy::Keep)
     );
     // `hostRequirements` resolved from the attachment's own parameter
     // default (merged into the job parameters by preprocessing).
@@ -768,7 +768,7 @@ services:
     script: { actions: { onRun: { command: serve } } }
 steps:
   - name: Render
-    dependencies: [{ dependsOn: "service:Cache" }]
+    dependencies: [{ service: "Cache" }]
     script: { actions: { onRun: { command: echo } } }
 "#,
         ),
@@ -1019,13 +1019,13 @@ specificationVersion: "environment-2023-09"
 extensions: [SERVICE, EXPR]
 services:
   - name: First
-    dependencies: [{ dependsOn: "service:Third" }]
+    dependencies: [{ service: "Third" }]
     ports: [{ name: main }]
     script:
       actions:
         onRun: { command: serve, args: ["{{ Service.Third.main.port }}"] }
   - name: Second
-    dependencies: [{ dependsOn: "service:First" }]
+    dependencies: [{ service: "First" }]
     ports: [{ name: main }]
     script:
       actions:
@@ -1099,7 +1099,7 @@ specificationVersion: "environment-2023-09"
 extensions: [SERVICE, EXPR]
 services:
   - name: Proxy
-    dependencies: [{ dependsOn: "service:Cache" }]
+    dependencies: [{ service: "Cache" }]
     ports: [{ name: main }]
     script: { actions: { onRun: { command: proxy } } }
 "#,
@@ -1112,7 +1112,7 @@ services:
     assert_eq!(
         err,
         "Model validation error: 1 validation error for EnvironmentTemplate\n\
-         services[0] -> dependencies[0]:\n\tdependency 'service:Cache' not found: no Service of \
+         services[0] -> dependencies[0]:\n\tdependency 'service: Cache' not found: no Service of \
          that name in this document's services."
     );
 }
@@ -1145,7 +1145,7 @@ services:
             "Model validation error: 1 validation error for EnvironmentTemplate\n\
              services[1] -> script -> actions -> onRun -> args[0]:\n\t\
              Failed to parse interpolation expression at [0, 28]. Service 'Front' references \
-             Service.Back.main.port but does not list service:Back in dependencies.\n"
+             Service.Back.main.port but does not list service: Back in dependencies.\n"
         ),
         "{err}"
     );

@@ -94,8 +94,8 @@ earlier draft of RFC 0009 used (exploratory report S9):
 
 | written | hint |
 |---|---|
-| `jobServices` (job template root) | `'jobServices' is not a property; declare Services in 'services' and put each Step in a Service's scope with 'dependsOn: service:<name>' in the Step's dependencies.` |
-| `stepServices` (a Step) | `'stepServices' is not a property; move the Service to the top-level 'services' list and add 'dependsOn: service:<name>' to this Step's dependencies.` |
+| `jobServices` (job template root) | `'jobServices' is not a property; declare Services in 'services' and put each Step in a Service's scope with 'service: <name>' in the Step's dependencies.` |
+| `stepServices` (a Step) | `'stepServices' is not a property; move the Service to the top-level 'services' list and add 'service: <name>' to this Step's dependencies.` |
 | `serviceEnvironments` (root) | `'serviceEnvironments' is not a property; a Service sets up its own host in 'onEnter', or a Job Environment with 'runScope: [SERVICE]' is entered by every Service Session.` |
 | `requiresServices` (environment template root) | `'requiresServices' is a Job Template property; an Environment Template declares the Services it provides in 'services'.` |
 | `readinessCheck` (a Service) | `'readinessCheck' is not a property; the health check is 'healthCheck'.` |

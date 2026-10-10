@@ -64,8 +64,8 @@ services:
 steps:
   - name: Use
     dependencies:
-      - dependsOn: "service:Alpha"
-      - dependsOn: "service:Beta"
+      - service: "Alpha"
+      - service: "Beta"
     script:
       actions:
         onRun:

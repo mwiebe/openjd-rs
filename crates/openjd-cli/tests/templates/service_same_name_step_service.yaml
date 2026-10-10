@@ -40,7 +40,7 @@ services:
 steps:
   - name: Work
     dependencies:
-      - dependsOn: "service:Cache"
+      - service: "Cache"
     script:
       actions:
         onRun:

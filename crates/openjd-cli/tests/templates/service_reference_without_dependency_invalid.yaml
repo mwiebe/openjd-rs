@@ -16,7 +16,7 @@ services:
 steps:
   - name: Warm
     dependencies:
-      - dependsOn: "service:Cache"
+      - service: "Cache"
     script:
       actions:
         onRun:

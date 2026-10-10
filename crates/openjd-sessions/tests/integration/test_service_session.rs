@@ -174,7 +174,7 @@ impl ServiceBuilder {
                 health_check: tcp_check(ports, 300),
                 restart_policy: ServiceRestartPolicy {
                     max_attempts: 0,
-                    completed_tasks: CompletedTasksPolicy::Rerun,
+                    completed_tasks: Some(CompletedTasksPolicy::Rerun),
                 },
                 variables: None,
                 script: ServiceScript {

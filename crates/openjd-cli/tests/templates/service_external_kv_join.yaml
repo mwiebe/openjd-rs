@@ -41,7 +41,7 @@ environment:
   name: KvClient
   description: "Tells every Task where the Job's key-value store is."
   dependencies:
-    - dependsOn: service:Kv
+    - service: Kv
   runScope: [TASK]
   variables:
     KV_ADDR: "{{ join_host_port(Service.Kv.main.connectAddress, Service.Kv.main.port) }}"

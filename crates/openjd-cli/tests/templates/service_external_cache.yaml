@@ -43,7 +43,7 @@ environment:
   name: CacheClient
   description: "Tells every Task where the Job's cache is."
   dependencies:
-    - dependsOn: service:Cache
+    - service: Cache
   runScope: [TASK]
   variables:
     CACHE_HOST: "{{ Service.Cache.main.connectAddress }}"

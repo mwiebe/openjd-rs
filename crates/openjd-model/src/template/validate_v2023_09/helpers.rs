@@ -176,40 +176,25 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
     }
 }
 
-/// RFC 0009 (§3.2): the `service:<name>` the author most likely meant by a
-/// `dependsOn` value that names no Step and no Service, when a Service
-/// (declared or required) named `<name>` exists. Recognizes the prefix
-/// forgotten (`Svc`), the prefix in the wrong case (`Service:Svc`), a space
-/// after the colon (`service: Svc`), and a port appended (`service:Svc.main`),
-/// in any combination; returns the canonical spelling, or `None` when no
-/// Service matches. A Service name is an identifier, so stripping at the
-/// first `.` cannot cut a real name short.
-pub fn canonical_service_dependency<'a>(
-    depends_on: &str,
-    service_names: impl IntoIterator<Item = &'a str>,
-) -> Option<String> {
-    const PREFIX: &str = crate::template::SERVICE_DEPENDENCY_PREFIX;
-    let rest = match depends_on.get(..PREFIX.len()) {
-        Some(head) if head.eq_ignore_ascii_case(PREFIX) => &depends_on[PREFIX.len()..],
-        _ => depends_on,
-    };
-    let name = rest.trim();
-    let name = name.split_once('.').map_or(name, |(head, _)| head);
-    let canonical = service_names.into_iter().find(|s| *s == name)?;
-    let canonical = format!("{PREFIX}{canonical}");
-    // The author already wrote it canonically: nothing to suggest.
-    (canonical != depends_on).then_some(canonical)
-}
-
-/// `; did you mean 'service:Svc'?` for [`canonical_service_dependency`]'s
-/// result, or nothing. Appended to a `dependency '…' not found` message in
-/// place of its final period.
-pub fn service_dependency_hint<'a>(
-    depends_on: &str,
-    service_names: impl IntoIterator<Item = &'a str>,
+/// RFC 0009 (§3.2): the hint for a `<StepDependency>` whose key does not
+/// match what its name is. For a `dependsOn: X` that names no Step, when a
+/// Service (declared or required) named `X` exists among `other_kind`:
+/// `; did you mean 'service: X'?`. For a `service: X` that names no
+/// Service, when a Step named `X` exists among `other_kind`: `; did you
+/// mean 'dependsOn: X'?`. Otherwise `.`, closing the `dependency '…' not
+/// found` sentence the hint is appended to.
+pub fn dependency_kind_hint<'a>(
+    target: crate::template::DependencyTarget<'_>,
+    other_kind: impl IntoIterator<Item = &'a str>,
 ) -> String {
-    match canonical_service_dependency(depends_on, service_names) {
-        Some(canonical) => format!("; did you mean '{canonical}'?"),
-        None => ".".to_string(),
+    use crate::template::DependencyTarget;
+    let (name, suggested) = match target {
+        DependencyTarget::Step(name) => (name, DependencyTarget::Service(name)),
+        DependencyTarget::Service(name) => (name, DependencyTarget::Step(name)),
+    };
+    if other_kind.into_iter().any(|n| n == name) {
+        format!("; did you mean '{suggested}'?")
+    } else {
+        ".".to_string()
     }
 }
