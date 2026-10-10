@@ -52,11 +52,11 @@ static RFC_COORDINATOR: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Adds `dependsOn: service:<service>` to the `dependencies` of the Step
+/// Adds `service: <service>` to the `dependencies` of the Step
 /// named `step` (a top-level `  - name: <step>` entry), creating the list
 /// when the Step has none. Unchanged when the template already lists it.
 fn with_service_dependency(template: &str, step: &str, service: &str) -> String {
-    let entry = format!("      - dependsOn: service:{service}\n");
+    let entry = format!("      - service: {service}\n");
     if template.contains(entry.trim_start()) {
         return template.to_string();
     }
@@ -167,7 +167,7 @@ fn valkey_example_creates_a_job_service_with_defaults_applied() {
     assert_eq!(cache.restart_policy.max_attempts, 3);
     assert_eq!(
         cache.restart_policy.completed_tasks,
-        CompletedTasksPolicy::Keep
+        Some(CompletedTasksPolicy::Keep)
     );
     // Host requirements are resolved.
     let hr = cache.host_requirements.as_ref().unwrap();
@@ -233,7 +233,7 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
     let deps = render.dependencies.as_deref().unwrap();
     assert_eq!(
         deps.iter()
-            .map(|d| (d.target(true).step(), d.target(true).service()))
+            .map(|d| (d.step(), d.service()))
             .collect::<Vec<_>>(),
         vec![(Some("PrepareScene"), None), (None, Some("Coordinator"))]
     );
@@ -256,7 +256,7 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
     assert_eq!(c.restart_policy.max_attempts, 1);
     assert_eq!(
         c.restart_policy.completed_tasks,
-        CompletedTasksPolicy::Rerun
+        Some(CompletedTasksPolicy::Rerun)
     );
     assert!(c.host_requirements.is_none());
     assert_eq!(
@@ -325,6 +325,7 @@ services:
       failureThreshold: "{{ null }}"
     restartPolicy:
       maxAttempts: "{{ Param.Attempts }}"
+      completedTasks: RERUN
     variables:
       LABEL: "{{ label }}"
       DIR: "{{ Param.Dir }}"
@@ -340,7 +341,7 @@ services:
           command: probe
   - name: Side
     dependencies:
-      - dependsOn: service:Cache
+      - service: Cache
     let:
       - tag = Job.Name + string(2)
     ports:
@@ -357,7 +358,7 @@ services:
 steps:
   - name: S
     dependencies:
-      - dependsOn: service:Side
+      - service: Side
     let:
       - n = 2
     script:
@@ -399,7 +400,7 @@ fn numeric_fields_resolve_in_the_service_let_scope() {
     assert_eq!(cache.restart_policy.max_attempts, 2);
     assert_eq!(
         cache.restart_policy.completed_tasks,
-        CompletedTasksPolicy::Rerun
+        Some(CompletedTasksPolicy::Rerun)
     );
     let amounts = cache
         .host_requirements
@@ -458,7 +459,7 @@ fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
     assert_eq!(side.restart_policy.max_attempts, 0);
     assert_eq!(
         side.restart_policy.completed_tasks,
-        CompletedTasksPolicy::Keep
+        Some(CompletedTasksPolicy::Keep)
     );
     assert_eq!(
         side.health_check,
@@ -484,6 +485,42 @@ fn numeric_fields_are_range_checked_at_job_creation() {
         err,
         "Model validation error: 1 validation error for JobTemplate\nservices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."
     );
+}
+
+/// §9.5 item 2 / §9.9 item 12: for a format-string `maxAttempts` the
+/// `completedTasks` requirement is checked when the value is resolved at
+/// job creation — required when it resolves above 0, not when it resolves
+/// to 0.
+#[test]
+fn completed_tasks_required_when_a_format_string_max_attempts_resolves_above_zero() {
+    let tmpl = NUMERIC.replace("      completedTasks: RERUN\n", "");
+    let err = create_err(&tmpl, &[]);
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> restartPolicy:\n\
+         \tcompletedTasks must be provided when maxAttempts is greater than 0 (maxAttempts is 2): a \
+         template that allows relaunch must say what a relaunch means for completed Tasks, KEEP or \
+         RERUN (Template Schemas §9.5 item 2)."
+    );
+    let job = create_ok(&tmpl, &[("Attempts", "0")]);
+    let policy = &job.services.as_ref().unwrap()[0].restart_policy;
+    assert_eq!(policy.max_attempts, 0);
+    assert_eq!(policy.completed_tasks, None);
+    assert_eq!(policy.completed_tasks_on_relaunch(), None);
+    // Omitted reads as RERUN when a Service it lists begins a new Session.
+    assert_eq!(
+        policy.completed_tasks_on_dependent_restart(),
+        CompletedTasksPolicy::Rerun
+    );
+    assert!(!policy.may_be_suspended());
+    let job = create_ok(NUMERIC, &[("Attempts", "0")]);
+    let policy = &job.services.as_ref().unwrap()[0].restart_policy;
+    assert_eq!(policy.completed_tasks, Some(CompletedTasksPolicy::Rerun));
+    assert_eq!(
+        policy.completed_tasks_on_relaunch(),
+        Some(CompletedTasksPolicy::Rerun)
+    );
+    assert!(!policy.may_be_suspended());
 }
 
 #[test]
@@ -541,7 +578,7 @@ services:
 {extra_actions}steps:
   - name: S
     dependencies:
-      - dependsOn: service:Store
+      - service: Store
     script:
       actions:
         onRun:
@@ -723,9 +760,9 @@ fn numeric_template_scopes_follow_the_declared_dependencies() {
             .as_deref()
             .unwrap()
             .iter()
-            .map(|d| d.depends_on.as_str())
+            .map(|d| d.service())
             .collect::<Vec<_>>(),
-        vec!["service:Side"]
+        vec![Some("Side")]
     );
 }
 
@@ -747,7 +784,7 @@ services:
   - name: Front
     dependencies:
       - dependsOn: Prepare
-      - dependsOn: service:Back
+      - service: Back
     ports: [{ name: main }]
     script:
       actions:
@@ -757,7 +794,7 @@ steps:
     script: { actions: { onRun: { command: prepare } } }
   - name: Use
     dependencies:
-      - dependsOn: service:Front
+      - service: Front
     script:
       actions:
         onRun: { command: use, args: ["{{ Service.Front.main.port }}"] }
@@ -780,7 +817,7 @@ steps:
     let json = serde_json::to_value(front).unwrap();
     assert_eq!(
         json["dependencies"],
-        serde_json::json!([{ "dependsOn": "Prepare" }, { "dependsOn": "service:Back" }])
+        serde_json::json!([{ "dependsOn": "Prepare" }, { "service": "Back" }])
     );
     let back_again: job::Service = serde_json::from_value(json).unwrap();
     assert_eq!(&back_again, front);
@@ -824,7 +861,7 @@ services:
 steps:
   - name: S
     dependencies:
-      - dependsOn: service:A
+      - service: A
     script:
       actions:
         onRun:
@@ -859,7 +896,7 @@ services:
 steps:
   - name: S
     dependencies:
-      - dependsOn: service:A
+      - service: A
     script:
       actions:
         onRun:
@@ -885,7 +922,7 @@ extensions: [SERVICE, EXPR, WRAP_ACTIONS]
 name: Test
 jobEnvironments:
   - name: Client
-    dependencies: [{ dependsOn: "service:A" }]
+    dependencies: [{ service: "A" }]
     runScope: [TASK]
     variables:
       HOST: "{{ Service.A.p.connectAddress }}"
@@ -911,7 +948,6 @@ steps:
   - name: S
     stepEnvironments:
       - name: TaskOnly
-        runScope: [TASK]
         variables: { K: v }
     script:
       actions:
@@ -956,8 +992,12 @@ steps:
             .raw(),
         "{{ WrappedService.Name }}"
     );
+    // A Step Environment gives no runScope and is entered only by Task
+    // Sessions; job creation materializes that as `[TASK]`.
     let step_env = &job.steps[0].step_environments.as_ref().unwrap()[0];
     assert_eq!(step_env.run_scope, Some(vec![RunScope::Task]));
+    assert!(step_env.runs_in(RunScope::Task));
+    assert!(!step_env.runs_in(RunScope::Service));
 
     // Round-trips through the job wire format.
     let json = serde_json::to_value(&envs[1]).unwrap();
@@ -1056,7 +1096,7 @@ fn job_with_services_round_trips_eq_and_hash() {
     assert!(side_json.get("references").is_none(), "got {side_json}");
     assert_eq!(
         side_json["dependencies"],
-        serde_json::json!([{ "dependsOn": "service:Cache" }])
+        serde_json::json!([{ "service": "Cache" }])
     );
     let side_back: job::Service = serde_json::from_value(side_json.clone()).unwrap();
     assert_eq!(&side_back, &job.services.as_ref().unwrap()[1]);
@@ -1144,7 +1184,7 @@ services:
 steps:
   - name: S
     dependencies:
-      - dependsOn: service:Metrics
+      - service: Metrics
     script:
       actions:
         onRun:

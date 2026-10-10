@@ -26,7 +26,7 @@ services:
 steps:
   - name: SleepStep
     dependencies:
-      - dependsOn: "service:Store"
+      - service: "Store"
     script:
       actions:
         onRun:

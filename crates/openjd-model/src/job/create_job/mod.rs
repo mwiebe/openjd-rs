@@ -27,7 +27,8 @@ pub use external::{
     RequirementBinding,
 };
 pub use instantiate::{
-    convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
+    convert_environment, convert_environment_with_symtab, convert_step_environment,
+    evaluate_let_bindings, EnvironmentKind,
 };
 pub use parameters::{
     build_symbol_table, merge_job_parameter_definitions, preprocess_job_parameters,
@@ -319,6 +320,7 @@ pub fn create_job(
         for (i, env) in envs.iter().enumerate() {
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
+                instantiate::EnvironmentKind::Job,
                 &symtab,
                 has_expr,
                 ctx,

@@ -29,33 +29,36 @@
 //! 1. `Task.*` or `Step.*` inside a Service (its actions, `variables`,
 //!    `let`, embedded files): *Task.\* is not available within a Service.*
 //!    / *Step.\* is not available within a Service.* (§9 item 3.)
-//! 2. The site is a job-creation-time field (`hostRequirements`, a
-//!    `<StepTemplate>`'s or `<Service>`'s `let` list — not a script's —, a
-//!    `parameterSpace` range, an action `timeout` /
-//!    `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the
-//!    four `<ServiceHealthCheck>` numeric fields): *Service.\* is not
-//!    available in `<field>`: it is resolved at job creation, before any
-//!    Service has an endpoint.* (§3.6.2, §9.9 items 1–2.)
-//! 3. The site is an Environment whose explicit `runScope` includes
-//!    `SERVICE`: the error is **dropped**. Pass 11 reports the rule once,
-//!    on the `runScope` list — *Environment 'E' is entered in Service
-//!    Sessions (its runScope includes SERVICE) and may not reference
-//!    Service.\*; declare runScope: [TASK] if it configures Tasks.* for a
-//!    Job Environment (§4 item 4 constraint 2), or *must not include
-//!    SERVICE: a Step Environment is entered only by the Task Sessions of
-//!    its Step; …* for a Step Environment (constraint 4) — and each
-//!    reference is a consequence of it.
+//! 2. The site is a job-creation-time field (§9.9 item 2: `hostRequirements`,
+//!    a `<StepTemplate>`'s or `<Service>`'s `let` list — not a script's —, a
+//!    `parameterSpace` range, an `<Action>`'s `timeout`, a cancelation
+//!    method's `mode` / `notifyPeriodInSeconds`, a `<ServicePort>`'s
+//!    `port`, a `<ServiceRestartPolicy>`'s `maxAttempts`, the four
+//!    `<ServiceHealthCheck>` numeric fields): *Service.\* is not available
+//!    in `<field>`: it is resolved at job creation, before any Service has
+//!    an endpoint.* (§3.6.2, §9.9 items 1–2.) Pass 8 never seeds `Service.*`
+//!    into the symbol table of these fields, so the reference is undefined
+//!    there whatever the scope; this rule only names the field.
+//! 3. The site is a Job Environment (or an Environment Template's
+//!    `environment`) whose explicit `runScope` includes `SERVICE`: the
+//!    error is **dropped**. Pass 11 reports the rule once, on the `runScope`
+//!    list — *Environment 'E' is entered in Service Sessions (its runScope
+//!    includes SERVICE) and may not reference Service.\*; declare runScope:
+//!    [TASK] if it configures Tasks.* (§4 item 4 constraint 2) — and each
+//!    reference is a consequence of it. A Step Environment gives no
+//!    `runScope` (pass 11 rejects one) and is always entered in Task
+//!    Sessions, so this rule never applies to it.
 //! 4. A Service — declared or required — referenced from a Step's `script`,
 //!    one of its `stepEnvironments`, another Service, a Job Environment, or
 //!    an Environment Template's `environment` that does not list
-//!    `service:<name>` in its `dependencies` (§9 scope rules 2–5, §9.8
+//!    `service: <name>` in its `dependencies` (§9 scope rules 2–5, §9.8
 //!    item 2, §9.9 item 1): *Step 'Render' references Service.Cache.main.port
-//!    but does not list service:Cache in dependencies.* — *Step 'Render'
+//!    but does not list service: Cache in dependencies.* — *Step 'Render'
 //!    references Service.Cache.main.port in stepEnvironments 'Tools' but
-//!    does not list service:Cache in dependencies.* — *Service 'Front'
-//!    references Service.Back.main.port but does not list service:Back in
+//!    does not list service: Cache in dependencies.* — *Service 'Front'
+//!    references Service.Back.main.port but does not list service: Back in
 //!    dependencies.* — *Environment 'CacheClient' references
-//!    Service.Cache.main.port but does not list service:Cache in
+//!    Service.Cache.main.port but does not list service: Cache in
 //!    dependencies.* The dependency is the author's statement that the
 //!    entity needs the Service; the reference alone is not taken as one. A
 //!    required Service follows the same rule: listing it is what grants
@@ -85,7 +88,6 @@
 use crate::error::{PathElement, ValidationError, ValidationErrors};
 use crate::template::{
     lists_service, Environment, EnvironmentTemplate, JobTemplate, RunScope, Service, StepTemplate,
-    SERVICE_DEPENDENCY_PREFIX,
 };
 use crate::types::{ModelExtension, ValidationContext};
 
@@ -232,6 +234,9 @@ fn job_creation_field(path: &[PathElement]) -> Option<&'static str> {
     }
     match fields.last().copied() {
         Some("timeout") => Some("timeout"),
+        // A cancelation method's `mode` and `notifyPeriodInSeconds` are both
+        // reported on the `cancelation` path.
+        Some("cancelation") => Some("a cancelation method's mode or notifyPeriodInSeconds"),
         Some("notifyPeriodInSeconds") => Some("notifyPeriodInSeconds"),
         Some("port") if fields.contains(&"ports") => Some("port"),
         Some("readinessIntervalSeconds") => Some("readinessIntervalSeconds"),
@@ -344,13 +349,13 @@ fn reason(
         )));
     }
 
-    // Rule 3: an Environment entered in Service Sessions (its explicit
+    // Rule 3: a Job Environment entered in Service Sessions (its explicit
     // runScope includes SERVICE). Pass 11 reports that on the runScope
-    // list, once: for a Job Environment because it references Service.*,
-    // for a Step Environment because SERVICE is never allowed there (§4
-    // item 4 constraint 4). Each reference is a consequence.
-    if let Site::Environment { env, .. } = site {
-        if env.runs_in(RunScope::Service) {
+    // list, once, because it references Service.*; each reference is a
+    // consequence. A Step Environment never has a runScope (pass 11 rejects
+    // one, §4 item 4 constraint 4) and is always a Task-Session site.
+    if let Site::Environment { env, step: None } = site {
+        if env.run_scope.is_some() && env.runs_in(RunScope::Service) {
             return Some(Refinement::Drop);
         }
     }
@@ -358,10 +363,7 @@ fn reason(
     // Rule 4: a declared or required Service the Step, Service, or
     // Environment does not list in its dependencies.
     let missing = |who: String, where_: String| {
-        format!(
-            "{who} references {name}{where_} but does not list \
-             {SERVICE_DEPENDENCY_PREFIX}{svc} in dependencies."
-        )
+        format!("{who} references {name}{where_} but does not list service: {svc} in dependencies.")
     };
     match site {
         Site::Task { step } if !lists_service(step.dependencies.as_deref(), svc) => {
@@ -549,6 +551,18 @@ mod tests {
         assert_eq!(
             job_creation_field(&p(&["steps", "script", "actions", "onRun", "args"])),
             None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["steps", "script", "actions", "onRun", "cancelation"])),
+            Some("a cancelation method's mode or notifyPeriodInSeconds")
+        );
+        assert_eq!(
+            job_creation_field(&p(&["services", "restartPolicy", "maxAttempts"])),
+            Some("maxAttempts")
+        );
+        assert_eq!(
+            job_creation_field(&p(&["services", "healthCheck", "healthIntervalSeconds"])),
+            Some("healthIntervalSeconds")
         );
     }
 }

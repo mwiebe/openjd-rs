@@ -51,7 +51,7 @@ services:
 steps:
   - name: A
     dependencies:
-      - dependsOn: "service:Flaky"
+      - service: "Flaky"
     script:
       actions:
         onRun:
@@ -90,7 +90,7 @@ steps:
   - name: B
     dependencies:
       - dependsOn: C
-      - dependsOn: "service:Flaky"
+      - service: "Flaky"
     script:
       actions:
         onRun:

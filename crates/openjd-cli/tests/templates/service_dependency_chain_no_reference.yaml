@@ -29,7 +29,7 @@ services:
           args: ["-c", "import sys; open(sys.argv[1], 'a').write('back exit\\n')", "{{ Param.TraceFile }}"]
   - name: Mid
     dependencies:
-      - dependsOn: "service:Back"
+      - service: "Back"
     ports:
       - name: main
     healthCheck:
@@ -46,7 +46,7 @@ services:
           args: ["-c", "import sys; open(sys.argv[1], 'a').write('mid exit\\n')", "{{ Param.TraceFile }}"]
   - name: Front
     dependencies:
-      - dependsOn: "service:Mid"
+      - service: "Mid"
     ports:
       - name: main
     healthCheck:
@@ -64,7 +64,7 @@ services:
 steps:
   - name: Use
     dependencies:
-      - dependsOn: "service:Front"
+      - service: "Front"
     script:
       actions:
         onRun:

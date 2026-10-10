@@ -50,7 +50,7 @@ pub use expr_parameters::{
 // step
 pub use step::{
     listed_service_names, listed_step_names, lists_service, DependencyTarget, SimpleAction,
-    StepDependency, StepScript, StepTemplate, SERVICE_DEPENDENCY_PREFIX,
+    StepDependency, StepScript, StepTemplate,
 };
 // environment
 pub use environment::{EmbeddedFile, Environment, EnvironmentScript, RunScope};

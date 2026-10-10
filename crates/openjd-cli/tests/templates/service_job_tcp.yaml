@@ -45,7 +45,7 @@ services:
 steps:
   - name: First
     dependencies:
-      - dependsOn: "service:Store"
+      - service: "Store"
     parameterSpace:
       taskParameterDefinitions:
         - name: N
@@ -74,7 +74,7 @@ steps:
   - name: Second
     dependencies:
       - dependsOn: First
-      - dependsOn: "service:Store"
+      - service: "Store"
     script:
       actions:
         onRun:

@@ -30,7 +30,7 @@ services:
 steps:
   - name: Use
     dependencies:
-      - dependsOn: "service:Sidecar"
+      - service: "Sidecar"
     script:
       actions:
         onRun:

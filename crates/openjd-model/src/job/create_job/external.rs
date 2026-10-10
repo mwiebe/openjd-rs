@@ -551,6 +551,7 @@ pub fn apply_environment_templates(
             // only when its runScope excludes SERVICE).
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
+                instantiate::EnvironmentKind::Job,
                 &symtab,
                 has_expr,
                 &ctx,

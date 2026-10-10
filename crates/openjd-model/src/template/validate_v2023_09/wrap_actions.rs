@@ -24,8 +24,10 @@
 //!   any wrap hook — must define `onWrapEnvEnter` and `onWrapEnvExit`; must
 //!   define `onWrapTaskRun` iff its `runScope` includes `TASK`; and must
 //!   define all four `onWrapService*` hooks iff its `runScope` includes
-//!   `SERVICE`. A hook the `runScope` does not call for is rejected, as is
-//!   a missing one it does.
+//!   `SERVICE`. A wrapping environment in a Step's `stepEnvironments`,
+//!   which has no `runScope` and is entered only by Task Sessions, must
+//!   define exactly RFC 0008's three hooks. A hook the `runScope` does not
+//!   call for is rejected, as is a missing one it does.
 //! - **Single-layer** (constraint 2). At most one environment in the
 //!   session stack (job environments + each step's step environments) may
 //!   define any wrap hook. A Service Session's stack is a subset of the
@@ -58,15 +60,26 @@ struct EffectiveRunScope {
 }
 
 impl EffectiveRunScope {
-    /// A Job, Step, or environment-template Environment: its `runScope` as
-    /// written, or its default when absent — `[TASK]` for an Environment
-    /// that references `Service.*`, every kind otherwise (Template Schemas
-    /// §4 item 3).
+    /// A Job Environment or an environment-template Environment: its
+    /// `runScope` as written, or its default when absent — `[TASK]` for an
+    /// Environment that lists a Service in `dependencies`, every kind
+    /// otherwise (Template Schemas §4 item 4).
     fn of_environment(env: &Environment) -> Self {
         Self {
             task: env.runs_in(RunScope::Task),
             service: env.runs_in(RunScope::Service),
             text: describe_run_scope(env),
+        }
+    }
+
+    /// A Step Environment: no `runScope` (pass 11 rejects one), entered
+    /// only by the Task Sessions of its Step, so exactly RFC 0008's three
+    /// hooks (Template Schemas §4.3 constraint 6).
+    fn of_step_environment() -> Self {
+        Self {
+            task: true,
+            service: false,
+            text: "a Step Environment, entered only by Task Sessions".to_string(),
         }
     }
 
@@ -260,18 +273,13 @@ fn join_names(names: &[&str]) -> String {
 
 /// `runScope: [TASK]` as written; when the field is absent, `default
 /// runScope: [TASK], since the environment depends on a Service` (it lists
-/// one in `dependencies`), `default runScope: [TASK], since the environment
-/// references Service.*` (a Step Environment, which has no list), or
-/// `default runScope: every kind of Session` (§4 item 4), for error
-/// messages.
+/// one in `dependencies`) or `default runScope: every kind of Session` (§4
+/// item 4), for error messages.
 fn describe_run_scope(env: &Environment) -> String {
     match &env.run_scope {
         Some(names) => format!("runScope: [{}]", names.join(", ")),
-        None if env.depends_on_service() => {
-            "default runScope: [TASK], since the environment depends on a Service".to_string()
-        }
         None if env.default_run_scope_is_task_only() => {
-            "default runScope: [TASK], since the environment references Service.*".to_string()
+            "default runScope: [TASK], since the environment depends on a Service".to_string()
         }
         None => "default runScope: every kind of Session".to_string(),
     }
@@ -279,9 +287,12 @@ fn describe_run_scope(env: &Environment) -> String {
 
 /// Walk one environment for WRAP_ACTIONS gating and return whether it
 /// defined any wrap hook (used for the single-layer check upstream).
+/// `scope` is the Session kinds it is entered in: its `runScope` for a Job
+/// Environment, Task Sessions only for a Step Environment.
 fn check_env(
     env: &Environment,
     path: &[PathElement],
+    scope: EffectiveRunScope,
     gating: WrapGating,
     errors: &mut ValidationErrors,
 ) -> bool {
@@ -290,13 +301,7 @@ fn check_env(
     };
     let script_path = path_field(path, "script");
     let actions_path = path_field(&script_path, "actions");
-    check_environment_actions(
-        &script.actions,
-        &actions_path,
-        &EffectiveRunScope::of_environment(env),
-        gating,
-        errors,
-    );
+    check_environment_actions(&script.actions, &actions_path, &scope, gating, errors);
     script.actions.has_any_wrap_hook()
 }
 
@@ -355,7 +360,13 @@ pub fn validate_wrap_actions_job_template(
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&[], "jobEnvironments");
         for (i, env) in envs.iter().enumerate() {
-            if check_env(env, &path_index(&envs_path, i), gating, errors) {
+            if check_env(
+                env,
+                &path_index(&envs_path, i),
+                EffectiveRunScope::of_environment(env),
+                gating,
+                errors,
+            ) {
                 job_env_wrap_count += 1;
             }
         }
@@ -383,7 +394,13 @@ pub fn validate_wrap_actions_job_template(
         let envs_path = path_field(&base, "stepEnvironments");
         let mut step_env_wrap_count = 0usize;
         for (j, env) in envs.iter().enumerate() {
-            if check_env(env, &path_index(&envs_path, j), gating, errors) {
+            if check_env(
+                env,
+                &path_index(&envs_path, j),
+                EffectiveRunScope::of_step_environment(),
+                gating,
+                errors,
+            ) {
                 step_env_wrap_count += 1;
             }
         }
@@ -417,7 +434,13 @@ pub fn validate_wrap_actions_environment_template(
     check_expr_prerequisite(ctx, errors);
     if let Some(env) = &et.environment {
         let env_path = path_field(&[], "environment");
-        check_env(env, &env_path, gating, errors);
+        check_env(
+            env,
+            &env_path,
+            EffectiveRunScope::of_environment(env),
+            gating,
+            errors,
+        );
     }
 }
 

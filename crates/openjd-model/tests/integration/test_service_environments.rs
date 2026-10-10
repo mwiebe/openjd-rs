@@ -15,7 +15,7 @@
 //!    environments, step environments, and environment templates.
 //! 2. **`dependencies`** on `<Environment>` (§4 item 3, §9.9 item 14):
 //!    extension gating, the Step Environment prohibition, and the list
-//!    constraints (non-empty, `service:` form naming a Service of the
+//!    constraints (non-empty, `service` key naming a Service of the
 //!    document or a requirement, no duplicates, not with an explicit
 //!    `runScope` including `SERVICE`). What listing a Service *does* —
 //!    visibility, scope, the `runScope` default — is covered in
@@ -257,12 +257,12 @@ fn run_scope_both_explicit_in_any_order() {
 }
 
 #[test]
-fn run_scope_accepted_on_job_and_step_environments() {
+fn run_scope_accepted_on_job_environments() {
     let jt = expect_job_ok(
         &job_template(
             "SERVICE, EXPR",
             "    runScope: [SERVICE]\n    variables: { K: v }\n",
-            "        runScope: [TASK]\n        variables: { K: v }\n",
+            "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
     );
@@ -270,22 +270,28 @@ fn run_scope_accepted_on_job_and_step_environments() {
     assert!(!job_env.runs_in(RunScope::Task));
     assert!(job_env.runs_in(RunScope::Service));
     let step_env = &jt.steps[0].step_environments.as_ref().unwrap()[0];
-    assert!(step_env.runs_in(RunScope::Task));
-    assert!(!step_env.runs_in(RunScope::Service));
+    assert!(step_env.run_scope.is_none());
 }
 
-/// §4 item 4 constraint 4: a Step Environment is entered only by the Task
-/// Sessions of its Step, so its `runScope` must not include `SERVICE` —
-/// alone or alongside `TASK`. The Environment here lists no Service and
-/// references none; the list alone is the error.
+/// §4 item 4 constraint 4 / §9.9 item 3: a Step Environment is entered only
+/// by the Task Sessions of its Step, so it must not give a `runScope` at
+/// all — not even `[TASK]`, the only kind that could enter it. The list
+/// alone is the error, whatever it names.
+const STEP_ENV_RUN_SCOPE_RULE: &str =
+    "steps[0] -> stepEnvironments[0] -> runScope:\n\trunScope is not permitted on a Step \
+     Environment: a Step Environment is entered only by the Task Sessions of its Step, so there \
+     is no kind of Session for it to choose (Template Schemas §4 item 4 constraint 4).";
+
 #[test]
-fn run_scope_service_on_step_environment_is_rejected() {
-    const RULE: &str =
-        "steps[0] -> stepEnvironments[0] -> runScope:\n\tmust not include SERVICE: a \
-                        Step Environment is entered only by the Task Sessions of its Step; no \
-                        Service Session enters one, so the name would select no Session \
-                        (Template Schemas §4 item 4 constraint 4).";
-    for run_scope in ["[SERVICE]", "[TASK, SERVICE]", "[SERVICE, TASK]"] {
+fn run_scope_on_step_environment_is_rejected() {
+    for run_scope in [
+        "[TASK]",
+        "[SERVICE]",
+        "[TASK, SERVICE]",
+        "[SERVICE, TASK]",
+        "[]",
+        "[NOPE]",
+    ] {
         expect_job_err(
             &job_template(
                 "SERVICE, EXPR",
@@ -293,18 +299,20 @@ fn run_scope_service_on_step_environment_is_rejected() {
                 &format!("        runScope: {run_scope}\n        variables: {{ K: v }}\n"),
             ),
             SERVICE_EXTS,
-            &["1 validation error for JobTemplate\n", RULE],
+            &[
+                "1 validation error for JobTemplate\n",
+                STEP_ENV_RUN_SCOPE_RULE,
+            ],
         );
     }
 }
 
-/// A Step Environment whose `runScope` includes `SERVICE` *and* references
-/// `Service.*` gets the constraint-4 error alone: the reference errors
-/// would only restate a consequence, and the old wording — that the
-/// Environment "is entered in Service Sessions" — was false for a Step
-/// Environment, which never is.
+/// A Step Environment that gives a `runScope` *and* references `Service.*`
+/// gets the constraint-4 error alone: the Step lists the Service, so the
+/// references are in scope (a Step Environment is always a Task-Session
+/// site), and the list is the one finding.
 #[test]
-fn run_scope_service_on_step_environment_reports_the_list_not_each_reference() {
+fn run_scope_on_step_environment_reports_the_list_not_each_reference() {
     let template = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [SERVICE, EXPR]
@@ -316,7 +324,7 @@ services:
     script: { actions: { onRun: { command: svc } } }
 steps:
   - name: Work
-    dependencies: [{ dependsOn: "service:Svc" }]
+    dependencies: [{ service: "Svc" }]
     stepEnvironments:
       - name: Cfg
         runScope: [SERVICE]
@@ -330,10 +338,7 @@ steps:
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "steps[0] -> stepEnvironments[0] -> runScope:\n\tmust not include SERVICE: a Step \
-             Environment is entered only by the Task Sessions of its Step; no Service Session \
-             enters one, so the name would select no Session (Template Schemas §4 item 4 \
-             constraint 4).",
+            STEP_ENV_RUN_SCOPE_RULE,
         ],
     );
 }
@@ -471,7 +476,7 @@ fn run_scope_errors_in_job_template_paths() {
         &[
             "2 validation errors for JobTemplate\n",
             "jobEnvironments[0] -> runScope[1]:\n\tduplicate run scope name 'TASK'.",
-            "steps[0] -> stepEnvironments[0] -> runScope[0]:\n\tunknown run scope name 'NOPE'; expected one of TASK, SERVICE.",
+            STEP_ENV_RUN_SCOPE_RULE,
         ],
     );
 }
@@ -510,7 +515,7 @@ services:
     script: {{ actions: {{ onRun: {{ command: serve }} }} }}
 steps:
   - name: S
-    dependencies: [{{ dependsOn: "service:X" }}]
+    dependencies: [{{ service: "X" }}]
     stepEnvironments:
       - name: StepEnv
 {step_env_body}
@@ -559,8 +564,8 @@ fn environment_dependencies_requires_service_extension() {
     expect_job_err(
         &job_template(
             "EXPR",
-            "    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { K: v }\n",
-            "        dependencies: [{ dependsOn: \"service:X\" }]\n        variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }]\n    variables: { K: v }\n",
+            "        dependencies: [{ service: \"X\" }]\n        variables: { K: v }\n",
         ),
         EXPR_ONLY,
         &[
@@ -578,7 +583,7 @@ fn environment_dependencies_without_service_are_rejected_even_when_available() {
     expect_job_err(
         &job_template(
             "EXPR",
-            "    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         ALL_EXTS,
@@ -593,7 +598,7 @@ fn environment_dependencies_without_service_are_rejected_even_when_available() {
 fn environment_dependencies_accepted_on_a_job_environment_and_an_environment_template() {
     let jt = expect_job_ok(
         &job_template_with_service(
-            "    dependencies: [{ dependsOn: \"service:X\" }]\n    variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
@@ -603,7 +608,7 @@ fn environment_dependencies_accepted_on_a_job_environment_and_an_environment_tem
     assert_eq!(env.listed_services().collect::<Vec<_>>(), ["X"]);
     let et = expect_env_ok(
         &env_template_with_service(
-            "  name: E\n  dependencies: [{ dependsOn: \"service:X\" }]\n  variables: { K: v }\n",
+            "  name: E\n  dependencies: [{ service: \"X\" }]\n  variables: { K: v }\n",
         ),
         SERVICE_EXTS,
     );
@@ -618,7 +623,7 @@ fn environment_dependencies_rejected_on_a_step_environment() {
     expect_job_err(
         &job_template_with_service(
             "    variables: { K: v }\n",
-            "        dependencies: [{ dependsOn: \"service:X\" }]\n        variables: { K: v }\n",
+            "        dependencies: [{ service: \"X\" }]\n        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
@@ -665,8 +670,9 @@ fn environment_dependencies_must_not_be_empty() {
     );
 }
 
-const STEP_NAME_MSG: &str = "dependency 'S' names a Step, but an Environment is entered by \
-    Sessions, not scheduled; an Environment may depend only on a Service, as 'service:<name>'.";
+const STEP_NAME_MSG: &str = "dependency 'dependsOn: S' names a Step, but an Environment is \
+    entered by Sessions, not scheduled; an Environment may depend only on a Service, as \
+    'service: <name>'.";
 
 #[test]
 fn environment_dependencies_reject_a_step_name() {
@@ -698,24 +704,24 @@ fn environment_dependencies_reject_a_step_name() {
 fn environment_dependencies_reject_an_unknown_service() {
     expect_job_err(
         &job_template_with_service(
-            "    dependencies: [{ dependsOn: \"service:X\" }, { dependsOn: \"service:Nope\" }]\n    variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }, { service: \"Nope\" }]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobEnvironments[0] -> dependencies[1]:\n\tdependency 'service:Nope' not found: no \
+            "jobEnvironments[0] -> dependencies[1]:\n\tdependency 'service: Nope' not found: no \
              Service of that name in services or requiresServices.",
         ],
     );
     expect_env_err(
         &env_template_with_service(
-            "  name: E\n  dependencies: [{ dependsOn: \"service:Nope\" }]\n  variables: { K: v }\n",
+            "  name: E\n  dependencies: [{ service: \"Nope\" }]\n  variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
             "1 validation error for EnvironmentTemplate\n",
-            "environment -> dependencies[0]:\n\tdependency 'service:Nope' not found: no Service \
+            "environment -> dependencies[0]:\n\tdependency 'service: Nope' not found: no Service \
              of that name in this document's services.",
         ],
     );
@@ -728,12 +734,12 @@ fn environment_template_without_services_cannot_list_one() {
     expect_env_err(
         &env_template(
             "SERVICE, EXPR",
-            "  name: E\n  dependencies: [{ dependsOn: \"service:Store\" }]\n  runScope: [TASK]\n  variables: { P: \"{{ Service.Store.main.port }}\" }\n",
+            "  name: E\n  dependencies: [{ service: \"Store\" }]\n  runScope: [TASK]\n  variables: { P: \"{{ Service.Store.main.port }}\" }\n",
         ),
         SERVICE_EXTS,
         &[
             "2 validation errors for EnvironmentTemplate\n",
-            "environment -> dependencies[0]:\n\tdependency 'service:Store' not found: no Service \
+            "environment -> dependencies[0]:\n\tdependency 'service: Store' not found: no Service \
              of that name in this document's services.",
             "environment -> variables -> P:\n\tFailed to parse interpolation expression at [",
             "Undefined variable: 'Service.Store.main.port'.",
@@ -745,13 +751,13 @@ fn environment_template_without_services_cannot_list_one() {
 fn environment_dependencies_reject_a_duplicate() {
     expect_job_err(
         &job_template_with_service(
-            "    dependencies: [{ dependsOn: \"service:X\" }, { dependsOn: \"service:X\" }]\n    variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }, { service: \"X\" }]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "jobEnvironments[0] -> dependencies[1]:\n\tduplicate dependency 'service:X'.",
+            "jobEnvironments[0] -> dependencies[1]:\n\tduplicate dependency 'service: X'.",
         ],
     );
 }
@@ -764,7 +770,7 @@ fn environment_dependencies_reject_an_explicit_service_run_scope() {
         expect_job_err(
             &job_template_with_service(
                 &format!(
-                    "    dependencies: [{{ dependsOn: \"service:X\" }}]\n    runScope: {run_scope}\n    variables: {{ K: v }}\n"
+                    "    dependencies: [{{ service: \"X\" }}]\n    runScope: {run_scope}\n    variables: {{ K: v }}\n"
                 ),
                 "        variables: { K: v }\n",
             ),
@@ -779,7 +785,7 @@ fn environment_dependencies_reject_an_explicit_service_run_scope() {
     }
     expect_env_err(
         &env_template_with_service(
-            "  name: E\n  dependencies: [{ dependsOn: \"service:X\" }]\n  runScope: [SERVICE]\n  variables: { K: v }\n",
+            "  name: E\n  dependencies: [{ service: \"X\" }]\n  runScope: [SERVICE]\n  variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
@@ -792,7 +798,7 @@ fn environment_dependencies_reject_an_explicit_service_run_scope() {
     // An explicit [TASK] is fine.
     expect_job_ok(
         &job_template_with_service(
-            "    dependencies: [{ dependsOn: \"service:X\" }]\n    runScope: [TASK]\n    variables: { K: v }\n",
+            "    dependencies: [{ service: \"X\" }]\n    runScope: [TASK]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
@@ -805,16 +811,16 @@ fn environment_dependencies_errors_are_reported_together() {
     // the runScope rule its own.
     expect_job_err(
         &job_template_with_service(
-            "    dependencies: [{ dependsOn: S }, { dependsOn: \"service:Nope\" }, { dependsOn: \"service:Nope\" }]\n    runScope: [SERVICE]\n    variables: { K: v }\n",
+            "    dependencies: [{ dependsOn: S }, { service: \"Nope\" }, { service: \"Nope\" }]\n    runScope: [SERVICE]\n    variables: { K: v }\n",
             "        variables: { K: v }\n",
         ),
         SERVICE_EXTS,
         &[
             "5 validation errors for JobTemplate\n",
             &format!("jobEnvironments[0] -> dependencies[0]:\n\t{STEP_NAME_MSG}"),
-            "jobEnvironments[0] -> dependencies[1]:\n\tdependency 'service:Nope' not found",
-            "jobEnvironments[0] -> dependencies[2]:\n\tdependency 'service:Nope' not found",
-            "jobEnvironments[0] -> dependencies[2]:\n\tduplicate dependency 'service:Nope'.",
+            "jobEnvironments[0] -> dependencies[1]:\n\tdependency 'service: Nope' not found",
+            "jobEnvironments[0] -> dependencies[2]:\n\tdependency 'service: Nope' not found",
+            "jobEnvironments[0] -> dependencies[2]:\n\tduplicate dependency 'service: Nope'.",
             "jobEnvironments[0] -> runScope:\n\tEnvironment 'JobEnv' is entered in Service Sessions",
         ],
     );
@@ -1321,6 +1327,9 @@ fn non_wrapping_environment_is_not_subject_to_the_rule() {
 
 #[test]
 fn rule_applies_in_job_and_step_environments() {
+    // A Step Environment gives no runScope and is entered only by Task
+    // Sessions: it defines exactly RFC 0008's three hooks, so each
+    // onWrapService* hook on it is rejected.
     expect_job_err(
         &job_template(
             "SERVICE, EXPR, WRAP_ACTIONS",
@@ -1328,22 +1337,45 @@ fn rule_applies_in_job_and_step_environments() {
                 "    runScope: [TASK]\n{}",
                 actions_body(&["onWrapEnvEnter", "onWrapEnvExit"], 4)
             ),
-            &format!(
-                "        runScope: [TASK]\n{}",
-                actions_body(&all_seven(), 8)
-            ),
+            &actions_body(&all_seven(), 8),
         ),
         ALL_EXTS,
         &[
             "6 validation errors for JobTemplate\n",
             "jobEnvironments[0] -> script -> actions:\n\ta wrapping environment whose runScope includes TASK (runScope: [TASK]) must define onWrapTaskRun; missing: onWrapTaskRun (RFC 0009).",
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
-            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit must not be defined: this environment's runScope (runScope: [TASK]) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceEnter:\n\tonWrapServiceEnter must not be defined: this environment's runScope (a Step Environment, entered only by Task Sessions) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceRun:\n\tonWrapServiceRun must not be defined: this environment's runScope (a Step Environment, entered only by Task Sessions) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceHealthCheck:\n\tonWrapServiceHealthCheck must not be defined: this environment's runScope (a Step Environment, entered only by Task Sessions) excludes SERVICE (RFC 0009).",
+            "steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapServiceExit:\n\tonWrapServiceExit must not be defined: this environment's runScope (a Step Environment, entered only by Task Sessions) excludes SERVICE (RFC 0009).",
             // Two wrap layers in one session: the RFC 0008 single-layer rule
             // still applies alongside.
             "steps[0] -> stepEnvironments:\n\tonly one environment in the session stack may define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).",
+        ],
+    );
+}
+
+#[test]
+fn step_environment_wrapper_defines_exactly_the_three_hooks() {
+    // §4.3 constraint 6: a wrapping Step Environment with RFC 0008's three
+    // hooks is valid beside a Service; one missing onWrapTaskRun is not.
+    expect_job_ok(
+        &job_template(
+            "SERVICE, EXPR, WRAP_ACTIONS",
+            "    variables: { K: v }\n",
+            &actions_body(RFC0008_HOOKS, 8),
+        ),
+        ALL_EXTS,
+    );
+    expect_job_err(
+        &job_template(
+            "SERVICE, EXPR, WRAP_ACTIONS",
+            "    variables: { K: v }\n",
+            &actions_body(ENV_HOOKS, 8),
+        ),
+        ALL_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "steps[0] -> stepEnvironments[0] -> script -> actions:\n\ta wrapping environment whose runScope includes TASK (a Step Environment, entered only by Task Sessions) must define onWrapTaskRun; missing: onWrapTaskRun (RFC 0009).",
         ],
     );
 }

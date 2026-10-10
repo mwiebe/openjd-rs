@@ -3169,8 +3169,8 @@ steps:
   - name: Work
     dependencies:
       - dependsOn: Prepare
-      - dependsOn: "service:Coord"
-      - dependsOn: "service:Cache"
+      - service: "Coord"
+      - service: "Cache"
     script:
       actions:
         onRun:
@@ -4453,38 +4453,60 @@ mod services {
         );
     }
 
-    /// Template Schemas §3.1 constraint 4 (RFC 0009): the `:` constraint on
-    /// a Step's name is gated on SERVICE. Without the extension,
-    /// `service:Store` is an ordinary Step name and `dependsOn: service:Store`
-    /// names that Step, which runs first.
+    /// Template Schemas §3.2 (RFC 0009): a dependency names a Step with
+    /// `dependsOn` or a Service with `service`, so `:` is an ordinary
+    /// character in a Step name even with SERVICE declared; `Use` lists a
+    /// Step named `Layer: Beauty` and the Service and runs after both.
     #[test]
-    fn test_colon_in_step_name_is_a_step_name_without_service() {
+    fn test_colon_in_step_name_is_allowed_with_service() {
         let (code, stdout, stderr) =
-            run_service_template("service_colon_step_name_without_service.yaml", &[]);
+            run_service_template("service_colon_step_name_allowed.yaml", &[]);
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
-            pos(&stdout, "STORE_STEP_RAN") < pos(&stdout, "USE_STEP_RAN"),
+            pos(&stdout, "BEAUTY_STEP_RAN") < pos(&stdout, "USE_STEP_RAN"),
             "{stdout}"
         );
-        assert!(stdout.contains("Running step 'service:Store'"), "{stdout}");
+        assert!(stdout.contains("Running step 'Layer: Beauty'"), "{stdout}");
         // `check` and `summary` agree.
-        let template = templates_dir().join("service_colon_step_name_without_service.yaml");
+        let template = templates_dir().join("service_colon_step_name_allowed.yaml");
         let (code, _stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
         assert_eq!(code, 0, "{stderr}");
+        let (code, stdout, stderr) =
+            run_cli(&["summary", template.to_str().unwrap(), "--step", "Use"]);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Dependencies (2):\n- 'Layer: Beauty'\n- Service 'Store'\n"),
+            "{stdout}"
+        );
     }
 
-    /// Template Schemas §3.1 constraint 4 / §9.9 item 12: with SERVICE
-    /// declared a Step's name may not contain `:`.
+    /// Template Schemas §3.2 item 2: without SERVICE the `service` key is
+    /// gated like every other SERVICE property.
     #[test]
-    fn test_colon_in_step_name_is_rejected_with_service() {
-        let template = templates_dir().join("service_colon_step_name_invalid.yaml");
+    fn test_service_key_without_service_is_gated() {
+        let template = templates_dir().join("service_key_without_service_invalid.yaml");
         let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
         assert_ne!(code, 0, "stdout:\n{stdout}");
         assert!(
             stderr.contains(
-                "steps[0] -> name:\n\tmust not contain ':' when the SERVICE extension is used, so \
-                 that a dependsOn value beginning 'service:' can only name a Service (Template \
-                 Schemas §3.1 constraint 4)."
+                "steps[1] -> dependencies[0] -> service:\n\tservice requires the SERVICE \
+                 extension."
+            ),
+            "{stderr}"
+        );
+    }
+
+    /// Template Schemas §3.2: an entry giving both keys is rejected.
+    #[test]
+    fn test_dependency_with_both_keys_is_rejected() {
+        let template = templates_dir().join("service_dependency_both_keys_invalid.yaml");
+        let (code, stdout, stderr) = run_cli(&["check", template.to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(
+                "steps[1] -> dependencies[0]:\n\ta dependency names a Step with dependsOn or a \
+                 Service with service, not both: {dependsOn: Prepare, service: Store} (Template \
+                 Schemas §3.2)."
             ),
             "{stderr}"
         );
@@ -4502,7 +4524,7 @@ mod services {
             stderr.contains(
                 "steps[1] -> script -> actions -> onRun -> args[2]:\n\tFailed to parse \
                  interpolation expression at [0, 29]. Step 'Render' references \
-                 Service.Cache.main.port but does not list service:Cache in dependencies."
+                 Service.Cache.main.port but does not list service: Cache in dependencies."
             ),
             "{stderr}"
         );
@@ -5100,10 +5122,13 @@ mod services {
     }
 
     /// A relaunch that begins a new Service Session changes the Service's
-    /// endpoints: a Service that depends on it is restarted with the new
-    /// value (no attempt consumed), a TASK-scoped Environment that captured
-    /// it is re-entered, and later Tasks resolve the new port. With `KEEP`,
-    /// the Task running during the relaunch completes.
+    /// endpoints (RFC 0009 "Dependents of a relaunched Service"): a Service
+    /// that lists it is stopped and started again in a new Service Session
+    /// with the new value (no attempt consumed; its own `completedTasks:
+    /// KEEP` keeps its scope's completed Tasks), a TASK-scoped Environment
+    /// that captured it is re-entered, and later Tasks resolve the new port.
+    /// With `KEEP` on the relaunched Service, the Task running during the
+    /// relaunch completes.
     #[test]
     fn test_new_session_restarts_dependents_and_reenters_environments() {
         let dir = TempDir::new().unwrap();
@@ -5134,9 +5159,23 @@ mod services {
         );
         assert!(
             stdout.contains(
-                "Service 'Front' depends on a Service that began a new Service Session; \
-                 restarting it with the new endpoints"
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks: KEEP; no relaunch attempt consumed)"
             ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is starting again in a new Service Session: \
+                 Service 'Back' is READY"
+            ),
+            "{stdout}"
+        );
+        // Front's stop is not a relaunch of its own: its first instance's
+        // Session ends and a new one begins, within maxAttempts 0.
+        assert!(!stdout.contains("Relaunching Service 'Front'"), "{stdout}");
+        assert!(
+            !stdout.contains("Returning every completed Task"),
             "{stdout}"
         );
         assert!(
@@ -5182,6 +5221,77 @@ mod services {
         .into_iter()
         .collect();
         assert_eq!(lines, expected);
+    }
+
+    /// The same template with Front's `completedTasks` omitted: a dependent
+    /// that has not said its state survives a new instance is stopped and
+    /// started again as a `RERUN` Service, so Work's completed Task returns
+    /// to the queue and runs again against the new instances (RFC 0009
+    /// "Dependents of a relaunched Service").
+    #[test]
+    fn test_new_session_dependent_without_completed_tasks_reruns_its_scope() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace.txt");
+        let counter = dir.path().join("counter");
+        let original =
+            std::fs::read_to_string(templates_dir().join("service_new_session_dependents.yaml"))
+                .unwrap();
+        // Drop Front's `completedTasks: KEEP` (the one following
+        // `maxAttempts: 0`); Back's stays.
+        let marker = "      maxAttempts: 0\n";
+        let at = original.find(marker).unwrap() + marker.len();
+        let keep = "      completedTasks: KEEP\n";
+        let keep_at = at + original[at..].find(keep).unwrap();
+        let template = format!(
+            "{}{}",
+            &original[..keep_at],
+            &original[keep_at + keep.len()..]
+        );
+        assert_eq!(
+            template.matches("\n      completedTasks: KEEP\n").count(),
+            1,
+            "{template}"
+        );
+        let path = dir.path().join("omitted.yaml");
+        std::fs::write(&path, template).unwrap();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path.to_str().unwrap(),
+            "-p",
+            &format!("TraceFile={}", trace.display()),
+            "-p",
+            &format!("CounterFile={}", counter.display()),
+        ]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks omitted, read as RERUN; no relaunch attempt \
+                 consumed)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Returning every completed Task of Step(s) 'Work' to the queue: a Service with \
+                 completedTasks: RERUN (scope: Step Work) was relaunched"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Relaunching Service 'Front'"), "{stdout}");
+        // Task 1 ran twice: once against the old instances, once again after
+        // Front's restart; Tasks 2 and 3 once each after it.
+        let lines = read_trace(&trace);
+        let starts: Vec<&str> = lines
+            .iter()
+            .filter(|l| l.starts_with("task ") && l.contains(" start "))
+            .map(|l| l.split(" start").next().unwrap())
+            .collect();
+        assert_eq!(
+            starts,
+            ["task 1", "task 2", "task 1", "task 2", "task 3"],
+            "{lines:?}"
+        );
     }
 
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY

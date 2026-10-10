@@ -52,7 +52,7 @@ services:
 steps:
   - name: Report
     dependencies:
-      - dependsOn: "service:Metrics"
+      - service: "Metrics"
     script:
       actions:
         onRun:

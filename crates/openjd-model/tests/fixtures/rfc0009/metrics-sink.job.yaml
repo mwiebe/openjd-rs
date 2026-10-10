@@ -24,7 +24,7 @@ services:
   - name: Proxy
     description: "Fronts the sink's HTTP API with authentication."
     dependencies:
-      - dependsOn: service:Metrics
+      - service: Metrics
     ports:
       - name: http
     script:
@@ -40,7 +40,7 @@ services:
 steps:
   - name: RenderFrames
     dependencies:
-      - dependsOn: service:Metrics
+      - service: Metrics
     parameterSpace:
       taskParameterDefinitions:
         - name: Frame
@@ -60,7 +60,7 @@ steps:
   - name: Report
     dependencies:
       - dependsOn: RenderFrames
-      - dependsOn: service:Proxy
+      - service: Proxy
     script:
       actions:
         onRun:

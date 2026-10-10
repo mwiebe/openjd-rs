@@ -121,7 +121,7 @@ pub(super) fn instantiate_step(
 
     // The Services whose `Service.*` endpoints this Step's Task Sessions
     // may reference (RFC 0009 §9 scope rule 3, §9.8 item 2): the inline and
-    // required Services the Step lists as `service:<name>` in its
+    // required Services the Step lists with the `service` key in its
     // `dependencies`.
     let in_scope_services =
         || crate::template::listed_services(st.dependencies.as_deref(), services);
@@ -188,15 +188,16 @@ pub(super) fn instantiate_step(
 
     // The same checks for this step's environments (session scope):
     // `variables` values, every action's `command`/`args`, embedded-file
-    // `data`. An Environment whose `runScope` excludes SERVICE also sees
-    // the `Service.*` endpoints its Step lists (RFC 0009: a Step
-    // Environment follows its Step's dependencies).
+    // `data`. A Step Environment sees the `Service.*` endpoints its Step
+    // lists (RFC 0009: a Step Environment follows its Step's dependencies
+    // and is entered only by Task Sessions).
     if let Some(envs) = &st.step_environments {
         let mut check_errors = ValidationErrors::default();
         let envs_path = path_field(&step_path, "stepEnvironments");
         for (j, env) in envs.iter().enumerate() {
             let env_symtab = build_env_check_symtab(
                 env,
+                EnvironmentKind::Step,
                 &step_symtab,
                 has_expr,
                 ctx,
@@ -219,15 +220,12 @@ pub(super) fn instantiate_step(
     let step_environments = st
         .step_environments
         .as_ref()
-        .map(|envs| envs.iter().map(convert_environment).collect());
+        .map(|envs| envs.iter().map(convert_step_environment).collect());
 
-    let dependencies = st.dependencies.as_ref().map(|deps| {
-        deps.iter()
-            .map(|d| job::StepDependency {
-                depends_on: d.depends_on.clone(),
-            })
-            .collect()
-    });
+    let dependencies = st
+        .dependencies
+        .as_ref()
+        .map(|deps| deps.iter().map(job::StepDependency::from).collect());
 
     let script = script.ok_or_else(|| {
         ModelError::DecodeValidation("Step must have a script or SimpleAction".to_string())
@@ -444,18 +442,32 @@ pub(super) fn instantiate_service<'a>(
     };
 
     let policy = svc.restart_policy();
+    let policy_path = path_field(path, "restartPolicy");
+    let max_attempts = resolve_service_u64(
+        policy.max_attempts.as_ref(),
+        &service_symtab,
+        budgets,
+        &path_field(&policy_path, "maxAttempts"),
+        0..=i64::MAX,
+        "must be >= 0.",
+        // DEFAULT_MAX_ATTEMPTS is 0, which fits every unsigned width.
+        template::ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS.unsigned_abs(),
+    )?;
+    // §9.5 item 2 / §9.9 item 12: a resolved maxAttempts > 0 needs
+    // completedTasks (a literal one was checked at template validation).
+    if max_attempts > 0 && policy.completed_tasks.is_none() {
+        let mut errors = ValidationErrors::default();
+        errors.add(
+            &policy_path,
+            crate::template::validate_v2023_09::service::completed_tasks_required_message(
+                i64::try_from(max_attempts).unwrap_or(i64::MAX),
+            ),
+        );
+        errors.into_result("JobTemplate")?;
+    }
     let restart_policy = job::ServiceRestartPolicy {
-        max_attempts: resolve_service_u64(
-            policy.max_attempts.as_ref(),
-            &service_symtab,
-            budgets,
-            &path_field(&path_field(path, "restartPolicy"), "maxAttempts"),
-            0..=i64::MAX,
-            "must be >= 0.",
-            // DEFAULT_MAX_ATTEMPTS is 0, which fits every unsigned width.
-            template::ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS.unsigned_abs(),
-        )?,
-        completed_tasks: policy.completed_tasks(),
+        max_attempts,
+        completed_tasks: policy.completed_tasks,
     };
 
     // Re-check the carried-forward (host-resolved) fields with the job
@@ -488,13 +500,10 @@ pub(super) fn instantiate_service<'a>(
         // stamps an external Service with its attachment.
         document: job::Document::JobTemplate,
         scope,
-        dependencies: svc.dependencies.as_ref().map(|deps| {
-            deps.iter()
-                .map(|d| job::StepDependency {
-                    depends_on: d.depends_on.clone(),
-                })
-                .collect()
-        }),
+        dependencies: svc
+            .dependencies
+            .as_ref()
+            .map(|deps| deps.iter().map(job::StepDependency::from).collect()),
         host_requirements,
         ports,
         health_check,
@@ -888,11 +897,14 @@ fn build_task_check_symtab<'a>(
 /// `requirements` the required Services it may: those it lists in its own
 /// `dependencies` for a Job Environment or an attached Environment (which
 /// has no requirements), those its Step lists for a Step Environment; their
-/// `Service.<name>.<port>.port` / `.connectAddress` are seeded only when the
-/// environment's effective `runScope` excludes `SERVICE` (Template Schemas
-/// §4 item 4.2, RFC 0009).
+/// `Service.<name>.<port>.port` / `.connectAddress` are seeded for a Step
+/// Environment always (`kind`: entered only by Task Sessions) and for a Job
+/// Environment only when its effective `runScope` excludes `SERVICE`
+/// (Template Schemas §4 item 4.2, RFC 0009).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_env_check_symtab<'a>(
     env: &template::Environment,
+    kind: EnvironmentKind,
     base: &SymbolTable,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
@@ -902,7 +914,7 @@ pub(super) fn build_env_check_symtab<'a>(
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
-    if !env.runs_in(template::RunScope::Service) {
+    if kind == EnvironmentKind::Step || !env.runs_in(template::RunScope::Service) {
         crate::job::service_symbols::add_unresolved_service_symbols(
             &mut symtab,
             in_scope_services,
@@ -978,10 +990,34 @@ fn convert_embedded_file(f: &template::EmbeddedFile) -> job::EmbeddedFile {
     }
 }
 
-/// Convert a template Environment to a job Environment (SESSION scope — keep FormatString).
+/// Which list an Environment is an entry of (RFC 0009): a Job Environment
+/// (or an Environment Template's `environment`) has a `runScope`, explicit
+/// or defaulted; a Step Environment has none and is entered only by the
+/// Task Sessions of its Step (Template Schemas §4 item 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentKind {
+    /// A `jobEnvironments` entry or an Environment Template's `environment`.
+    Job,
+    /// A `stepEnvironments` entry.
+    Step,
+}
+
+/// Convert a template Job Environment (or an Environment Template's
+/// `environment`) to a job Environment (SESSION scope — keep FormatString).
 #[must_use]
 pub fn convert_environment(env: &template::Environment) -> job::Environment {
     convert_environment_with_symtab(env, None)
+}
+
+/// Convert a template Step Environment to a job Environment. A Step
+/// Environment gives no `runScope` (validation rejects one) and is entered
+/// only by the Task Sessions of its Step, so its `run_scope` is materialized
+/// as `[TASK]` (Template Schemas §4 item 4, RFC 0009).
+#[must_use]
+pub fn convert_step_environment(env: &template::Environment) -> job::Environment {
+    let mut converted = convert_environment_with_symtab(env, None);
+    converted.run_scope = Some(vec![template::RunScope::Task]);
+    converted
 }
 
 /// Convert a template Environment to a job Environment, optionally filtering
@@ -995,22 +1031,19 @@ pub fn convert_environment_with_symtab(
         name: env.name.clone(),
         description: env.description.as_ref().map(|d| d.0.clone()),
         // §4 item 3: carried as written; validation (pass 11) has rejected
-        // every entry that is not `service:<name>` naming a Service the
+        // every entry that is not `service: <name>` naming a Service the
         // Environment may depend on.
-        dependencies: env.dependencies.as_ref().map(|deps| {
-            deps.iter()
-                .map(|d| job::StepDependency {
-                    depends_on: d.depends_on.clone(),
-                })
-                .collect()
-        }),
+        dependencies: env
+            .dependencies
+            .as_ref()
+            .map(|deps| deps.iter().map(job::StepDependency::from).collect()),
         // Validation (pass 11) has rejected unrecognized names, so every
         // entry parses; one that does not (a directly-constructed template
         // bypassing decode) is dropped rather than failing conversion. An
         // absent `runScope` is materialized as its effective default (§4
         // item 4): `[TASK]` when the Environment lists a Service in
-        // `dependencies` or references `Service.*`, else left absent (every
-        // kind of Session).
+        // `dependencies`, else left absent (every kind of Session). A Step
+        // Environment's is `[TASK]` always (`convert_step_environment`).
         run_scope: match &env.run_scope {
             Some(names) => Some(
                 names

@@ -21,7 +21,7 @@ pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
     /// §4 item 3 (RFC 0009) — the Services this Environment depends on,
-    /// each a [`StepDependency`] in the `service:<name>` form. Requires the
+    /// each a [`StepDependency`] with the `service` key. Requires the
     /// `SERVICE` extension. Permitted only on a `jobEnvironments` entry and
     /// on an Environment Template's `environment`; a `stepEnvironments`
     /// entry follows its Step's `dependencies` and may not give a list of
@@ -29,16 +29,18 @@ pub struct Environment {
     /// / `.connectAddress` available to the Environment's format strings; a
     /// Job Environment that lists an inline Service puts every Step in that
     /// Service's scope (§9.1 rule 3). Held as written: validation reports a
-    /// Step-name entry, an unknown Service, or a duplicate with a field
+    /// `dependsOn` entry, an unknown Service, or a duplicate with a field
     /// path. See [`listed_services`](Self::listed_services).
     pub dependencies: Option<Vec<StepDependency>>,
     /// §4 item 4 (RFC 0009) — the kinds of Session this Environment is
     /// entered in, as `<RunScopeName>`s. Requires the `SERVICE` extension.
-    /// `None` means the default: `[TASK]` when the Environment lists a
-    /// Service in `dependencies` or references a `Service.*` value, every
-    /// kind of Session otherwise. Held as plain strings so that an
-    /// unrecognized name is reported with a field path by template
-    /// validation rather than as a serde error; use
+    /// Permitted only on a `jobEnvironments` entry and on an Environment
+    /// Template's `environment`; a `stepEnvironments` entry may not give it
+    /// (a Step Environment is entered only by the Task Sessions of its
+    /// Step). `None` means the default: `[TASK]` when the Environment lists
+    /// a Service in `dependencies`, every kind of Session otherwise. Held as
+    /// plain strings so that an unrecognized name is reported with a field
+    /// path by template validation rather than as a serde error; use
     /// [`runs_in`](Self::runs_in) to query the effective scope.
     pub run_scope: Option<Vec<String>>,
     pub script: Option<EnvironmentScript>,
@@ -46,14 +48,16 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// True iff this Environment is entered in Sessions of kind `kind` (§4
-    /// item 4, RFC 0009): exactly the kinds the list names when `runScope`
-    /// is given; otherwise the default, which follows the Environment's own
-    /// text — `[TASK]` when it lists a Service in `dependencies` or any of
-    /// its format strings references a `Service.*` value (see
+    /// True iff this Job Environment (or Environment Template's
+    /// `environment`) is entered in Sessions of kind `kind` (§4 item 4, RFC
+    /// 0009): exactly the kinds the list names when `runScope` is given;
+    /// otherwise the default, which follows the Environment's own text —
+    /// `[TASK]` when it lists a Service in `dependencies` (see
     /// [`default_run_scope_is_task_only`](Self::default_run_scope_is_task_only)),
     /// every kind otherwise. Unrecognized names, which template validation
-    /// rejects, never match.
+    /// rejects, never match. Not meaningful for a Step Environment, which
+    /// gives no `runScope` and is entered only by the Task Sessions of its
+    /// Step.
     pub fn runs_in(&self, kind: RunScope) -> bool {
         match &self.run_scope {
             None => !self.default_run_scope_is_task_only() || kind == RunScope::Task,
@@ -70,35 +74,32 @@ impl Environment {
             .filter(move |kind| self.runs_in(*kind))
     }
 
-    /// The Service names this Environment lists in `dependencies` as
-    /// `service:<name>` (§4 item 3), in list order. Empty when the list is
-    /// absent; a Step-name entry (a validation error) yields nothing here.
+    /// The Service names this Environment lists in `dependencies` with the
+    /// `service` key (§4 item 3), in list order. Empty when the list is
+    /// absent; a `dependsOn` entry (a validation error) yields nothing here.
     pub fn listed_services(&self) -> impl Iterator<Item = &str> + '_ {
         listed_service_names(self.dependencies.as_deref())
     }
 
     /// True when this Environment lists any Service in `dependencies` (§4
-    /// item 3) — one of the two conditions under which an absent `runScope`
-    /// defaults to `[TASK]`.
+    /// item 3) — the condition under which an absent `runScope` defaults to
+    /// `[TASK]`.
     pub fn depends_on_service(&self) -> bool {
         self.listed_services().next().is_some()
     }
 
     /// True when any format string of this Environment (`variables`,
     /// actions, embedded files, script `let`) references a `Service.*`
-    /// value. For a Step Environment, which has no `dependencies` of its
-    /// own and follows its Step's, this is the condition that makes an
-    /// absent `runScope` default to `[TASK]` (§4 item 4).
+    /// value. An Environment whose explicit `runScope` includes `SERVICE`
+    /// may not (§4 item 4 constraint 2).
     pub fn references_service(&self) -> bool {
         super::service_scope::environment_references_service(self)
     }
 
     /// True when `runScope` is absent and defaults to `[TASK]` (§4 item 4):
-    /// the Environment lists a Service in `dependencies`, or — a Step
-    /// Environment following its Step's list, or a Job Environment whose
-    /// reference validation rejects — references `Service.*`.
+    /// the Environment lists a Service in `dependencies`.
     pub fn default_run_scope_is_task_only(&self) -> bool {
-        self.run_scope.is_none() && (self.depends_on_service() || self.references_service())
+        self.run_scope.is_none() && self.depends_on_service()
     }
 }
 
@@ -207,13 +208,9 @@ mod tests {
     fn default_follows_a_service_dependency() {
         let mut e = env(None);
         e.dependencies = Some(vec![
-            StepDependency {
-                depends_on: "service:Cache".into(),
-            },
-            // A Step-name entry (rejected by validation) is not a Service.
-            StepDependency {
-                depends_on: "Prepare".into(),
-            },
+            StepDependency::on_service("Cache"),
+            // A `dependsOn` entry (rejected by validation) is not a Service.
+            StepDependency::on_step("Prepare"),
         ]);
         assert_eq!(e.listed_services().collect::<Vec<_>>(), vec!["Cache"]);
         assert!(e.depends_on_service());
@@ -233,9 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn default_follows_a_service_reference() {
-        // A Step Environment has no list of its own: a reference to a
-        // Service its Step lists is what makes it Task-only by default.
+    fn a_reference_alone_does_not_change_the_default() {
+        // Only the `dependencies` list decides the default: a Job
+        // Environment that references a Service without listing it is a
+        // validation error, not a Task-only Environment; a Step Environment
+        // gives no runScope and is always Task-only, which its owner
+        // decides, not this accessor.
         let mut e = env(None);
         e.variables = Some(
             [(
@@ -247,18 +247,9 @@ mod tests {
         );
         assert!(e.references_service());
         assert!(!e.depends_on_service());
-        assert!(e.default_run_scope_is_task_only());
-        assert!(e.runs_in(RunScope::Task));
-        assert!(!e.runs_in(RunScope::Service));
-        assert_eq!(
-            e.effective_run_scope().collect::<Vec<_>>(),
-            vec![RunScope::Task]
-        );
-        // An explicit list is exhaustive and honored even with a reference
-        // (validation rejects SERVICE here; the accessor just reports it).
-        e.run_scope = Some(vec!["SERVICE".to_string()]);
-        assert!(e.runs_in(RunScope::Service));
         assert!(!e.default_run_scope_is_task_only());
+        assert!(e.runs_in(RunScope::Task));
+        assert!(e.runs_in(RunScope::Service));
     }
 
     #[test]

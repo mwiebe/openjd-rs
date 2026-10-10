@@ -162,25 +162,17 @@ pub fn validate_structure(
 
     // Step validation
     let all_step_names: HashSet<String> = jt.steps.iter().map(|s| s.name.clone()).collect();
-    // RFC 0009: with SERVICE, a `dependsOn` beginning `service:` names a
-    // Service; those entries are resolved by pass 11 against `services` and
-    // `requiresServices`, and the combined Step/Service graph is checked for
-    // cycles there.
-    let service_active = ctx.profile.has_extension(ModelExtension::Service);
-    // The Services a `dependsOn` could have meant, for the hint on a target
-    // that names nothing (RFC 0009 §3.2).
+    // RFC 0009: a `service` entry names a Service; those entries are
+    // resolved by pass 11 against `services` and `requiresServices` (and
+    // gated when SERVICE is not declared), and the combined Step/Service
+    // graph is checked for cycles there. The Services a `dependsOn` could
+    // have meant, for the hint on one that names no Step (§3.2).
     let service_names: Vec<&str> = jt
         .services()
         .iter()
         .map(|s| s.name.as_str())
         .chain(jt.requires_services().iter().map(|r| r.name.as_str()))
         .collect();
-    // Without SERVICE, a `services` or `requiresServices` list is itself
-    // the error (pass 11 reports it); a `service:`-prefixed target that
-    // then names no Step is a consequence of the missing extension, not a
-    // finding of its own, and is left unreported.
-    let service_lists_without_extension =
-        !service_active && (jt.services.is_some() || jt.requires_services.is_some());
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
@@ -220,40 +212,38 @@ pub fn validate_structure(
             errors.add(&step_path, "must have 'script' or a simple action field.");
         }
 
-        // Dependencies (§3.2). Step targets resolve here; `service:` targets
-        // (SERVICE only) resolve in pass 11. Self-dependency and duplicates
-        // are checked for both kinds.
+        // Dependencies (§3.2). Each entry is exactly one of `dependsOn` /
+        // `service`; `dependsOn` entries resolve here, `service` entries
+        // (SERVICE only) in pass 11. Self-dependency and duplicates are
+        // checked for both kinds.
         if let Some(deps) = &step.dependencies {
             let deps_path = path_field(&step_path, "dependencies");
             if deps.is_empty() {
                 errors.add(&deps_path, "must not be empty.");
             }
-            let mut dep_names = HashSet::new();
+            let mut seen: HashSet<&StepDependency> = HashSet::new();
             for (j, dep) in deps.iter().enumerate() {
                 let dep_path = path_index(&deps_path, j);
-                if let Some(target) = dep.target(service_active).step() {
+                if !dep.is_well_formed() {
+                    errors.add(&dep_path, super::service::malformed_dependency(dep));
+                    continue;
+                }
+                if let Some(target) = dep.step() {
                     if target == step.name {
                         errors.add(&dep_path, "cannot depend on itself.");
                     }
                     if !step_names.contains(target) && !all_step_names.contains(target) {
-                        let consequence = service_lists_without_extension
-                            && target.starts_with(SERVICE_DEPENDENCY_PREFIX);
-                        if !consequence {
-                            errors.add(
-                                &dep_path,
-                                format!(
-                                    "dependency '{target}' not found{}",
-                                    service_dependency_hint(target, service_names.iter().copied())
-                                ),
-                            );
-                        }
+                        errors.add(
+                            &dep_path,
+                            super::service::unknown_step_dependency(
+                                target,
+                                service_names.iter().copied(),
+                            ),
+                        );
                     }
                 }
-                if !dep_names.insert(&dep.depends_on) {
-                    errors.add(
-                        &dep_path,
-                        format!("duplicate dependency '{}'.", dep.depends_on),
-                    );
+                if !seen.insert(dep) {
+                    errors.add(&dep_path, super::service::duplicate_dependency(dep));
                 }
             }
         }
@@ -331,10 +321,10 @@ pub fn validate_structure(
         }
     }
 
-    // Cycle detection. With SERVICE the Steps' and Services' `dependencies`
-    // form one graph, which pass 11 checks (naming the cycle); without it
-    // only Step-to-Step edges exist.
-    if !service_active {
+    // Cycle detection. With SERVICE the Steps', Services' and Job
+    // Environments' `dependencies` form one graph, which pass 11 checks
+    // (naming the cycle); without it only Step-to-Step edges exist.
+    if !ctx.profile.has_extension(ModelExtension::Service) {
         detect_dependency_cycles(&jt.steps, errors);
     }
 
@@ -1070,7 +1060,11 @@ fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationError
         let deps: Vec<String> = step
             .dependencies
             .as_ref()
-            .map(|d| d.iter().map(|dep| dep.depends_on.clone()).collect())
+            .map(|d| {
+                d.iter()
+                    .filter_map(|dep| dep.step().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         adj.insert(name, deps);
     }

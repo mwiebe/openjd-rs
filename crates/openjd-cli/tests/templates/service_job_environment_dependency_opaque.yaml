@@ -17,7 +17,7 @@ parameterDefinitions:
 jobEnvironments:
   - name: Opaque
     dependencies:
-      - dependsOn: service:Store
+      - service: Store
     variables:
       OPAQUE_SEEN: "yes"
     script:

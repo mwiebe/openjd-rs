@@ -20,8 +20,8 @@
 //!
 //! | written | now |
 //! |---|---|
-//! | `jobServices` (root) | `services`, with `dependsOn: service:<name>` on each Step |
-//! | `stepServices` (a Step) | the top-level `services`, with `dependsOn: service:<name>` on the Step |
+//! | `jobServices` (root) | `services`, with `service: <name>` on each Step |
+//! | `stepServices` (a Step) | the top-level `services`, with `service: <name>` on the Step |
 //! | `serviceEnvironments` (root) | removed; `onEnter`, or a Job Environment with `runScope: [SERVICE]` |
 //! | `requiresServices` (Environment Template root) | a Job Template property; an Environment Template provides Services in `services` |
 //! | `readinessCheck` (a Service) | `healthCheck` |
@@ -134,11 +134,11 @@ fn hint(path: &[PathElement], message: &str) -> Option<String> {
     let text = match field {
         "jobServices" if at_root => {
             "'jobServices' is not a property; declare Services in 'services' and put each Step \
-             in a Service's scope with 'dependsOn: service:<name>' in the Step's dependencies."
+             in a Service's scope with 'service: <name>' in the Step's dependencies."
         }
         "stepServices" if on_step => {
             "'stepServices' is not a property; move the Service to the top-level 'services' list \
-             and add 'dependsOn: service:<name>' to this Step's dependencies."
+             and add 'service: <name>' to this Step's dependencies."
         }
         // Only the Environment Template root rejects it; a Job Template's
         // is a known field.

@@ -32,7 +32,7 @@ environment:
   description: "Tells every Task where the Job's Valkey store is."
   # Depending on the Service is what lets this Environment reference Service.Cache.*.
   dependencies:
-    - dependsOn: service:Cache
+    - service: Cache
   # An Environment that depends on a Service applies to Task Sessions only;
   # it would be meaningless in the Service's own Session.
   runScope: [TASK]

@@ -123,13 +123,14 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// reference under the same rule: the `requiresServices` entries its Step
 /// (a Step Environment) or it (a Job Environment) lists in `dependencies`
 /// (`listed_requirements`); none for an Environment Template. Their
-/// `Service.<name>.<port>.port` / `.connectAddress` are added only when the
-/// environment's effective `runScope` excludes `SERVICE` (§4 item 4.2, §9.9
-/// item 2) — which it does by default for an Environment that lists or
-/// references a Service; an Environment with an explicit `runScope`
-/// including `SERVICE` never sees any `Service.*` value, so a reference
-/// there surfaces as an undefined variable. `bindAddress` is never in scope
-/// in an environment.
+/// `Service.<name>.<port>.port` / `.connectAddress` are added for a Step
+/// Environment always (it is entered only by Task Sessions and gives no
+/// `runScope`, §4 item 4), and for a Job Environment only when its
+/// effective `runScope` excludes `SERVICE` (§4 item 4.2, §9.9 item 2) —
+/// which it does by default for an Environment that lists a Service; an
+/// Environment with an explicit `runScope` including `SERVICE` never sees
+/// any `Service.*` value, so a reference there surfaces as an undefined
+/// variable. `bindAddress` is never in scope in an environment.
 fn build_session_scope_symtab<'a>(
     params: Option<&[JobParameterDefinition]>,
     env: &Environment,
@@ -139,7 +140,7 @@ fn build_session_scope_symtab<'a>(
     requirements: impl IntoIterator<Item = &'a ServiceRequirement>,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(params);
-    if !env.runs_in(RunScope::Service) {
+    if is_step_env || !env.runs_in(RunScope::Service) {
         add_unresolved_service_symbols(&mut symtab, in_scope_services, None).expect("symtab");
         add_unresolved_requirement_symbols(&mut symtab, requirements).expect("symtab");
     }
@@ -195,7 +196,7 @@ fn build_session_scope_symtab<'a>(
 ///           plus let bindings.
 ///
 /// With `SERVICE` (RFC 0009), the `port` / `connectAddress` of the inline
-/// and required Services the Step lists as `service:<name>` in its
+/// and required Services the Step lists with the `service` key in its
 /// `dependencies` are in scope (Template Schemas §9 scope item 3, §9.8
 /// item 2); `bindAddress` never is. A reference to a Service the Step does
 /// not list — inline or required — surfaces as an undefined variable, which
@@ -2145,10 +2146,10 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
-                // RFC 0009 §9 scope item 3: a step environment whose
-                // effective runScope excludes SERVICE follows its Step's
-                // dependencies — it sees the inline and required Services
-                // the Step lists, and no other.
+                // RFC 0009 §9 scope item 3: a Step Environment is entered
+                // only by Task Sessions and follows its Step's dependencies
+                // — it sees the inline and required Services the Step
+                // lists, and no other.
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,

@@ -30,9 +30,9 @@ pub use error::{DiagnosticSpan, ErrorDetail};
 pub use error::{PathElement, ValidationError, ValidationErrors};
 pub use job::create_job::{
     apply_environment_templates, build_symbol_table, convert_environment,
-    convert_environment_with_symtab, create_job, evaluate_let_bindings,
+    convert_environment_with_symtab, convert_step_environment, create_job, evaluate_let_bindings,
     merge_job_parameter_definitions, preprocess_job_parameters, AppliedEnvironmentTemplates,
-    AttachedEnvironmentTemplate, MergedParameterDefinition, PathParameterOptions,
+    AttachedEnvironmentTemplate, EnvironmentKind, MergedParameterDefinition, PathParameterOptions,
     RequirementBinding,
 };
 pub use step_dependency_graph::StepDependencyGraph;

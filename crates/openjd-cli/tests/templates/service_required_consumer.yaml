@@ -16,13 +16,13 @@ requiresServices:
 jobEnvironments:
   - name: RClient
     dependencies:
-      - dependsOn: service:R
+      - service: R
     variables:
       R_ENDPOINT: "{{ Service.R.main.connectAddress }}:{{ Service.R.main.port }}"
 steps:
   - name: Use
     dependencies:
-      - dependsOn: service:R
+      - service: R
     script:
       actions:
         onRun:

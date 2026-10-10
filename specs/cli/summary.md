@@ -123,8 +123,10 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
    `Display` of `job::ServiceScope`: `every Step` / `Step Work` / `Steps A, B`),
    description, `Ports: api (TCP), metrics (TCP, port 9100)` (protocol, and the pinned
    number when the template gives one), `Health check: <TYPE>`, `Restart policy:
-   maxAttempts N, completedTasks KEEP|RERUN`, and `Dependencies: 'Prepare', Service 'Back'`
-   when it lists any.
+   maxAttempts N, completedTasks KEEP|RERUN|none` (`none` when the template gave none,
+   which it may only with `maxAttempts` 0; JSON `"completed_tasks": null`), and
+   `Dependencies: 'Prepare', Service 'Back'` (a `dependsOn` entry as `'Name'`, a `service`
+   entry as `Service 'Name'`) when it lists any.
 5. **Required Services** (RFC 0009 §9.8) — each `requiresServices` entry with its ports
    and either `— satisfied by <document>` (the attachment `apply_environment_templates`
    bound it to) or `— not satisfied: attach an Environment Template that declares it with
@@ -224,11 +226,11 @@ struct StepInfo {
     deps: Vec<DepInfo>,
 }
 
-struct DepInfo { name: String, is_service: bool }           // one `dependencies` entry
+struct DepInfo { name: String, is_service: bool }           // one `dependencies` entry: dependsOn (false) or service (true)
 struct PortInfo { name: String, protocol: String, port: Option<u16> }
 struct ServiceInfo {                                        // one `services` entry
     name: String, description: Option<String>, document: Option<String>, scope: String,
-    ports: Vec<PortInfo>, health_check: String, max_attempts: u64, completed_tasks: String,
+    ports: Vec<PortInfo>, health_check: String, max_attempts: u64, completed_tasks: Option<String>,
     deps: Vec<DepInfo>,
 }
 struct RequirementInfo { name: String, ports: Vec<PortInfo>, satisfied_by: Option<String> }

@@ -18,7 +18,7 @@ mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
-mod service;
+pub(crate) mod service;
 mod service_diagnostics;
 mod structure;
 mod task_chunking;

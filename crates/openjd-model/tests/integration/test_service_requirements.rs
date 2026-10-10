@@ -93,7 +93,7 @@ fn job(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
 fn with_step_deps(template: &str, names: &[&str]) -> String {
     let deps = names
         .iter()
-        .map(|n| format!("{{ dependsOn: \"service:{n}\" }}"))
+        .map(|n| format!("{{ service: \"{n}\" }}"))
         .collect::<Vec<_>>()
         .join(", ");
     template.replacen(
@@ -128,8 +128,8 @@ fn requirement_opens_port_and_connect_address_where_listed() {
     // inline `Proxy` must likewise be listed by the Step that references it.
     let t = with_step_deps(&job(
         "  - name: Cache\n    ports:\n      - name: main\n      - name: stats\n        protocol: UDP\n",
-        "  - name: Proxy\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
-        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
+        "  - name: Proxy\n    dependencies: [{ service: \"Cache\" }]\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}:{{ Service.Cache.main.port }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ service: \"Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      STATS: \"{{ Service.Cache.stats.port }}\"\n",
         r#"["{{ Service.Cache.main.port }}", "{{ join_host_port(Service.Cache.main.connectAddress, Service.Cache.main.port) }}", "{{ Service.Proxy.main.port }}"]"#,
     ), &["Proxy", "Cache"])
     .replace(
@@ -174,9 +174,9 @@ fn step_reference_to_a_required_service_without_dependency_is_rejected() {
         2,
         &[
             "steps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [",
-            "Step 'S' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "Step 'S' references Service.Cache.main.connectAddress but does not list service: Cache in dependencies.",
             "steps[0] -> script -> actions -> onRun -> args[1]:\n\tFailed to parse interpolation expression at [",
-            "Step 'S' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+            "Step 'S' references Service.Cache.main.port but does not list service: Cache in dependencies.",
         ],
     );
     assert!(!err.contains("Undefined variable"), "{err}");
@@ -194,7 +194,7 @@ fn step_environment_reference_to_a_required_service_without_dependency_is_reject
         1,
         &[
             "steps[0] -> stepEnvironments[0] -> variables -> P:\n\tFailed to parse interpolation expression at [",
-            "Step 'S' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service:Cache in dependencies.",
+            "Step 'S' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service: Cache in dependencies.",
         ],
     );
 }
@@ -243,9 +243,9 @@ fn service_reference_to_a_required_service_without_dependency_is_rejected() {
         2,
         &[
             "services[0] -> variables -> UP:\n\tFailed to parse interpolation expression at [",
-            "Service 'Proxy' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "Service 'Proxy' references Service.Cache.main.connectAddress but does not list service: Cache in dependencies.",
             "services[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [",
-            "Service 'Proxy' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+            "Service 'Proxy' references Service.Cache.main.port but does not list service: Cache in dependencies.",
         ],
     );
 }
@@ -259,7 +259,7 @@ fn job_environment_reference_to_a_required_service_needs_the_dependency() {
     let jt = decode_job(&job(
         CACHE_REQ,
         "",
-        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ service: \"Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
         "[x]",
     ));
     assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
@@ -280,9 +280,9 @@ fn job_environment_reference_to_a_required_service_without_dependency_is_rejecte
         2,
         &[
             "jobEnvironments[0] -> variables -> HOST:\n\tFailed to parse interpolation expression at [",
-            "Environment 'Client' references Service.Cache.main.connectAddress but does not list service:Cache in dependencies.",
+            "Environment 'Client' references Service.Cache.main.connectAddress but does not list service: Cache in dependencies.",
             "jobEnvironments[0] -> variables -> PORT:\n\tFailed to parse interpolation expression at [",
-            "Environment 'Client' references Service.Cache.main.port but does not list service:Cache in dependencies.",
+            "Environment 'Client' references Service.Cache.main.port but does not list service: Cache in dependencies.",
         ],
     );
     assert!(!err.contains("Undefined variable"), "{err}");
@@ -295,7 +295,7 @@ fn job_environment_may_list_a_required_service_without_referencing_it() {
     let jt = decode_job(&job(
         CACHE_REQ,
         "",
-        "jobEnvironments:\n  - name: Client\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    variables: { K: v }\n",
+        "jobEnvironments:\n  - name: Client\n    dependencies: [{ service: \"Cache\" }]\n    variables: { K: v }\n",
         "[x]",
     ));
     let env = &jt.job_environments.as_ref().unwrap()[0];
@@ -456,7 +456,7 @@ fn bind_address_of_a_required_service_is_rejected_everywhere() {
     let err = job_err(&with_step_deps(
         &job(
             CACHE_REQ,
-            "  - name: Proxy\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
+            "  - name: Proxy\n    dependencies: [{ service: \"Cache\" }]\n    ports: [{ name: main }]\n    variables: { B: \"{{ Service.Cache.main.bindAddress }}\" }\n    script: { actions: { onRun: { command: proxy } } }\n",
             "",
             r#"["{{ Service.Cache.main.bindAddress }}"]"#,
         ),
@@ -825,19 +825,11 @@ fn same_named_attachments_are_accepted_when_not_required() {
 #[test]
 fn inline_service_shadowing_an_attached_one_is_accepted() {
     // §1.2.2 item 3: the inline `Cache` is what the Job Template's
-    // references resolve to (the Step lists `service:Cache`, which names
+    // references resolve to (the Step lists `service: Cache`, which names
     // the inline one); the attached one still runs.
     let fixture = include_str!("../fixtures/rfc0009/valkey-shared-store.job.yaml");
-    let fixture = if fixture.contains("service:Cache") {
-        fixture.to_string()
-    } else {
-        fixture.replacen(
-            "  - name: ProcessFrames\n",
-            "  - name: ProcessFrames\n    dependencies: [{ dependsOn: \"service:Cache\" }]\n",
-            1,
-        )
-    };
-    let jt = decode_job(&fixture);
+    assert!(fixture.contains("- service: Cache"));
+    let jt = decode_job(fixture);
     let et = decode_env(RFC_QUEUE_CACHE);
     let (job, applied) = submit(&jt, std::slice::from_ref(&et), &[]).unwrap();
     assert!(applied.requirement_bindings.is_empty());

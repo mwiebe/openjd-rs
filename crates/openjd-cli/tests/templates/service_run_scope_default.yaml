@@ -43,7 +43,7 @@ jobEnvironments:
       PLAIN_VAR: "plain-value"
   - name: XClient
     dependencies:
-      - dependsOn: service:X
+      - service: X
     variables:
       X_ENDPOINT: "{{ Service.X.main.connectAddress }}:{{ Service.X.main.port }}"
 steps:

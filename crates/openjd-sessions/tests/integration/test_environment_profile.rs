@@ -526,7 +526,7 @@ fn service(name: &str, on_run: Action) -> Service {
         },
         restart_policy: ServiceRestartPolicy {
             max_attempts: 0,
-            completed_tasks: CompletedTasksPolicy::Keep,
+            completed_tasks: Some(CompletedTasksPolicy::Keep),
         },
         variables: None,
         script: ServiceScript {

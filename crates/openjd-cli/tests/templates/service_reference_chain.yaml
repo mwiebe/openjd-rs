@@ -34,7 +34,7 @@ services:
                 c.close()
   - name: Front
     dependencies:
-      - dependsOn: "service:Back"
+      - service: "Back"
     ports:
       - name: main
     healthCheck:
@@ -69,7 +69,7 @@ services:
 steps:
   - name: Use
     dependencies:
-      - dependsOn: "service:Front"
+      - service: "Front"
     script:
       actions:
         onRun:

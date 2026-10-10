@@ -231,7 +231,7 @@ it reports is built from that prefix.
 `services` are instantiated in job scope before the steps (the Steps in a
 Service's scope may reference it), each seeing the Services it lists in its
 `dependencies` — `listed_services(svc.dependencies, services)`, the inline
-Services named by its `service:<name>` entries, in declaration order (the
+Services named by its `service` entries, in declaration order (the
 dependency graph's acyclicity is pass 11's concern; list order carries no
 meaning). First `compute_service_scopes` (see
 [template-types.md](template-types.md), "Service scope") computes every
@@ -280,13 +280,20 @@ in_scope, scope)`, path `services[k]`):
    '<earlier>'; two ports with the same protocol must not have the same
    port number.`), which catches the format-string forms the template
    validator could not compare. The same number on a TCP and a UDP port
-   is accepted.
+   is accepted. Once `maxAttempts` is resolved, §9.5 item 2 / §9.9 item 12
+   is applied to the resolved value: a `maxAttempts` greater than 0 without
+   `completedTasks` fails at `restartPolicy` with pass 11's wording
+   (`completedTasks must be provided when maxAttempts is greater than 0
+   (maxAttempts is 2): …`), which catches the format-string form the
+   template validator deferred; `job::ServiceRestartPolicy::completed_tasks`
+   is carried as given (`None` only with `maxAttempts` 0 — see
+   [job-types.md](job-types.md)).
 4. **Carried-forward re-checks** — `build_service_check_symtab` extends the
    Service's table with the `Unresolved` placeholders the Service Session
    binds (`Session.*`, PATH `Param.*`, `Service.File.*` for its embedded
    files, its own `Service.<name>.<port>.*` including `bindAddress`, the
    `port` / `connectAddress` of every Service in `in_scope` — the Services
-   of its document it lists as `service:<name>` — and of the declared ports
+   of its document it lists with the `service` key — and of the declared ports
    of the `requiresServices` entries it lists,
    `listed_requirements(svc.dependencies, requirements)`), evaluates the
    `<ServiceScript>.let` bindings into it (`script let binding '<name>':
@@ -295,8 +302,8 @@ in_scope, scope)`, path `services[k]`):
    `command` / `args`, and embedded-file `data` — the Service counterpart
    of `check_carried_forward_environment`.
 5. **Conversion** — `variables` and `script` are carried as
-   `FormatString`s; `dependencies` is copied as written (Step names and
-   `service:<name>` entries alike); `scope` is the computed value
+   `FormatString`s; `dependencies` is copied as written (`dependsOn` and
+   `service` entries alike); `scope` is the computed value
    (`AllSteps` for an external Service); `resolved_symtab` is `filter_symtab_for_service` (the
    symbols those fields and `<ServiceScript>.let` reference, with the
    `RawParam.*` fallback).
@@ -308,20 +315,22 @@ dependencies. `build_task_check_symtab` seeds a Step's check table with the
 `port` / `connectAddress` of the inline and required Services the Step lists —
 `listed_services(step.dependencies, services)` and
 `listed_requirements(step.dependencies, requirements)`; its `stepEnvironments`
-are checked by `build_env_check_symtab` against the same Services and
-requirements. A `jobEnvironments` entry is checked against the inline
+are checked by `build_env_check_symtab` (`EnvironmentKind::Step`) against the same
+Services and requirements, seeded unconditionally — a Step Environment gives
+no `runScope` and is entered only by the Task Sessions of its Step. A
+`jobEnvironments` entry (`EnvironmentKind::Job`) is checked against the inline
 Services and the requirements it lists in its *own* `dependencies` —
 `listed_services(env.dependencies, services)` and
 `listed_requirements(env.dependencies, requirements)` — the same rule as for
 a Step (listing an inline Service from a Job Environment is what puts every
-Step in its scope, §9.1 rule 3). `build_env_check_symtab` seeds these only
-when the environment's *effective* `runScope` excludes `SERVICE` — the same
-visibility rules pass 8 applied, so a reference that validated resolves here
-and at run time.
-Conversion also materializes an Environment's default `runScope`: one without
-the field that lists a Service in `dependencies` (or, a Step Environment,
-references `Service.*`) is converted with `run_scope: Some([Task])` (§4 item
-4), so a runtime never re-derives the default.
+Step in its scope, §9.1 rule 3), seeded only when the environment's
+*effective* `runScope` excludes `SERVICE` — the same visibility rules pass 8
+applied, so a reference that validated resolves here and at run time.
+Conversion also materializes an Environment's default `runScope`: a Job
+Environment without the field that lists a Service in `dependencies` is
+converted with `run_scope: Some([Task])` (§4 item 4), and every Step
+Environment is (`convert_step_environment`), so a runtime never re-derives
+the default.
 
 Environment conversion carries `dependencies` (as written), `runScope`
 (parsed to `Vec<RunScope>`) and the four `onWrapService*` hooks into
@@ -471,7 +480,7 @@ environments, environment_documents }` — the external Services instantiated
 in attachment order (then each template's `services` order), each stamped
 with its attachment as `job::Service::document` and with `scope: AllSteps`,
 each instantiated seeing the Services of its own attached document it lists
-as `service:<name>` (`listed_services(svc.dependencies, services)` over that
+with the `service` key (`listed_services(svc.dependencies, services)` over that
 document's `services`), and the attached `environment` checked against every
 Service of its document;
 the `RequirementBinding { requirement, document, service }` each
@@ -597,7 +606,7 @@ Environments converted:
    `instantiate_service` as a Job Template `services[k]` entry, with
    `InstantiateCtx` built from the attachment's profile and `services` set
    to that document's `services` (no requirements), `in_scope` the
-   Services of that document it lists as `service:<name>` —
+   Services of that document it lists with the `service` key —
    `listed_services(svc.dependencies, services)`, the only ones a
    `Service.*` reference there can name — and `scope: AllSteps` (every Step
    of the Job is in an external Service's scope, §1.2.2 item 1).
@@ -637,10 +646,15 @@ and the wrapper rule has no Service in scope.
 
 ```rust
 pub fn convert_environment(env: &template::Environment) -> job::Environment
+pub fn convert_step_environment(env: &template::Environment) -> job::Environment
 ```
 
 Converts a template environment to a resolved job environment. Takes 1 argument and is
 infallible. Environment variables and script fields remain as FormatString (session-scope).
+`convert_environment` is for a Job Environment or an Environment Template's `environment`
+(whose `runScope`, explicit or defaulted, it carries); `convert_step_environment` is for a Step
+Environment, whose `run_scope` it materializes as `Some([Task])` (a Step Environment gives no
+`runScope` and is entered only by the Task Sessions of its Step, Template Schemas §4 item 4).
 
 A separate `convert_environment_with_symtab` function accepts an optional `&SymbolTable`
 to filter the symbol table to only symbols referenced by the environment's format strings.

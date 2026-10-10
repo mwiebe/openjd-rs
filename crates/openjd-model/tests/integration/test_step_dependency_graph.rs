@@ -43,9 +43,7 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
                 } else {
                     Some(
                         deps.into_iter()
-                            .map(|d| StepDependency {
-                                depends_on: d.to_string(),
-                            })
+                            .map(|d| StepDependency::on_step(d.to_string()))
                             .collect(),
                     )
                 },

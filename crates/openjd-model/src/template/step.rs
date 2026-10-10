@@ -126,39 +126,19 @@ impl StepTemplate {
     }
 }
 
-/// The literal prefix that makes a `dependsOn` value name a Service rather
-/// than a Step under the `SERVICE` extension (§3.2, RFC 0009).
-pub const SERVICE_DEPENDENCY_PREFIX: &str = "service:";
-
-/// What a `dependsOn` value names (§3.2): a Step of the same Job Template,
-/// or, with the `SERVICE` extension, a Service the Job Template declares in
-/// `services` or requires in `requiresServices`.
-///
-/// Parsed from the raw string by [`DependencyTarget::parse`]: the `service:`
-/// prefix is recognized only when `SERVICE` is declared. In any other
-/// template `service:Cache` is an ordinary Step name (§3.1 constraint 4
-/// forbids `:` in a Step name only under `SERVICE`).
+/// What a `<StepDependency>` names (§3.2): a Step of the same Job Template
+/// (the `dependsOn` key), or, with the `SERVICE` extension, a Service the
+/// Job Template declares in `services` or requires in `requiresServices`
+/// (the `service` key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyTarget<'a> {
     /// A Step, by name; satisfied when the Step has completed.
     Step(&'a str),
-    /// A Service, by name (without the `service:` prefix); satisfied when the
-    /// Service is READY.
+    /// A Service, by name; satisfied when the Service is READY.
     Service(&'a str),
 }
 
 impl<'a> DependencyTarget<'a> {
-    /// Classify `depends_on`: with `service_active`, a value beginning
-    /// `service:` names the Service after the prefix; otherwise, and for any
-    /// other value, the whole string is a Step name.
-    #[must_use]
-    pub fn parse(depends_on: &'a str, service_active: bool) -> Self {
-        match depends_on.strip_prefix(SERVICE_DEPENDENCY_PREFIX) {
-            Some(name) if service_active => Self::Service(name),
-            _ => Self::Step(depends_on),
-        }
-    }
-
     /// The Step name, for a Step target.
     #[must_use]
     pub fn step(self) -> Option<&'a str> {
@@ -168,7 +148,7 @@ impl<'a> DependencyTarget<'a> {
         }
     }
 
-    /// The Service name (without the prefix), for a Service target.
+    /// The Service name, for a Service target.
     #[must_use]
     pub fn service(self) -> Option<&'a str> {
         match self {
@@ -178,55 +158,121 @@ impl<'a> DependencyTarget<'a> {
     }
 }
 
-/// §3.2 StepDependency: one entry of a Step's or, with `SERVICE`, a
-/// Service's `dependencies`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StepDependency {
-    /// A Step name, or `service:<ServiceName>` under the `SERVICE`
-    /// extension. See [`DependencyTarget`].
-    pub depends_on: String,
-}
-
-impl StepDependency {
-    /// What this entry names; see [`DependencyTarget::parse`].
-    #[must_use]
-    pub fn target(&self, service_active: bool) -> DependencyTarget<'_> {
-        DependencyTarget::parse(&self.depends_on, service_active)
+/// `dependsOn: X` or `service: X` — the entry as a template writes it.
+impl std::fmt::Display for DependencyTarget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Step(name) => write!(f, "dependsOn: {name}"),
+            Self::Service(name) => write!(f, "service: {name}"),
+        }
     }
 }
 
-/// True when `dependencies` lists `service:<name>` (with `SERVICE`
-/// declared, which is the only context in which a Service exists).
+/// §3.2 StepDependency: one entry of a Step's, a Service's, or a Job
+/// Environment's `dependencies`. It is one of `dependsOn: <StepName>` or,
+/// with the `SERVICE` extension, `service: <ServiceName>`; exactly one of
+/// the two keys must be present (an entry giving both or neither is a
+/// validation error, reported at the entry's path). Without `SERVICE` the
+/// `service` key is gated like every other `SERVICE` property. See
+/// [`target`](Self::target).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StepDependency {
+    /// The name of a Step of the same Job Template.
+    #[serde(default)]
+    pub depends_on: Option<String>,
+    /// The name of a Service the Job Template declares in `services` or
+    /// requires in `requiresServices` (`SERVICE` extension).
+    #[serde(default)]
+    pub service: Option<String>,
+}
+
+impl StepDependency {
+    /// An entry naming the Step `name`.
+    #[must_use]
+    pub fn on_step(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: Some(name.into()),
+            service: None,
+        }
+    }
+
+    /// An entry naming the Service `name`.
+    #[must_use]
+    pub fn on_service(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: None,
+            service: Some(name.into()),
+        }
+    }
+
+    /// What this entry names, or `None` when it gives both keys or neither
+    /// (a validation error; such an entry is no dependency).
+    #[must_use]
+    pub fn target(&self) -> Option<DependencyTarget<'_>> {
+        match (&self.depends_on, &self.service) {
+            (Some(step), None) => Some(DependencyTarget::Step(step)),
+            (None, Some(service)) => Some(DependencyTarget::Service(service)),
+            _ => None,
+        }
+    }
+
+    /// The Step this entry names, if it is a well-formed `dependsOn` entry.
+    #[must_use]
+    pub fn step(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::step)
+    }
+
+    /// The Service this entry names, if it is a well-formed `service` entry.
+    #[must_use]
+    pub fn service(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::service)
+    }
+
+    /// True when the entry is well-formed: exactly one of the two keys.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.target().is_some()
+    }
+
+    /// The entry as written (`dependsOn: X`, `service: X`), or a description
+    /// of a malformed one, for messages.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match (&self.depends_on, &self.service) {
+            (Some(step), Some(service)) => format!("dependsOn: {step}, service: {service}"),
+            (None, None) => "{}".to_string(),
+            _ => self.target().expect("one key").to_string(),
+        }
+    }
+}
+
+/// True when `dependencies` lists Service `name` with the `service` key.
 #[must_use]
 pub fn lists_service(dependencies: Option<&[StepDependency]>, name: &str) -> bool {
     dependencies
         .into_iter()
         .flatten()
-        .any(|d| d.target(true) == DependencyTarget::Service(name))
+        .any(|d| d.service() == Some(name))
 }
 
-/// The Service names `dependencies` lists as `service:<name>`, in list
-/// order (with `SERVICE` declared).
+/// The Service names `dependencies` lists with the `service` key, in list
+/// order.
 pub fn listed_service_names(
     dependencies: Option<&[StepDependency]>,
 ) -> impl Iterator<Item = &str> + '_ {
     dependencies
         .into_iter()
         .flatten()
-        .filter_map(|d| d.target(true).service())
+        .filter_map(|d| d.service())
 }
 
-/// The Step names `dependencies` lists, in list order, under `SERVICE`
-/// (`service:` entries skipped) or without it (every entry).
+/// The Step names `dependencies` lists with the `dependsOn` key, in list
+/// order (`service` entries and malformed entries skipped).
 pub fn listed_step_names(
     dependencies: Option<&[StepDependency]>,
-    service_active: bool,
 ) -> impl Iterator<Item = &str> + '_ {
-    dependencies
-        .into_iter()
-        .flatten()
-        .filter_map(move |d| d.target(service_active).step())
+    dependencies.into_iter().flatten().filter_map(|d| d.step())
 }
 
 /// §3.5 StepScript
@@ -247,55 +293,75 @@ mod tests {
     };
 
     #[test]
-    fn dependency_target_parsing_is_gated_on_service() {
-        assert_eq!(
-            DependencyTarget::parse("service:Cache", true),
-            DependencyTarget::Service("Cache")
-        );
-        assert_eq!(
-            DependencyTarget::parse("service:Cache", false),
-            DependencyTarget::Step("service:Cache")
-        );
-        assert_eq!(
-            DependencyTarget::parse("Render", true),
-            DependencyTarget::Step("Render")
-        );
+    fn dependency_target_accessors_and_display() {
         assert_eq!(DependencyTarget::Service("C").service(), Some("C"));
         assert_eq!(DependencyTarget::Service("C").step(), None);
         assert_eq!(DependencyTarget::Step("S").step(), Some("S"));
         assert_eq!(DependencyTarget::Step("S").service(), None);
-        // An empty name after the prefix is still a Service target; the
-        // validator reports it as unknown.
-        assert_eq!(
-            DependencyTarget::parse("service:", true),
-            DependencyTarget::Service("")
-        );
+        assert_eq!(DependencyTarget::Step("S").to_string(), "dependsOn: S");
+        assert_eq!(DependencyTarget::Service("C").to_string(), "service: C");
+    }
+
+    #[test]
+    fn step_dependency_is_one_of_two_keys() {
+        let step = StepDependency::on_step("Render");
+        assert_eq!(step.target(), Some(DependencyTarget::Step("Render")));
+        assert_eq!(step.step(), Some("Render"));
+        assert_eq!(step.service(), None);
+        assert!(step.is_well_formed());
+        assert_eq!(step.describe(), "dependsOn: Render");
+        let svc = StepDependency::on_service("Cache");
+        assert_eq!(svc.target(), Some(DependencyTarget::Service("Cache")));
+        assert_eq!(svc.service(), Some("Cache"));
+        assert_eq!(svc.step(), None);
+        assert_eq!(svc.describe(), "service: Cache");
+        // Both keys, or neither: no target.
+        let both = StepDependency {
+            depends_on: Some("Render".into()),
+            service: Some("Cache".into()),
+        };
+        assert_eq!(both.target(), None);
+        assert!(!both.is_well_formed());
+        assert_eq!(both.describe(), "dependsOn: Render, service: Cache");
+        let neither = StepDependency {
+            depends_on: None,
+            service: None,
+        };
+        assert_eq!(neither.target(), None);
+        assert_eq!(neither.describe(), "{}");
+        // Decoding: each key is optional; an unknown key is rejected.
+        let decoded: StepDependency = serde_saphyr::from_str("service: Cache").unwrap();
+        assert_eq!(decoded, StepDependency::on_service("Cache"));
+        let decoded: StepDependency = serde_saphyr::from_str("{}").unwrap();
+        assert_eq!(decoded.target(), None);
+        assert!(serde_saphyr::from_str::<StepDependency>("dependsOnService: X").is_err());
     }
 
     #[test]
     fn listed_names_split_by_kind() {
-        let deps: Vec<StepDependency> = ["A", "service:X", "B", "service:Y"]
-            .iter()
-            .map(|d| StepDependency {
-                depends_on: d.to_string(),
-            })
-            .collect();
+        let deps = vec![
+            StepDependency::on_step("A"),
+            StepDependency::on_service("X"),
+            StepDependency::on_step("B"),
+            StepDependency::on_service("Y"),
+            StepDependency {
+                depends_on: Some("C".into()),
+                service: Some("Z".into()),
+            },
+        ];
         assert!(lists_service(Some(&deps), "X"));
         assert!(!lists_service(Some(&deps), "A"));
+        assert!(!lists_service(Some(&deps), "Z"));
         assert!(!lists_service(None, "X"));
         assert_eq!(
             listed_service_names(Some(&deps)).collect::<Vec<_>>(),
             vec!["X", "Y"]
         );
         assert_eq!(
-            listed_step_names(Some(&deps), true).collect::<Vec<_>>(),
+            listed_step_names(Some(&deps)).collect::<Vec<_>>(),
             vec!["A", "B"]
         );
-        assert_eq!(
-            listed_step_names(Some(&deps), false).collect::<Vec<_>>(),
-            vec!["A", "service:X", "B", "service:Y"]
-        );
-        assert_eq!(deps[1].target(true), DependencyTarget::Service("X"));
+        assert_eq!(deps[1].target(), Some(DependencyTarget::Service("X")));
     }
 
     #[test]

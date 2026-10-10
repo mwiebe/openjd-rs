@@ -1290,7 +1290,7 @@ fn test_create_job_dependencies_preserved() {
     assert_eq!(job.steps.len(), 2);
     let deps = job.steps[1].dependencies.as_ref().unwrap();
     assert_eq!(deps.len(), 1);
-    assert_eq!(deps[0].depends_on, "Build");
+    assert_eq!(deps[0].step(), Some("Build"));
 }
 
 #[test]

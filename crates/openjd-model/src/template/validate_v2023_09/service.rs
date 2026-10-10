@@ -4,12 +4,13 @@
 
 //! Pass 11: `SERVICE` — validate or reject (RFC 0009, Template Schemas §9).
 //!
-//! Five fields are gated by the `SERVICE` extension:
+//! Six fields are gated by the `SERVICE` extension:
 //! - `services` on the job template root (§1.1 item 8)
 //! - `requiresServices` on the job template root (§1.1 item 9)
 //! - `services` on the environment template root (§1.2)
 //! - `dependencies` on `<Environment>` (§4 item 3)
 //! - `runScope` on `<Environment>` (§4 item 4)
+//! - `service` on `<StepDependency>` (§3.2 item 2)
 //!
 //! (The `onWrapService*` hooks on `<EnvironmentActions>`, gated on both
 //! `WRAP_ACTIONS` and `SERVICE`, are handled by pass 10 with the other wrap
@@ -19,10 +20,9 @@
 //! validation error and nothing inside the lists is examined
 //! ([`gate_services_job_template`] / [`gate_services_environment_template`],
 //! run ahead of every other pass so these errors lead the list; what follows
-//! from the missing extension — a `service:` target that names no Step, a
-//! `Service.*` reference to a Service the gated lists name — is left
-//! unreported as a consequence). When it is enabled, this pass additionally
-//! enforces:
+//! from the missing extension — a `Service.*` reference to a Service the
+//! gated lists name — is left unreported as a consequence). When it is
+//! enabled, this pass additionally enforces:
 //!
 //! - **EXPR prerequisite.** A template that lists `SERVICE` in
 //!   `extensions:` must also list `EXPR` (§9, §9.9 item 7).
@@ -31,46 +31,46 @@
 //! - **Name uniqueness.** Service names are unique within a list,
 //!   requirement names are unique within theirs, and no requirement bears
 //!   the name of an inline Service (§9.9 item 5).
-//! - **Step names.** No Step's `name` contains `:` (§3.1 constraint 4,
-//!   §9.9 item 12), so that a `dependsOn` beginning `service:` can only
-//!   name a Service.
-//! - **`dependsOn: service:<name>`** (§3.2 constraint 1, §9.9 item 9): on a
-//!   Step or a Service, the name is a Service of the document's `services`
-//!   or, in a Job Template, of its `requiresServices`. (Step targets, self
-//!   dependency and duplicates are pass 6's for a Step; a Service's
-//!   `dependencies` are checked wholly here: at least one element, each
-//!   entry a Step of the Job Template or a Service other than itself, no
-//!   duplicates, and in an Environment Template only the `service:` form.)
-//!   A target that names nothing but nearly spells a Service's name — the
-//!   prefix forgotten, in the wrong case, followed by a space, or with a
-//!   port appended — gets `; did you mean 'service:<name>'?`
-//!   ([`super::helpers::service_dependency_hint`]).
-//! - **One acyclic graph.** The `dependencies` of the document's Steps and
-//!   Services form one graph with every kind of edge, which must be
-//!   acyclic (§3.2 constraint 3, §9.9 item 10); the error names the cycle.
-//!   See [`crate::template::service_scope`].
+//! - **`service: <name>`** (§3.2 constraint 1, §9.9 item 9): on a Step or a
+//!   Service, the name is a Service of the document's `services` or, in a
+//!   Job Template, of its `requiresServices`. (Step targets, self
+//!   dependency, duplicates and the one-of rule are pass 6's for a Step; a
+//!   Service's `dependencies` are checked wholly here: at least one
+//!   element, each entry exactly one of `dependsOn` / `service`, naming a
+//!   Step of the Job Template or a Service other than itself, no
+//!   duplicates, and in an Environment Template only the `service` key.) A
+//!   `service` entry that names no Service but a Step of that name gets `;
+//!   did you mean 'dependsOn: <name>'?`, and a `dependsOn` that names no
+//!   Step but a Service of that name the mirror hint
+//!   ([`super::helpers::dependency_kind_hint`]).
+//! - **One acyclic graph.** The `dependencies` of the document's Steps,
+//!   Services, and Job Environments form one graph with every kind of
+//!   edge — when a Job Environment lists Service `X`, every Step gains an
+//!   edge to `X` — which must be acyclic (§3.2 constraint 3, §9.9 item
+//!   10); the error names the cycle and, when a Job Environment's entry
+//!   closed it, the Job Environment. See [`crate::template::service_scope`].
 //! - **Scope** (§9.1, §9.9 item 11): every Service of a Job Template has a
 //!   non-empty scope — some Step lists it, directly or through other
 //!   Services, or some Job Environment lists it — else it is unused and
 //!   rejected by name; a Service listed only by unused Services is unused,
-//!   and the message names them. A Service a Job Environment lists has every Step in
-//!   its scope and so may not list a Step in `dependencies`: that Step could
-//!   not run until the Service was READY, and the Service could not start
-//!   until the Step completed.
+//!   and the message names them.
 //! - **`<Environment>.dependencies`** (§4 item 3, §3.2 constraint 5, §9.9
 //!   item 14): permitted only on a `jobEnvironments` entry and on an
 //!   Environment Template's `environment`, never on a `stepEnvironments`
-//!   entry; at least one element; every entry in the `service:` form (a
-//!   Step name is rejected — an Environment is entered by Sessions, not
-//!   scheduled) naming a Service of the document's `services` or, in a Job
-//!   Template, of its `requiresServices`; no Service listed twice; and not
-//!   together with an explicit `runScope` that includes `SERVICE`.
+//!   entry; at least one element; every entry with the `service` key (a
+//!   `dependsOn` entry is rejected — an Environment is entered by Sessions,
+//!   not scheduled) naming a Service of the document's `services` or, in a
+//!   Job Template, of its `requiresServices`; no Service listed twice; and
+//!   not together with an explicit `runScope` that includes `SERVICE`.
 //! - **`<Service>` structure** (§9–§9.7): identifier names that are not
 //!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; the
 //!   literal `<ServiceHealthCheck>` numeric fields
 //!   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`,
 //!   `healthIntervalSeconds`, `failureThreshold`) positive; literal
-//!   `maxAttempts` non-negative; `onHealthCheck` defined iff the health
+//!   `maxAttempts` non-negative, and a literal `maxAttempts` greater than 0
+//!   accompanied by `completedTasks` (§9.5 item 2, §9.9 item 12 — a
+//!   format-string `maxAttempts` is checked at job creation);
+//!   `onHealthCheck` defined iff the health
 //!   check type is `COMMAND`; every port a `TCP_CONNECT` check names is
 //!   declared and has `protocol: TCP`; a Service none of whose ports is TCP
 //!   declares a `STDOUT` or `COMMAND` check; a `STDOUT` check gives
@@ -85,13 +85,14 @@
 //! - **`<ServiceRequirement>` structure** (§9.8): an identifier name that is
 //!   not `File`; 1–10 uniquely named ports, each an identifier other than
 //!   `File`.
-//! - **`runScope`** (§4 item 4, §9.9 item 3): at least one element, only
-//!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates; never
-//!   `SERVICE` on a `stepEnvironments` entry (constraint 4: no Service
-//!   Session enters a Step Environment); and, when it includes `SERVICE`
-//!   elsewhere, the Environment neither lists nor references a Service
-//!   (constraint 2) — one error on the list, with the per-reference errors
-//!   pass 8 found dropped by [`super::service_diagnostics`].
+//! - **`runScope`** (§4 item 4, §9.9 item 3): never on a `stepEnvironments`
+//!   entry (constraint 4: a Step Environment is entered only by the Task
+//!   Sessions of its Step); elsewhere, at least one element, only
+//!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates; and,
+//!   when it includes `SERVICE`, the Environment neither lists nor
+//!   references a Service (constraint 2) — one error on the list, with the
+//!   per-reference errors pass 8 found dropped by
+//!   [`super::service_diagnostics`].
 //!
 //! The numeric `@fmtstring` fields are modeled like `<Action>.timeout`: a
 //! value without an expression is checked here, and a format string is
@@ -101,7 +102,7 @@
 
 use std::collections::HashSet;
 
-use super::helpers::service_dependency_hint;
+use super::helpers::dependency_kind_hint;
 use super::structure::{
     validate_action, validate_description, validate_embedded_files,
     validate_host_requirements_in_context, validate_variables,
@@ -125,9 +126,8 @@ const RESERVED_FILE_NAME: &str = "File";
 
 /// Validate RFC 0009 constraints for a job template that declares
 /// `SERVICE`: the EXPR prerequisite, every Service and requirement, every
-/// `service:` dependency, the combined dependency graph and the Services'
-/// scopes, the Step-name colon rule, and every Environment's `dependencies`
-/// and `runScope`. (Without the extension only the EXPR check runs here;
+/// `service` dependency, the combined dependency graph and the Services'
+/// scopes, and every Environment's `dependencies` and `runScope`. (Without the extension only the EXPR check runs here;
 /// the gated fields are [`gate_services_job_template`]'s, ahead of every
 /// other pass.)
 pub fn validate_services_job_template(
@@ -150,7 +150,6 @@ pub fn validate_services_job_template(
         validate_service_list(services, &list_path, limits, rules, ctx, errors);
         service_names.extend(services.iter().map(|s| s.name.as_str()));
     }
-    validate_step_names(jt, errors);
     validate_job_template_dependencies(jt, errors);
 
     if let Some(requirements) = &jt.requires_services {
@@ -199,14 +198,14 @@ pub fn validate_services_job_template(
 }
 
 /// Report the `SERVICE`-gated fields of a job template that does not
-/// declare the extension: `services`, `requiresServices`, and every
-/// Environment's `dependencies` and `runScope`. Nothing inside the lists is
-/// examined. Runs ahead of every other pass so that these errors come
-/// first: a `dependency 'service:X' not found` or an `Undefined variable:
-/// 'Service.X.p.port'` that follows from the missing extension is a
-/// consequence, and passes 6 and 8 leave those unreported (see
-/// [`super::structure`] and [`super::service_diagnostics`]). Does nothing
-/// when the extension is declared.
+/// declare the extension: `services`, `requiresServices`, the `service` key
+/// of every Step's `dependencies` entries, and every Environment's
+/// `dependencies` and `runScope`. Nothing inside the lists is examined.
+/// Runs ahead of every other pass so that these errors come first: an
+/// `Undefined variable: 'Service.X.p.port'` that follows from the missing
+/// extension is a consequence, and pass 8 leaves it unreported (see
+/// [`super::service_diagnostics`]). Does nothing when the extension is
+/// declared.
 pub fn gate_services_job_template(
     jt: &JobTemplate,
     ctx: &ValidationContext,
@@ -234,15 +233,35 @@ pub fn gate_services_job_template(
         }
     }
     for (i, step) in jt.steps.iter().enumerate() {
+        let step_path = [PathElement::Field("steps".into()), PathElement::Index(i)];
+        gate_service_dependencies(
+            step.dependencies.as_deref(),
+            &path_field(&step_path, "dependencies"),
+            errors,
+        );
         let Some(envs) = &step.step_environments else {
             continue;
         };
-        let envs_path = path_field(
-            &[PathElement::Field("steps".into()), PathElement::Index(i)],
-            "stepEnvironments",
-        );
+        let envs_path = path_field(&step_path, "stepEnvironments");
         for (j, env) in envs.iter().enumerate() {
             gate_environment_fields(env, &path_index(&envs_path, j), errors);
+        }
+    }
+}
+
+/// §3.2 item 2 without `SERVICE`: the `service` key of a `<StepDependency>`
+/// is an unknown field, reported on the entry's `service` path.
+fn gate_service_dependencies(
+    deps: Option<&[StepDependency]>,
+    deps_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    for (j, dep) in deps.into_iter().flatten().enumerate() {
+        if dep.service.is_some() {
+            errors.add(
+                &path_field(&path_index(deps_path, j), "service"),
+                "service requires the SERVICE extension.",
+            );
         }
     }
 }
@@ -319,9 +338,9 @@ enum EnvironmentKind {
 /// §4 item 3 / §3.2 constraint 5 / §9.9 item 14: validate one Environment's
 /// `dependencies` at `env_path`, with `SERVICE` declared. A Step
 /// Environment may not give the list at all; else the list is non-empty,
-/// every entry uses the `service:` form (a Step name is rejected — an
-/// Environment is entered, not scheduled) and names a Service in `known`,
-/// and no Service is listed twice. An explicit `runScope` that includes
+/// every entry uses the `service` key (a `dependsOn` entry is rejected — an
+/// Environment is entered, not scheduled; a malformed entry is rejected as
+/// such) and names a Service in `known`, and no Service is listed twice. An explicit `runScope` that includes
 /// `SERVICE` beside the list is [`validate_run_scope`]'s (§4 item 4
 /// constraint 2).
 fn validate_environment_dependencies(
@@ -346,33 +365,31 @@ fn validate_environment_dependencies(
     if deps.is_empty() {
         errors.add(&deps_path, "must not be empty.");
     }
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut seen: HashSet<&StepDependency> = HashSet::new();
     for (j, dep) in deps.iter().enumerate() {
         let dep_path = path_index(&deps_path, j);
-        match dep.target(true) {
-            DependencyTarget::Step(name) => errors.add(
+        match dep.target() {
+            None => errors.add(&dep_path, malformed_dependency(dep)),
+            Some(DependencyTarget::Step(name)) => errors.add(
                 &dep_path,
                 format!(
-                    "dependency '{name}' names a Step, but an Environment is entered by Sessions, \
-                     not scheduled; an Environment may depend only on a Service, as \
-                     '{SERVICE_DEPENDENCY_PREFIX}<name>'{}",
-                    service_dependency_hint(name, known.all())
+                    "dependency 'dependsOn: {name}' names a Step, but an Environment is entered \
+                     by Sessions, not scheduled; an Environment may depend only on a Service, as \
+                     'service: <name>'{}",
+                    dependency_kind_hint(DependencyTarget::Step(name), known.all())
                 ),
             ),
-            DependencyTarget::Service(name) => {
+            Some(DependencyTarget::Service(name)) => {
                 if !known.services.contains(name) && !known.required.contains(name) {
                     errors.add(
                         &dep_path,
-                        unknown_service_dependency(name, known.where_, known.all()),
+                        unknown_service_dependency(name, known.where_, std::iter::empty()),
                     );
                 }
             }
         }
-        if !seen.insert(dep.depends_on.as_str()) {
-            errors.add(
-                &dep_path,
-                format!("duplicate dependency '{}'.", dep.depends_on),
-            );
+        if dep.is_well_formed() && !seen.insert(dep) {
+            errors.add(&dep_path, duplicate_dependency(dep));
         }
     }
     // §4 item 3 constraint 5 / item 4 constraint 2 (an explicit runScope
@@ -380,49 +397,55 @@ fn validate_environment_dependencies(
     // reported by `validate_run_scope`, once, on the runScope list.
 }
 
-/// §3.1 constraint 4 / §9.9 item 12: with `SERVICE`, no Step's `name`
-/// contains `:`.
-fn validate_step_names(jt: &JobTemplate, errors: &mut ValidationErrors) {
-    for (i, step) in jt.steps.iter().enumerate() {
-        if step.name.contains(':') {
-            errors.add(
-                &path_field(
-                    &[PathElement::Field("steps".into()), PathElement::Index(i)],
-                    "name",
-                ),
-                format!(
-                    "must not contain ':' when the SERVICE extension is used, so that a \
-                     dependsOn value beginning '{SERVICE_DEPENDENCY_PREFIX}' can only name a \
-                     Service (Template Schemas §3.1 constraint 4)."
-                ),
-            );
-        }
+/// §3.2: the message for an entry that gives both keys or neither.
+pub(super) fn malformed_dependency(dep: &StepDependency) -> String {
+    match (&dep.depends_on, &dep.service) {
+        (Some(_), Some(_)) => format!(
+            "a dependency names a Step with dependsOn or a Service with service, not both: \
+             {{{}}} (Template Schemas §3.2).",
+            dep.describe()
+        ),
+        _ => "a dependency must name a Step with dependsOn or a Service with service; this \
+              entry gives neither (Template Schemas §3.2)."
+            .to_string(),
     }
 }
 
-/// `dependency 'service:X' not found: …` — the `service:` target names no
-/// Service. `where_` says which lists were searched; `known` are the
-/// Services the author could have meant, for the `did you mean` hint when
-/// the spelling is off (a space after the colon, a port appended).
+/// §3.2 constraint 2: `duplicate dependency 'A'.` for a Step named twice,
+/// `duplicate dependency 'service: X'.` for a Service.
+pub(super) fn duplicate_dependency(dep: &StepDependency) -> String {
+    match dep.target() {
+        Some(DependencyTarget::Step(name)) => format!("duplicate dependency '{name}'."),
+        _ => format!("duplicate dependency '{}'.", dep.describe()),
+    }
+}
+
+/// `dependency 'service: X' not found: …` — a `service` entry names no
+/// Service. `where_` says which lists were searched; `step_names` are the
+/// Steps of the template: when one of that name exists the message is
+/// instead `dependency 'X' names no Service; did you mean 'dependsOn: X'?`
+/// ([`dependency_kind_hint`]).
 fn unknown_service_dependency<'a>(
     name: &str,
     where_: &str,
-    known: impl IntoIterator<Item = &'a str>,
+    step_names: impl IntoIterator<Item = &'a str>,
 ) -> String {
-    let written = format!("{SERVICE_DEPENDENCY_PREFIX}{name}");
-    format!(
-        "dependency '{written}' not found: {where_}{}",
-        service_dependency_hint(&written, known)
-    )
+    let hint = dependency_kind_hint(DependencyTarget::Service(name), step_names);
+    if hint == "." {
+        format!("dependency 'service: {name}' not found: {where_}.")
+    } else {
+        format!("dependency '{name}' names no Service{hint}")
+    }
 }
 
 /// §3.2 constraints 1–3 / §9 item 4 / §9.9 items 9–11 for a Job Template
-/// with `SERVICE`: every `service:` entry of a Step's `dependencies` names a
+/// with `SERVICE`: every `service` entry of a Step's `dependencies` names a
 /// Service of `services` or `requiresServices`; each Service's
-/// `dependencies` is non-empty, names Steps of the template or Services
-/// other than itself, and lists no target twice; the combined graph is
-/// acyclic (the error names the cycle); every Service has a non-empty
-/// scope; and a Service with every Step in its scope lists no Step. (An
+/// `dependencies` is non-empty, every entry exactly one of `dependsOn` /
+/// `service`, names Steps of the template or Services other than itself,
+/// and lists no target twice; the combined graph — including the edge from
+/// every Step to each Service a Job Environment lists — is acyclic (the
+/// error names the cycle); and every Service has a non-empty scope. (An
 /// Environment's `dependencies` are
 /// [`validate_environment_dependencies`]'s.)
 fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationErrors) {
@@ -435,19 +458,21 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
         .collect();
     let where_ = "no Service of that name in services or requiresServices";
     let known = || service_names.iter().chain(required_names.iter()).copied();
+    let steps = || step_names.iter().copied();
 
-    // Steps: `service:` targets (pass 6 did the Step targets).
+    // Steps: `service` entries (pass 6 did the `dependsOn` entries, the
+    // one-of rule and the duplicates).
     for (i, step) in jt.steps.iter().enumerate() {
         let deps_path = path_field(
             &[PathElement::Field("steps".into()), PathElement::Index(i)],
             "dependencies",
         );
         for (j, dep) in step.dependencies.iter().flatten().enumerate() {
-            if let Some(name) = dep.target(true).service() {
+            if let Some(name) = dep.service() {
                 if !service_names.contains(name) && !required_names.contains(name) {
                     errors.add(
                         &path_index(&deps_path, j),
-                        unknown_service_dependency(name, where_, known()),
+                        unknown_service_dependency(name, where_, steps()),
                     );
                 }
             }
@@ -464,39 +489,32 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
         if deps.is_empty() {
             errors.add(&deps_path, "must not be empty.");
         }
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<&StepDependency> = HashSet::new();
         for (j, dep) in deps.iter().enumerate() {
             let dep_path = path_index(&deps_path, j);
-            match dep.target(true) {
-                DependencyTarget::Step(name) => {
+            match dep.target() {
+                None => errors.add(&dep_path, malformed_dependency(dep)),
+                Some(DependencyTarget::Step(name)) => {
                     if !step_names.contains(name) {
-                        errors.add(
-                            &dep_path,
-                            format!(
-                                "dependency '{name}' not found{}",
-                                service_dependency_hint(name, known())
-                            ),
-                        );
+                        errors.add(&dep_path, unknown_step_dependency(name, known()));
                     }
                 }
-                DependencyTarget::Service(name) => {
+                Some(DependencyTarget::Service(name)) => {
                     if name == svc.name {
                         errors.add(&dep_path, "cannot depend on itself.");
                     } else if !service_names.contains(name) && !required_names.contains(name) {
-                        errors.add(&dep_path, unknown_service_dependency(name, where_, known()));
+                        errors.add(&dep_path, unknown_service_dependency(name, where_, steps()));
                     }
                 }
             }
-            if !seen.insert(dep.depends_on.as_str()) {
-                errors.add(
-                    &dep_path,
-                    format!("duplicate dependency '{}'.", dep.depends_on),
-                );
+            if dep.is_well_formed() && !seen.insert(dep) {
+                errors.add(&dep_path, duplicate_dependency(dep));
             }
         }
     }
 
-    // The combined graph and the scopes.
+    // The combined graph (Steps, Services, and the edges a Job
+    // Environment's entries add) and the scopes.
     let scopes = match compute_service_scopes(jt) {
         Ok(scopes) => scopes,
         Err(cycle) => {
@@ -508,29 +526,24 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
         let Some(computed) = scopes.get(&svc.name) else {
             continue;
         };
-        let svc_path = path_index(&list_path, k);
         if computed.is_unused() {
-            errors.add(&svc_path, unused_service_message(computed));
+            errors.add(&path_index(&list_path, k), unused_service_message(computed));
         }
-        if computed.listed_by_job_environment {
-            let deps_path = path_field(&svc_path, "dependencies");
-            for (j, dep) in svc.dependencies.iter().flatten().enumerate() {
-                if let Some(step) = dep.target(true).step() {
-                    if step_names.contains(step) {
-                        errors.add(
-                            &path_index(&deps_path, j),
-                            format!(
-                                "Step '{step}' is in the scope of Service '{}' (a Job \
-                                 Environment lists the Service, so every Step is in its \
-                                 scope); a Service cannot depend on a Step in its own scope, \
-                                 which could not run until the Service was READY.",
-                                svc.name
-                            ),
-                        );
-                    }
-                }
-            }
-        }
+    }
+}
+
+/// `dependency 'dependsOn: X' not found…` — a `dependsOn` entry names no
+/// Step. `service_names` are the Services the author could have meant,
+/// for the `did you mean 'service: X'?` hint when one of that name exists.
+pub(super) fn unknown_step_dependency<'a>(
+    name: &str,
+    service_names: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let hint = dependency_kind_hint(DependencyTarget::Step(name), service_names);
+    if hint == "." {
+        format!("dependency '{name}' not found.")
+    } else {
+        format!("dependency '{name}' names no Step{hint}")
     }
 }
 
@@ -562,7 +575,7 @@ fn unused_service_message(computed: &ComputedServiceScope) -> String {
 /// Validate RFC 0009 constraints for an environment template: the EXPR
 /// prerequisite, the `services` list (§1.2, gated and validated exactly like
 /// a Job Template's, except that a Service's `dependencies` may use only the
-/// `service:` form and name a Service of this list, since the document has
+/// `service` key and name a Service of this list, since the document has
 /// no Steps, and `requiresServices` has no place here), and the
 /// Environment's `dependencies` (which name Services of this document's
 /// `services`) and `runScope`.
@@ -600,7 +613,7 @@ pub fn validate_services_environment_template(
 
 /// §1.2 item 6 constraints 4–5 / §3.2 constraint 4 / §9 item 4 / §9.9 items
 /// 9–10 for an Environment Template's `services`: each `dependencies` list
-/// is non-empty, every entry uses the `service:` form and names a Service of
+/// is non-empty, every entry uses the `service` key and names a Service of
 /// this list other than the one listing it, no target is listed twice, and
 /// the graph is acyclic. (Scope is not checked: every Step of every Job is
 /// in an external Service's scope.)
@@ -618,20 +631,24 @@ fn validate_environment_template_dependencies(
         if deps.is_empty() {
             errors.add(&deps_path, "must not be empty.");
         }
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<&StepDependency> = HashSet::new();
         for (j, dep) in deps.iter().enumerate() {
             let dep_path = path_index(&deps_path, j);
-            match dep.target(true) {
-                DependencyTarget::Step(name) => errors.add(
+            match dep.target() {
+                None => errors.add(&dep_path, malformed_dependency(dep)),
+                Some(DependencyTarget::Step(name)) => errors.add(
                     &dep_path,
                     format!(
-                        "dependency '{name}' names a Step, but an Environment Template has no \
-                         Steps; a Service here may depend only on a Service of the same \
-                         document, as '{SERVICE_DEPENDENCY_PREFIX}<name>'{}",
-                        service_dependency_hint(name, service_names.iter().copied())
+                        "dependency 'dependsOn: {name}' names a Step, but an Environment \
+                         Template has no Steps; a Service here may depend only on a Service of \
+                         the same document, as 'service: <name>'{}",
+                        dependency_kind_hint(
+                            DependencyTarget::Step(name),
+                            service_names.iter().copied()
+                        )
                     ),
                 ),
-                DependencyTarget::Service(name) => {
+                Some(DependencyTarget::Service(name)) => {
                     if name == svc.name {
                         errors.add(&dep_path, "cannot depend on itself.");
                     } else if !service_names.contains(name) {
@@ -640,17 +657,14 @@ fn validate_environment_template_dependencies(
                             unknown_service_dependency(
                                 name,
                                 "no Service of that name in this document's services",
-                                service_names.iter().copied(),
+                                std::iter::empty(),
                             ),
                         );
                     }
                 }
             }
-            if !seen.insert(dep.depends_on.as_str()) {
-                errors.add(
-                    &dep_path,
-                    format!("duplicate dependency '{}'.", dep.depends_on),
-                );
+            if dep.is_well_formed() && !seen.insert(dep) {
+                errors.add(&dep_path, duplicate_dependency(dep));
             }
         }
     }
@@ -660,20 +674,19 @@ fn validate_environment_template_dependencies(
 }
 
 /// §4 item 4 / §9.9 item 3: validate one Environment's `runScope` at
-/// `env_path`, with `SERVICE` declared: the list must be non-empty, name
-/// only recognized `<RunScopeName>`s, and name each at most once. Each offending element is reported on its own
-/// index so the user sees the complete list. Then, once on the list:
-///
-/// - on a `stepEnvironments` entry the list must not include `SERVICE`
-///   (constraint 4): a Step Environment is entered only by the Task
-///   Sessions of its Step, and no Service Session enters one;
-/// - elsewhere, a list that includes `SERVICE` must belong to an
-///   Environment that neither lists a Service in `dependencies` nor
-///   references `Service.*` (§4 item 3 constraint 5 / item 4 constraint
-///   2): a Service Session may begin before any Service other than its own
-///   has an endpoint. The per-reference `Undefined variable` errors pass 8
-///   found for such an Environment are dropped by
-///   [`super::service_diagnostics`] in favor of this one.
+/// `env_path`, with `SERVICE` declared. On a `stepEnvironments` entry the
+/// field is not permitted at all, whatever its value (constraint 4): a
+/// Step Environment is entered only by the Task Sessions of its Step, so
+/// there is no kind of Session for it to choose. Elsewhere the list must
+/// be non-empty, name only recognized `<RunScopeName>`s, and name each at
+/// most once — each offending element is reported on its own index so the
+/// user sees the complete list — and a list that includes `SERVICE` must
+/// belong to an Environment that neither lists a Service in
+/// `dependencies` nor references `Service.*` (§4 item 3 constraint 5 /
+/// item 4 constraint 2): a Service Session may begin before any Service
+/// other than its own has an endpoint. The per-reference `Undefined
+/// variable` errors pass 8 found for such an Environment are dropped by
+/// [`super::service_diagnostics`] in favor of this one.
 fn validate_run_scope(
     env: &Environment,
     env_path: &[PathElement],
@@ -684,6 +697,15 @@ fn validate_run_scope(
         return;
     };
     let path = path_field(env_path, "runScope");
+    if kind == EnvironmentKind::Step {
+        errors.add(
+            &path,
+            "runScope is not permitted on a Step Environment: a Step Environment is entered only \
+             by the Task Sessions of its Step, so there is no kind of Session for it to choose \
+             (Template Schemas §4 item 4 constraint 4).",
+        );
+        return;
+    }
     if names.is_empty() {
         errors.add(&path, "must not be empty.");
     }
@@ -705,23 +727,7 @@ fn validate_run_scope(
     if !env.runs_in(RunScope::Service) {
         return;
     }
-    if kind == EnvironmentKind::Step {
-        errors.add(
-            &path,
-            format!(
-                "must not include {}: a Step Environment is entered only by the Task Sessions of \
-                 its Step; no Service Session enters one, so the name would select no Session \
-                 (Template Schemas §4 item 4 constraint 4).",
-                RunScope::Service.as_str()
-            ),
-        );
-        return;
-    }
-    let lists = env
-        .dependencies
-        .iter()
-        .flatten()
-        .any(|d| d.target(true).service().is_some());
+    let lists = env.depends_on_service();
     let references = environment_references_service(env);
     let what = match (lists, references) {
         (true, true) => "depend on or reference a Service",
@@ -1032,14 +1038,23 @@ fn validate_service(
 
     // §9.5 <ServiceRestartPolicy>
     if let Some(policy) = &service.restart_policy {
+        let policy_path = path_field(path, "restartPolicy");
         if let Some(attempts) = &policy.max_attempts {
             check_literal_int(
                 attempts,
-                &path_field(&path_field(path, "restartPolicy"), "maxAttempts"),
+                &path_field(&policy_path, "maxAttempts"),
                 0..=i64::MAX,
                 "must be >= 0.",
                 errors,
             );
+            // §9.5 item 2 / §9.9 item 12: a literal maxAttempts > 0 needs
+            // completedTasks. A format string is checked at job creation.
+            if policy.completed_tasks.is_none() && literal_int(attempts).is_some_and(|n| n > 0) {
+                errors.add(
+                    &policy_path,
+                    completed_tasks_required_message(literal_int(attempts).expect("literal")),
+                );
+            }
         }
     }
 
@@ -1098,6 +1113,16 @@ fn validate_service(
             }
         }
     }
+}
+
+/// §9.5 item 2 / §9.9 item 12: the message for a `restartPolicy` whose
+/// `maxAttempts` (`n`, greater than 0) is given without `completedTasks`.
+pub fn completed_tasks_required_message(n: i64) -> String {
+    format!(
+        "completedTasks must be provided when maxAttempts is greater than 0 (maxAttempts is \
+         {n}): a template that allows relaunch must say what a relaunch means for completed \
+         Tasks, KEEP or RERUN (Template Schemas §9.5 item 2)."
+    )
 }
 
 /// §9.2 / §9.3 item 1 / §9.8: a Service, requirement, or port name is an `<Identifier>` (§7.1)

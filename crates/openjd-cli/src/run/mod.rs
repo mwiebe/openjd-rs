@@ -466,7 +466,7 @@ impl RunContext {
                     d = services.wait_instance_failure() => d,
                 };
                 let (policy, scope) = services.begin_recovery(detected);
-                if policy == openjd_model::job::CompletedTasksPolicy::Rerun {
+                if policy == Some(openjd_model::job::CompletedTasksPolicy::Rerun) {
                     println!(
                         "{}\tCanceling the running Task of Step '{}': a Service with \
                          completedTasks: RERUN is UNREADY; the Task returns to the queue",
@@ -594,11 +594,11 @@ pub async fn execute(args: RunArgs) -> Result<(), RunError> {
 /// Step `D` cannot run before `D` has completed, since its Tasks wait for
 /// the Service and the Service waits for `D`. A Service's scope already
 /// includes the Steps that reach it through other Services (§9.1 rule 2),
-/// so a chain `Use -> service:Front -> service:Back -> Prepare` folds
+/// so a chain `Use -> Service Front -> Service Back -> Prepare` folds
 /// `Prepare` into `Use` through Back's scope. The result orders the run so
 /// the implied edges hold; the Job's own `steps` are not changed otherwise.
 /// A Service whose scope is every Step lists no Step (validation rejects
-/// it), so nothing is folded for it; `service:` entries are the Service
+/// it), so nothing is folded for it; `service` entries are the Service
 /// gate's concern and are not folded.
 fn with_implied_step_dependencies(job: &Job) -> Job {
     let mut ordered = job.clone();
@@ -613,10 +613,8 @@ fn with_implied_step_dependencies(job: &Job) -> Job {
         for step in ordered.steps.iter_mut().filter(|s| scope.contains(&s.name)) {
             let existing = step.dependencies.get_or_insert_with(Vec::new);
             for dep in &step_deps {
-                if *dep != step.name && !existing.iter().any(|d| d.depends_on == *dep) {
-                    existing.push(openjd_model::job::StepDependency {
-                        depends_on: dep.to_string(),
-                    });
+                if *dep != step.name && !existing.iter().any(|d| d.step() == Some(dep)) {
+                    existing.push(openjd_model::job::StepDependency::on_step(*dep));
                 }
             }
         }
@@ -625,8 +623,8 @@ fn with_implied_step_dependencies(job: &Job) -> Job {
 }
 
 /// Resolve step dependencies transitively, returning indices in execution
-/// order. A `service:<name>` entry (RFC 0009) names a Service, not a Step,
-/// and is skipped.
+/// order. A `service` entry (RFC 0009) names a Service, not a Step, and is
+/// skipped.
 fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) -> Vec<usize> {
     let step_name_to_idx: HashMap<String, usize> = job
         .steps
@@ -634,14 +632,12 @@ fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) ->
         .enumerate()
         .map(|(i, s)| (s.name.clone(), i))
         .collect();
-    let service_active = job.service_active();
     let mut visited = std::collections::HashSet::new();
     let mut order = Vec::new();
     fn visit(
         job: &openjd_model::job::Job,
         idx: usize,
         name_to_idx: &HashMap<String, usize>,
-        service_active: bool,
         visited: &mut std::collections::HashSet<usize>,
         order: &mut Vec<usize>,
     ) {
@@ -650,24 +646,17 @@ fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) ->
         }
         if let Some(deps) = &job.steps[idx].dependencies {
             for dep in deps {
-                let Some(step) = dep.target(service_active).step() else {
+                let Some(step) = dep.step() else {
                     continue;
                 };
                 if let Some(&dep_idx) = name_to_idx.get(step) {
-                    visit(job, dep_idx, name_to_idx, service_active, visited, order);
+                    visit(job, dep_idx, name_to_idx, visited, order);
                 }
             }
         }
         order.push(idx);
     }
-    visit(
-        job,
-        target_idx,
-        &step_name_to_idx,
-        service_active,
-        &mut visited,
-        &mut order,
-    );
+    visit(job, target_idx, &step_name_to_idx, &mut visited, &mut order);
     order
 }
 

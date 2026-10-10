@@ -1,9 +1,11 @@
 # A relaunch that begins a new Service Session (new endpoints) propagates:
 # Back's second instance exits before READY, so its third starts in a new
-# Service Session with a new port; Front, which depends on Back and reads its endpoint,
-# is then restarted with the new value (without consuming one of its own
-# attempts), and the TASK-scoped Client Environment is re-entered so Tasks
-# see the new BACK_PORT. completedTasks: KEEP lets the Task that was running
+# Service Session with a new port; Front, which lists Back and reads its
+# endpoint, is then stopped and started again in a new Service Session with
+# the new value (without consuming one of its own attempts, and keeping its
+# scope's completed Tasks under its own completedTasks: KEEP), and the
+# TASK-scoped Client Environment is re-entered so Tasks see the new
+# BACK_PORT. Back's completedTasks: KEEP lets the Task that was running
 # during the relaunch complete.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
@@ -54,13 +56,16 @@ services:
                     sys.exit(1)
   - name: Front
     dependencies:
-      - dependsOn: "service:Back"
+      - service: "Back"
     ports:
       - name: main
     healthCheck:
       type: STDOUT
     restartPolicy:
       maxAttempts: 0
+      # Applies to Front's own scope when it is stopped and started again
+      # because Back began a new Session: Task 1's result is kept.
+      completedTasks: KEEP
     script:
       actions:
         onRun:
@@ -71,7 +76,7 @@ services:
 jobEnvironments:
   - name: Client
     dependencies:
-      - dependsOn: service:Back
+      - service: Back
     runScope: [TASK]
     variables:
       BACK_PORT: "{{ Service.Back.main.port }}"
@@ -83,7 +88,7 @@ jobEnvironments:
 steps:
   - name: Work
     dependencies:
-      - dependsOn: "service:Front"
+      - service: "Front"
     parameterSpace:
       taskParameterDefinitions:
         - name: N
