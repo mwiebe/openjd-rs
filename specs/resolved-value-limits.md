@@ -698,7 +698,8 @@ PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
 14), PR #417 (which closed items 12, 15, 16, 17, 19), PR #418 (which
 closed items 20–23), PR #419 (which closed item 4), and PR #428
 (which closed items 6, 8, 18); item 11's audit (2026-10-09) added
-items 24–31, and the audits of the item 24 fix added items 32–34.
+items 24–31, the audits of the item 24 fix added items 32–34, and the
+audits of the item 25 fix added items 35–38.
 Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
@@ -708,8 +709,8 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 24 (fixed, pending PR), 25, 26, 27, 28, 29, 30, 31, 32,
-33, 34.
+**Open:** 1, 24 (fixed, pending #434), 25 (fixed, pending #435), 26,
+27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38.
 **Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 11 (audited), 12, 13,
 14, 15, 16, 17, 18, 19, 20, 21, 22, 23.
 
@@ -1249,7 +1250,9 @@ int/float/string/path.
     computed with the same join (`[[], [Task.Param.I]]` →
     `unresolved[list[list[int]]]`).
 
-    **Fixed, pending PR** — branch `fix/unresolved-list-join`
+    **Fixed, pending merge** — PR
+    [#434](https://github.com/OpenJobDescription/openjd-rs/pull/434),
+    branch `fix/unresolved-list-join`
     (`1dbe31e2`, `fix(expr)!`): `types::join_list_element` is shared by
     `eval_list`, `unresolved_list_from_elements`,
     `eval_listcomp_unresolved`, and `make_list` — element-wise list
@@ -1261,7 +1264,11 @@ int/float/string/path.
     Breaking on the concrete side: `[[1], ['a']]` and `make_list` over
     incompatible list types are now rejected (RFC 0005 rule 7), and
     `[1, 2.0, 'a']` errors instead of panicking. Converged after four
-    implement/audit rounds; the audits surfaced items 32–34. Close this
+    implement/audit rounds; the audits surfaced items 32–34. A review
+    follow-up on the PR (`fd221455`) made an always-null unresolved
+    element (`[None if Session.HasPathMappingRules else None]`, which
+    produced the malformed "incompatible types: , and nulltype") report
+    the construct's run-time null error at every stage. Close this
     item when the PR merges.
 25. **`eval_boolop` returns a concrete operand after an unresolved
     one.** After the first unresolved operand, the loop still returns
@@ -1293,6 +1300,30 @@ int/float/string/path.
     result stays safe only when every earlier unresolved operand is
     bool-typed and the deciding value is that same bool
     (`Session.HasPathMappingRules and false` → `false`).
+
+    **Fixed, pending merge** — PR
+    [#435](https://github.com/OpenJobDescription/openjd-rs/pull/435),
+    stacked on #434 (it depends on #434's join: its union results would
+    otherwise be rejected inside list literals), branch
+    `fix/unresolved-boolop` (`867ffdb3`, `fix(expr)!`). From the first
+    unresolved operand on, `eval_boolop` collects every value the
+    operator could return — per union member of each unresolved
+    operand (table in `specs/expr/evaluator.md`, BoolOp), the whole type
+    of an unresolved last operand, each reachable deciding concrete
+    operand — and returns a concrete value only when every outcome is
+    the same value, the first absorbed error when no outcome remains,
+    and otherwise `unresolved(union)`. Nested `and`/`or` hand their
+    outcome lists to the parent, so `Flag and 1 or 0` types as `int`.
+    Evaluation stops at an unresolved operand that always decides, as at
+    run time. Every example above now passes `create_job`; the silent
+    variant has no `resolved_value`; the type variant passes pass 8.
+    Breaking: pass 8 newly rejects some and/or results that meet a
+    strict union consumer (item 35) and expressions that fail on every
+    run (`(Task.Param.I or Param.S).upper()`). Converged after two
+    implement/audit rounds (~69,000 probes against the #434
+    evaluator); round 1 caught a `cond and A or B` regression, fixed by
+    the nested outcome lists. The audits surfaced items 35–38. Close
+    this item when the PR merges.
 26. **Generic list `+` leaks an unbound type variable.** `Param.L +
     [Task.Param.I]` and `[Task.Param.I] + [Task.Param.I]` type as
     `unresolved[list[T3]]` at both pass 8 and gate 2 — the signature's
@@ -1381,3 +1412,54 @@ confirmed not made worse by it. Symbol states as for items 24–31.
     so this is a diagnostics-consistency nit, not a soundness issue.
     Fix: route the concrete comprehension's `make_list` conflict
     through the same `incompatible_list_types_error` formatter.
+
+Items 35–38 come from the independent audits of the item 25 fix
+(PR #435). Symbol states as for items 24–31, plus `Task.Param.O`
+(unresolved `int | nulltype`) and `Task.Param.A` (unresolved `any`).
+
+35. **Union operands: operators, subscripts, and functions are strict
+    per member and imprecise in their result type.** Pre-existing, but
+    `and`/`or` now produce union types far more often, so templates
+    reach it more. Two halves:
+    - *Over-rejection:* a union operand is rejected if any member
+      fails. `Param.L[Task.Param.U]` with `U: int | string` was already
+      rejected; now `Param.L[Session.HasPathMappingRules or Param.Z]`
+      (index `bool | int`), `round(Session.HasPathMappingRules or
+      Param.N)` and `(Session.HasPathMappingRules or Param.F) * 2` are
+      rejected at pass 8 too, though each runs when the flag is false.
+      The #435 audit counted 72 such pass-8 and 86 gate-2 cases, all
+      "Index must be an integer" with a `bool`/`string` member.
+    - *Wrong result type:* dispatch takes the first matching overload's
+      return type, so the static type can miss run-time values.
+      `(Task.Param.O or Param.S) * 2` types as `int` but gives `'abcabc'`;
+      `(X or 1) * 2` with `X: float?` types as `int` but gives a float;
+      `(Flag and Param.L) + Param.L` gives item 26's `list[T3]`. All
+      reproduce without and/or (`Task.Param.U * 2`,
+      `(Param.L if Flag else false) + Param.L`).
+
+    Fix: dispatch per union member, take the union of the matching
+    members' result types, and reject only when no member matches —
+    for operators, subscripts, and function calls alike.
+36. **An `any` operand returned by `or` is not known to be truthy.**
+    In `Param.L[(Task.Param.A or Param.Z) and Param.Z]` every run
+    returns `Param.Z`, but the outer `and` classifies the inner `or`'s
+    `Typed(any)` outcome as possibly `false`/`null`, so the result is
+    `bool | nulltype | int` and pass 8 and gate 2 reject the subscript.
+    All 12 always-succeeding rejections the audit found are this shape.
+    `any` only appears in model code for a failed `let` binding, so the
+    impact is near zero. Fix: record an `or`-returned `any`/type-variable
+    member as a truthy outcome (e.g. a `Truthy(ANY)` variant) that an
+    enclosing `and` only passes on.
+37. **An absorbed error is not re-raised when a later operand exists.**
+    `Task.Param.I and fail('x') and Param.N` types as `unresolved[int]`
+    though every run fails at `fail('x')` (the `int` always passes `and`
+    on). The re-raise rule only fires when no outcome remains; here the
+    last operand still contributes. Not a regression — the old code
+    accepted it too. Fix: when a value error is absorbed while no
+    outcome has been collected and every earlier operand passes on,
+    re-raise it immediately.
+38. **BoolOp test gaps.** No test covers an error absorbed inside a
+    nested operator (`(Flag and fail('x')) or Param.N` →
+    `unresolved[int]`, not concrete), or the `noreturn` and
+    type-variable rows of the outcome table in
+    `specs/expr/evaluator.md`.
