@@ -79,7 +79,8 @@ static RFC_COORDINATOR: LazyLock<String> = LazyLock::new(|| {
 /// when the Step has none. Unchanged when the template already lists it.
 fn with_service_dependency(template: &str, step: &str, service: &str) -> String {
     let entry = format!("      - service: {service}\n");
-    if template.contains(entry.trim_start()) {
+    // Match without the newline so a trailing comment on the entry still counts.
+    if template.contains(entry.trim()) {
         return template.to_string();
     }
     let name_line = format!("  - name: {step}\n");

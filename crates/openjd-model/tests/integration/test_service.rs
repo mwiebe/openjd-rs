@@ -2343,7 +2343,7 @@ fn rfc_example_step_coordinator_services_validate() {
         coordinator.port_names().collect::<Vec<_>>(),
         vec!["api", "metrics"]
     );
-    assert_eq!(coordinator.health_check().type_name(), "STDOUT");
+    assert_eq!(coordinator.health_check().type_name(), "COMMAND");
     assert_eq!(
         coordinator
             .health_check()
@@ -2361,5 +2361,5 @@ fn rfc_example_step_coordinator_services_validate() {
         .iter_named()
         .map(|(name, _)| name)
         .collect();
-    assert_eq!(names, vec!["onEnter", "onRun", "onExit"]);
+    assert_eq!(names, vec!["onEnter", "onRun", "onHealthCheck", "onExit"]);
 }

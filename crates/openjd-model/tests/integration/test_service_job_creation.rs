@@ -57,7 +57,8 @@ static RFC_COORDINATOR: LazyLock<String> = LazyLock::new(|| {
 /// when the Step has none. Unchanged when the template already lists it.
 fn with_service_dependency(template: &str, step: &str, service: &str) -> String {
     let entry = format!("      - service: {service}\n");
-    if template.contains(entry.trim_start()) {
+    // Match without the newline so a trailing comment on the entry still counts.
+    if template.contains(entry.trim()) {
         return template.to_string();
     }
     let name_line = format!("  - name: {step}\n");
@@ -238,21 +239,22 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
         vec![(Some("PrepareScene"), None), (None, Some("Coordinator"))]
     );
     assert_eq!(c.port_names().collect::<Vec<_>>(), vec!["api", "metrics"]);
-    // STDOUT without healthIntervalSeconds: no heartbeat; failureThreshold
-    // takes its default but has nothing to count.
+    // COMMAND with only readinessTimeoutSeconds given: the intervals and
+    // threshold take the COMMAND defaults (§9.4 items 3, 5, and 6).
     assert_eq!(
         c.health_check,
-        ServiceHealthCheck::Stdout {
+        ServiceHealthCheck::Command {
+            readiness_interval_seconds: 5,
             readiness_timeout_seconds: 120,
-            health_interval_seconds: None,
+            health_interval_seconds: 30,
             failure_threshold: 3,
         }
     );
-    assert_eq!(c.health_check.type_name(), "STDOUT");
-    assert_eq!(c.health_check.readiness_interval_seconds(), None);
+    assert_eq!(c.health_check.type_name(), "COMMAND");
+    assert_eq!(c.health_check.readiness_interval_seconds(), Some(5));
     assert_eq!(c.health_check.readiness_timeout_seconds(), 120);
-    assert_eq!(c.health_check.health_interval_seconds(), None);
-    assert!(!c.health_check.monitors_health());
+    assert_eq!(c.health_check.health_interval_seconds(), Some(30));
+    assert!(c.health_check.monitors_health());
     assert_eq!(c.restart_policy.max_attempts, 1);
     assert_eq!(
         c.restart_policy.completed_tasks,
@@ -265,22 +267,20 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
             .iter_named()
             .map(|(n, _)| n)
             .collect::<Vec<_>>(),
-        vec!["onEnter", "onRun", "onExit"]
+        vec!["onEnter", "onRun", "onHealthCheck", "onExit"]
     );
-    assert_eq!(c.script.actions.iter_actions().count(), 3);
+    assert_eq!(c.script.actions.iter_actions().count(), 4);
     let on_run_args = c.script.actions.on_run.args.as_ref().unwrap();
     assert_eq!(
         on_run_args[4].raw(),
         "{{ join_host_port(Service.Coordinator.api.bindAddress, Service.Coordinator.api.port) }}"
     );
-    // The resolved symtab carries nothing for this Service: every reference
-    // is host-scope (Session.*, Service.*), bound by the Service Session.
+    // The resolved symtab carries only the Job Parameter onEnter reads; every
+    // other reference is host-scope (Session.*, Service.*), bound by the
+    // Service Session.
     let st = symtab_of(c.resolved_symtab.as_ref().unwrap());
-    assert!(
-        st.keys().next().is_none(),
-        "got {:?}",
-        st.keys().collect::<Vec<_>>()
-    );
+    assert_eq!(st.keys().collect::<Vec<_>>(), vec!["Param"]);
+    assert_eq!(st.get_value("Param.TileCount"), Some(&ExprValue::Int(256)));
 }
 
 // ════════════════════════════════════════════════════════════════════
