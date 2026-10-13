@@ -717,10 +717,11 @@ impl ServiceSession {
             log_section_banner(&sid, &format!("Service onEnter: {}", self.service.name));
             let result = self.run_foreground_action(&on_enter, None, true).await?;
             if result.state != ActionState::Success {
+                let fail_message = self.lock_status().fail_message.clone();
                 return Err(SessionError::ServiceScriptFailed {
                     name: self.service.name.clone(),
                     action: "onEnter".into(),
-                    reason: failure_reason(&result),
+                    reason: failure_reason(&result, fail_message.as_deref()),
                 });
             }
         }
@@ -1026,10 +1027,11 @@ impl ServiceSession {
                     {
                         Ok(result) if result.state == ActionState::Success => {}
                         Ok(result) => {
+                            let fail_message = self.lock_status().fail_message.clone();
                             first_error.get_or_insert(SessionError::ServiceScriptFailed {
                                 name: self.service.name.clone(),
                                 action: "onExit".into(),
-                                reason: failure_reason(&result),
+                                reason: failure_reason(&result, fail_message.as_deref()),
                             });
                         }
                         Err(e) => {
@@ -1507,12 +1509,17 @@ fn format_exit_code(code: Option<i32>) -> String {
 }
 
 /// The `reason` of a [`SessionError::ServiceScriptFailed`] for a finished
-/// foreground action.
-fn failure_reason(result: &SubprocessResult) -> String {
-    match result.state {
+/// foreground action. An `openjd_fail` message the action emitted accompanies
+/// the reason (RFC 0009 `<ServiceActions>`: "the message accompanies it").
+fn failure_reason(result: &SubprocessResult, fail_message: Option<&str>) -> String {
+    let base = match result.state {
         ActionState::Canceled => "canceled".to_string(),
         ActionState::Timeout => "timed out".to_string(),
         _ => format_exit_code(result.exit_code),
+    };
+    match fail_message {
+        Some(msg) if !msg.is_empty() => format!("{base}; openjd_fail: {msg}"),
+        _ => base,
     }
 }
 

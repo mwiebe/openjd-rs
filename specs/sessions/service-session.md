@@ -186,7 +186,10 @@ returns it; `end()` is still required.
    `timeout` and `cancelation` apply; cancelable through `cancel_handle()`).
    Banner `Service onEnter: <name>`. A non-`Success` result is
    `SessionError::ServiceScriptFailed { name, action: "onEnter", reason }`
-   with reason `exit code: N` / `canceled` / `timed out`.
+   with reason `exit code: N` / `canceled` / `timed out`, followed by
+   `; openjd_fail: <message>` when the action emitted one (RFC 0009
+   `<ServiceActions>`: "the message accompanies it"). The same shape is
+   used for an `onExit` failure in `end()`.
 
 ## Environment variables of a Service action
 

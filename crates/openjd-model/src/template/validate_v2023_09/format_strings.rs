@@ -1373,23 +1373,40 @@ fn validate_env_actions_timing_fs(
     actions_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let wrap_hook_names: Vec<&str> = script
+    // On the plain lifecycle actions these fields resolve at job creation,
+    // before any session exists, so they validate against the
+    // template-scope symtab. On the RFC 0008 wrap hooks they resolve at run
+    // time with the `WrappedAction.*` variables seeded — that is what makes
+    // round-trip forwarding (`timeout: "{{WrappedAction.Timeout}}"`,
+    // `mode: "{{WrappedAction.Cancelation.Mode}}"`) possible — so they
+    // validate against the wrapped-action scope, plus the hook's companion
+    // group (`WrappedEnv.Name`, `WrappedStep.Name`, or the RFC 0009
+    // `WrappedService.*`): the runtime resolves a hook's timing fields
+    // against the same symbol table as its command and args, so the two
+    // scopes must agree.
+    let wrap_hook_scopes: Vec<(&str, WrapHookScope)> = script
         .actions
         .wrap_hooks()
         .iter()
-        .map(|(name, _, _)| *name)
+        .map(|(name, _, extra)| (*name, *extra))
         .collect();
     for (name, action) in script.actions.iter_named() {
         let action_path = path_field(actions_path, name);
         let scoped_symtab: SymbolTable;
-        let field_symtab: &SymbolTable = if wrap_hook_names.contains(&name) {
-            let mut st = template_symtab.clone();
-            add_wrapped_action_scope(&mut st);
-            scoped_symtab = st;
-            &scoped_symtab
-        } else {
-            template_symtab
-        };
+        let field_symtab: &SymbolTable =
+            if let Some((_, extra)) = wrap_hook_scopes.iter().find(|(hook, _)| *hook == name) {
+                let mut st = template_symtab.clone();
+                add_wrapped_action_scope(&mut st);
+                match extra {
+                    WrapHookScope::EnvName => add_wrapped_env_name_scope(&mut st),
+                    WrapHookScope::StepName => add_wrapped_step_name_scope(&mut st),
+                    WrapHookScope::Service => add_wrapped_service_scope(&mut st),
+                }
+                scoped_symtab = st;
+                &scoped_symtab
+            } else {
+                template_symtab
+            };
         validate_action_timing_fs(action, field_symtab, template_ev, &action_path, errors);
     }
 }

@@ -576,6 +576,71 @@ fn service_hooks_see_wrapped_action_variables() {
 }
 
 #[test]
+fn service_hook_timing_fields_see_wrapped_service() {
+    // A hook's `timeout` and `cancelation` resolve at run time against the
+    // same symbol table as its command and args, so the hook's companion
+    // group (`WrappedService.*` here) is in scope there too — not only
+    // `WrappedAction.*`.
+    expect_env_ok(
+        &env_template(
+            "SERVICE, EXPR, WRAP_ACTIONS, FEATURE_BUNDLE_1",
+            r#"  name: Wrapper
+  runScope: [SERVICE]
+  script:
+    actions:
+      onWrapEnvEnter:
+        command: echo
+        timeout: "{{ 30 if WrappedEnv.Name == 'Conda' else 60 }}"
+      onWrapEnvExit: { command: echo }
+      onWrapServiceEnter: { command: echo }
+      onWrapServiceRun:
+        command: echo
+        timeout: "{{ 60 if WrappedService.Name == 'Store' else WrappedAction.Timeout }}"
+        cancelation:
+          mode: NOTIFY_THEN_TERMINATE
+          notifyPeriodInSeconds: "{{ 30 + len(WrappedService.Ports) }}"
+      onWrapServiceReadinessCheck: { command: echo }
+      onWrapServiceExit: { command: echo }
+"#,
+        ),
+        ALL_EXTS,
+    );
+}
+
+#[test]
+fn hook_timing_fields_reject_other_hooks_companion_groups() {
+    // The companion group is per hook: `WrappedService.*` is not in scope
+    // in an env hook's timing fields, nor `WrappedStep.Name` in a Service
+    // hook's.
+    expect_env_err(
+        &env_template(
+            "SERVICE, EXPR, WRAP_ACTIONS, FEATURE_BUNDLE_1",
+            r#"  name: Wrapper
+  script:
+    actions:
+      onWrapEnvEnter:
+        command: echo
+        timeout: "{{ WrappedService.Ports[0] }}"
+      onWrapTaskRun: { command: echo }
+      onWrapEnvExit: { command: echo }
+      onWrapServiceEnter: { command: echo }
+      onWrapServiceRun:
+        command: echo
+        timeout: "{{ 60 if WrappedStep.Name == 'Render' else 30 }}"
+      onWrapServiceReadinessCheck: { command: echo }
+      onWrapServiceExit: { command: echo }
+"#,
+        ),
+        ALL_EXTS,
+        &[
+            "2 validation errors for EnvironmentTemplate\n",
+            "environment -> script -> actions -> onWrapEnvEnter -> timeout:\n\tFailed to parse interpolation expression at [0, 29]. Undefined variable: 'WrappedService.Ports'.",
+            "environment -> script -> actions -> onWrapServiceRun -> timeout:\n\tFailed to parse interpolation expression at [0, 48]. Undefined variable: 'WrappedStep.Name'.",
+        ],
+    );
+}
+
+#[test]
 fn wrapped_env_and_step_names_not_available_in_service_hooks() {
     expect_env_err(
         &env_template(
