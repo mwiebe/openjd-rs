@@ -80,7 +80,7 @@ Current coverage: 87.3% line coverage (see [COVERAGE_REPORT.md](COVERAGE_REPORT.
 
 ## Conformance
 
-Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) (1,209 tests on Linux):
+Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) (1,231 tests on Linux):
 
 | Category | Tests |
 |----------|-------|
@@ -92,17 +92,17 @@ Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDes
 | Environment template validation (EXPR) | 6 |
 | Environment template validation (FEATURE_BUNDLE_1) | 4 |
 | Environment template validation (WRAP_ACTIONS) | 9 |
-| Job execution (base) | 184 |
-| Job execution (EXPR) | 147 |
+| Job execution (base) | 196 |
+| Job execution (EXPR) | 157 |
 | Job execution (FEATURE_BUNDLE_1) | 12 |
 | Job execution (TASK_CHUNKING) | 7 |
 | Job execution (REDACTED_ENV_VARS) | 8 |
 | Job execution (WRAP_ACTIONS) | 64 |
-| **Total** | **1,209** |
+| **Total** | **1,231** |
 
 The `SERVICE` extension suite (RFC 0009, on the openjd-specifications `rfc-service`
 branch) adds 232 job template, 54 environment template, and 66 job execution tests, all
-passing (1,561 in total).
+passing (1,583 in total).
 
 ## Architecture
 
