@@ -76,7 +76,7 @@
 //!
 //! When the document does not declare `SERVICE` at all, every `Undefined
 //! variable: 'Service.<svc>…'` whose `<svc>` the document's `services` or
-//! `requiresServices` names is **dropped**: the gating pass has reported
+//! `externalServices` names is **dropped**: the gating pass has reported
 //! the list itself (*services requires the SERVICE extension.*), and the
 //! reference is a consequence of that.
 //!
@@ -92,7 +92,7 @@ use crate::template::{
 use crate::types::{ModelExtension, ValidationContext};
 
 /// One Service the document knows: declared in its `services`, or required
-/// by a Job Template's `requiresServices`.
+/// by a Job Template's `externalServices`.
 enum Known<'a> {
     Declared(&'a Service),
     Required { port_names: Vec<&'a str> },
@@ -159,7 +159,7 @@ impl<'a> Document<'a> {
         }
         let req = self
             .job_template?
-            .requires_services()
+            .external_services()
             .iter()
             .find(|r| r.name == name)?;
         Some(Known::Required {
@@ -279,7 +279,7 @@ fn refine(doc: &Document<'_>, service_active: bool, errors: &mut ValidationError
         };
         // Without the extension no Service.* value exists anywhere, and the
         // gating pass has already reported the `services` /
-        // `requiresServices` list the name came from: a reference to one
+        // `externalServices` list the name came from: a reference to one
         // of its Services is a consequence of that, not a finding.
         if !service_active {
             let declared = name

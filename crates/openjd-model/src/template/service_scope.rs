@@ -298,7 +298,7 @@ fn edges_of<'a>(
 /// cycle in the combined dependency graph of its Steps, Services, and Job
 /// Environments.
 ///
-/// The names in `jt.requires_services` are external Services: a `service`
+/// The names in `jt.external_services` are external Services: a `service`
 /// entry naming one is not an edge of the graph and does not place anything
 /// in an inline Service's scope, whether a Step, a Service, or a Job
 /// Environment lists it.
@@ -595,7 +595,7 @@ pub fn listed_services<'a>(
         .filter(move |svc| super::step::lists_service(dependencies, &svc.name))
 }
 
-/// The `requiresServices` entries of `requirements` that `dependencies` lists
+/// The `externalServices` entries of `requirements` that `dependencies` lists
 /// with the `service` key — the required Services whose
 /// `Service.<name>.<port>.port` / `.connectAddress` the listing Step,
 /// Service, or Job Environment may reference (§9 scope rules 2–4, §9.8 item
@@ -904,7 +904,7 @@ mod tests {
         // required Service listed by a Job Environment is not one either.
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
-             requiresServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
+             externalServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
              jobEnvironments:\n\
              - name: Opaque\n  dependencies: [{{service: Listed}}, {{service: Ext}}]\n  \
              variables: {{A: x}}\n\
@@ -928,7 +928,7 @@ mod tests {
     fn references_are_not_edges_and_requirement_names_are_not_dependencies() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
-             requiresServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
+             externalServices: [{{name: Ext, ports: [{{name: main}}]}}]\n\
              services:\n{}{}steps:\n{}{}",
             svc("Own", &["{{ Service.Ext.main.port }}"], &["service:Ext"]),
             svc("Other", &["{{ Service.Own.main.port }}"], &[]),
@@ -1110,18 +1110,18 @@ mod tests {
     fn listed_requirements_follow_the_dependencies_list() {
         let yaml = format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
-             requiresServices:\n- name: R1\n  ports: [{{name: main}}]\n- name: R2\n  \
+             externalServices:\n- name: R1\n  ports: [{{name: main}}]\n- name: R2\n  \
              ports: [{{name: main}}]\n- name: R3\n  ports: [{{name: main}}]\nservices:\n{}steps:\n{}",
             svc("A", &[], &[]),
             step("S1", &[], &["service:R3", "service:A", "service:R1", "service:Nope"]),
         );
         let jt = template(&yaml);
         let names: Vec<&str> =
-            listed_requirements(jt.steps[0].dependencies.as_deref(), jt.requires_services())
+            listed_requirements(jt.steps[0].dependencies.as_deref(), jt.external_services())
                 .map(|r| r.name.as_str())
                 .collect();
         assert_eq!(names, vec!["R1", "R3"]);
-        assert_eq!(listed_requirements(None, jt.requires_services()).count(), 0);
+        assert_eq!(listed_requirements(None, jt.external_services()).count(), 0);
     }
 
     #[test]

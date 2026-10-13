@@ -2,13 +2,13 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Integration tests for RFC 0009 `requiresServices` (Template Schemas §1.1
+//! Integration tests for RFC 0009 `externalServices` (Template Schemas §1.1
 //! item 9, §1.2.2 items 2–4, §9 scope lists, §9.8, §9.2, §1.1 item 9.4, §9.1 rule 4):
 //!
 //! 1. **Template validation** — schema, list and name constraints, the
 //!    `Service.R.*` scope a requirement opens, and the diagnostics for an
 //!    undeclared port and for `bindAddress`.
-//! 2. **Job creation** — `job::Job::requires_services` and its JSON.
+//! 2. **Job creation** — `job::Job::external_services` and its JSON.
 //! 3. **Submission** (`apply_environment_templates`) — matching each
 //!    requirement to exactly one attached Service, the bindings recorded,
 //!    and every rejection; plus the §1.2.2 item 4 wrapper rule as it
@@ -72,7 +72,7 @@ fn assert_errs(err: &str, count: usize, lines: &[&str]) {
     }
 }
 
-/// A Job Template with `requiresServices` body `reqs`, `services` body
+/// A Job Template with `externalServices` body `reqs`, `services` body
 /// `services` (omitted when empty), Job Environments `job_envs` (a
 /// complete block or empty), and one Step `S` whose `onRun` args are
 /// `args`.
@@ -84,7 +84,7 @@ fn job(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
     };
     format!(
         "specificationVersion: \"jobtemplate-2023-09\"\nextensions: [SERVICE, EXPR]\nname: Req\n\
-         {job_envs}requiresServices:\n{reqs}{services}steps:\n  - name: S\n    script:\n      \
+         {job_envs}externalServices:\n{reqs}{services}steps:\n  - name: S\n    script:\n      \
          actions:\n        onRun:\n          command: run\n          args: {args}\n"
     )
 }
@@ -137,7 +137,7 @@ fn requirement_opens_port_and_connect_address_where_listed() {
         "  - name: S\n    stepEnvironments:\n      - name: StepClient\n        variables: { P: \"{{ Service.Cache.stats.connectAddress }}\" }\n",
     );
     let jt = decode_job(&t);
-    let reqs = jt.requires_services();
+    let reqs = jt.external_services();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].name, "Cache");
     assert_eq!(reqs[0].port_names().collect::<Vec<_>>(), ["main", "stats"]);
@@ -221,7 +221,7 @@ fn step_reference_to_a_required_service_with_dependency_is_accepted() {
     assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
     let (job, _) = create(&jt, &[]).unwrap();
     assert!(job.services.is_none());
-    assert_eq!(job.requires_services.as_ref().unwrap()[0].name, "Cache");
+    assert_eq!(job.external_services.as_ref().unwrap()[0].name, "Cache");
 }
 
 #[test]
@@ -310,9 +310,9 @@ fn unused_requirement_is_accepted() {
     // submission.
     let t = job(CACHE_REQ, "", "", "[x]");
     let jt = decode_job(&t);
-    assert_eq!(jt.requires_services()[0].name, "Cache");
+    assert_eq!(jt.external_services()[0].name, "Cache");
     let (created, _) = create(&jt, &[]).unwrap();
-    assert_eq!(created.requires_services.as_ref().unwrap().len(), 1);
+    assert_eq!(created.external_services.as_ref().unwrap().len(), 1);
     let et = decode_env(&provider("Cache", "[{ name: main }]"));
     let (_, applied) = submit(&jt, std::slice::from_ref(&et), &[]).unwrap();
     assert_eq!(applied.requirement_bindings.len(), 1);
@@ -329,23 +329,23 @@ fn unused_requirement_is_accepted() {
 fn rfc_required_queue_cache_example_validates() {
     let jt = decode_job(RFC_REQUIRED);
     assert!(jt.services.is_none());
-    assert_eq!(jt.requires_services()[0].name, "Cache");
+    assert_eq!(jt.external_services()[0].name, "Cache");
 }
 
 #[test]
-fn requires_services_must_not_be_empty() {
+fn external_services_must_not_be_empty() {
     assert_eq!(
-        job_err(&job("  []\n", "", "", "[x]").replace("requiresServices:\n  []\n", "requiresServices: []\n")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices:\n\tmust not be empty."
+        job_err(&job("  []\n", "", "", "[x]").replace("externalServices:\n  []\n", "externalServices: []\n")),
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices:\n\tmust not be empty."
     );
 }
 
 #[test]
-fn requires_services_at_most_ten() {
+fn external_services_at_most_ten() {
     decode_job(&job(&n_reqs(10), "", "", "[x]"));
     assert_eq!(
         job_err(&job(&n_reqs(11), "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices:\n\tmust not contain more than 10 elements."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices:\n\tmust not contain more than 10 elements."
     );
 }
 
@@ -353,7 +353,7 @@ fn requires_services_at_most_ten() {
 fn requirement_names_must_be_unique() {
     assert_eq!(
         job_err(&job(&format!("{CACHE_REQ}{CACHE_REQ}"), "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[1]:\n\tduplicate service requirement name: 'Cache'"
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[1]:\n\tduplicate service requirement name: 'Cache'"
     );
 }
 
@@ -369,7 +369,7 @@ fn requirement_name_must_not_also_be_an_inline_service() {
             ),
             &["Cache"]
         )),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> name:\n\t'Cache' is also declared in services; a Service is either declared or required, not both."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> name:\n\t'Cache' is also declared in services; a Service is either declared or required, not both."
     );
 }
 
@@ -377,11 +377,11 @@ fn requirement_name_must_not_also_be_an_inline_service() {
 fn requirement_name_must_be_an_identifier_and_not_file() {
     assert_eq!(
         job_err(&job("  - name: File\n    ports: [{ name: main }]\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references."
     );
     assert_eq!(
         job_err(&job("  - name: \"my-cache\"\n    ports: [{ name: main }]\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> name:\n\t'my-cache' is not a valid identifier."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> name:\n\t'my-cache' is not a valid identifier."
     );
 }
 
@@ -389,12 +389,12 @@ fn requirement_name_must_be_an_identifier_and_not_file() {
 fn requirement_ports_must_not_be_empty_or_exceed_ten() {
     assert_eq!(
         job_err(&job("  - name: Cache\n    ports: []\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> ports:\n\tmust not be empty."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> ports:\n\tmust not be empty."
     );
     decode_job(&job(&n_ports(10), "", "", "[x]"));
     assert_eq!(
         job_err(&job(&n_ports(11), "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> ports:\n\tmust not contain more than 10 elements."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> ports:\n\tmust not contain more than 10 elements."
     );
 }
 
@@ -402,15 +402,15 @@ fn requirement_ports_must_not_be_empty_or_exceed_ten() {
 fn requirement_port_names_must_be_unique_identifiers_and_not_file() {
     assert_eq!(
         job_err(&job("  - name: Cache\n    ports: [{ name: main }, { name: main, protocol: UDP }]\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> ports[1]:\n\tduplicate port name 'main'."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> ports[1]:\n\tduplicate port name 'main'."
     );
     assert_eq!(
         job_err(&job("  - name: Cache\n    ports: [{ name: File }]\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> ports[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> ports[0] -> name:\n\tmust not be 'File'; it is reserved for Service.File.* references."
     );
     assert_eq!(
         job_err(&job("  - name: Cache\n    ports: [{ name: \"9main\" }]\n", "", "", "[x]")),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices[0] -> ports[0] -> name:\n\t'9main' is not a valid identifier."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0] -> ports[0] -> name:\n\t'9main' is not a valid identifier."
     );
 }
 
@@ -532,33 +532,33 @@ fn required_service_values_are_not_in_an_environment_entered_in_service_sessions
 }
 
 #[test]
-fn requires_services_rejected_in_an_environment_template() {
+fn external_services_rejected_in_an_environment_template() {
     let err = decode_environment_template(
         yaml_val(
-            "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nrequiresServices:\n  - name: Cache\n    ports: [{ name: main }]\nenvironment:\n  name: E\n  variables: { K: v }\n",
+            "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nexternalServices:\n  - name: Cache\n    ports: [{ name: main }]\nenvironment:\n  name: E\n  variables: { K: v }\n",
         ),
         Some(EXTS),
         &CallerLimits::default(),
     )
-    .expect_err("requiresServices is permitted only in a Job Template")
+    .expect_err("externalServices is permitted only in a Job Template")
     .to_string();
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for EnvironmentTemplate\nrequiresServices:\n\t\
-         unknown field `requiresServices`, expected one of `specificationVersion`, `$schema`, \
-         `extensions`, `parameterDefinitions`, `environment`, `services`. 'requiresServices' is a \
+        "Model validation error: 1 validation error for EnvironmentTemplate\nexternalServices:\n\t\
+         unknown field `externalServices`, expected one of `specificationVersion`, `$schema`, \
+         `extensions`, `parameterDefinitions`, `environment`, `services`. 'externalServices' is a \
          Job Template property; an Environment Template declares the Services it provides in \
          'services'."
     );
 }
 
 #[test]
-fn requires_services_without_the_service_extension_is_rejected() {
+fn external_services_without_the_service_extension_is_rejected() {
     let t = job(CACHE_REQ, "", "", "[x]")
         .replace("extensions: [SERVICE, EXPR]\n", "extensions: [EXPR]\n");
     assert_eq!(
         job_err(&t),
-        "Model validation error: 1 validation error for JobTemplate\nrequiresServices:\n\trequiresServices requires the SERVICE extension."
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices:\n\texternalServices requires the SERVICE extension."
     );
 }
 
@@ -595,7 +595,7 @@ fn job_carries_the_requirements_and_serializes_them() {
     );
     let jt = decode_job(&t);
     let (job, _) = create(&jt, &[]).unwrap();
-    let reqs = job.requires_services.as_ref().expect("requires_services");
+    let reqs = job.external_services.as_ref().expect("external_services");
     assert_eq!(
         reqs,
         &vec![job::ServiceRequirement {
@@ -614,12 +614,12 @@ fn job_carries_the_requirements_and_serializes_them() {
     );
     assert!(job.services.is_none());
     let json = serde_json::to_value(&job).unwrap();
-    assert_eq!(json["requiresServices"][0]["name"], "Cache");
-    assert_eq!(json["requiresServices"][0]["ports"][0]["name"], "main");
-    assert_eq!(json["requiresServices"][0]["ports"][1]["protocol"], "UDP");
+    assert_eq!(json["externalServices"][0]["name"], "Cache");
+    assert_eq!(json["externalServices"][0]["ports"][0]["name"], "main");
+    assert_eq!(json["externalServices"][0]["ports"][1]["protocol"], "UDP");
     let back: Vec<job::ServiceRequirement> =
-        serde_json::from_value(json["requiresServices"].clone()).unwrap();
-    assert_eq!(Some(back), job.requires_services);
+        serde_json::from_value(json["externalServices"].clone()).unwrap();
+    assert_eq!(Some(back), job.external_services);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -664,7 +664,7 @@ fn provider(name: &str, ports: &str) -> String {
 
 fn submission_err(index: usize, message: &str) -> String {
     format!(
-        "Model validation error: 1 validation error for Submission\nJobTemplate -> requiresServices[{index}]:\n\t{message}"
+        "Model validation error: 1 validation error for Submission\nJobTemplate -> externalServices[{index}]:\n\t{message}"
     )
 }
 
@@ -689,7 +689,7 @@ fn requirement_matched_to_the_rfc_queue_cache_is_bound() {
     );
     let combined = applied.into_combined_job(job);
     assert_eq!(combined.services.as_ref().unwrap().len(), 1);
-    assert!(combined.requires_services.is_some());
+    assert!(combined.external_services.is_some());
 }
 
 #[test]

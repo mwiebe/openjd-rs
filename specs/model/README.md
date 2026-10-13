@@ -72,7 +72,7 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `SERVICE` (RFC 0009) — implemented. The `<Service>` schema (one `services`
-  list per document, `requiresServices` on a Job Template, the §9 sub-objects
+  list per document, `externalServices` on a Job Template, the §9 sub-objects
   incl. `dependencies` and `<ServiceRequirement>`), the extension gating and
   EXPR prerequisite, the §9.9 structural checks (incl. `completedTasks`
   required when `maxAttempts` > 0), the two-key `<StepDependency>` (`dependsOn`
@@ -94,7 +94,7 @@ Currently implements `2023-09` with extensions:
   (`service_diagnostics.rs`), the `WrappedService.*` wrap-hook variables,
   pass-8 validation of every format string and `let` inside a Service, job
   creation of Services (`job::Service` with its computed `scope` and
-  `dependencies`, `Job::services`, `Job::requires_services`, resolved
+  `dependencies`, `Job::services`, `Job::external_services`, resolved
   `<Service>.let` and numeric fields, job-side `runScope` / Service hooks), the
   runtime-facing `job::service_symbols` builders, and the submission stage
   (`apply_environment_templates`: §1.2.2 external Services merged before the

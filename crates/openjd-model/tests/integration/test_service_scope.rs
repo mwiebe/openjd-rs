@@ -633,7 +633,7 @@ fn job_environment_sees_only_the_services_and_requirements_it_lists() {
     })
     .replace(
         "jobEnvironments:",
-        "requiresServices: [{ name: R, ports: [{ name: m }] }]\njobEnvironments:",
+        "externalServices: [{ name: R, ports: [{ name: m }] }]\njobEnvironments:",
     );
     expect_job_err(
         &t,

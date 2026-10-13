@@ -288,7 +288,7 @@ impl StepTemplate {
 
 /// What a `<StepDependency>` names (§3.2): a Step of the same Job Template
 /// (the `dependsOn` key), or, with the `SERVICE` extension, a Service the
-/// Job Template declares in `services` or requires in `requiresServices`
+/// Job Template declares in `services` or requires in `externalServices`
 /// (the `service` key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DependencyTarget<'a> {
@@ -342,7 +342,7 @@ pub struct StepDependency {
     #[serde(default)]
     pub depends_on: Option<String>,
     /// The name of a Service the Job Template declares in `services` or
-    /// requires in `requiresServices` (`SERVICE` extension).
+    /// requires in `externalServices` (`SERVICE` extension).
     #[serde(default)]
     pub service: Option<String>,
 }

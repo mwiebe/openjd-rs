@@ -8,10 +8,10 @@
 //!
 //! These tests cover:
 //!
-//! 1. **Schema parse**: `services`, `requiresServices`, and every `<Service>`
+//! 1. **Schema parse**: `services`, `externalServices`, and every `<Service>`
 //!    sub-object decode from YAML/JSON, with the numeric `@fmtstring` fields
 //!    accepting either an integer or a format string.
-//! 2. **Extension gating**: using `services`/`requiresServices` without
+//! 2. **Extension gating**: using `services`/`externalServices` without
 //!    `SERVICE`, or declaring `SERVICE` without `EXPR`, produces a specific,
 //!    path-annotated validation error.
 //! 3. **Structural validation** (§9.7 items 3–5 and 7 as far as they concern
@@ -30,7 +30,7 @@
 //! The `Service.*` format-string scope rules (§9 scope lists) and job creation of Services are covered in `test_service_scope.rs`
 //! and `test_service_job_creation.rs`; Service scope (§9.1), unused
 //! Services, dependency cycles, `dependencies` and the `runScope` default in
-//! `test_service_scope_rules.rs`; `requiresServices` in
+//! `test_service_scope_rules.rs`; `externalServices` in
 //! `test_service_requirements.rs`; `<Environment>.runScope`, the
 //! `onWrapService*` hooks, and the Environment Template root changes in
 //! `test_service_environments.rs`.
@@ -274,7 +274,7 @@ fn minimal_service_decodes_with_spec_defaults() {
     assert_eq!(ServiceActions::default_timeout_seconds("onExit"), Some(300));
 
     assert!(svc.dependencies.is_none());
-    assert!(jt.requires_services.is_none());
+    assert!(jt.external_services.is_none());
 }
 
 #[test]
@@ -751,13 +751,13 @@ steps:
 }
 
 #[test]
-fn requires_services_rejected_without_extension() {
+fn external_services_rejected_without_extension() {
     expect_job_err(
         r#"
 specificationVersion: "jobtemplate-2023-09"
 extensions: [EXPR]
 name: Test
-requiresServices:
+externalServices:
   - name: Cache
     ports: [{name: main}]
 steps:
@@ -767,7 +767,7 @@ steps:
         SERVICE_EXTS,
         &[
             "1 validation error for JobTemplate\n",
-            "requiresServices:\n\trequiresServices requires the SERVICE extension.",
+            "externalServices:\n\texternalServices requires the SERVICE extension.",
         ],
     );
 }
@@ -2226,14 +2226,14 @@ fn rfc_example_step_coordinator_verbatim() {
     );
 }
 
-/// `requiresServices` declares `Cache` with port `main`; the Step lists
+/// `externalServices` declares `Cache` with port `main`; the Step lists
 /// `service:Cache` and uses `Service.Cache.main.connectAddress` and `.port`
 /// (§1.1, §9.9).
 #[test]
 fn rfc_example_required_queue_cache_verbatim() {
     let jt = expect_fixture_job_ok(RFC_REQUIRED_QUEUE_CACHE);
     assert!(jt.services.is_none());
-    let reqs = jt.requires_services();
+    let reqs = jt.external_services();
     assert_eq!(reqs.len(), 1);
     assert_eq!(reqs[0].name, "Cache");
     assert_eq!(reqs[0].port_names().collect::<Vec<_>>(), vec!["main"]);

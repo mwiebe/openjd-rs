@@ -23,7 +23,7 @@
 //! | `jobServices` (root) | `services`, with `service: <name>` on each Step |
 //! | `stepServices` (a Step) | the top-level `services`, with `service: <name>` on the Step |
 //! | `serviceEnvironments` (root) | removed; `onEnter`, or a Job Environment with `runScope: [SERVICE]` |
-//! | `requiresServices` (Environment Template root) | a Job Template property; an Environment Template provides Services in `services` |
+//! | `externalServices` (Environment Template root) | a Job Template property; an Environment Template provides Services in `services` |
 //! | `readinessCheck` (a Service) | `healthCheck` |
 //! | `onReadinessCheck` (`<ServiceActions>`) | `onHealthCheck` |
 //! | `onWrapServiceReadinessCheck` (`<EnvironmentActions>`) | `onWrapServiceHealthCheck` |
@@ -142,8 +142,8 @@ fn hint(path: &[PathElement], message: &str) -> Option<String> {
         }
         // Only the Environment Template root rejects it; a Job Template's
         // is a known field.
-        "requiresServices" if at_root => {
-            "'requiresServices' is a Job Template property; an Environment Template declares the \
+        "externalServices" if at_root => {
+            "'externalServices' is a Job Template property; an Environment Template declares the \
              Services it provides in 'services'."
         }
         "serviceEnvironments" if at_root => {
@@ -267,7 +267,7 @@ mod tests {
         )
         .is_some());
         assert!(hint(&p(&["services", "0"]), "missing field `ports`").is_some());
-        assert!(hint(&p(&["requiresServices", "0"]), "missing field `ports`").is_none());
+        assert!(hint(&p(&["externalServices", "0"]), "missing field `ports`").is_none());
         assert!(hint(&p(&["services", "0"]), "missing field `script`").is_none());
     }
 }

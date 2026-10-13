@@ -1069,7 +1069,7 @@ fn service_dependency_on_an_unknown_step_is_rejected() {
 }
 
 fn unknown_service_message() -> &'static str {
-    "dependency 'service: Nope' not found: no Service of that name in services or requiresServices."
+    "dependency 'service: Nope' not found: no Service of that name in services or externalServices."
 }
 
 // ── The wrong-key hint (RFC 0009 §3.2) ───────────────────────────────
@@ -1120,7 +1120,7 @@ fn step_dependency_with_the_step_key_hints_at_a_required_service() {
     )
     .replace(
         "services:\n",
-        "requiresServices:\n  - name: Cache\n    ports: [{ name: main }]\nservices:\n",
+        "externalServices:\n  - name: Cache\n    ports: [{ name: main }]\nservices:\n",
     );
     assert_eq!(
         job_err(&t),
@@ -1329,13 +1329,13 @@ fn job_environment_scope_edges_join_the_one_graph() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Required Services (requiresServices)
+// Required Services (externalServices)
 // ════════════════════════════════════════════════════════════════════
 
 const REQUIRED: &str = "specificationVersion: \"jobtemplate-2023-09\"
 extensions: [SERVICE, EXPR]
 name: Required
-requiresServices:
+externalServices:
   - name: R
     ports: [{ name: main }]
 services:
@@ -1609,7 +1609,7 @@ fn the_wrong_key_for_a_name_gets_the_mirror_hint() {
          steps[0] -> dependencies[0]:\n\tdependency 'Gone' not found.\n\
          services[0] -> dependencies[0]:\n\tdependency 'Nope' not found.\n\
          services[0] -> dependencies[1]:\n\tdependency 'service: Nada' not found: no Service \
-         of that name in services or requiresServices."
+         of that name in services or externalServices."
     );
 }
 

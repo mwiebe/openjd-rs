@@ -120,7 +120,7 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// for an Environment Template's `environment`, the Services of the
 /// document it lists in its own `dependencies` (`listed_services`).
 /// `requirements` are the required Services (§9.8) the environment may
-/// reference under the same rule: the `requiresServices` entries its Step
+/// reference under the same rule: the `externalServices` entries its Step
 /// (a Step Environment) or it (a Job Environment) lists in `dependencies`
 /// (`listed_requirements`); none for an Environment Template. Their
 /// `Service.<name>.<port>.port` / `.connectAddress` are added for a Step
@@ -217,7 +217,7 @@ fn build_task_scope_symtab(
         .expect("symtab");
         add_unresolved_requirement_symbols(
             &mut symtab,
-            listed_requirements(step.dependencies.as_deref(), jt.requires_services()),
+            listed_requirements(step.dependencies.as_deref(), jt.external_services()),
         )
         .expect("symtab");
     }
@@ -1917,7 +1917,7 @@ pub fn validate_format_strings(
     let service_active = p8.service_active;
     let services: &[Service] = if service_active { jt.services() } else { &[] };
     let requirements: &[ServiceRequirement] = if service_active {
-        jt.requires_services()
+        jt.external_services()
     } else {
         &[]
     };
@@ -2619,7 +2619,7 @@ const SERVICE_MAX_ATTEMPTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedCon
 ///   `connectAddress` of every other Service in `in_scope` (the Services
 ///   of the document this Service lists in its `dependencies`, §9 scope
 ///   item 2) and of every `requirements` entry's declared ports (the
-///   `requiresServices` entries it lists, §9.8 item 2), and the
+///   `externalServices` entries it lists, §9.8 item 2), and the
 ///   `<ServiceScript>.let` bindings. Used for `variables`, every action's
 ///   `command` / `args`, and embedded-file `data`. `Task.*` and `Step.*` are
 ///   never in scope within a Service.

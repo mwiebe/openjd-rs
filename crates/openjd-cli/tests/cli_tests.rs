@@ -3126,7 +3126,7 @@ steps:
     /// RFC 0009: a Job Template's `services` are listed with their scope,
     /// ports (with protocol and any pinned number), health check type and
     /// restart policy; a Step's dependency count tells Steps from Services
-    /// and names the Services; a `requiresServices` entry is listed with
+    /// and names the Services; an `externalServices` entry is listed with
     /// its ports and, without `--environment`, as unsatisfied.
     #[test]
     fn test_summary_lists_services_and_requirements() {
@@ -3136,7 +3136,7 @@ steps:
             r#"specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: ServiceJob
-requiresServices:
+externalServices:
   - name: Cache
     ports:
       - name: main
@@ -3235,7 +3235,7 @@ steps:
             "{value}"
         );
         assert_eq!(
-            value["requires_services"],
+            value["external_services"],
             serde_json::json!([{
                 "name": "Cache",
                 "ports": [
@@ -3305,7 +3305,7 @@ steps:
         assert_eq!(code, 0);
         let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(
-            value["requires_services"][0]["satisfied_by"],
+            value["external_services"][0]["satisfied_by"],
             serde_json::json!(provider.display().to_string()),
             "{value}"
         );
@@ -5764,13 +5764,13 @@ mod services {
         assert!(!stdout.contains("is READY"), "{stdout}");
     }
 
-    /// Template Schemas §1.1 item 9, §1.2.2 item 2, §9.8: `requiresServices`
+    /// Template Schemas §1.1 item 9, §1.2.2 item 2, §9.8: `externalServices`
     /// satisfied by an attached Environment Template. `Service.R.main.*`
     /// resolves to the attached Service's endpoint both in the Task's
     /// arguments and in a Job Environment's variable; the attached Service
     /// is logged with its document and has scope every Step.
     #[test]
-    fn test_requires_services_satisfied_by_environment() {
+    fn test_external_services_satisfied_by_environment() {
         let env_path = templates_dir().join("service_required_provider.yaml");
         let env_path = env_path.to_str().unwrap();
         let (code, stdout, stderr) = run_service_template(
@@ -5805,10 +5805,10 @@ mod services {
         assert!(stdout.contains("Chunks run: 1"), "{stdout}");
     }
 
-    /// A `requiresServices` entry that the attachments do not satisfy is
+    /// An `externalServices` entry that the attachments do not satisfy is
     /// rejected at submission (Template Schemas §1.2.2 item 2): non-zero
     /// exit, no Session started, and the model error at
-    /// `JobTemplate -> requiresServices[0]`.
+    /// `JobTemplate -> externalServices[0]`.
     fn assert_requirement_rejected(environments: &[&str], message: &str) {
         let mut args = Vec::new();
         let paths: Vec<String> = environments
@@ -5828,14 +5828,14 @@ mod services {
         }
         assert!(
             stderr.contains(&format!(
-                "1 validation error for Submission\nJobTemplate -> requiresServices[0]:\n\t{message}\n"
+                "1 validation error for Submission\nJobTemplate -> externalServices[0]:\n\t{message}\n"
             )),
             "expected {message:?} in stderr:\n{stderr}"
         );
     }
 
     #[test]
-    fn test_requires_services_unmet_without_attachment() {
+    fn test_external_services_unmet_without_attachment() {
         assert_requirement_rejected(
             &[],
             "required Service 'R' is not provided: no Environment Template is attached \
@@ -5844,7 +5844,7 @@ mod services {
     }
 
     #[test]
-    fn test_requires_services_unmet_by_attachment_without_the_service() {
+    fn test_external_services_unmet_by_attachment_without_the_service() {
         assert_requirement_rejected(
             &["env_plain_expr_greeting.yaml"],
             "required Service 'R' is not provided: none of the attached Environment Templates \
@@ -5854,7 +5854,7 @@ mod services {
     }
 
     #[test]
-    fn test_requires_services_ambiguous_two_attachments() {
+    fn test_external_services_ambiguous_two_attachments() {
         assert_requirement_rejected(
             &[
                 "service_required_provider.yaml",
@@ -5868,7 +5868,7 @@ mod services {
     }
 
     #[test]
-    fn test_requires_services_provider_missing_port() {
+    fn test_external_services_provider_missing_port() {
         assert_requirement_rejected(
             &["service_required_provider_missing_port.yaml"],
             "required Service 'R' is provided by <service_required_provider_missing_port.yaml>, \
@@ -5877,7 +5877,7 @@ mod services {
     }
 
     #[test]
-    fn test_requires_services_provider_protocol_mismatch() {
+    fn test_external_services_provider_protocol_mismatch() {
         assert_requirement_rejected(
             &["service_required_provider_udp.yaml"],
             "required Service 'R' is provided by <service_required_provider_udp.yaml>, whose \

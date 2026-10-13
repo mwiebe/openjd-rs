@@ -16,7 +16,7 @@
 //! template validation (§9.9):
 //!
 //! - the **requirement matching** rule (§1.2.2 item 2): each entry of the
-//!   Job Template's `requiresServices` matches exactly one attached Service
+//!   Job Template's `externalServices` matches exactly one attached Service
 //!   with its `name`, declaring every listed port with the same `protocol`;
 //! - the **wrapping-Environment** rule (§1.2.2 item 4): a wrapping
 //!   Environment from a document that does not declare `SERVICE`, placed in
@@ -110,7 +110,7 @@ pub struct AppliedEnvironmentTemplates {
     /// [`ServiceScope::AllSteps`](job::ServiceScope::AllSteps). These precede
     /// every Service in the Job Template's `services` in the combined list.
     pub external_services: Vec<job::Service>,
-    /// The attached Service each of the Job Template's `requiresServices`
+    /// The attached Service each of the Job Template's `externalServices`
     /// entries was matched to (§1.2.2 item 2), in requirement order. A
     /// runtime seeds `Service.<requirement>.<port>.port` /
     /// `.connectAddress` in the Job Template's Task Sessions and Job
@@ -174,7 +174,7 @@ impl AppliedEnvironmentTemplates {
     }
 }
 
-/// One `requiresServices` entry of the Job Template matched to the attached
+/// One `externalServices` entry of the Job Template matched to the attached
 /// Service that provides it (Template Schemas §1.2.2 item 2, §9.8).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -281,12 +281,12 @@ impl Documents<'_> {
 ///    reports every violation at once, as a `ModelValidation` error for
 ///    `Submission` whose paths start with the document (`JobTemplate`,
 ///    `EnvironmentTemplate[i]`, or the attachment's label):
-///    - §1.2.2 item 2 — each entry of the Job Template's `requiresServices`
+///    - §1.2.2 item 2 — each entry of the Job Template's `externalServices`
 ///      matches exactly one attached Service with the same `name` (none or
 ///      two or more is an error naming the documents), and that Service
 ///      declares every listed port with the same `protocol` (a missing port
 ///      or a protocol mismatch is an error naming the port). Reported at
-///      `JobTemplate -> requiresServices[i]`.
+///      `JobTemplate -> externalServices[i]`.
 ///    - §1.2.2 item 4 — a wrapping Environment (one defining any
 ///      `WRAP_ACTIONS` hook) in a document that does not declare `SERVICE`
 ///      has the default `runScope` and no `onWrapService*` hooks; Service
@@ -350,8 +350,8 @@ pub fn apply_environment_templates(
 
     // ── §1.2.2 item 2: requirement matching ──
     let mut requirement_bindings = Vec::new();
-    let requirements_path = path_field(&docs.path(None), "requiresServices");
-    for (i, req) in job.requires_services.iter().flatten().enumerate() {
+    let requirements_path = path_field(&docs.path(None), "externalServices");
+    for (i, req) in job.external_services.iter().flatten().enumerate() {
         let req_path = path_index(&requirements_path, i);
         let candidates: Vec<(usize, &crate::template::Service)> = attached
             .iter()
@@ -778,7 +778,7 @@ environment:
             steps: Vec::new(),
             job_environments: None,
             services: None,
-            requires_services: None,
+            external_services: None,
         };
         let applied = AppliedEnvironmentTemplates {
             external_services: Vec::new(),

@@ -89,12 +89,12 @@ pub struct Job {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub services: Option<Vec<Service>>,
     /// The external Services the Job Template requires (RFC 0009
-    /// `requiresServices`, Template Schemas §9.8), in declaration order.
+    /// `externalServices`, Template Schemas §9.8), in declaration order.
     /// Matched to attached Services at submission by
     /// [`apply_environment_templates`](crate::apply_environment_templates).
     /// `None` when none is declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requires_services: Option<Vec<ServiceRequirement>>,
+    pub external_services: Option<Vec<ServiceRequirement>>,
 }
 
 impl Job {
@@ -108,7 +108,7 @@ impl Job {
 
     /// True when the Job declares the `SERVICE` extension, under which a
     /// [`StepDependency`] may name a Service with its `service` key and the
-    /// Job may have `services` and `requiresServices`.
+    /// Job may have `services` and `externalServices`.
     #[must_use]
     pub fn service_active(&self) -> bool {
         self.has_extension(crate::types::ModelExtension::Service)
@@ -126,7 +126,7 @@ impl Hash for Job {
         self.steps.hash(state);
         self.job_environments.hash(state);
         self.services.hash(state);
-        self.requires_services.hash(state);
+        self.external_services.hash(state);
     }
 }
 
@@ -371,7 +371,7 @@ impl EnvironmentActions {
 /// Service names are unique within the list that declares them, and
 /// nothing more: an external Service from an attached Environment Template
 /// may share its `name` with a Service in the Job Template or in another
-/// attachment (an error only when a `requiresServices` entry names it), and
+/// attachment (an error only when an `externalServices` entry names it), and
 /// a scheduler must keep same-named Services from different documents
 /// distinct. A [`Service`] therefore carries the document that declares it
 /// ([`Service::document`]), so a consumer keys Services on `(document,

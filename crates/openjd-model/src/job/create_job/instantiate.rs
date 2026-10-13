@@ -31,7 +31,7 @@ pub(super) struct InstantiateCtx<'a> {
     pub(super) budgets: super::EvalBudgets,
     /// The document's `services`, in declaration order (empty when none).
     pub(super) services: &'a [template::Service],
-    /// A Job Template's `requiresServices` (empty for an Environment
+    /// A Job Template's `externalServices` (empty for an Environment
     /// Template, or when none).
     pub(super) requirements: &'a [template::ServiceRequirement],
 }
@@ -800,7 +800,7 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 /// `in_scope_services` are the Services whose `Service.<name>.<port>.port`
 /// / `.connectAddress` a Task of this Step may reference (RFC 0009): the
 /// inline Services the Step lists in its `dependencies`; `requirements` are
-/// the `requiresServices` entries it lists, seeded the same way for their
+/// the `externalServices` entries it lists, seeded the same way for their
 /// declared ports.
 ///
 /// `Err` only for a failed symbol seed — an internal invariant (see

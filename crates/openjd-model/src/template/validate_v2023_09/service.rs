@@ -6,7 +6,7 @@
 //!
 //! Six fields are gated by the `SERVICE` extension:
 //! - `services` on the job template root (§1.1 item 8)
-//! - `requiresServices` on the job template root (§1.1 item 9)
+//! - `externalServices` on the job template root (§1.1 item 9)
 //! - `services` on the environment template root (§1.2)
 //! - `dependencies` on `<Environment>` (§4 item 3)
 //! - `runScope` on `<Environment>` (§4 item 4)
@@ -26,14 +26,14 @@
 //!
 //! - **EXPR prerequisite.** A template that lists `SERVICE` in
 //!   `extensions:` must also list `EXPR` (§9).
-//! - **List shape.** Each `services` / `requiresServices` list has 1–10
+//! - **List shape.** Each `services` / `externalServices` list has 1–10
 //!   elements (§1.1 items 8–9, §1.2).
 //! - **Name uniqueness.** Service names are unique within a list,
 //!   requirement names are unique within theirs, and no requirement bears
 //!   the name of an inline Service (§9.2, §1.1 item 9.4).
 //! - **`service: <name>`** (§3.2 constraint 1): on a Step or a
 //!   Service, the name is a Service of the document's `services` or, in a
-//!   Job Template, of its `requiresServices`. (Step targets, self
+//!   Job Template, of its `externalServices`. (Step targets, self
 //!   dependency, duplicates and the one-of rule are pass 6's for a Step; a
 //!   Service's `dependencies` are checked wholly here: at least one
 //!   element, each entry exactly one of `dependsOn` / `service`, naming a
@@ -60,7 +60,7 @@
 //!   entry; at least one element; every entry with the `service` key (a
 //!   `dependsOn` entry is rejected — an Environment is entered by Sessions,
 //!   not scheduled) naming a Service of the document's `services` or, in a
-//!   Job Template, of its `requiresServices`; no Service listed twice; and
+//!   Job Template, of its `externalServices`; no Service listed twice; and
 //!   not together with an explicit `runScope` that includes `SERVICE`.
 //! - **`<Service>` structure** (§9–§9.7): identifier names that are not
 //!   `File`; 1–10 uniquely named ports; literal `port` in 1–65535; the
@@ -152,8 +152,8 @@ pub fn validate_services_job_template(
     }
     validate_job_template_dependencies(jt, errors);
 
-    if let Some(requirements) = &jt.requires_services {
-        let list_path = path_field(&[], "requiresServices");
+    if let Some(requirements) = &jt.external_services {
+        let list_path = path_field(&[], "externalServices");
         validate_requirement_list(requirements, &list_path, &service_names, limits, errors);
     }
 
@@ -161,11 +161,11 @@ pub fn validate_services_job_template(
     let known = EnvironmentDependencyTargets {
         services: &service_names,
         required: &jt
-            .requires_services()
+            .external_services()
             .iter()
             .map(|r| r.name.as_str())
             .collect(),
-        where_: "no Service of that name in services or requiresServices",
+        where_: "no Service of that name in services or externalServices",
     };
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&[], "jobEnvironments");
@@ -198,7 +198,7 @@ pub fn validate_services_job_template(
 }
 
 /// Report the `SERVICE`-gated fields of a job template that does not
-/// declare the extension: `services`, `requiresServices`, the `service` key
+/// declare the extension: `services`, `externalServices`, the `service` key
 /// of every Step's `dependencies` entries, and every Environment's
 /// `dependencies` and `runScope`. Nothing inside the lists is examined.
 /// Runs ahead of every other pass so that these errors come first: an
@@ -220,10 +220,10 @@ pub fn gate_services_job_template(
             "services requires the SERVICE extension.",
         );
     }
-    if jt.requires_services.is_some() {
+    if jt.external_services.is_some() {
         errors.add(
-            &path_field(&[], "requiresServices"),
-            "requiresServices requires the SERVICE extension.",
+            &path_field(&[], "externalServices"),
+            "externalServices requires the SERVICE extension.",
         );
     }
     if let Some(envs) = &jt.job_environments {
@@ -310,7 +310,7 @@ fn gate_environment_fields(
 
 /// Where an Environment's `dependencies` entry may point (§4 item 3
 /// constraint 2): the document's `services` and, in a Job Template, its
-/// `requiresServices`; `where_` says which lists were searched.
+/// `externalServices`; `where_` says which lists were searched.
 struct EnvironmentDependencyTargets<'a> {
     services: &'a HashSet<&'a str>,
     required: &'a HashSet<&'a str>,
@@ -440,7 +440,7 @@ fn unknown_service_dependency<'a>(
 
 /// §3.2 constraints 1–3 / §9 item 4 / §3.2 constraint 3, §9.1 rule 4 for a Job Template
 /// with `SERVICE`: every `service` entry of a Step's `dependencies` names a
-/// Service of `services` or `requiresServices`; each Service's
+/// Service of `services` or `externalServices`; each Service's
 /// `dependencies` is non-empty, every entry exactly one of `dependsOn` /
 /// `service`, names Steps of the template or Services other than itself,
 /// and lists no target twice; the combined graph — including the edge from
@@ -452,11 +452,11 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
     let step_names: HashSet<&str> = jt.steps.iter().map(|s| s.name.as_str()).collect();
     let service_names: HashSet<&str> = jt.services().iter().map(|s| s.name.as_str()).collect();
     let required_names: HashSet<&str> = jt
-        .requires_services()
+        .external_services()
         .iter()
         .map(|r| r.name.as_str())
         .collect();
-    let where_ = "no Service of that name in services or requiresServices";
+    let where_ = "no Service of that name in services or externalServices";
     let known = || service_names.iter().chain(required_names.iter()).copied();
     let steps = || step_names.iter().copied();
 
@@ -576,7 +576,7 @@ fn unused_service_message(computed: &ComputedServiceScope) -> String {
 /// prerequisite, the `services` list (§1.2, gated and validated exactly like
 /// a Job Template's, except that a Service's `dependencies` may use only the
 /// `service` key and name a Service of this list, since the document has
-/// no Steps, and `requiresServices` has no place here), and the
+/// no Steps, and `externalServices` has no place here), and the
 /// Environment's `dependencies` (which name Services of this document's
 /// `services`) and `runScope`.
 pub fn validate_services_environment_template(
@@ -798,7 +798,7 @@ fn validate_service_list(
     }
 }
 
-/// Validate a `requiresServices` list (§1.1 item 9, §9.8): its size, the
+/// Validate an `externalServices` list (§1.1 item 9, §9.8): its size, the
 /// uniqueness of its names, that no name is also an inline Service's
 /// (`service_names`), and each `<ServiceRequirement>`'s ports.
 fn validate_requirement_list(

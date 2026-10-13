@@ -1273,7 +1273,7 @@ steps:
     assert!(job.services.is_none());
     let json = serde_json::to_value(&job).unwrap();
     assert!(json.get("services").is_none());
-    assert!(json.get("requiresServices").is_none());
+    assert!(json.get("externalServices").is_none());
     let step: job::Step = serde_json::from_value(json["steps"][0].clone()).unwrap();
     assert_eq!(step, job.steps[0]);
 }

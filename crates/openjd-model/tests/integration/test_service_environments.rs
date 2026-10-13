@@ -711,7 +711,7 @@ fn environment_dependencies_reject_an_unknown_service() {
         &[
             "1 validation error for JobTemplate\n",
             "jobEnvironments[0] -> dependencies[1]:\n\tdependency 'service: Nope' not found: no \
-             Service of that name in services or requiresServices.",
+             Service of that name in services or externalServices.",
         ],
     );
     expect_env_err(

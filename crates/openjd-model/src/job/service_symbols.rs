@@ -326,7 +326,7 @@ pub(crate) fn add_unresolved_service_file_symbols(
 
 /// Seed `Unresolved` placeholders for the `Service.<name>.<port>.port`
 /// (`unresolved[int]`) and `.connectAddress` (`unresolved[string]`) of every
-/// port each `requiresServices` entry declares (Template Schemas §9.8). A
+/// port each `externalServices` entry declares (Template Schemas §9.8). A
 /// required Service's `bindAddress` is never in scope, so none is seeded.
 pub(crate) fn add_unresolved_requirement_symbols<'a>(
     symtab: &mut SymbolTable,

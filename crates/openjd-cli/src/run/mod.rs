@@ -48,7 +48,7 @@ struct PreparedRun {
     /// [`profile_for`](Self::profile_for)) which document's extension
     /// profile its format strings are evaluated with.
     environment_documents: Vec<Document>,
-    /// The attached Service each `requiresServices` entry of the Job
+    /// The attached Service each `externalServices` entry of the Job
     /// Template was bound to at submission (Template Schemas §1.2.2 item
     /// 2).
     requirement_bindings: Vec<RequirementBinding>,
@@ -193,7 +193,7 @@ impl RunContext {
     /// scope"; Template Schemas §1.2.2 items 2–3): for a Task or Step
     /// Environment ([`Visibility::Step`]) the Job Template's inline Services
     /// whose scope includes the Step and the attached Services bound to its
-    /// `requiresServices`; for a Job Environment
+    /// `externalServices`; for a Job Environment
     /// ([`Visibility::Environment`]) the Services of `document` — and, for
     /// the Job Template's own, the bound requirements — it lists in its
     /// `dependencies`. Without Services in scope, `base` unchanged — the

@@ -166,7 +166,7 @@ pub fn validate_structure(
         .profile
         .has_extension(crate::types::ModelExtension::FeatureBundle1);
     // RFC 0009: a `service` entry names a Service; those entries are
-    // resolved by pass 11 against `services` and `requiresServices` (and
+    // resolved by pass 11 against `services` and `externalServices` (and
     // gated when SERVICE is not declared), and the combined Step/Service
     // graph is checked for cycles there. The Services a `dependsOn` could
     // have meant, for the hint on one that names no Step (§3.2).
@@ -174,7 +174,7 @@ pub fn validate_structure(
         .services()
         .iter()
         .map(|s| s.name.as_str())
-        .chain(jt.requires_services().iter().map(|r| r.name.as_str()))
+        .chain(jt.external_services().iter().map(|r| r.name.as_str()))
         .collect();
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {

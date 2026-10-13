@@ -362,7 +362,7 @@ pub enum ModelExtension {
     /// `onWrapEnvExit` on `<EnvironmentActions>` (and, with `SERVICE`, the
     /// four `onWrapService*` hooks). See RFC 0008.
     WrapActions,
-    /// `SERVICE` — enables `services` and `requiresServices` on the job
+    /// `SERVICE` — enables `services` and `externalServices` on the job
     /// template, `services` on the environment template, `runScope` on
     /// `<Environment>`, and the `<Service>` entity. Requires `EXPR`. See
     /// RFC 0009.

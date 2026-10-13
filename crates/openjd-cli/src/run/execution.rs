@@ -149,7 +149,7 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     // Services placed before the Job Template's services (each stamped
     // with its document — an external `Cache` and the Job Template's
     // `Cache` are two Services), their Environments are placed before its
-    // jobEnvironments, each requiresServices entry is matched to exactly
+    // jobEnvironments, each externalServices entry is matched to exactly
     // one attached Service, and the submission-time wrapper check runs
     // against the combined Job. Each template is labeled with its path in
     // error messages and in the run log.

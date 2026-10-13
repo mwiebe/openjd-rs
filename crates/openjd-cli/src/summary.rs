@@ -114,7 +114,7 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // With `--environment`, summarize the combined Job as `run` would see
     // it: the attached Environments and Services, and each
-    // `requiresServices` entry bound to the attachment that satisfies it
+    // `externalServices` entry bound to the attachment that satisfies it
     // (RFC 0009 §1.2.2; a requirement no attachment satisfies is the same
     // error `run` reports). Without, the Job Template alone is summarized
     // and a requirement is shown unsatisfied.
@@ -242,11 +242,11 @@ fn service_summaries(job: &job::Job) -> Vec<ServiceInfo> {
         .collect()
 }
 
-/// The Job Template's `requiresServices` (RFC 0009 §9.8), each with its
+/// The Job Template's `externalServices` (RFC 0009 §9.8), each with its
 /// ports and, when an attached Environment Template (`--environment`)
 /// declares the Service, the document that satisfies it.
 fn requirement_summaries(job: &job::Job, bindings: &[(String, String)]) -> Vec<RequirementInfo> {
-    job.requires_services
+    job.external_services
         .iter()
         .flatten()
         .map(|req| RequirementInfo {
@@ -592,7 +592,7 @@ impl CliResult for JobSummaryResult {
         }
         if !self.requirements.is_empty() {
             obj.insert(
-                "requires_services".into(),
+                "external_services".into(),
                 serde_json::json!(self
                     .requirements
                     .iter()
@@ -934,7 +934,7 @@ struct ServiceInfo {
     deps: Vec<DepInfo>,
 }
 
-/// One `requiresServices` entry (RFC 0009 §9.8).
+/// One `externalServices` entry (RFC 0009 §9.8).
 struct RequirementInfo {
     name: String,
     ports: Vec<PortInfo>,

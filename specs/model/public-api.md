@@ -253,7 +253,7 @@ pub struct AppliedEnvironmentTemplates {
     /// Attachment order, then each template's `services` order; each stamped
     /// with its attachment as `document` and with `scope: AllSteps`.
     pub external_services: Vec<job::Service>,
-    /// The attached Service each `requiresServices` entry was matched to, in
+    /// The attached Service each `externalServices` entry was matched to, in
     /// requirement order (§1.2.2 item 2).
     pub requirement_bindings: Vec<RequirementBinding>,
     /// Attachment order; services-only templates contribute none.
@@ -339,7 +339,7 @@ inside its actions and RFC 0008 wrap hooks. Also available via the
 given the Job that `create_job` built from the Job Template alone and the
 scheduler-ordered Environment Templates, it runs the two submission-time
 checks that relate documents only the scheduler sees together — requirement
-matching (merge rule 2: each `requiresServices` entry matches exactly one
+matching (merge rule 2: each `externalServices` entry matches exactly one
 attached Service with its ports and protocols, recorded as a
 [`RequirementBinding`]) and the wrapping-Environment rule (merge rule 4) —
 reporting every violation as a `ModelValidation` error for the model name
@@ -381,7 +381,7 @@ pub struct JobTemplate {
     /// RFC 0009 §1.1 item 8 — requires the `SERVICE` extension.
     pub services: Option<Vec<template::Service>>,
     /// RFC 0009 §1.1 item 9 — requires the `SERVICE` extension.
-    pub requires_services: Option<Vec<template::ServiceRequirement>>,
+    pub external_services: Option<Vec<template::ServiceRequirement>>,
     pub steps: Vec<template::StepTemplate>,
 }
 ```
@@ -395,8 +395,8 @@ impl JobTemplate {
     pub fn parameter_definitions_list(&self) -> &[JobParameterDefinition];
     /// Empty when `services` is absent.
     pub fn services(&self) -> &[template::Service];
-    /// Empty when `requiresServices` is absent.
-    pub fn requires_services(&self) -> &[template::ServiceRequirement];
+    /// Empty when `externalServices` is absent.
+    pub fn external_services(&self) -> &[template::ServiceRequirement];
 
     /// Build a ModelProfile from the template's declared
     /// specificationVersion + extensions. Entries in `extensions` that
@@ -632,7 +632,7 @@ pub struct template::ServicePort {
     pub protocol: template::ServicePortProtocol,
 }
 
-/// §9.8 — one `requiresServices` entry.
+/// §9.8 — one `externalServices` entry.
 pub struct template::ServiceRequirement {
     pub name: String,
     pub ports: Vec<template::ServiceRequirementPort>,
@@ -806,7 +806,7 @@ impl Display for ServiceDependencyCycle;   // "dependencies contain a cycle: Ste
 /// Scopes of every inline Service (rules 1–3), or the first cycle among the
 /// Step→Step, Step→Service, Service→Step and Service→Service edges plus the
 /// edge from every Step to each Service a Job Environment lists (rule 3).
-/// `service` entries naming a `requiresServices` entry are not edges.
+/// `service` entries naming an `externalServices` entry are not edges.
 pub fn compute_service_scopes(jt: &JobTemplate) -> Result<ServiceScopes, ServiceDependencyCycle>;
 /// A cycle among the Service dependencies of an Environment Template's Services.
 pub fn service_dependency_cycle(services: &[template::Service]) -> Option<ServiceDependencyCycle>;
@@ -817,7 +817,7 @@ pub fn listed_services<'a>(
     dependencies: Option<&'a [StepDependency]>,
     services: &'a [template::Service],
 ) -> impl Iterator<Item = &'a template::Service> + Clone + 'a;
-/// The `requiresServices` entries that `dependencies` lists with the `service` key,
+/// The `externalServices` entries that `dependencies` lists with the `service` key,
 /// in declaration order — the required Services whose `port` / `connectAddress`
 /// the listing Step, Service, or Job Environment may reference (§9.8 item 2).
 /// Listing one grants access to its values and nothing more: its scope is every
@@ -1090,15 +1090,15 @@ pub struct job::Job {
     /// RFC 0009 `services`, each with its computed scope; external Services
     /// first after `apply_environment_templates`. Omitted from JSON when `None`.
     pub services: Option<Vec<Service>>,
-    /// RFC 0009 `requiresServices`. Omitted from JSON when `None`.
-    pub requires_services: Option<Vec<ServiceRequirement>>,
+    /// RFC 0009 `externalServices`. Omitted from JSON when `None`.
+    pub external_services: Option<Vec<ServiceRequirement>>,
 }
 
 impl job::Job {
     /// True when `extensions` contains `extension`.
     pub fn has_extension(&self, extension: ModelExtension) -> bool;
     /// `has_extension(ModelExtension::Service)`: only such a Job has
-    /// `service` dependency entries, `services` or `requires_services`.
+    /// `service` dependency entries, `services` or `external_services`.
     pub fn service_active(&self) -> bool;
 }
 
@@ -1337,7 +1337,7 @@ impl job::Service {
     pub fn port(&self, name: &str) -> Option<&ServicePort>;
 }
 
-/// §9.8 — an instantiated `requiresServices` entry.
+/// §9.8 — an instantiated `externalServices` entry.
 pub struct job::ServiceRequirement {
     pub name: String,
     pub ports: Vec<ServiceRequirementPort>,
@@ -1949,7 +1949,7 @@ pub fn add_wrapped_service_symbols(
 Scope — which Services a Session may see — is the caller's decision (RFC
 0009 "The `Service.*` scope"): a Task Session sees the inline Services whose
 `scope` includes its Step and the attached Services bound to the Job
-Template's `requiresServices`; a Service Session sees the Services of
+Template's `externalServices`; a Service Session sees the Services of
 `job::Service::depends_on_services()` (resolved within its `document`, a
 required name to the bound attached Service) plus its own. A scheduler
 starts a Service once every Service of `depends_on_services()` is READY and

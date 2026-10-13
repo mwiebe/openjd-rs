@@ -395,11 +395,11 @@ After `create_job`, `apply_environment_templates` folds the `--environment` temp
 into the Job: `job.services` is the external Services (attachment order, then each
 template's `services` order) followed by the Job Template's `services`, and
 `job.job_environments` the attached Environments followed by the template's own. Its
-`requirement_bindings` — the attached Service each `requiresServices` entry matched —
+`requirement_bindings` — the attached Service each `externalServices` entry matched —
 are kept in `PreparedRun` and handed to the `ServiceManager`. A requirement that no
 attachment provides, that two provide, or whose provider lacks a port or carries it
 with another protocol is rejected before any Session exists, with the model's
-`Submission` error naming `JobTemplate -> requiresServices[i]` and the cause (see
+`Submission` error naming `JobTemplate -> externalServices[i]` and the cause (see
 `specs/model/validation.md`, "Submission-time checks").
 
 **Dependencies and scope.** A Step's or a Service's `dependencies` list Steps and
@@ -458,7 +458,7 @@ and two readiness verdicts. A name is looked up across documents in exactly one 
   `ServiceManager::task_scope_endpoints(document, visibility)`). The RFC's queue-cache
   Environment, which lists `service: Cache`, therefore publishes the queue's `Cache`
   through `VALKEY_HOST` / `VALKEY_PORT` while the Job Template's Tasks resolve
-  `Service.Cache.*` to their own — or, with `requiresServices: [{name: Cache, …}]` and no
+  `Service.Cache.*` to their own — or, with `externalServices: [{name: Cache, …}]` and no
   inline `Cache`, to the queue's. For a Task the seeding is by *scope*, not by
   *visibility*: a required Service's endpoints are seeded into every Job Template Task
   Session, including a Step that does not list `service: <requirement>` — which template
@@ -568,7 +568,7 @@ submission's `Param.*` table when neither exists) with
 appended — the `Service.<name>.<port>.port` and `.connectAddress` of every READY
 Service the resolving entity may see: for a Task or a step Environment
 (`EnteredEnvironment::step` is `Some`), the Job Template's inline Services whose scope
-includes the Step plus the attached Services bound to its `requiresServices` under the
+includes the Step plus the attached Services bound to its `externalServices` under the
 requirement's name; for a job Environment (`step` is `None`), the Services of its
 document (`EnteredEnvironment::document`, recorded so a re-entry uses the same scope —
 `Document::JobTemplate`, or the `--environment` attachment that defines it) and, for

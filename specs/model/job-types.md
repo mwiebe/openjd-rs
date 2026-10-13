@@ -40,7 +40,7 @@ pub struct Job {
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
     pub services: Option<Vec<Service>>,                  // SERVICE (RFC 0009); omitted from JSON when None
-    pub requires_services: Option<Vec<ServiceRequirement>>,  // SERVICE (RFC 0009); omitted from JSON when None
+    pub external_services: Option<Vec<ServiceRequirement>>,  // SERVICE (RFC 0009); omitted from JSON when None
 }
 
 impl Job {
@@ -53,12 +53,12 @@ impl Job {
 output. `services` is the instantiated `services` list in declaration order, each entry carrying
 its computed scope (see [Service](#service-rfc-0009-service-extension)); after
 `apply_environment_templates`, the attached external Services precede the Job Template's own.
-`requires_services` is the instantiated `requiresServices` list. Both serialize only when
+`external_services` is the instantiated `externalServices` list. Both serialize only when
 present, so a job without Services has the same wire shape as before RFC 0009.
 
 `service_active` is true for a Job created from a template declaring `SERVICE` — the only Job
 whose `dependencies` entries may use the `service` key and which may have `services` or
-`requires_services`.
+`external_services`.
 
 ### JobParameter
 
@@ -407,7 +407,7 @@ impl Service {
 
 pub use template::ServiceScope;                            // re-exported; see template-types.md "Service scope"
 
-pub struct ServiceRequirement {                            // §9.8, instantiated requiresServices entry
+pub struct ServiceRequirement {                            // §9.8, instantiated externalServices entry
     pub name: String,
     pub ports: Vec<ServiceRequirementPort>,
 }
@@ -548,7 +548,7 @@ every `services` entry `create_job` produces, and the attached Environment Templ
 attachment index, with the caller's label when it gave one) for an external Service, stamped by
 `apply_environment_templates`. Service names are unique within the list that declares them and
 nothing more — an external Service may be named like a Service of the Job Template or of another
-attachment (an error only when a `requiresServices` entry names it) — so two Services of a
+attachment (an error only when an `externalServices` entry names it) — so two Services of a
 combined Job are the same Service iff `(document, name)` agree; a scheduler keys on that pair. A
 `Service.*` reference resolves within the referencing entity's own document, except that the Job
 Template's references to a required Service resolve to the attached Service the requirement was

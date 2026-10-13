@@ -9,7 +9,7 @@ single step. The command instantiates the job (resolving parameters and creating
 object) to produce accurate task counts that reflect parameter space expansion. With
 `--environment`, the attached Environment Templates are applied as `run` applies them, so the
 summary is of the combined Job: attached Environments and Services appear, and each
-`requiresServices` entry is shown with the attachment that satisfies it (an unsatisfied
+`externalServices` entry is shown with the attachment that satisfies it (an unsatisfied
 requirement is the same error `run` reports).
 
 ## Interface
@@ -127,7 +127,7 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
    which it may only with `maxAttempts` 0; JSON `"completed_tasks": null`), and
    `Dependencies: 'Prepare', Service 'Back'` (a `dependsOn` entry as `'Name'`, a `service`
    entry as `Service 'Name'`) when it lists any.
-5. **Required Services** (RFC 0009 §9.8) — each `requiresServices` entry with its ports
+5. **Required Services** (RFC 0009 §9.8) — each `externalServices` entry with its ports
    and either `— satisfied by <document>` (the attachment `apply_environment_templates`
    bound it to) or `— not satisfied: attach an Environment Template that declares it with
    --environment`.
@@ -188,7 +188,7 @@ step with Service dependencies also carries `service_dependencies` (the Service 
 list order; `dependencies` stays the total count); the root carries `services` — each
 `{"name", "description"?, "document"?, "scope", "ports": [{"name", "protocol", "port"?}],
 "health_check", "restart_policy": {"max_attempts", "completed_tasks"}, "dependencies"?:
-[{"step_name"} | {"service_name"}]}` — and `requires_services` — each `{"name", "ports":
+[{"step_name"} | {"service_name"}]}` — and `external_services` — each `{"name", "ports":
 [{"name", "protocol"}], "satisfied_by"?}` — when the Job has any.
 
 ### YAML Format

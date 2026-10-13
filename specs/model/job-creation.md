@@ -241,7 +241,7 @@ budgets template validation and the session runtime apply.
 
 `instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
 extension flags, limits, budgets, and the template's `services` and
-`requiresServices` slices, from which each Step's and Service's in-scope sets
+`externalServices` slices, from which each Step's and Service's in-scope sets
 are drawn), the collected-errors contract (both take `create_job`'s
 `&mut ValidationErrors` and return `Option<_>` — see "Aggregation" below),
 and pass 8's per-binding `let` evaluator
@@ -325,7 +325,7 @@ in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
    files, its own `Service.<name>.<port>.*` including `bindAddress`, the
    `port` / `connectAddress` of every Service in `in_scope` — the Services
    of its document it lists with the `service` key — and of the declared ports
-   of the `requiresServices` entries it lists,
+   of the `externalServices` entries it lists,
    `listed_requirements(svc.dependencies, requirements)`), evaluates the
    `<ServiceScript>.let` bindings into it through
    `check_carried_forward_let_bindings` (a failure is a check failure at
@@ -345,7 +345,7 @@ in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
    steps 1, 3, or 4 is returned as `None` instead — its resolved values are
    incomplete — and job creation fails on the collection.
 
-`requiresServices` is converted field for field into `Job::requires_services`.
+`externalServices` is converted field for field into `Job::external_services`.
 
 The check symbol tables of the entities *around* a Service follow the same
 dependencies. `build_task_check_symtab` seeds a Step's check table with the
@@ -598,7 +598,7 @@ with the `service` key (`listed_services(svc.dependencies, services)` over that
 document's `services`), and the attached `environment` checked against every
 Service of its document;
 the `RequirementBinding { requirement, document, service }` each
-`requiresServices` entry was matched to, in requirement order; the attached
+`externalServices` entry was matched to, in requirement order; the attached
 Environments converted in attachment order (a services-only template
 contributes none); and, index for index with `environments`, the
 `job::Document` each came from (`combined_environment_documents(&job)`
@@ -646,10 +646,10 @@ model). Only if they pass are the Services instantiated and the
 Environments converted:
 
 1. **Merge rule 2 — requirement matching.** For each entry `i` of the Job
-   Template's `requiresServices`, the attached Services named like it are
+   Template's `externalServices`, the attached Services named like it are
    collected across every attachment. Exactly one must exist, and it must
    declare every port the requirement lists with the same `protocol`;
-   otherwise the error is reported at `JobTemplate -> requiresServices[i]`,
+   otherwise the error is reported at `JobTemplate -> externalServices[i]`,
    naming the requirement and the cause:
 
    ```

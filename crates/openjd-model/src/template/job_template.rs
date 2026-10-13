@@ -33,7 +33,7 @@ pub struct JobTemplate {
     /// §1.1 item 9 (RFC 0009) — the external Services whose endpoints this
     /// Job Template reads directly, each with the ports it uses. Requires
     /// the `SERVICE` extension; permitted only in a Job Template.
-    pub requires_services: Option<Vec<ServiceRequirement>>,
+    pub external_services: Option<Vec<ServiceRequirement>>,
     pub steps: Vec<StepTemplate>,
 }
 
@@ -49,9 +49,9 @@ impl JobTemplate {
     }
 
     /// The external Services this template requires, in declaration order;
-    /// empty when `requiresServices` is absent.
-    pub fn requires_services(&self) -> &[ServiceRequirement] {
-        self.requires_services.as_deref().unwrap_or_default()
+    /// empty when `externalServices` is absent.
+    pub fn external_services(&self) -> &[ServiceRequirement] {
+        self.external_services.as_deref().unwrap_or_default()
     }
 
     pub fn description(&self) -> Option<&str> {

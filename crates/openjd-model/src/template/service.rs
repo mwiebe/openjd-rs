@@ -11,7 +11,7 @@
 //! Tasks depend on it — is computed from the template's `Service.*`
 //! references (§9.1, [`crate::template::service_scope`]). A Job Template
 //! that reads an external Service's endpoint declares a
-//! [`ServiceRequirement`] in `requiresServices` (§9.8). The types here are
+//! [`ServiceRequirement`] in `externalServices` (§9.8). The types here are
 //! the unresolved template shapes; the `Service.*` format-string scope and
 //! job creation of Services are implemented separately.
 
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 pub struct Service {
     /// §9.2 `<ServiceName>`: the first component of `Service.<name>.*`
     /// references. Unique within its list and, in a Job Template, distinct
-    /// from every `requiresServices` name.
+    /// from every `externalServices` name.
     pub name: String,
     pub description: Option<Description>,
     /// Expression bindings evaluated once at job creation (EXPR). Not in
@@ -166,7 +166,7 @@ impl std::fmt::Display for ServicePortProtocol {
 }
 
 /// §9.8 `<ServiceRequirement>` — one entry of a Job Template's
-/// `requiresServices`: the Job Template reads the endpoint of an external
+/// `externalServices`: the Job Template reads the endpoint of an external
 /// Service named `name`, declared by an attached Environment Template, on
 /// the ports listed.
 ///

@@ -36,7 +36,7 @@
 //! declare a `Cache`). A Service Session is seeded with the endpoints of the
 //! Services it lists with the `service` key in its `dependencies` — of its
 //! own document, or the attached Service bound to the Job Template's
-//! `requiresServices` entry of that name for an inline Service — and a Task
+//! `externalServices` entry of that name for an inline Service — and a Task
 //! Session with the inline Services whose scope includes its Step and the
 //! bound required Services.
 //!
@@ -217,7 +217,7 @@ pub(super) struct ServiceRunConfig {
     /// the profile of the document that declares it (Template Schemas §1.2
     /// item 3).
     pub attached_profiles: Vec<ModelProfile>,
-    /// The attached Service each `requiresServices` entry of the Job
+    /// The attached Service each `externalServices` entry of the Job
     /// Template was bound to at submission (§1.2.2 item 2). The Job
     /// Template's Tasks, Environments and inline Services see
     /// `Service.<requirement>.*` as that Service's endpoints.
@@ -718,7 +718,7 @@ impl ServiceManager {
     /// - [`Visibility::Step`] — a Task of the Step, or one of its Step
     ///   Environments: the READY inline Services of the Job Template whose
     ///   scope includes the Step, and the READY attached Services bound to
-    ///   the Job Template's `requiresServices` — seeded by scope, which is
+    ///   the Job Template's `externalServices` — seeded by scope, which is
     ///   every Step, not by visibility: a Step that does not list
     ///   `service: <requirement>` gets the symbols too, but template
     ///   validation has already rejected any reference from it (Template

@@ -228,7 +228,7 @@ pub fn create_job(
         .collect();
 
     let services_t: &[crate::template::Service] = job_template.services();
-    let requirements_t: &[crate::template::ServiceRequirement] = job_template.requires_services();
+    let requirements_t: &[crate::template::ServiceRequirement] = job_template.external_services();
     let icx = instantiate::InstantiateCtx {
         has_expr,
         limits: &limits,
@@ -238,7 +238,7 @@ pub fn create_job(
         requirements: requirements_t,
     };
 
-    let requires_services = job_template.requires_services.as_ref().map(|reqs| {
+    let external_services = job_template.external_services.as_ref().map(|reqs| {
         reqs.iter()
             .map(|r| job::ServiceRequirement {
                 name: r.name.clone(),
@@ -456,6 +456,6 @@ pub fn create_job(
         steps,
         job_environments,
         services,
-        requires_services,
+        external_services,
     })
 }

@@ -35,13 +35,13 @@ pub struct JobTemplate {
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
     pub services: Option<Vec<Service>>,                        // SERVICE extension (RFC 0009), §1.1 item 8
-    pub requires_services: Option<Vec<ServiceRequirement>>,    // SERVICE extension (RFC 0009), §1.1 item 9
+    pub external_services: Option<Vec<ServiceRequirement>>,    // SERVICE extension (RFC 0009), §1.1 item 9
     pub steps: Vec<StepTemplate>,
 }
 
 impl JobTemplate {
     pub fn services(&self) -> &[Service];                      // empty when absent
-    pub fn requires_services(&self) -> &[ServiceRequirement];  // empty when absent
+    pub fn external_services(&self) -> &[ServiceRequirement];  // empty when absent
 }
 ```
 
@@ -52,7 +52,7 @@ an empty slice when `parameter_definitions` is `None`.
 depend on it) is computed from the `dependencies` of the template's Steps, Services, and Job
 Environments — a Step lists `service: <name>` to depend on a Service (§3.2, §9.1, see
 [Service scope](#service-scope-91) below) — so a `<StepTemplate>` has no separate Service list and
-the order of `services` carries no meaning. `requiresServices` declares the external Services whose
+the order of `services` carries no meaning. `externalServices` declares the external Services whose
 endpoints the template reads, with their ports (§9.8). The pre-RFC-0009 keys `jobServices` and
 `stepServices` are not properties of any type and are rejected as unknown fields at decode.
 
@@ -80,7 +80,7 @@ has the same list constraints as a Job Template's `services` and is validated by
 (pass 11), except that a Service's `dependencies` here may list only other Services of the same
 document, with the `service` key (the document has no Steps; a `dependsOn` entry, an unknown
 Service, and a cycle among them are pass 11 errors), every Service here has every Step of the Job
-in its scope and is never unused, and `requiresServices` is not a property of this type (rejected
+in its scope and is never unused, and `externalServices` is not a property of this type (rejected
 as an unknown field). `environment`
 is `Option` on the wire too: an explicit `environment: null` is "not provided". The `$schema`
 property is accepted and ignored, as on the Job Template.
@@ -215,13 +215,13 @@ free functions accept the `Option` field directly (`step.dependencies.as_deref()
 [job-types.md](job-types.md)).
 
 A Step's Tasks are scheduled once every listed Step has completed and every listed Service is
-READY. Listing a `requiresServices` name is valid and is satisfied when that external Service is
+READY. Listing an `externalServices` name is valid and is satisfied when that external Service is
 READY; it does not affect any scope, but it is what lets the Step (or Service) reference that
 required Service's `Service.<name>.*` values, exactly as for an inline Service (§9.8 item 2;
 `listed_requirements`). Pass 6 checks a Step's list — the one-of rule, self and duplicate entries,
 and the `dependsOn` entries (`dependency 'X' not found.`, or, when a Service named `X` exists,
 `dependency 'X' names no Step; did you mean 'service: X'?`); pass 11 resolves the `service` entries
-(`dependency 'service: X' not found: no Service of that name in services or requiresServices.`,
+(`dependency 'service: X' not found: no Service of that name in services or externalServices.`,
 or, when a Step named `X` exists, `dependency 'X' names no Service; did you mean 'dependsOn: X'?`;
 see [validation.md](validation.md)).
 
@@ -380,14 +380,14 @@ pipeline instead of as a serde error.
 
 `dependencies` has the shape of a Step's ([StepDependency](#stepdependency-32)) and lists Steps
 and Services in one list: the Service starts only after every listed Step (`dependsOn`) has
-completed and every listed Service (`service`, an inline Service or a `requiresServices` name) is
+completed and every listed Service (`service`, an inline Service or an `externalServices` name) is
 READY, in addition to its other start conditions, and it is stopped before any Service it lists.
 The Service sees `Service.X.<port>.port` and `.connectAddress` of another inline Service `X` only
 when it lists `service: X`. On a Job Template, pass 11 rejects at `services[k] -> dependencies` an
 empty list (`must not be empty.`), and at `services[k] -> dependencies[j]` a malformed entry (both
 keys or neither), an unknown Step (`dependency 'Nope' not found.`, with the `did you mean 'service:
 Nope'?` hint when a Service of that name exists), an unknown Service (`dependency 'service: Nope'
-not found: no Service of that name in services or requiresServices.`, or the mirror hint when a
+not found: no Service of that name in services or externalServices.`, or the mirror hint when a
 Step of that name exists), the Service itself (`cannot depend on itself.`), and a duplicate entry
 (`duplicate dependency '…'.`); a cycle in the combined graph — which includes an edge from every
 Step to each Service a Job Environment lists — is reported at the root (`dependencies contain a
@@ -464,7 +464,7 @@ Step's Session, so a Service it depends on is one every Step depends on, declare
 inferred; (4) a Service in whose scope no Step falls — one that no Step, Service, or Job
 Environment lists — is unused, and pass 11 rejects the template at `services[k]` naming it
 (`Service 'Cache' is unused: no Step, Service, or Job Environment lists it.`). A `service` entry
-naming a `requiresServices` name is not an edge and places nothing in an inline Service's scope
+naming an `externalServices` name is not an edge and places nothing in an inline Service's scope
 (an external Service's scope is every Step), whichever kind of entity lists it. An Environment
 Template's Services have every Step in their scope and are never unused.
 
@@ -484,7 +484,7 @@ pass 11 reports it at `services`.
 `listed_services` yields, in declaration order, the Services of `services` that `dependencies`
 lists with the `service` key — those whose `Service.<name>.<port>.*` the listing Step, Service, or
 Environment may reference; a required name or a typo yields nothing. `listed_requirements` is
-its counterpart over a Job Template's `requiresServices`: the required Services the entity lists,
+its counterpart over a Job Template's `externalServices`: the required Services the entity lists,
 whose `port` / `connectAddress` it may reference (§9.8 item 2); an inline name or a typo yields
 nothing. Pass 8 seeds a Step's script and `stepEnvironments` (over the Step's list), a Service's
 own fields (over its list), a Job Environment (over its own list, both helpers), and an
