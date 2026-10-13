@@ -275,12 +275,14 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
         on_run_args[4].raw(),
         "{{ join_host_port(Service.Coordinator.api.bindAddress, Service.Coordinator.api.port) }}"
     );
-    // The resolved symtab carries only the Job Parameter onEnter reads; every
-    // other reference is host-scope (Session.*, Service.*), bound by the
-    // Service Session.
+    // The resolved symtab carries the Job Parameters onEnter reads: the INT
+    // as Param.*, and the PATH as RawParam.* only, since its Param.* value is
+    // host-mapped on the service host. Every other reference is host-scope
+    // (Session.*, Service.*), bound by the Service Session.
     let st = symtab_of(c.resolved_symtab.as_ref().unwrap());
-    assert_eq!(st.keys().collect::<Vec<_>>(), vec!["Param"]);
     assert_eq!(st.get_value("Param.TileCount"), Some(&ExprValue::Int(256)));
+    assert!(st.get_value("Param.SceneDir").is_none());
+    assert!(st.get_value("RawParam.SceneDir").is_some());
 }
 
 // ════════════════════════════════════════════════════════════════════

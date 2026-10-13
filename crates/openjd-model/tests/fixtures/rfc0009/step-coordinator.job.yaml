@@ -2,6 +2,11 @@ specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "Tiled Render With Coordinator"
 parameterDefinitions:
+  - name: SceneDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: INOUT  # PrepareScene writes the scene here; the coordinator and workers read it.
+    default: scene
   - name: TileCount
     type: INT
     default: 256
@@ -32,6 +37,8 @@ services:
             - "init-db"
             - "--data-dir"
             - "{{ Session.WorkingDirectory }}/db"
+            - "--scene"
+            - "{{ Param.SceneDir }}"
             - "--tiles"
             - "{{ Param.TileCount }}"
         onRun:
@@ -61,7 +68,7 @@ steps:
       actions:
         onRun:
           command: prepare-scene
-          args: ["--out", "{{ Session.WorkingDirectory }}/scene"]
+          args: ["--out", "{{ Param.SceneDir }}"]
   - name: RenderTiles
     dependencies:
       - dependsOn: PrepareScene  # Must complete first.
@@ -79,5 +86,7 @@ steps:
           args:
             - "--coordinator"
             - "http://{{ join_host_port(Service.Coordinator.api.connectAddress, Service.Coordinator.api.port) }}"
+            - "--scene"
+            - "{{ Param.SceneDir }}"
             - "--worker-id"
             - "{{ Task.Param.WorkerId }}"
