@@ -35,7 +35,7 @@ Which consumer honors it is a scope decision, not the filter's:
 
 | Consumer | Effect |
 |---|---|
-| `ServiceSession` background `onRun` driver, health check type `STDOUT` | The first line makes the instance READY with `message`. Afterwards, when the check gives `healthIntervalSeconds`, each line is a heartbeat (a successful health probe that resets the failure count and restarts the interval); without it later lines have no effect. A line drained after `onRun` exited does neither (onRun exit wins, constraint 11). |
+| `ServiceSession` background `onRun` driver, health check type `STDOUT` | The first line makes the instance READY with `message`. Afterwards, when the check gives `healthIntervalSeconds`, each line is a heartbeat (a successful health probe that resets the failure count and restarts the interval); without it later lines have no effect. A line drained after `onRun` exited does neither (onRun exit wins, constraint 10). |
 | `ServiceSession` `onRun` driver, health check type `TCP_CONNECT` or `COMMAND` | Logged as ignored. |
 | `ServiceSession` `onEnter` / `onExit` | Logged as ignored. |
 | `ServiceSession` `onHealthCheck` driver | Logged as ignored, like every message on the check's stdout (RFC 0009 §9.6.1 rule 2: the check's result is its exit status). |

@@ -339,7 +339,7 @@ for an authored `script`).
 like every other format-string field; it no longer survives to job
 creation.
 
-### Service scopes (RFC 0009; Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.8, §9.9 items 1–2, §3.6.2, §4 item 3.2, §4.3.1)
+### Service scopes (RFC 0009; Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.8, §9 job-creation exclusion, §3.6.2, §4 item 3.2, §4.3.1)
 
 Everything a Service endpoint resolves to is `@fmtstring[host]` — unknown until the scheduler
 places the Service — so pass 8 seeds the `Service.*` keys as `Unresolved` placeholders
@@ -350,7 +350,7 @@ places the Service — so pass 8 seeds the `Service.*` keys as `Unresolved` plac
 may see — is decided per call site, and a reference outside its scope is detected as the
 crate's ordinary undefined-variable error, exactly as an out-of-scope `WrappedStep.Name` is
 under RFC 0008. The same mechanism rejects a reference to a Service or port name that is
-neither declared nor required (§9.9 item 1). Nothing about `Service.*` is examined unless the
+neither declared nor required (§9 visibility rule). Nothing about `Service.*` is examined unless the
 template declares `SERVICE`; without it pass 11 rejects the lists and pass 8 never walks them.
 
 Visibility follows the declared dependencies (§9 scope list, §9.8 item 2), one rule with no
@@ -399,7 +399,7 @@ order tried:
 | Condition | Message |
 |---|---|
 | `Task.*` / `Step.*` anywhere under `services[k]` | `Task.* is not available within a Service.` / `Step.* is not available within a Service.` (§9 item 3: the RFC states the two together) |
-| job-creation field (§9.9 item 2: every field resolved at job creation, before any Service is placed) | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding` — a `<StepTemplate>`'s or `<Service>`'s, not a script's —, `a parameterSpace range`, `timeout`, `a cancelation method's mode or notifyPeriodInSeconds` (both reported on the `cancelation` path), `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`). Pass 8 never seeds `Service.*` into these fields' symbol tables (`build_template_scope_symtab`, `validate_action_timing_fs`, the numeric `@fmtstring` checks), so the reference is undefined there whatever the scope; this rule only names the field |
+| job-creation field (§9 job-creation exclusion: every field resolved at job creation, before any Service is placed) | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding` — a `<StepTemplate>`'s or `<Service>`'s, not a script's —, `a parameterSpace range`, `timeout`, `a cancelation method's mode or notifyPeriodInSeconds` (both reported on the `cancelation` path), `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`). Pass 8 never seeds `Service.*` into these fields' symbol tables (`build_template_scope_symtab`, `validate_action_timing_fs`, the numeric `@fmtstring` checks), so the reference is undefined there whatever the scope; this rule only names the field |
 | the site is a Job Environment (or an Environment Template's `environment`) with `SERVICE` in its explicit `runScope` | **the error is dropped.** Pass 11 reports the rule once, on the `runScope` list: `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` (`… may not depend on a Service …` when it lists one and references none, `… may not depend on or reference a Service …` when both) — and each reference is a consequence of it (exploratory report S12, S21). A Step Environment gives no `runScope` (pass 11 rejects any) and is always a Task-Session site, so this rule never applies to it |
 | a declared or required Service referenced from a Step's `script`, one of its `stepEnvironments`, another Service, a Job Environment, or an Environment Template's `environment`, whose `dependencies` (the Step's, for a Step Environment) do not list `service: <svc>` (§9 scope rules 2–5, §9.8 item 2) | `Step 'Render' references Service.Cache.main.port but does not list service: Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service: Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service: Back in dependencies.` — from a Job Environment or an Environment Template's `environment`, `Environment 'CacheClient' references Service.Cache.main.port but does not list service: Cache in dependencies.` |
 | the port is not declared | `Service 'Store' has no port 'mian'; declared ports: main.` — or, for a required Service, `required Service 'Cache' has no port 'admin'; declared ports: main.` |
@@ -432,7 +432,7 @@ Who sees which Services (the `in_scope` iterator at each site):
 | `services[k]` body (variables, every action, embedded files, `<ServiceScript>.let`) — `validate_service_format_strings` | the other `services` entries and the `requiresServices` entries it lists with the `service` key in `dependencies` (any order; pass 11 rejects a cycle), plus itself | its own only |
 | environment template `services[k]` body | the other `services` entries it lists in `dependencies`, plus itself | its own only |
 | environment template `environment` | the `services` entries it lists in its own `dependencies` (`listed_services`), under the `runScope` condition | never |
-| any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, every `<Action>`'s `timeout`, a cancelation method's `mode` / `notifyPeriodInSeconds`, the numeric `@fmtstring` fields of `<ServicePort>`, `<ServiceHealthCheck>` and `<ServiceRestartPolicy>` | **none** — job-creation stage (§9.9 item 2); `service_diagnostics` names the field | never |
+| any `hostRequirements` (Step's or Service's), `<StepTemplate>.let`, `<Service>.let`, parameter-space ranges, every `<Action>`'s `timeout`, a cancelation method's `mode` / `notifyPeriodInSeconds`, the numeric `@fmtstring` fields of `<ServicePort>`, `<ServiceHealthCheck>` and `<ServiceRestartPolicy>` | **none** — job-creation stage; `service_diagnostics` names the field | never |
 
 Consequences the tests pin: list order carries no meaning (a Service may list and reference a
 later Service), a reference to an inline or required Service without the matching `service`
@@ -459,7 +459,7 @@ Environments a Service Session enters are the Job's, which follow the `runScope`
   `validate_host_requirements_fs`, so the Step and Service checks are one code path with the
   owner's path prefixed), the numeric `@fmtstring` fields, and every action's `timeout` /
   cancelation `mode` / `notifyPeriodInSeconds` (`validate_action_timing_fs`). Never
-  `Session.*`, `Service.*`, PATH `Param.*`, `Step.*`, or `Task.*` (§9 item 3, §9.9 item 2).
+  `Session.*`, `Service.*`, PATH `Param.*`, `Step.*`, or `Task.*` (§9 item 3).
 - *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
   job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
   `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
@@ -481,7 +481,7 @@ four `onWrapService*` hooks (`WrapHookScope::Service` → `add_wrapped_service_s
 not available in `onWrapEnvEnter` / `onWrapTaskRun` / `onWrapEnvExit`, and `WrappedEnv.Name` /
 `WrappedStep.Name` are not available in the Service hooks.
 
-**Numeric `@fmtstring` fields** (§9.3 note; `SERVICE_PORT_CONSTRAINT`,
+**Numeric `@fmtstring` fields** (§9.5.1; `SERVICE_PORT_CONSTRAINT`,
 `SERVICE_SECONDS_CONSTRAINT`, `SERVICE_MAX_ATTEMPTS_CONSTRAINT`) join the resolved-value
 constraint table below with target type `int?`: `port` 1–65535 (`must be between 1 and
 65535.`), the four `<ServiceHealthCheck>` numeric fields > 0 (`must be > 0.`), `maxAttempts` ≥
@@ -716,7 +716,7 @@ Service hooks (Template Schemas §4.3 "WRAP_ACTIONS extension constraints"):
   set is an error at the `actions` path: `an environment that defines any of onWrapEnvEnter,
   onWrapTaskRun, or onWrapEnvExit must define all three (RFC 0008).` The Service hooks do not
   take part in this count (each has already been rejected for lacking `SERVICE`).
-- **Hooks follow `runScope`** (constraint 6, §9.9 item 6; `WRAP_ACTIONS` with `SERVICE`,
+- **Hooks follow `runScope`** (constraint 6; `WRAP_ACTIONS` with `SERVICE`,
   replacing the all-or-nothing rule): a *wrapping* environment — one that defines any wrap hook
   (`has_any_wrap_hook`) — must define `onWrapEnvEnter` and `onWrapEnvExit`; must define
   `onWrapTaskRun` iff `runs_in(Task)`; and must define all four `onWrapService*` hooks iff
@@ -798,16 +798,16 @@ Cache` and referencing `Service.Cache.*`, but no `extensions:`, therefore report
 The pre-RFC-0009 keys `jobServices` (job template root) and `stepServices` (`<StepTemplate>`)
 are not properties and are rejected at decode as unknown fields — with their model path and a
 rename hint, see [parsing.md](parsing.md) "Pass 3" — as is `requiresServices` on an environment
-template (§9.9 item 11).
+template (§9.1 rule 4).
 
-**EXPR prerequisite (§9.9 item 7):** declaring `SERVICE` without `EXPR` is an error at
+**EXPR prerequisite (§9):** declaring `SERVICE` without `EXPR` is an error at
 `extensions`, in both job and environment templates, whether or not any Service is defined:
 ``SERVICE requires EXPR; both must be listed in the template's `extensions` (RFC 0009).``
 
 **With the extension declared:**
 - **Lists** (§1.1 items 8–9, §1.2): each `services` / `requiresServices` list `must not be
   empty.` and `must not contain more than 10 elements.`
-- **`runScope`** (§4 item 4, §9.9 item 3; `validate_run_scope`):
+- **`runScope`** (§4 item 4; `validate_run_scope`):
   - On a `stepEnvironments` entry the field is rejected whole, whatever it names — even
     `[TASK]`, the only kind that could enter it (constraint 4; conformance
     `4--run-scope-on-step-environment.invalid`): `runScope is not permitted on a Step
@@ -820,7 +820,7 @@ template (§9.9 item 11).
     `unknown run scope name '<name>'; expected one of TASK, SERVICE.` (names are
     case-sensitive) or `duplicate run scope name '<name>'.` Then, once on the `runScope` path,
     when the list includes `SERVICE` and the Environment lists a Service in `dependencies`
-    and/or references `Service.*` (constraint 2 / §4 item 3 constraint 5 / §9.9 item 2):
+    and/or references `Service.*` (constraint 2 / §4 item 3 constraint 5):
     `Environment 'Client' is entered in Service Sessions (its runScope includes SERVICE) and
     may not depend on a Service; declare runScope: [TASK] if it configures Tasks.` — `… may not
     reference Service.*; …` when it only references, `… may not depend on or reference a
@@ -828,7 +828,7 @@ template (§9.9 item 11).
     for the Environment are dropped by `service_diagnostics` in favor of this one error
     (exploratory report S12, S21). An absent `runScope` defaults to `[TASK]` for an Environment
     that lists a Service and needs no check.
-- **An Environment's `dependencies`** (§4 item 3, §3.2 constraint 5, §9.9 item 14;
+- **An Environment's `dependencies`** (§4 item 3, §3.2 constraint 5;
   `validate_environment_dependencies`), on every `<Environment>` of either template kind:
   - On a `stepEnvironments` entry the list is rejected whole, whatever it names, at
     `steps[i] -> stepEnvironments[j] -> dependencies`: `a Step Environment follows its Step's
@@ -850,16 +850,15 @@ template (§9.9 item 11).
     or both.
   - A Job Environment's entries join the dependency graph as an edge from every Step to each
     Service listed (§3.2 constraint 3, §9.1 rule 3); see "Dependencies" below.
-- **Name uniqueness** (§9.9 item 5): `duplicate service name: '<name>'` on the offending
+- **Name uniqueness** : `duplicate service name: '<name>'` on the offending
   `services` element for a repeat within the list; `duplicate service requirement name:
   '<name>'` on the offending `requiresServices` element; and, on `requiresServices[i] ->
   name`, `'<name>' is also declared in services; a Service is either declared or required, not
   both.`
-- **`<ServiceName>`, requirement names, and port names** (§9.2, §9.3 item 1, §9.8, §9.9 item
-  5): on the `name` field, `'<name>' is not a valid identifier.`, `exceeds
+- **`<ServiceName>`, requirement names, and port names** (§9.2, §9.3 item 1, §9.8): on the `name` field, `'<name>' is not a valid identifier.`, `exceeds
   <max_identifier_len> characters.` (64, or 512 with FEATURE_BUNDLE_1), and `must not be
   'File'; it is reserved for Service.File.* references.`
-- **Dependencies** (§3.2 constraints 1–3, §9 item 4, §9.1, §9.9 items 9–11;
+- **Dependencies** (§3.2 constraints 1–3, §9 item 4, §9.1, §3.2 constraint 3;
   `validate_job_template_dependencies`), job template:
   - A Step's `service` entries (the one-of rule, its `dependsOn` entries, self-dependency and
     duplicates are pass 6's): on `steps[i] -> dependencies[j]`, an unknown name reports
@@ -909,7 +908,7 @@ template (§9.9 item 11).
   `<ServicePort>`'s.
 - **Ports** (§9 item 6): `ports` `must not be empty.` / `must not contain more than 10
   elements.`; `duplicate port name '<name>'.` on the element.
-- **Port numbers per protocol** (§9 item 6.4, §9.9 item 8): on `ports[i] -> port` of the later
+- **Port numbers per protocol** (§9 item 6.4): on `ports[i] -> port` of the later
   port, `<TCP|UDP> port <n> is also used by port '<earlier>'; two ports with the same protocol
   must not have the same port number.` Only literal numbers are compared here (one that
   carries an expression is compared at job creation, once resolved — see
@@ -923,14 +922,14 @@ template (§9.9 item 11).
   `healthCheck.readinessTimeoutSeconds`, `healthCheck.healthIntervalSeconds`, and
   `healthCheck.failureThreshold` `must be > 0.`; `restartPolicy.maxAttempts` `must be >= 0.`;
   any of them `must be an integer.` when the text does not parse.
-- **`completedTasks` required** (§9.5 item 2, §9.9 item 12): a literal `maxAttempts` greater
+- **`completedTasks` required** (§9.5 item 2): a literal `maxAttempts` greater
   than 0 without `completedTasks` reports, on `restartPolicy`, `completedTasks must be provided
   when maxAttempts is greater than 0 (maxAttempts is 2): a template that allows relaunch must
   say what a relaunch means for completed Tasks, KEEP or RERUN (Template Schemas §9.5 item 2).`
   (`service::completed_tasks_required_message`). `maxAttempts` 0, explicit or defaulted, needs
   none; a format-string `maxAttempts` is checked with the same message when it is resolved at
   job creation (see [job-creation.md](job-creation.md)).
-- **Health-check consistency** (§9.4 items 3 and 6, §9.7 item 3, §9.9 item 4):
+- **Health-check consistency** (§9.4 items 3 and 6, §9.7 item 3):
   `script -> actions`: `onHealthCheck must be defined when healthCheck.type is COMMAND.`;
   `script -> actions -> onHealthCheck`: `onHealthCheck must not be defined when
   healthCheck.type is <TCP_CONNECT|STDOUT>.` (the default type is `TCP_CONNECT`). A
@@ -943,7 +942,7 @@ template (§9.9 item 11).
   count.` (a format-string `failureThreshold` counts as given). A `STDOUT` check that gives
   `readinessIntervalSeconds` is rejected at decode as an unknown field, since the `STDOUT` form
   has no such property (as `ports` is on the other two forms).
-- **Health check and port protocols** (§9 item 7, §9.4 item 2, §9.9 item 4): a `TCP_CONNECT`
+- **Health check and port protocols** (§9 item 7, §9.4 item 2): a `TCP_CONNECT`
   `ports` entry naming a UDP port reports, on `healthCheck -> ports[k]`, `port '<name>' has
   protocol UDP and cannot be probed by a TCP_CONNECT health check; only TCP ports may be
   named.` A Service none of whose ports is TCP whose effective check is `TCP_CONNECT` reports,
@@ -965,12 +964,12 @@ spellings — `readinessCheck`, `onReadinessCheck`, `timeoutSeconds`, `intervalS
 unknown fields (conformance fixtures `9.4--health-old-readiness-check-key.invalid` and
 `9.4--health-old-timeout-seconds-key.invalid`).
 
-Not in this pass: `Service.*` scope rules (§9.9 items 1–2; pass 8, "Service scopes"), the
+Not in this pass: `Service.*` scope rules (§9 job-creation exclusion; pass 8, "Service scopes"), the
 wrap hooks an Environment's `runScope` calls for (item 6; pass 10), `let` bindings and format
 strings inside a Service (pass 8), job creation of Services (see
 [job-creation.md](job-creation.md)), and the submission-time checks (next section).
 
-## Submission-time checks (RFC 0009, Template Schemas §1.2.2 items 2–4, §9.9 closing paragraph)
+## Submission-time checks (RFC 0009, Template Schemas §1.2.2 items 2–4, §9.9 last two rows)
 
 Two of the SERVICE extension's rules relate documents that only the scheduler sees together
 — a Job Template and the Environment Templates attached to a submission — and so cannot run
@@ -999,7 +998,7 @@ the attachment):
   resolve to its own Services first (pass 8 seeds the document's own Services and its
   requirements), and the merge keeps same-named Services distinct by stamping each with its
   `job::Document` (see "apply_environment_templates" in [job-creation.md](job-creation.md)).
-  Within one document the §9.9 item 5 uniqueness check (pass 11) applies as before.
+  Within one document the §9.2 / §1.1 item 9.4 uniqueness check (pass 11) applies as before.
 - **Wrapping Environment from a SERVICE-less document (§1.2.2 item 4).** Such an Environment
   (any `WRAP_ACTIONS` hook defined; `runScope` and the `onWrapService*` hooks are both gated
   behind `SERVICE`, so it necessarily has the default scope and no Service hooks) must not be

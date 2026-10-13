@@ -449,7 +449,7 @@ struct Managed {
     environment_profiles: Vec<Option<ModelProfile>>,
     /// Whether a Step in the Service's scope is pending in the current
     /// round: the gate starts active idle Services and leaves inactive ones
-    /// idle (constraint 10: a Service whose scope schedules no Task need
+    /// idle (constraint 9: a Service whose scope schedules no Task need
     /// not start).
     active: bool,
     /// Cancels background work when the Service is stopped. Replaced when
@@ -459,7 +459,7 @@ struct Managed {
 }
 
 impl Managed {
-    /// A fresh [`Instance`] for a new Service Session (constraint 9: new
+    /// A fresh [`Instance`] for a new Service Session (constraint 8: new
     /// host selection, new ports, new working directory).
     fn new_instance(&self, retain_working_dir: bool) -> Instance {
         Instance {
@@ -624,7 +624,7 @@ impl ServiceManager {
         self.services.iter().filter(|m| m.is_job_wide()).count()
     }
 
-    /// Activate every Service whose scope is every Step (constraint 10: the
+    /// Activate every Service whose scope is every Step (constraint 9: the
     /// Job will schedule a Task), so the next gate starts them. Called
     /// before the Task Session enters the Job's Environments, which may
     /// reference them.
@@ -636,7 +636,7 @@ impl ServiceManager {
 
     /// Activate every Service whose scope includes `step`, so the next gate
     /// starts those not yet READY (a Service stopped because its scope had
-    /// completed starts again in a new Session, constraint 9). A Service that
+    /// completed starts again in a new Session, constraint 8). A Service that
     /// lists Steps in its `dependencies` is activated only once every listed
     /// Step has completed (`completed`) — a listed Step outside the run's
     /// selection (`selected`) counts as completed, as a Step's own

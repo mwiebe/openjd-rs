@@ -25,13 +25,13 @@
 //! enabled, this pass additionally enforces:
 //!
 //! - **EXPR prerequisite.** A template that lists `SERVICE` in
-//!   `extensions:` must also list `EXPR` (§9, §9.9 item 7).
+//!   `extensions:` must also list `EXPR` (§9).
 //! - **List shape.** Each `services` / `requiresServices` list has 1–10
 //!   elements (§1.1 items 8–9, §1.2).
 //! - **Name uniqueness.** Service names are unique within a list,
 //!   requirement names are unique within theirs, and no requirement bears
-//!   the name of an inline Service (§9.9 item 5).
-//! - **`service: <name>`** (§3.2 constraint 1, §9.9 item 9): on a Step or a
+//!   the name of an inline Service (§9.2, §1.1 item 9.4).
+//! - **`service: <name>`** (§3.2 constraint 1): on a Step or a
 //!   Service, the name is a Service of the document's `services` or, in a
 //!   Job Template, of its `requiresServices`. (Step targets, self
 //!   dependency, duplicates and the one-of rule are pass 6's for a Step; a
@@ -46,16 +46,16 @@
 //! - **One acyclic graph.** The `dependencies` of the document's Steps,
 //!   Services, and Job Environments form one graph with every kind of
 //!   edge — when a Job Environment lists Service `X`, every Step gains an
-//!   edge to `X` — which must be acyclic (§3.2 constraint 3, §9.9 item
-//!   10); the error names the cycle and, when a Job Environment's entry
+//!   edge to `X` — which must be acyclic (§3.2 constraint 3);
+//!   the error names the cycle and, when a Job Environment's entry
 //!   closed it, the Job Environment. See [`crate::template::service_scope`].
-//! - **Scope** (§9.1, §9.9 item 11): every Service of a Job Template has a
+//! - **Scope** (§9.1): every Service of a Job Template has a
 //!   non-empty scope — some Step lists it, directly or through other
 //!   Services, or some Job Environment lists it — else it is unused and
 //!   rejected by name; a Service listed only by unused Services is unused,
 //!   and the message names them.
-//! - **`<Environment>.dependencies`** (§4 item 3, §3.2 constraint 5, §9.9
-//!   item 14): permitted only on a `jobEnvironments` entry and on an
+//! - **`<Environment>.dependencies`** (§4 item 3, §3.2 constraint 5):
+//!   permitted only on a `jobEnvironments` entry and on an
 //!   Environment Template's `environment`, never on a `stepEnvironments`
 //!   entry; at least one element; every entry with the `service` key (a
 //!   `dependsOn` entry is rejected — an Environment is entered by Sessions,
@@ -68,24 +68,24 @@
 //!   (`readinessIntervalSeconds`, `readinessTimeoutSeconds`,
 //!   `healthIntervalSeconds`, `failureThreshold`) positive; literal
 //!   `maxAttempts` non-negative, and a literal `maxAttempts` greater than 0
-//!   accompanied by `completedTasks` (§9.5 item 2, §9.9 item 12 — a
+//!   accompanied by `completedTasks` (§9.5 item 2 — a
 //!   format-string `maxAttempts` is checked at job creation);
 //!   `onHealthCheck` defined iff the health
 //!   check type is `COMMAND`; every port a `TCP_CONNECT` check names is
 //!   declared and has `protocol: TCP`; a Service none of whose ports is TCP
 //!   declares a `STDOUT` or `COMMAND` check; a `STDOUT` check gives
 //!   `failureThreshold` only together with `healthIntervalSeconds` (§9 item
-//!   7, §9.4 items 3 and 6, §9.9 item 4 — a `STDOUT` check's
+//!   7, §9.4 items 3 and 6 — a `STDOUT` check's
 //!   `readinessIntervalSeconds` is rejected as an unknown field at decode,
 //!   as `ports` is on anything but `TCP_CONNECT`); no two ports of the same
-//!   `protocol` have the same literal `port` number (§9 item 6.4, §9.9 item
-//!   8 — format-string numbers are checked at job creation).
+//!   `protocol` have the same literal `port` number (§9 item 6.4 —
+//!   format-string numbers are checked at job creation).
 //!   `description`, `variables`, `hostRequirements`, embedded files and
 //!   every `<Action>` reuse the pass-6 validators.
 //! - **`<ServiceRequirement>` structure** (§9.8): an identifier name that is
 //!   not `File`; 1–10 uniquely named ports, each an identifier other than
 //!   `File`.
-//! - **`runScope`** (§4 item 4, §9.9 item 3): never on a `stepEnvironments`
+//! - **`runScope`** (§4 item 4): never on a `stepEnvironments`
 //!   entry (constraint 4: a Step Environment is entered only by the Task
 //!   Sessions of its Step); elsewhere, at least one element, only
 //!   recognized `<RunScopeName>`s (`TASK`, `SERVICE`), no duplicates; and,
@@ -97,7 +97,7 @@
 //! The numeric `@fmtstring` fields are modeled like `<Action>.timeout`: a
 //! value without an expression is checked here, and a format string is
 //! resolved and range-checked at job creation. Format-string *scopes*
-//! (`Service.*`, §9.9 items 1–2) and `let` bindings are validated by the
+//! (`Service.*`, §9 visibility rule, §9 job-creation exclusion) and `let` bindings are validated by the
 //! format-string pass, not here.
 
 use std::collections::HashSet;
@@ -335,7 +335,7 @@ enum EnvironmentKind {
     Step,
 }
 
-/// §4 item 3 / §3.2 constraint 5 / §9.9 item 14: validate one Environment's
+/// §4 item 3 / §3.2 constraint 5: validate one Environment's
 /// `dependencies` at `env_path`, with `SERVICE` declared. A Step
 /// Environment may not give the list at all; else the list is non-empty,
 /// every entry uses the `service` key (a `dependsOn` entry is rejected — an
@@ -438,7 +438,7 @@ fn unknown_service_dependency<'a>(
     }
 }
 
-/// §3.2 constraints 1–3 / §9 item 4 / §9.9 items 9–11 for a Job Template
+/// §3.2 constraints 1–3 / §9 item 4 / §3.2 constraint 3, §9.1 rule 4 for a Job Template
 /// with `SERVICE`: every `service` entry of a Step's `dependencies` names a
 /// Service of `services` or `requiresServices`; each Service's
 /// `dependencies` is non-empty, every entry exactly one of `dependsOn` /
@@ -547,7 +547,7 @@ pub(super) fn unknown_step_dependency<'a>(
     }
 }
 
-/// §9.1 rule 4 / §9.9 item 11: the message for a Service in whose scope no
+/// §9.1 rule 4: the message for a Service in whose scope no
 /// Step falls. When only other Services list it, they are named, since
 /// they are unused too (a Service listed only by unused Services is
 /// unused); otherwise nothing lists it at all.
@@ -611,8 +611,7 @@ pub fn validate_services_environment_template(
     }
 }
 
-/// §1.2 item 6 constraints 4–5 / §3.2 constraint 4 / §9 item 4 / §9.9 items
-/// 9–10 for an Environment Template's `services`: each `dependencies` list
+/// §1.2 item 6 constraints 4–5 / §3.2 constraint 4 / §9 item 4 for an Environment Template's `services`: each `dependencies` list
 /// is non-empty, every entry uses the `service` key and names a Service of
 /// this list other than the one listing it, no target is listed twice, and
 /// the graph is acyclic. (Scope is not checked: every Step of every Job is
@@ -673,7 +672,7 @@ fn validate_environment_template_dependencies(
     }
 }
 
-/// §4 item 4 / §9.9 item 3: validate one Environment's `runScope` at
+/// §4 item 4: validate one Environment's `runScope` at
 /// `env_path`, with `SERVICE` declared. On a `stepEnvironments` entry the
 /// field is not permitted at all, whatever its value (constraint 4): a
 /// Step Environment is entered only by the Task Sessions of its Step, so
@@ -918,7 +917,7 @@ fn validate_service(
                 "must be between 1 and 65535.",
                 errors,
             );
-            // §9 item 6.4 / §9.9 item 8: the same literal number twice in
+            // §9 item 6.4: the same literal number twice in
             // one protocol's space. Format-string numbers are compared at
             // job creation, once resolved.
             if let Some(n) = literal_int(number) {
@@ -948,7 +947,7 @@ fn validate_service(
 
     // §9.4 <ServiceHealthCheck>
     let health = service.health_check();
-    // §9 item 7 / §9.9 item 4: TCP_CONNECT, given or defaulted, needs a TCP
+    // §9 item 7: TCP_CONNECT, given or defaulted, needs a TCP
     // port to probe. (An empty `ports` list is already reported above.)
     if !service.ports.is_empty()
         && !has_tcp_port
@@ -990,7 +989,7 @@ fn validate_service(
                 if probed.is_empty() {
                     errors.add(&probed_path, "if provided, must not be empty.");
                 }
-                // §9.9 item 4: every port a TCP_CONNECT check names is
+                // §9 item 7, §9.4 items 2, 3, and 6, §9.7 item 3: every port a TCP_CONNECT check names is
                 // declared and has protocol TCP (§9.4 item 2).
                 for (i, name) in probed.iter().enumerate() {
                     match protocol_of(name) {
@@ -1017,7 +1016,7 @@ fn validate_service(
                     }
                 }
             }
-            // §9.4 item 6 / §9.9 item 4: a STDOUT check gives
+            // §9.4 item 6: a STDOUT check gives
             // failureThreshold only together with healthIntervalSeconds —
             // without a heartbeat there is no probe for it to count.
             ServiceHealthCheck::Stdout {
@@ -1047,7 +1046,7 @@ fn validate_service(
                 "must be >= 0.",
                 errors,
             );
-            // §9.5 item 2 / §9.9 item 12: a literal maxAttempts > 0 needs
+            // §9.5 item 2: a literal maxAttempts > 0 needs
             // completedTasks. A format string is checked at job creation.
             if policy.completed_tasks.is_none() && literal_int(attempts).is_some_and(|n| n > 0) {
                 errors.add(
@@ -1074,7 +1073,7 @@ fn validate_service(
             errors,
         );
     }
-    // §9.7 item 3 / §9.9 item 4: onHealthCheck iff type is COMMAND.
+    // §9.7 item 3: onHealthCheck iff type is COMMAND.
     let is_command = matches!(health, ServiceHealthCheck::Command { .. });
     match (&service.script.actions.on_health_check, is_command) {
         (None, true) => errors.add(
@@ -1115,7 +1114,7 @@ fn validate_service(
     }
 }
 
-/// §9.5 item 2 / §9.9 item 12: the message for a `restartPolicy` whose
+/// §9.5 item 2: the message for a `restartPolicy` whose
 /// `maxAttempts` (`n`, greater than 0) is given without `completedTasks`.
 pub fn completed_tasks_required_message(n: i64) -> String {
     format!(

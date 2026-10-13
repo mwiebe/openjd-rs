@@ -261,7 +261,7 @@ pub struct ServiceRunExit {
     /// which is one.
     pub canceled: bool,
     /// `Some` when the health check canceled `onRun` because the instance
-    /// became UNHEALTHY (RFC 0009 lifecycle constraint 11, "Failure and
+    /// became UNHEALTHY (RFC 0009 lifecycle constraint 10, "Failure and
     /// restart"). Set even when the caller's own cancelation raced it, in
     /// which case `canceled` is also `true` and the exit is not a failure.
     pub unhealthy: Option<ServiceUnhealthy>,
@@ -424,7 +424,7 @@ struct RunDriverInputs {
     message_rx: mpsc::UnboundedReceiver<ActionMessage>,
     cancel_requested: Arc<AtomicBool>,
     /// Cancels `onRun` with its own cancelation method when the instance
-    /// becomes UNHEALTHY (lifecycle constraint 11).
+    /// becomes UNHEALTHY (lifecycle constraint 10).
     cancel_handle: SessionCancelHandle,
     /// The `onHealthCheck` driver's inputs, for a `COMMAND` health check.
     /// The `onRun` driver spawns it, requests one invocation per probe,
@@ -922,7 +922,7 @@ impl ServiceSession {
     /// elapses, or `onRun` exits. After READY a probe runs every
     /// `healthIntervalSeconds`; `failureThreshold` consecutive failures make
     /// the instance UNHEALTHY, on which the runtime cancels `onRun` with its
-    /// cancelation method (constraint 11) and stops probing; a success
+    /// cancelation method (constraint 10) and stops probing; a success
     /// resets the count. For `TCP_CONNECT` and `COMMAND`, an interval is
     /// measured from the end of the previous probe: a `TCP_CONNECT` probe
     /// connects to every listed port; a `COMMAND` probe is one
@@ -1973,7 +1973,7 @@ impl HealthTracker<'_> {
         });
     }
 
-    /// Stop probing because `onRun` exited (constraint 11): a phase-1
+    /// Stop probing because `onRun` exited (constraint 10): a phase-1
     /// instance has failed; a phase-2 instance is simply no longer probed.
     fn stop_for_exit(&mut self) {
         if self.is_pending() {
@@ -2302,7 +2302,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 else => break,
             }
             if result.is_some() {
-                // "onRun exit wins" (rule 5, constraint 11): the check is
+                // "onRun exit wins" (rule 5, constraint 10): the check is
                 // stopped — an invocation in flight is canceled with its own
                 // cancelation method and its result discarded — and messages
                 // that raced the exit are still applied, but neither a
@@ -2535,7 +2535,7 @@ async fn drive_health_check(
         slot.reset();
 
         if stop.is_cancelled() {
-            // Rule 5 / constraint 11: canceled by the runtime (onRun exited,
+            // Rule 5 / constraint 10: canceled by the runtime (onRun exited,
             // probing ended, or the Session is ending). The result is
             // discarded; the dropped `reply` tells the requester so.
             break;

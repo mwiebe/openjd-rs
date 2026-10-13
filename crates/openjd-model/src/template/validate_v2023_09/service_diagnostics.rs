@@ -4,7 +4,7 @@
 
 //! Scope-specific diagnostics for out-of-scope `Service.*` and `Task.*`
 //! references (RFC 0009 "The `Service.*` scope", Template Schemas §9 scope
-//! list, §9.8, §9.9 items 1–2, §4 item 3.2, §7.3.1).
+//! list, §9.8, §9 job-creation exclusion, §4 item 3.2, §7.3.1).
 //!
 //! Pass 8 validates every format string against a symbol table seeded with
 //! exactly the `Service.*` values in scope at that site, so a reference that
@@ -29,14 +29,14 @@
 //! 1. `Task.*` or `Step.*` inside a Service (its actions, `variables`,
 //!    `let`, embedded files): *Task.\* is not available within a Service.*
 //!    / *Step.\* is not available within a Service.* (§9 item 3.)
-//! 2. The site is a job-creation-time field (§9.9 item 2: `hostRequirements`,
+//! 2. The site is a job-creation-time field (§9 job-creation exclusion: `hostRequirements`,
 //!    a `<StepTemplate>`'s or `<Service>`'s `let` list — not a script's —, a
 //!    `parameterSpace` range, an `<Action>`'s `timeout`, a cancelation
 //!    method's `mode` / `notifyPeriodInSeconds`, a `<ServicePort>`'s
 //!    `port`, a `<ServiceRestartPolicy>`'s `maxAttempts`, the four
 //!    `<ServiceHealthCheck>` numeric fields): *Service.\* is not available
 //!    in `<field>`: it is resolved at job creation, before any Service has
-//!    an endpoint.* (§3.6.2, §9.9 items 1–2.) Pass 8 never seeds `Service.*`
+//!    an endpoint.* (§3.6.2, §9 visibility rule, §9 job-creation exclusion.) Pass 8 never seeds `Service.*`
 //!    into the symbol table of these fields, so the reference is undefined
 //!    there whatever the scope; this rule only names the field.
 //! 3. The site is a Job Environment (or an Environment Template's
@@ -52,7 +52,7 @@
 //!    one of its `stepEnvironments`, another Service, a Job Environment, or
 //!    an Environment Template's `environment` that does not list
 //!    `service: <name>` in its `dependencies` (§9 scope rules 2–5, §9.8
-//!    item 2, §9.9 item 1): *Step 'Render' references Service.Cache.main.port
+//!    item 2, §9 visibility rule): *Step 'Render' references Service.Cache.main.port
 //!    but does not list service: Cache in dependencies.* — *Step 'Render'
 //!    references Service.Cache.main.port in stepEnvironments 'Tools' but
 //!    does not list service: Cache in dependencies.* — *Service 'Front'

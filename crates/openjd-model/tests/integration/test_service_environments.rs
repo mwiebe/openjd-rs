@@ -13,7 +13,7 @@
 //!    `effective_run_scope` accessors, extension gating, and the §4 item 4
 //!    constraints (non-empty, recognized names, no duplicates) in job
 //!    environments, step environments, and environment templates.
-//! 2. **`dependencies`** on `<Environment>` (§4 item 3, §9.9 item 14):
+//! 2. **`dependencies`** on `<Environment>` (§4 item 3):
 //!    extension gating, the Step Environment prohibition, and the list
 //!    constraints (non-empty, `service` key naming a Service of the
 //!    document or a requirement, no duplicates, not with an explicit
@@ -273,7 +273,7 @@ fn run_scope_accepted_on_job_environments() {
     assert!(step_env.run_scope.is_none());
 }
 
-/// §4 item 4 constraint 4 / §9.9 item 3: a Step Environment is entered only
+/// §4 item 4 constraint 4: a Step Environment is entered only
 /// by the Task Sessions of its Step, so it must not give a `runScope` at
 /// all — not even `[TASK]`, the only kind that could enter it. The list
 /// alone is the error, whatever it names.

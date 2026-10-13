@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! Integration tests for RFC 0009 `requiresServices` (Template Schemas §1.1
-//! item 9, §1.2.2 items 2–4, §9 scope lists, §9.8, §9.9 items 1, 5 and 11):
+//! item 9, §1.2.2 items 2–4, §9 scope lists, §9.8, §9.2, §1.1 item 9.4, §9.1 rule 4):
 //!
 //! 1. **Template validation** — schema, list and name constraints, the
 //!    `Service.R.*` scope a requirement opens, and the diagnostics for an
@@ -160,7 +160,7 @@ fn requirement_opens_port_and_connect_address_where_listed() {
 
 #[test]
 fn step_reference_to_a_required_service_without_dependency_is_rejected() {
-    // §9 scope rule 3, §9.8 item 2, §9.9 item 1: the requirement alone does
+    // §9 scope rule 3, §9.8 item 2: the requirement alone does
     // not put the Service in scope for the Step; the message names the fix,
     // exactly as for an inline Service.
     let err = job_err(&job(
@@ -489,13 +489,13 @@ fn with_step_fields(fields: &str) -> String {
 
 #[test]
 fn required_service_values_are_not_in_a_step_let() {
-    // §9.9 item 2: never in a <StepTemplate>.let.
+    // §9 job-creation exclusion: never in a <StepTemplate>.let.
     assert_errs(&job_err(&with_step_fields(STEP_LET)), 1, &[LET_MSG]);
 }
 
 #[test]
 fn required_service_values_are_not_in_step_host_requirements() {
-    // §9.9 item 2: never in hostRequirements.
+    // §9 job-creation exclusion: never in hostRequirements.
     assert_errs(
         &job_err(&with_step_fields(STEP_HOST_REQ)),
         1,

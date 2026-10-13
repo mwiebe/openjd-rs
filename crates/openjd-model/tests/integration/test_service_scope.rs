@@ -601,7 +601,7 @@ fn job_environment_dependency_gives_every_step_scope() {
 
 /// The one visibility rule has no exceptions: a Job Environment that
 /// references a Service it does not list is rejected with the message that
-/// names the fix (§9 scope rule 4, §9.9 item 1).
+/// names the fix (§9 scope rule 4).
 #[test]
 fn job_environment_reference_without_dependency_is_rejected() {
     let err = decode_job_template(

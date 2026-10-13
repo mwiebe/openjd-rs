@@ -280,7 +280,7 @@ in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
    with every check decode and pass 8 could not finish on a non-literal
    value (name pattern and uniqueness, bounds, attribute values) re-applied
    on the resolved values, reported at the Service's path.
-3. **Numeric `@fmtstring` fields** (§9.3 note) — `resolve_service_int`
+3. **Numeric `@fmtstring` fields** (§9.5.1) — `resolve_service_int`
    resolves `port`, the four `healthCheck` numeric fields
    (`readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`,
    `failureThreshold`), and `restartPolicy.maxAttempts` with target type
@@ -305,13 +305,13 @@ in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
    needs the template defaults. Each `job::ServicePort` carries its
    `protocol` (§9.3 item 3) unchanged from the template. Once every
    `port` is resolved, `check_duplicate_port_numbers` applies §9 item 6.4
-   / §9.9 item 8 to the resolved numbers: two ports with the same
+   / §9 item 6.4 to the resolved numbers: two ports with the same
    `protocol` and the same number fail at `ports[i] -> port` of the later
    one with pass 11's wording (`<TCP|UDP> port <n> is also used by port
    '<earlier>'; two ports with the same protocol must not have the same
    port number.`), which catches the format-string forms the template
    validator could not compare. The same number on a TCP and a UDP port
-   is accepted. Once `maxAttempts` is resolved, §9.5 item 2 / §9.9 item 12
+   is accepted. Once `maxAttempts` is resolved, §9.5 item 2
    is applied to the resolved value: a `maxAttempts` greater than 0 without
    `completedTasks` fails at `restartPolicy` with pass 11's wording
    (`completedTasks must be provided when maxAttempts is greater than 0
@@ -675,7 +675,7 @@ Environments converted:
    while `create_job`'s own Services keep the default
    `Document::JobTemplate`; a scheduler keys Services on `(document,
    name)`. A repeat within one document remains a template-validation
-   error (§9.9 item 5). The combined Service list is still assembled with
+   error (§9.2, §1.1 item 9.4). The combined Service list is still assembled with
    provenance (every external Service, then the Job's `services`) — the
    wrapper check below names a witness from it.
 

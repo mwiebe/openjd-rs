@@ -396,7 +396,7 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
 }
 
 /// Whether `step` will run at least one Task under this selection — RFC
-/// 0009 constraint 10 lets the runner decline to start a Service whose scope
+/// 0009 constraint 9 lets the runner decline to start a Service whose scope
 /// schedules no Task (a `--tasks '[]'` selection, say).
 fn step_runs_tasks(step_idx: usize, selection: &RunSelection) -> bool {
     if selection.selected_step_idx == Some(step_idx) {
@@ -475,7 +475,7 @@ async fn run_workload(
         .map(|&i| job.steps[i].name.clone())
         .collect();
     // Every Service of the combined Job is registered; those whose scope is
-    // every Step are activated now (RFC 0009 constraint 10: unless the
+    // every Step are activated now (RFC 0009 constraint 9: unless the
     // selection schedules no Task), the rest when the first Step of their
     // scope is about to run.
     ctx.services.register(job, &prepared.environment_documents);

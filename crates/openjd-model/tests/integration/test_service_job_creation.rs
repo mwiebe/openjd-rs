@@ -602,7 +602,7 @@ steps:
     );
 }
 
-/// §9.5 item 2 / §9.9 item 12: for a format-string `maxAttempts` the
+/// §9.5 item 2: for a format-string `maxAttempts` the
 /// `completedTasks` requirement is checked when the value is resolved at
 /// job creation — required when it resolves above 0, not when it resolves
 /// to 0.

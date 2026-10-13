@@ -18,7 +18,7 @@
 //! The `dependencies` of a template's Steps, Services, and Job Environments
 //! together form one graph — Step-to-Step, Step-to-Service, Service-to-Step
 //! and Service-to-Service edges — which must be acyclic (§3.2 constraint 3,
-//! §9.9 item 10). When a Job Environment lists Service `X`, the graph gains
+//! §3.2 constraint 3). When a Job Environment lists Service `X`, the graph gains
 //! an edge from every Step to `X`, because every Step is in `X`'s scope
 //! (rule 3); so a Service a Job Environment lists, or any Service it depends
 //! on transitively, cannot depend on a Step. [`compute_service_scopes`]
@@ -205,7 +205,7 @@ impl ServiceScopes {
 }
 
 /// A cycle in the graph the `dependencies` of a template's Steps, Services,
-/// and Job Environments form (§3.2 constraint 3, §9.9 item 10).
+/// and Job Environments form (§3.2 constraint 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceDependencyCycle {
     /// The nodes along the cycle — `Step X` or `Service X` — starting and

@@ -4070,7 +4070,7 @@ mod services {
         assert!(stdout.contains("TASK_GOT hello"), "{stdout}");
     }
 
-    /// RFC 0009 `<ServiceHealthCheck>` after READY, constraint 11, "Failure
+    /// RFC 0009 `<ServiceHealthCheck>` after READY, constraint 10, "Failure
     /// and restart": a COMMAND probe fails `failureThreshold` times after
     /// Task 1 makes the service sick; the instance is UNHEALTHY, `onRun` is
     /// canceled, and with `maxAttempts: 1` / `KEEP` a second instance is
@@ -4512,7 +4512,7 @@ mod services {
         );
     }
 
-    /// Template Schemas §9 scope rule 3 / §9.9 item 1: a Step that references
+    /// Template Schemas §9 scope rule 3: a Step that references
     /// a Service it does not list in `dependencies` is rejected, and the
     /// message names the missing entry.
     #[test]
@@ -5006,7 +5006,7 @@ mod services {
     /// dependencies"): Step A's completed Task runs again. Helper is scoped
     /// to Step B, whose Task was running, so its scope never completed: its
     /// Service Session continues across the RERUN (constraint 6) and is not
-    /// started again (constraint 9 applies only to a Session that ended).
+    /// started again (constraint 8 applies only to a Session that ended).
     #[test]
     fn test_rerun_on_every_step_service_returns_every_step_to_pending() {
         let dir = TempDir::new().unwrap();
@@ -6058,7 +6058,7 @@ mod services {
         );
     }
 
-    /// RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 9: Solo
+    /// RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 8: Solo
     /// (scope Step A) is stopped once A completes. Flaky (RERUN, scope Steps
     /// A, B) exits while B runs and returns A to pending, so Solo is started
     /// again in a new Service Session — new port, onExit run again — when A

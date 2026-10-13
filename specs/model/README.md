@@ -90,7 +90,7 @@ Currently implements `2023-09` with extensions:
   Service visible to a Step or Service that lists it in `dependencies` and to
   Job Environments, required Services' declared ports,
   the `runScope` exclusion, no `Service.*` in any field resolved at job
-  creation, §9.9 items 1–2) and their diagnostics
+  creation, §9 visibility rule, §9 job-creation exclusion) and their diagnostics
   (`service_diagnostics.rs`), the `WrappedService.*` wrap-hook variables,
   pass-8 validation of every format string and `let` inside a Service, job
   creation of Services (`job::Service` with its computed `scope` and

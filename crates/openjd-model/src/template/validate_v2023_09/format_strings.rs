@@ -126,7 +126,7 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
 /// `Service.<name>.<port>.port` / `.connectAddress` are added for a Step
 /// Environment always (it is entered only by Task Sessions and gives no
 /// `runScope`, §4 item 4), and for a Job Environment only when its
-/// effective `runScope` excludes `SERVICE` (§4 item 4.2, §9.9 item 2) —
+/// effective `runScope` excludes `SERVICE` (§4 item 4.2) —
 /// which it does by default for an Environment that lists a Service; an
 /// Environment with an explicit `runScope` including `SERVICE` never sees
 /// any `Service.*` value, so a reference there surfaces as an undefined
@@ -2612,7 +2612,7 @@ const SERVICE_MAX_ATTEMPTS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedCon
 ///   `hostRequirements`, the numeric `@fmtstring` fields (`port`, the
 ///   health-check seconds and threshold, `maxAttempts`; target `int?`) and
 ///   every action's `timeout` / cancelation fields. Never `Session.*`,
-///   `Service.*`, `Step.*`, or `Task.*` (§9 item 3, §9.9 item 2).
+///   `Service.*`, `Step.*`, or `Task.*` (§9 item 3).
 /// - **Service-execution scope** — the above plus PATH `Param.*`,
 ///   `Session.*`, this Service's `Service.File.*`, its own
 ///   `Service.<name>.<port>.*` (including `bindAddress`), the `port` /

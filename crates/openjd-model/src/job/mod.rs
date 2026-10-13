@@ -764,7 +764,7 @@ impl ServiceHealthCheck {
 /// resolved (default 0) and `completedTasks` as the template gave it.
 ///
 /// `completedTasks` has no default. Job creation requires it when the
-/// resolved `maxAttempts` is greater than 0 (§9.5 item 2, §9.9 item 12), so
+/// resolved `maxAttempts` is greater than 0 (§9.5 item 2), so
 /// a Service that can be relaunched always says what a relaunch means for
 /// its completed Tasks; a Service with `maxAttempts` 0 may omit it, and
 /// then the field matters only when the Service is stopped and started
@@ -805,7 +805,7 @@ impl ServiceRestartPolicy {
     }
 
     /// True when the Service may be suspended while idle (RFC 0009
-    /// constraint 10): only a Service whose `completedTasks` is `KEEP`.
+    /// constraint 9): only a Service whose `completedTasks` is `KEEP`.
     #[must_use]
     pub fn may_be_suspended(&self) -> bool {
         self.completed_tasks == Some(CompletedTasksPolicy::Keep)

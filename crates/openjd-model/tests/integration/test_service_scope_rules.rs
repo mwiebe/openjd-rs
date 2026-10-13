@@ -489,7 +489,7 @@ fn job_environment_without_dependencies_serializes_none() {
 
 #[test]
 fn job_environment_reference_without_a_dependency_is_rejected() {
-    // §9 scope rule 4 / §9.9 item 1: the reference is not taken as a
+    // §9 scope rule 4: the reference is not taken as a
     // dependency, and the Service is not placed in a Job-wide scope by it.
     // Step A keeps X used so the one error is the reference's.
     let t = job(

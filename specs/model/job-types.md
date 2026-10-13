@@ -513,7 +513,7 @@ fields (`port`, the four `<ServiceHealthCheck>` fields, `maxAttempts` — resolv
 Service is stopped and started again because a Service it lists began a new Service Session —
 `completed_tasks_on_dependent_restart` reads an omitted value as `RERUN` there (RFC 0009
 "Dependents of a relaunched Service"), and `may_be_suspended` is true only for an explicit
-`KEEP` (constraint 10).
+`KEEP` (constraint 9).
 `variables` and the whole `script` are `@fmtstring[host]` and stay `FormatString`s, exactly
 as an Environment's do: they reference `Session.*`, `Service.File.*`, and in-scope
 `Service.<name>.<port>.*` endpoints that only the Service Session can bind. Action `timeout`

@@ -27,8 +27,7 @@
 //! unused (§9.1), so the template builders here give their Step a
 //! `service:<Name>` dependency on every Service they declare.
 //!
-//! The `Service.*` format-string scope rules (§9 scope lists, §9.9 items
-//! 1–2) and job creation of Services are covered in `test_service_scope.rs`
+//! The `Service.*` format-string scope rules (§9 scope lists) and job creation of Services are covered in `test_service_scope.rs`
 //! and `test_service_job_creation.rs`; Service scope (§9.1), unused
 //! Services, dependency cycles, `dependencies` and the `runScope` default in
 //! `test_service_scope_rules.rs`; `requiresServices` in
@@ -1820,7 +1819,7 @@ fn completed_tasks_must_be_keep_or_rerun() {
     );
 }
 
-/// §9.5 item 2 / §9.9 item 12: a literal `maxAttempts` greater than 0
+/// §9.5 item 2: a literal `maxAttempts` greater than 0
 /// without `completedTasks` is rejected at template validation, on the
 /// `restartPolicy`; 0 (explicit or the default) needs none, and a format
 /// string is checked when it is resolved at job creation.

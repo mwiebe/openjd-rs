@@ -392,8 +392,8 @@ Step of that name exists), the Service itself (`cannot depend on itself.`), and 
 (`duplicate dependency '…'.`); a cycle in the combined graph — which includes an edge from every
 Step to each Service a Job Environment lists — is reported at the root (`dependencies contain a
 cycle: <path>.`, naming the Job Environment when its entry closed the cycle). On an Environment
-Template only `service` entries naming a Service of the same document are valid (§9 item 4, §9.9
-items 9–11).
+Template only `service` entries naming a Service of the same document are valid (§9 item 4, §3.2
+constraints 1–3, §9.1 rule 4).
 
 A `<Service>` has no `serviceEnvironments` property: the RFC rejected a Service-scoped
 Environment list (Rejected Ideas, "`serviceEnvironments`, a Service-scoped Environment list") in
@@ -470,7 +470,7 @@ Template's Services have every Step in their scope and are never unused.
 
 The `dependencies` of the template's Steps, Services, and Job Environments form one graph —
 Step-to-Step, Step-to-Service, Service-to-Step and Service-to-Service edges — that must be acyclic
-(§3.2 constraint 3, §9.9 item 10). When a Job Environment lists Service `X`, the graph gains an
+(§3.2 constraint 3). When a Job Environment lists Service `X`, the graph gains an
 edge from every Step to `X`, because every Step is in `X`'s scope (rule 3); so a Service a Job
 Environment lists, or any Service it depends on transitively, cannot depend on a Step. These scope
 edges are not counted among the Steps that list a Service (`dependent_steps`), only among its
@@ -661,7 +661,7 @@ impl CompletedTasksPolicy {
 }
 ```
 
-`completedTasks` has no default (§9.5 item 2, §9.9 item 12): when `maxAttempts` is greater than 0
+`completedTasks` has no default (§9.5 item 2): when `maxAttempts` is greater than 0
 it must be provided — a template that allows relaunch must say what a relaunch means for completed
 Tasks. Pass 11 checks a literal `maxAttempts` at `services[k] -> restartPolicy`
 (`completedTasks must be provided when maxAttempts is greater than 0 (maxAttempts is 2): a

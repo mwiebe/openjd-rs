@@ -427,7 +427,7 @@ pub struct ServiceRestartPolicy {
     pub max_attempts: Option<FormatString>,
     /// What happens to completed and running Tasks when a new instance is
     /// launched. No default: required when `maxAttempts` is greater than 0
-    /// (§9.5 item 2, §9.9 item 12 — checked at template validation for a
+    /// (§9.5 item 2 — checked at template validation for a
     /// literal `maxAttempts`, at job creation for a format string); may be
     /// omitted when `maxAttempts` is 0, in which case it matters only when
     /// the Service is stopped and started again because a Service it lists

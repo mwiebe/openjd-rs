@@ -369,7 +369,7 @@ pub(super) fn instantiate_service<'a>(
         .map(|hr| resolve_host_requirements(hr, &service_symtab, ctx, path, budgets))
         .transpose()?;
 
-    // §9.2 / §9.3 / §9.4 numeric `@fmtstring` fields: target type `int?`,
+    // §9.5.1 numeric `@fmtstring` fields: target type `int?`,
     // a `null` resolution meaning "not provided" (the default applies), and
     // a non-null value satisfying the field's range — a violation is
     // recorded in `check_errors` at the field, as pass 8 reports it.
@@ -520,7 +520,7 @@ pub(super) fn instantiate_service<'a>(
         template::ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS.unsigned_abs(),
         check_errors,
     )?;
-    // §9.5 item 2 / §9.9 item 12: a resolved maxAttempts > 0 needs
+    // §9.5 item 2: a resolved maxAttempts > 0 needs
     // completedTasks (a literal one was checked at template validation).
     if max_attempts > 0 && policy.completed_tasks.is_none() {
         check_errors.add(

@@ -637,7 +637,7 @@ pub enum ServiceHealth {
     /// onRun exited before a probe passed.
     ExitedBeforeReady,
     /// `failureThreshold` consecutive probes failed after READY; the runtime
-    /// has canceled onRun with its cancelation method (constraint 11).
+    /// has canceled onRun with its cancelation method (constraint 10).
     Unhealthy(ServiceUnhealthy),
 }
 impl ServiceHealth {

@@ -795,7 +795,7 @@ impl ServiceScopes {
     pub fn scope_of(&self, name: &str) -> ServiceScope;   // AllSteps for an undeclared name
 }
 
-/// A cycle in the combined Step/Service/Job-Environment dependency graph (§3.2 constraint 3, §9.9 item 10).
+/// A cycle in the combined Step/Service/Job-Environment dependency graph (§3.2 constraint 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceDependencyCycle {
     pub path: Vec<String>,                              // ["Step Use", "Service Indexer", "Step Use"]
@@ -1433,7 +1433,7 @@ impl job::ServiceRestartPolicy {
     /// The policy when stopped and started again because a listed Service began
     /// a new Service Session: the value, or `Rerun` when none was given.
     pub fn completed_tasks_on_dependent_restart(&self) -> CompletedTasksPolicy;
-    /// `completed_tasks == Some(Keep)` (constraint 10).
+    /// `completed_tasks == Some(Keep)` (constraint 9).
     pub fn may_be_suspended(&self) -> bool;
 }
 

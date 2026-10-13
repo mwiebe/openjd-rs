@@ -422,9 +422,9 @@ outside the selection counts as completed, as a Step's own dependencies do under
 `--step`). A Step that lists `service: X` is in X's scope, so its Tasks wait for X
 through the readiness gate; Steps outside a Service's scope never wait on it. A Service is stopped once no Step still to run is in
 its scope, and returns to idle; a `RERUN` that returns one of its Steps to the queue
-activates it again, in a new Service Session (lifecycle constraint 9). *When* a Service
+activates it again, in a new Service Session (lifecycle constraint 8). *When* a Service
 starts, between the satisfaction of its `dependencies` and the first Task of its scope,
-is the scheduler's choice (constraint 10): this runner starts lazily — at the last gate
+is the scheduler's choice (constraint 9): this runner starts lazily — at the last gate
 before the first Task of the scope — which is one valid choice; an eager scheduler
 that starts a Service as soon as its `dependencies` are satisfied is another.
 
@@ -491,7 +491,7 @@ an external Service's Session thus keep the Job's profile, and an attached Envir
 entered in a Job Template Service's Session keeps its template's.
 
 Template validation (per document) and `apply_environment_templates` (across documents)
-between them enforce §9.9 item 6 — a wrapping Environment whose `runScope` includes
+between them enforce §4.3 WRAP_ACTIONS constraint 6 — a wrapping Environment whose `runScope` includes
 `SERVICE` defines all four `onWrapService*` hooks — so the CLI's wrap preflight only
 re-checks RFC 0008's single-layer rule over the combined stacks.
 
@@ -532,7 +532,7 @@ can start and none is starting, the gate fails the run with `cannot order the st
 Services <names>: each depends on a Service that is not READY and is not starting`.
 
 A Service whose scope is every Step is activated at job start, but only if some
-selected Step will run at least one Task (constraint 10 — a `--tasks '[]'` selection
+selected Step will run at least one Task (constraint 9 — a `--tasks '[]'` selection
 runs none, and the run logs `Not starting the N Service(s) whose scope is every Step:
 no Task of this Job will run`); a Service scoped to some Steps is activated when the
 first Step of its scope is about to run, only if that Step will run a Task (`Not
@@ -585,7 +585,7 @@ While a Task runs, `RunContext::run_task` selects between the Task and
 an instance failure: its `onRun` exits other than by cancelation, or its health check
 declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after READY —
 RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
-and, per lifecycle constraint 11, has already canceled `onRun` with its cancelation
+and, per lifecycle constraint 10, has already canceled `onRun` with its cancelation
 method). Between Tasks, the gate polls the same health and exit channels. An exit
 observed after the scope completed is never seen (nothing watches after the last
 Task), so it is not a failure — the RFC's stop race.
@@ -616,7 +616,7 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
   scheduler would form new Sessions for requeued Tasks anyway. The new Session
   re-enters the Job's Environments. A Service that had been stopped because its scope
   completed, and whose scope includes a returned Step, is activated again when that
-  Step is next reached and starts in a new Service Session (constraint 9); several
+  Step is next reached and starts in a new Service Session (constraint 8); several
   `RERUN` Services failing during one Task return the union of their scopes.
 - `completedTasks: KEEP` — the Task continues; if it fails on its own that is an
   ordinary Task failure, which the local runner (having no Task retry) treats as it
@@ -668,7 +668,7 @@ scope is every Step, the Step's for one scoped to Steps), logging `Re-entering N
 Environment(s): a Service they may reference has new endpoints`. Tasks resolve
 `Service.*` per Task, so they see the new value without further action.
 
-Not implemented: suspension (constraint 10's `KEEP`-only pause — a Service may be
+Not implemented: suspension (constraint 9's `KEEP`-only pause — a Service may be
 suspended only if its `completedTasks` is `KEEP`, and not while any Service that lists
 it has a Session) — a single-process runner never pauses a Job; relocation and host
 loss do not arise with one host.
