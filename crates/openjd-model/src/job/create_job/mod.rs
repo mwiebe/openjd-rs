@@ -238,36 +238,6 @@ pub fn create_job(
         requirements: requirements_t,
     };
 
-    // RFC 0009 `services`: instantiated in job scope before the steps,
-    // since every Step's Task Sessions may reference them. Each Service
-    // sees the Services it lists in its `dependencies`, and carries the
-    // scope the template's `dependencies` lists give it (§9.1; validation
-    // has rejected a dependency cycle, so the computation cannot fail here).
-    let services = job_template
-        .services
-        .as_ref()
-        .map(|services| {
-            let scopes = crate::template::compute_service_scopes(job_template).map_err(|c| {
-                ModelError::ModelValidation(crate::error::ValidationErrors::single(c.to_string()))
-            })?;
-            let list_path = [crate::error::PathElement::Field("services".to_string())];
-            services
-                .iter()
-                .enumerate()
-                .map(|(k, svc)| {
-                    let computed = scopes.get(&svc.name);
-                    instantiate::instantiate_service(
-                        svc,
-                        &symtab,
-                        icx,
-                        &crate::error::path_index(&list_path, k),
-                        crate::template::listed_services(svc.dependencies.as_deref(), services),
-                        computed.map_or(job::ServiceScope::AllSteps, |c| c.scope.clone()),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
     let requires_services = job_template.requires_services.as_ref().map(|reqs| {
         reqs.iter()
             .map(|r| job::ServiceRequirement {
@@ -293,10 +263,11 @@ pub fn create_job(
     // Every check failure across the whole template accumulates into
     // this one collection and is reported together as a single
     // `ModelValidation` error, in pass 8's order: `jobEnvironments`
-    // first, then each step in turn (step `let`, script, step
-    // environments). Resolution failures that leave a step
-    // uninstantiable (host requirements, parameter space) are not
-    // checks: they abort immediately, reported alone. A job environment
+    // first, then each Service (RFC 0009), then each step in turn (step
+    // `let`, script, step environments). Resolution failures that leave a
+    // step or Service uninstantiable (host requirements, parameter space,
+    // a Service numeric field that does not resolve) are not checks: they
+    // abort immediately, reported alone. A job environment
     // also sees the `Service.*` endpoints of the inline and required
     // Services it lists in its `dependencies` (RFC 0009 §9 scope rule 4;
     // listing an inline Service puts every Step in its scope).
@@ -330,6 +301,40 @@ pub fn create_job(
         }
     }
 
+    // RFC 0009 `services`: instantiated in job scope before the steps,
+    // since every Step's Task Sessions may reference them, and after the
+    // job environments, in pass 8's order. Each Service sees the Services
+    // it lists in its `dependencies`, and carries the scope the template's
+    // `dependencies` lists give it (§9.1; validation has rejected a
+    // dependency cycle, so the computation cannot fail here). Its checks
+    // report into `check_errors` like a step's.
+    let services = job_template
+        .services
+        .as_ref()
+        .map(|services| {
+            let scopes = crate::template::compute_service_scopes(job_template).map_err(|c| {
+                ModelError::ModelValidation(crate::error::ValidationErrors::single(c.to_string()))
+            })?;
+            let list_path = [crate::error::PathElement::Field("services".to_string())];
+            services
+                .iter()
+                .enumerate()
+                .map(|(k, svc)| {
+                    let computed = scopes.get(&svc.name);
+                    instantiate::instantiate_service(
+                        svc,
+                        &symtab,
+                        icx,
+                        &crate::error::path_index(&list_path, k),
+                        crate::template::listed_services(svc.dependencies.as_deref(), services),
+                        computed.map_or(job::ServiceScope::AllSteps, |c| c.scope.clone()),
+                        &mut check_errors,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+
     let mut steps = Vec::with_capacity(job_template.steps.len());
     for (step_index, st) in job_template.steps.iter().enumerate() {
         steps.push(instantiate::instantiate_step(
@@ -341,13 +346,28 @@ pub fn create_job(
         )?);
     }
     check_errors.into_result("JobTemplate")?;
-    // `instantiate_step` only declines to build a step after recording
-    // the failure in `check_errors`, so every step is present here.
+    // `instantiate_step` and `instantiate_service` only decline to build
+    // their item after recording the failure in `check_errors`, so every
+    // step and Service is present here.
     let steps: Vec<job::Step> = steps.into_iter().collect::<Option<_>>().ok_or_else(|| {
         ModelError::DecodeValidation(
             "internal error: a step was skipped without a recorded error".to_string(),
         )
     })?;
+    let services: Option<Vec<job::Service>> = match services {
+        None => None,
+        Some(services) => Some(
+            services
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    ModelError::DecodeValidation(
+                        "internal error: a Service was skipped without a recorded error"
+                            .to_string(),
+                    )
+                })?,
+        ),
+    };
 
     // Caller-imposed total task count limit across all steps
     if let Some(max_task_count) = ctx.caller_limits.max_task_count {

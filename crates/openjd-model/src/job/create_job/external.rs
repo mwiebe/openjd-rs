@@ -497,10 +497,16 @@ pub fn apply_environment_templates(
     errors.into_result(SUBMISSION)?;
 
     // ── Instantiate the external Services and convert the Environments ──
+    //
+    // Every carried-forward re-check failure across the attached documents
+    // accumulates — paths prefixed with the document's — into one
+    // `Submission` error, as `create_job` aggregates the Job Template's; a
+    // resolution failure aborts alone, naming its document.
     let base_symtab = build_symbol_table(job_parameter_values)?;
     let mut external_services = Vec::with_capacity(external_count);
     let mut environments = Vec::new();
     let mut environment_documents = Vec::new();
+    let mut submission_errors = ValidationErrors::default();
     for (doc, att) in attached.iter().enumerate() {
         let doc_path = docs.path(Some(doc));
         let document = job::Document::environment_template(doc, att.label);
@@ -525,23 +531,30 @@ pub fn apply_environment_templates(
             requirements: &[],
         };
 
+        // This document's check failures, re-rooted under its path below.
+        let mut check_errors = ValidationErrors::default();
         let services_path = path_field(&[], "services");
         for (k, svc) in services.iter().enumerate() {
             // An external Service has every Step in its scope (§1.2.2 item
             // 1) and depends only on Services of its own document, which
             // are the ones whose endpoints it may read.
-            let mut instantiated = instantiate::instantiate_service(
+            let instantiated = instantiate::instantiate_service(
                 svc,
                 &symtab,
                 icx,
                 &path_index(&services_path, k),
                 crate::template::listed_services(svc.dependencies.as_deref(), services),
                 job::ServiceScope::AllSteps,
+                &mut check_errors,
             )
             .map_err(|e| in_document(e, &doc_path))?;
-            // §1.2.2 item 3: the Service is known by (document, name).
-            instantiated.document = document.clone();
-            external_services.push(instantiated);
+            // A declined Service has recorded its failure; the submission
+            // fails on the collection below.
+            if let Some(mut instantiated) = instantiated {
+                // §1.2.2 item 3: the Service is known by (document, name).
+                instantiated.document = document.clone();
+                external_services.push(instantiated);
+            }
         }
 
         if let Some(env) = att.template.environment() {
@@ -550,7 +563,6 @@ pub fn apply_environment_templates(
             // document the Environment lists in its `dependencies` (seeded
             // only when its runScope excludes SERVICE).
             let env_path = path_field(&[], "environment");
-            let mut check_errors = ValidationErrors::default();
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 instantiate::EnvironmentKind::Job,
@@ -572,16 +584,19 @@ pub fn apply_environment_templates(
                 &env_path,
                 &mut check_errors,
             );
-            check_errors
-                .into_result(SUBMISSION)
-                .map_err(|e| in_document(e, &doc_path))?;
             environments.push(instantiate::convert_environment_with_symtab(
                 env,
                 Some(&symtab),
             ));
             environment_documents.push(document);
         }
+        submission_errors.extend_remapped(check_errors, |rel| {
+            let mut p = doc_path.clone();
+            p.extend_from_slice(rel);
+            p
+        });
     }
+    submission_errors.into_result(SUBMISSION)?;
 
     Ok(AppliedEnvironmentTemplates {
         external_services,

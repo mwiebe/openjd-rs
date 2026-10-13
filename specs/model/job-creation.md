@@ -242,9 +242,11 @@ budgets template validation and the session runtime apply.
 `instantiate_step` and `instantiate_service` share an `InstantiateCtx` (the
 extension flags, limits, budgets, and the template's `services` and
 `requiresServices` slices, from which each Step's and Service's in-scope sets
-are drawn) and the
-template-scope `let` evaluator `evaluate_template_let_bindings`, which
-`<StepTemplate>.let` and `<Service>.let` both use. `resolve_host_requirements`
+are drawn), the collected-errors contract (both take `create_job`'s
+`&mut ValidationErrors` and return `Option<_>` — see "Aggregation" below),
+and pass 8's per-binding `let` evaluator
+`check_carried_forward_let_bindings`, which `<StepTemplate>.let`,
+`<Service>.let`, and every script-level `let` use. `resolve_host_requirements`
 takes the owner's path (`steps[i]`, `services[k]`) so the same code — and the
 same messages — serve a Step's and a Service's `hostRequirements`; every path
 it reports is built from that prefix.
@@ -262,14 +264,18 @@ Service's scope from the template's `dependencies` lists and Job
 Environments; a cycle cannot reach here (pass 11 rejected it) and is
 reported as a `ModelValidation` error carrying the `ServiceDependencyCycle`
 message if it does. Per Service (`instantiate_service(svc, base, icx, path,
-in_scope, scope)`, path `services[k]`):
+in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
 
-1. **`<Service>.let`** — evaluated with `evaluate_template_let_bindings`
-   into a clone of the scope's symbol table (template library, no PATH
-   `Param.*`, no host context). A binding that fails reports
-   `service let binding '<name>': <error>` (an `Expression` error); pass 8
-   already type-checked it with everything unresolved, so a failure comes
-   from the real parameter values.
+1. **`<Service>.let`** — evaluated with pass 8's
+   `check_carried_forward_let_bindings` into a clone of the scope's symbol
+   table (template library, no PATH `Param.*`, no host context). A binding
+   that fails is a check failure at `services[k] -> let[j]` with pass 8's
+   `Invalid expression in let binding '<name>': <error>` message and
+   caret, the name is bound `Unresolved`, and — as for a failed step-level
+   binding — steps 2–3 below are skipped (they need the concrete value)
+   while step 4 still runs; pass 8 already type-checked the binding with
+   everything unresolved, so a failure comes from the real parameter
+   values.
 2. **`hostRequirements`** — `resolve_host_requirements` against that table,
    with every check decode and pass 8 could not finish on a non-literal
    value (name pattern and uniqueness, bounds, attribute values) re-applied
@@ -286,10 +292,12 @@ in_scope, scope)`, path `services[k]`):
    heartbeat is expected); a multi-segment string concatenates and parses with
    surrounding whitespace tolerated (`must be an integer.` otherwise); the
    result must lie in the field's range (`must be between 1 and 65535.`,
-   `must be > 0.`, `must be >= 0.`), reported as a `ModelValidation` error
-   at the field path with pass 11's wording. A resolution failure (a
+   `must be > 0.`, `must be >= 0.`), recorded as a check failure at the
+   field path with pass 11's wording — every violating field is reported,
+   and the Service's remaining checks still run. A resolution failure (a
    whole-field value the `int?` target rejects) is a `FormatStringError`
-   whose message carries the field path. The §9 defaults also fill the
+   whose message carries the field path and aborts alone, like a Step's
+   host requirements. The §9 defaults also fill the
    `healthCheck` / `restartPolicy` objects when the template omits
    them, and a `TCP_CONNECT` check without `ports` is expanded to every
    declared **TCP** port (`template::Service::tcp_port_names`; §9 item 7 —
@@ -319,17 +327,23 @@ in_scope, scope)`, path `services[k]`):
    of its document it lists with the `service` key — and of the declared ports
    of the `requiresServices` entries it lists,
    `listed_requirements(svc.dependencies, requirements)`), evaluates the
-   `<ServiceScript>.let` bindings into it (`script let binding '<name>':
-   ...` on failure), and `check_carried_forward_service` re-runs the pass
-   8 constraints on `variables` (§4.4.2 length), every action's
-   `command` / `args`, and embedded-file `data` — the Service counterpart
-   of `check_carried_forward_environment`.
+   `<ServiceScript>.let` bindings into it through
+   `check_carried_forward_let_bindings` (a failure is a check failure at
+   `services[k] -> script -> let[j]`, the name bound `Unresolved`), and
+   `check_carried_forward_service` re-runs the pass 8 constraints on
+   `variables` (§4.4.2 length), every action's `command` / `args`, every
+   action's `timeout` / `cancelation` (`validate_action_timing_fs` against
+   the Service's job-creation table — `<Service>.let` in scope, as at pass
+   8), and embedded-file `data` — the Service counterpart of
+   `check_carried_forward_environment`.
 5. **Conversion** — `variables` and `script` are carried as
    `FormatString`s; `dependencies` is copied as written (`dependsOn` and
    `service` entries alike); `scope` is the computed value
    (`AllSteps` for an external Service); `resolved_symtab` is `filter_symtab_for_service` (the
    symbols those fields and `<ServiceScript>.let` reference, with the
-   `RawParam.*` fallback).
+   `RawParam.*` fallback). A Service that recorded any check failure in
+   steps 1, 3, or 4 is returned as `None` instead — its resolved values are
+   incomplete — and job creation fails on the collection.
 
 `requiresServices` is converted field for field into `Job::requires_services`.
 
@@ -481,24 +495,34 @@ diagnostic from this stage names a synthesized node.
 
 **Aggregation.** Like pass 8, job creation reports every check failure
 in the template at once: one `ValidationErrors` collection is threaded
-through the job environments and every step (`instantiate_step` takes
-it as `&mut`) and converted to a single `ModelError::ModelValidation`
-once, after all steps are instantiated and before the caller-limit
-task-count and size checks. The order is pass 8's order — deterministic
-except within one environment's `variables`, which is a `HashMap` and
-iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
-order — its step-level `let`, its script (`let`, `onRun`
-`command`/`args`, `timeout`/`cancelation`, embedded-file `data`), then
-its `stepEnvironments` in order (`let`, `variables`, every action's
+through the job environments, every Service (RFC 0009), and every step
+(`instantiate_service` and `instantiate_step` take it as `&mut`) and
+converted to a single `ModelError::ModelValidation` once, after all
+steps are instantiated and before the caller-limit task-count and size
+checks. The order is pass 8's order — deterministic except within one
+environment's or Service's `variables`, which is a `HashMap` and
+iterates in arbitrary order (shared with pass 8): `jobEnvironments` in
+template order, then each Service in `services` order (`let`,
+`hostRequirements`, the numeric fields — `ports[*].port`, the
+`healthCheck` fields, `restartPolicy.maxAttempts` and its
+`completedTasks` requirement — then its script's `let`, `variables`,
+every action's `command`/`args` and `timeout`/`cancelation`,
+embedded-file `data`), then each step in template order — its
+step-level `let`, its script (`let`, `onRun` `command`/`args`,
+`timeout`/`cancelation`, embedded-file `data`), then its
+`stepEnvironments` in order (`let`, `variables`, every action's
 `command`/`args`, every action's `timeout`/`cancelation`, embedded-file
-`data`). **Non-check failures are reported alone.** The job name and
-parameter constraints are checked before any check failure is
-collected, and the caller task-count / size caps after the collection
-is converted, so neither interacts with it. Resolving a step's host
-requirements or parameter space for real (a value that cannot coerce,
-a duplicate resolved capability name, an association length mismatch,
-…) aborts immediately, discarding any check failures collected from
-earlier scopes. These leave the job unconstructible
+`data`). `apply_environment_templates` aggregates the same way across
+the attached documents (see below). **Non-check failures are reported
+alone.** The job name and parameter constraints are checked before any
+check failure is collected, and the caller task-count / size caps after
+the collection is converted, so neither interacts with it. Resolving a
+step's host requirements or parameter space for real (a value that
+cannot coerce, a duplicate resolved capability name, an association
+length mismatch, …), or a Service's host requirements or a Service
+numeric field that does not resolve to `int?`, aborts immediately,
+discarding any check failures collected from earlier scopes. These
+leave the job unconstructible
 rather than describing a defect in a carried-forward field, and they
 are reported with their own (pre-existing) error kinds and formats.
 
@@ -701,7 +725,8 @@ Environments converted:
    `Service.*` reference there can name — and `scope: AllSteps` (every Step
    of the Job is in an external Service's scope, §1.2.2 item 1).
    `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
-   and the carried-forward re-checks all run as for an inline Service.
+   and the carried-forward re-checks all run as for an inline Service,
+   reporting into the submission's collection (below).
 4. **Attached Environments.** The carried-forward resolved-value checks
    run as for a `jobEnvironments` entry (`build_env_check_symtab` seeded
    with the Services of the document the Environment lists in its own
@@ -713,12 +738,19 @@ Environments converted:
    a runtime seeding `Service.*` for the Environment seeds, of that
    document's Services, the ones the Environment lists.
 
-Errors raised inside one document in steps 3–4 are attributed to it:
-validation errors get the document prefixed to every path and report for
-`Submission` (`EnvironmentTemplate[0] -> services[0] -> ports[0] -> port:
-must be between 1 and 65535.`); format-string and expression errors get
-the document name prefixed to the message (`Expression error:
-EnvironmentTemplate[0]: service let binding 'share': ...`).
+Errors raised inside one document in steps 3–4 are attributed to it.
+Check failures (the collected kind — a Service's `let`, numeric fields,
+and carried-forward fields; an Environment's `let` and carried-forward
+fields) accumulate across **every** attached document, each path
+prefixed with its document's (`EnvironmentTemplate[0] -> services[0] ->
+ports[0] -> port: must be between 1 and 65535.`, `queue.yaml ->
+environment -> variables -> BIG: ...`), into one `ModelValidation` error
+for `Submission`, reported after the last document — the same
+whole-template aggregation `create_job` performs, extended to the
+submission. Resolution failures abort alone, as in `create_job`, with
+the document prefixed: validation errors get it on every path, and
+format-string errors on the message (`Format string error:
+EnvironmentTemplate[0]: services[0] -> ports[0] -> port: ...`).
 
 **Limits.** The 10-element cap on `services` is per document (pass 11)
 and is not re-applied to the combined list: three documents at the cap

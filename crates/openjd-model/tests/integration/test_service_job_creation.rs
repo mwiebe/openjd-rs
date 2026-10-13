@@ -475,15 +475,130 @@ fn service_resolved_symtab_carries_let_values_and_raw_param_fallbacks() {
 
 #[test]
 fn numeric_fields_are_range_checked_at_job_creation() {
+    // `metrics = Param.Port + 1000` carries the violation into `ports[1]`
+    // too; both are reported, in field order, in one error.
     let err = create_err(NUMERIC, &[("Port", "70000")]);
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> ports[0] -> port:\n\tmust be between 1 and 65535."
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.\n\
+         services[0] -> ports[1] -> port:\n\tmust be between 1 and 65535."
     );
     let err = create_err(NUMERIC, &[("Attempts", "-1")]);
     assert_eq!(
         err,
         "Model validation error: 1 validation error for JobTemplate\nservices[0] -> restartPolicy -> maxAttempts:\n\tmust be >= 0."
+    );
+}
+
+/// Every Service check failure across the template is reported together
+/// with the job-environment and step checks — in pass 8's order
+/// (`jobEnvironments`, `services`, `steps`) — rather than the first failing
+/// Service aborting alone.
+#[test]
+fn service_check_failures_aggregate_with_the_rest_of_the_template() {
+    let tmpl = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR, FEATURE_BUNDLE_1]
+name: Test
+parameterDefinitions:
+  - { name: Port, type: INT, default: 70000 }
+  - { name: D, type: INT, default: 0 }
+  - { name: T, type: INT, default: 0 }
+jobEnvironments:
+  - name: Env
+    script:
+      actions:
+        onEnter: { command: setup, timeout: "{{ Param.T }}" }
+services:
+  - name: A
+    ports: [{ name: p, port: "{{ Param.Port }}" }]
+    script:
+      let:
+        - x = 10 // Param.D
+      actions:
+        onRun: { command: a, args: ["{{ x }}"], timeout: "{{ Param.T }}" }
+  - name: B
+    ports: [{ name: p }]
+    restartPolicy:
+      maxAttempts: "{{ Param.D - 1 }}"
+    script:
+      actions:
+        onRun: { command: b }
+steps:
+  - name: S
+    dependencies:
+      - service: A
+      - service: B
+    script:
+      actions:
+        onRun: { command: run, timeout: "{{ Param.T }}" }
+"#;
+    let err = create_err(tmpl, &[]);
+    assert_eq!(
+        err,
+        "Model validation error: 6 validation errors for JobTemplate\n\
+         jobEnvironments[0] -> script -> actions -> onEnter -> timeout:\n\
+         \ttimeout must be > 0.\n\
+         services[0] -> ports[0] -> port:\n\
+         \tmust be between 1 and 65535.\n\
+         services[0] -> script -> let[0]:\n\
+         \tInvalid expression in let binding 'x': Division by zero\n\
+         \x20 x = 10 // Param.D\n\
+         \x20     ~~~^~~~~~~~~~\n\
+         services[0] -> script -> actions -> onRun -> timeout:\n\
+         \ttimeout must be > 0.\n\
+         services[1] -> restartPolicy -> maxAttempts:\n\
+         \tmust be >= 0.\n\
+         steps[0] -> script -> actions -> onRun -> timeout:\n\
+         \ttimeout must be > 0."
+    );
+    // Binding the parameters validly makes the same template a job
+    // (`D = 1` keeps `maxAttempts` at 0, which needs no `completedTasks`).
+    create_ok(tmpl, &[("Port", "6379"), ("D", "1"), ("T", "30")]);
+}
+
+/// A Service `timeout` / cancelation field that depends on a parameter is
+/// re-checked with the parameters bound, in the `<Service>.let` scope, as a
+/// Step's or an Environment's is.
+#[test]
+fn service_action_timing_is_rechecked_with_parameters_bound() {
+    let tmpl = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR, FEATURE_BUNDLE_1]
+name: Test
+parameterDefinitions:
+  - { name: T, type: INT, default: 30 }
+services:
+  - name: A
+    let:
+      - grace = Param.T * 2
+    ports: [{ name: p }]
+    script:
+      actions:
+        onRun: { command: a, timeout: "{{ Param.T }}" }
+        onExit:
+          command: stop
+          cancelation:
+            mode: NOTIFY_THEN_TERMINATE
+            notifyPeriodInSeconds: "{{ grace }}"
+steps:
+  - name: S
+    dependencies:
+      - service: A
+    script:
+      actions:
+        onRun: { command: run }
+"#;
+    create_ok(tmpl, &[]);
+    let err = create_err(tmpl, &[("T", "0")]);
+    assert_eq!(
+        err,
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         services[0] -> script -> actions -> onRun -> timeout:\n\
+         \ttimeout must be > 0.\n\
+         services[0] -> script -> actions -> onExit -> cancelation:\n\
+         \tnotifyPeriodInSeconds must be > 0."
     );
 }
 

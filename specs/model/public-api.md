@@ -291,7 +291,8 @@ checks on the carried-forward session/task-scope fields
 Service `variables`, embedded-file `data`, and the `let` bindings feeding
 them — see the Resolved-Value Checks on Carried-Forward Fields section of
 [job-creation.md](job-creation.md); every such failure across the
-template's job environments and steps is reported together in one
+template's job environments, Services — including their numeric
+`@fmtstring` fields — and steps is reported together in one
 `ModelError::ModelValidation`), runs the final task-count
 limit from [`CallerLimits`], and returns the complete [`job::Job`]. The
 `ctx` it takes is a full [`ValidationContext`] — i.e. revision +
@@ -350,7 +351,10 @@ with its attachment as [`job::Service::document`] (merge rule 3: inline
 Services shadow external ones, so an external Service may be named like a
 Service of the Job Template or of another attachment and the pair
 `(document, name)` identifies it), and converts its Environment with the
-merged parameter table. [`AppliedEnvironmentTemplates::into_combined_job`]
+merged parameter table; the resolved-value check failures of every attached
+document's Services and Environment are reported together in one
+`Submission` error, as `create_job` aggregates the Job Template's.
+[`AppliedEnvironmentTemplates::into_combined_job`]
 places the external Services before the Job Template's `services` and
 the attached Environments before its `jobEnvironments` (merge rule 1). A
 caller that enters the attached Environments itself (the CLI's `run`)

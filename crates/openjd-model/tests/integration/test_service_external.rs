@@ -1319,6 +1319,56 @@ environment:
     assert!(msg.contains("2048"), "{msg}");
 }
 
+/// Check failures across every attached document — a Service's and an
+/// Environment's — are reported together in one `Submission` error, each
+/// under its document's path, as `create_job` aggregates the Job
+/// Template's; the first failing document does not abort alone.
+#[test]
+fn attached_document_check_failures_aggregate_across_documents() {
+    const SVC: &str = r#"
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+parameterDefinitions:
+  - name: Port
+    type: INT
+    default: 70000
+  - name: Divisor
+    type: INT
+    default: 0
+services:
+  - name: Svc
+    ports: [{ name: main, port: "{{ Param.Port }}" }]
+    script:
+      let: ["share = 100 // Param.Divisor"]
+      actions:
+        onRun: { command: serve, args: ["{{ share }}"] }
+"#;
+    const ENV: &str = r#"
+specificationVersion: "environment-2023-09"
+parameterDefinitions:
+  - name: Big
+    type: STRING
+environment:
+  name: Big
+  variables:
+    BIG: "{{ Param.Big }}"
+"#;
+    let long = "x".repeat(2049);
+    let msg = submit_err(PLAIN_JOB, &[SVC, ENV], &[("Big", &long)]);
+    assert_eq!(
+        msg,
+        "Model validation error: 3 validation errors for Submission\n\
+         EnvironmentTemplate[0] -> services[0] -> ports[0] -> port:\n\
+         \tmust be between 1 and 65535.\n\
+         EnvironmentTemplate[0] -> services[0] -> script -> let[0]:\n\
+         \tInvalid expression in let binding 'share': Division by zero\n\
+         \x20 share = 100 // Param.Divisor\n\
+         \x20         ~~~~^~~~~~~~~~~~~~~~\n\
+         EnvironmentTemplate[1] -> environment -> variables -> BIG:\n\
+         \tresolves to at least 2049 characters, exceeding the maximum of 2048."
+    );
+}
+
 #[test]
 fn attached_environment_template_profile_reflects_its_own_extensions() {
     let et = decode_env(RFC_QUEUE_CACHE);

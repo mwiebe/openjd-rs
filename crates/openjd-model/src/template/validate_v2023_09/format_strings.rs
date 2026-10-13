@@ -2886,18 +2886,22 @@ fn validate_service_format_strings<'a>(
 /// Job-creation resolved-value checks for a Service (RFC 0009): each
 /// `variables` value against §4.4.2's `max_env_var_value_len`, every
 /// action's `command`/`args` against `CallerLimits::max_resolved_arg_len`,
-/// and each embedded file's `data` against
-/// `CallerLimits::max_resolved_data_len` — the Service counterpart of
-/// [`check_carried_forward_environment`].
+/// every action's `timeout` / `cancelation` against the spec-mandated
+/// `Int`/`CancelationMode` constraints, and each embedded file's `data`
+/// against `CallerLimits::max_resolved_data_len` — the Service counterpart
+/// of [`check_carried_forward_environment`], in pass 8's order.
 ///
 /// `symtab` is the service-execution check table: concrete `Param.*` /
 /// `RawParam.*` / `Job.Name` / service-level `let` values, with `Unresolved`
 /// placeholders for `Session.*`, PATH `Param.*`, `Service.File.*`, and the
 /// in-scope `Service.<name>.<port>.*` endpoints, and the `<ServiceScript>.let`
-/// bindings evaluated in.
+/// bindings evaluated in. `template_symtab` is the Service's job-creation
+/// table (`Param.*` without PATH, `RawParam.*`, `Job.Name`, the
+/// `<Service>.let` values) the timing fields resolve against, as at pass 8.
 pub(crate) fn check_carried_forward_service(
     svc: &Service,
     symtab: &SymbolTable,
+    template_symtab: &SymbolTable,
     ctx: &ValidationContext,
     max_env_var_value_len: usize,
     path: &[PathElement],
@@ -2927,15 +2931,20 @@ pub(crate) fn check_carried_forward_service(
     }
     let script_path = path_field(path, "script");
     let actions_path = path_field(&script_path, "actions");
+    let template_profile = ctx.profile.to_expr_profile(openjd_expr::HostContext::None);
+    let template_lib = FunctionLibrary::for_profile(&template_profile);
+    let template_ev = FsEval::new(&template_lib, &ctx.caller_limits);
     for (name, action) in svc.script.actions.iter_named() {
+        let action_path = path_field(&actions_path, name);
         validate_action_fs(
             action,
             symtab,
             &ev,
-            &path_field(&actions_path, name),
+            &action_path,
             ctx.caller_limits.max_resolved_arg_len,
             errors,
         );
+        validate_action_timing_fs(action, template_symtab, &template_ev, &action_path, errors);
     }
     check_embedded_files_data(
         svc.script.embedded_files.as_deref(),

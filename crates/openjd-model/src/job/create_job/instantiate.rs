@@ -36,32 +36,6 @@ pub(super) struct InstantiateCtx<'a> {
     pub(super) requirements: &'a [template::ServiceRequirement],
 }
 
-/// Evaluate a `let` list at job creation into `symtab` through pass 8's
-/// per-binding helper, in the caller's host context (`None` for template
-/// scope — `<Service>.let`; `Unresolved` for the host-resolved
-/// `<ServiceScript>.let`). Unlike the Step sites, which accumulate into
-/// `create_job`'s whole-template collection, a Service's binding failures
-/// are reported at `let_path -> let[j]` and abort the Service's
-/// instantiation immediately.
-fn evaluate_service_let_bindings(
-    bindings: &[String],
-    let_path: &[PathElement],
-    symtab: &mut SymbolTable,
-    ctx: &crate::types::ValidationContext,
-    host_context: openjd_expr::HostContext,
-) -> Result<(), ModelError> {
-    let mut errors = ValidationErrors::default();
-    crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings(
-        bindings,
-        let_path,
-        symtab,
-        ctx,
-        host_context,
-        &mut errors,
-    );
-    errors.into_result("JobTemplate")
-}
-
 /// Instantiate a StepTemplate into a Step.
 ///
 /// The step's carried-forward resolved-value checks — and its `let`
@@ -308,6 +282,19 @@ pub(super) fn instantiate_step(
 /// are `@fmtstring[host]`: they are carried forward unresolved and re-checked
 /// against a check table where `Param.*` have real values, like an
 /// Environment's.
+///
+/// Like [`instantiate_step`], the Service's checks report into
+/// `check_errors` — the collection `create_job` (or
+/// `apply_environment_templates`) threads through the whole document and
+/// converts into one `ModelValidation` error — in pass 8's order: `let`,
+/// `hostRequirements`, the numeric fields, then the script's `let`,
+/// `variables`, actions, embedded files. A numeric field that resolves out
+/// of range, a `maxAttempts` without `completedTasks`, and a failed `let`
+/// binding are recorded there, and the Service is returned as `Ok(None)`
+/// (the remaining checks still run, with the failed names bound
+/// `Unresolved`); only a resolution failure — `hostRequirements`, a numeric
+/// field that does not resolve to `int?` — is returned as `Err` and aborts
+/// job creation alone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn instantiate_service<'a>(
     svc: &template::Service,
@@ -316,7 +303,8 @@ pub(super) fn instantiate_service<'a>(
     path: &[PathElement],
     in_scope: impl Iterator<Item = &'a template::Service>,
     scope: job::ServiceScope,
-) -> Result<job::Service, ModelError> {
+    check_errors: &mut ValidationErrors,
+) -> Result<Option<job::Service>, ModelError> {
     let InstantiateCtx {
         has_expr,
         limits,
@@ -325,17 +313,54 @@ pub(super) fn instantiate_service<'a>(
         requirements,
         ..
     } = icx;
+    let before = check_errors.len();
     let mut service_symtab = base.clone();
     if has_expr {
         if let Some(bindings) = &svc.let_bindings {
-            evaluate_service_let_bindings(
+            crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings(
                 bindings,
                 &path_field(path, "let"),
                 &mut service_symtab,
                 ctx,
                 openjd_expr::HostContext::None,
-            )?;
+                check_errors,
+            );
         }
+    }
+    let let_failed = check_errors.len() > before;
+
+    // The carried-forward (host-resolved) fields are re-checked with the
+    // job parameters bound whatever happened above — `variables`, every
+    // action (`command`/`args`, and `timeout`/`cancelation` in the
+    // `<Service>.let` scope), embedded-file `data`, after evaluating
+    // `<ServiceScript>.let` into the check table.
+    let check_fields = |service_symtab: &SymbolTable, check_errors: &mut ValidationErrors| {
+        let check_symtab = build_service_check_symtab(
+            svc,
+            service_symtab,
+            has_expr,
+            ctx,
+            path,
+            in_scope,
+            crate::template::listed_requirements(svc.dependencies.as_deref(), requirements),
+            check_errors,
+        )?;
+        crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
+            svc,
+            &check_symtab,
+            service_symtab,
+            ctx,
+            limits.max_env_var_value_len,
+            path,
+            check_errors,
+        );
+        Ok::<(), ModelError>(())
+    };
+
+    // The job-creation-stage fields need the concrete `let` values.
+    if let_failed {
+        check_fields(&service_symtab, check_errors)?;
+        return Ok(None);
     }
 
     let host_requirements = svc
@@ -346,7 +371,8 @@ pub(super) fn instantiate_service<'a>(
 
     // §9.2 / §9.3 / §9.4 numeric `@fmtstring` fields: target type `int?`,
     // a `null` resolution meaning "not provided" (the default applies), and
-    // a non-null value satisfying the field's range.
+    // a non-null value satisfying the field's range — a violation is
+    // recorded in `check_errors` at the field, as pass 8 reports it.
     let ports_path = path_field(path, "ports");
     let ports = svc
         .ports
@@ -364,6 +390,7 @@ pub(super) fn instantiate_service<'a>(
                         &path_field(&path_index(&ports_path, i), "port"),
                         1..=65535,
                         "must be between 1 and 65535.",
+                        check_errors,
                     )
                 })
                 .transpose()?
@@ -377,7 +404,7 @@ pub(super) fn instantiate_service<'a>(
             })
         })
         .collect::<Result<Vec<_>, ModelError>>()?;
-    check_duplicate_port_numbers(&ports, &ports_path)?;
+    check_duplicate_port_numbers(&ports, &ports_path, check_errors);
 
     // §9.3 <ServiceHealthCheck>: the four numeric fields resolve alike;
     // the defaults differ by type (readinessIntervalSeconds 1 for
@@ -385,9 +412,9 @@ pub(super) fn instantiate_service<'a>(
     // heartbeat for STDOUT).
     let hc_path = path_field(path, "healthCheck");
     let declared = svc.health_check();
-    let resolve_field = |name: &'static str,
-                         value: Option<&openjd_expr::FormatString>,
-                         default: u64|
+    let mut resolve_field = |name: &'static str,
+                             value: Option<&openjd_expr::FormatString>,
+                             default: u64|
      -> Result<u64, ModelError> {
         resolve_service_u64(
             value,
@@ -397,6 +424,7 @@ pub(super) fn instantiate_service<'a>(
             1..=i64::MAX,
             "must be > 0.",
             default,
+            check_errors,
         )
     };
     let readiness_timeout_seconds = resolve_field(
@@ -469,6 +497,7 @@ pub(super) fn instantiate_service<'a>(
                         &path_field(&hc_path, "healthIntervalSeconds"),
                         1..=i64::MAX,
                         "must be > 0.",
+                        check_errors,
                     )
                 })
                 .transpose()?
@@ -489,46 +518,29 @@ pub(super) fn instantiate_service<'a>(
         "must be >= 0.",
         // DEFAULT_MAX_ATTEMPTS is 0, which fits every unsigned width.
         template::ServiceRestartPolicy::DEFAULT_MAX_ATTEMPTS.unsigned_abs(),
+        check_errors,
     )?;
     // §9.5 item 2 / §9.9 item 12: a resolved maxAttempts > 0 needs
     // completedTasks (a literal one was checked at template validation).
     if max_attempts > 0 && policy.completed_tasks.is_none() {
-        let mut errors = ValidationErrors::default();
-        errors.add(
+        check_errors.add(
             &policy_path,
             crate::template::validate_v2023_09::service::completed_tasks_required_message(
                 i64::try_from(max_attempts).unwrap_or(i64::MAX),
             ),
         );
-        errors.into_result("JobTemplate")?;
     }
     let restart_policy = job::ServiceRestartPolicy {
         max_attempts,
         completed_tasks: policy.completed_tasks,
     };
 
-    // Re-check the carried-forward (host-resolved) fields with the job
-    // parameters bound: `variables`, every action, embedded-file `data`,
-    // after evaluating `<ServiceScript>.let` into the check table.
-    let check_symtab = build_service_check_symtab(
-        svc,
-        &service_symtab,
-        has_expr,
-        ctx,
-        path,
-        in_scope,
-        crate::template::listed_requirements(svc.dependencies.as_deref(), requirements),
-    )?;
-    let mut check_errors = ValidationErrors::default();
-    crate::template::validate_v2023_09::format_strings::check_carried_forward_service(
-        svc,
-        &check_symtab,
-        ctx,
-        limits.max_env_var_value_len,
-        path,
-        &mut check_errors,
-    );
-    check_errors.into_result("JobTemplate")?;
+    check_fields(&service_symtab, check_errors)?;
+    // A recorded job-creation-stage violation leaves the Service without
+    // its resolved values; job creation fails on the collection.
+    if check_errors.len() > before {
+        return Ok(None);
+    }
 
     let converted = job::Service {
         name: svc.name.clone(),
@@ -568,10 +580,10 @@ pub(super) fn instantiate_service<'a>(
         resolved_symtab: None,
     };
     let filtered = filter_symtab_for_service(&converted, &service_symtab);
-    Ok(job::Service {
+    Ok(Some(job::Service {
         resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(&filtered)),
         ..converted
-    })
+    }))
 }
 
 /// §9 item 5.4 / §9.7 item 8: no two ports of the same `protocol` share a
@@ -581,8 +593,8 @@ pub(super) fn instantiate_service<'a>(
 fn check_duplicate_port_numbers(
     ports: &[job::ServicePort],
     ports_path: &[PathElement],
-) -> Result<(), ModelError> {
-    let mut errors = ValidationErrors::default();
+    errors: &mut ValidationErrors,
+) {
     for (i, later) in ports.iter().enumerate() {
         let Some(number) = later.port else {
             continue;
@@ -601,17 +613,21 @@ fn check_duplicate_port_numbers(
             );
         }
     }
-    errors.into_result("JobTemplate")
 }
 
 /// Resolve one of a Service's numeric `@fmtstring` fields (`port`,
 /// `timeoutSeconds`, `intervalSeconds`, `maxAttempts`) with target type
 /// `int?` (RFC 0009 §9.2): `Ok(None)` when a whole-field expression
 /// resolves to `null` — the field is treated as not provided — otherwise
-/// the integer, which must lie in `range` (else `range_msg`, as a
-/// validation error at `path`, matching the raw-text check for the literal
-/// form of the same field). A multi-segment string concatenates and parses
-/// with surrounding whitespace tolerated, as `<Action>.timeout` does.
+/// the integer, which must lie in `range`. A value outside it (`range_msg`)
+/// or a multi-segment string that does not parse as an integer is recorded
+/// in `errors` at `path` — matching the raw-text check for the literal form
+/// of the same field — and returned as `Ok(None)`, so the caller keeps
+/// checking and discards the Service afterwards. A multi-segment string
+/// concatenates and parses with surrounding whitespace tolerated, as
+/// `<Action>.timeout` does. `Err` only when the format string does not
+/// resolve to `int?` at all.
+#[allow(clippy::too_many_arguments)]
 fn resolve_service_int(
     fs: &openjd_expr::FormatString,
     symtab: &SymbolTable,
@@ -619,6 +635,7 @@ fn resolve_service_int(
     path: &[PathElement],
     range: std::ops::RangeInclusive<i64>,
     range_msg: &str,
+    errors: &mut ValidationErrors,
 ) -> Result<Option<i64>, ModelError> {
     let target = openjd_expr::ExprType::union(vec![
         openjd_expr::ExprType::INT,
@@ -632,7 +649,6 @@ fn resolve_service_int(
             start: None,
             end: None,
         })?;
-    let mut errors = ValidationErrors::default();
     let value = match resolved {
         openjd_expr::ExprValue::Null => return Ok(None),
         openjd_expr::ExprValue::Int(v) => v,
@@ -640,14 +656,14 @@ fn resolve_service_int(
             Ok(v) => v,
             Err(_) => {
                 errors.add(path, "must be an integer.");
-                return errors.into_result("JobTemplate").map(|()| None);
+                return Ok(None);
             }
         },
     };
     if !range.contains(&value) {
         errors.add(path, range_msg);
+        return Ok(None);
     }
-    errors.into_result("JobTemplate")?;
     Ok(Some(value))
 }
 
@@ -663,12 +679,13 @@ fn resolve_service_u64(
     range: std::ops::RangeInclusive<i64>,
     range_msg: &str,
     default: u64,
+    errors: &mut ValidationErrors,
 ) -> Result<u64, ModelError> {
     let Some(fs) = fs else {
         return Ok(default);
     };
     Ok(
-        resolve_service_int(fs, symtab, budgets, path, range, range_msg)?
+        resolve_service_int(fs, symtab, budgets, path, range, range_msg, errors)?
             // The range starts at 0 or above, so the value is non-negative.
             .map_or(default, |v| v.unsigned_abs()),
     )
@@ -683,6 +700,11 @@ fn resolve_service_u64(
 /// `connectAddress` of every Service in `in_scope`, with the
 /// `<ServiceScript>.let` bindings evaluated in — the scope the Service
 /// Session binds at run time. `Task.*` is never in scope within a Service.
+///
+/// A `let` binding that fails to evaluate is reported into `errors` at
+/// `<path> -> script -> let[j]` exactly as for a step script (see
+/// [`build_task_check_symtab`]) and bound `Unresolved`.
+#[allow(clippy::too_many_arguments)]
 fn build_service_check_symtab<'a, 'r>(
     svc: &template::Service,
     base: &SymbolTable,
@@ -691,6 +713,7 @@ fn build_service_check_symtab<'a, 'r>(
     path: &[PathElement],
     in_scope: impl Iterator<Item = &'a template::Service>,
     requirements: impl IntoIterator<Item = &'r template::ServiceRequirement>,
+    errors: &mut ValidationErrors,
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
@@ -699,13 +722,14 @@ fn build_service_check_symtab<'a, 'r>(
     crate::job::service_symbols::add_unresolved_requirement_symbols(&mut symtab, requirements)?;
     if has_expr {
         if let Some(bindings) = &svc.script.let_bindings {
-            evaluate_service_let_bindings(
+            crate::template::validate_v2023_09::format_strings::check_carried_forward_let_bindings(
                 bindings,
                 &path_field(&path_field(path, "script"), "let"),
                 &mut symtab,
                 ctx,
                 openjd_expr::HostContext::Unresolved,
-            )?;
+                errors,
+            );
         }
     }
     Ok(symtab)
