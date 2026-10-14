@@ -121,7 +121,9 @@ pub fn format_help(template: &JobTemplate, path: &Path) -> String {
     out.push_str(
         "  -p, --job-param <KEY=VALUE>  Job parameters (Key=Value, file://path, or inline JSON)\n",
     );
-    out.push_str("  --environment <PATH>       Environment template files\n");
+    out.push_str(
+        "  --environment <PATH>       Environment template files (Environments and Services)\n",
+    );
     out.push_str("  --verbose                  Enable verbose logging\n");
     out.push_str(
         "  -h, --help                 Print help (leave out template to list all options)\n",

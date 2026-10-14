@@ -79,8 +79,9 @@ An Environment Template defines an Environment, a list of Services (§1.2 item 6
 has the same list constraints as a Job Template's `services` and is validated by the same code
 (pass 11), except that a Service's `dependencies` here may list only other Services of the same
 document, with the `service` key (the document has no Steps; a `dependsOn` entry, an unknown
-Service, and a cycle among them are pass 11 errors), every Service here has every Step of the Job
-in its scope and is never unused, and `externalServices` is not a property of this type (rejected
+Service, and a cycle among them are pass 11 errors), a Service here is not checked for an empty scope
+(its scope is computed over the combined Job at submission, and one nothing lists is never started),
+and `externalServices` is not a property of this type (rejected
 as an unknown field). `environment`
 is `Option` on the wire too: an explicit `environment: null` is "not provided". The `$schema`
 property is accepted and ignored, as on the Job Template.
@@ -432,7 +433,8 @@ pub struct ComputedServiceScope {
 impl ComputedServiceScope {
     pub fn is_unused(&self) -> bool;           // rule 4: scope is `Steps` with no Step
 }
-pub struct ServiceScopes { .. }           // get(name), iter(), scope_of(name) (AllSteps for an undeclared name)
+pub struct ServiceScopes { .. }           // get(name), iter(), scope_of(name) (empty for an undeclared name),
+                                          // required_service_scopes(&JobTemplate)
 pub struct ServiceDependencyCycle {
     pub path: Vec<String>,                              // "Step Use", "Service Indexer", "Step Use"
     pub via_job_environment: Option<(String, String)>,  // (Job Environment, Service it lists) when a scope edge closed it

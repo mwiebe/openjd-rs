@@ -4070,8 +4070,8 @@ mod services {
         assert!(stdout.contains("TASK_GOT hello"), "{stdout}");
     }
 
-    /// RFC 0009 `<ServiceHealthCheck>` after READY, constraint 10, "Failure
-    /// and restart": a COMMAND probe fails `failureThreshold` times after
+    /// RFC 0009 `<ServiceHealthCheck>` after READY and "Failure and restart"
+    /// step 2: a COMMAND probe fails `failureThreshold` times after
     /// Task 1 makes the service sick; the instance is UNHEALTHY, `onRun` is
     /// canceled, and with `maxAttempts: 1` / `KEEP` a second instance is
     /// relaunched in the same Service Session and serves Tasks 2 and 3.
@@ -5292,6 +5292,30 @@ mod services {
             ["task 1", "task 2", "task 1", "task 2", "task 3"],
             "{lines:?}"
         );
+    }
+
+    /// "Failure and restart" step 4 when the scope's last Task is already
+    /// running: the Service's attempts run out mid-Task under `KEEP`, so the
+    /// Task finishes, but the scope then fails. A Step that depends on the
+    /// scope must not run, and the Job fails.
+    #[test]
+    fn test_service_failed_during_last_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_fail_during_last_task.yaml", &[]);
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step A) is FAILED: onRun exited while the scope still had \
+                 work (exit code: 1); 0 of 0 relaunch(es) used (restartPolicy.maxAttempts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_MUST_NOT_RUN"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) failed: onRun exited"),
+            "{stdout}"
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
     }
 
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY

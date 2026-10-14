@@ -24,9 +24,11 @@
 //!    non-rejection when the
 //!    wrapper declares `SERVICE` with the four hooks or with `runScope:
 //!    [TASK]`, and the non-rejection when nothing places a Service in scope.
-//! 4. **Scope** — an external Service has every Step in its scope whether
-//!    or not any Step lists it (Environment Template Services are never
-//!    "unused"); it sees another Service of its own document only when it
+//! 4. **Scope** — an external Service's scope is computed over the combined
+//!    Job by the §9.1 rules (its own document's Environment, a bound
+//!    `externalServices` entry, or another Service of its document that lists
+//!    it); one nothing lists has an empty scope, is accepted, and is never
+//!    started. It sees another Service of its own document only when it
 //!    lists `service:<name>` in its `dependencies`, and that list may name
 //!    only Services of the same document; a Job Template cannot reference
 //!    an external Service it does not require (template validation); an
@@ -1194,6 +1196,85 @@ environment:
 "#;
     let (_, applied) = submit_ok(&RFC_COORDINATOR, &[T], &[]);
     assert_eq!(applied.external_services[0].scope, ServiceScope::AllSteps);
+}
+
+#[test]
+fn attached_service_chain_declared_in_reverse_reaches_a_fixed_point() {
+    // §9.1 rule 2 within an attached document, with the Services declared
+    // in reverse dependency order so that one pass over the list is not
+    // enough: `Third` is listed by `First`, which is listed by `Second`,
+    // which the Environment lists. All three must end up with every Step.
+    const T: &str = r#"
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: Third
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: serve }
+  - name: First
+    dependencies: [{ service: "Third" }]
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: serve }
+  - name: Second
+    dependencies: [{ service: "First" }]
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: proxy }
+environment:
+  name: Client
+  dependencies: [{ service: "Second" }]
+  variables: { PROXY: "{{ Service.Second.main.port }}" }
+"#;
+    let (_, applied) = submit_ok(PLAIN_JOB, &[T], &[]);
+    assert_eq!(
+        service_names(&applied.external_services),
+        ["Third", "First", "Second"]
+    );
+    for svc in &applied.external_services {
+        assert_eq!(svc.scope, ServiceScope::AllSteps, "{}", svc.name);
+    }
+}
+
+#[test]
+fn inline_service_listing_a_requirement_passes_its_scope_to_the_attached_service() {
+    // §9.1 rule 2 across the requirement: inline `Proxy` lists the
+    // `externalServices` entry `Metrics`, and only Step A lists `Proxy`, so
+    // the attached `Metrics` is in scope for A alone (via
+    // `Job::required_service_scopes`, which `apply_environment_templates`
+    // uses).
+    const JOB: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: ViaInline
+externalServices:
+  - name: Metrics
+    ports: [{ name: main }]
+services:
+  - name: Proxy
+    dependencies: [{ service: "Metrics" }]
+    ports: [{ name: http }]
+    script: { actions: { onRun: { command: proxy, args: ["{{ Service.Metrics.main.port }}"] } } }
+steps:
+  - name: A
+    dependencies: [{ service: "Proxy" }]
+    script: { actions: { onRun: { command: run } } }
+  - name: B
+    script: { actions: { onRun: { command: run } } }
+"#;
+    let (job, applied) = submit_ok(JOB, &[&service_only_template("Metrics")], &[]);
+    assert_eq!(
+        job.required_service_scopes().get("Metrics"),
+        Some(&ServiceScope::steps(["A"]))
+    );
+    assert_eq!(
+        applied.external_services[0].scope,
+        ServiceScope::steps(["A"])
+    );
 }
 
 #[test]

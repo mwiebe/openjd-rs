@@ -567,16 +567,26 @@ fn find_cycle<'a>(graph: &[(Node<'a>, Vec<Edge<'a>>)]) -> Option<ServiceDependen
         .enumerate()
         .map(|(i, (n, _))| (*n, i))
         .collect();
-    fn visit<'a>(
-        at: usize,
-        graph: &[(Node<'a>, Vec<Edge<'a>>)],
-        index: &HashMap<Node<'a>, usize>,
-        marks: &mut [Mark],
-        // Each open node with the edge that reached it (`None` for a root).
-        stack: &mut Vec<(usize, Option<Edge<'a>>)>,
-    ) -> Option<ServiceDependencyCycle> {
-        marks[at] = Mark::Open;
-        for edge in &graph[at].1 {
+    let mut marks = vec![Mark::New; graph.len()];
+    // The DFS stack, one frame per open node: the node, the edge that
+    // reached it (`None` for a root), and the index of its next out-edge to
+    // examine. An explicit stack rather than recursion, since a long
+    // `dependsOn` chain is a long path and recursion per edge would overflow
+    // the thread's stack.
+    let mut stack: Vec<(usize, Option<Edge<'a>>, usize)> = Vec::new();
+    for root in 0..graph.len() {
+        if marks[root] != Mark::New {
+            continue;
+        }
+        marks[root] = Mark::Open;
+        stack.push((root, None, 0));
+        while let Some(&(at, _, next_edge)) = stack.last() {
+            let Some(edge) = graph[at].1.get(next_edge) else {
+                marks[at] = Mark::Done;
+                stack.pop();
+                continue;
+            };
+            stack.last_mut().expect("frame is on the stack").2 += 1;
             let Some(&next_idx) = index.get(&edge.to) else {
                 continue;
             };
@@ -585,18 +595,18 @@ fn find_cycle<'a>(graph: &[(Node<'a>, Vec<Edge<'a>>)]) -> Option<ServiceDependen
                 Mark::Open => {
                     let start = stack
                         .iter()
-                        .position(|(n, _)| *n == next_idx)
+                        .position(|(n, _, _)| *n == next_idx)
                         .expect("open nodes are on the stack");
                     let mut path: Vec<String> = stack[start..]
                         .iter()
-                        .map(|(i, _)| graph[*i].0.to_string())
+                        .map(|(i, _, _)| graph[*i].0.to_string())
                         .collect();
                     path.push(graph[next_idx].0.to_string());
                     // The edges along the cycle: those that reached each
                     // node after the first, plus the closing edge.
                     let via_job_environment = stack[start + 1..]
                         .iter()
-                        .filter_map(|(_, e)| *e)
+                        .filter_map(|(_, e, _)| *e)
                         .chain(std::iter::once(*edge))
                         .find_map(|e| {
                             e.via_job_environment.map(|env| match e.to {
@@ -610,26 +620,10 @@ fn find_cycle<'a>(graph: &[(Node<'a>, Vec<Edge<'a>>)]) -> Option<ServiceDependen
                     });
                 }
                 Mark::New => {
-                    stack.push((next_idx, Some(*edge)));
-                    if let Some(c) = visit(next_idx, graph, index, marks, stack) {
-                        return Some(c);
-                    }
-                    stack.pop();
+                    marks[next_idx] = Mark::Open;
+                    stack.push((next_idx, Some(*edge), 0));
                 }
             }
-        }
-        marks[at] = Mark::Done;
-        None
-    }
-    let mut marks = vec![Mark::New; graph.len()];
-    let mut stack = Vec::new();
-    for i in 0..graph.len() {
-        if marks[i] == Mark::New {
-            stack.push((i, None));
-            if let Some(c) = visit(i, graph, &index, &mut marks, &mut stack) {
-                return Some(c);
-            }
-            stack.pop();
         }
     }
     None
@@ -1217,6 +1211,35 @@ mod tests {
         assert_eq!(
             step_references(&step).into_iter().collect::<Vec<_>>(),
             vec!["A".to_string(), "B".to_string()]
+        );
+    }
+
+    /// A reverse-declared `dependsOn` chain of 6,000 Steps has recursion
+    /// depth 6,000 in a recursive DFS, which overflows a test thread's
+    /// stack. The cycle check must not recurse per edge (Q6).
+    #[test]
+    fn cycle_check_handles_a_deep_dependency_chain() {
+        const N: usize = 6_000;
+        let mut yaml = String::from(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [SERVICE, EXPR]\nname: J\n\
+             services:\n",
+        );
+        yaml.push_str(&svc("Svc", &[], &[]));
+        yaml.push_str("steps:\n");
+        for i in 0..N {
+            let deps: Vec<String> = if i + 1 < N {
+                vec![format!("S{}", i + 1)]
+            } else {
+                vec!["service:Svc".to_string()]
+            };
+            let deps: Vec<&str> = deps.iter().map(String::as_str).collect();
+            yaml.push_str(&step(&format!("S{i}"), &[], &deps));
+        }
+        let jt = template(&yaml);
+        let scopes = compute_service_scopes(&jt).unwrap();
+        assert_eq!(
+            scopes.scope_of("Svc"),
+            ServiceScope::steps([format!("S{}", N - 1)])
         );
     }
 }

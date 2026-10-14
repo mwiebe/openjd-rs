@@ -592,7 +592,7 @@ to the Job Template.
 Output: `AppliedEnvironmentTemplates { external_services, requirement_bindings,
 environments, environment_documents }` — the external Services instantiated
 in attachment order (then each template's `services` order), each stamped
-with its attachment as `job::Service::document` and with `scope: AllSteps`,
+with its attachment as `job::Service::document` and with its scope computed over the combined Job by the §9.1 rules (every Step when its own document's `environment` lists it; the bound `externalServices` entry's scope when a requirement matched it; closed over the Services of the same document that list it; empty, and never started, otherwise),
 each instantiated seeing the Services of its own attached document it lists
 with the `service` key (`listed_services(svc.dependencies, services)` over that
 document's `services`), and the attached `environment` checked against every
@@ -725,8 +725,9 @@ Environments converted:
    to that document's `services` (no requirements), `in_scope` the
    Services of that document it lists with the `service` key —
    `listed_services(svc.dependencies, services)`, the only ones a
-   `Service.*` reference there can name — and `scope: AllSteps` (every Step
-   of the Job is in an external Service's scope, §1.2.2 item 1).
+   `Service.*` reference there can name — and its scope from
+   `attached_service_scopes` (§9.1 over the combined Job, §1.2.2; empty when
+   nothing in the Job lists it).
    `<Service>.let`, `hostRequirements`, the numeric `@fmtstring` fields,
    and the carried-forward re-checks all run as for an inline Service,
    reporting into the submission's collection (below).

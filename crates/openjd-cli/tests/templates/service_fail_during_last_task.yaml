@@ -1,0 +1,41 @@
+# A KEEP Service with no relaunches whose onRun exits while the only Task
+# in its scope is already running. The failure consumes the last attempt
+# while nothing else in the scope will pass through the readiness gate, so
+# the scope must fail when the Task completes ("Failure and restart" step
+# 4): Step B, which depends on A, must not run and the Job must fail.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "FailDuringLastTask"
+services:
+  - name: S
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxAttempts: 0
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(1); raise SystemExit(1)"]
+          cancelation:
+            mode: TERMINATE
+steps:
+  - name: A
+    dependencies:
+      - service: "S"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(3); print('TASK_A_DONE')"]
+  - name: B
+    dependencies:
+      - dependsOn: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_B_MUST_NOT_RUN')"]

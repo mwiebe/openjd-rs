@@ -1,4 +1,4 @@
-# RFC 0009 <ServiceHealthCheck> after READY, lifecycle constraint 11, and
+# RFC 0009 <ServiceHealthCheck> after READY, lifecycle constraint 10, and
 # "Failure and restart": a COMMAND probe that passes until Task 1 writes a
 # marker, then fails. With healthIntervalSeconds: 1 and failureThreshold: 2,
 # two consecutive failed probes make instance 1 UNHEALTHY, an instance

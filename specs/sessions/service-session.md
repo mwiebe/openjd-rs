@@ -33,7 +33,7 @@ agent):
 |---|---|
 | Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness then health, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
 | Detect instance failures: ready timeout, `onRun` exit before READY, `onRun` exit at any time, UNHEALTHY (`failureThreshold` consecutive failed probes after READY) | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
-| Cancel `onRun` with its own `cancelation` method on request, at `end()`, and on UNHEALTHY (constraint 10) | When to cancel otherwise (scope complete, ready timeout, …) |
+| Cancel `onRun` with its own `cancelation` method on request, at `end()`, and on UNHEALTHY ("Failure and restart" step 2, performed here rather than by the scheduler) | When to cancel otherwise (scope complete, ready timeout, …) |
 | Run `onHealthCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
 
 ## Why a sibling type, not a mode of `Session`
@@ -244,7 +244,7 @@ This is the precedence RFC 0009 "Services run inside Environments" states
 (Environments < Service `variables` < `onEnter`). The map is recomputed for each
 action, so every `onRun` instance (including relaunches) and `onExit` see
 `onEnter`'s changes — they are retained across relaunches because `onEnter`
-is not re-run (constraint 5 / "Failure and restart" step 3.2).
+is not re-run (constraint 5 / "Failure and restart" step 3).
 
 The same map is given to `onHealthCheck`, which therefore sees
 `onEnter`'s variables too (RFC 0009: "every instance of *onRun*,
@@ -385,8 +385,8 @@ the instance is UNHEALTHY: `Service '<name>' is UNHEALTHY: <ServiceUnhealthy>`
 (error), `Unhealthy` is published, probing stops (the check driver is
 stopped), and the runtime cancels `onRun` with its own cancelation method
 through the Session's cancel handle (`Canceling Service '<name>' onRun: the
-instance is UNHEALTHY`) — lifecycle constraint 10, "stopped the same way an
-instance is stopped at scope end". The resulting `ServiceRunExit` has
+instance is UNHEALTHY`) — the cancel that "Failure and restart" step 2 assigns
+to the scheduler, which this runtime performs itself. The resulting `ServiceRunExit` has
 `unhealthy: Some(..)` and `canceled: false`: UNHEALTHY is an instance failure,
 and the caller takes the restart decision once the exit arrives. A probe
 result that arrives after probing stopped is discarded.
@@ -447,8 +447,8 @@ decision ("cancels `onRun` if it is still running … and waits for it to exit")
 belongs to the scheduler, which calls `cancel_run` then `wait_exit`. It does
 stop the check driver: a `COMMAND` invocation in flight at the deadline is
 canceled, and no further invocation starts. On `Unhealthy` the runtime
-*does* cancel `onRun` (constraint 10 says how an UNHEALTHY instance is
-stopped); the scheduler only awaits the exit.
+*does* cancel `onRun` ("Failure and restart" step 2's cancel, performed by
+the runtime rather than the scheduler); the scheduler only awaits the exit.
 
 ### Concurrency with `onRun` (RFC 0009 §9.6.1), rule by rule
 
@@ -601,7 +601,7 @@ Environments after a wrapping one) are wrapped by its `onWrapEnvEnter` /
 `Session::enter_environment` / `exit_environment`'s existing behavior, which
 `enter()` and `end()` call unchanged.
 
-## Relaunch (constraint 5, "Failure and restart" 3.2)
+## Relaunch (constraint 5, "Failure and restart" step 3)
 
 `launch()` in `Exited` relaunches `onRun` in the same Session: same working
 directory and endpoints, `onEnter` not re-run, its environment-variable changes

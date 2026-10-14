@@ -9,7 +9,7 @@
 //! takes the scheduler's side of the split that
 //! `specs/sessions/service-session.md` describes: it allocates endpoints
 //! ([`super::service_ports`]), decides when each Service Session starts
-//! (ordering constraints 2 and 10: after every entry of the Service's
+//! (ordering constraints 2 and 9: after every entry of the Service's
 //! `dependencies` is satisfied — its Steps completed, its Services READY),
 //! gates Tasks on readiness (constraint 3), watches for instance failures
 //! while Tasks run — an `onRun` exit, or an UNHEALTHY verdict from the
@@ -813,19 +813,59 @@ impl ServiceManager {
     /// before any it depends on (constraint 4) — and return each to idle.
     /// A Service whose scope is every Step is stopped only by
     /// [`stop_all`](Self::stop_all).
-    pub(super) async fn stop_completed_scopes(&mut self, remaining: &BTreeSet<String>) {
-        let done: BTreeSet<ServiceKey> = self
+    ///
+    /// A Service whose `onRun` exited while the scope's last Task was
+    /// running has a restart decision in flight that no later readiness
+    /// gate will collect. That decision is settled here first: a relaunch
+    /// is simply stopped, and a FAILED verdict is returned so the caller
+    /// fails the scope ("Failure and restart" step 4).
+    pub(super) async fn stop_completed_scopes(
+        &mut self,
+        remaining: &BTreeSet<String>,
+    ) -> Result<Vec<ServiceFailure>, RunError> {
+        let done: Vec<usize> = self
             .services
             .iter()
-            .filter(|m| m.active && !m.is_job_wide())
-            .filter(|m| {
+            .enumerate()
+            .filter(|(_, m)| m.active && !m.is_job_wide())
+            .filter(|(_, m)| {
                 m.scope
                     .step_names()
                     .is_some_and(|steps| steps.is_disjoint(remaining))
             })
-            .map(|m| m.key.clone())
+            .map(|(idx, _)| idx)
             .collect();
-        self.stop_set(&done).await;
+        let mut failures = Vec::new();
+        for &idx in &done {
+            let m = &mut self.services[idx];
+            if !matches!(m.state, State::Busy(_)) {
+                continue;
+            }
+            let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
+                unreachable!("checked above");
+            };
+            let (inst, result) = handle
+                .await
+                .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
+            match result {
+                Outcome::Failed(reason) => {
+                    failures.push(ServiceFailure {
+                        name: m.key.name.clone(),
+                        document: m.key.document.clone(),
+                        scope: m.scope.clone(),
+                        reason,
+                    });
+                    m.state = State::Failed;
+                }
+                Outcome::Ready { .. } | Outcome::Stopped => {
+                    m.state = State::Ready(Box::new(inst));
+                }
+            }
+        }
+        let keys: BTreeSet<ServiceKey> =
+            done.iter().map(|&i| self.services[i].key.clone()).collect();
+        self.stop_set(&keys).await;
+        Ok(failures)
     }
 
     /// Stop everything, in dependency order (constraint 4), after the Task
@@ -1453,10 +1493,11 @@ async fn start_or_recover(
                     return (inst, Outcome::Stopped);
                 }
                 log_line(format!(
-                    "{} {} is UNREADY: {}",
+                    "{} {} is UNREADY: {} ({})",
                     inst.label,
                     inst.scope_label,
-                    k.describe()
+                    k.describe(),
+                    describe_policy(inst.service.restart_policy.completed_tasks)
                 ));
                 kind = Some(k);
             }

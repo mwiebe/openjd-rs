@@ -45,25 +45,31 @@ in `openjd-model` is the documented bridge between the two.
 
 ```rust
 #[non_exhaustive]
-pub enum ExprExtension {}   // empty today — reserved API shape
+pub enum ExprExtension {
+    /// RFC 0009 `SERVICE`: adds `join_host_port`, `split_host_port`,
+    /// `is_ipv4`, and `is_ipv6` (Expression Language §2.2.4). No syntax.
+    Service,
+}
 
 impl ExprExtension {
-    pub const ALL: &'static [ExprExtension] = &[];
+    pub const ALL: &'static [ExprExtension] = &[ExprExtension::Service];
 }
 ```
 
 Expression-*level* extensions add or modify functions, operators, or types
-beyond the base revision. None exist today: the model-level "EXPR"
-extension gates whether the expression language is available *at all*, not
-which features are registered once it is. The empty-but-`#[non_exhaustive]`
-enum reserves the shape for the first real extension.
+beyond the base revision; the model-level "EXPR" extension gates whether the
+expression language is available *at all*, not which features are registered
+once it is. `Service` is the one variant today. `ExprProfile::current()` has
+no extensions, so the four `SERVICE` functions are absent from it;
+`ExprProfile::latest()` enables every variant in `ALL`, and the model layer
+enables `Service` when a document declares `SERVICE`.
 
 Code that must react to new extensions matches on `ExprExtension`
 exhaustively *without a wildcard arm* (e.g. `build_library_skeleton`'s
-`for ext in profile.extensions() { match *ext {} }` and
-`extension_syntax_v2026_02`). Adding the first variant is therefore a
-compile error at each site that must decide what the variant means —
-the forcing-function idiom used throughout the workspace.
+`for ext in profile.extensions() { match *ext { ExprExtension::Service => … } }`
+and `extension_syntax_v2026_02`). Adding a variant is therefore a compile
+error at each site that must decide what the variant means — the
+forcing-function idiom used throughout the workspace.
 
 ### `HostContext`
 
@@ -183,8 +189,9 @@ the rules themselves. Consequences:
 
 `build_library_skeleton(profile)` is where the revision and extension
 axes turn into registrations: an exhaustive `match profile.revision()`
-plus an exhaustive `for ext in profile.extensions() { match *ext {} }`,
-each a compile-error sentinel for the first new variant.
+plus an exhaustive `for ext in profile.extensions() { match *ext { … } }`
+(`Service` registers the host and port functions), each a compile-error
+sentinel for the next new variant.
 
 ## Relationship to Other Documents
 

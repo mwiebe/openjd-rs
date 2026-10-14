@@ -397,7 +397,7 @@ order tried:
 
 | Condition | Message |
 |---|---|
-| `Task.*` / `Step.*` anywhere under `services[k]` | `Task.* is not available within a Service.` / `Step.* is not available within a Service.` (§9 item 3: the RFC states the two together) |
+| `Task.*` / `Step.*` anywhere under `services[k]` | `Task.* is not available within a Service.` / `Step.* is not available within a Service.` (neither is in the §9 list of scopes available within a `<Service>`) |
 | job-creation field (§9 job-creation exclusion: every field resolved at job creation, before any Service is placed) | `Service.* is not available in <field>: it is resolved at job creation, before any Service has an endpoint.` (`<field>` is `hostRequirements`, `a let binding` — a `<StepTemplate>`'s or `<Service>`'s, not a script's —, `a parameterSpace range`, `timeout`, `a cancelation method's mode or notifyPeriodInSeconds` (both reported on the `cancelation` path), `notifyPeriodInSeconds`, `port`, `readinessIntervalSeconds`, `readinessTimeoutSeconds`, `healthIntervalSeconds`, `failureThreshold`, or `maxAttempts`). Pass 8 never seeds `Service.*` into these fields' symbol tables (`build_template_scope_symtab`, `validate_action_timing_fs`, the numeric `@fmtstring` checks), so the reference is undefined there whatever the scope; this rule only names the field |
 | the site is a Job Environment (or an Environment Template's `environment`) with `SERVICE` in its explicit `runScope` | **the error is dropped.** Pass 11 reports the rule once, on the `runScope` list: `Environment 'Conda' is entered in Service Sessions (its runScope includes SERVICE) and may not reference Service.*; declare runScope: [TASK] if it configures Tasks.` (`… may not depend on a Service …` when it lists one and references none, `… may not depend on or reference a Service …` when both) — and each reference is a consequence of it (exploratory report S12, S21). A Step Environment gives no `runScope` (pass 11 rejects any) and is always a Task-Session site, so this rule never applies to it |
 | a declared or required Service referenced from a Step's `script`, one of its `stepEnvironments`, another Service, a Job Environment, or an Environment Template's `environment`, whose `dependencies` (the Step's, for a Step Environment) do not list `service: <svc>` (§9 scope rules 2–5, §9.8 item 2) | `Step 'Render' references Service.Cache.main.port but does not list service: Cache in dependencies.` — from a Step Environment, `Step 'Render' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service: Cache in dependencies.` — from a Service, `Service 'Front' references Service.Back.main.port but does not list service: Back in dependencies.` — from a Job Environment or an Environment Template's `environment`, `Environment 'CacheClient' references Service.Cache.main.port but does not list service: Cache in dependencies.` |
@@ -435,12 +435,12 @@ Who sees which Services (the `in_scope` iterator at each site):
 
 Consequences the tests pin: list order carries no meaning (a Service may list and reference a
 later Service), a reference to an inline or required Service without the matching `service`
-dependency is an error naming the fix (from a Step, a Service, or an Environment alike), a
-requirement nothing lists is accepted, a dependency cycle is a pass 11 error, a wrapping Job
+dependency is an error naming the fix (from a Step, a Service, or an Environment alike), an
+`externalServices` entry nothing lists is a pass 11 error, a dependency cycle is a pass 11 error, a wrapping Job
 environment whose explicit `runScope` includes `SERVICE` sees no `Service.*` even in its
 `onWrapService*` hooks, a required Service's `bindAddress` and undeclared ports are errors, and
-`Task.*` / `Step.*` are never seeded for a Service (§9: "`Task.*` and `Step.*` values are never
-available within a Service"). There is no Environment that sees a Service's `bindAddress`: a
+`Task.*` / `Step.*` are never seeded for a Service (the §9 list of format string scopes available
+within a `<Service>` does not include them). There is no Environment that sees a Service's `bindAddress`: a
 `<Service>` has no `serviceEnvironments` property (the RFC's Rejected Ideas), so the only
 Environments a Service Session enters are the Job's, which follow the `runScope` rule.
 
@@ -458,7 +458,7 @@ Environments a Service Session enters are the Job's, which follow the `runScope`
   `validate_host_requirements_fs`, so the Step and Service checks are one code path with the
   owner's path prefixed), the numeric `@fmtstring` fields, and every action's `timeout` /
   cancelation `mode` / `notifyPeriodInSeconds` (`validate_action_timing_fs`). Never
-  `Session.*`, `Service.*`, PATH `Param.*`, `Step.*`, or `Task.*` (§9 item 3).
+  `Session.*`, `Service.*`, PATH `Param.*`, `Step.*`, or `Task.*` (§9 item 3 for `let`; the §9 scope list has no `Task.*` or `Step.*`).
 - *Service-execution scope* — `Param.*` including PATH, `RawParam.*`, `Session.*`, every
   job-creation-stage symbol above (copied over, `Param`/`RawParam` excepted), this Service's
   `Service.File.*`, its own three endpoint values, the `port` / `connectAddress` of every
@@ -827,7 +827,7 @@ template (§9.1 rule 4).
     for the Environment are dropped by `service_diagnostics` in favor of this one error
     (exploratory report S12, S21). An absent `runScope` defaults to `[TASK]` for an Environment
     that lists a Service and needs no check.
-- **An Environment's `dependencies`** (§4 item 3, §3.2 constraint 5;
+- **An Environment's `dependencies`** (§4 item 3 constraint 2;
   `validate_environment_dependencies`), on every `<Environment>` of either template kind:
   - On a `stepEnvironments` entry the list is rejected whole, whatever it names, at
     `steps[i] -> stepEnvironments[j] -> dependencies`: `a Step Environment follows its Step's

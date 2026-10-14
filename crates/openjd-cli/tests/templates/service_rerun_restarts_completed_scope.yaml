@@ -1,4 +1,4 @@
-# RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 9: Solo is
+# RFC 0009 "RERUN and Step dependencies" / lifecycle constraint 8: Solo is
 # listed by Step A only (scope Step A) and is stopped once A completes.
 # Flaky (completedTasks: RERUN, maxAttempts 1) is listed by A and B (scope
 # Steps A, B); B depends on A. Flaky's first instance exits while B's Task

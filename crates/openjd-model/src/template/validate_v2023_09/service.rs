@@ -540,14 +540,44 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
             required_scopes.get(&req.name),
             Some(ServiceScope::Steps { steps }) if steps.is_empty()
         ) {
+            // The inline Services that list the entry, which are therefore
+            // unused themselves (§9.1 rule 4) — named so the message points
+            // at the right fix.
+            let listers: Vec<&str> = jt
+                .services()
+                .iter()
+                .filter(|svc| lists_service(svc.dependencies.as_deref(), &req.name))
+                .map(|svc| svc.name.as_str())
+                .collect();
             errors.add(
                 &path_index(&requirements_path, k),
-                format!(
-                    "external Service '{}' is unused: no Step, Service, or Job Environment lists \
-                     it.",
-                    req.name
-                ),
+                unused_external_service_message(&req.name, &listers),
             );
+        }
+    }
+}
+
+/// §9.1 rule 4 applied to an `externalServices` entry: the message for an
+/// entry in whose scope no Step falls, naming the inline Services that list
+/// it when that is why (they are unused too).
+fn unused_external_service_message(name: &str, listers: &[&str]) -> String {
+    match listers {
+        [] => format!(
+            "external Service '{name}' is unused: no Step, Service, or Job Environment lists it."
+        ),
+        [only] => format!(
+            "external Service '{name}' is unused: no Step is in its scope (Service '{only}' lists \
+             it, but no Step is in {only}'s scope either)."
+        ),
+        many => {
+            let quoted: Vec<String> = many.iter().map(|s| format!("'{s}'")).collect();
+            let (init, last) = quoted.split_at(quoted.len() - 1);
+            format!(
+                "external Service '{name}' is unused: no Step is in its scope (Services {} and {} \
+                 list it, but no Step is in their scope either).",
+                init.join(", "),
+                last[0]
+            )
         }
     }
 }

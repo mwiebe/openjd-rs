@@ -1627,7 +1627,7 @@ revision is defined today.
 Enums marked `#[non_exhaustive]`:
 
 - `ExprRevision`
-- `ExprExtension` (empty today — reserved for future expression-level extensions)
+- `ExprExtension` (`Service` today; `#[non_exhaustive]` for future expression-level extensions)
 - `TypeCode`
 - `ExpressionErrorKind`
 - `ExprValue` (outer enum) — so new primitive types can be added to

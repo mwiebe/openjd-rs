@@ -32,7 +32,7 @@ This places an `openjd` binary on your `PATH`.
 |---------|---------|
 | `openjd check FILE [--extensions EXT...]` | Validate a job or environment template. Exit code 0 on success, non-zero on validation error, with per-field error paths. |
 | `openjd summary FILE [-p NAME=VALUE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count. |
-| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...]` | Instantiate and run a job template locally, streaming action output with timestamps. |
+| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...] [--environment FILE...]` | Instantiate and run a job template locally, streaming action output with timestamps. With the `SERVICE` extension (RFC 0009), starts each Service in its own Session before the Steps that depend on it, gates Tasks on READY, applies the restart policy, and stops Services when their scope completes; `--environment` files supply queue-style Environments and external Services. |
 
 Run `openjd --help` for the full flag list, or `openjd COMMAND --help`
 for a specific command.

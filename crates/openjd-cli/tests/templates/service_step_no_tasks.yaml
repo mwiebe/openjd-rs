@@ -1,4 +1,4 @@
-# RFC 0009 constraint 10: a Service scoped to a Step (the Step lists it in
+# RFC 0009 constraint 9: a Service scoped to a Step (the Step lists it in
 # its dependencies) is not started when that Step will schedule no Task
 # (--tasks '[]'). The Service records any start in the marker file, which
 # must stay absent.

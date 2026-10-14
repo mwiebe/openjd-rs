@@ -1,5 +1,5 @@
 # RFC 0009 <ServiceHealthCheck> TCP_CONNECT after READY, "Failure and
-# restart", and lifecycle constraints 6-7 and 11: a hung process is detected
+# restart", and lifecycle constraints 6-7 and 10: a hung process is detected
 # without exiting. After answering Task 1 the service closes its listening
 # socket and sleeps, still holding the process. With healthIntervalSeconds: 1
 # and failureThreshold: 2, two refused connections make the instance

@@ -366,6 +366,22 @@ fn external_services_entry_nothing_lists_is_rejected() {
         job_err(&job_unlisted(CACHE_REQ, "", "", "[x]")),
         "Model validation error: 1 validation error for JobTemplate\nexternalServices[0]:\n\texternal Service 'Cache' is unused: no Step, Service, or Job Environment lists it."
     );
+    // Listed only by an inline Service that nothing lists: both are unused,
+    // and the entry's message names the Service so the fix is clear.
+    let err = job_err(&job_unlisted(
+        CACHE_REQ,
+        "  - name: Proxy\n    ports: [{ name: main }]\n    dependencies: [{ service: \"Cache\" }]\n    script: { actions: { onRun: { command: proxy } } }\n",
+        "",
+        "[x]",
+    ));
+    assert_errs(
+        &err,
+        2,
+        &[
+            "services[0]:\n\tService 'Proxy' is unused: no Step, Service, or Job Environment lists it.",
+            "externalServices[0]:\n\texternal Service 'Cache' is unused: no Step is in its scope (Service 'Proxy' lists it, but no Step is in Proxy's scope either).",
+        ],
+    );
     // Listed by a Step, a Service, or a Job Environment: accepted.
     decode_job(&job(CACHE_REQ, "", "", "[x]"));
     decode_job(&job_unlisted(CACHE_REQ, "", LISTER_ENV, "[x]"));

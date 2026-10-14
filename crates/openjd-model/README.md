@@ -23,8 +23,9 @@ validation, and job creation for OpenJD templates. Part of the
   dependency graphs.
 - **Host capability matching** — matching host requirements against
   runtime capabilities.
-- **Extensions** — the `EXPR`, `FEATURE_BUNDLE_1`, `TASK_CHUNKING`, and
-  `REDACTED_ENV_VARS` extensions from the 2023-09 specification.
+- **Extensions** — the `EXPR`, `FEATURE_BUNDLE_1`, `TASK_CHUNKING`,
+  `REDACTED_ENV_VARS`, `WRAP_ACTIONS`, and `SERVICE` extensions from the
+  2023-09 specification.
 
 The crate passes 100% of the upstream [OpenJD conformance test suite] —
 over 700 template validation and environment-template tests on Linux,

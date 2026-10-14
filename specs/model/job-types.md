@@ -527,8 +527,9 @@ by `create_job` from the template's `dependencies` lists through
 a Service that lists it, transitively (rule 2), and `AllSteps` for a
 Service a `jobEnvironments` entry lists in its `dependencies` (rule 3) or one a Service with
 scope `AllSteps` lists. `Steps { .. }` is never empty for a Job created from a decoded template, because a Job
-Template Service with no Step in its scope is unused and rejected by validation (rule 4). Every external Service has scope
-`AllSteps`, stamped by `apply_environment_templates`.
+Template Service with no Step in its scope is unused and rejected by validation (rule 4). An external Service's scope is
+computed over the combined Job by the same rules in `apply_environment_templates`; it is `Steps {}` when nothing in the
+Job lists it, and such a Service is never started.
 
 `dependencies` are the Steps and Services the Service depends on, as written (§9 item 4).
 `depends_on_steps()` yields its Step entries — the Steps that must complete before it starts;

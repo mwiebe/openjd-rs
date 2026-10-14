@@ -1838,6 +1838,16 @@ fn completed_tasks_is_required_when_max_attempts_is_positive() {
              relaunch means for completed Tasks, KEEP or RERUN (Template Schemas §9.5 item 2).",
         ],
     );
+    // The boundary: 1 is "greater than 0".
+    expect_job_err(
+        &service_with_restart_policy("      maxAttempts: 1\n"),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for JobTemplate\n",
+            "services[0] -> restartPolicy:\n\tcompletedTasks must be provided when maxAttempts is \
+             greater than 0 (maxAttempts is 1):",
+        ],
+    );
     expect_job_ok(
         &service_with_restart_policy("      maxAttempts: 2\n      completedTasks: RERUN\n"),
         SERVICE_EXTS,

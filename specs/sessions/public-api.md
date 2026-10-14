@@ -637,7 +637,7 @@ pub enum ServiceHealth {
     /// onRun exited before a probe passed.
     ExitedBeforeReady,
     /// `failureThreshold` consecutive probes failed after READY; the runtime
-    /// has canceled onRun with its cancelation method (constraint 10).
+    /// has canceled onRun with its cancelation method ("Failure and restart" step 2).
     Unhealthy(ServiceUnhealthy),
 }
 impl ServiceHealth {
@@ -798,6 +798,9 @@ impl EnvironmentScriptRunner {
         self,
         rx: tokio::sync::watch::Receiver<Option<Duration>>,
     ) -> Self;
+    /// The Session-wide log tag every record of this runner's actions
+    /// carries (see `SessionConfig::log_tag`); `None` for no tag.
+    pub fn with_session_tag(self, tag: Option<String>) -> Self;
 
     /// Run the environment's onEnter action. Returns immediately if
     /// the environment has no `onEnter`.
@@ -848,6 +851,7 @@ impl StepScriptRunner {
         self,
         rx: tokio::sync::watch::Receiver<Option<Duration>>,
     ) -> Self;
+    pub fn with_session_tag(self, tag: Option<String>) -> Self;
 
     /// Evaluate let bindings, materialize embedded files, then run
     /// the `onRun` action.
@@ -1363,8 +1367,8 @@ finite, well-defined concepts):
 - `LogContent` (a `bitflags` type — new variants added at the
   bit-flag level require a new constant, which is a minor/patch
   bump)
-- `EmbeddedFilesScope` (step vs env — and spec §6 defines no other
-  embedded-file scopes)
+- `EmbeddedFilesScope` (step, env, and under RFC 0009 service — the three
+  entities that carry embedded files)
 
 `ActionMessage` is not `#[non_exhaustive]` today but probably should
 be — `openjd_*` directives are an open-ended spec-extension point.

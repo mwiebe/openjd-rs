@@ -38,6 +38,7 @@ pub struct Service {
     /// references. Unique within its list and, in a Job Template, distinct
     /// from every `externalServices` name.
     pub name: String,
+    /// A description with no functional purpose, for UIs.
     pub description: Option<Description>,
     /// Expression bindings evaluated once at job creation (EXPR). Not in
     /// scope: `Session.*`, `Service.*`.
@@ -233,6 +234,7 @@ pub enum ServiceHealthCheck {
     /// port.
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
+        /// The TCP ports to probe; every declared TCP port when omitted.
         ports: Option<Vec<String>>,
         /// Default [`DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS`](Self::DEFAULT_TCP_CONNECT_READINESS_INTERVAL_SECONDS).
         readiness_interval_seconds: Option<FormatString>,
@@ -474,6 +476,7 @@ pub struct ServiceScript {
     /// is started (EXPR); the host-context counterpart of `<Service>.let`.
     #[serde(rename = "let")]
     pub let_bindings: Option<Vec<String>>,
+    /// The actions run at each stage of the Service's lifecycle (§9.7).
     pub actions: ServiceActions,
     /// Materialized to the Service Session's working directory before each
     /// action runs; reachable as `Service.File.<name>`.

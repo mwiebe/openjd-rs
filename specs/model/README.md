@@ -98,8 +98,8 @@ Currently implements `2023-09` with extensions:
   `<Service>.let` and numeric fields, job-side `runScope` / Service hooks), the
   runtime-facing `job::service_symbols` builders, and the submission stage
   (`apply_environment_templates`: §1.2.2 external Services merged before the
-  Job's `services` with `AllSteps` scope and stamped with their
-  `job::Document`, requirement matching with `RequirementBinding`s, the
+  Job's `services`, each with its §9.1 scope over the combined Job and
+  stamped with its `job::Document`, requirement matching with `RequirementBinding`s, the
   wrapping-Environment check, per-document profiles via
   `EnvironmentTemplate::profile`); see [template-types.md](template-types.md),
   pass 8 "Service scopes", passes 10–11, and "Submission-time checks" in

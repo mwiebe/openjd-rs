@@ -108,8 +108,10 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedEnvironmentTemplates {
     /// The external Services, instantiated: in attachment order, and within
-    /// one template in its `services` order, each with
-    /// [`ServiceScope::AllSteps`](job::ServiceScope::AllSteps). These precede
+    /// one template in its `services` order, each with its
+    /// [`scope`](job::Service::scope) computed over the combined Job by the
+    /// §9.1 rules (see `attached_service_scopes`); an empty scope means
+    /// nothing in the Job lists it and it is never started. These precede
     /// every Service in the Job Template's `services` in the combined list.
     pub external_services: Vec<job::Service>,
     /// The attached Service each of the Job Template's `externalServices`

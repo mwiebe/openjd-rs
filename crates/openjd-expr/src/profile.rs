@@ -372,10 +372,9 @@ impl ExprProfile {
         }
         // Stage 2: per-revision extension layer. A given extension's
         // effect on the accepted syntax is revision-scoped, so this
-        // second match is intentional and parallel to the first. Today
-        // `ExprExtension` has no variants, so this function always
-        // returns `false`; the structure is in place for the first
-        // extension variant to plug in.
+        // second match is intentional and parallel to the first. The
+        // one extension today, `Service`, adds functions and no syntax,
+        // so this still returns `false` for every feature.
         match self.revision {
             ExprRevision::V2026_02 => self.extension_syntax_v2026_02(feature),
         }
@@ -425,14 +424,10 @@ impl ExprProfile {
     /// Extension-layer syntax-feature acceptance for the 2026-02 revision.
     ///
     /// Iterates the profile's enabled extensions and asks each one
-    /// whether it grants the feature under this revision. Today
-    /// `ExprExtension` has no variants, so this function is defined as
-    /// an empty iteration over `self.extensions` whose body would
-    /// match on the extension variant. When the first variant is added,
-    /// add a `match` arm here that returns `true` for each feature that
-    /// variant contributes under V2026_02.
-    #[allow(clippy::unused_self)] // placeholder: `self` is needed once extensions exist
-    #[allow(clippy::never_loop)] // shape is preserved for when ExprExtension has variants
+    /// whether it grants the feature under this revision. `Service`, the
+    /// one variant today, grants none; an extension that adds syntax adds
+    /// a `match` arm here returning `true` for each feature it contributes
+    /// under V2026_02.
     fn extension_syntax_v2026_02(&self, feature: SyntaxFeature) -> bool {
         for ext in &self.extensions {
             // Exhaustive match: adding a new `ExprExtension` variant

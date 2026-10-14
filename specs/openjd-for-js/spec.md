@@ -403,8 +403,13 @@ All errors extend ECMAScript's `Error` class with a `.message` property.
 | `CancellationToken` | Runtime-only concept |
 | `SessionCallbacks` | Runtime-only concept |
 | `ActionStatus` / `SessionStatus` | Runtime-only concept |
+| `apply_environment_templates` (RFC 0009 submission-stage merge) | Not bound; a scheduler-side operation |
 
 Sessions are excluded because they manage OS processes and filesystem I/O, which are not available in the browser WASM sandbox. The sessions crate could be exposed in a future Node.js (non-browser) target via wasi or napi.
+
+### `SERVICE` extension (RFC 0009)
+
+`getSupportedExtensions()` includes `SERVICE`, so `decodeJobTemplate` and `decodeEnvironmentTemplate` accept templates that declare it by default, with every validation rule of Template Schemas §9. `FunctionLibrary.default()` is built from `ExprProfile::current()`, which has no expression-level extensions, so the four `SERVICE` string functions (`join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`) are not in it; a caller evaluating a `SERVICE` template's expressions standalone does not have them.
 
 ## Size Budget
 

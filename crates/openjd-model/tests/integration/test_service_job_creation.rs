@@ -619,6 +619,14 @@ fn completed_tasks_required_when_a_format_string_max_attempts_resolves_above_zer
          template that allows relaunch must say what a relaunch means for completed Tasks, KEEP or \
          RERUN (Template Schemas §9.5 item 2)."
     );
+    // The boundary: a value that resolves to 1 is "greater than 0".
+    let err = create_err(&tmpl, &[("Attempts", "1")]);
+    assert!(
+        err.contains(
+            "completedTasks must be provided when maxAttempts is greater than 0 (maxAttempts is 1)"
+        ),
+        "{err}"
+    );
     let job = create_ok(&tmpl, &[("Attempts", "0")]);
     let policy = &job.services.as_ref().unwrap()[0].restart_policy;
     assert_eq!(policy.max_attempts, 0);

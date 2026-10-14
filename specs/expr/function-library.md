@@ -521,12 +521,13 @@ the default library category modules (see `default_library.rs`).
 
 ## Function Coverage
 
-228 Rust signatures registered in `default_library.rs` (counted over
-`FunctionLibrary::for_profile(&ExprProfile::current())`). All function names from the
-specification are present, including the `join_host_port` / `split_host_port` /
-`is_ipv4` / `is_ipv6` family that the `SERVICE` extension (RFC 0009) adds to §2.2.4;
-those four are registered alongside the other string functions in
-`string_functions()` and implemented in `functions/host_port.rs`. Some per-type
+224 Rust signatures registered in `default_library.rs` (counted over
+`FunctionLibrary::for_profile(&ExprProfile::current())`), plus the 4 that the
+`SERVICE` extension (RFC 0009) adds to §2.2.4 — `join_host_port`, `split_host_port`,
+`is_ipv4`, `is_ipv6` — for 228 under `ExprProfile::latest()`. Those four are
+registered by `register_service_functions`, which `build_library_skeleton` calls only
+for a profile with `ExprExtension::Service`, and are implemented in
+`functions/host_port.rs`. All function names from the specification are present. Some per-type
 overloads use generic `T1` signatures where the specification spells out per concrete
 type (e.g., `repr_pwsh` has separate signatures for string, int, float, bool, path,
 range_expr, list in the spec but uses generic `T1` in Rust).

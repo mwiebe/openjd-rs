@@ -129,7 +129,9 @@ pub enum SessionError {
         format_service_expected(.expected)
     )]
     InvalidServiceState {
+        /// The states the operation accepts.
         expected: Vec<crate::service_session::ServiceSessionState>,
+        /// The state the Service Session was in.
         current: crate::service_session::ServiceSessionState,
     },
 
@@ -138,8 +140,12 @@ pub enum SessionError {
     /// *onExit failure* (reported, but it does not change the scope's outcome).
     #[error("Service '{name}' {action} failed: {reason}")]
     ServiceScriptFailed {
+        /// The Service's `name`.
         name: String,
+        /// `onEnter` or `onExit`.
         action: String,
+        /// Why the action did not succeed: its exit code, a timeout, or a
+        /// cancelation.
         reason: String,
     },
 
@@ -147,7 +153,12 @@ pub enum SessionError {
     /// the caller's endpoint assignment omits one, that the Service does not
     /// declare — the two inputs to a Service Session disagree.
     #[error("Service '{name}' port '{port}' has no endpoint assignment")]
-    ServicePortUnassigned { name: String, port: String },
+    ServicePortUnassigned {
+        /// The Service's `name`.
+        name: String,
+        /// The port's `name`.
+        port: String,
+    },
 }
 
 fn format_service_expected(states: &[crate::service_session::ServiceSessionState]) -> String {

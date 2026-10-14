@@ -677,8 +677,11 @@ async fn execute_step(
         }
         TasksOutcome::Done | TasksOutcome::Rerun(_) => {
             // Constraint 6: a Service whose scope has no Step left to run
-            // is stopped.
-            ctx.services.stop_completed_scopes(remaining).await;
+            // is stopped. One whose restart decision was still pending and
+            // came back FAILED fails the scope ("Failure and restart" step 4).
+            for failure in ctx.services.stop_completed_scopes(remaining).await? {
+                ctx.record_service_failure(failure);
+            }
             Ok(StepOutcome::Done)
         }
     }

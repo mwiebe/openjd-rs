@@ -514,7 +514,7 @@ requested port that is already allocated in its protocol or cannot be bound (`Se
 a *start failure* of the Service. Endpoints are allocated when the Service Session is
 opened, before any of its actions runs; a new Service Session gets new ports.
 
-### Start ordering (constraints 2, 10)
+### Start ordering (constraints 2, 9)
 
 Services are started by the **readiness gate** (`ServiceManager::gate`), which runs
 before the Task Session enters the Job's Environments, before each Step's
@@ -585,8 +585,8 @@ While a Task runs, `RunContext::run_task` selects between the Task and
 an instance failure: its `onRun` exits other than by cancelation, or its health check
 declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after READY —
 RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
-and, per lifecycle constraint 10, has already canceled `onRun` with its cancelation
-method). Between Tasks, the gate polls the same health and exit channels. An exit
+and has already canceled `onRun` with its cancelation method, the cancel "Failure and
+restart" step 2 describes). Between Tasks, the gate polls the same health and exit channels. An exit
 observed after the scope completed is never seen (nothing watches after the last
 Task), so it is not a failure — the RFC's stop race.
 

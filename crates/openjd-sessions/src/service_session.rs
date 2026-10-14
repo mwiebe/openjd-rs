@@ -262,8 +262,7 @@ pub struct ServiceRunExit {
     /// which is one.
     pub canceled: bool,
     /// `Some` when the health check canceled `onRun` because the instance
-    /// became UNHEALTHY (RFC 0009 lifecycle constraint 10, "Failure and
-    /// restart"). Set even when the caller's own cancelation raced it, in
+    /// became UNHEALTHY (RFC 0009 "Failure and restart" step 2). Set even when the caller's own cancelation raced it, in
     /// which case `canceled` is also `true` and the exit is not a failure.
     pub unhealthy: Option<ServiceUnhealthy>,
     /// The `openjd_fail` message, or the reason the action could not run.
@@ -425,7 +424,7 @@ struct RunDriverInputs {
     message_rx: mpsc::UnboundedReceiver<ActionMessage>,
     cancel_requested: Arc<AtomicBool>,
     /// Cancels `onRun` with its own cancelation method when the instance
-    /// becomes UNHEALTHY (lifecycle constraint 10).
+    /// becomes UNHEALTHY ("Failure and restart" step 2).
     cancel_handle: SessionCancelHandle,
     /// The `onHealthCheck` driver's inputs, for a `COMMAND` health check.
     /// The `onRun` driver spawns it, requests one invocation per probe,
@@ -923,7 +922,7 @@ impl ServiceSession {
     /// elapses, or `onRun` exits. After READY a probe runs every
     /// `healthIntervalSeconds`; `failureThreshold` consecutive failures make
     /// the instance UNHEALTHY, on which the runtime cancels `onRun` with its
-    /// cancelation method (constraint 10) and stops probing; a success
+    /// cancelation method ("Failure and restart" step 2) and stops probing; a success
     /// resets the count. For `TCP_CONNECT` and `COMMAND`, an interval is
     /// measured from the end of the previous probe: a `TCP_CONNECT` probe
     /// connects to every listed port; a `COMMAND` probe is one

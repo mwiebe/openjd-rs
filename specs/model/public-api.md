@@ -251,7 +251,9 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedEnvironmentTemplates {
     /// Attachment order, then each template's `services` order; each stamped
-    /// with its attachment as `document` and with `scope: AllSteps`.
+    /// with its attachment as `document` and with its scope computed over the
+    /// combined Job by the §9.1 rules (`attached_service_scopes`); an empty
+    /// scope means nothing in the Job lists it and it is never started.
     pub external_services: Vec<job::Service>,
     /// The attached Service each `externalServices` entry was matched to, in
     /// requirement order (§1.2.2 item 2).
@@ -792,7 +794,12 @@ pub struct ServiceScopes { /* by name */ }
 impl ServiceScopes {
     pub fn get(&self, name: &str) -> Option<&ComputedServiceScope>;
     pub fn iter(&self) -> impl Iterator<Item = &ComputedServiceScope>;
-    pub fn scope_of(&self, name: &str) -> ServiceScope;   // AllSteps for an undeclared name
+    pub fn scope_of(&self, name: &str) -> ServiceScope;   // empty `Steps {}` for an undeclared name
+    /// The scope each `externalServices` entry of `jt` confers on the attached
+    /// Service it is matched to, by the §9.1 rules applied to the required
+    /// name over `jt` (rules 1–3); an entry nothing lists has an empty scope,
+    /// which validation rejects (rule 4).
+    pub fn required_service_scopes(&self, jt: &JobTemplate) -> BTreeMap<String, ServiceScope>;
 }
 
 /// A cycle in the combined Step/Service/Job-Environment dependency graph (§3.2 constraint 3).
@@ -1100,6 +1107,13 @@ impl job::Job {
     /// `has_extension(ModelExtension::Service)`: only such a Job has
     /// `service` dependency entries, `services` or `external_services`.
     pub fn service_active(&self) -> bool;
+    /// The scope each `externalServices` entry confers on the attached
+    /// Service it is matched to (§9.1 over the required name: the Steps that
+    /// list it, the scopes of the Job's Services that list it, every Step
+    /// when a Job Environment lists it). `apply_environment_templates` uses
+    /// this; validation has rejected an entry nothing lists, so every scope
+    /// is non-empty.
+    pub fn required_service_scopes(&self) -> BTreeMap<String, ServiceScope>;
 }
 
 pub struct job::JobParameter {
@@ -1984,10 +1998,12 @@ Instantiation](#job-instantiation)) and also available via the
 `create_job::` module path: `apply_environment_templates`,
 `AttachedEnvironmentTemplate`, `AppliedEnvironmentTemplates`. Error
 contract: a `ModelValidation` error for `Submission` collecting every
-merge-rule-3 wrapper violation (at `<doc> -> environment`, `JobTemplate ->
-jobEnvironments[i]`, or `JobTemplate -> steps[i] -> stepEnvironments[j]`)
-before any Service is instantiated (merge rule 2 — Service names scoped to
-their document — rejects nothing); thereafter a per-document error from
+requirement-matching failure of §1.2.2 item 2 (at `JobTemplate ->
+externalServices[i]`: no attached Service of that name, two or more, a
+missing port, or a protocol mismatch) and every item-4 wrapper violation
+(at `<doc> -> environment` or `JobTemplate -> jobEnvironments[i]`) before
+any Service is instantiated (item 3 — Service names are per document —
+rejects nothing); thereafter a per-document error from
 `instantiate_service` or the Environment re-checks, with the document
 prefixed to its paths (validation errors, also reported for `Submission`)
 or to its message (format-string and expression errors). Full messages

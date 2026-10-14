@@ -543,7 +543,8 @@ pub struct RunArgs {
     #[arg(long = "tasks", conflicts_with_all = ["task_params", "maximum_tasks"])]
     pub tasks: Option<String>,
 
-    /// Environment template files
+    /// Environment template files, applied as a queue would: their
+    /// Environments and (SERVICE extension) Services are added to the Job
     #[arg(long = "environment", alias = "env")]
     pub environments: Vec<PathBuf>,
 
@@ -568,11 +569,13 @@ pub struct RunArgs {
     #[arg(long = "extensions")]
     pub extensions: Option<String>,
 
-    /// Preserve session working directory after completion
+    /// Preserve the Session working directories (the Task Session's and each
+    /// Service Session's) after completion
     #[arg(long)]
     pub preserve: bool,
 
-    /// Enable verbose logging while running the Session
+    /// Enable verbose logging while running the Session, including every
+    /// Service health-probe result
     #[arg(long)]
     pub verbose: bool,
 

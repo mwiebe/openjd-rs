@@ -511,7 +511,9 @@ impl std::fmt::Display for Document {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Service {
+    /// The Service's `name`, the first component of `Service.*` references.
     pub name: String,
+    /// The resolved `description`, if any.
     pub description: Option<String>,
     /// The document that declares this Service: [`Document::JobTemplate`]
     /// for the Job Template's own `services` (the default, omitted from
@@ -552,6 +554,7 @@ pub struct Service {
     /// (session scope — resolved on the service host). Not propagated to
     /// the entities in the Service's scope.
     pub variables: Option<HashMap<String, FormatString>>,
+    /// The Service's actions and embedded files (§9.6).
     pub script: ServiceScript,
     /// Filtered symbol table containing only the symbols referenced by this
     /// Service's host-resolved format strings (variables, actions,
@@ -697,18 +700,30 @@ pub enum ServiceHealthCheck {
         /// The names of the TCP ports to probe — every declared TCP port
         /// when the template named none (§9 item 6, §9.3 item 2).
         ports: Vec<String>,
+        /// Seconds between probes before READY (§9.4 item 3).
         readiness_interval_seconds: u64,
+        /// Seconds from `onRun`'s launch until an instance that is not yet
+        /// READY has failed (§9.4 item 4).
         readiness_timeout_seconds: u64,
+        /// Seconds between probes after READY (§9.4 item 5).
         health_interval_seconds: u64,
+        /// Consecutive failed probes after READY that make the instance
+        /// UNHEALTHY (§9.4 item 6).
         failure_threshold: u64,
     },
     /// A probe is one `onHealthCheck` invocation; exit 0 while `onRun` is
     /// running is a success.
     #[serde(rename = "COMMAND")]
     Command {
+        /// Seconds between probes before READY (§9.4 item 3).
         readiness_interval_seconds: u64,
+        /// Seconds from `onRun`'s launch until an instance that is not yet
+        /// READY has failed (§9.4 item 4).
         readiness_timeout_seconds: u64,
+        /// Seconds between probes after READY (§9.4 item 5).
         health_interval_seconds: u64,
+        /// Consecutive failed probes after READY that make the instance
+        /// UNHEALTHY (§9.4 item 6).
         failure_threshold: u64,
     },
     /// A probe is an `openjd_service_ready: <message>` line on `onRun`'s
@@ -716,6 +731,8 @@ pub enum ServiceHealthCheck {
     /// expected every `health_interval_seconds` when that is `Some`.
     #[serde(rename = "STDOUT")]
     Stdout {
+        /// Seconds from `onRun`'s launch until an instance that is not yet
+        /// READY has failed (§9.4 item 4).
         readiness_timeout_seconds: u64,
         /// The heartbeat interval, or `None` when no heartbeat is expected
         /// and the instance's health is that `onRun` is still running.
@@ -870,9 +887,14 @@ impl ServiceRestartPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ServiceScript {
+    /// The `<ServiceScript>` `let` bindings, as written; evaluated on the
+    /// service host when the Service is started.
     #[serde(rename = "let", alias = "letBindings")]
     pub let_bindings: Option<Vec<String>>,
+    /// The Service's actions.
     pub actions: ServiceActions,
+    /// Files materialized to the Service Session's working directory before
+    /// each action runs, reachable as `Service.File.<name>`.
     pub embedded_files: Option<Vec<EmbeddedFile>>,
 }
 
@@ -880,9 +902,13 @@ pub struct ServiceScript {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceActions {
+    /// One-time setup, run once per Service Session before the first `onRun`.
     pub on_enter: Option<Action>,
+    /// The long-lived action whose process is the service.
     pub on_run: Action,
+    /// The probe of a `COMMAND` health check; present iff the type is `COMMAND`.
     pub on_health_check: Option<Action>,
+    /// Cleanup, run once when the Service Session ends.
     pub on_exit: Option<Action>,
 }
 
