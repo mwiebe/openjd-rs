@@ -55,7 +55,7 @@ pub struct Service {
     pub host_requirements: Option<HostRequirements>,
     /// §9.3 The named ports the Service exposes: 1–10 entries with unique
     /// names, each TCP (the default) or UDP. No two ports of the same
-    /// protocol may have the same `port` number (§9 item 5.4).
+    /// protocol may have the same `port` number (§9 item 6.4).
     pub ports: Vec<ServicePort>,
     /// §9.4 How readiness and, after READY, health are determined. `None`
     /// means `{ type: TCP_CONNECT }` on every declared TCP port; a Service

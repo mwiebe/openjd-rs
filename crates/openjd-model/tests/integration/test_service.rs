@@ -14,7 +14,7 @@
 //! 2. **Extension gating**: using `services`/`externalServices` without
 //!    `SERVICE`, or declaring `SERVICE` without `EXPR`, produces a specific,
 //!    path-annotated validation error.
-//! 3. **Structural validation** (§9.7 items 3–5 and 7 as far as they concern
+//! 3. **Structural validation** (§9.9 as far as it concerns
 //!    Services): list sizes, name uniqueness and collisions, identifier and
 //!    `File` rules, port ranges, health-check/restart constraints, and the reuse
 //!    of the `<Environment>`-shaped validators for `variables`,
@@ -1123,7 +1123,7 @@ fn service_name_length_follows_identifier_limit() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServicePort> — §9 item 5, §9.2
+// <ServicePort> — §9 item 6, §9.2
 // ════════════════════════════════════════════════════════════════════
 
 fn service_with_ports(ports: &str) -> String {
@@ -1238,7 +1238,7 @@ fn port_number_range() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServiceHealthCheck> — §9.3, §9.7 item 4
+// <ServiceHealthCheck> — §9.4, §9.7 item 3
 // ════════════════════════════════════════════════════════════════════
 
 /// A service with ports `main` and `metrics`, the given `healthCheck`
@@ -1295,7 +1295,7 @@ fn tcp_connect_declared_ports_accepted() {
     );
 }
 
-/// §9.3 items 3–6: every numeric field of every form is a `<posinteger>`.
+/// §9.4 items 3–6: every numeric field of every form is a `<posinteger>`.
 /// `readinessIntervalSeconds` is not a field of the `STDOUT` form (tested
 /// separately); `failureThreshold` on `STDOUT` needs `healthIntervalSeconds`
 /// beside it to reach the range check.
@@ -1362,7 +1362,7 @@ fn health_numeric_fields_must_be_positive() {
     }
 }
 
-/// §9.3 item 6 / §9.7 item 4: on a STDOUT check `failureThreshold` is
+/// §9.4 item 6: on a STDOUT check `failureThreshold` is
 /// permitted only together with `healthIntervalSeconds`.
 #[test]
 fn stdout_failure_threshold_requires_health_interval() {
@@ -1398,7 +1398,7 @@ fn stdout_failure_threshold_requires_health_interval() {
     );
 }
 
-/// §9.3 item 3: `readinessIntervalSeconds` does not apply to a STDOUT
+/// §9.4 item 3: `readinessIntervalSeconds` does not apply to a STDOUT
 /// check; it is not a property of that form and is rejected as unknown.
 #[test]
 fn stdout_readiness_interval_rejected() {
@@ -1416,7 +1416,7 @@ fn stdout_readiness_interval_rejected() {
             .contains("unknown field `readinessIntervalSeconds`"),
         "got: {err}"
     );
-    // It is accepted on both other forms (§9.3 item 3: default 1 for
+    // It is accepted on both other forms (§9.4 item 3: default 1 for
     // TCP_CONNECT, 5 for COMMAND).
     expect_job_ok(
         &service_with_health(
@@ -1568,7 +1568,7 @@ fn old_readiness_spellings_rejected_as_unknown() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServicePort>.protocol — §9.2 item 3, §9 items 6.4 and 7, §9.7 items 4 and 8
+// <ServicePort>.protocol — §9.3 item 3, §9 items 6.4 and 7
 // ════════════════════════════════════════════════════════════════════
 
 /// A service with the given `ports` list body (indented six spaces) and

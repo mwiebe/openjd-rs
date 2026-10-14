@@ -1,0 +1,28 @@
+# A KEEP Service whose relaunch is still in flight (never becomes READY)
+# when its scope's last Task completes. Constraint 6: the Session ends when
+# the scope completes, whatever its state; an exit observed after the scope
+# has completed is not a failure. The relaunch is cut short, Step B runs,
+# and the Job succeeds without waiting for readinessTimeoutSeconds.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: InFlight
+parameterDefinitions:
+  - { name: Marker, type: STRING }
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 5 }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nif not os.path.exists(m):\n    open(m, 'w').close(); print('openjd_service_ready: up', flush=True); time.sleep(1); raise SystemExit(1)\ntime.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ service: S }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; time.sleep(2); print('TASK_A_DONE')"] } } }
+  - name: B
+    dependencies: [{ dependsOn: A }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_B_RAN')"] } } }

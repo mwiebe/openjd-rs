@@ -62,17 +62,13 @@ through a programmatic API, which further necessitates a macro wrapper.
 ```rust
 macro_rules! session_action_log {
     ($level:ident, $session_id:expr, $action:expr, $content:expr, $($arg:tt)+) => {
-        match ($action as Option<&str>) {
-            Some(action) => log::$level!(
-                target: "openjd.sessions",
-                session_id = $session_id,
-                openjd_log_content = $content.bits(),
-                openjd_timestamp_usec = timestamp_usec(),
-                openjd_action = action;
-                "[{}] {}", action, format_args!($($arg)+)
-            ),
-            None => session_log!($level, $session_id, $content, $($arg)+),
-        }
+        $crate::session_tagged_log!(
+            $level,
+            $session_id,
+            $crate::logging::LogTag { session: None, action: ($action as Option<&str>) },
+            $content,
+            $($arg)+
+        )
     };
 }
 ```
@@ -158,10 +154,9 @@ Session's `Starting Service: …`, `Service onEnter: …`, `Service onRun: …
 (launch N)`, `Ending Service: …`, `Service onExit: …`). A consumer that merges
 streams can therefore show a tagged Session's banners (the CLI does, for the
 Service Sessions) while still printing its own for the untagged Session.
-Redaction is applied to a line before any prefix is added. `log_tag: None`
-(the default) leaves every record exactly as before.
-Redaction is applied to the line before the prefix is added, so the prefix
-never hides or splits a redacted value.
+Redaction is applied to a line before any prefix is added, so the prefix
+never hides or splits a redacted value. `log_tag: None` (the default) leaves
+every record exactly as before.
 
 ## Banner Helpers
 

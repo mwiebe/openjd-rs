@@ -10,8 +10,9 @@
 //! RFC 0009 an Environment Template contributed only an Environment, placed
 //! in the Job's `jobEnvironments` ahead of the Job Template's own; with the
 //! `SERVICE` extension it may also define `services`, which become
-//! **external Services** of every Job submitted through it, with every Step
-//! in their scope. Two checks relate documents that only the scheduler sees
+//! **external Services** of every Job submitted through it, each scoped by
+//! the §9.1 rules over the combined Job (`attached_service_scopes`). Two
+//! checks relate documents that only the scheduler sees
 //! together and are therefore performed here, at submission, rather than at
 //! template validation (§9.9):
 //!
@@ -385,8 +386,8 @@ impl Documents<'_> {
 ///    keys Services on `(document, name)`.
 /// 2. Instantiates each external Service through the same code path as a
 ///    `services` entry — `<Service>.let`, `hostRequirements`, the numeric
-///    `@fmtstring` fields, the carried-forward re-checks — with every Step
-///    in its scope, seeing the other Services of its own document (a
+///    `@fmtstring` fields, the carried-forward re-checks — with its scope
+///    from `attached_service_scopes`, seeing the other Services of its own document (a
 ///    `Service.*` reference to another document's Service is a
 ///    template-validation error, so none can reach here). Errors carry the
 ///    document in their path or message.

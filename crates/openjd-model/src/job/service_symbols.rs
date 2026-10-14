@@ -83,7 +83,7 @@ pub struct ServiceEndpoint {
     /// for this port, in the space of [`protocol`](Self::protocol). The
     /// same number is used for binding and connecting.
     pub port: u16,
-    /// The port's `<ServicePort>.protocol` (§9.2 item 3): the protocol the
+    /// The port's `<ServicePort>.protocol` (§9.3 item 3): the protocol the
     /// number was allocated in and the service process binds it with.
     /// Reported as `WrappedService.Protocols[i]`. `TCP` is the default and
     /// omitted from JSON.

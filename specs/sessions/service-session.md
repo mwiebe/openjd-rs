@@ -21,7 +21,7 @@ restart"), `<ServiceActions>` incl. "Concurrency with `onRun`" (rules 1–6),
 (`onWrapService*`, "RFC 0008's rules extend to the new hooks" 1–6,
 `WrappedService.*`), "Environment variables within a Service", and the
 `openjd_service_ready` message; wiki *Template Schemas* §4.3 rule 6, §4.3.1,
-§9.6, §9.6.1; wiki *How-Jobs-Are-Run* § Services.
+§9.6, §9.7.1; wiki *How-Jobs-Are-Run* § Services.
 
 ### What this runtime decides, and what it leaves to the caller
 
@@ -34,7 +34,7 @@ agent):
 | Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness then health, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
 | Detect instance failures: ready timeout, `onRun` exit before READY, `onRun` exit at any time, UNHEALTHY (`failureThreshold` consecutive failed probes after READY) | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
 | Cancel `onRun` with its own `cancelation` method on request, at `end()`, and on UNHEALTHY ("Failure and restart" step 2, performed here rather than by the scheduler) | When to cancel otherwise (scope complete, ready timeout, …) |
-| Run `onHealthCheck` concurrently with `onRun` under the rules of §9.6.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
+| Run `onHealthCheck` concurrently with `onRun` under the rules of §9.7.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
 
 ## Why a sibling type, not a mode of `Session`
 
@@ -150,17 +150,17 @@ Checks, before any directory is created:
 - Every declared port, and every port a `TCP_CONNECT` check names, has an
   endpoint: else `SessionError::ServicePortUnassigned { name, port }` —
   `Service 'svc' port 'metrics' has no endpoint assignment`.
-- Each endpoint's `protocol` is the declared port's `protocol` (§9.2 item 3;
+- Each endpoint's `protocol` is the declared port's `protocol` (§9.3 item 3;
   the number was allocated in that protocol's space): else
   `SessionError::Runtime("Service 'svc' port 'ingest' is declared UDP but its
   endpoint assignment is TCP")`. And every port a `TCP_CONNECT` check names
-  is TCP (§9.3 item 2): else `SessionError::Runtime("Service 'svc':
+  is TCP (§9.4 item 2): else `SessionError::Runtime("Service 'svc':
   TCP_CONNECT health check names port 'ingest', whose protocol is UDP;
   only TCP ports can be probed")` — model validation already forbids this.
 - A `COMMAND` health check comes with an `onHealthCheck`: else
   `SessionError::Runtime("Service 'svc': health check type is COMMAND but
   onHealthCheck is not defined")` (model validation already forbids this
-  combination, §9.7 item 4).
+  combination, §9.7 item 3).
 
 The endpoint assignment's ports are then re-ordered into the Service's
 `ports` declaration order, so `WrappedService.PortNames` / `.Ports` /
@@ -209,7 +209,7 @@ returns it; `end()` is still required.
    Embedded files are written **once**, here, and never again in the
    Session — not before `onRun`, not before any `onHealthCheck`
    invocation, not on relaunch, not before `onExit`. This is how rule 1 of
-   "Concurrency with `onRun`" (§9.6.1 item 1) is satisfied: a Service
+   "Concurrency with `onRun`" (§9.7.1 item 1) is satisfied: a Service
    Session's format-string values are constant for its lifetime, so the
    content never changes, and the rule explicitly allows leaving an
    unchanged file in place; since nothing is ever rewritten, no action can
@@ -251,7 +251,7 @@ The same map is given to `onHealthCheck`, which therefore sees
 *onHealthCheck*, and *onExit*").
 
 Messages honored per action ("Environment variables within a Service", the
-wiki's message table, and §9.6.1 rule 2):
+wiki's message table, and §9.7.1 rule 2):
 
 | Message | `onEnter` | `onRun` | `onHealthCheck` | `onExit` |
 |---|---|---|---|---|
@@ -450,7 +450,7 @@ canceled, and no further invocation starts. On `Unhealthy` the runtime
 *does* cancel `onRun` ("Failure and restart" step 2's cancel, performed by
 the runtime rather than the scheduler); the scheduler only awaits the exit.
 
-### Concurrency with `onRun` (RFC 0009 §9.6.1), rule by rule
+### Concurrency with `onRun` (RFC 0009 §9.7.1), rule by rule
 
 1. **Embedded files** — written once at `enter()`, never rewritten (see
    `enter()` step 2). A wrapping Environment's embedded files (`Env.File.*`
@@ -701,7 +701,7 @@ tag nothing changes.
 - Validation of the Environment stack given to the Service Session — the
   single-layer rule (checked by `Session::enter_environment` as in any
   Session), and that a `SERVICE`-scoped wrapping Environment defines all four
-  `onWrapService*` hooks (§9.7 item 6) — is the CLI's / scheduler's.
+  `onWrapService*` hooks (§4.3 `WRAP_ACTIONS` constraint 6) — is the CLI's / scheduler's.
 - Collapsing successful `onHealthCheck` output (RFC MAY) — see "Logging".
 - Host loss ("Failure and restart" step 6) is a scheduler concern; nothing here waits on a
   lost host because nothing here runs there.

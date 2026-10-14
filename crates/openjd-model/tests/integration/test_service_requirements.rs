@@ -899,7 +899,7 @@ fn same_named_attachments_are_accepted_when_not_required() {
 }
 
 #[test]
-fn inline_service_shadowing_an_attached_one_is_accepted() {
+fn inline_service_named_like_an_attached_one_is_accepted() {
     // §1.2.2 item 3: the inline `Cache` is what the Job Template's
     // references resolve to (the Step lists `service: Cache`, which names
     // the inline one); the attached one still runs.

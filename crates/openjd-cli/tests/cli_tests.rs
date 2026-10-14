@@ -3936,7 +3936,7 @@ mod services {
         );
     }
 
-    /// RFC 0009 §9.2 item 3 / §9 item 6 (conformance
+    /// RFC 0009 §9.3 item 3 / §9 item 6 (conformance
     /// `service-udp-port-echo`): a Service whose only port is UDP is
     /// allocated a UDP port on loopback, reported with a `/udp` suffix in
     /// the endpoints line, becomes READY through its STDOUT check, and is
@@ -3968,7 +3968,7 @@ mod services {
     /// A metrics sink with a UDP ingest port: a Service with
     /// a UDP port and a TCP port and no `healthCheck` becomes READY
     /// through the default TCP_CONNECT, which probes the TCP port only
-    /// (§9 item 6, §9.3 item 2). The endpoints line suffixes only the UDP
+    /// (§9 item 6, §9.4 item 2). The endpoints line suffixes only the UDP
     /// port; the Task reaches both ports.
     #[test]
     fn test_job_service_mixed_tcp_udp_default_health_check_probes_tcp_only() {
@@ -4847,7 +4847,7 @@ mod services {
 
     /// As above, with the Job Template's same-named inline Service scoped to
     /// Step Work (the only Step that lists it): the Task's
-    /// `Service.Cache.*` is the inline `Cache` (inline shadows), the attached
+    /// `Service.Cache.*` is the inline `Cache` (names are per document), the attached
     /// Environment's variables the queue's, and the inline `Cache` stops
     /// before Step Done, which is outside its scope.
     #[test]
@@ -5316,6 +5316,53 @@ mod services {
             "{stdout}"
         );
         assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// "Failure and restart" step 4 for a job-wide Service (listed by a Job
+    /// Environment) whose attempts run out during the run's last Task: the
+    /// verdict is pending at `stop_all`, and the Job must fail.
+    #[test]
+    fn test_job_wide_service_failed_during_last_task_fails_the_job() {
+        let (code, stdout, stderr) =
+            run_service_template("service_job_wide_fail_during_last_task.yaml", &[]);
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: every Step) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("Service 'S' (scope: every Step) failed: onRun exited"),
+            "{stdout}"
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 6: a relaunch still in flight when the scope's last Task
+    /// completes is cut short, not awaited. The Job succeeds, Step B runs,
+    /// and the run does not wait out `readinessTimeoutSeconds` (5 s here).
+    #[test]
+    fn test_relaunch_in_flight_at_scope_end_is_cut_short() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let start = std::time::Instant::now();
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_in_flight_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "waited out the relaunch: {elapsed:?}\n{stdout}"
+        );
     }
 
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY

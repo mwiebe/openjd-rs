@@ -611,7 +611,7 @@ impl ServiceSession {
                 });
             };
             // The number was allocated in the declared protocol's space
-            // (§9.2 item 3); an assignment in the other space is the
+            // (§9.3 item 3); an assignment in the other space is the
             // scheduler's error, not the Service's.
             if endpoint.protocol != port.protocol {
                 return Err(SessionError::Runtime(format!(
@@ -629,7 +629,7 @@ impl ServiceSession {
                     });
                 };
                 // Model validation restricts TCP_CONNECT to TCP ports
-                // (§9.3 item 2).
+                // (§9.4 item 2).
                 if endpoint.protocol != ServicePortProtocol::Tcp {
                     return Err(SessionError::Runtime(format!(
                         "Service '{}': TCP_CONNECT health check names port '{p}', whose \
@@ -2124,7 +2124,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
         }
     };
 
-    // The ready timeout is measured from launch (RFC 0009 §9.3 item 4)
+    // The ready timeout is measured from launch (RFC 0009 §9.4 item 4)
     // and runs continuously, including while a probe is in progress.
     let deadline = tokio::time::sleep(plan.readiness_timeout);
     tokio::pin!(deadline);

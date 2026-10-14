@@ -31,9 +31,9 @@
 //! its scope to the queue.
 //!
 //! Services are keyed by [`ServiceKey`] — the document that declares a
-//! Service plus its name (Template Schemas §1.2.2 item 3: an inline Service
-//! shadows an external one of the same name, and two attachments may both
-//! declare a `Cache`). A Service Session is seeded with the endpoints of the
+//! Service plus its name (Template Schemas §1.2.2 item 3: Service names are
+//! per document, so an inline Service and an attached one may share a name,
+//! and two attachments may both declare a `Cache`). A Service Session is seeded with the endpoints of the
 //! Services it lists with the `service` key in its `dependencies` — of its
 //! own document, or the attached Service bound to the Job Template's
 //! `externalServices` entry of that name for an inline Service — and a Task
@@ -257,8 +257,7 @@ pub(super) struct GateOutcome {
     /// completed Tasks of every Step in the union of their scopes return to
     /// the queue.
     pub rerun: Option<ServiceScope>,
-    /// A Service whose scope is every Step (or an external Service) began a
-    /// new Service Session (new endpoints) since the last gate: every
+    /// A Service whose scope is every Step began a new Service Session (new endpoints) since the last gate: every
     /// Environment the Task Session entered may hold stale `Service.*`
     /// values.
     pub job_wide_endpoints_changed: bool,
@@ -814,31 +813,58 @@ impl ServiceManager {
     /// A Service whose scope is every Step is stopped only by
     /// [`stop_all`](Self::stop_all).
     ///
-    /// A Service whose `onRun` exited while the scope's last Task was
-    /// running has a restart decision in flight that no later readiness
-    /// gate will collect. That decision is settled here first: a relaunch
-    /// is simply stopped, and a FAILED verdict is returned so the caller
-    /// fails the scope ("Failure and restart" step 4).
+    /// Returns the FAILED verdicts that were already decided but not yet
+    /// collected (see [`collect_decided_failures`](Self::collect_decided_failures)),
+    /// so the caller fails the scope ("Failure and restart" step 4). A
+    /// relaunch still in flight is cut short, not awaited: the scope has
+    /// completed, so its outcome is no longer a failure.
     pub(super) async fn stop_completed_scopes(
         &mut self,
         remaining: &BTreeSet<String>,
     ) -> Result<Vec<ServiceFailure>, RunError> {
-        let done: Vec<usize> = self
+        let done: BTreeSet<ServiceKey> = self
             .services
             .iter()
-            .enumerate()
-            .filter(|(_, m)| m.active && !m.is_job_wide())
-            .filter(|(_, m)| {
+            .filter(|m| m.active && !m.is_job_wide())
+            .filter(|m| {
                 m.scope
                     .step_names()
                     .is_some_and(|steps| steps.is_disjoint(remaining))
             })
-            .map(|(idx, _)| idx)
+            .map(|m| m.key.clone())
             .collect();
+        let failures = self.collect_decided_failures(&done).await?;
+        self.stop_set(&done).await;
+        Ok(failures)
+    }
+
+    /// Stop everything, in dependency order (constraint 4), after the Task
+    /// Session has exited the Job's Environments. Returns the FAILED
+    /// verdicts that were already decided but not yet collected, as
+    /// [`stop_completed_scopes`](Self::stop_completed_scopes) does for a
+    /// Step-scoped Service: a job-wide Service whose attempts ran out during
+    /// the run's last Task fails the Job.
+    pub(super) async fn stop_all(&mut self) -> Result<Vec<ServiceFailure>, RunError> {
+        let all: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
+        let failures = self.collect_decided_failures(&all).await?;
+        self.stop_set(&all).await;
+        Ok(failures)
+    }
+
+    /// For each Service in `keys` whose background task has already
+    /// finished — its restart decision is made, but no readiness gate has
+    /// run since to collect it — take the result: a `Failed` verdict is
+    /// returned as a [`ServiceFailure`] and the Service left FAILED; a
+    /// `Ready` or `Stopped` instance is put back for the caller to stop. A
+    /// task still running is left alone, for `stop_set` to cut short.
+    async fn collect_decided_failures(
+        &mut self,
+        keys: &BTreeSet<ServiceKey>,
+    ) -> Result<Vec<ServiceFailure>, RunError> {
         let mut failures = Vec::new();
-        for &idx in &done {
-            let m = &mut self.services[idx];
-            if !matches!(m.state, State::Busy(_)) {
+        for m in self.services.iter_mut().filter(|m| keys.contains(&m.key)) {
+            let decided = matches!(&m.state, State::Busy(handle) if handle.is_finished());
+            if !decided {
                 continue;
             }
             let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
@@ -862,17 +888,7 @@ impl ServiceManager {
                 }
             }
         }
-        let keys: BTreeSet<ServiceKey> =
-            done.iter().map(|&i| self.services[i].key.clone()).collect();
-        self.stop_set(&keys).await;
         Ok(failures)
-    }
-
-    /// Stop everything, in dependency order (constraint 4), after the Task
-    /// Session has exited the Job's Environments.
-    pub(super) async fn stop_all(&mut self) {
-        let all: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
-        self.stop_set(&all).await;
     }
 
     /// Stop the Services in `keys`: cancel their background work and end
@@ -1295,9 +1311,9 @@ impl ServiceManager {
     }
 }
 
-/// True when the Job Template declares an inline Service named `name` (which
-/// shadows an attached Service of the same name, Template Schemas §1.2.2
-/// item 3).
+/// True when the Job Template declares an inline Service named `name` (its
+/// own `Service.<name>.*` references mean that one; an attached Service of
+/// the same name is a different Service, Template Schemas §1.2.2 item 3).
 fn service_declared(job: &Job, name: &str) -> bool {
     job.services
         .iter()

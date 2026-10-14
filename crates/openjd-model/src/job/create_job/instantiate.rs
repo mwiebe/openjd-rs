@@ -445,7 +445,7 @@ pub(super) fn instantiate_service<'a>(
             health_interval_seconds,
             ..
         } => job::ServiceHealthCheck::TcpConnect {
-            // §9 item 6 / §9.3 item 2: the default port set is every TCP
+            // §9 item 6 / §9.4 item 2: the default port set is every TCP
             // port; validation has rejected a Service with none.
             ports: probed
                 .clone()
@@ -487,7 +487,7 @@ pub(super) fn instantiate_service<'a>(
         } => job::ServiceHealthCheck::Stdout {
             readiness_timeout_seconds,
             // No default: a `null` resolution, like an absent field, means
-            // no heartbeat is expected (§9.3 item 5).
+            // no heartbeat is expected (§9.4 item 5).
             health_interval_seconds: health_interval_seconds
                 .as_ref()
                 .map(|fs| {
@@ -587,7 +587,7 @@ pub(super) fn instantiate_service<'a>(
     }))
 }
 
-/// §9 item 5.4 / §9.7 item 8: no two ports of the same `protocol` share a
+/// §9 item 6.4: no two ports of the same `protocol` share a
 /// resolved `port` number. Template validation applies the same rule to
 /// literal numbers; this catches the format-string forms once resolved,
 /// reporting the later port with the same message, at `ports[i] -> port`.

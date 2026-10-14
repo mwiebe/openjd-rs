@@ -222,7 +222,7 @@ fn coordinator_example_creates_a_service_scoped_to_one_step() {
     assert_eq!(services.len(), 1);
     let c = &services[0];
     assert_eq!(c.name, "Coordinator");
-    // Only RenderTiles lists `service:Coordinator` (§9.1 item 1);
+    // Only RenderTiles lists `service:Coordinator` (§9.1 rule 1);
     // PrepareScene, which RenderTiles also depends on, is not in its scope.
     assert_eq!(c.scope, ServiceScope::steps(["RenderTiles"]));
     assert!(!c.scope.contains("PrepareScene"));
@@ -860,8 +860,8 @@ fn second_service_errors_carry_its_index() {
 }
 
 /// The NUMERIC template's scopes: Step `S` lists `service:Side`, so it is in
-/// `Side`'s scope (§9.1 item 1); `Side` lists `service:Cache`, so `Side`'s
-/// scope is inside `Cache`'s (§9.1 item 2) and both are scoped to `S`. The
+/// `Side`'s scope (§9.1 rule 1); `Side` lists `service:Cache`, so `Side`'s
+/// scope is inside `Cache`'s (§9.1 rule 2) and both are scoped to `S`. The
 /// job-side `Service` keeps the declared edge: `Side` depends on `Cache`, and
 /// neither depends on a Step.
 #[test]
@@ -898,7 +898,7 @@ fn numeric_template_scopes_follow_the_declared_dependencies() {
 /// A Service may list a Step and a Service in one `dependencies` list
 /// (§9 item 4). `Use` lists `service:Front`, so `Use` is in `Front`'s scope;
 /// `Front` lists `service:Back`, so `Back`'s scope contains `Front`'s
-/// (§9.1 item 2). `Front` also lists the Step `Prepare`, which is not in
+/// (§9.1 rule 2). `Front` also lists the Step `Prepare`, which is not in
 /// either scope: it must complete before `Front` starts.
 #[test]
 fn service_dependencies_on_steps_and_services_are_carried_into_the_job() {
@@ -1287,7 +1287,7 @@ steps:
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServicePort>.protocol — §9.2 item 3, §9 items 6.4 and 7, §9.7 item 8
+// <ServicePort>.protocol — §9.3 item 3, §9 items 6.4 and 7
 // ════════════════════════════════════════════════════════════════════
 
 /// A metrics sink with a UDP `ingest` port and a TCP `api` port, both

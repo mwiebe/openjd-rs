@@ -1,4 +1,4 @@
-# RFC 0009 §9.2 item 3 / §9 item 7 (conformance `service-udp-port-echo`): a
+# RFC 0009 §9.3 item 3 / §9 item 7 (conformance `service-udp-port-echo`): a
 # Service whose only port is `protocol: UDP` (a python datagram echo
 # listener). It cannot be probed by TCP_CONNECT, so it declares a STDOUT
 # health check and prints `openjd_service_ready` once bound. The Task

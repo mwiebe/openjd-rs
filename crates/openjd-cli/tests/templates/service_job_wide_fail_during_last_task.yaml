@@ -1,0 +1,26 @@
+# A job-wide Service (a Job Environment lists it) with no relaunches whose
+# onRun exits while the run's last Task is running. Its FAILED verdict is
+# pending when the run ends, on the stop_all path rather than
+# stop_completed_scopes; the Job must still fail ("Failure and restart"
+# step 4: the scope is every Step, and with it the Job).
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: JobWideFail
+jobEnvironments:
+  - name: E
+    dependencies: [{ service: S }]
+    variables: { P: "{{ Service.S.main.port }}" }
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    restartPolicy: { maxAttempts: 0, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(1); raise SystemExit(1)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; time.sleep(3); print('TASK_A_DONE')"] } } }

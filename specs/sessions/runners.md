@@ -272,7 +272,7 @@ spawn a new sudo process per action.
 emits about the action is attributed to that name (`[<tag>] ` prefix plus the
 `openjd_action` structured field — see [logging.md](logging.md)); the `Phase: Running
 action` subsection banner becomes one tagged line. It is set only by the Service
-Session for the action that runs concurrently with `onRun` (RFC 0009 §9.6.1 rule 3).
+Session for the action that runs concurrently with `onRun` (RFC 0009 §9.7.1 rule 3).
 
 Alongside it, `session_tag: Option<String>` carries the Session's `SessionConfig::log_tag`
 — copied onto every runner the Session builds (the `with_session_tag` builder on

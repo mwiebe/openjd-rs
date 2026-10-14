@@ -94,6 +94,7 @@ Spec entry point: `specs/model/README.md`
 Local job execution runtime. Manages session lifecycle, runs actions via subprocess, handles environment setup/teardown.
 
 - **Session** (`src/session.rs`) — Session state machine: enter environments, run task actions, cleanup.
+- **ServiceSession** (`src/service_session.rs`) — RFC 0009 `SERVICE`: runs one Service's `onEnter` / `onRun` / `onHealthCheck` / `onExit` inside the Job's Environments, with `TCP_CONNECT`, `COMMAND`, and `STDOUT` readiness and health probes and per-action log attribution.
 - **Subprocess** (`src/subprocess.rs`) — Process spawning, I/O streaming, signal handling (SIGTERM/SIGKILL), process tree management.
 - **Action filter** (`src/action_filter.rs`) — Real-time stdout/stderr message parsing, redaction, and annotation.
 - **Cross-user** (`src/cross_user_helper.rs`) — Subprocess execution as a different OS user via an embedded helper binary.
@@ -108,7 +109,7 @@ CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
-- **run** (`src/run/`) — Local job execution using the sessions runtime.
+- **run** (`src/run/`) — Local job execution using the sessions runtime. `services.rs` and `service_ports.rs` are the single-host Service scheduler (RFC 0009): start Services before the Steps in their scope, gate Tasks on READY, apply the restart policy, stop at scope end.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`

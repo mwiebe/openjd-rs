@@ -900,7 +900,8 @@ template (§9.1 rule 4).
   this document's services.`, plus `cannot depend on itself.` and `duplicate dependency
   '…'.`; a cycle among the `service` entries (`service_dependency_cycle`) reports
   `dependencies contain a cycle: Service A -> Service B -> Service A.` at `services`. Scope is
-  not checked: every Step of every Job is in an external Service's scope.
+  not checked here: an attached Service's scope is computed over the combined Job at
+  submission, and one nothing lists is never started rather than rejected.
 - **Requirement ports** (§9.8 item 2): `externalServices[i] -> ports` `must not be empty.` /
   `must not contain more than 10 elements.`; `duplicate port name '<name>'.` on the element;
   the identifier rules above on `ports[j] -> name`. `protocol` is the same serde enum as a

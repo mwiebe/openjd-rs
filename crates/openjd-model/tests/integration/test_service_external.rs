@@ -357,8 +357,8 @@ fn rfc_queue_cache_example_merges_with_the_cache_service_first() {
     assert_eq!(service_names(&applied.external_services), ["Cache"]);
 
     let cache = &applied.external_services[0];
-    // An external Service has every Step in its scope (§1.2.2 item 1) and
-    // is stamped with its document.
+    // The attachment's own Environment lists `Cache` (§9.1 rule 3), so every
+    // Step is in its scope; it is stamped with its document.
     assert_eq!(cache.scope, ServiceScope::AllSteps);
     assert_eq!(cache.document, job::Document::environment_template(0, None));
     assert!(applied.requirement_bindings.is_empty());
@@ -603,9 +603,9 @@ fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
 
 #[test]
 fn external_service_named_like_an_inline_service_is_accepted() {
-    // §1.2.2 item 3: the coordinator example's inline `Coordinator` shadows
-    // an attached `Coordinator` for the Job Template's references; the two
-    // are kept distinct by their documents. The attached one precedes the
+    // §1.2.2 item 3: the coordinator example's inline `Coordinator` and an
+    // attached `Coordinator` are two Services; the Job Template's references
+    // mean its own, and the two are kept distinct by their documents. The attached one precedes the
     // inline one in the combined Job. Nothing lists the attached one — the
     // Step's `service: Coordinator` names the inline Service — so its scope
     // is empty and it is never started (§9.1).

@@ -155,7 +155,7 @@ fn check_environment_actions(
 }
 
 /// The hooks-follow-`runScope` rule (RFC 0009; Template Schemas §4.3
-/// WRAP_ACTIONS constraint 6, §9.7 item 6), applied to a wrapping
+/// WRAP_ACTIONS constraint 6), applied to a wrapping
 /// environment when `SERVICE` is declared.
 ///
 /// Inner environments are entered in every kind of Session, so every

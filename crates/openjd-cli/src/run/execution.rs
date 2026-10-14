@@ -63,7 +63,14 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     // order (constraint 4), after the Task Session has left their
     // Environments.
     ctx.exit_environments_down_to(0).await;
-    ctx.services.stop_all().await;
+    match ctx.services.stop_all().await {
+        Ok(failures) => {
+            for failure in failures {
+                ctx.record_service_failure(failure);
+            }
+        }
+        Err(e) => eprintln!("ERROR: {e}"),
+    }
     ctx.record_interruption();
     if let Err(e) = execution_result {
         if !args.preserve {
@@ -278,7 +285,7 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
 /// them too. The model enforces the rule per document at template
 /// validation; this covers the combined Job, where an `--environment`
 /// template's wrapper meets the Job Template's. That a `SERVICE`-scoped
-/// wrapper defines all four `onWrapService*` hooks (§9.7 item 6) is enforced
+/// wrapper defines all four `onWrapService*` hooks (§4.3 `WRAP_ACTIONS` constraint 6) is enforced
 /// by the model — per document at template validation, and across documents
 /// by `apply_environment_templates` — and is not repeated here.
 fn validate_wrap_environment_stacks(job: &Job, steps_to_run: &[usize]) -> Result<(), RunError> {
@@ -677,8 +684,9 @@ async fn execute_step(
         }
         TasksOutcome::Done | TasksOutcome::Rerun(_) => {
             // Constraint 6: a Service whose scope has no Step left to run
-            // is stopped. One whose restart decision was still pending and
-            // came back FAILED fails the scope ("Failure and restart" step 4).
+            // is stopped. One whose attempts ran out during the Step's last
+            // Task fails the scope ("Failure and restart" step 4); a
+            // relaunch still in flight is cut short.
             for failure in ctx.services.stop_completed_scopes(remaining).await? {
                 ctx.record_service_failure(failure);
             }

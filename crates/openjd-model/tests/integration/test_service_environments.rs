@@ -5,7 +5,7 @@
 //! Integration tests for the RFC 0009 `SERVICE` extension's changes to
 //! `<Environment>`, `<EnvironmentActions>`, and the Environment Template
 //! root (Template Schemas §1.2, §4 items 3–4, §4.3 WRAP_ACTIONS constraint
-//! 6, §9.7 items 3 and 6).
+//! 6, §9.9).
 //!
 //! These tests cover:
 //!

@@ -42,13 +42,14 @@ openjd-rs/
 │   │       ├── lib.rs
 │   │       ├── action.rs
 │   │       ├── session.rs
+│   │       ├── service_session.rs  # RFC 0009 Service Session
 │   │       └── embedded_files.rs
 │   └── openjd-cli/             # CLI binary
 │       └── src/
 │           ├── main.rs
 │           ├── check.rs
 │           ├── summary.rs
-│           ├── run.rs
+│           ├── run/            # run subcommand; services.rs is the Service scheduler
 │           └── help.rs
 └── specs/                      # Design specs
     ├── architecture.md
@@ -92,12 +93,15 @@ Core template library. Depends on openjd-expr. Provides:
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:
 - Session lifecycle management
+- Service Session lifecycle (RFC 0009): a Service's actions, health probes, and
+  per-action log attribution
 - Action execution (subprocess management)
 - Re-exports path mapping from openjd-expr
 
 ### openjd-cli
 Binary crate. Depends on all three libraries.
-Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally).
+Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs
+locally, including a single-host Service scheduler for RFC 0009).
 
 ## Key Design Decisions
 

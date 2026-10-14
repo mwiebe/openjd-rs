@@ -526,8 +526,11 @@ pub struct Service {
     /// The Steps whose Tasks depend on this Service (Template Schemas §9.1),
     /// computed from the template's `dependencies` lists: the Steps that list
     /// it with the `service` key, those in the scope of a Service that lists it, and
-    /// [`ServiceScope::AllSteps`] for a Service a Job Environment lists,
-    /// one a Job-wide Service depends on, or an external Service. A scheduler
+    /// [`ServiceScope::AllSteps`] for a Service a Job Environment lists or
+    /// one a Job-wide Service depends on. An external Service's scope is
+    /// computed by the same rules over the combined Job at submission
+    /// ([`apply_environment_templates`](crate::apply_environment_templates));
+    /// it is empty when nothing in the Job lists it. A scheduler
     /// starts the Service before the first Task of any Step in the scope and
     /// stops it once none has a Task left.
     #[serde(default = "ServiceScope::all_steps_default")]
@@ -671,7 +674,7 @@ pub struct ServicePort {
     /// allocates one. Resolved from the template's `@fmtstring`; a
     /// whole-field `null` resolution is `None`.
     pub port: Option<u16>,
-    /// §9.2 item 3: the transport protocol of the port, `TCP` (the
+    /// §9.3 item 3: the transport protocol of the port, `TCP` (the
     /// default, omitted from JSON) or `UDP`. The runtime requests or
     /// allocates the number in this protocol's space and publishes or
     /// forwards the port as it.
@@ -698,7 +701,7 @@ pub enum ServiceHealthCheck {
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         /// The names of the TCP ports to probe — every declared TCP port
-        /// when the template named none (§9 item 6, §9.3 item 2).
+        /// when the template named none (§9 item 6, §9.4 item 2).
         ports: Vec<String>,
         /// Seconds between probes before READY (§9.4 item 3).
         readiness_interval_seconds: u64,

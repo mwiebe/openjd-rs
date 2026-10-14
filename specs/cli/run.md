@@ -32,12 +32,12 @@ openjd run <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [-t <KEY=VALUE>]...
 | `-t`, `--task-param` | `Vec<String>` | No | — | Explicit task parameter values for a single task |
 | `--tasks` | `Option<String>` | No | — | JSON array or file of task parameter sets |
 | `--maximum-tasks` | `i64` | No | `-1` | Max tasks to run (-1 = all) |
-| `--environment` | `Vec<PathBuf>` | No | — | Additional environment template files |
+| `--environment` | `Vec<PathBuf>` | No | — | Environment template files, applied as a queue would: their Environments and (SERVICE) Services join the Job |
 | `--path-mapping-rules` | `Option<String>` | No | — | Path mapping rules (JSON or file://) |
 | `--run-dependencies` | `bool` | No | `false` | Run transitive dependency steps first |
 | `--no-run-dependencies` | `bool` | No | — | Explicit opt-out (default behavior) |
 | `--extensions` | `Option<String>` | No | all | Comma-separated extension names |
-| `--preserve` | `bool` | No | `false` | Keep session working directory after completion |
+| `--preserve` | `bool` | No | `false` | Keep the Session working directories (the Task Session's and each Service Session's) after completion |
 | `--verbose` | `bool` | No | `false` | Enable DEBUG-level logging; with Services, print every health probe result (see Output) |
 | `--timestamp-format` | `String` | No | `relative` | Log timestamp format: `relative`, `local`, `utc` |
 | `--output` | `String` | No | `human-readable` | Output format: `human-readable`, `json`, `yaml` |
@@ -409,9 +409,11 @@ item 3). A Step's Tasks are scheduled once the Steps it lists have completed and
 Services it lists are READY; a Service starts once the Steps it lists have completed and
 the Services it lists are READY, and is stopped before any Service it lists. Every
 Service of the combined Job carries the scope job creation computed for it from those
-dependencies (`job::Service::scope`, Template Schemas §9.1): every Step for an external
-Service or a Service a Job Environment lists; otherwise the Steps that list
-`service: <Name>`, together with the scope of every Service that lists it, transitively.
+dependencies (`job::Service::scope`, Template Schemas §9.1): every Step for a Service a
+Job Environment lists (an attached document's own `environment` included); otherwise
+the Steps that list `service: <Name>`, together with the scope of every Service that
+lists it, transitively. An external Service nothing in the combined Job lists has an
+empty scope and is never activated.
 A Job Environment's list changes nothing else about scheduling: the runtime never gates
 on it, since a Service it lists is Job-wide and READY before the Environment is entered. (Validation rejects a Job Template Service whose scope is empty.) The
 manager registers all of them once and *activates* each when the run reaches its
@@ -644,8 +646,8 @@ local runner either fails the run (no further Task runs, exit code 1).
 that began a new Service Session changed the Service's endpoints, so every Service
 that lists it, directly or transitively, holds endpoint values that are no longer
 valid. At the next gate (`restart_dependents`) the runner stops each such dependent
-that has a Session — READY, or still starting — in the order of constraint 4
-(dependents before the Services they list, `stop_order`), logging `Service 'Front'
+that has a Session — READY, or still starting — in the order of constraint 4 among
+themselves (dependents before the Services they list, `stop_order`), logging `Service 'Front'
 (scope: Step Work) is stopping: Service 'Back' began a new Service Session
 (completedTasks: KEEP; no relaunch attempt consumed)`, ends its Session, and leaves it
 idle but active, so the gate starts it again in a new Service Session once every
@@ -667,6 +669,12 @@ Environments that may have captured the old value (all of them for a Service who
 scope is every Step, the Step's for one scoped to Steps), logging `Re-entering N
 Environment(s): a Service they may reference has new endpoints`. Tasks resolve
 `Service.*` per Task, so they see the new value without further action.
+
+The relaunched Service's own old Session, however, is ended by the background relaunch
+task before the gate runs, so a READY dependent outlives the Service it lists by up to
+one gate interval and its `onExit` runs after the listed Service's. The same holds when
+a Service becomes FAILED while a dependent is READY. This is a deviation from
+constraint 4; see `specs/service-extension-status.md` § Gaps, L4.
 
 Not implemented: suspension (constraint 9's `KEEP`-only pause — a Service may be
 suspended only if its `completedTasks` is `KEEP`, and not while any Service that lists
@@ -703,9 +711,12 @@ Session normally.
 
 Service lifecycle is logged on the run's timeline with the same banners the
 Environments use (`Starting Service: <name>` / `Stopping Service: <name>`) and one
-line per event, each naming the Service and its scope — `(scope: every Step)`,
-`(scope: Step Render)`, or `(scope: Steps Gather, Scatter)` (sorted Step names), the
-`Display` of `job::ServiceScope`: endpoints
+line per event naming the Service. The lines that describe a state the scheduler
+tracks — `endpoints`, `is UNHEALTHY`, `is UNREADY`, `is FAILED`, `is stopping`, `is
+starting again` — also carry the scope: `(scope: every Step)`, `(scope: Step Render)`,
+or `(scope: Steps Gather, Scatter)` (sorted Step names), the `Display` of
+`job::ServiceScope`; the per-launch lines (`working directory`, `onRun launched`, `is
+READY`, `onRun (launch N) …`, `Relaunching …`, `stopped`) do not. The lines: endpoints
 (`Service 'Cache' (scope: every Step) endpoints: main -> 127.0.0.1:41235`; a UDP port's
 address is suffixed `/udp` — `ingest -> 127.0.0.1:50780/udp` — and a TCP port's is
 unsuffixed), `working directory: <path>` (the Service Session's, printed as soon as it
@@ -723,7 +734,8 @@ relaunch or FAILED line, so the old instance is seen gone before the new one sta
 RFC 0009 "Failure and restart" step 2), `Relaunching Service
 '<name>' onRun in its Service Session (relaunch N of M): <reason>` / `… in a new
 Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
-(restartPolicy.maxAttempts)`, and `stopped`. The `<reason>` of a failure is one of
+(restartPolicy.maxAttempts)`, and `stopped` (or `stopped; working directory preserved
+at: <path>` under `--preserve`). The `<reason>` of a failure is one of
 `failed to start: …`, `onRun exited before becoming READY (exit code: N[; <fail
 message>])`, `did not become READY within readinessTimeoutSeconds`, `onRun exited while the
 scope still had work (…)`, or `instance UNHEALTHY: <the UNHEALTHY detail>`. The

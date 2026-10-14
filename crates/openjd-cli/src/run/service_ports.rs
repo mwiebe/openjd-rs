@@ -24,7 +24,7 @@
 //! receive the same port number in one run, even when one of them has
 //! already released it: a Task that resolved the old endpoint could
 //! otherwise connect to the wrong Service. TCP and UDP numbers are separate
-//! spaces (§9.2 item 3): the table is kept per protocol, so a TCP port and a
+//! spaces (§9.3 item 3): the table is kept per protocol, so a TCP port and a
 //! UDP port of the same number are independent allocations.
 
 use std::collections::BTreeSet;

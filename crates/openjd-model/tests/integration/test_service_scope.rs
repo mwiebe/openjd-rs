@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! Integration tests for the RFC 0009 `Service.*` format-string scope rules
-//! (Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.7 items 1–2,
+//! (Template Schemas §7.3.1 `Service.*` rows, §9 scope list, §9.9,
 //! §3.6.2 let tables, §4 item 3.2, §4.3.1 `WrappedService.*`).
 //!
 //! Every negative case asserts the full Pydantic-style error path and
@@ -311,7 +311,7 @@ fn step_script_never_sees_bind_address() {
 }
 
 /// There are no per-Step Services: any Step may list a Service, and the
-/// Service's scope is exactly the Steps that list it (§9.1 item 1).
+/// Service's scope is exactly the Steps that list it (§9.1 rule 1).
 #[test]
 fn another_step_may_reference_the_same_service() {
     let tmpl = template(&Tmpl {
@@ -501,7 +501,7 @@ fn step_action_timeout_cannot_reference_services() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §4 item 3.2 / §9.7 item 2: Environments and runScope
+// §4 items 3–4: Environments and runScope
 // ════════════════════════════════════════════════════════════════════
 
 /// §4 item 4: an Environment without `runScope` that lists a Service (a
@@ -724,7 +724,7 @@ fn service_reference_without_dependency_is_rejected() {
 
 /// §1.1 item 8: the order of `services` carries no meaning, so a Service
 /// may list (and reference) one declared after it. The listed Service's
-/// scope contains the listing one's (§9.1 item 3), so `C` serves `S`
+/// scope contains the listing one's (§9.1 rule 3), so `C` serves `S`
 /// although `S` does not list it.
 #[test]
 fn service_may_reference_a_later_service() {
@@ -831,7 +831,7 @@ fn task_values_are_never_available_within_a_service() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §9 item 3 / §9.2 / §9.7 item 2: <Service>.let, hostRequirements and the
+// §9 item 3 / §9 job-creation exclusion: <Service>.let, hostRequirements and the
 // numeric fields are job-creation scope
 // ════════════════════════════════════════════════════════════════════
 
