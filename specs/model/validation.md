@@ -990,7 +990,7 @@ the attachment):
   `required Service '<r>' is provided by <doc>, whose port '<p>' has protocol <P> but the
   requirement declares <Q> …`, each ending `(Template Schemas §1.2.2 item 2).` Matching uses
   the requirement alone; a match is recorded as a `RequirementBinding`.
-- **Inline Services shadow external ones (§1.2.2 item 3) — not a check.** An external
+- **Service names are per document (§1.2.2 item 3) — not a check.** An external
   Service's `name` may equal that of another external Service or of a Service in the Job
   Template's `services`; the submission is not rejected for it unless a requirement names the
   duplicated external name (the ambiguity above). The Job Template's `Service.*` references

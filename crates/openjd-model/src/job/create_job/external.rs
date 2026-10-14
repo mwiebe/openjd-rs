@@ -22,7 +22,7 @@
 //!   Environment from a document that does not declare `SERVICE`, placed in
 //!   the combined Job's `jobEnvironments`, may not meet any Service.
 //!
-//! Inline Services shadow external ones (§1.2.2 item 3): an external Service
+//! Service names are per document (§1.2.2 item 3): an external Service
 //! may share its `name` with a Service of the Job Template or of another
 //! attachment, and nothing here rejects that unless a requirement names it.
 //! A `Service.*` reference resolves within its own document — or, for a

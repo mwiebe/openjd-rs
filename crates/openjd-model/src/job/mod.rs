@@ -419,7 +419,7 @@ impl EnvironmentActions {
 /// The document of a submission that declares an entity: the Job Template,
 /// or one of the Environment Templates the scheduler attached to it
 /// (Template Schemas §1.2.2 "Services from Environment Templates", RFC 0009
-/// "Inline Services shadow external ones").
+/// "Service names are per document").
 ///
 /// Service names are unique within the list that declares them, and
 /// nothing more: an external Service from an attached Environment Template

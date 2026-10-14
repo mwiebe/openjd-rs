@@ -428,7 +428,7 @@ is the scheduler's choice (constraint 9): this runner starts lazily — at the l
 before the first Task of the scope — which is one valid choice; an eager scheduler
 that starts a Service as soon as its `dependencies` are satisfied is another.
 
-**Inline Services shadow external ones** (Template Schemas §1.2.2 item 3). An
+**Service names are per document** (Template Schemas §1.2.2 item 3). An
 external Service may be named like a Service of the Job Template or of another
 attachment; the submission is rejected for it only when a requirement names that name
 (the ambiguity above). The manager identifies every Service by `ServiceKey {

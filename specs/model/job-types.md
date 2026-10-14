@@ -543,7 +543,7 @@ once no Step in `scope` has a Task left, before any Service of `depends_on_servi
 deserializes as `AllSteps` when absent.
 
 `document` is the document of the submission that declares the Service (Template Schemas
-§1.2.2 item 3, RFC 0009 "Inline Services shadow external ones"): `Document::JobTemplate` for
+§1.2.2 item 3, RFC 0009 "Service names are per document"): `Document::JobTemplate` for
 every `services` entry `create_job` produces, and the attached Environment Template (by 0-based
 attachment index, with the caller's label when it gave one) for an external Service, stamped by
 `apply_environment_templates`. Service names are unique within the list that declares them and

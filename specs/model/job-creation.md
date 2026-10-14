@@ -667,7 +667,7 @@ Environments converted:
    Matching reads the requirement alone — never the Job Template's
    references.
 
-   **Merge rule 3 — inline Services shadow external ones.** Nothing else
+   **Merge rule 3 — Service names are per document.** Nothing else
    is compared across documents: an external Service may have the same
    `name` as a Service in another attachment or in the Job Template's
    `services` (the Job Template's references resolve to its own Service),

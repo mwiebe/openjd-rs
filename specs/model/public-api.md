@@ -346,10 +346,10 @@ reporting every violation as a `ModelValidation` error for the model name
 `Submission` with paths rooted at the document (`JobTemplate`,
 `EnvironmentTemplate[i]`, or the attachment's label); then instantiates each
 template's `services` as **external Services** under that template's own
-[`EnvironmentTemplate::profile`], each with `scope: AllSteps` and stamped
-with its attachment as [`job::Service::document`] (merge rule 3: inline
-Services shadow external ones, so an external Service may be named like a
-Service of the Job Template or of another attachment and the pair
+[`EnvironmentTemplate::profile`], each with its scope computed over the
+combined Job and stamped with its attachment as [`job::Service::document`]
+(merge rule 3: Service names are per document, so an attached Service may be
+named like a Service of the Job Template or of another attachment and the pair
 `(document, name)` identifies it), and converts its Environment with the
 merged parameter table; the resolved-value check failures of every attached
 document's Services and Environment are reported together in one
