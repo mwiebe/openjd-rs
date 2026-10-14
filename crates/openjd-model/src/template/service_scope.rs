@@ -1,3 +1,7 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// Copyright by contributors to this project.
+// SPDX-License-Identifier: (Apache-2.0 OR MIT)
+
 //! Service scope (Template Schemas §9.1, RFC 0009 "Service scope").
 //!
 //! The scope of a Service declared in a Job Template's `services` is the set
