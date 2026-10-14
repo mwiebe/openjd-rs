@@ -32,6 +32,11 @@ Job creation now reports every carried-forward check failure at once,
 re-checks action timing with the parameters bound, and locates `let`
 failures by field path
 (PR [#428](https://github.com/OpenJobDescription/openjd-rs/pull/428)).
+Lists now use one type-join rule at every stage
+(PR [#434](https://github.com/OpenJobDescription/openjd-rs/pull/434)),
+and `and`/`or` type correctly after an unresolved operand
+(PR [#435](https://github.com/OpenJobDescription/openjd-rs/pull/435)),
+closing the two gate-2 rejections the item 11 audit found.
 The gate sections below describe the behavior **as shipped**. What
 remains is the follow-up list at the
 [end of this document](#follow-ups).
@@ -699,7 +704,8 @@ PR #407 (which closed item 9), PR #410 (which closed items 5, 10, 13,
 closed items 20–23), PR #419 (which closed item 4), and PR #428
 (which closed items 6, 8, 18); item 11's audit (2026-10-09) added
 items 24–31, the audits of the item 24 fix added items 32–34, and the
-audits of the item 25 fix added items 35–38.
+audits of the item 25 fix added items 35–38. PR #434 then closed
+item 24 and PR #435 closed item 25.
 Items 1–2 are leftovers from earlier
 rounds; items 3–8 come from the
 [PR #404 review](https://github.com/OpenJobDescription/openjd-rs/pull/404)
@@ -709,10 +715,9 @@ checks and no budgets at all); items 10–14 come from the
 [PR #407 review](https://github.com/OpenJobDescription/openjd-rs/pull/407).
 None blocks the design; each is an independent piece of work.
 
-**Open:** 1, 24 (fixed, pending #434), 25 (fixed, pending #435), 26,
-27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38.
+**Open:** 1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38.
 **Closed:** 2 (dropped), 3, 4, 5, 6, 7, 8, 9, 10, 11 (audited), 12, 13,
-14, 15, 16, 17, 18, 19, 20, 21, 22, 23.
+14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25.
 
 1. **File the §4.4.2 upstream clarification issue.** Open question 2
    verified the raw-text vs resolved-value divergence against
@@ -1209,8 +1214,8 @@ are recorded so they are not lost. Symbol states below: `Param.L =
 'abc'`, `Param.F = 2.5`; `Task.Param.I`/`F`/`S`/`P` unresolved
 int/float/string/path.
 
-24. **`unresolved_list_from_elements` is stricter than the concrete
-    list join.** `eval_list` and `eval_listcomp` both route through
+24. ~~**`unresolved_list_from_elements` is stricter than the concrete
+    list join.**~~ `eval_list` and `eval_listcomp` both route through
     `unresolved_list_from_elements` (`evaluator.rs`) once any element
     is `Unresolved`; its compatibility check accepts only identical
     types plus top-level int/float and path/string mixing. The concrete
@@ -1250,10 +1255,10 @@ int/float/string/path.
     computed with the same join (`[[], [Task.Param.I]]` →
     `unresolved[list[list[int]]]`).
 
-    **Fixed, pending merge** — PR
-    [#434](https://github.com/OpenJobDescription/openjd-rs/pull/434),
-    branch `fix/unresolved-list-join`
-    (`1dbe31e2`, `fix(expr)!`): `types::join_list_element` is shared by
+    **Resolved** — merged as PR
+    [#434](https://github.com/OpenJobDescription/openjd-rs/pull/434)
+    (`61d8c1ca`, `fix(expr)!`; developed on branch
+    `fix/unresolved-list-join`): `types::join_list_element` is shared by
     `eval_list`, `unresolved_list_from_elements`,
     `eval_listcomp_unresolved`, and `make_list` — element-wise list
     joins, the empty list fitting any list type, unions joining through
@@ -1268,10 +1273,9 @@ int/float/string/path.
     follow-up on the PR (`fd221455`) made an always-null unresolved
     element (`[None if Session.HasPathMappingRules else None]`, which
     produced the malformed "incompatible types: , and nulltype") report
-    the construct's run-time null error at every stage. Close this
-    item when the PR merges.
-25. **`eval_boolop` returns a concrete operand after an unresolved
-    one.** After the first unresolved operand, the loop still returns
+    the construct's run-time null error at every stage.
+25. ~~**`eval_boolop` returns a concrete operand after an unresolved
+    one.**~~ After the first unresolved operand, the loop still returns
     the first later operand that would decide the result (truthy for
     `or`, null/false for `and`), ignoring that the unresolved operand
     may itself decide it at run time — under EXPR semantics `x or y`
@@ -1301,11 +1305,12 @@ int/float/string/path.
     bool-typed and the deciding value is that same bool
     (`Session.HasPathMappingRules and false` → `false`).
 
-    **Fixed, pending merge** — PR
-    [#435](https://github.com/OpenJobDescription/openjd-rs/pull/435),
-    stacked on #434 (it depends on #434's join: its union results would
-    otherwise be rejected inside list literals), branch
-    `fix/unresolved-boolop` (`867ffdb3`, `fix(expr)!`). From the first
+    **Resolved** — merged as PR
+    [#435](https://github.com/OpenJobDescription/openjd-rs/pull/435)
+    (`57d953ad`, `fix(expr)!`; developed on branch
+    `fix/unresolved-boolop`, stacked on #434 because it depends on
+    #434's join: its union results would otherwise be rejected inside
+    list literals). From the first
     unresolved operand on, `eval_boolop` collects every value the
     operator could return — per union member of each unresolved
     operand (table in `specs/expr/evaluator.md`, BoolOp), the whole type
@@ -1322,8 +1327,7 @@ int/float/string/path.
     run (`(Task.Param.I or Param.S).upper()`). Converged after two
     implement/audit rounds (~69,000 probes against the #434
     evaluator); round 1 caught a `cond and A or B` regression, fixed by
-    the nested outcome lists. The audits surfaced items 35–38. Close
-    this item when the PR merges.
+    the nested outcome lists. The audits surfaced items 35–38.
 26. **Generic list `+` leaks an unbound type variable.** `Param.L +
     [Task.Param.I]` and `[Task.Param.I] + [Task.Param.I]` type as
     `unresolved[list[T3]]` at both pass 8 and gate 2 — the signature's
