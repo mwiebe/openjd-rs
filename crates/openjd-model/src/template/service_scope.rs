@@ -61,13 +61,14 @@ use crate::format_string::FormatString;
 )]
 pub enum ServiceScope {
     /// Every Step of the Job: a Service a Job Environment lists in its
-    /// `dependencies`, one a Job-wide Service depends on, or an external
-    /// Service. The Service lives
-    /// as long as the Job.
+    /// `dependencies`, or one a Job-wide Service depends on. The Service
+    /// lives as long as the Job.
     AllSteps,
     /// Exactly these Steps, by name. The Service is started before the first
     /// Task of any of them and stopped once none has a Task left to run. An
-    /// empty set is an unused Service, which validation rejects.
+    /// empty set is a Service nothing lists: validation rejects an inline
+    /// Service or an `externalServices` entry in that state, and an attached
+    /// Service in that state is never started (§1.2.2).
     Steps {
         /// The Step names, sorted.
         steps: BTreeSet<String>,
@@ -194,13 +195,62 @@ impl ServiceScopes {
         self.by_name.values()
     }
 
-    /// The scope of `name`, or `AllSteps` for a name the template does not
-    /// declare (an external Service).
+    /// The scope of `name`, or an empty scope for a name the template does
+    /// not declare.
     #[must_use]
     pub fn scope_of(&self, name: &str) -> ServiceScope {
-        self.by_name
-            .get(name)
-            .map_or(ServiceScope::AllSteps, |c| c.scope.clone())
+        self.by_name.get(name).map_or_else(
+            || ServiceScope::steps::<[&str; 0], &str>([]),
+            |c| c.scope.clone(),
+        )
+    }
+
+    /// The scope each `externalServices` entry of `jt` confers on the
+    /// attached Service it is matched to at submission, by the same rules as
+    /// an inline Service's (§9.1): the Steps that list it (rule 1), the
+    /// scopes of the inline Services that list it (rule 2), and every Step
+    /// when a Job Environment lists it (rule 3). An entry nothing lists has
+    /// an empty scope, which validation rejects (rule 4).
+    #[must_use]
+    pub fn required_service_scopes(&self, jt: &JobTemplate) -> BTreeMap<String, ServiceScope> {
+        let mut out = BTreeMap::new();
+        for req in jt.external_services() {
+            let name = req.name.as_str();
+            let scope = if jt
+                .job_environments
+                .iter()
+                .flatten()
+                .any(|env| env.listed_services().any(|n| n == name))
+            {
+                ServiceScope::AllSteps
+            } else {
+                let mut steps: BTreeSet<String> = jt
+                    .steps
+                    .iter()
+                    .filter(|s| super::step::lists_service(s.dependencies.as_deref(), name))
+                    .map(|s| s.name.clone())
+                    .collect();
+                let mut all = false;
+                for svc in jt.services() {
+                    if super::step::lists_service(svc.dependencies.as_deref(), name) {
+                        match self.scope_of(&svc.name) {
+                            ServiceScope::AllSteps => {
+                                all = true;
+                                break;
+                            }
+                            ServiceScope::Steps { steps: s } => steps.extend(s),
+                        }
+                    }
+                }
+                if all {
+                    ServiceScope::AllSteps
+                } else {
+                    ServiceScope::Steps { steps }
+                }
+            };
+            out.insert(name.to_string(), scope);
+        }
+        out
     }
 }
 
@@ -601,9 +651,9 @@ pub fn listed_services<'a>(
 /// Service, or Job Environment may reference (§9 scope rules 2–4, §9.8 item
 /// 2). Declaration
 /// order; a name no requirement declares (an inline Service, or a typo)
-/// yields nothing here. Listing a required Service grants access to its
-/// values and nothing more: its scope is every Step whether or not any
-/// entity lists it ([`ServiceScope::AllSteps`]).
+/// yields nothing here. Listing a required Service makes its values visible
+/// and puts the lister in the matched Service's scope, as for an inline
+/// Service ([`ServiceScopes::required_service_scopes`]).
 pub fn listed_requirements<'a>(
     dependencies: Option<&'a [StepDependency]>,
     requirements: &'a [ServiceRequirement],
@@ -871,8 +921,11 @@ mod tests {
         assert!(back.depends_on_services.is_empty());
         assert_eq!(back.dependent_steps, vec!["S2".to_string()]);
         assert_eq!(back.dependent_services, vec!["Front".to_string()]);
-        // An undeclared name is treated as an external Service.
-        assert_eq!(scopes.scope_of("Ext"), ServiceScope::AllSteps);
+        // An undeclared name has no scope here.
+        assert_eq!(
+            scopes.scope_of("Ext"),
+            ServiceScope::steps::<[&str; 0], &str>([])
+        );
         assert_eq!(scopes.iter().count(), 4);
     }
 

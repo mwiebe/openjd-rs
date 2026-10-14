@@ -16,8 +16,8 @@
 //!    transitively;
 //! 3. a `jobEnvironments` entry listing `service:X` puts every Step in
 //!    `X`'s scope;
-//! 4. a Job Template Service with no Step in its scope is rejected as
-//!    unused (Environment Template Services are exempt).
+//! 4. a Job Template Service, or an `externalServices` entry, with no Step
+//!    in its scope is rejected as unused.
 //!
 //! `Service.X.*` is visible to a Step, Service, or Job Environment only if
 //! it lists `service:X`, whether `X` is inline or required. The
@@ -1113,10 +1113,16 @@ fn step_dependency_with_the_step_key_for_a_service_gets_a_hint() {
 /// The hint names a required Service too.
 #[test]
 fn step_dependency_with_the_step_key_hints_at_a_required_service() {
+    // `T` lists `service: Cache` correctly so that the entry is used; the
+    // subject is `S`'s `dependsOn: Cache`.
     let t = job(
         "",
         &svc("X", &[], ""),
-        &step("S", &["service:X", "Cache"], "[s]"),
+        &format!(
+            "{}{}",
+            step("S", &["service:X", "Cache"], "[s]"),
+            step("T", &["service:Cache"], "[t]")
+        ),
     )
     .replace(
         "services:\n",
@@ -1358,13 +1364,17 @@ steps:
 ";
 
 #[test]
-fn depending_on_a_required_service_is_valid_and_a_no_op_for_scope() {
+fn depending_on_a_required_service_is_valid_and_scopes_the_matched_service() {
     let jt = decode(REQUIRED);
     let scopes = compute_service_scopes(&jt).unwrap();
-    // R is external: no computed entry, and every Step is in its scope —
-    // the Job Environment's listing it changes nothing about scope.
+    // R is external: no computed entry among the inline Services. The scope
+    // its entry confers on the attached Service it is matched to follows
+    // §9.1 over this template: a Job Environment lists it, so every Step.
     assert!(scopes.get("R").is_none());
-    assert_eq!(scopes.scope_of("R"), ServiceScope::AllSteps);
+    assert_eq!(
+        scopes.required_service_scopes(&jt).get("R"),
+        Some(&ServiceScope::AllSteps)
+    );
     let x = scopes.get("X").unwrap();
     assert_eq!(x.scope, ServiceScope::steps(["A"]));
     // A required Service is not an edge among the inline Services.

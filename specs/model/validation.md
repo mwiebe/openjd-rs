@@ -362,9 +362,8 @@ an Environment Template's `environment` sees only the Services of its document i
 seeders take the `template::service_scope::listed_services(dependencies, services)` and
 `listed_requirements(dependencies, requirements)` iterators at every site, over the Step's list
 for a Step's sites and over the Environment's own list for a Job Environment. Listing a required
-Service grants access to its values and nothing more: its scope is every Step and it is READY
-before any Task runs whether or not anything lists it, and a requirement that nothing lists is
-accepted (unlike an unused inline Service, pass 11). Pass 8 does not decide a Service's *scope*
+Service makes its values visible and puts the lister in the matched Service's scope; an entry
+that nothing lists is rejected in pass 11 like an unused inline Service. Pass 8 does not decide a Service's *scope*
 (the Steps whose Tasks depend on it, §9.1): `template::service_scope::compute_service_scopes`
 computes it from the `dependencies` lists — the Steps', the Services', and the Job
 Environments' (rule 3) — for pass 11 (cycles, unused Services, a job-wide Service listing a

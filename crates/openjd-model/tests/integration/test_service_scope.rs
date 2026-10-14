@@ -627,8 +627,11 @@ fn job_environment_reference_without_dependency_is_rejected() {
 /// follows the same rule as an inline one.
 #[test]
 fn job_environment_sees_only_the_services_and_requirements_it_lists() {
+    // Step `S` lists `R` so that the `externalServices` entry is used; the
+    // subject is the Job Environment's unlisted references.
     let t = template(&Tmpl {
         job_env: "dependencies: [{ service: \"A\" }]\nvariables: { A: \"{{ Service.A.p.port }}\", B: \"{{ Service.B.q.port }}\", R: \"{{ Service.R.m.port }}\" }",
+        step_deps: &["A", "B", "C", "R"],
         ..Default::default()
     })
     .replace(

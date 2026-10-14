@@ -274,7 +274,8 @@ pub(super) fn instantiate_step(
 /// rule 2); the Service itself is seeded separately, with `bindAddress`, and
 /// the `requirements` of a Job Template it lists are seeded as well
 /// (`listed_requirements`, §9.8 item 2). `scope` is the
-/// §9.1 result for the Service (`AllSteps` for an external Service).
+/// §9.1 result for the Service (for an external Service, over the combined
+/// Job).
 ///
 /// Job-creation-stage fields resolve here: `<Service>.let` (template scope,
 /// like `<StepTemplate>.let`), the numeric `@fmtstring` fields with their

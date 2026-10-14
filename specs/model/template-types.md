@@ -464,9 +464,11 @@ Step's Session, so a Service it depends on is one every Step depends on, declare
 inferred; (4) a Service in whose scope no Step falls — one that no Step, Service, or Job
 Environment lists — is unused, and pass 11 rejects the template at `services[k]` naming it
 (`Service 'Cache' is unused: no Step, Service, or Job Environment lists it.`). A `service` entry
-naming an `externalServices` name is not an edge and places nothing in an inline Service's scope
-(an external Service's scope is every Step), whichever kind of entity lists it. An Environment
-Template's Services have every Step in their scope and are never unused.
+naming an `externalServices` name is not an edge among the inline Services and places nothing in
+an inline Service's scope; it contributes to the scope the entry confers on the attached Service it
+is matched to (`ServiceScopes::required_service_scopes`, §9.1 over the required name), and an entry
+that nothing lists is rejected like an unused inline Service (rule 4). An attached Service's scope
+is computed over the combined Job at submission; one nothing lists is never started.
 
 The `dependencies` of the template's Steps, Services, and Job Environments form one graph —
 Step-to-Step, Step-to-Service, Service-to-Step and Service-to-Service edges — that must be acyclic
@@ -490,7 +492,7 @@ nothing. Pass 8 seeds a Step's script and `stepEnvironments` (over the Step's li
 own fields (over its list), a Job Environment (over its own list, both helpers), and an
 Environment Template's `environment` (over its own list, `listed_services` only) with them, and
 job creation passes the same sets as the entity's in-scope sets. Listing a required Service
-grants access to its values and nothing more — its scope is every Step regardless.
+makes its values visible and puts the lister in the matched Service's scope.
 
 `Service.*` values are available exactly to the entities that list the Service, so a reference is
 never an implicit edge, and never an implicit dependency. The reference extraction helpers remain
@@ -526,10 +528,11 @@ to the `script` and `stepEnvironments` of a Step that lists `service: <name>` in
 `dependencies`, to an inline Service that lists it, and to a `jobEnvironments` entry that lists
 it. A Step, Service, or Job Environment that references a required Service without listing it is
 rejected with the same message as for an inline Service (see [validation.md](validation.md),
-"Scope-rule diagnostics"); `bindAddress` is never in scope. Listing a required Service grants
-visibility and nothing more: its scope is every Step whether or not anything lists it. A
-requirement that no Step, Service, or Job Environment lists is accepted — unlike an unused inline
-Service — since it may exist to be matched for a consumer that reaches the Service by other means. At submission `apply_environment_templates` matches it to
+"Scope-rule diagnostics"); `bindAddress` is never in scope. Listing a required Service makes
+its values visible and puts the lister in the matched Service's scope. An entry that no Step,
+Service, or Job Environment lists is rejected at template validation
+(`external Service '<name>' is unused: no Step, Service, or Job Environment lists it.`), exactly
+as an unused inline Service is. At submission `apply_environment_templates` matches it to
 exactly one attached Service of that name declaring every listed port with the same protocol (see
 [job-creation.md](job-creation.md), "Applying Environment Templates"). Permitted only in a Job
 Template.

@@ -445,8 +445,8 @@ fn unknown_service_dependency<'a>(
 /// `service`, names Steps of the template or Services other than itself,
 /// and lists no target twice; the combined graph — including the edge from
 /// every Step to each Service a Job Environment lists — is acyclic (the
-/// error names the cycle); and every Service has a non-empty scope. (An
-/// Environment's `dependencies` are
+/// error names the cycle); and every Service, and every `externalServices`
+/// entry, has a non-empty scope. (An Environment's `dependencies` are
 /// [`validate_environment_dependencies`]'s.)
 fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationErrors) {
     let step_names: HashSet<&str> = jt.steps.iter().map(|s| s.name.as_str()).collect();
@@ -528,6 +528,26 @@ fn validate_job_template_dependencies(jt: &JobTemplate, errors: &mut ValidationE
         };
         if computed.is_unused() {
             errors.add(&path_index(&list_path, k), unused_service_message(computed));
+        }
+    }
+    // §9.1 rule 4 for `externalServices` entries: one that no Step, Service,
+    // or Job Environment lists confers no scope on the Service it is matched
+    // to, and nothing can reference it (§9.8).
+    let required_scopes = scopes.required_service_scopes(jt);
+    let requirements_path = path_field(&[], "externalServices");
+    for (k, req) in jt.external_services().iter().enumerate() {
+        if matches!(
+            required_scopes.get(&req.name),
+            Some(ServiceScope::Steps { steps }) if steps.is_empty()
+        ) {
+            errors.add(
+                &path_index(&requirements_path, k),
+                format!(
+                    "external Service '{}' is unused: no Step, Service, or Job Environment lists \
+                     it.",
+                    req.name
+                ),
+            );
         }
     }
 }

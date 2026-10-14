@@ -602,9 +602,11 @@ fn external_service_named_like_a_job_service_is_accepted_and_kept_distinct() {
 #[test]
 fn external_service_named_like_an_inline_service_is_accepted() {
     // §1.2.2 item 3: the coordinator example's inline `Coordinator` shadows
-    // an attached `Coordinator` for the Job Template's references; both run
-    // and are kept distinct by their documents. The attached one precedes
-    // the inline one in the combined Job and has every Step in its scope.
+    // an attached `Coordinator` for the Job Template's references; the two
+    // are kept distinct by their documents. The attached one precedes the
+    // inline one in the combined Job. Nothing lists the attached one — the
+    // Step's `service: Coordinator` names the inline Service — so its scope
+    // is empty and it is never started (§9.1).
     let (job, applied) = submit_ok(
         &RFC_COORDINATOR,
         &[&service_only_template("Coordinator")],
@@ -619,7 +621,10 @@ fn external_service_named_like_an_inline_service_is_accepted() {
         services[0].document,
         job::Document::environment_template(0, None)
     );
-    assert_eq!(services[0].scope, ServiceScope::AllSteps);
+    assert_eq!(
+        services[0].scope,
+        ServiceScope::steps::<[&str; 0], &str>([])
+    );
     assert_eq!(services[1].document, job::Document::JobTemplate);
     assert_eq!(services[1].scope, ServiceScope::steps(["RenderTiles"]));
 }
@@ -1012,9 +1017,9 @@ fn external_service_sees_other_services_of_its_own_document() {
     // `Second` lists `service:First` and references it; `First` lists
     // `service:Third`, declared after it (the order carries no meaning), and
     // references it. The declared dependencies are carried forward and the
-    // listed Services' symbols seeded for the re-check. Every external
-    // Service has every Step in its scope (§1.2.2 item 1), dependencies or
-    // not.
+    // listed Services' symbols seeded for the re-check. The document's
+    // Environment lists `Second` only; by §9.1 rules 2 and 3 every Step is
+    // then in the scope of all three.
     const T: &str = r#"
 specificationVersion: "environment-2023-09"
 extensions: [SERVICE, EXPR]
@@ -1036,6 +1041,10 @@ services:
     script:
       actions:
         onRun: { command: serve }
+environment:
+  name: Client
+  dependencies: [{ service: "Second" }]
+  variables: { PROXY: "{{ Service.Second.main.port }}" }
 "#;
     let (_, applied) = submit_ok(PLAIN_JOB, &[T], &[]);
     assert_eq!(
@@ -1153,13 +1162,65 @@ services:
 }
 
 #[test]
-fn unlisted_attachment_service_still_has_every_step_in_scope() {
-    // Environment Template Services are exempt from the "unused" rule: no
-    // Step of the Job lists them, and every Step is in their scope.
+fn attached_service_nothing_lists_has_an_empty_scope_and_is_accepted() {
+    // §1.2.2, §9.1: an attached Service is scoped by the same rules as an
+    // inline one over the combined Job. Nothing here lists `Metrics` — no
+    // Step through `externalServices`, and the attachment has no
+    // Environment — so its scope is empty. That is not an error (the queue
+    // cannot know which Jobs will use it); the runtime never starts it.
     let (_, applied) = submit_ok(&RFC_COORDINATOR, &[&service_only_template("Metrics")], &[]);
     let metrics = &applied.external_services[0];
-    assert_eq!(metrics.scope, ServiceScope::AllSteps);
+    assert_eq!(metrics.scope, ServiceScope::steps::<[&str; 0], &str>([]));
     assert!(metrics.dependencies.is_none());
+}
+
+#[test]
+fn attached_service_listed_by_its_own_environment_has_every_step_in_scope() {
+    // §9.1 rule 3 over the combined Job: the attachment's Environment is a
+    // Job Environment of the Job, so a Service it lists has every Step.
+    const T: &str = r#"
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: Metrics
+    ports: [{ name: main }]
+    script:
+      actions:
+        onRun: { command: serve }
+environment:
+  name: Client
+  dependencies: [{ service: "Metrics" }]
+  variables: { METRICS: "{{ Service.Metrics.main.port }}" }
+"#;
+    let (_, applied) = submit_ok(&RFC_COORDINATOR, &[T], &[]);
+    assert_eq!(applied.external_services[0].scope, ServiceScope::AllSteps);
+}
+
+#[test]
+fn attached_service_bound_to_a_requirement_takes_the_requirement_scope() {
+    // §9.1 rules 1–2 over the combined Job: a Step that lists the
+    // `externalServices` entry is in the matched attached Service's scope,
+    // and only that Step.
+    const JOB: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Req
+externalServices:
+  - name: Metrics
+    ports: [{ name: main }]
+steps:
+  - name: A
+    dependencies: [{ service: "Metrics" }]
+    script: { actions: { onRun: { command: run, args: ["{{ Service.Metrics.main.port }}"] } } }
+  - name: B
+    script: { actions: { onRun: { command: run } } }
+"#;
+    let (_, applied) = submit_ok(JOB, &[&service_only_template("Metrics")], &[]);
+    assert_eq!(applied.requirement_bindings.len(), 1);
+    assert_eq!(
+        applied.external_services[0].scope,
+        ServiceScope::steps(["A"])
+    );
 }
 
 #[test]

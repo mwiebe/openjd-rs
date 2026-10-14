@@ -820,8 +820,8 @@ pub fn listed_services<'a>(
 /// The `externalServices` entries that `dependencies` lists with the `service` key,
 /// in declaration order — the required Services whose `port` / `connectAddress`
 /// the listing Step, Service, or Job Environment may reference (§9.8 item 2).
-/// Listing one grants access to its values and nothing more: its scope is every
-/// Step regardless.
+/// Listing one makes its values visible and puts the lister in the matched
+/// Service's scope, as for an inline Service (`Job::required_service_scopes`).
 pub fn listed_requirements<'a>(
     dependencies: Option<&'a [StepDependency]>,
     requirements: &'a [template::ServiceRequirement],
@@ -1308,8 +1308,9 @@ pub struct job::Service {
     /// Services are the same Service iff `(document, name)` agree.
     pub document: Document,
     /// §9.1: the Steps whose Tasks depend on the Service, computed from the
-    /// template's `dependencies` lists and Job Environments; `AllSteps` for an
-    /// external Service. Defaults to `AllSteps` when absent from JSON.
+    /// template's `dependencies` lists and Job Environments; for an external
+    /// Service, computed over the combined Job at submission (empty when
+    /// nothing lists it). Defaults to `AllSteps` when absent from JSON.
     pub scope: ServiceScope,
     /// §9 item 4, as written: `dependsOn` Steps and `service` entries naming a
     /// Service of the same document or a required one. Omitted from JSON when `None`.

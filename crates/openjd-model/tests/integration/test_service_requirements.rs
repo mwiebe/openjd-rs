@@ -75,8 +75,31 @@ fn assert_errs(err: &str, count: usize, lines: &[&str]) {
 /// A Job Template with `externalServices` body `reqs`, `services` body
 /// `services` (omitted when empty), Job Environments `job_envs` (a
 /// complete block or empty), and one Step `S` whose `onRun` args are
-/// `args`.
+/// `args` and which lists every entry of `reqs` in its `dependencies`, as
+/// §9.1 rule 4 requires of some entity. Use [`job_unlisted`] when the test
+/// is about an entry nothing lists.
 fn job(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
+    let mut names: Vec<&str> = Vec::new();
+    // Top-level entries only (`  - name: X`), not their ports.
+    for n in reqs
+        .lines()
+        .filter_map(|l| l.strip_prefix("  - name: "))
+        .map(|n| n.trim().trim_matches('"'))
+    {
+        if !names.contains(&n) {
+            names.push(n);
+        }
+    }
+    let t = job_unlisted(reqs, services, job_envs, args);
+    if names.is_empty() {
+        t
+    } else {
+        with_step_deps(&t, &names)
+    }
+}
+
+/// [`job`] without Step `S` listing the `externalServices` entries.
+fn job_unlisted(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
     let services = if services.is_empty() {
         String::new()
     } else {
@@ -89,8 +112,32 @@ fn job(reqs: &str, services: &str, job_envs: &str, args: &str) -> String {
     )
 }
 
-/// `template` with Step `S` listing `service:<Name>` for each of `names`.
+/// `template` with Step `S` listing `service:<Name>` for each of `names`,
+/// merged into the `dependencies` list `S` already has, if any.
 fn with_step_deps(template: &str, names: &[&str]) -> String {
+    let marker = "  - name: S\n    dependencies: [";
+    if let Some(at) = template.find(marker) {
+        let start = at + marker.len();
+        let end = start + template[start..].find(']').expect("closing bracket");
+        let existing = &template[start..end];
+        let mut entries: Vec<String> = if existing.trim().is_empty() {
+            Vec::new()
+        } else {
+            existing.split(", ").map(str::to_string).collect()
+        };
+        for n in names {
+            let e = format!("{{ service: \"{n}\" }}");
+            if !entries.contains(&e) {
+                entries.push(e);
+            }
+        }
+        return format!(
+            "{}{}{}",
+            &template[..start],
+            entries.join(", "),
+            &template[end..]
+        );
+    }
     let deps = names
         .iter()
         .map(|n| format!("{{ service: \"{n}\" }}"))
@@ -163,10 +210,11 @@ fn step_reference_to_a_required_service_without_dependency_is_rejected() {
     // §9 scope rule 3, §9.8 item 2: the requirement alone does
     // not put the Service in scope for the Step; the message names the fix,
     // exactly as for an inline Service.
-    let err = job_err(&job(
+    // A Job Environment lists Cache so that the entry itself is used.
+    let err = job_err(&job_unlisted(
         CACHE_REQ,
         "",
-        "",
+        LISTER_ENV,
         r#"["{{ Service.Cache.main.connectAddress }}", "{{ Service.Cache.main.port }}"]"#,
     ));
     assert_errs(
@@ -185,7 +233,7 @@ fn step_reference_to_a_required_service_without_dependency_is_rejected() {
 #[test]
 fn step_environment_reference_to_a_required_service_without_dependency_is_rejected() {
     // A Step Environment follows its Step's dependencies (§9 scope rule 3).
-    let t = job(CACHE_REQ, "", "", "[x]").replace(
+    let t = job_unlisted(CACHE_REQ, "", LISTER_ENV, "[x]").replace(
         "  - name: S\n",
         "  - name: S\n    stepEnvironments:\n      - name: Tools\n        variables: { P: \"{{ Service.Cache.main.port }}\" }\n",
     );
@@ -230,10 +278,10 @@ fn service_reference_to_a_required_service_without_dependency_is_rejected() {
     // as it would another inline Service. `S` lists `Proxy` so that `Proxy`
     // is used.
     let err = job_err(&with_step_deps(
-        &job(
+        &job_unlisted(
             CACHE_REQ,
             "  - name: Proxy\n    ports: [{ name: main }]\n    variables: { UP: \"{{ Service.Cache.main.connectAddress }}\" }\n    script: { actions: { onRun: { command: proxy, args: [\"{{ Service.Cache.main.port }}\"] } } }\n",
-            "",
+            LISTER_ENV,
             "[x]",
         ),
         &["Proxy"],
@@ -253,17 +301,22 @@ fn service_reference_to_a_required_service_without_dependency_is_rejected() {
 #[test]
 fn job_environment_reference_to_a_required_service_needs_the_dependency() {
     // §9 scope rule 4, §9.8 item 2: a Job Environment lists the required
-    // Service like any other entity; listing it grants visibility and
-    // nothing more. Its runScope defaults to [TASK]. The Step neither lists
-    // nor references the Service.
-    let jt = decode_job(&job(
+    // Service like any other entity, which makes its values visible and
+    // puts every Step in the matched Service's scope. Its runScope defaults
+    // to [TASK]. The Step neither lists nor references the Service.
+    let jt = decode_job(&job_unlisted(
         CACHE_REQ,
         "",
         "jobEnvironments:\n  - name: Client\n    dependencies: [{ service: \"Cache\" }]\n    variables:\n      HOST: \"{{ Service.Cache.main.connectAddress }}\"\n      PORT: \"{{ Service.Cache.main.port }}\"\n",
         "[x]",
     ));
     assert!(jt.job_environments.as_ref().unwrap()[0].default_run_scope_is_task_only());
-    assert!(compute_service_scopes(&jt).unwrap().get("Cache").is_none());
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert!(scopes.get("Cache").is_none());
+    assert_eq!(
+        scopes.required_service_scopes(&jt).get("Cache"),
+        Some(&ServiceScope::AllSteps)
+    );
 }
 
 #[test]
@@ -291,8 +344,8 @@ fn job_environment_reference_to_a_required_service_without_dependency_is_rejecte
 #[test]
 fn job_environment_may_list_a_required_service_without_referencing_it() {
     // An opaque consumer of a required Service: valid, Task-only by default,
-    // and not an error for the requirement either (§9.8).
-    let jt = decode_job(&job(
+    // and it alone keeps the entry used (§9.1 rule 4).
+    let jt = decode_job(&job_unlisted(
         CACHE_REQ,
         "",
         "jobEnvironments:\n  - name: Client\n    dependencies: [{ service: \"Cache\" }]\n    variables: { K: v }\n",
@@ -304,26 +357,31 @@ fn job_environment_may_list_a_required_service_without_referencing_it() {
 }
 
 #[test]
-fn unused_requirement_is_accepted() {
-    // §9.8: a requirement nothing lists or references is not an error,
-    // unlike an unused inline Service (§9.1 rule 4); it is still matched at
-    // submission.
-    let t = job(CACHE_REQ, "", "", "[x]");
-    let jt = decode_job(&t);
-    assert_eq!(jt.external_services()[0].name, "Cache");
-    let (created, _) = create(&jt, &[]).unwrap();
-    assert_eq!(created.external_services.as_ref().unwrap().len(), 1);
-    let et = decode_env(&provider("Cache", "[{ name: main }]"));
-    let (_, applied) = submit(&jt, std::slice::from_ref(&et), &[]).unwrap();
-    assert_eq!(applied.requirement_bindings.len(), 1);
+fn external_services_entry_nothing_lists_is_rejected() {
+    // §9.1 rule 4 applied to an `externalServices` entry (§9.8): one that no
+    // Step, Service, or Job Environment lists confers no scope and nothing
+    // can reference it, so it is rejected at template validation, naming
+    // the entry — exactly as an inline Service nothing lists is.
     assert_eq!(
-        submit_err(&t, &[], &[]),
-        submission_err(
-            0,
-            "required Service 'Cache' is not provided: no Environment Template is attached (Template Schemas §1.2.2 item 2)."
-        )
+        job_err(&job_unlisted(CACHE_REQ, "", "", "[x]")),
+        "Model validation error: 1 validation error for JobTemplate\nexternalServices[0]:\n\texternal Service 'Cache' is unused: no Step, Service, or Job Environment lists it."
     );
+    // Listed by a Step, a Service, or a Job Environment: accepted.
+    decode_job(&job(CACHE_REQ, "", "", "[x]"));
+    decode_job(&job_unlisted(CACHE_REQ, "", LISTER_ENV, "[x]"));
+    decode_job(&with_step_deps(
+        &job_unlisted(
+            CACHE_REQ,
+            "  - name: Proxy\n    ports: [{ name: main }]\n    dependencies: [{ service: \"Cache\" }]\n    script: { actions: { onRun: { command: proxy } } }\n",
+            "",
+            "[x]",
+        ),
+        &["Proxy"],
+    ));
 }
+
+/// A Job Environment that lists `Cache` without referencing it.
+const LISTER_ENV: &str = "jobEnvironments:\n  - name: Lister\n    dependencies: [{ service: \"Cache\" }]\n    variables: { K: v }\n";
 
 #[test]
 fn rfc_required_queue_cache_example_validates() {
@@ -554,7 +612,9 @@ fn external_services_rejected_in_an_environment_template() {
 
 #[test]
 fn external_services_without_the_service_extension_is_rejected() {
-    let t = job(CACHE_REQ, "", "", "[x]")
+    // Without SERVICE the `service` dependency key is unknown too, so the
+    // template is built without it: the gate on the list is the subject.
+    let t = job_unlisted(CACHE_REQ, "", "", "[x]")
         .replace("extensions: [SERVICE, EXPR]\n", "extensions: [EXPR]\n");
     assert_eq!(
         job_err(&t),

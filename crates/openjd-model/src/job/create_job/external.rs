@@ -40,6 +40,8 @@
 use openjd_expr::ExprValue;
 use serde::{Deserialize, Serialize};
 
+use std::collections::{BTreeMap, HashSet};
+
 use crate::error::{
     path_field, path_index, path_to_string, ModelError, PathElement, ValidationErrors,
 };
@@ -186,6 +188,82 @@ pub struct RequirementBinding {
     pub document: job::Document,
     /// The bound Service's `name` (equal to `requirement`).
     pub service: String,
+}
+
+/// The scope of each Service of one attached Environment Template (document
+/// `doc`), by the §9.1 rules applied over the combined Job: every Step when
+/// the document's own `environment` lists it (rule 3; that Environment is a
+/// Job Environment of the combined Job); the scope its `externalServices`
+/// entry confers when a requirement is bound to it (rules 1–3 on the Job
+/// Template side, from `required_scopes`); and, transitively, the scope of
+/// every Service of the same document that lists it (rule 2). A Service
+/// none of these reach has an empty scope.
+fn attached_service_scopes<'a>(
+    template: &'a EnvironmentTemplate,
+    bindings: &[RequirementBinding],
+    doc: usize,
+    required_scopes: &BTreeMap<String, job::ServiceScope>,
+) -> BTreeMap<&'a str, job::ServiceScope> {
+    use job::ServiceScope;
+    let services = template.services();
+    let listed_by_env: HashSet<&str> = template
+        .environment()
+        .map(|env| env.listed_services().collect())
+        .unwrap_or_default();
+    let mut scopes: BTreeMap<&str, ServiceScope> = BTreeMap::new();
+    for svc in services {
+        let name = svc.name.as_str();
+        let mut scope = ServiceScope::steps::<[&str; 0], &str>([]);
+        if listed_by_env.contains(name) {
+            scope = ServiceScope::AllSteps;
+        } else if let Some(b) = bindings
+            .iter()
+            .find(|b| {
+                b.service == name
+                    && matches!(b.document, job::Document::EnvironmentTemplate { index, .. } if index == doc)
+            })
+        {
+            if let Some(s) = required_scopes.get(&b.requirement) {
+                scope = s.clone();
+            }
+        }
+        scopes.insert(name, scope);
+    }
+    // Rule 2 within the document: Y lists X puts Y's scope in X's. The graph
+    // is acyclic (validated), so iterate to a fixed point.
+    let lists = |svc: &crate::template::Service, name: &str| {
+        crate::template::listed_service_names(svc.dependencies.as_deref()).any(|n| n == name)
+    };
+    loop {
+        let mut changed = false;
+        for x in services {
+            let mut merged = scopes[x.name.as_str()].clone();
+            for y in services {
+                if y.name != x.name && lists(y, &x.name) {
+                    merged = union(merged, &scopes[y.name.as_str()]);
+                }
+            }
+            if merged != scopes[x.name.as_str()] {
+                scopes.insert(x.name.as_str(), merged);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    scopes
+}
+
+fn union(a: job::ServiceScope, b: &job::ServiceScope) -> job::ServiceScope {
+    use job::ServiceScope;
+    match (a, b) {
+        (ServiceScope::AllSteps, _) | (_, ServiceScope::AllSteps) => ServiceScope::AllSteps,
+        (ServiceScope::Steps { mut steps }, ServiceScope::Steps { steps: more }) => {
+            steps.extend(more.iter().cloned());
+            ServiceScope::Steps { steps }
+        }
+    }
 }
 
 /// Where a Service in the combined Job comes from, for error messages.
@@ -503,6 +581,9 @@ pub fn apply_environment_templates(
     // `Submission` error, as `create_job` aggregates the Job Template's; a
     // resolution failure aborts alone, naming its document.
     let base_symtab = build_symbol_table(job_parameter_values)?;
+    // §9.1 over the combined Job: the scope each `externalServices` entry
+    // confers on the attached Service it is bound to.
+    let required_scopes = job.required_service_scopes();
     let mut external_services = Vec::with_capacity(external_count);
     let mut environments = Vec::new();
     let mut environment_documents = Vec::new();
@@ -534,17 +615,25 @@ pub fn apply_environment_templates(
         // This document's check failures, re-rooted under its path below.
         let mut check_errors = ValidationErrors::default();
         let services_path = path_field(&[], "services");
+        let scopes =
+            attached_service_scopes(att.template, &requirement_bindings, doc, &required_scopes);
         for (k, svc) in services.iter().enumerate() {
-            // An external Service has every Step in its scope (§1.2.2 item
-            // 1) and depends only on Services of its own document, which
-            // are the ones whose endpoints it may read.
+            // An external Service's scope is computed over the combined Job
+            // by the same rules as an inline Service's (§1.2.2, §9.1); one
+            // nothing lists has an empty scope and is never started. It
+            // depends only on Services of its own document, which are the
+            // ones whose endpoints it may read.
+            let scope = scopes
+                .get(svc.name.as_str())
+                .cloned()
+                .unwrap_or_else(|| job::ServiceScope::steps::<[&str; 0], &str>([]));
             let instantiated = instantiate::instantiate_service(
                 svc,
                 &symtab,
                 icx,
                 &path_index(&services_path, k),
                 crate::template::listed_services(svc.dependencies.as_deref(), services),
-                job::ServiceScope::AllSteps,
+                scope,
                 &mut check_errors,
             )
             .map_err(|e| in_document(e, &doc_path))?;

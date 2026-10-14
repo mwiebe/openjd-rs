@@ -270,7 +270,7 @@ pub fn create_job(
     // abort immediately, reported alone. A job environment
     // also sees the `Service.*` endpoints of the inline and required
     // Services it lists in its `dependencies` (RFC 0009 §9 scope rule 4;
-    // listing an inline Service puts every Step in its scope).
+    // listing a Service puts every Step in its scope).
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {

@@ -27,7 +27,7 @@ pub mod service_symbols;
 pub mod step_dependency_graph;
 pub mod step_param_space;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 
 use indexmap::IndexMap;
@@ -112,6 +112,59 @@ impl Job {
     #[must_use]
     pub fn service_active(&self) -> bool {
         self.has_extension(crate::types::ModelExtension::Service)
+    }
+
+    /// The scope each `externalServices` entry confers on the attached
+    /// Service it is matched to (Template Schemas §9.1, applied to a required
+    /// name over this Job): the Steps that list it, the scopes of the Job's
+    /// own Services that list it, and every Step when a Job Environment lists
+    /// it. Validation has rejected an entry nothing lists, so every scope
+    /// here is non-empty.
+    #[must_use]
+    pub fn required_service_scopes(&self) -> BTreeMap<String, ServiceScope> {
+        fn lists(deps: Option<&[StepDependency]>, name: &str) -> bool {
+            deps.into_iter()
+                .flatten()
+                .any(|d| d.service() == Some(name))
+        }
+        let mut out = BTreeMap::new();
+        for req in self.external_services.iter().flatten() {
+            let name = req.name.as_str();
+            let scope = if self
+                .job_environments
+                .iter()
+                .flatten()
+                .any(|env| lists(env.dependencies.as_deref(), name))
+            {
+                ServiceScope::AllSteps
+            } else {
+                let mut steps: BTreeSet<String> = self
+                    .steps
+                    .iter()
+                    .filter(|s| lists(s.dependencies.as_deref(), name))
+                    .map(|s| s.name.clone())
+                    .collect();
+                let mut all = false;
+                for svc in self.services.iter().flatten() {
+                    if lists(svc.dependencies.as_deref(), name) {
+                        match &svc.scope {
+                            ServiceScope::AllSteps => {
+                                all = true;
+                                break;
+                            }
+                            ServiceScope::Steps { steps: s } => steps.extend(s.iter().cloned()),
+                        }
+                    }
+                }
+                if all {
+                    ServiceScope::AllSteps
+                } else {
+                    ServiceScope::Steps { steps }
+                }
+            };
+            out.insert(name.to_string(), scope);
+        }
+        out
     }
 }
 

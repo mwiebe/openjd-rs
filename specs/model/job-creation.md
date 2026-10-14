@@ -339,7 +339,7 @@ in_scope, scope, check_errors)`, path `services[k]`), in pass 8's order:
 5. **Conversion** — `variables` and `script` are carried as
    `FormatString`s; `dependencies` is copied as written (`dependsOn` and
    `service` entries alike); `scope` is the computed value
-   (`AllSteps` for an external Service); `resolved_symtab` is `filter_symtab_for_service` (the
+   (for an external Service, `attached_service_scopes`' result over the combined Job); `resolved_symtab` is `filter_symtab_for_service` (the
    symbols those fields and `<ServiceScript>.let` reference, with the
    `RawParam.*` fallback). A Service that recorded any check failure in
    steps 1, 3, or 4 is returned as `None` instead — its resolved values are
@@ -606,8 +606,11 @@ extends the list with `JobTemplate` for the Job's own, matching the
 folded `job_environments`). `into_combined_job(job)` folds them into the Job: `services`
 becomes external Services followed by the Job Template's own, and
 `job_environments` the attached Environments followed by the Job
-Template's own (merge rule 1: every attached Service is provided to the Job
-with every Step in its scope; the attached Environments are placed in
+Template's own (merge rule 1: every attached Service is part of the combined Job,
+scoped by §9.1 over it — every Step when the document's own Environment lists it,
+the bound `externalServices` entry's scope when a requirement is bound to it,
+closed transitively over the document's Services, and empty otherwise, in which
+case it is never started; the attached Environments are placed in
 `jobEnvironments` as today). The bindings do not fold into the Job; a
 runtime keeps them to seed `Service.<requirement>.*` from the bound
 Service's endpoints. `Job::extensions` is left as the Job
