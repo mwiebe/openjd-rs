@@ -1,0 +1,92 @@
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "LIDAR Scan Queries"
+parameterDefinitions:
+  - name: ScanDir
+    description: "The aerial LIDAR scan, about 1 TB of point cloud tiles."
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: IN
+  - name: IndexDir
+    description: "Where BuildIndex writes the spatial index and the Service reads it."
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: INOUT
+    default: index
+  - name: ResultsDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+    default: results
+  - name: GridSize
+    description: "Queries run over a GridSize x GridSize grid of cells covering the scan."
+    type: INT
+    default: 100
+
+services:
+  - name: SpatialIndex
+    description: "Answers spatial queries over the indexed scan."
+    dependencies:
+      - dependsOn: BuildIndex  # Holds no host until the index exists.
+    hostRequirements:
+      amounts:
+        - name: amount.worker.memory
+          min: 131072  # Holds the index in memory.
+    ports:
+      - name: api
+    healthCheck:
+      # Loading the index takes a while. The server prints "openjd_service_ready: loaded"
+      # once it is answering queries; until then no query Task is scheduled.
+      type: STDOUT
+      readinessTimeoutSeconds: 3600
+    restartPolicy:
+      maxAttempts: 2
+      completedTasks: KEEP  # The index on disk is unchanged by a relaunch; completed queries stand.
+    script:
+      actions:
+        onRun:
+          command: pointcloud-server
+          args:
+            - "--index"
+            - "{{ Param.IndexDir }}"
+            - "--listen"
+            - "{{ join_host_port(Service.SpatialIndex.api.bindAddress, Service.SpatialIndex.api.port) }}"
+
+steps:
+  - name: BuildIndex
+    hostRequirements:
+      amounts:
+        - name: amount.worker.memory
+          min: 262144
+        - name: amount.worker.disk.scratch
+          min: 2048
+    script:
+      actions:
+        onRun:
+          command: pointcloud-index
+          args: ["--scan", "{{ Param.ScanDir }}", "--out", "{{ Param.IndexDir }}"]
+  - name: RunQueries
+    dependencies:
+      # The Service, not BuildIndex: these Tasks never touch the scan or the index.
+      - service: SpatialIndex
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: CellX
+          type: INT
+          range: "1-{{ Param.GridSize }}"
+        - name: CellY
+          type: INT
+          range: "1-{{ Param.GridSize }}"
+    script:
+      actions:
+        onRun:
+          command: pointcloud-query
+          args:
+            - "--server"
+            - "http://{{ join_host_port(Service.SpatialIndex.api.connectAddress, Service.SpatialIndex.api.port) }}"
+            - "--cell"
+            - "{{ Task.Param.CellX }},{{ Task.Param.CellY }}"
+            - "--grid"
+            - "{{ Param.GridSize }}"
+            - "--out"
+            - "{{ Param.ResultsDir }}/cell_{{ Task.Param.CellX }}_{{ Task.Param.CellY }}.laz"

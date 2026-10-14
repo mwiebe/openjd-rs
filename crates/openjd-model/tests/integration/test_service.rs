@@ -60,7 +60,10 @@ const RFC_QUEUE_CACHE_CONSUMER: &str =
     include_str!("../fixtures/rfc0009/queue-cache-consumer.job.yaml");
 const RFC_REQUIRED_QUEUE_CACHE: &str =
     include_str!("../fixtures/rfc0009/required-queue-cache.job.yaml");
-const RFC_METRICS_SINK: &str = include_str!("../fixtures/rfc0009/metrics-sink.job.yaml");
+const RFC_SPATIAL_INDEX: &str = include_str!("../fixtures/rfc0009/spatial-index.job.yaml");
+/// Formerly an RFC example; kept as the fixture for a UDP port and a
+/// Service that lists another Service.
+const METRICS_SINK: &str = include_str!("../fixtures/rfc0009/metrics-sink.job.yaml");
 
 fn yaml_val(s: &str) -> serde_json::Value {
     serde_saphyr::from_str(s).unwrap()
@@ -2240,14 +2243,52 @@ fn rfc_example_required_queue_cache_verbatim() {
     assert_eq!(reqs[0].ports[0].protocol, ServicePortProtocol::Tcp);
 }
 
+/// `SpatialIndex` lists `dependsOn: BuildIndex`; `RunQueries` lists
+/// `service: SpatialIndex` and not `BuildIndex`, so the Service's scope is
+/// `RunQueries` alone and `BuildIndex` is in no Service's scope (§9.1). The
+/// STDOUT health check gives only `readinessTimeoutSeconds`.
+#[test]
+fn rfc_example_spatial_index_verbatim() {
+    let jt = expect_fixture_job_ok(RFC_SPATIAL_INDEX);
+    let services = jt.services.as_ref().unwrap();
+    assert_eq!(services.len(), 1);
+    let svc = &services[0];
+    assert_eq!(svc.name, "SpatialIndex");
+    assert_eq!(svc.port_names().collect::<Vec<_>>(), vec!["api"]);
+    assert_eq!(svc.health_check().type_name(), "STDOUT");
+    assert_eq!(
+        svc.health_check()
+            .readiness_timeout_seconds()
+            .unwrap()
+            .raw(),
+        "3600"
+    );
+    assert_eq!(
+        svc.restart_policy().completed_tasks,
+        Some(CompletedTasksPolicy::Keep)
+    );
+    let deps: Vec<_> = svc
+        .dependencies
+        .iter()
+        .flatten()
+        .map(|d| (d.step(), d.service()))
+        .collect();
+    assert_eq!(deps, vec![(Some("BuildIndex"), None)]);
+    let scopes = compute_service_scopes(&jt).unwrap();
+    assert_eq!(
+        scopes.get("SpatialIndex").unwrap().scope,
+        ServiceScope::steps(["RunQueries"])
+    );
+}
+
 /// A UDP `ingest` port and a TCP `api` port, fronted by a `Proxy` Service
 /// that lists `service:Metrics`. `RenderFrames` lists `service:Metrics`;
 /// `Report` lists `service:Proxy`, so by the transitive rule (§9.1) it is in
 /// the sink's scope too: the sink's scope is both Steps, the proxy's is
 /// `Report` alone.
 #[test]
-fn rfc_example_metrics_sink_verbatim() {
-    let jt = expect_fixture_job_ok(RFC_METRICS_SINK);
+fn metrics_sink_udp_and_transitive_scope() {
+    let jt = expect_fixture_job_ok(METRICS_SINK);
     let services = jt.services.as_ref().unwrap();
     let svc = &services[0];
     assert_eq!(svc.name, "Metrics");

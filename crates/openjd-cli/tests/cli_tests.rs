@@ -3965,7 +3965,7 @@ mod services {
         assert!(stdout.contains("Chunks run: 2"), "{stdout}");
     }
 
-    /// RFC 0009 "A metrics sink with a UDP ingest port": a Service with
+    /// A metrics sink with a UDP ingest port: a Service with
     /// a UDP port and a TCP port and no `healthCheck` becomes READY
     /// through the default TCP_CONNECT, which probes the TCP port only
     /// (§9 item 6, §9.3 item 2). The endpoints line suffixes only the UDP
