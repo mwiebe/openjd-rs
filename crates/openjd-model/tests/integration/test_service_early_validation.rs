@@ -109,7 +109,7 @@ const OK_ATTEMPTS: &str = "1";
 const OK_VAR: &str = r#""x""#;
 const OK_ARG: &str = r#""{{ Service.Store.main.port }}""#;
 
-// ── Numeric @fmtstring fields (§9.2 note) ──────────────────────────────
+// ── Numeric @fmtstring fields (§9.5.1) ──────────────────────────────
 
 #[test]
 fn literal_expression_port_out_of_range_is_rejected_at_validation() {

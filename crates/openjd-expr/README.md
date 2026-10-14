@@ -27,6 +27,10 @@ Expression language for [Open Job Description] (OpenJD) templates. Part of the
 - **Range expressions** (`1-10`, `1-100:10`, `1,5,10-20`).
 - **Path mapping** — applying source→destination path rules across
   platforms.
+- **Host and port functions** (`SERVICE` extension, RFC 0009) —
+  `join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`, registered only
+  for a profile with `ExprExtension::Service` (`ExprProfile::latest()`, or the
+  model layer when a document declares `SERVICE`).
 
 The parser is built on [`ruff_python_parser`], the same Python parser Astral
 uses in Ruff and the OpenJD spec recommends for Rust implementations.

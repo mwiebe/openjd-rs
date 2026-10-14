@@ -4,7 +4,7 @@
 
 //! Integration tests for job creation of RFC 0009 Services: the `job::Service`
 //! types `create_job` produces, resolution of the `<Service>.let` bindings
-//! and the numeric `@fmtstring` fields (Template Schemas §9.2 "resolved at
+//! and the numeric `@fmtstring` fields (Template Schemas §9.5.1 "resolved at
 //! job creation ... target type `int?`"), Service `hostRequirements`, the
 //! carried-forward re-checks, `resolved_symtab`, and the job-side
 //! `Environment.run_scope` / `onWrapService*` fields. Also the runtime-facing

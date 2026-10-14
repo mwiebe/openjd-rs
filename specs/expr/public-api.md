@@ -268,6 +268,11 @@ pub enum ExprExtension {
     Service,
 }
 
+impl ExprExtension {
+    /// Every variant, in a stable order; what `ExprProfile::latest()` enables.
+    pub const ALL: &'static [ExprExtension];
+}
+
 /// Host-context state available to expression evaluation. Today this gates
 /// `apply_path_mapping`.
 #[derive(Debug, Clone, Default)]

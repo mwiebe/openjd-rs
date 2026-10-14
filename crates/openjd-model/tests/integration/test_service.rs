@@ -229,7 +229,7 @@ fn minimal_service_decodes_with_spec_defaults() {
     assert_eq!(svc.port_names().collect::<Vec<_>>(), vec!["main"]);
     assert!(svc.ports[0].port.is_none());
 
-    // §9 item 6: the health check defaults to TCP_CONNECT on every port.
+    // §9 item 7: the health check defaults to TCP_CONNECT on every port.
     assert!(svc.health_check.is_none());
     match svc.health_check() {
         ServiceHealthCheck::TcpConnect {
@@ -259,7 +259,7 @@ fn minimal_service_decodes_with_spec_defaults() {
     assert_eq!(ServiceHealthCheck::DEFAULT_HEALTH_INTERVAL_SECONDS, 30);
     assert_eq!(ServiceHealthCheck::DEFAULT_FAILURE_THRESHOLD, 3);
 
-    // §9 item 7: restart policy defaults to { maxAttempts: 0, completedTasks: RERUN }.
+    // §9 item 8: restart policy defaults to { maxAttempts: 0, completedTasks: RERUN }.
     assert!(svc.restart_policy.is_none());
     let policy = svc.restart_policy();
     assert!(policy.max_attempts.is_none());
@@ -1123,7 +1123,7 @@ fn service_name_length_follows_identifier_limit() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// <ServicePort> — §9 item 6, §9.2
+// <ServicePort> — §9 item 6, §9.3
 // ════════════════════════════════════════════════════════════════════
 
 fn service_with_ports(ports: &str) -> String {

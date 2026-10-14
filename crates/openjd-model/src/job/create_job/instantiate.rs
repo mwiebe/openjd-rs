@@ -445,7 +445,7 @@ pub(super) fn instantiate_service<'a>(
             health_interval_seconds,
             ..
         } => job::ServiceHealthCheck::TcpConnect {
-            // §9 item 6 / §9.4 item 2: the default port set is every TCP
+            // §9 item 7 / §9.4 item 2: the default port set is every TCP
             // port; validation has rejected a Service with none.
             ports: probed
                 .clone()
@@ -618,7 +618,7 @@ fn check_duplicate_port_numbers(
 
 /// Resolve one of a Service's numeric `@fmtstring` fields (`port`,
 /// `timeoutSeconds`, `intervalSeconds`, `maxAttempts`) with target type
-/// `int?` (RFC 0009 §9.2): `Ok(None)` when a whole-field expression
+/// `int?` (RFC 0009 §9.5.1): `Ok(None)` when a whole-field expression
 /// resolves to `null` — the field is treated as not provided — otherwise
 /// the integer, which must lie in `range`. A value outside it (`range_msg`)
 /// or a multi-segment string that does not parse as an integer is recorded

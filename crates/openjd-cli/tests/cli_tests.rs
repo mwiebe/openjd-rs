@@ -3936,7 +3936,7 @@ mod services {
         );
     }
 
-    /// RFC 0009 §9.3 item 3 / §9 item 6 (conformance
+    /// RFC 0009 §9.3 item 3 / §9 item 7 (conformance
     /// `service-udp-port-echo`): a Service whose only port is UDP is
     /// allocated a UDP port on loopback, reported with a `/udp` suffix in
     /// the endpoints line, becomes READY through its STDOUT check, and is
@@ -3968,7 +3968,7 @@ mod services {
     /// A metrics sink with a UDP ingest port: a Service with
     /// a UDP port and a TCP port and no `healthCheck` becomes READY
     /// through the default TCP_CONNECT, which probes the TCP port only
-    /// (§9 item 6, §9.4 item 2). The endpoints line suffixes only the UDP
+    /// (§9 item 7, §9.4 item 2). The endpoints line suffixes only the UDP
     /// port; the Task reaches both ports.
     #[test]
     fn test_job_service_mixed_tcp_udp_default_health_check_probes_tcp_only() {
@@ -5363,6 +5363,94 @@ mod services {
             elapsed < std::time::Duration::from_secs(5),
             "waited out the relaunch: {elapsed:?}\n{stdout}"
         );
+    }
+
+    /// "Failure and restart" step 4 when the Service's `onExit` is still
+    /// running as the scope's last Task completes: the FAILED verdict was
+    /// decided while the scope had work and stands whatever the teardown
+    /// timing. Step B must not run and the Job fails.
+    #[test]
+    fn test_service_failed_with_slow_on_exit_during_last_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_fail_slow_on_exit_during_last_task.yaml", &[]);
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("SVC_ONEXIT"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_MUST_NOT_RUN"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 3 at the gate: an instance failure between Tasks (here,
+    /// during a slow Step Environment `onEnter`) is observed by the readiness
+    /// gate before the next Task, which then does not run.
+    #[test]
+    fn test_service_failure_between_tasks_is_caught_by_the_gate() {
+        let (code, stdout, stderr) = run_service_template("service_fails_between_tasks.yaml", &[]);
+        assert!(stdout.contains("ENV_ENTERED"), "{stdout}");
+        assert!(
+            stdout.contains("Service 'S' (scope: Step A) is FAILED: onRun exited while the"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("TASK_A_RAN"), "{stdout}");
+        assert!(!stdout.contains("Running Task"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Constraint 4 when the dependent is declared before the Service it
+    /// lists: stop order follows the dependency graph, not declaration order.
+    #[test]
+    fn test_stop_order_follows_dependencies_not_declaration_order() {
+        let (code, stdout, stderr) =
+            run_service_template("service_stop_order_dependent_declared_first.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Service 'Back' is READY") < pos(&stdout, "Starting Service: Front"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "Stopping Service: Front") < pos(&stdout, "Stopping Service: Back"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "FRONT_ONEXIT") < pos(&stdout, "BACK_ONEXIT"),
+            "{stdout}"
+        );
+    }
+
+    /// A relaunch that became READY during the scope's last Task, with no
+    /// gate afterwards to collect it, is stopped at scope end like any READY
+    /// instance: one `onExit`, one `stopped` line, and the Job succeeds.
+    #[test]
+    fn test_relaunch_ready_at_scope_end_is_stopped_once() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_ready_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("Stopping Service: S"), "{stdout}");
+        assert_eq!(stdout.matches("SVC_ONEXIT").count(), 1, "{stdout}");
+        assert!(stdout.contains("Service 'S' stopped"), "{stdout}");
+        assert!(
+            pos(&stdout, "Service 'S' stopped") < pos(&stdout, "STEP_B_RAN"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
     }
 
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY

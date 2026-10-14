@@ -60,7 +60,7 @@ pub struct Service {
     /// §9.4 How readiness and, after READY, health are determined. `None`
     /// means `{ type: TCP_CONNECT }` on every declared TCP port; a Service
     /// none of whose ports is TCP must declare a `STDOUT` or `COMMAND`
-    /// check (§9 item 6). See [`health_check`](Self::health_check).
+    /// check (§9 item 7). See [`health_check`](Self::health_check).
     pub health_check: Option<ServiceHealthCheck>,
     /// §9.5 What happens when `onRun` exits before the scope ends. `None`
     /// means `{ maxAttempts: 0 }`: never relaunched, and the exit fails the
@@ -95,7 +95,7 @@ impl Service {
 
     /// The names of the declared ports whose `protocol` is `TCP`, in
     /// declaration order — the ports a `TCP_CONNECT` health check
-    /// probes when it names none (§9 item 6, §9.4 item 2).
+    /// probes when it names none (§9 item 7, §9.4 item 2).
     pub fn tcp_port_names(&self) -> impl Iterator<Item = &str> {
         self.ports
             .iter()

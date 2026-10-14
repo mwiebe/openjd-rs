@@ -2568,7 +2568,7 @@ pub fn validate_format_strings_environment_template(
     }
 }
 
-/// §9.2 `<ServicePort>.port` (`<posintstring>`, RFC 0009): the resolved
+/// §9.3 `<ServicePort>.port` (`<posintstring>`, RFC 0009): the resolved
 /// value must be a TCP port number; whole-field `null` means "runtime
 /// allocates".
 const SERVICE_PORT_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstraint::Int {
@@ -2673,7 +2673,7 @@ fn validate_service_format_strings<'a>(
         );
     }
 
-    // Numeric @fmtstring fields (§9.2–§9.4): job-creation scope, `int?`.
+    // Numeric @fmtstring fields (§9.5.1): job-creation scope, `int?`.
     let ports_path = path_field(path, "ports");
     for (i, port) in svc.ports.iter().enumerate() {
         if let Some(number) = &port.port {
@@ -2779,7 +2779,7 @@ fn validate_service_format_strings<'a>(
             if !expr_active && value.has_complex_expressions() {
                 errors.add(&var_path, "complex expressions require the EXPR extension.");
             }
-            // §4.4.2 applies through §9 item 7 (same schema as
+            // §4.4.2 applies through §9 item 9 (same schema as
             // `<Environment>.variables`).
             validate_fs_with(
                 value,

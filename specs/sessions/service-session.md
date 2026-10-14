@@ -34,7 +34,7 @@ agent):
 | Enter `SERVICE`-scoped Environments, run `onEnter`, launch `onRun`, probe readiness then health, report exit, relaunch, `onExit`, exit Environments, cleanup | Port allocation and `bindAddress`/`connectAddress` choice |
 | Detect instance failures: ready timeout, `onRun` exit before READY, `onRun` exit at any time, UNHEALTHY (`failureThreshold` consecutive failed probes after READY) | Restart decision (`restartPolicy`, relaunch vs. new Session), Task gating, multi-Service ordering |
 | Cancel `onRun` with its own `cancelation` method on request, at `end()`, and on UNHEALTHY ("Failure and restart" step 2, performed here rather than by the scheduler) | When to cancel otherwise (scope complete, ready timeout, …) |
-| Run `onHealthCheck` concurrently with `onRun` under the rules of §9.7.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §9.7) |
+| Run `onHealthCheck` concurrently with `onRun` under the rules of §9.7.1; run the `onWrapService*` hooks of the entered wrapping Environment in place of the Service's actions | Validate the Environment stack (single wrap layer, hook set matches `runScope`, §4.3 `WRAP_ACTIONS` constraint 6) |
 
 ## Why a sibling type, not a mode of `Session`
 
@@ -393,7 +393,7 @@ result that arrives after probing stopped is discarded.
 
 - **`TCP_CONNECT`** — for each probed port (the check's `ports`, which the
   model restricts to TCP ports and defaults to every declared TCP port — a
-  UDP port of a mixed Service is never probed, §9 item 6), the probe address
+  UDP port of a mixed Service is never probed, §9 item 7), the probe address
   is the loopback address of the same family when `bindAddress` is a
   wildcard (`0.0.0.0` → `127.0.0.1`, `::` → `::1`), otherwise `bindAddress`
   itself (an IP literal or a hostname). One probe connects to every target in

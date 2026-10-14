@@ -1,0 +1,46 @@
+# A KEEP Service whose relaunch becomes READY during the scope's last Task,
+# with no gate running afterwards to collect it. At scope end the READY
+# instance must be stopped like any other: onExit runs exactly once, the
+# `stopped` line is logged, and the Job succeeds.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RelaunchReadyAtScopeEnd"
+parameterDefinitions:
+  - name: Marker
+    type: STRING
+services:
+  - name: S
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxAttempts: 1
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nprint('openjd_service_ready: up', flush=True)\nif not os.path.exists(m):\n    open(m, 'w').close(); time.sleep(0.7); raise SystemExit(1)\ntime.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+        onExit:
+          command: python
+          args: ["-c", "print('SVC_ONEXIT')"]
+steps:
+  - name: A
+    dependencies:
+      - service: "S"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(2.5); print('TASK_A_DONE')"]
+  - name: B
+    dependencies:
+      - dependsOn: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_B_RAN')"]

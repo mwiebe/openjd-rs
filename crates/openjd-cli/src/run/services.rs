@@ -813,11 +813,12 @@ impl ServiceManager {
     /// A Service whose scope is every Step is stopped only by
     /// [`stop_all`](Self::stop_all).
     ///
-    /// Returns the FAILED verdicts that were already decided but not yet
-    /// collected (see [`collect_decided_failures`](Self::collect_decided_failures)),
-    /// so the caller fails the scope ("Failure and restart" step 4). A
-    /// relaunch still in flight is cut short, not awaited: the scope has
-    /// completed, so its outcome is no longer a failure.
+    /// Returns the FAILED verdicts that were decided during the scope's last
+    /// Task and that no readiness gate ran to collect (see
+    /// [`stop_set`](Self::stop_set)), so the caller fails the scope
+    /// ("Failure and restart" step 4). A relaunch still undecided is cut
+    /// short, not awaited: the scope has completed, so its outcome is no
+    /// longer a failure.
     pub(super) async fn stop_completed_scopes(
         &mut self,
         remaining: &BTreeSet<String>,
@@ -833,77 +834,52 @@ impl ServiceManager {
             })
             .map(|m| m.key.clone())
             .collect();
-        let failures = self.collect_decided_failures(&done).await?;
-        self.stop_set(&done).await;
-        Ok(failures)
+        self.stop_set(&done).await
     }
 
     /// Stop everything, in dependency order (constraint 4), after the Task
     /// Session has exited the Job's Environments. Returns the FAILED
-    /// verdicts that were already decided but not yet collected, as
-    /// [`stop_completed_scopes`](Self::stop_completed_scopes) does for a
-    /// Step-scoped Service: a job-wide Service whose attempts ran out during
-    /// the run's last Task fails the Job.
+    /// verdicts decided during the run's last Task that no gate collected,
+    /// as [`stop_completed_scopes`](Self::stop_completed_scopes) does: a
+    /// job-wide Service whose attempts ran out during that Task fails the
+    /// Job.
     pub(super) async fn stop_all(&mut self) -> Result<Vec<ServiceFailure>, RunError> {
         let all: BTreeSet<ServiceKey> = self.services.iter().map(|m| m.key.clone()).collect();
-        let failures = self.collect_decided_failures(&all).await?;
-        self.stop_set(&all).await;
-        Ok(failures)
-    }
-
-    /// For each Service in `keys` whose background task has already
-    /// finished — its restart decision is made, but no readiness gate has
-    /// run since to collect it — take the result: a `Failed` verdict is
-    /// returned as a [`ServiceFailure`] and the Service left FAILED; a
-    /// `Ready` or `Stopped` instance is put back for the caller to stop. A
-    /// task still running is left alone, for `stop_set` to cut short.
-    async fn collect_decided_failures(
-        &mut self,
-        keys: &BTreeSet<ServiceKey>,
-    ) -> Result<Vec<ServiceFailure>, RunError> {
-        let mut failures = Vec::new();
-        for m in self.services.iter_mut().filter(|m| keys.contains(&m.key)) {
-            let decided = matches!(&m.state, State::Busy(handle) if handle.is_finished());
-            if !decided {
-                continue;
-            }
-            let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
-                unreachable!("checked above");
-            };
-            let (inst, result) = handle
-                .await
-                .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
-            match result {
-                Outcome::Failed(reason) => {
-                    failures.push(ServiceFailure {
-                        name: m.key.name.clone(),
-                        document: m.key.document.clone(),
-                        scope: m.scope.clone(),
-                        reason,
-                    });
-                    m.state = State::Failed;
-                }
-                Outcome::Ready { .. } | Outcome::Stopped => {
-                    m.state = State::Ready(Box::new(inst));
-                }
-            }
-        }
-        Ok(failures)
+        self.stop_set(&all).await
     }
 
     /// Stop the Services in `keys`: cancel their background work and end
     /// their Sessions, each before any Service it depends on (constraint 4;
     /// see [`stop_order`](Self::stop_order)).
-    async fn stop_set(&mut self, keys: &BTreeSet<ServiceKey>) {
+    ///
+    /// A background task that had already decided FAILED when its stop token
+    /// was canceled — and may still have been running `onExit` — returns
+    /// `Outcome::Failed` rather than `Stopped`; those verdicts are collected
+    /// and returned, since no gate will run to see them. A task cut short
+    /// before deciding returns `Stopped`, and is not a failure.
+    async fn stop_set(
+        &mut self,
+        keys: &BTreeSet<ServiceKey>,
+    ) -> Result<Vec<ServiceFailure>, RunError> {
+        let mut failures = Vec::new();
         if keys.is_empty() {
-            return;
+            return Ok(failures);
         }
         for m in self.services.iter().filter(|m| keys.contains(&m.key)) {
             m.stop.cancel();
         }
         for idx in self.stop_order(keys) {
-            stop_managed(&mut self.services[idx], &self.shared).await;
+            let m = &mut self.services[idx];
+            if let Some(reason) = stop_managed(m, &self.shared).await? {
+                failures.push(ServiceFailure {
+                    name: m.key.name.clone(),
+                    document: m.key.document.clone(),
+                    scope: m.scope.clone(),
+                    reason,
+                });
+            }
         }
+        Ok(failures)
     }
 
     /// The order in which to stop the Services in `keys` (constraint 4):
@@ -1361,18 +1337,31 @@ fn driver_lost_exit() -> ServiceRunExit {
 
 /// End `m`'s Session, if one is live, awaiting (and thereby cutting short,
 /// through its stop token) any background start or relaunch first, and
-/// return the Service to idle.
-async fn stop_managed(m: &mut Managed, shared: &Shared) {
+/// return the Service to idle. Returns the reason when the background task
+/// had already decided FAILED: that verdict stands (the failure was observed
+/// while the scope had work) and the Service is left FAILED.
+async fn stop_managed(m: &mut Managed, shared: &Shared) -> Result<Option<String>, RunError> {
+    let mut failed = None;
     match std::mem::replace(&mut m.state, State::Idle) {
-        State::Busy(handle) => match handle.await {
-            Ok((mut inst, _)) => end_instance(&mut inst).await,
-            Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
-        },
+        State::Busy(handle) => {
+            let (mut inst, outcome) = handle
+                .await
+                .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
+            match outcome {
+                Outcome::Failed(reason) => {
+                    // `start_or_recover` ended the Session before returning.
+                    failed = Some(reason);
+                    m.state = State::Failed;
+                }
+                Outcome::Ready { .. } | Outcome::Stopped => end_instance(&mut inst).await,
+            }
+        }
         State::Ready(mut inst) => end_instance(&mut inst).await,
         State::Idle | State::Failed => {}
     }
     m.active = false;
     m.stop = shared.config.cancel_token.child_token();
+    Ok(failed)
 }
 
 /// Constraint 7: end the Service Session, if one is live.

@@ -507,7 +507,7 @@ impl std::fmt::Display for Document {
 ///
 /// Two Services of a combined Job are the same Service iff their
 /// [`document`](Self::document) and `name` agree: names are unique within
-/// one document's list only (Template Schemas §1.2.2 item 2).
+/// one document's list only (Template Schemas §1.2.2 item 3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Service {
@@ -547,7 +547,7 @@ pub struct Service {
     pub host_requirements: Option<HostRequirements>,
     /// The declared ports, in declaration order.
     pub ports: Vec<ServicePort>,
-    /// The effective health check, with the §9.3 defaults applied.
+    /// The effective health check, with the §9.4 defaults applied.
     pub health_check: ServiceHealthCheck,
     /// The effective restart policy, with the §9.5 default `maxAttempts`
     /// applied and `completedTasks` resolved (required when `maxAttempts`
@@ -663,7 +663,7 @@ pub struct ServiceRequirementPort {
     pub protocol: ServicePortProtocol,
 }
 
-/// An instantiated `<ServicePort>` (§9.2).
+/// An instantiated `<ServicePort>` (§9.3).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServicePort {
@@ -701,7 +701,7 @@ pub enum ServiceHealthCheck {
     #[serde(rename = "TCP_CONNECT")]
     TcpConnect {
         /// The names of the TCP ports to probe — every declared TCP port
-        /// when the template named none (§9 item 6, §9.4 item 2).
+        /// when the template named none (§9 item 7, §9.4 item 2).
         ports: Vec<String>,
         /// Seconds between probes before READY (§9.4 item 3).
         readiness_interval_seconds: u64,
@@ -901,7 +901,7 @@ pub struct ServiceScript {
     pub embedded_files: Option<Vec<EmbeddedFile>>,
 }
 
-/// An instantiated `<ServiceActions>` (§9.6).
+/// An instantiated `<ServiceActions>` (§9.7).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceActions {

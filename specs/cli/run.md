@@ -728,10 +728,11 @@ probed on its TCP ports only; or `…, no
 heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>]`,
 `is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
 <what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `onRun (launch N) canceled;
-exit code: N/A` (or `… exited; exit code: <n>`: how the instance the runtime canceled after
-UNHEALTHY or a readiness timeout ended, logged after its exit is awaited and before the
-relaunch or FAILED line, so the old instance is seen gone before the new one starts —
-RFC 0009 "Failure and restart" step 2), `Relaunching Service
+exit code: N/A` or `… exited; exit code: <n>` (how the failed instance's `onRun` ended:
+`canceled` when the runtime canceled it after UNHEALTHY or a readiness timeout, `exited` when
+it exited on its own; logged for every instance failure once the exit is collected, after
+the `is UNREADY` line and before the relaunch or FAILED line, so the old instance is seen
+gone before the new one starts — RFC 0009 "Failure and restart" step 2), `Relaunching Service
 '<name>' onRun in its Service Session (relaunch N of M): <reason>` / `… in a new
 Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
 (restartPolicy.maxAttempts)`, and `stopped` (or `stopped; working directory preserved
