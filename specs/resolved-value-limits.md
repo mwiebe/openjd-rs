@@ -1270,8 +1270,9 @@ int/float/string/path.
     incompatible list types are now rejected (RFC 0005 rule 7), and
     `[1, 2.0, 'a']` errors instead of panicking. Converged after four
     implement/audit rounds; the audits surfaced items 32–34. A review
-    follow-up on the PR (`fd221455`) made an always-null unresolved
-    element (`[None if Session.HasPathMappingRules else None]`, which
+    follow-up on the PR, folded into the squash commit, made an
+    always-null unresolved element
+    (`[None if Session.HasPathMappingRules else None]`, which
     produced the malformed "incompatible types: , and nulltype") report
     the construct's run-time null error at every stage.
 25. ~~**`eval_boolop` returns a concrete operand after an unresolved
@@ -1384,7 +1385,7 @@ int/float/string/path.
     `openjd-sessions`.
 
 Items 32–34 come from the independent audits of the item 24 fix
-(branch `fix/unresolved-list-join`). Each predates that fix and was
+(PR #434). Each predates that fix and was
 confirmed not made worse by it. Symbol states as for items 24–31.
 
 32. **The nesting-depth check skips unresolved elements.**
