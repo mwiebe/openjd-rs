@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `d7cb09c`.
+  openjd-specifications commit `61f27ee`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -409,8 +409,11 @@ The expr specs need no change unless the warning lands.
   (`subprocess.rs:1121`–`:1126`) strip only the line terminator. The RFC's grammar allows
   only spaces and tabs around the value, so a directive followed by, say, a form feed would be valid on one path and
   invalid on the other. Make the Unix helper strip only the line terminator, and let the parser apply the grammar.
-* Logging: a directive line is treated like the other directives. It is logged by default and hidden when
-  `echo_openjd_directives` is `false` (`action_filter.rs:211`), which matches the RFC.
+* Logging: a valid directive line is treated like the other directives. It is logged by default and hidden when
+  `echo_openjd_directives` is `false` (`action_filter.rs:211`). An invalid or `Forbidden` directive must always stay
+  in the log, with ` -- ERROR: <message>` appended, as the error branches for `openjd_env` already do
+  (`action_filter.rs:166`–`:174`, returning `pass_through = true`). It must not reach the shared `:211` path, which
+  would hide it when echo is off.
 
 ### S3. Reading `@` files
 
@@ -585,6 +588,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Values are returned on success and reported through the callback as they arrive, on stdout and on stderr.
   Nothing is returned on failure, cancellation, or timeout, or when the action exits 0 after an invalid directive.
 * Every collector failure surfaces as a failed Task with its message.
+* Logging: with `echo_openjd_directives = false`, a valid directive is hidden and an invalid one stays in the log with
+  its error; with the default, both appear.
 * Cancel at once: an invalid directive followed by a long `sleep` cancels the Action well before the sleep ends,
   through its configured cancelation, with a message that names the output. A test that only checks the final state
   would also pass with fail-at-exit, so it must check the timing.
@@ -651,7 +656,7 @@ binding API are shaped so that a Python port can mirror them.
 These are the questions the RFC needs to answer before an implementation can be called conformant. The prototype
 picks a behavior for each and records it in the specs. A9, A10, and A12 were about the session-supplied output file,
 and the RFC revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in
-`1e89748`. Resolved items are kept, struck through, so the numbering stays stable.
+`1e89748` and `61f27ee`. Resolved items are kept, struck through, so the numbering stays stable.
 
 * **A1. The validation warning has no channel.** §Modifications to the Expression Language says that template
   validation "MUST emit a warning". No OpenJD specification, the conformance runner, nor openjd-rs has a warning
@@ -715,8 +720,9 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
   `Cannot parse '[1.5, 2.5]' as float`. This is mainly an openjd-rs gap against the EXPR spec (Q5), to be fixed before
   M4.6. The RFC should still say explicitly that range list items follow §1.3.2, because the §1.3.12 table types the
   `INT` range as `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
-* ~~**A15. Is a directive line logged?**~~ Resolved in `1e89748`: like the other messages, the line appears in the
-  log by default, and a runtime's option to hide recognized messages applies to it too. openjd-rs already behaves
-  this way through `echo_openjd_directives`.
+* ~~**A15. Is a directive line logged?**~~ Resolved in `1e89748`, refined in `61f27ee`: like the other messages, the
+  line appears in the log by default; a runtime option to hide recognized messages may hide a valid directive, but
+  an invalid one always stays in the log with its error. openjd-rs's `echo_openjd_directives` gives the first part,
+  and S2 adds the second.
 * ~~**A16. Cancel at once, or fail at exit?**~~ Resolved in `1e89748`: an invalid directive MUST cancel and fail its
   Action at once.
