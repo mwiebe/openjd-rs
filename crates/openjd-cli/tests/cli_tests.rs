@@ -4964,8 +4964,8 @@ mod services {
         );
         assert!(
             stdout.contains(
-                "Returning every completed Task of Step(s) 'Work' to the queue: a Service with \
-                 completedTasks: RERUN (scope: Step Work) was relaunched\n"
+                "Returning Step(s) 'Work' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched\n"
             ),
             "{stdout}"
         );
@@ -5031,8 +5031,8 @@ mod services {
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
             stdout.contains(
-                "Returning every completed Task of Step(s) 'A', 'B' to the queue: a Service with \
-                 completedTasks: RERUN (scope: every Step) was relaunched\n"
+                "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched\n"
             ),
             "{stdout}"
         );
@@ -5181,10 +5181,7 @@ mod services {
         // Front's stop is not a relaunch of its own: its first instance's
         // Session ends and a new one begins, within maxAttempts 0.
         assert!(!stdout.contains("Relaunching Service 'Front'"), "{stdout}");
-        assert!(
-            !stdout.contains("Returning every completed Task"),
-            "{stdout}"
-        );
+        assert!(!stdout.contains("Returning Step(s)"), "{stdout}");
         assert!(
             stdout.contains(
                 "Re-entering 1 Environment(s): a Service they may reference has new endpoints"
@@ -5280,8 +5277,8 @@ mod services {
         );
         assert!(
             stdout.contains(
-                "Returning every completed Task of Step(s) 'Work' to the queue: a Service with \
-                 completedTasks: RERUN (scope: Step Work) was relaunched"
+                "Returning Step(s) 'Work' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched"
             ),
             "{stdout}"
         );
@@ -5644,19 +5641,109 @@ mod services {
         assert!(!stdout.contains("Task canceled"), "{stdout}");
         assert!(
             stdout.contains(
-                "Returning every completed Task of Step(s) 'A', 'C' to the queue: a Service \
-                 with completedTasks: RERUN (scope: Steps A, C) was relaunched"
+                "Returning Step(s) 'A', 'C' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched"
             ),
             "{stdout}"
         );
         assert_eq!(stdout.matches("Running step 'B'").count(), 1, "{stdout}");
         assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        // The requeue follows the running Step's completion, before D (the
+        // next Step, outside the scope) runs.
+        assert!(
+            pos(&stdout, "Returning Step(s) 'A', 'C'") < pos(&stdout, "Running step 'D'"),
+            "{stdout}"
+        );
         let trace = std::fs::read_to_string(&trace).unwrap();
         assert_eq!(
             trace.lines().collect::<Vec<_>>(),
-            ["A ran", "B start", "W died", "B done", "A ran", "C ran"],
+            ["A ran", "B start", "W died", "B done", "A ran", "D ran", "C ran"],
             "{stdout}"
         );
+    }
+
+    /// Two `RERUN` Services failing during one Task are returned together:
+    /// the in-Task watcher cancels at the first, the requeue gate observes
+    /// the second, and one requeue covers both scopes.
+    #[test]
+    fn test_two_rerun_services_failing_in_one_task_are_requeued_together() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_two_services_fail_in_one_task.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(stdout.matches("Returning Step(s)").count(), 1, "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'B' to the queue"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches("New Task Session for the requeued Tasks")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("W died").count(), 1, "{trace}");
+        assert_eq!(trace.matches("V died").count(), 1, "{trace}");
+        assert_eq!(trace.matches("A1 done").count(), 2, "{trace}");
+        assert_eq!(trace.matches("B2 done").count(), 1, "{trace}");
+        assert_eq!(trace.matches("C1 done").count(), 1, "{trace}");
+    }
+
+    /// A `RERUN` relaunch a gate observes between Steps (the Service exited
+    /// during A's Step Environment onExit) is held until the running
+    /// out-of-scope Step completes, then requeued: A runs again before C.
+    #[test]
+    fn test_rerun_observed_by_a_gate_between_steps_is_requeued() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_observed_between_steps.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'C' to the queue"),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("A ran").count(), 2, "{trace}");
+        assert_eq!(trace.matches("B3 done").count(), 1, "{trace}");
+        assert!(pos(&trace, "B3 done") < pos(&trace, "C ran"), "{trace}");
+        assert!(trace.contains("W launch 2"), "{trace}");
+    }
+
+    /// A scope already pending (out-of-scope failure) is merged into the
+    /// requeue when a Service in scope then fails during the same Task.
+    #[test]
+    fn test_pending_rerun_scope_is_merged_into_an_in_scope_cancel() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_outside_scope_then_in_scope_same_task.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(
+            stdout
+                .matches("Canceling the running Task of Step 'B'")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Returning Step(s)").count(), 1, "{stdout}");
+        assert!(
+            stdout.contains("Returning Step(s) 'A', 'B', 'C' to the queue"),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("A1 done").count(), 2, "{trace}");
+        assert_eq!(trace.matches("C1 done").count(), 1, "{trace}");
     }
 
     /// Job-wide counterpart of the Step-scoped Environment-exit test: the
@@ -5781,7 +5868,7 @@ mod services {
             "{stdout}"
         );
         assert!(
-            !stdout.contains("Returning every completed Task"),
+            !stdout.contains("Returning Step(s)"),
             "no requeue is announced for a FAILED Service:\n{stdout}"
         );
         assert!(
@@ -6398,9 +6485,9 @@ mod services {
         assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
         assert!(
             stdout.contains(
-                "Returning every completed Task of Step(s) 'A', 'B' to the queue: a Service with \
-                 completedTasks: RERUN (scope: Steps A, B) was relaunched; dependent Step(s) 'C' \
-                 return to pending\n"
+                "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                 Service(s) with completedTasks: RERUN covering them were relaunched; dependent \
+                 Step(s) 'C' return to pending\n"
             ),
             "{stdout}"
         );
@@ -6481,8 +6568,8 @@ mod services {
             pos(&stdout, "Service 'Solo' stopped") < pos(&stdout, "Running step 'B'"),
             "Solo stops once its scope completes:\n{stdout}"
         );
-        let rerun = "Returning every completed Task of Step(s) 'A', 'B' to the queue: a Service \
-                     with completedTasks: RERUN (scope: Steps A, B) was relaunched\n";
+        let rerun = "Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again): \
+                     Service(s) with completedTasks: RERUN covering them were relaunched\n";
         let at = pos(&stdout, rerun);
         assert!(
             stdout[at..].contains("\t--------- Starting Service: Solo"),

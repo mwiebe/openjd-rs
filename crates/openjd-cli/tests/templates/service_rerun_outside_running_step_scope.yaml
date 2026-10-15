@@ -1,7 +1,8 @@
 # RFC 0009 "Failure and restart" step 1: a RERUN relaunch cancels the running
 # Tasks *in the Service's scope*. W's scope is Steps A and C; it exits while
 # Step B runs. B's Task is not canceled and B completes; A's completed Tasks
-# (and C) return to the queue once B has completed.
+# (and C) return to the queue once B has completed — before D, the next Step,
+# runs: the requeue follows the running Step, not the next Step in the scope.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]
 name: "RerunOutsideScope"
@@ -24,6 +25,8 @@ steps:
     script: { actions: { onRun: { command: python, args: ["-c", "open(r'{{Param.Trace}}','a').write('A ran\\n')"] } } }
   - name: B
     script: { actions: { onRun: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('B start\\n'); time.sleep(2); open(r'{{Param.Trace}}','a').write('B done\\n')"] } } }
+  - name: D
+    script: { actions: { onRun: { command: python, args: ["-c", "open(r'{{Param.Trace}}','a').write('D ran\\n')"] } } }
   - name: C
     dependencies: [{ service: W }]
     script: { actions: { onRun: { command: python, args: ["-c", "open(r'{{Param.Trace}}','a').write('C ran\\n')"] } } }

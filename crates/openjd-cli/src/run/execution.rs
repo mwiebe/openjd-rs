@@ -578,10 +578,6 @@ async fn run_workload(
                 }
             }
         }
-        if rerun.is_none() {
-            // A relaunch observed by the gate after the last Step's Tasks.
-            rerun = ctx.take_pending_rerun();
-        }
         if rerun.is_none() || ctx.is_stopping() {
             // The run's last Task has returned: every remaining scope is
             // complete (constraint 6), before the Job Environments exit.
@@ -600,6 +596,13 @@ async fn run_workload(
         if ctx.is_stopping() {
             return Ok(());
         }
+        // A second `RERUN` Service that failed during the same Task is
+        // observed by that gate (the in-Task watcher stopped at the first):
+        // the scopes are returned together, as one requeue.
+        let scope = match ctx.take_pending_rerun() {
+            Some(pending) => merge_scopes(Some(scope), &pending),
+            None => scope,
+        };
         // "RERUN and Step dependencies": every Step in the scope returns to
         // pending, and with it every Step that depends on one of them;
         // dependencies are resolved again from scratch. A Service that was
@@ -609,11 +612,13 @@ async fn run_workload(
         let returned = returned_steps(job, &scope, steps_to_run);
         let in_scope: Vec<&String> = returned.iter().filter(|n| scope.contains(n)).collect();
         let dependents: Vec<&String> = returned.iter().filter(|n| !scope.contains(n)).collect();
+        // The scope may be the union of several Services' (each named, with
+        // its scope, on its own `Relaunching Service …` line above), and a
+        // returned Step may have had no Task complete yet.
         let mut msg = format!(
-            "Returning every completed Task of Step(s) {} to the queue: a Service with \
-             completedTasks: RERUN {} was relaunched",
-            quoted_list(in_scope.into_iter()),
-            services::scope_label(&scope)
+            "Returning Step(s) {} to the queue (their completed Tasks run again): \
+             Service(s) with completedTasks: RERUN covering them were relaunched",
+            quoted_list(in_scope.into_iter())
         );
         if !dependents.is_empty() {
             msg.push_str(&format!(

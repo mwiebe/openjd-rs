@@ -401,8 +401,9 @@ impl RunContext {
         self.pending_rerun = Some(merge_scopes(self.pending_rerun.take(), scope));
     }
 
-    /// The pending `RERUN` scope, if any, once a Step has completed (or
-    /// the run's Steps have): its completed Tasks return to the queue now.
+    /// The pending `RERUN` scope, if any, once a Step has completed, or at
+    /// the requeue (a second Service's scope the requeue gate observed): its
+    /// completed Tasks return to the queue now.
     pub(super) fn take_pending_rerun(&mut self) -> Option<ServiceScope> {
         self.pending_rerun.take()
     }
@@ -535,8 +536,8 @@ impl RunContext {
                 "{}\tTask canceled; it returns to the queue (not a Task failure)",
                 self.timestamp()
             );
-            // Together with any scope still waiting for a Step to complete.
-            let scope = merge_scopes(self.pending_rerun.take(), &scope);
+            // A scope still waiting for a Step to complete joins this one
+            // at the requeue (`run_workload` takes it after its gate).
             return Ok(TaskRun::Rerun(scope));
         }
         println!(

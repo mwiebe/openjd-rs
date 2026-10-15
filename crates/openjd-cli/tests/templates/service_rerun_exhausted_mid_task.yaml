@@ -2,7 +2,7 @@
 # `06b` run: the Service crashes while a Task runs, the Task is canceled and
 # returns to the queue, and the Service is FAILED at once (no relaunch
 # budget). The Job fails; nothing is requeued, so the log must not announce
-# "Returning every completed Task of the Job to the queue" or open a new
+# "Returning Step(s) … to the queue" or open a new
 # Task Session.
 specificationVersion: "jobtemplate-2023-09"
 extensions: [SERVICE, EXPR]

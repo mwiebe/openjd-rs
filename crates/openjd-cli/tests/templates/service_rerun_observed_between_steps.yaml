@@ -1,0 +1,40 @@
+# A completedTasks: RERUN Service (scope A, C) exits between Steps — during
+# Step A's slow Step Environment onExit — so a gate, not the in-Task watcher,
+# observes the relaunch. The scope is held until the running Step (B, outside
+# the scope) completes; then A's completed Task returns to the queue and A
+# runs again before C.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RerunObservedBetweenSteps"
+parameterDefinitions:
+  - { name: Trace, type: STRING }
+  - { name: DieOn, type: STRING, default: "A exiting" }
+  - { name: Attempts, type: INT, default: 1 }
+services:
+  - name: W
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxAttempts: "{{Param.Attempts}}", completedTasks: RERUN }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,time\nt=r'{{Param.Trace}}'\ns=open(t).read() if os.path.exists(t) else ''\nn=s.count('W launch')+1\nopen(t,'a').write(f'W launch {n}\\n')\nif 'W died' in s and '{{Param.DieOn}}'=='FAILRELAUNCH':\n    raise SystemExit(5)\nprint('openjd_service_ready: up', flush=True)\nwhile True:\n    time.sleep(0.1)\n    s=open(t).read()\n    if '{{Param.DieOn}}'.replace('FAILRELAUNCH','B1 start') in s and 'W died' not in s:\n        open(t,'a').write('W died\\n'); raise SystemExit(1)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ service: W }]
+    stepEnvironments:
+      - name: SlowExit
+        script:
+          actions:
+            onEnter: { command: python, args: ["-c", "pass"] }
+            onExit: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('A exiting\\n'); time.sleep(1.5)"] }
+    script: { actions: { onRun: { command: python, args: ["-c", "open(r'{{Param.Trace}}','a').write('A ran\\n')"] } } }
+  - name: B
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-3" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('B{{Task.Param.N}} start\\n'); time.sleep(1.5); open(r'{{Param.Trace}}','a').write('B{{Task.Param.N}} done\\n')"] } } }
+  - name: C
+    dependencies: [{ service: W }]
+    script: { actions: { onRun: { command: python, args: ["-c", "open(r'{{Param.Trace}}','a').write('C ran\\n')"] } } }

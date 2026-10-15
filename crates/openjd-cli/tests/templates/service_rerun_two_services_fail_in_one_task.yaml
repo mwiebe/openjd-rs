@@ -1,0 +1,41 @@
+# Two completedTasks: RERUN Services (W: Steps A, B; V: Step B) fail during the
+# same Task of B. The in-Task watcher cancels the Task at the first failure;
+# the requeue gate observes the second. Their scopes are returned together:
+# one "Returning Step(s) 'A', 'B'" line, one new Task Session.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "A6B"
+parameterDefinitions:
+  - { name: Trace, type: STRING }
+services:
+  - name: W
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxAttempts: 1, completedTasks: RERUN }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,time\nt=r'{{Param.Trace}}'\ns=open(t).read() if os.path.exists(t) else ''\nopen(t,'a').write('W launch\\n')\nprint('openjd_service_ready: up', flush=True)\nwhile True:\n    time.sleep(0.05)\n    s=open(t).read()\n    if 'B1 start' in s and 'W died' not in s:\n        open(t,'a').write('W died\\n'); raise SystemExit(1)"]
+          cancelation: { mode: TERMINATE }
+  - name: V
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxAttempts: 1, completedTasks: RERUN }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os,time\nt=r'{{Param.Trace}}'\ns=open(t).read() if os.path.exists(t) else ''\nopen(t,'a').write('V launch\\n')\nprint('openjd_service_ready: up', flush=True)\nwhile True:\n    time.sleep(0.05)\n    s=open(t).read()\n    if 'B1 start' in s and 'V died' not in s:\n        open(t,'a').write('V died\\n'); raise SystemExit(1)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{service: W}]
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('A1 start\\n'); time.sleep(0.0); open(r'{{Param.Trace}}','a').write('A1 done\\n')"] } } }
+  - name: B
+    dependencies: [{service: V}, {service: W}]
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('B{{Task.Param.N}} start\\n'); time.sleep(1.0); open(r'{{Param.Trace}}','a').write('B{{Task.Param.N}} done\\n')"] } } }
+  - name: C
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; open(r'{{Param.Trace}}','a').write('C1 start\\n'); time.sleep(0.0); open(r'{{Param.Trace}}','a').write('C1 done\\n')"] } } }

@@ -602,7 +602,9 @@ the same Task is detected; a relaunch that began a new Session is remembered
 (`pending_replaced`) for the next gate to restart its dependents as if the gate had
 awaited it — also when the promoted instance has failed again by then and the gate
 awaits a later relaunch of it (whose own outcome may say `replaced: false`); the flag
-is dropped when the Service is stopped. Between Tasks, the gate polls the same health and exit channels. An
+is dropped when the Service is stopped. A background task that panicked (an internal
+error) is handed to the next gate as a FAILED outcome, logged `is FAILED: background
+task failed: …`, so the run fails rather than carrying on without the Service. Between Tasks, the gate polls the same health and exit channels. An
 exit observed after the scope completed is not a failure — the RFC's stop race: the
 scope's completion cancels the Service's stop token when its last Task returns (see
 "Task gating"), and nothing watches a READY instance after that.
@@ -628,20 +630,26 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
   completed, in the original order, re-running their completed Tasks — **only once the
   Service is actually relaunched**: after the canceled Task's Step unwinds (or the
   running Step completes), `run_workload` runs the readiness gate before announcing the
-  requeue, so the restart decision (and the relaunch) has settled. If the Service's attempts are exhausted it
-  is FAILED instead, the gate records the failure, and the run fails without printing
-  `Returning every completed Task …` or `New Task Session for the requeued Tasks` (the
-  exploratory report's stumble S10). Otherwise the requeue is logged (`Returning every
-  completed Task of Step(s) 'A', 'B' to the queue: a Service with completedTasks: RERUN
-  (scope: Steps A, B) was relaunched`, followed by `; dependent Step(s) 'C' return to
-  pending` when a Step outside the scope is returned) and the requeued Tasks run in a
+  requeue, so the restart decision (and the relaunch) has settled; a second `RERUN`
+  Service that failed during the same Task is observed by that gate, and its scope
+  joins the requeue (`take_pending_rerun` after the gate), so several `RERUN` Services
+  failing during one Task return the union of their scopes in one requeue. If the
+  Service's attempts are exhausted it is FAILED instead, the gate records the failure,
+  and the run fails without printing `Returning Step(s) …` or `New Task Session for the
+  requeued Tasks` (the exploratory report's stumble S10). Otherwise the requeue is
+  logged (`Returning Step(s) 'A', 'B' to the queue (their completed Tasks run again):
+  Service(s) with completedTasks: RERUN covering them were relaunched`, followed by `;
+  dependent Step(s) 'C' return to pending` when a Step outside the scope is returned —
+  the line names the Steps, not a Service or scope, since the scope may be the union of
+  several Services' and a returned Step may have had no Task complete yet; each
+  relaunched Service and its scope is on its own `Relaunching Service …` line above) and
+  the requeued Tasks run in a
   **new Task Session** (`RunContext::replace_task_session`): a canceled action leaves a
   Session ending-only ("Brittle Sessions", `specs/sessions/session.md`), and a
   scheduler would form new Sessions for requeued Tasks anyway. The new Session
   re-enters the Job's Environments. A Service that had been stopped because its scope
   completed, and whose scope includes a returned Step, is activated again when that
-  Step is next reached and starts in a new Service Session (constraint 8); several
-  `RERUN` Services failing during one Task return the union of their scopes.
+  Step is next reached and starts in a new Service Session (constraint 8).
 - `completedTasks: KEEP` — the Task continues; if it fails on its own that is an
   ordinary Task failure, which the local runner (having no Task retry) treats as it
   always has: the run fails. Completed Tasks stand.
@@ -679,7 +687,7 @@ stop consumes none of the dependent's `maxAttempts` (its relaunch counter belong
 an instance, and a new Session gets a fresh one). The dependent's own `completedTasks`
 applies to its own scope exactly as for any instance that is stopped and started
 again: under `RERUN` the completed Tasks of its scope are returned to the queue
-(merged into the gate's `rerun` scope, so the same `Returning every completed Task …`
+(merged into the gate's `rerun` scope, so the same `Returning Step(s) …`
 path runs); under `KEEP` they stand. A dependent that gives no `completedTasks`
 (allowed only with `maxAttempts` 0) is treated as `RERUN` — it has not said that its
 state survives a new instance — and the log line says `completedTasks omitted, read as

@@ -1016,6 +1016,7 @@ impl ServiceManager {
     /// is watched. `Failed` and `Stopped` outcomes are left in place for the
     /// next gate (or scope end) to collect.
     async fn promote_finished_relaunches(&mut self) {
+        let retain = self.shared.config.retain_working_dir;
         for m in self.services.iter_mut() {
             // The handle is awaited in place (`&mut JoinHandle` is a
             // Future) and the state replaced only once its output is in
@@ -1040,8 +1041,20 @@ impl ServiceManager {
                     m.state = State::Busy(tokio::spawn(async move { (inst, outcome) }));
                 }
                 Err(e) => {
-                    eprintln!("ERROR: {}: background task failed: {e}", m.key);
-                    m.state = State::Failed;
+                    // The task panicked (an internal error): its instance is
+                    // gone with it. Hand the next gate a FAILED outcome, as
+                    // `await_busy` would have reported had it awaited the
+                    // panic itself, so the run fails rather than carrying on
+                    // without the Service.
+                    let reason = format!("background task failed: {e}");
+                    log_line(format!(
+                        "{} {} is FAILED: {reason}",
+                        m.key,
+                        scope_label(&m.scope)
+                    ));
+                    let inst = m.new_instance(retain);
+                    m.state =
+                        State::Busy(tokio::spawn(async move { (inst, Outcome::Failed(reason)) }));
                 }
             }
         }
