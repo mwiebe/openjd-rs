@@ -332,7 +332,8 @@ The expr specs need no change unless the warning lands.
 When `output_variables` is `Some`:
 
 1. Create an empty file `<working_dir>/.openjd/task_outputs/<uuid>.txt`, which is inside the Session working
-   directory, as §The output file recommends. The runtime creates `.openjd/task_outputs` itself when the Session starts, before any job-user action runs. It
+   directory, as §The output file recommends. The runtime creates `.openjd/task_outputs` itself when the Session starts, for every Session, before any job-user
+   action runs (it can't know yet which Steps declare outputs). It
    fails if the path already exists, keeps the directory unwritable by the job user, and checks its owner and mode
    before each use. Under cross-user execution the working directory itself is group-writable (mode `0o770`,
    `tempdir.rs:174`–`:186`), so a
@@ -435,7 +436,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 1 | `feat(model): CONTROL_FLOW extension, outputVariables and enableIf schema` | — | M1, and M2 items 1–3 (gating, the EXPR prerequisite, structural rules) |
 | 2 | `feat(model): Steps.* and Task.OutputFile scopes in template validation` | 1 | the M2 scope rules and their messages, `enableIf` typing, and the `create_job` check-table seeding from M4.3. Until PR 4, `openjd run` of a template that reads `Steps.*` fails when a Task starts, because the value is unresolved; this is acceptable on the prototype branch |
 | 3 | `feat(model): task output file parser` | 1 | M3 |
-| 4 | `feat(model): step input binding` | 2, 3 | M4: `StepBinding`, static `enableIf`, `bind_step`, `StepInputs`, `attach_step_inputs`, range rules, task-count limits |
+| 4 | `feat(model): step input binding` | 2, 3 | M4: `StepBinding`, static `enableIf`, `bind_step`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
 | 5 | `feat(sessions): task output file` | 3 | S1–S4 |
 | 6 | `feat(cli): simulate step input binding in openjd run` | 4, 5 | C1, C2 |
 | 7 | `test(cli): golden tests for the RFC sample templates` | 6 | the sample tests below |
@@ -463,7 +464,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
-  product space; empty with associated ranges; a list-literal range that flattens to nothing; the 1024 cap lifted;
+  product space; empty with associated ranges; non-empty `INT` and `FLOAT` list-literal ranges with a list-valued item
+  (`["{{Param.L}}"]`); a list-literal range that flattens to nothing; the 1024 cap lifted;
   `max_task_count` across bindings; and `TaskParam` alignment and iteration order under a
   `combination: "A * B"` with `B` varying fastest.
 * Job creation: a producer script that uses `Task.OutputFile`, and a script that reads `Steps.*`, both pass
