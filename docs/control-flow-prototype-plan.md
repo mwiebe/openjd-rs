@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `779202f`.
+  openjd-specifications commit `d7cb09c`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -62,7 +62,7 @@ Each of these was checked against the code at `be266ed` or by running the releas
 | `run_task` takes a `job::StepScript`, not a `job::Step`, and returns `ActionResult { state, exit_code, stdout }` | `crates/openjd-sessions/src/session.rs:1758`, `crates/openjd-sessions/src/action.rs:74` |
 | Per-action environment variables are computed in `run_task` | `crates/openjd-sessions/src/session.rs:1785`, `evaluate_env_vars` at `:2393` |
 | Directives are recognized by `parse_directive` (prefix `openjd_`, then `<kind>: `) and turned into `ActionMessage`s by `process_line`, on the line-reader side; the Session applies them in `apply_message`. A malformed `openjd_env` sends `CancelMarkFailed` | `crates/openjd-sessions/src/action_filter.rs:45`, `crates/openjd-sessions/src/subprocess.rs:1219`, `crates/openjd-sessions/src/session.rs:2286` |
-| A recognized directive line is logged by default; `echo_openjd_directives` (default `true`) hides it when `false` | `crates/openjd-sessions/src/action_filter.rs:211`, the `SessionConfig` doc comment at `crates/openjd-sessions/src/session.rs:141`, and the CLI's settings at `crates/openjd-cli/src/run/mod.rs:318` and `run/execution.rs:289` |
+| A recognized directive line is logged by default; `echo_openjd_directives` (default `true`) hides it when `false` | `crates/openjd-sessions/src/action_filter.rs:211`, the `SessionConfig` doc comment at `crates/openjd-sessions/src/session.rs:141`, and the CLI's setting at `crates/openjd-cli/src/run/execution.rs:289` |
 | Lines are silently truncated at 64 KiB in four places: `truncate_line` on the direct path, and in the helper `LineFramer::accumulate` (which drops the rest of an over-long line before it is decoded), `decode_and_truncate`, and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:62`, `crates/openjd-sessions/src/helper/src/framer.rs:195`, `:89`, `:116` |
 | Invalid UTF-8 on stdout is decoded with backslash escapes, not rejected | `decode_backslashreplace`, `crates/openjd-sessions/src/subprocess.rs:87` |
 | Under cross-user execution the embedded helper runs the action as the job user and streams `Response::Out` lines; its commands are `Run`, `Cancel`, and `Shutdown` | `crates/openjd-sessions/src/helper/src/protocol.rs:49`, `:69` |
@@ -585,6 +585,9 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Values are returned on success and reported through the callback as they arrive, on stdout and on stderr.
   Nothing is returned on failure, cancellation, or timeout, or when the action exits 0 after an invalid directive.
 * Every collector failure surfaces as a failed Task with its message.
+* Cancel at once: an invalid directive followed by a long `sleep` cancels the Action well before the sleep ends,
+  through its configured cancelation, with a message that names the output. A test that only checks the final state
+  would also pass with fail-at-exit, so it must check the timing.
 * Recognition: `openjd_output_var:N=1` with no space is a directive, and `openjd_output_var: ` with nothing after it
   fails the Task.
 * `@` files: relative and absolute paths; a file written and closed before the directive; a symlink that stays
@@ -600,7 +603,7 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   the same on both paths; an `@` file that is not UTF-8 or contains NUL fails the Task.
 * An `@` FIFO fails the Task without hanging the reader, on both paths.
 * Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
-  passed through unchanged and its file is not read; a directive in a Job Template `onEnter` fails; an undeclared
+  passed through unchanged and its file is not read; a directive in a Job Template `onEnter` cancels and fails the Action; an undeclared
   name with a missing `@` file reports the undeclared name.
 * Cross-user parity: `@` directives with a space and with a tab after the colon, with `N= @f`, and with trailing
   spaces after the path give the same result as on the direct path. Run with the RFC samples' own form
