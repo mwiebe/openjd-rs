@@ -759,7 +759,13 @@ token as before, and the Services through the manager: a Service Session does **
 share the run's token — a token canceled during teardown would also cancel `onExit`
 and the Environment exits, which constraint 7 wants run — so the manager cancels a
 running `onEnter`/`onRun` through the Session's cancel handle and then ends the
-Session normally.
+Session normally. The readiness gate stops its loop the moment the run's token is
+cancelled (and starts nothing more), so a Service left idle waiting for a relaunching
+dependency terminates the gate rather than erroring or spinning; teardown then runs
+through `stop_all`. One ordering caveat remains: a relaunch the gate was awaiting when
+the interrupt arrived is ended there (its `onExit` runs) before `stop_all` stops the
+READY Services that list it — the constraint-4 stop-order gap recorded as L4 in
+`specs/service-extension-status.md`.
 
 ### Output
 

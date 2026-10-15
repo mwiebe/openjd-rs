@@ -1439,6 +1439,12 @@ impl ServiceManager {
     /// dependencies are all READY (constraint 2). Each wave starts
     /// concurrently; the next begins when the wave has settled.
     async fn start_pending(&mut self, outcome: &mut GateOutcome) -> Result<(), RunError> {
+        // The run is stopping: start nothing (and do not log a restart for a
+        // Service that will not start). `gate` breaks on the same condition;
+        // `stop_all` tears the Services down.
+        if self.shared.config.cancel_token.is_cancelled() {
+            return Ok(());
+        }
         loop {
             let ready: BTreeMap<ServiceKey, ServiceEndpoints> = self
                 .services

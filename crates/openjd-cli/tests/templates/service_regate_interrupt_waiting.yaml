@@ -46,8 +46,10 @@ services:
 steps:
   - name: Work
     dependencies: [{ service: "B" }, { service: "A" }]
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
     script:
       actions:
         onRun:
           command: python
-          args: ["-c", "import time; open(r'{{ Param.Trace }}', 'a').write('task 1 start\\n'); time.sleep(600)"]
+          args: ["-c", "import time; open(r'{{ Param.Trace }}', 'a').write('task {{ Task.Param.N }} start\\n'); time.sleep(1.5 if {{ Task.Param.N }} == 1 else 600)"]
