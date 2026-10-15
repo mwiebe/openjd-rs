@@ -84,7 +84,9 @@ Each of these was checked against the code at `be266ed` or by running the releas
 * `job::Step` (`job/mod.rs:105`) gets `output_variables: Option<Vec<job::OutputVariable>>` (name and type, plus the
   constraints needed to check values) and `binding: StepBinding`. `job::Environment` (`job/mod.rs:147`) gets
   `enabled: bool`. New fields use `skip_serializing_if` so that the serialized form of existing jobs doesn't change
-  (`tests/integration/test_job_step_serde.rs`).
+  (`tests/integration/test_job_step_serde.rs`). They also need `#[serde(default)]`, with `Bound` as the default
+  binding and `true` as the default for `enabled`. Without it, a job serialized before the change, or one whose
+  fields were skipped, fails to deserialize with `missing field`.
 
 ### M2. Validation
 
@@ -143,9 +145,12 @@ It is a pure function, so sessions, the CLI, `openjd-for-js`, and a scheduler th
   apply to the last line for each variable. Rule 6 covers declared variables with no line. Rule 7, the size limit, is
   enforced by the caller before it reads the bytes. Messages give the 1-based line number and the variable name.
   Messages never repeat raw line content beyond the variable name; see S3 for why.
-* Type conversion: use `json_to_expr_value` (`parameters.rs:1381`), then coerce to the declared type through the same
-  path as `coerce_json_to_job_parameter_type`. Before converting, reject `null` and objects at any depth, and nesting
-  deeper than the declared type. Each row of the RFC's conversion table becomes a unit test.
+* Type conversion: use `json_to_expr_value` (`parameters.rs:1381`) for the natural JSON typing, then coerce to the
+  declared type with EXPR's implicit coercion, `ExprValue::coerce` (`value.rs:904`), as the RFC's §Type conversion
+  requires. Do not reuse `coerce_json_to_job_parameter_type`: it follows job-parameter rules, which are more lenient
+  (for example `1` is accepted as a `BOOL` at `parameters.rs:691`). Ambiguity A7 asks the RFC which of the two it
+  means. Before converting, reject `null` and objects at any depth, and nesting deeper than the declared type. Each row
+  of the RFC's conversion table becomes a unit test.
 * Constraints: the `check_constraints` of the wrapped definition from M1.
 
 ### M4. Job creation and binding
@@ -215,8 +220,10 @@ Environments are kept as they are, because they are carried forward as format st
 5. **Host-scope `Steps.*` in Steps bound at creation.** A Step such as `FramesToVideo` reads `Steps.*` only in its
    script, so it binds at job creation but needs the values before its Tasks run. Add
    `pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError>`. It merges the
-   concrete `Steps.*` values that the Step reads into `resolved_symtab`. `filter_symtab_for_step`
-   (`instantiate.rs:909`) keeps them, because they appear in `accessed_symbols`. Expose the list of producers whose
+   concrete `Steps.*` values that the Step reads into `resolved_symtab`. It has to find those symbols itself, because
+   `filter_symtab_for_step` (`instantiate.rs:909`) runs only inside `instantiate_step`, where the symbol table has no
+   `Steps.*` entries to keep (`copy_symbol_value` skips a missing symbol, `format_string.rs:613`). Reuse
+   `collect_all_accessed_symbols` (`instantiate.rs:1014`) and copy the matching values from `inputs`. Expose the list of producers whose
    values a Step needs before dispatch as `job::Step::input_producers()`.
 6. **Range rules under `CONTROL_FLOW`.**
    * An empty list from a format-string range is already accepted (see the table above). Add tests for it under
@@ -456,21 +463,27 @@ picks a behavior for each and records it in the specs.
   length), and, per the RFC's framing, it allows empty computed ranges. §Backward compatibility counts only "one
   existing rule" as relaxed, but the range-length change is a second one. Open Question 10 asks the related question;
   keying both relaxations on ranges that read `Steps.*` would satisfy TR1.
-* **A4. `"1-0"`.** The Video example's note relies on §3.4.1.1.1, under which `"1-0"` is `[1]`. openjd-rs rejects it
-  with `Descending range 1-0 requires a negative step`. Until Open Question 11 is settled, the note is wrong for
-  openjd-rs users, and `minValue: 1` is the only portable guard.
+* **A4. Editorial: the Video example's `"1-0"` note.** The RFC already records that openjd-rs rejects `"1-0"`
+  (§Empty parameter spaces, "some implementations reject it instead", and Open Question 11). The Video example's note
+  says only that `"1-0"` is `[1]` under §3.4.1.1.1. It should mention the divergence too, because openjd-rs fails with
+  `Descending range 1-0 requires a negative step`, and `minValue: 1` is the only guard that works everywhere.
 * **A5. Task-count limits.** The RFC allows a per-Step limit checked at binding. openjd-rs and services already have a
   per-Job total (`CallerLimits::max_task_count`) that is checked at creation. The RFC should say whether a Job-total
   limit applies cumulatively at each binding, so that the binding that crosses it fails, and that pending Steps count
   as zero at creation.
 * **A6. JSON numbers coerced to `STRING`.** The conversion rule makes any number outside `i64`, or with a fraction or
-  exponent, a `float` before it is coerced. `S=12345678901234567890` then becomes `"1.2345678901234567e19"`, and the
+  exponent, a `float` before it is coerced. `S=12345678901234567890` then becomes `"1.2345678901234567e+19"` under EXPR coercion (checked with
+  `ExprValue::coerce`), while the job-parameter path keeps the digits. The
   RFC doesn't say whether `S=1.50` gives `"1.50"` or `"1.5"`. Specify whether a `STRING` output keeps the written
   digits (openjd-rs `Float64` can keep the original spelling), and whether an out-of-range number such as `1e400` is
   an error.
-* **A7. How lenient coercion is, with examples (Open Question 16).** EXPR's implicit coercion accepts `N="12"` for
-  `INT`, and `B="yes"`, `"on"`, or `"1"` for `BOOL`, but rejects `B=1` because EXPR has no implicit int-to-bool rule.
-  The RFC's table shows none of these cases. Either add them or make output conversion stricter.
+* **A7. Which coercion, and how lenient (Open Question 16).** The RFC makes two statements that don't agree in
+  openjd-rs. It converts with EXPR's implicit coercion (§1.2.3), and it also says a `Steps.*` value behaves exactly
+  like a `Param.*` value of the same type. But job-parameter values go through a separate, more lenient conversion:
+  `B=1` is a valid `BOOL` job parameter (`parameters.rs:691`, and `openjd run -p '{"B": 1}'` accepts it), while EXPR
+  coercion rejects it (`Cannot coerce int to bool`). Both paths accept `N="12"` for `INT` and `B="yes"`, `"on"`, or
+  `"1"` for `BOOL`. The RFC's table shows none of these cases. The RFC should name one conversion and add these rows
+  (or make output conversion stricter). The prototype uses EXPR coercion, which is the RFC's normative text.
 * **A8. `enableIf` that is not a single whole-field expression.** The RFC doesn't say how
   `enableIf: "yes"` (no braces) or `enableIf: "{{Param.X}} "` (text around the expression) resolves. EXPR's
   string-to-bool coercion would accept the first and reject `"true "`. Require a YAML `bool` or a single whole-field
