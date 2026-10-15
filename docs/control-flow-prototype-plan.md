@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `61f27ee`.
+  openjd-specifications commit `e5c366e`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -412,7 +412,7 @@ The expr specs need no change unless the warning lands.
 * Logging: a valid directive line is treated like the other directives. It is logged by default and hidden when
   `echo_openjd_directives` is `false` (`action_filter.rs:211`). An invalid or `Forbidden` directive must always stay
   in the log, with ` -- ERROR: <message>` appended, as the error branches for `openjd_env` already do
-  (`action_filter.rs:166`–`:174`, returning `pass_through = true`). It must not reach the shared `:211` path, which
+  (`action_filter.rs:166`–`:175` and `:193`–`:204`, returning `pass_through = true`). It must not reach the shared `:211` path, which
   would hide it when echo is off.
 
 ### S3. Reading `@` files
@@ -608,8 +608,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   the same on both paths; an `@` file that is not UTF-8 or contains NUL fails the Task.
 * An `@` FIFO fails the Task without hanging the reader, on both paths.
 * Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
-  passed through unchanged and its file is not read; a directive in a Job Template `onEnter` cancels and fails the Action; an undeclared
-  name with a missing `@` file reports the undeclared name.
+  passed through unchanged and its file is not read; a directive in a Job Template `onEnter` cancels and fails the
+  Action; an undeclared name with a missing `@` file reports the undeclared name.
 * Cross-user parity: `@` directives with a space and with a tab after the colon, with `N= @f`, and with trailing
   spaces after the path give the same result as on the direct path. Run with the RFC samples' own form
   (`openjd_output_var: Keys=@keys.json`).
