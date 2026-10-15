@@ -106,8 +106,8 @@ Each of these was checked against the code at `be266ed` or by running the releas
   * Under `collect: APPEND` the constraints split: `item` applies to each element as it arrives, `maxLength` to the
     growing list, and `minLength` only when the action exits. `check_constraints` on a whole list can't express that,
     so the wrapper also exposes `check_element` and `check_length(len, at_exit: bool)`.
-* `job::Step` (`job/mod.rs:105`) gets `output_variables: Option<Vec<job::OutputVariable>>` and
-  `binding: StepBinding`. `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`
+* `job::Step` (`job/mod.rs:105`) gets `output_variables: Option<Vec<job::OutputVariable>>`,
+  `binding: StepBinding`, and `path_inputs: Vec<job::PathInput>` (M4.5). `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`
   (`job/mod.rs:103`), and `JobParameterDefinition` implements none of the first three, so `job::OutputVariable`
   cannot hold the M1 wrapper. It is its own struct: a name, a `JobParameterType`, the `collect` mode, the `unit`, and
   an `OutputConstraints` value
@@ -344,8 +344,8 @@ Environments are kept as they are, because they are carried forward as format st
    path-typed `Steps.P.Output.X` or `TaskParam.N` that the Step reads, `inputs` holds only the `Raw` twin, so copy
    that instead, as `include_raw_param_fallbacks` (`instantiate.rs:993`) does for `PATH` `Param.*`. Every path-typed
    `Raw` value it stores, whether the Step reads it directly or through this fallback, is stored as a `string` (or
-   list of strings) and recorded in a new `job::Step::path_inputs: Vec<job::PathInput>` list (`PathInput { symbol, ty }`), which S4
-   uses.
+   list of strings) and recorded in `job::Step::path_inputs` (`PathInput { symbol: String, ty: openjd_expr::ExprType }`, where `ty`
+   is `path`, `list[path]`, or `list[list[path]]` for a multi-Task producer's `LIST[PATH]` output), which S4 uses.
    Every bound Step that reads `Steps.*` in host-scope fields goes through `attach_step_inputs`, including one bound
    by `bind_step`; `bind_step` doesn't put path-typed `Steps.*` values into `resolved_symtab` itself. Expose the list
    of producers whose values a Step needs before dispatch as `job::Step::input_producers()`.
@@ -460,7 +460,7 @@ lists `unapply_rules` and `UnmapError`.
 ### S1. API
 
 * `run_task` (`session.rs:1758`) takes a `StepScript` and a `resolved_symtab`, not a `job::Step`, so the new inputs
-  arrive in a `RunTaskOptions` struct: `output_variables: Option<&[openjd_model::job::OutputVariable]>`, the Step's
+  arrive in a `RunTaskOptions` struct, added as one new parameter beside the existing ones: `output_variables: Option<&[openjd_model::job::OutputVariable]>`, the Step's
   output declarations, and `path_inputs: &[openjd_model::job::PathInput]`, the list M4.5 records (S4 uses it).
   The crate is pre-1.0, so this change is allowed.
 * The Session must know whether the Job lists `CONTROL_FLOW`, and for each Environment it enters whether a Job
@@ -686,7 +686,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 6 | `feat(cli): simulate step input binding in openjd run` | 4, 4a, 5 | C1, C2 |
 | 7 | `test(cli): golden tests for the RFC sample templates` | 6 | the sample tests below |
 
-PR 3 can proceed in parallel with 2 and 4. PR 5's directive work (S1–S3) can start after 3, but its S4 part needs
+PR 3 can proceed in parallel with 2. PR 5's directive work (S1–S3) can start after 3, but its S4 part needs
 `job::Step::path_inputs` from PR 4. PR 7 can start early as a list of failing tests, and the tests turn
 on as PR 6 lands.
 
