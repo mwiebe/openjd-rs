@@ -457,8 +457,9 @@ struct Managed {
     state: State,
     /// Set when a relaunch that began a new Service Session (new endpoints)
     /// was promoted to `Ready` by the in-Task watcher before any gate saw
-    /// it; the next gate consumes it exactly as it would the `replaced`
-    /// flag of a `Ready` outcome it awaited itself.
+    /// it; the next gate consumes it as it would the `replaced` flag of a
+    /// `Ready` outcome it awaited itself — also when the instance has
+    /// failed again by then and the gate awaits a later relaunch of it.
     pending_replaced: bool,
 }
 
@@ -1016,17 +1017,16 @@ impl ServiceManager {
     /// next gate (or scope end) to collect.
     async fn promote_finished_relaunches(&mut self) {
         for m in self.services.iter_mut() {
-            let finished_ready = matches!(&m.state, State::Busy(h) if h.is_finished());
-            if !finished_ready {
-                continue;
-            }
-            let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
-                unreachable!("checked above");
+            // The handle is awaited in place (`&mut JoinHandle` is a
+            // Future) and the state replaced only once its output is in
+            // hand: this future runs inside the Task's `select!` and may be
+            // dropped at any await, after which the handle — still `Busy`,
+            // its output untaken — is awaited by the next gate as before.
+            let result = match &mut m.state {
+                State::Busy(handle) if handle.is_finished() => handle.await,
+                _ => continue,
             };
-            // `handle` has finished, so this await returns at once; a
-            // panic in the task is reported by the gate that next awaits it,
-            // which cannot happen here — re-wrap it so nothing is lost.
-            match handle.await {
+            match result {
                 Ok((inst, Outcome::Ready { replaced })) => {
                     // A new-Session relaunch changed the endpoints; the
                     // gate's dependents check runs next time it is reached.
@@ -1228,9 +1228,15 @@ impl ServiceManager {
     async fn await_busy(&mut self, outcome: &mut GateOutcome) -> Result<Vec<ServiceKey>, RunError> {
         let mut replaced = Vec::new();
         for m in self.services.iter_mut() {
-            // A relaunch the in-Task watcher promoted to READY, whose new
-            // Session this gate has not yet accounted for.
-            if std::mem::take(&mut m.pending_replaced) && matches!(m.state, State::Ready(_)) {
+            // A relaunch the in-Task watcher promoted to READY began a new
+            // Session this gate has not yet accounted for. The instance may
+            // since have failed again and be relaunching (`Busy`, possibly
+            // in the same Session): its dependents still hold the endpoints
+            // of the Session before, so the flag carries over to whatever
+            // outcome is awaited below. A Service no longer running (its
+            // scope completed, or FAILED) has nothing to restart.
+            let promoted = std::mem::take(&mut m.pending_replaced);
+            if promoted && matches!(m.state, State::Ready(_)) {
                 replaced.push(m.key.clone());
                 if m.is_job_wide() {
                     outcome.job_wide_endpoints_changed = true;
@@ -1249,7 +1255,7 @@ impl ServiceManager {
                 .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
             match result {
                 Outcome::Ready { replaced: r } => {
-                    if r {
+                    if r || promoted {
                         replaced.push(m.key.clone());
                         if m.is_job_wide() {
                             outcome.job_wide_endpoints_changed = true;
@@ -1489,6 +1495,8 @@ fn driver_lost_exit() -> ServiceRunExit {
 /// while the scope had work) and the Service is left FAILED.
 async fn stop_managed(m: &mut Managed, shared: &Shared) -> Result<Option<String>, RunError> {
     let mut failed = None;
+    // A stopped Service's dependents are stopped with it (or already were).
+    m.pending_replaced = false;
     match std::mem::replace(&mut m.state, State::Idle) {
         State::Busy(handle) => {
             let (mut inst, outcome) = handle

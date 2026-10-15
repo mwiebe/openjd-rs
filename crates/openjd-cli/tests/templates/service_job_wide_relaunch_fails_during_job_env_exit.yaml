@@ -1,0 +1,31 @@
+# "An exit observed after the scope has completed is not a failure", Job-wide:
+# the run's last Task returns while a relaunch of a Job-wide Service is in
+# flight; the relaunch exits before READY during the Job Environment's slow
+# onExit. Scope completion (complete_all_scopes) is signaled before the Job
+# Environments exit, so that exit is not a failure and the Job succeeds.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: JobWideRelaunchFailsDuringJobEnvExit
+parameterDefinitions:
+  - { name: Marker, type: STRING }
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nif not os.path.exists(m):\n    open(m, 'w').close(); print('openjd_service_ready: up', flush=True); time.sleep(0.5); raise SystemExit(1)\ntime.sleep(2); raise SystemExit(3)"]
+          cancelation: { mode: TERMINATE }
+jobEnvironments:
+  - name: SlowExit
+    dependencies: [{ service: S }]
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "print('ENV_ENTER')"] }
+        onExit: { command: python, args: ["-c", "import time; print('ENV_EXIT_BEGIN', flush=True); time.sleep(3); print('ENV_EXIT_END')"] }
+steps:
+  - name: A
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; time.sleep(1.5); print('TASK_A_DONE')"] } } }

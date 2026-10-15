@@ -382,15 +382,21 @@ async fn test_retain_working_dir_survives_cleanup_and_drop() {
         log_tag: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
-    let cleaned = {
+    let (cleaned, cleaned_files) = {
         let mut session = Session::with_config(config("retain-cleanup")).unwrap();
-        let dir = session.working_directory().to_path_buf();
+        let dirs = (
+            session.working_directory().to_path_buf(),
+            session.files_directory().to_path_buf(),
+        );
         session.cleanup();
-        dir
+        dirs
     };
-    let dropped = {
+    let (dropped, dropped_files) = {
         let session = Session::with_config(config("retain-drop")).unwrap();
-        session.working_directory().to_path_buf()
+        (
+            session.working_directory().to_path_buf(),
+            session.files_directory().to_path_buf(),
+        )
     };
     assert!(
         cleaned.is_dir(),
@@ -398,6 +404,17 @@ async fn test_retain_working_dir_survives_cleanup_and_drop() {
         cleaned.display()
     );
     assert!(dropped.is_dir(), "{} removed on drop", dropped.display());
+    // The embedded files directory is its own TempDir and is kept too.
+    assert!(
+        cleaned_files.is_dir(),
+        "{} removed",
+        cleaned_files.display()
+    );
+    assert!(
+        dropped_files.is_dir(),
+        "{} removed",
+        dropped_files.display()
+    );
 }
 
 // === TestSessionRunTask_2023_09 ===

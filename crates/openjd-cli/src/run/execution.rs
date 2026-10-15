@@ -51,6 +51,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         base_symtab: SerializedSymbolTable::from_symtab(&base_symtab),
         cancel_token,
         preserved_working_dirs: Vec::new(),
+        pending_rerun: None,
     };
 
     println!("{}\tSession start", ctx.timestamp());
@@ -562,12 +563,24 @@ async fn run_workload(
             {
                 StepOutcome::Done => {
                     completed.insert(step.name.clone());
+                    // A `RERUN` relaunch observed while this Step — outside
+                    // the Service's scope — ran: its Tasks were not
+                    // canceled, and the scope's completed Tasks return to
+                    // the queue now that the Step has completed.
+                    if let Some(scope) = ctx.take_pending_rerun() {
+                        rerun = Some(scope);
+                        break;
+                    }
                 }
                 StepOutcome::Rerun(scope) => {
                     rerun = Some(scope);
                     break;
                 }
             }
+        }
+        if rerun.is_none() {
+            // A relaunch observed by the gate after the last Step's Tasks.
+            rerun = ctx.take_pending_rerun();
         }
         if rerun.is_none() || ctx.is_stopping() {
             // The run's last Task has returned: every remaining scope is

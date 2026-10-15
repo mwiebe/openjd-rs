@@ -599,8 +599,10 @@ watched the same way: the watcher also wakes when a background start or relaunch
 finishes and, when it finished READY, holds the instance as READY at once rather than
 leaving it to the next gate (`promote_finished_relaunches`), so a second exit during
 the same Task is detected; a relaunch that began a new Session is remembered
-(`pending_replaced`) for the next gate to restart its dependents exactly as if the gate
-had awaited it. Between Tasks, the gate polls the same health and exit channels. An
+(`pending_replaced`) for the next gate to restart its dependents as if the gate had
+awaited it — also when the promoted instance has failed again by then and the gate
+awaits a later relaunch of it (whose own outcome may say `replaced: false`); the flag
+is dropped when the Service is stopped. Between Tasks, the gate polls the same health and exit channels. An
 exit observed after the scope completed is not a failure — the RFC's stop race: the
 scope's completion cancels the Service's stop token when its last Task returns (see
 "Task gating"), and nothing watches a READY instance after that.
@@ -609,17 +611,24 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
 `is UNHEALTHY: <reason>` first) and the restart decision runs on a background task
 (`start_or_recover`), so a `KEEP` relaunch proceeds while the Task continues:
 
-- `completedTasks: RERUN` — the running Task is canceled through the Task Session's
-  cancel handle (its own `cancelation` method), logged as `Task canceled; it returns
-  to the queue (not a Task failure)` and not counted in `tasks_run` or as a failure.
-  The Step's remaining Tasks are abandoned and, per "`RERUN` and Step dependencies",
-  every selected Step in the Service's scope returns to pending, and with it every
-  selected Step that depends on one of them, directly or transitively
+- `completedTasks: RERUN` — when the running Task's Step is **in the Service's
+  scope**, the Task is canceled through the Task Session's cancel handle (its own
+  `cancelation` method), logged as `Canceling the running Task of Step 'B': …` and
+  `Task canceled; it returns to the queue (not a Task failure)` and not counted in
+  `tasks_run` or as a failure; the Step's remaining Tasks are abandoned. When the
+  running Task's Step is **outside** the scope (a Service scoped to Steps A and C fails
+  while B runs), or the relaunch is observed by a gate between Tasks or Steps, nothing is
+  canceled — "Failure and restart" step 1 cancels only the Tasks in the Service's scope
+  — and the scope is held in `RunContext::pending_rerun` until the running Step
+  completes (`take_pending_rerun` in `run_workload`; a Task of a Step in the pending
+  scope does not start, `take_pending_rerun_for`). Either way, per "`RERUN` and Step
+  dependencies", every selected Step in the Service's scope then returns to pending,
+  and with it every selected Step that depends on one of them, directly or transitively
   (`returned_steps`): `run_workload` resumes over the Steps no longer marked
   completed, in the original order, re-running their completed Tasks — **only once the
-  Service is actually relaunched**: after the canceled Task's Step unwinds,
-  `run_workload` runs the readiness gate before announcing the requeue, so the restart
-  decision (and the relaunch) has settled. If the Service's attempts are exhausted it
+  Service is actually relaunched**: after the canceled Task's Step unwinds (or the
+  running Step completes), `run_workload` runs the readiness gate before announcing the
+  requeue, so the restart decision (and the relaunch) has settled. If the Service's attempts are exhausted it
   is FAILED instead, the gate records the failure, and the run fails without printing
   `Returning every completed Task …` or `New Task Session for the requeued Tasks` (the
   exploratory report's stumble S10). Otherwise the requeue is logged (`Returning every
@@ -717,7 +726,8 @@ scope's last Task, before the scope's completion canceled its token) keeps that
 verdict: `stop_set` returns the failure and the scope fails. An internal error while
 stopping one Service (its background task panicked) does not stop the stopping of the
 others: every Service in the set is stopped, in order, and the first such error is
-returned afterwards.
+returned afterwards (not covered by a test: the path needs a panicking background task,
+which the public interface cannot provoke).
 
 An interruption (Ctrl-C) cancels the running Task through the shared cancellation
 token as before, and the Services through the manager: a Service Session does **not**

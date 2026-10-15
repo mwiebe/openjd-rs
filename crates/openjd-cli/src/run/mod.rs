@@ -158,6 +158,14 @@ struct RunContext {
     /// Working directories of Task Sessions replaced after a RERUN, kept
     /// under `--preserve` and reported with the result.
     preserved_working_dirs: Vec<PathBuf>,
+    /// The scopes of the `completedTasks: RERUN` Services relaunched so far
+    /// whose completed Tasks have not yet been returned to the queue. A
+    /// relaunch observed while a Task of a Step *in* the scope runs cancels
+    /// that Task and requeues at once; one observed while a Step outside the
+    /// scope runs (or between Tasks) waits here until that Step completes,
+    /// since only the Tasks in the Service's scope are canceled (RFC 0009
+    /// "Failure and restart" step 1).
+    pending_rerun: Option<ServiceScope>,
 }
 
 impl RunContext {
@@ -366,16 +374,16 @@ impl RunContext {
     /// RFC 0009 ordering constraint 3, the readiness gate: start every
     /// active Service that is not yet READY and wait for it. Records a
     /// FAILED Service as a failed run and refreshes the Task Session's
-    /// Environments when a Service's endpoints changed. Returns the Steps
-    /// whose completed Tasks a `RERUN` relaunch returned to the queue.
-    async fn gate_services(&mut self) -> Result<Option<ServiceScope>, RunError> {
+    /// Environments when a Service's endpoints changed. The scope of a
+    /// `RERUN` relaunch the gate observed is added to `pending_rerun`.
+    async fn gate_services(&mut self) -> Result<(), RunError> {
         if !self.services.any_registered() {
-            return Ok(None);
+            return Ok(());
         }
         let outcome = self.services.gate().await?;
         if let Some(failure) = outcome.failure {
             self.record_service_failure(failure);
-            return Ok(None);
+            return Ok(());
         }
         if outcome.job_wide_endpoints_changed {
             self.refresh_environments_from(0).await;
@@ -383,7 +391,34 @@ impl RunContext {
             let baseline = self.step_env_baseline;
             self.refresh_environments_from(baseline).await;
         }
-        Ok(outcome.rerun)
+        if let Some(scope) = outcome.rerun {
+            self.add_pending_rerun(&scope);
+        }
+        Ok(())
+    }
+
+    fn add_pending_rerun(&mut self, scope: &ServiceScope) {
+        self.pending_rerun = Some(merge_scopes(self.pending_rerun.take(), scope));
+    }
+
+    /// The pending `RERUN` scope, if any, once a Step has completed (or
+    /// the run's Steps have): its completed Tasks return to the queue now.
+    pub(super) fn take_pending_rerun(&mut self) -> Option<ServiceScope> {
+        self.pending_rerun.take()
+    }
+
+    /// The pending `RERUN` scope when it contains `step`: a Task of that
+    /// Step must not start (its Step's completed Tasks are being returned).
+    fn take_pending_rerun_for(&mut self, step: &str) -> Option<ServiceScope> {
+        if self
+            .pending_rerun
+            .as_ref()
+            .is_some_and(|s| s.contains(step))
+        {
+            self.pending_rerun.take()
+        } else {
+            None
+        }
     }
 
     /// Replace the Task Session after a `RERUN`: the old Session (ending-only
@@ -424,7 +459,8 @@ impl RunContext {
         task_values: Option<&TaskParameterSet>,
         param_lines: &[String],
     ) -> Result<TaskRun, RunError> {
-        if let Some(scope) = self.gate_services().await? {
+        self.gate_services().await?;
+        if let Some(scope) = self.take_pending_rerun_for(&step.name) {
             return Ok(TaskRun::Rerun(scope));
         }
         if self.is_stopping() {
@@ -450,7 +486,10 @@ impl RunContext {
         let mut rerun: Option<ServiceScope> = None;
         let result = {
             let Self {
-                session, services, ..
+                session,
+                services,
+                pending_rerun,
+                ..
             } = self;
             let mut task = Box::pin(session.run_task(
                 &step.name,
@@ -466,17 +505,26 @@ impl RunContext {
                     d = services.wait_instance_failure() => d,
                 };
                 let (policy, scope) = services.begin_recovery(detected);
-                if policy == Some(openjd_model::job::CompletedTasksPolicy::Rerun) {
-                    println!(
-                        "{}\tCanceling the running Task of Step '{}': a Service with \
-                         completedTasks: RERUN is UNREADY; the Task returns to the queue",
-                        crate::format_log_timestamp(),
-                        step.name
-                    );
-                    cancel.cancel(None, false);
-                    rerun = Some(merge_scopes(rerun.take(), &scope));
-                    break task.await;
+                if policy != Some(openjd_model::job::CompletedTasksPolicy::Rerun) {
+                    continue;
                 }
+                if !scope.contains(&step.name) {
+                    // Only the Tasks in the Service's scope are canceled
+                    // ("Failure and restart" step 1): this one continues,
+                    // and the scope's completed Tasks are returned once its
+                    // Step completes.
+                    *pending_rerun = Some(merge_scopes(pending_rerun.take(), &scope));
+                    continue;
+                }
+                println!(
+                    "{}\tCanceling the running Task of Step '{}': a Service with \
+                     completedTasks: RERUN is UNREADY; the Task returns to the queue",
+                    crate::format_log_timestamp(),
+                    step.name
+                );
+                cancel.cancel(None, false);
+                rerun = Some(merge_scopes(rerun.take(), &scope));
+                break task.await;
             }
         };
         let result = result.map_err(|e| format!("Step '{}': {e}", step.name))?;
@@ -487,6 +535,8 @@ impl RunContext {
                 "{}\tTask canceled; it returns to the queue (not a Task failure)",
                 self.timestamp()
             );
+            // Together with any scope still waiting for a Step to complete.
+            let scope = merge_scopes(self.pending_rerun.take(), &scope);
             return Ok(TaskRun::Rerun(scope));
         }
         println!(
@@ -711,6 +761,7 @@ mod tests {
             base_symtab: SerializedSymbolTable::from_symtab(&openjd_expr::SymbolTable::new()),
             cancel_token: CancellationToken::new(),
             preserved_working_dirs: Vec::new(),
+            pending_rerun: None,
         };
 
         ctx.record_interruption();

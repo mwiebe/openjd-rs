@@ -247,8 +247,9 @@ impl TempDir {
         })
     }
 
-    /// Keep the directory: it will not be removed on drop. For a Session
-    /// whose working directory the caller asked to retain.
+    /// Keep the directory: neither [`cleanup`](Self::cleanup) nor drop
+    /// removes it. For a Session whose working directory the caller asked
+    /// to retain.
     pub fn keep(&mut self) {
         self.cleaned_up = true;
     }

@@ -5574,6 +5574,109 @@ mod services {
         let _ = std::fs::remove_dir_all(path);
     }
 
+    /// A new-Session relaunch promoted to READY during a Task, whose
+    /// instance fails again (same-Session relaunch) before the next gate:
+    /// the dependent is still restarted against the new endpoints.
+    #[test]
+    fn test_new_session_during_task_restarts_dependent_after_a_further_relaunch() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_new_session_during_task_then_same_session_relaunch.yaml",
+            &[
+                "-p",
+                &format!("TraceFile={}", trace.display()),
+                "-p",
+                &format!("CounterFile={}", counter.display()),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout
+                .contains("Relaunching Service 'Back' in a new Service Session (relaunch 2 of 3)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'Back' onRun in its Service Session (relaunch 3 of 3)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'Front' (scope: Step Work) is stopping: Service 'Back' began a new \
+                 Service Session (completedTasks: KEEP; no relaunch attempt consumed)"
+            ),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let port_of = |prefix: &str, nth: usize| -> String {
+            trace
+                .lines()
+                .filter(|l| l.starts_with(prefix))
+                .nth(nth)
+                .unwrap_or_else(|| panic!("no {prefix} #{nth} in\n{trace}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let new_back_port = port_of("back launch 4", 0);
+        assert_ne!(new_back_port, port_of("back launch 1", 0), "{trace}");
+        assert_eq!(port_of("front launch", 1), new_back_port, "{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
+    /// RFC 0009 "Failure and restart" step 1: only the Tasks in the
+    /// Service's scope are canceled. W (scope A, C; RERUN) exits while B
+    /// runs: B's Task completes, then A and C return to the queue.
+    #[test]
+    fn test_rerun_does_not_cancel_a_task_of_a_step_outside_the_scope() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        let (code, stdout, stderr) = run_service_template(
+            "service_rerun_outside_running_step_scope.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("Canceling the running Task"), "{stdout}");
+        assert!(!stdout.contains("Task canceled"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Returning every completed Task of Step(s) 'A', 'C' to the queue: a Service \
+                 with completedTasks: RERUN (scope: Steps A, C) was relaunched"
+            ),
+            "{stdout}"
+        );
+        assert_eq!(stdout.matches("Running step 'B'").count(), 1, "{stdout}");
+        assert_eq!(stdout.matches("Running step 'A'").count(), 2, "{stdout}");
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(
+            trace.lines().collect::<Vec<_>>(),
+            ["A ran", "B start", "W died", "B done", "A ran", "C ran"],
+            "{stdout}"
+        );
+    }
+
+    /// Job-wide counterpart of the Step-scoped Environment-exit test: the
+    /// run's last Task returns while a relaunch is in flight; its exit
+    /// during the Job Environment's slow onExit is not a failure.
+    #[test]
+    fn test_job_wide_relaunch_exit_during_job_env_exit_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_job_wide_relaunch_fails_during_job_env_exit.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("ENV_EXIT_END"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert_eq!(stdout.matches("Service 'S' stopped").count(), 1, "{stdout}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task
