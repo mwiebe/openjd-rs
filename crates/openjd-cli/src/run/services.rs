@@ -472,6 +472,12 @@ struct Managed {
     /// dependencies are READY (constraint 2), re-seeding its in-scope
     /// endpoints, instead of relaunching in the background with stale ones.
     pending_relaunches: u64,
+    /// Set alongside `pending_relaunches` for a `Regate`: the restart the
+    /// gate performs opens a NEW Service Session (new ports), so the gate
+    /// must treat its `Ready` as `replaced` — restarting this Service's own
+    /// dependents and re-entering the Environments that list it, exactly as
+    /// a `Ready { replaced: true }` it had awaited directly (constraint 8).
+    pending_new_session: bool,
 }
 
 impl Managed {
@@ -632,6 +638,7 @@ impl ServiceManager {
                 state: State::Idle,
                 pending_replaced: false,
                 pending_relaunches: 0,
+                pending_new_session: false,
             });
         }
     }
@@ -1292,7 +1299,13 @@ impl ServiceManager {
                 .map_err(|e| format!("{}: background task failed: {e}", m.key))?;
             match result {
                 Outcome::Ready { replaced: r } => {
-                    if r || promoted {
+                    // `r`: this Session began anew along the way.
+                    // `promoted`: an in-Task promotion already flagged it.
+                    // `pending_new_session`: a `Regate` restart, whose new
+                    // ports the gate must now propagate.
+                    let new_session = r || promoted || m.pending_new_session;
+                    m.pending_new_session = false;
+                    if new_session {
                         replaced.push(m.key.clone());
                         if m.is_job_wide() {
                             outcome.job_wide_endpoints_changed = true;
@@ -1325,8 +1338,12 @@ impl ServiceManager {
                     // Services it lists are READY (constraint 2), carrying
                     // the consumed attempts. `start_pending`, run next in
                     // this gate loop, waits for the dependencies and
-                    // re-seeds the new Session's in-scope endpoints.
+                    // re-seeds the new Session's in-scope endpoints. The
+                    // restart opens a NEW Session (new ports), so flag it so
+                    // this Service's own dependents are restarted when it is
+                    // READY again (constraint 8).
                     m.pending_relaunches = relaunches;
+                    m.pending_new_session = true;
                     m.state = State::Idle;
                 }
             }
@@ -1471,7 +1488,10 @@ impl ServiceManager {
                 spawned = true;
             }
             if !spawned {
-                if !blocked.is_empty() && !self.any_busy() {
+                if !blocked.is_empty()
+                    && !self.any_busy()
+                    && !self.shared.config.cancel_token.is_cancelled()
+                {
                     return Err(format!(
                         "cannot order the start of Services {}: each depends on a Service that \
                          is not READY and is not starting",
@@ -1568,6 +1588,7 @@ async fn stop_managed(m: &mut Managed, shared: &Shared) -> Result<Option<String>
     }
     m.active = false;
     m.pending_relaunches = 0;
+    m.pending_new_session = false;
     m.stop = shared.config.cancel_token.child_token();
     Ok(failed)
 }

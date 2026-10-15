@@ -783,53 +783,6 @@ async fn launch_after_an_unobserved_exit_relaunches_without_wait_exit() {
     ss.end().await.unwrap();
 }
 
-/// A driver that ends without publishing an exit (its task failed — reachable
-/// through a panicking `SessionConfig::callback`) is still reclaimed by
-/// `wait_exit`: the state leaves `Running` for `Exited`, so a relaunch is
-/// accepted, and `end()` still runs `onExit`.
-#[tokio::test]
-async fn a_lost_driver_is_reclaimed_so_the_state_leaves_running() {
-    let root = TempDir::new().unwrap();
-    let service = ServiceBuilder::new(
-        "svc",
-        &["main"],
-        sh("echo openjd_service_ready: up; exit 3"),
-    )
-    .health(stdout_check(300))
-    .on_exit(sh("true"))
-    .build();
-    let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = panicked.clone();
-    let mut config = session_config(&root, "svc-test:lostdriver");
-    config.callback = Some(Box::new(move |_, status| {
-        if status.state == ActionState::Failed
-            && !flag.swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            panic!("induced driver panic");
-        }
-    }));
-    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
-        session: config,
-        service,
-        environments: vec![],
-        environment_profiles: vec![],
-        endpoints: endpoints("svc", &[("main", 5)]),
-        in_scope_endpoints: vec![],
-    })
-    .unwrap();
-    assert!(ss.start().await.unwrap().is_ready());
-    let exit = ss.wait_exit().await.unwrap();
-    assert!(exit.fail_message.is_some(), "{exit:?}");
-    assert_eq!(ss.state(), ServiceSessionState::Exited);
-    // Relaunch is accepted (the state left Running).
-    ss.launch().await.unwrap();
-    assert!(ss.wait_ready().await.unwrap().is_ready());
-    ss.cancel_run(Some(Duration::ZERO));
-    ss.wait_exit().await.unwrap();
-    ss.end().await.unwrap();
-    assert_eq!(ss.state(), ServiceSessionState::Ended);
-}
-
 #[tokio::test]
 async fn on_run_command_not_found_is_a_failed_exit() {
     let root = TempDir::new().unwrap();

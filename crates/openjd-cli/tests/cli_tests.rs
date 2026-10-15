@@ -6106,6 +6106,71 @@ mod services {
         assert!(trace.contains("task 2 done"), "{trace}");
     }
 
+    /// A new Session reached through a re-gate (a Service that lists others)
+    /// still propagates to its OWN dependents: in A←B←C, B re-gates on a new
+    /// Session and C, which lists B, is restarted and sees B's new port
+    /// (constraint 8 through the re-gate).
+    #[test]
+    fn test_regate_new_session_restarts_the_services_own_dependents() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_chain_propagates_new_session.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'C' (scope: Step Work) is stopping: Service 'B' began a new Service \
+                 Session (completedTasks: KEEP; no relaunch attempt consumed)"
+            ),
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let b_port = trace
+            .lines()
+            .filter_map(|l| l.strip_prefix("B launch "))
+            .next_back()
+            .and_then(|l| l.split_whitespace().nth(2)) // "<n> port <PORT> aport <A>"
+            .unwrap()
+            .to_string();
+        let c_port = trace
+            .lines()
+            .rfind(|l| l.starts_with("C launch bport "))
+            .unwrap()
+            .rsplit(' ')
+            .next()
+            .unwrap();
+        assert_eq!(c_port, b_port, "C holds a stale B port\n{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
+    /// The consumed-attempt count carried through a re-gate still fails the
+    /// Service at exactly maxAttempts rather than looping forever.
+    #[test]
+    fn test_regate_still_fails_at_max_attempts() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_exhausts_attempts.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'B' (scope: Step Work) is FAILED: onRun exited before becoming READY \
+                 (exit code: 7); 3 of 3 relaunch(es) used (restartPolicy.maxAttempts)"
+            ),
+            "{stdout}"
+        );
+        // 1 start + 3 relaunches = 4 launches, no more.
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("B launch").count(), 4, "{trace}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task
@@ -6374,6 +6439,87 @@ mod services {
         assert!(collected.contains("Service 'Store' stopped"), "{collected}");
         assert!(!collected.contains("EXIT_NORMAL"), "{collected}");
         assert_eq!(read_trace(&trace), vec!["service exit"]);
+    }
+
+    /// An interruption while a re-gated Service waits for its upstream ends
+    /// the run cleanly (a Results summary, exit 1), not with the internal
+    /// "cannot order the start of Services" scheduling error.
+    #[test]
+    fn test_interrupt_while_a_regated_service_waits_ends_cleanly() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let template = templates_dir().join("service_regate_interrupt_waiting.yaml");
+        let mut child = spawn_run_piped(&template, &["-p", &format!("Trace={}", trace.display())]);
+        let stdout = child.stdout.take().expect("stdout is piped");
+        let (tx, rx) = mpsc::channel::<String>();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut collected = String::new();
+        // Wait until B has re-gated (its new Service Session), so it is idle
+        // waiting for A, which is relaunching and never becomes READY.
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    let hit = line.contains("Relaunching Service 'B' in a new Service Session");
+                    collected.push_str(&line);
+                    collected.push('\n');
+                    if hit {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    panic!("B never re-gated. output so far:\n{collected}");
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        if !send_interrupt(&child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            #[cfg(windows)]
+            {
+                eprintln!("SKIPPED: no console available to deliver CTRL_BREAK_EVENT");
+                return;
+            }
+            #[cfg(not(windows))]
+            panic!("failed to deliver SIGINT to the CLI process");
+        }
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(line) => {
+                    collected.push_str(&line);
+                    collected.push('\n');
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    panic!("CLI did not exit within 60s of interruption. output:\n{collected}");
+                }
+            }
+        }
+        reader.join().unwrap();
+        let status = child.wait().unwrap();
+        assert_eq!(status.code(), Some(1), "{collected}");
+        assert!(
+            collected.contains("Interruption signal received."),
+            "{collected}"
+        );
+        assert!(
+            collected.contains("--- Results of local session ---"),
+            "{collected}"
+        );
+        assert!(
+            !collected.contains("cannot order the start of Services"),
+            "{collected}"
+        );
     }
 
     /// The RFC's Valkey example adapted: the Service's `onEnter` puts a fake

@@ -679,7 +679,12 @@ other Services does not start in that background task — it cannot see whether 
 Services are READY — so the task ends the old Session and hands the Service back to the
 gate (`Outcome::Regate`, carrying the consumed attempts); `start_pending` restarts it
 from idle once every Service it lists is READY (constraint 2), re-seeding the new
-Session's in-scope endpoints with their current values. Otherwise the Service is
+Session's in-scope endpoints with their current values. That restart opens a new
+Service Session, so the gate treats its `Ready` as `replaced` in turn — restarting
+*this* Service's own dependents and re-entering the Environments that list it
+(constraint 8) — exactly as for a new Session it had awaited directly. (An
+interruption while the Service waits here ends the run through the normal stop path,
+not the "cannot order the start of Services" error.) Otherwise the Service is
 FAILED: its Session is ended, the failure is recorded with its name and scope, and the
 scope fails — every Step in it, and with it the Job when the scope is every Step; in
 the local runner either fails the run (no further Task runs, exit code 1).

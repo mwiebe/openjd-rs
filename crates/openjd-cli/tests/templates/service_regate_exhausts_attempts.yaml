@@ -1,0 +1,39 @@
+# A Service that lists another and whose onRun always exits before READY is
+# re-gated on every new-Session relaunch; the consumed-attempt count carried
+# through the re-gate must still fail it at exactly maxAttempts (4 launches
+# for maxAttempts 3), not loop forever.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RegateExhausts"
+parameterDefinitions:
+  - name: Trace
+    type: STRING
+services:
+  - name: A
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: a', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+  - name: B
+    dependencies: [{ service: "A" }]
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 3, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "open(r'{{ Param.Trace }}', 'a').write('B launch\\n'); raise SystemExit(7)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "B" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_MUST_NOT_RUN')"]

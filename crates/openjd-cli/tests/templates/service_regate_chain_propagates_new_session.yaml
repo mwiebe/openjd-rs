@@ -1,0 +1,73 @@
+# A→B→C chain (C lists B, B lists A). B fails during Task 1 and, on a new
+# Session (its own relaunch), is re-gated. When B comes back READY in its new
+# Session with a new port, C — which lists B — must be restarted so it sees
+# B's new port, not the stale one (constraint 8, propagated through the
+# re-gate).
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RegateChain"
+parameterDefinitions:
+  - name: Trace
+    type: STRING
+services:
+  - name: A
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: a', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+  - name: B
+    dependencies: [{ service: "A" }]
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 3, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.Trace }}", "{{ Service.B.main.port }}", "{{ Service.A.main.port }}"]
+          cancelation: { mode: TERMINATE }
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace, port, aport = sys.argv[1], sys.argv[2], sys.argv[3]
+            n = open(trace + '.bc').read().count('x') + 1 if os.path.exists(trace + '.bc') else 1
+            open(trace + '.bc', 'a').write('x')
+            open(trace, 'a').write(f'B launch {n} port {port} aport {aport}\n')
+            if n == 2:
+                sys.exit(7)   # exit before READY -> new Session (re-gate)
+            print('openjd_service_ready: b up', flush=True)
+            if n == 1:
+                while 'task 1 start' not in (open(trace).read() if os.path.exists(trace) else ''):
+                    time.sleep(0.05)
+                time.sleep(0.2)
+                open(trace, 'a').write('B crash\n')
+                sys.exit(1)
+            while True:
+                time.sleep(0.2)
+  - name: C
+    dependencies: [{ service: "B" }]
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    restartPolicy: { maxAttempts: 0, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.Trace }}', 'a').write('C launch bport {{ Service.B.main.port }}\\n'); print('openjd_service_ready: c', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "C" }, { service: "B" }, { service: "A" }]
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.Trace }}', 'a').write('task {{ Task.Param.N }} start\\n'); time.sleep(2.5 if {{ Task.Param.N }} == 1 else 0.1); open(r'{{ Param.Trace }}', 'a').write('task {{ Task.Param.N }} done\\n')"]
