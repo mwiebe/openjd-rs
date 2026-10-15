@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `1e89748`.
+  openjd-specifications commit `779202f`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
