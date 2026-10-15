@@ -844,6 +844,16 @@ impl ServiceManager {
     pub(super) async fn gate(&mut self) -> Result<GateOutcome, RunError> {
         let mut outcome = GateOutcome::default();
         loop {
+            // The run is stopping: nothing more is started or awaited here —
+            // `stop_all` tears the Services down. Terminating the loop
+            // explicitly on cancellation is what keeps a Service left `Idle`
+            // but `active` (e.g. a dependent whose upstream was `Stopped`
+            // mid-relaunch) from either erroring or spinning the loop, since
+            // the per-round predicates below (`any_busy` / `any_startable` /
+            // `any_pending_replaced`) know nothing of cancellation.
+            if self.shared.config.cancel_token.is_cancelled() {
+                break;
+            }
             for detected in self.poll_failures() {
                 let (policy, scope) = self.begin_recovery(detected);
                 if policy == Some(CompletedTasksPolicy::Rerun) {

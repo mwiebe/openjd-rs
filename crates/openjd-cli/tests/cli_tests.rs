@@ -6146,6 +6146,32 @@ mod services {
         assert!(trace.contains("task 2 done"), "{trace}");
     }
 
+    /// After a re-gate (new Session), a later SAME-Session relaunch of the
+    /// same Service does not spuriously restart its dependents (constraint 8:
+    /// a same-Session relaunch keeps its ports). C is restarted exactly once
+    /// — for B's re-gate — and launches twice.
+    #[test]
+    fn test_same_session_relaunch_after_a_regate_does_not_restart_dependents() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_regate_then_same_session_relaunch_no_spurious_restart.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(
+            stdout
+                .matches("is stopping: Service 'B' began a new Service Session")
+                .count(),
+            1,
+            "{stdout}"
+        );
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        assert_eq!(trace.matches("C launch").count(), 2, "{trace}");
+        assert!(trace.contains("task 3 done"), "{trace}");
+    }
+
     /// The consumed-attempt count carried through a re-gate still fails the
     /// Service at exactly maxAttempts rather than looping forever.
     #[test]
@@ -6480,7 +6506,10 @@ mod services {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(500));
+        // Let Task 1 finish so the interrupt lands in the between-Tasks gate
+        // where B waits for A — the gate that must terminate on cancel rather
+        // than erroring or spinning.
+        std::thread::sleep(Duration::from_millis(2500));
         if !send_interrupt(&child) {
             let _ = child.kill();
             let _ = child.wait();
