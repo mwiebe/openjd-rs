@@ -31,7 +31,7 @@ Every PR below goes through the `implement-change` skill. Each PR updates the cr
   static-type API for the `null` warning, which is deferred along with the warning (see A1).
 * **openjd-sessions** recognizes `openjd_output_var:` in the action filter, reads `@` files as the job user as each
   directive arrives, feeds each value to the model's collector, reports it through the action callback, and returns
-  the collected values in `ActionResult`. Its three silent line-truncation sites must start marking truncation.
+  the collected values in `ActionResult`. Its four silent line-truncation sites must start marking truncation.
 * **openjd-cli** `openjd run` already runs Steps in topological order in one Session. It becomes a scheduler
   simulator: it binds each pending Step before running it, skips disabled Steps and Environments, and keeps outputs in
   memory. It prints each Task's outputs with their units. `openjd summary` reports pending Steps.
@@ -382,8 +382,8 @@ The expr specs need no change unless the warning lands.
 * The filter is built with a treatment for the current Action: `Allowed` (the Action may report outputs),
   `Forbidden` (a Job Template Action that may not), or `Ignored` (ordinary output: no `CONTROL_FLOW`, or an
   Environment Template Action). `run_task` uses `Allowed` only when `output_variables` is `Some`. Under
-  WRAP_ACTIONS, the treatment follows the Action the hook runs in place of, which `run_task` and `enter_environment`
-  already know.
+  WRAP_ACTIONS, the treatment follows the Action the hook runs in place of, which `run_task`, `enter_environment`,
+  and `exit_environment` already know.
 * With `Ignored`, the line falls through as today. With `Forbidden`, the filter returns a cancel callback, as a
   malformed `openjd_env` does, and the Action fails with a message that names the directive.
 * With `Allowed`, `process_line` (`subprocess.rs:1219`) hands the payload to an `OutputCollector` (M3) owned by the
@@ -426,26 +426,35 @@ The expr specs need no change unless the warning lands.
   handling. Then require a regular file with `fstat`, and read at most `collector.remaining_bytes_for(name) + 1`
   bytes.
 * Same-user Sessions read the file directly; that meets the RFC's access rule.
-* Cross-user Sessions must read it as the job user. Add a command to the embedded helper protocol
-  (`protocol.rs:49`), such as `ReadOutputFile { token, path, root, max_bytes }`, answered by the helper, which runs as
-  the job user. The parent must not read the file itself, even with an owner or link-count check, because the RFC
-  requires no more access than the job user. Whether the helper can serve a command while a `Run` is in progress has
-  to be checked first. A reply would also arrive on the same response stream that the parent's `select!` loop
-  (`cross_user_helper.rs:620`) reads, interleaved with later `Out` lines, which the parent would have to hold back
-  until the reply arrives to keep the RFC's ordering. The simpler design is for the helper to resolve `@` directives
-  itself, as it reads the Action's output, so ordering falls out of the stream:
+* Cross-user Sessions must read it as the job user. The parent must not read the file itself, even with an owner or
+  link-count check, because the RFC requires no more access than the job user. PR 5 has the helper, which runs as
+  the job user, resolve `@` directives as it reads the Action's output, so the RFC's ordering falls out of the
+  stream:
   * `RunCommand` (`protocol.rs:19`) gets an optional `output_files: { max_bytes }`. The parent sets it only for an
     `Allowed` Action; otherwise the helper leaves `openjd_output_var:` lines alone, so `Ignored` lines stay ordinary
-    output and `Forbidden` lines reach the parent unchanged and fail there.
+    output and `Forbidden` lines reach the parent unchanged and fail there. The root for path resolution is
+    `RunCommand.cwd`, which is the Session working directory (`session.rs:2055`, `:2127`).
+  * The helper sub-crate depends only on `serde`, `serde_json`, `nix`, and `windows`
+    (`helper/Cargo.bundled.toml`), so it can't use the model's parser. It gets a minimal recognizer for the `@` form
+    only: the `openjd_output_var:` prefix, a name, `=`, optional spaces or tabs, `@`, and the path. Anything else
+    goes to the parent as an ordinary `Out` line for the model parser. It skips a line it truncated or had to decode
+    lossily, which the parent rejects anyway. The file operations need new `nix` features (`fs`) and `windows`
+    features (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
   * For a `@` directive, the helper reads the file as above, up to `max_bytes + 1`, and sends a new
-    `Response::OutputFile { line, content | error }` frame in place of the `Out` line. Content up to 1 MiB doesn't
-    fit the parent's 128 KiB response-line limit (`cross_user_helper.rs:23`, checked at `:119`–`:128`), so the frame
-    is sent as a header and length-prefixed chunks, or the limit is raised for this frame only.
-  * The helper doesn't know the declared outputs or the values so far, so it reads before the parent's `check_name`
-    and remaining-size checks. To keep the RFC's outcome, it reports a read failure in the frame rather than failing
-    the line itself, and the parent applies `check_name` first, then the read result, then the size. The only
-    difference from the RFC's order is reading a file whose directive is then rejected.
-  Either way the helper sub-crate's gates apply.
+    `Response::OutputFile { line, content | error }` in place of the `Out` line. The parent reads newline-delimited
+    JSON with a 128 KiB line cap (`cross_user_helper.rs:23`, checked at `:119`–`:128`), and content up to 1 MiB
+    doesn't fit one line, so the frame is a header followed by chunks of JSON-escaped content, each sized by its
+    encoded length as `fit_out_payload` does.
+  * The helper doesn't know the declared outputs or the values so far, so it reads before the parent's checks. To
+    keep the RFC's outcome, it reports a read failure in the frame rather than failing the line itself, and the
+    parent applies `check_name` first, then the read result, then the remaining-size check. This differs from the
+    RFC's order in two ways that don't change the outcome: the helper may read a file whose directive is then
+    rejected, and it reads up to the whole per-Task limit rather than what remains.
+  * In the parent, an `@` directive on the cross-user path that arrives as a plain `Out` line, because the helper's
+    recognizer didn't match it, is invalid. The parent never reads the file.
+  * A helper command to read a file on request, answered while a `Run` is in progress, was considered. Its reply
+    would arrive on the stream the parent's `select!` loop (`cross_user_helper.rs:620`) reads, interleaved with later
+    `Out` lines, which the parent would have to hold back to keep the ordering.
 * On the direct path, file reads are blocking I/O inside the async line reader. They are bounded by the size limit;
   use `spawn_blocking` and await it before the next line, so ordering is kept.
 * The runtime never modifies or deletes the file.
@@ -555,10 +564,10 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   expression.
 * Parser and collector: every row of the RFC's conversion table, each "invalid if" rule of §Processing a directive
   that the model owns, both forms of the directive, leading whitespace, whitespace before `=` rejected, whitespace
-  after `=` accepted (`N= 1`, `N= @f`), an empty `@` path, `NaN` and `1e400`, file content with a BOM and line
-  breaks; `ONCE` repeated and missing, `LAST` replacing a value and its size, `LAST` with an invalid intermediate value, `APPEND` with zero and several values, `item` and
-  `maxLength` checked per element and `minLength` at exit, a list value under `APPEND` becoming one element, and the
-  size limit for inline and file values.
+  after `=` accepted (`N= 1`, `N= @f`), an empty `@` path, `NaN` and `1e400`, file content with a BOM and line breaks;
+  `ONCE` repeated and missing, `LAST` replacing a value and its size, `LAST` with an invalid intermediate value,
+  `APPEND` with zero and several values, `item` and `maxLength` checked per element and `minLength` at exit, a list
+  value under `APPEND` becoming one element, and the size limit for inline and file values.
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
@@ -588,7 +597,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   the same on both paths; an `@` file that is not UTF-8 or contains NUL fails the Task.
 * An `@` FIFO fails the Task without hanging the reader, on both paths.
 * Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
-  passed through unchanged and its file is not read.
+  passed through unchanged and its file is not read; a directive in a Job Template `onEnter` fails; an undeclared
+  name with a missing `@` file reports the undeclared name.
+* WRAP_ACTIONS environment hooks: a directive from `onWrapEnvEnter` or `onWrapEnvExit` that wraps a Job Template
+  Environment fails the Action, and one that wraps an Environment Template Environment is ordinary output.
+* `LAST` with no directive fails the Task at exit.
 * WRAP_ACTIONS: directives from `onWrapTaskRun` and from the wrapped process count for the Task, including when the
   wrapping Environment comes from an Environment Template.
 * Cross-user (Docker, `scripts/run_cross_user_tests.sh`, and the Windows job): an `@` file that the job user can't
