@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `d28dd6f`.
+  openjd-specifications commit `1e89748`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -62,7 +62,7 @@ Each of these was checked against the code at `be266ed` or by running the releas
 | `run_task` takes a `job::StepScript`, not a `job::Step`, and returns `ActionResult { state, exit_code, stdout }` | `crates/openjd-sessions/src/session.rs:1758`, `crates/openjd-sessions/src/action.rs:74` |
 | Per-action environment variables are computed in `run_task` | `crates/openjd-sessions/src/session.rs:1785`, `evaluate_env_vars` at `:2393` |
 | Directives are recognized by `parse_directive` (prefix `openjd_`, then `<kind>: `) and turned into `ActionMessage`s by `process_line`, on the line-reader side; the Session applies them in `apply_message`. A malformed `openjd_env` sends `CancelMarkFailed` | `crates/openjd-sessions/src/action_filter.rs:45`, `crates/openjd-sessions/src/subprocess.rs:1219`, `crates/openjd-sessions/src/session.rs:2286` |
-| A recognized directive line is dropped from the log unless `echo_openjd_directives` is set | `crates/openjd-sessions/src/action_filter.rs:211` |
+| A recognized directive line is logged by default; `echo_openjd_directives` (default `true`) hides it when `false` | `crates/openjd-sessions/src/action_filter.rs:211`, `crates/openjd-sessions/src/session.rs:141`, `:576` |
 | Lines are silently truncated at 64 KiB in four places: `truncate_line` on the direct path, and in the helper `LineFramer::accumulate` (which drops the rest of an over-long line before it is decoded), `decode_and_truncate`, and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:62`, `crates/openjd-sessions/src/helper/src/framer.rs:195`, `:89`, `:116` |
 | Invalid UTF-8 on stdout is decoded with backslash escapes, not rejected | `decode_backslashreplace`, `crates/openjd-sessions/src/subprocess.rs:87` |
 | Under cross-user execution the embedded helper runs the action as the job user and streams `Response::Out` lines; its commands are `Run`, `Cancel`, and `Shutdown` | `crates/openjd-sessions/src/helper/src/protocol.rs:49`, `:69` |
@@ -388,8 +388,9 @@ The expr specs need no change unless the warning lands.
   malformed `openjd_env` does, and the Action fails with a message that names the directive.
 * With `Allowed`, `process_line` (`subprocess.rs:1219`) hands the payload to an `OutputCollector` (M3) owned by the
   line reader for this Action. Processing is synchronous in the reader, so an `@` file is read before any later line
-  is processed, as the RFC requires. An invalid directive cancels the Action and fails it. The RFC allows either
-  cancelling at once or failing at exit; cancelling at once reuses `CancelMarkFailed`. That path needs one change:
+  is processed, as the RFC requires. An invalid directive cancels the Action at once and fails it, as the RFC
+  requires, through `CancelMarkFailed`, which calls `cancel_action(None, true)` (`session.rs:2323`), so the Action's
+  configured cancelation applies. That path needs one change:
   `process_line` sends a fixed `"Action canceled due to malformed command"` as the `CancelMarkFailed` message
   (`subprocess.rs:1279`–`:1282`), which overwrites any earlier `fail_message` when the Session applies it
   (`session.rs:2322`), and the RFC requires the failure to name the output, the problem, and the offending text.
@@ -408,9 +409,8 @@ The expr specs need no change unless the warning lands.
   (`subprocess.rs:1121`–`:1126`) strip only the line terminator. The RFC's grammar allows
   only spaces and tabs around the value, so a directive followed by, say, a form feed would be valid on one path and
   invalid on the other. Make the Unix helper strip only the line terminator, and let the parser apply the grammar.
-* Logging: the filter drops a recognized directive from the log unless `echo_openjd_directives` is set
-  (`action_filter.rs:211`). The RFC says the line is passed through unchanged (A15). The prototype keeps today's
-  echo behavior for consistency with the other directives, and logs each accepted value at info level instead.
+* Logging: a directive line is treated like the other directives. It is logged by default and hidden when
+  `echo_openjd_directives` is `false` (`action_filter.rs:211`), which matches the RFC.
 
 ### S3. Reading `@` files
 
@@ -647,8 +647,8 @@ binding API are shaped so that a Python port can mirror them.
 
 These are the questions the RFC needs to answer before an implementation can be called conformant. The prototype
 picks a behavior for each and records it in the specs. A9, A10, and A12 were about the session-supplied output file,
-and the RFC revision at `5a86c21` that replaced it with the directive settled them; they are kept, struck through,
-so the numbering stays stable.
+and the RFC revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in
+`1e89748`. Resolved items are kept, struck through, so the numbering stays stable.
 
 * **A1. The validation warning has no channel.** §Modifications to the Expression Language says that template
   validation "MUST emit a warning". No OpenJD specification, the conformance runner, nor openjd-rs has a warning
@@ -712,12 +712,8 @@ so the numbering stays stable.
   `Cannot parse '[1.5, 2.5]' as float`. This is mainly an openjd-rs gap against the EXPR spec (Q5), to be fixed before
   M4.6. The RFC should still say explicitly that range list items follow §1.3.2, because the §1.3.12 table types the
   `INT` range as `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
-* **A15. Is a directive line logged?** §The `openjd_output_var` directive says the line "is passed through to the
-  Action's log unchanged", like the other messages. How Jobs Are Run doesn't say that for the other messages, and
-  openjd-rs drops every recognized directive from the log unless `echo_openjd_directives` is set
-  (`action_filter.rs:211`). Either drop the sentence, or make it a rule for all directives. Prototype: today's echo
-  behavior, plus an info-level log line for each accepted value.
-* **A16. Cancel at once, or fail at exit?** §Processing a directive lets a runtime cancel the Action on an invalid
-  directive or let it finish and fail it. The difference is visible: an Action that would have written its real
-  outputs to an external system completes in one runtime and not the other. Consider requiring one. Prototype:
-  cancel at once, through the existing `CancelMarkFailed` path.
+* ~~**A15. Is a directive line logged?**~~ Resolved in `1e89748`: like the other messages, the line appears in the
+  log by default, and a runtime's option to hide recognized messages applies to it too. openjd-rs already behaves
+  this way through `echo_openjd_directives`.
+* ~~**A16. Cancel at once, or fail at exit?**~~ Resolved in `1e89748`: an invalid directive MUST cancel and fail its
+  Action at once.
