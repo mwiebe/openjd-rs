@@ -1,0 +1,45 @@
+# A TCP_CONNECT check on a Service with two TCP ports and a UDP port probes
+# both TCP ports — the launch line names them, `TCP_CONNECT on a, b` — and
+# skips the UDP one; the Service is READY only once both accept.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "TcpConnectTwoPorts"
+services:
+  - name: Two
+    ports:
+      - name: a
+      - name: b
+      - name: u
+        protocol: UDP
+    healthCheck:
+      type: TCP_CONNECT
+      readinessTimeoutSeconds: 30
+      readinessIntervalSeconds: 1
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Service.Two.a.bindAddress }}", "{{ Service.Two.a.port }}", "{{ Service.Two.b.port }}"]
+          cancelation:
+            mode: TERMINATE
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import socket, sys, time
+            host, a, b = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+            sa = socket.socket(); sa.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sa.bind((host, a)); sa.listen(4)
+            print("A_LISTENING", flush=True)
+            time.sleep(1.5)
+            sb = socket.socket(); sb.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sb.bind((host, b)); sb.listen(4)
+            print("B_LISTENING", flush=True)
+            while True:
+                time.sleep(1)
+steps:
+  - name: Use
+    dependencies: [{ service: "Two" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_RAN')"]

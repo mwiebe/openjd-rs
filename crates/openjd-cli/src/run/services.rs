@@ -640,6 +640,16 @@ impl ServiceManager {
             .collect()
     }
 
+    /// Reserve the requested ports of `services` for their owners before any
+    /// Service starts ([`PortAllocator::reserve_requested`]).
+    pub(super) fn reserve_requested_ports(&self, services: &[Service]) {
+        self.shared
+            .ports
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .reserve_requested(services);
+    }
+
     /// `true` when any Service is registered.
     pub(super) fn any_registered(&self) -> bool {
         !self.services.is_empty()

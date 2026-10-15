@@ -162,6 +162,24 @@ impl PortAllocator {
             .extend(taken.into_iter().map(|k| (k, owner.clone())));
         Ok(ServiceEndpoints::new(service.name.clone(), ports))
     }
+
+    /// Record every requested port of `services`, for its owner, before any
+    /// Service starts, so that a free port handed to another Service never
+    /// takes a number a later-starting Service has pinned (which would read,
+    /// wrongly, as a pin collision). Call after
+    /// [`check_requested_ports`] has passed on the same `services`.
+    pub(super) fn reserve_requested(&mut self, services: &[Service]) {
+        for service in services {
+            let owner: Owner = (service.document.clone(), service.name.clone());
+            for declared in &service.ports {
+                if let Some(port) = declared.port {
+                    self.allocated
+                        .entry((declared.protocol, port))
+                        .or_insert_with(|| owner.clone());
+                }
+            }
+        }
+    }
 }
 
 /// Before any Service starts: the first pair of `services` that request
@@ -173,9 +191,16 @@ impl PortAllocator {
 /// "Placement": a scheduler places Services so that their requests can be
 /// met, or rejects the Job). `Ok(())` when no two pins collide.
 pub(super) fn check_requested_ports(services: &[Service]) -> Result<(), String> {
-    let mut requested: std::collections::BTreeMap<(ServicePortProtocol, u16), String> =
-        std::collections::BTreeMap::new();
+    let mut requested: BTreeMap<(ServicePortProtocol, u16), String> = BTreeMap::new();
     for service in services {
+        // An external Service is named with its document, as everywhere.
+        let label = |port_name: &str| {
+            format!(
+                "Service '{}'{} port '{port_name}'",
+                service.name,
+                super::services::origin_suffix(&service.document)
+            )
+        };
         for declared in &service.ports {
             let Some(port) = declared.port else {
                 continue;
@@ -183,15 +208,12 @@ pub(super) fn check_requested_ports(services: &[Service]) -> Result<(), String> 
             let protocol = declared.protocol;
             if let Some(holder) = requested.get(&(protocol, port)) {
                 return Err(format!(
-                    "Service '{}' port '{}' requests {protocol} port {port}, which is already \
-                     allocated to another Service of this run ({holder})",
-                    service.name, declared.name
+                    "{} requests {protocol} port {port}, which is already allocated to another \
+                     Service of this run ({holder})",
+                    label(&declared.name)
                 ));
             }
-            requested.insert(
-                (protocol, port),
-                format!("Service '{}' port '{}'", service.name, declared.name),
-            );
+            requested.insert((protocol, port), label(&declared.name));
         }
     }
     Ok(())
@@ -383,6 +405,69 @@ mod tests {
             "40001 was offered again and must be skipped"
         );
         assert!(offers.is_empty());
+    }
+
+    /// A pinned number is reserved up front, so free allocation never
+    /// takes it and the pin's owner still receives it.
+    #[test]
+    fn reserved_requested_ports_are_skipped_by_free_allocation() {
+        let mut alloc = PortAllocator::default();
+        let pinned = service("A", &[("main", Some(47555))]);
+        alloc.reserve_requested(std::slice::from_ref(&pinned));
+        // The "OS" offers the pinned number first, then another.
+        let mut offers = vec![47556u16, 47555];
+        let mut bind = |_: ServicePortProtocol, port: u16| -> std::io::Result<u16> {
+            Ok(if port == 0 {
+                offers.pop().unwrap()
+            } else {
+                port
+            })
+        };
+        let free = alloc
+            .allocate_with(&service("B", &[("main", None)]), &mut bind)
+            .unwrap();
+        assert_eq!(free.ports[0].1.port, 47556);
+        let a = alloc.allocate_with(&pinned, &mut bind).unwrap();
+        assert_eq!(a.ports[0].1.port, 47555);
+    }
+
+    /// The free-port retry gives up, with its own message, when the OS keeps
+    /// offering numbers this run already used.
+    #[test]
+    fn free_allocation_gives_up_after_the_retry_cap() {
+        let mut alloc = PortAllocator::default();
+        let mut bind = |_: ServicePortProtocol, _: u16| -> std::io::Result<u16> { Ok(40001) };
+        alloc
+            .allocate_with(&service("A", &[("main", None)]), &mut bind)
+            .unwrap();
+        let mut calls = 0;
+        let mut bind = |_: ServicePortProtocol, _: u16| -> std::io::Result<u16> {
+            calls += 1;
+            Ok(40001)
+        };
+        let err = alloc
+            .allocate_with(&service("B", &[("main", None)]), &mut bind)
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "Service 'B' port 'main': could not find a free TCP port on 127.0.0.1 not yet used \
+             by this run"
+        );
+        assert_eq!(calls, 65, "one bind plus 64 retries");
+    }
+
+    /// Two free ports of one Service are distinct even when the OS offers
+    /// the same number twice in a row.
+    #[test]
+    fn two_free_ports_of_one_service_are_distinct() {
+        let mut alloc = PortAllocator::default();
+        let mut offers = vec![40002u16, 40001, 40001];
+        let mut bind =
+            |_: ServicePortProtocol, _: u16| -> std::io::Result<u16> { Ok(offers.pop().unwrap()) };
+        let e = alloc
+            .allocate_with(&service("A", &[("a", None), ("b", None)]), &mut bind)
+            .unwrap();
+        assert_eq!((e.ports[0].1.port, e.ports[1].1.port), (40001, 40002));
     }
 
     #[test]

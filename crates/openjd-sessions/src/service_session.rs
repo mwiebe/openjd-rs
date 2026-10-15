@@ -1763,16 +1763,23 @@ fn probe_address(bind_address: &str) -> String {
 async fn tcp_probe(targets: &[(String, String, u16)]) -> ProbeResult {
     for (name, address, port) in targets {
         let connect = tokio::net::TcpStream::connect((address.as_str(), *port));
+        // Joined for the message as §9.3 joins an address and a port: an
+        // IPv6 literal in brackets.
+        let endpoint = if address.contains(':') {
+            format!("[{address}]:{port}")
+        } else {
+            format!("{address}:{port}")
+        };
         match tokio::time::timeout(TCP_PROBE_CONNECT_TIMEOUT, connect).await {
             Ok(Ok(_stream)) => {}
             Ok(Err(e)) => {
                 return ProbeResult::Failed(format!(
-                    "TCP connect to port '{name}' ({address}:{port}) failed: {e}"
+                    "TCP connect to port '{name}' ({endpoint}) failed: {e}"
                 ));
             }
             Err(_) => {
                 return ProbeResult::Failed(format!(
-                    "TCP connect to port '{name}' ({address}:{port}) timed out after {}s",
+                    "TCP connect to port '{name}' ({endpoint}) timed out after {}s",
                     TCP_PROBE_CONNECT_TIMEOUT.as_secs()
                 ));
             }
@@ -2768,6 +2775,29 @@ mod tests {
                 detail.starts_with(&format!(
                     "TCP connect to port 'b' (127.0.0.1:{closed_port}) failed: "
                 )),
+                "{detail}"
+            ),
+            ProbeResult::Ok => panic!("closed port probed ok"),
+        }
+    }
+
+    /// An IPv6 probe address is bracketed when joined with the port in the
+    /// failure detail (§9.3), and an IPv6 listener is reachable.
+    #[tokio::test]
+    async fn tcp_probe_brackets_an_ipv6_address_in_its_detail() {
+        let Ok(listener) = tokio::net::TcpListener::bind("[::1]:0").await else {
+            eprintln!("no IPv6 loopback; skipping");
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        assert_eq!(
+            tcp_probe(&[("a".to_string(), "::1".to_string(), port)]).await,
+            ProbeResult::Ok
+        );
+        drop(listener);
+        match tcp_probe(&[("a".to_string(), "::1".to_string(), port)]).await {
+            ProbeResult::Failed(detail) => assert!(
+                detail.starts_with(&format!("TCP connect to port 'a' ([::1]:{port}) failed: ")),
                 "{detail}"
             ),
             ProbeResult::Ok => panic!("closed port probed ok"),

@@ -666,11 +666,10 @@ fn numeric_field_that_does_not_resolve_to_an_integer_fails() {
         "readinessIntervalSeconds: \"{{ Param.Text }}\"",
     );
     let err = create_err(&tmpl, &[("Text", "soon")]);
-    assert!(
-        err.starts_with(
-            "Format string error: services[0] -> healthCheck -> readinessIntervalSeconds: "
-        ),
-        "got: {err}"
+    assert_eq!(
+        err,
+        "Format string error: services[0] -> healthCheck -> readinessIntervalSeconds: Cannot \
+         coerce string to int?\n  Param.Text\n  ~~~~~~^~~~"
     );
 }
 
@@ -838,11 +837,11 @@ fn service_host_requirements_errors_carry_the_service_path() {
         "      attributes:\n        - name: attr.worker.os.family\n          anyOf: [\"{{ Param.Text }}\"]",
     );
     let err = create_err(&tmpl, &[("Text", "beos")]);
-    assert!(
-        err.starts_with(
-            "Model validation error: 1 validation error for JobTemplate\nservices[0] -> hostRequirements -> attributes[0] -> anyOf[0]:\n\t"
-        ),
-        "got: {err}"
+    assert_eq!(
+        err,
+        "Model validation error: 1 validation error for JobTemplate\nservices[0] -> \
+         hostRequirements -> attributes[0] -> anyOf[0]:\n\tvalue 'beos' is not valid for \
+         attr.worker.os.family."
     );
 }
 

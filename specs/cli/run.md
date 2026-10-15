@@ -622,7 +622,9 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
   scope**, the Task is canceled through the Task Session's cancel handle (its own
   `cancelation` method), logged as `Canceling the running Task of Step 'B': …` and
   `Task canceled; it returns to the queue (not a Task failure)` and not counted in
-  `tasks_run` or as a failure; the Step's remaining Tasks are abandoned. When the
+  `chunks_run` or as a failure (a returned Task counts again when it re-runs, and
+  `--maximum-tasks` applies afresh to the requeued pass, so a run may report more chunks
+  than its limit); the Step's remaining Tasks are abandoned. When the
   running Task's Step is **outside** the scope (a Service scoped to Steps A and C fails
   while B runs), or the relaunch is observed by a gate between Tasks or Steps, nothing is
   canceled — "Failure and restart" step 1 cancels only the Tasks in the Service's scope
@@ -856,7 +858,12 @@ that pin the same `(protocol, port)` number (`service_ports::check_requested_por
 template validation accepts the template (the two could be placed on different hosts),
 but the single-host runner cannot honor both and fails the run then — `Service 'B' port
 'p' requests TCP port 47200, which is already allocated to another Service of this run
-(Service 'A' port 'p')` — rather than after A is READY.
+(Service 'A' port 'p')` — rather than after A is READY. An external Service is named
+with its document on both sides of that line (`Service 'Cache' (from queue.yaml) port
+'main'`), since two documents may each declare a `Cache`. Once the check passes, every
+pinned number is reserved for its owner (`PortAllocator::reserve_requested`) before any
+Service starts, so a free port handed to an earlier-starting Service never takes a
+number a later one has pinned.
 
 **`--step` without `--run-dependencies`**, when the selected Step's Service lists a Step
 that is not being run: the Service is started as if that Step had completed, as the

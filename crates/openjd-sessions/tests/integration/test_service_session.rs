@@ -1962,6 +1962,56 @@ async fn command_readiness_waits_interval_between_invocations() {
     ss.end().await.unwrap();
 }
 
+/// The readiness deadline cancels a `COMMAND` invocation in flight, with
+/// the check's own cancelation method, and starts no further one
+/// ("Health": `TimedOut; stop the check`): the check traps the TERM of its
+/// NOTIFY_THEN_TERMINATE cancelation and records it — at the deadline,
+/// before the caller cancels `onRun`.
+#[tokio::test]
+async fn readiness_deadline_cancels_an_in_flight_command_check() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 60"))
+        .health(command_check(1, 1))
+        .on_health_check(sh_ntt(
+            &format!(
+                "echo check-start >> {t}; trap 'echo check-term >> {t}; exit 1' TERM; \
+                 while :; do sleep 0.1; done"
+            ),
+            10,
+        ))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    assert_eq!(ss.start().await.unwrap(), ServiceHealth::TimedOut);
+    // Give the canceled check a moment to run its trap, then look before
+    // onRun is canceled.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before_cancel = read_trace(&trace);
+    assert_eq!(
+        before_cancel,
+        vec!["check-start", "check-term"],
+        "{before_cancel:?}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    // No further invocation started.
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+}
+
 #[tokio::test]
 async fn command_readiness_invocation_timeout_counts_as_not_ready() {
     testing_logger::setup();

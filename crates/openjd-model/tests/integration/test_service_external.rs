@@ -1278,6 +1278,97 @@ steps:
 }
 
 #[test]
+fn every_step_inline_service_listing_a_requirement_gives_the_attached_service_every_step() {
+    // §9.1 rules 2–3 across the requirement: a Job Environment lists the
+    // inline `Proxy` (every Step), and `Proxy` lists the `externalServices`
+    // entry `Metrics`, so the attached `Metrics` has every Step — the
+    // `AllSteps` arm of `Job::required_service_scopes`.
+    const JOB: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: ViaInlineAllSteps
+externalServices:
+  - name: Metrics
+    ports: [{ name: main }]
+services:
+  - name: Proxy
+    dependencies: [{ service: "Metrics" }]
+    ports: [{ name: http }]
+    script: { actions: { onRun: { command: proxy, args: ["{{ Service.Metrics.main.port }}"] } } }
+jobEnvironments:
+  - name: E
+    dependencies: [{ service: "Proxy" }]
+    variables: { P: "{{ Service.Proxy.http.port }}" }
+steps:
+  - name: A
+    script: { actions: { onRun: { command: run } } }
+  - name: B
+    script: { actions: { onRun: { command: run } } }
+"#;
+    let (job, applied) = submit_ok(JOB, &[&service_only_template("Metrics")], &[]);
+    assert_eq!(
+        job.required_service_scopes().get("Metrics"),
+        Some(&ServiceScope::AllSteps)
+    );
+    assert_eq!(applied.external_services[0].scope, ServiceScope::AllSteps);
+}
+
+#[test]
+fn attached_service_listed_by_two_step_scoped_siblings_takes_the_union_of_their_scopes() {
+    // §9.1 rule 2 within the attached document, over the combined Job:
+    // `Store` is listed by `Front1` and `Front2`, bound to requirements that
+    // Steps A and B list respectively; `Store`'s scope is the union {A, B}.
+    const JOB: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Union
+externalServices:
+  - name: Front1
+    ports: [{ name: main }]
+  - name: Front2
+    ports: [{ name: main }]
+steps:
+  - name: A
+    dependencies: [{ service: "Front1" }]
+    script: { actions: { onRun: { command: run, args: ["{{ Service.Front1.main.port }}"] } } }
+  - name: B
+    dependencies: [{ service: "Front2" }]
+    script: { actions: { onRun: { command: run, args: ["{{ Service.Front2.main.port }}"] } } }
+  - name: C
+    script: { actions: { onRun: { command: run } } }
+"#;
+    const T: &str = r#"
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: Store
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: serve } } }
+  - name: Front1
+    dependencies: [{ service: "Store" }]
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: front, args: ["{{ Service.Store.main.port }}"] } } }
+  - name: Front2
+    dependencies: [{ service: "Store" }]
+    ports: [{ name: main }]
+    script: { actions: { onRun: { command: front, args: ["{{ Service.Store.main.port }}"] } } }
+"#;
+    let (_, applied) = submit_ok(JOB, &[T], &[]);
+    let scope_of = |name: &str| {
+        applied
+            .external_services
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no {name}"))
+            .scope
+            .clone()
+    };
+    assert_eq!(scope_of("Front1"), ServiceScope::steps(["A"]));
+    assert_eq!(scope_of("Front2"), ServiceScope::steps(["B"]));
+    assert_eq!(scope_of("Store"), ServiceScope::steps(["A", "B"]));
+}
+
+#[test]
 fn attached_service_bound_to_a_requirement_takes_the_requirement_scope() {
     // §9.1 rules 1–2 over the combined Job: a Step that lists the
     // `externalServices` entry is in the matched attached Service's scope,

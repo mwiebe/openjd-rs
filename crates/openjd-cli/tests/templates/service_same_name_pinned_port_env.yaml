@@ -1,0 +1,26 @@
+# An attached Environment Template whose Service `Cache` pins the same TCP
+# port as the Job Template's own `Cache` (service_same_name_pinned_port_job.yaml):
+# two distinct Services, and the pinned-port precheck names each with its
+# document.
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+parameterDefinitions:
+  - name: Port
+    type: INT
+services:
+  - name: Cache
+    ports:
+      - name: main
+        port: "{{ Param.Port }}"
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+environment:
+  name: QueueCache
+  dependencies: [{ service: Cache }]
+  variables:
+    QC_PORT: "{{ Service.Cache.main.port }}"

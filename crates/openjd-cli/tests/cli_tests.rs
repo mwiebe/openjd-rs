@@ -5987,6 +5987,55 @@ mod services {
         assert!(!stdout.contains("hunter2"), "{stdout}");
     }
 
+    /// A `TCP_CONNECT` check probes every TCP port (named on the launch
+    /// line, `on a, b`), skips UDP ones, and reports READY only once all
+    /// accept.
+    #[test]
+    fn test_tcp_connect_probes_every_tcp_port_and_names_them() {
+        let (code, stdout, stderr) =
+            run_service_template("service_tcp_connect_two_ports.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "health check: TCP_CONNECT on a, b (readinessTimeoutSeconds 30, \
+                 readinessIntervalSeconds 1, healthIntervalSeconds 30, failureThreshold 3)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "B_LISTENING") < pos(&stdout, "Service 'Two' is READY"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_RAN"), "{stdout}");
+    }
+
+    /// Two Services named alike in two documents pinning one port are two
+    /// Services; the precheck names the holder with its document.
+    #[test]
+    fn test_pinned_port_precheck_names_the_holder_with_its_document() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let env = templates_dir().join("service_same_name_pinned_port_env.yaml");
+        let env = env.to_str().unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_name_pinned_port_job.yaml",
+            &["-p", &format!("Port={port}"), "--environment", env],
+        );
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(&format!(
+                "Service 'Cache' port 'main' requests TCP port {port}, which is already \
+                 allocated to another Service of this run (Service 'Cache' (from {env}) port \
+                 'main')"
+            )),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task

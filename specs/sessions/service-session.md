@@ -404,7 +404,8 @@ result that arrives after probing stopped is discarded.
   turn with a 1 s per-connect bound and closes immediately; it succeeds when
   every connection does, else it fails naming the first port that did not
   (`TCP connect to port 'main' (127.0.0.1:4100) failed: Connection refused`
-  / `… timed out after 1s`). The same probe serves both phases.
+  / `… timed out after 1s`; an IPv6 address is bracketed, `([::1]:4100)`, as
+  §9.3 joins an address and a port). The same probe serves both phases.
 - **`STDOUT`** — the probe is an `openjd_service_ready: <message>` line on
   `onRun`'s stdout (same `openjd_<kind>: <payload>` syntax as every message;
   `ActionFilter` parses it to `ActionMessage::ServiceReady`). The first

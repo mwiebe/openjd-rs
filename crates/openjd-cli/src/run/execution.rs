@@ -506,6 +506,7 @@ async fn run_workload(
     if let Err(e) = service_ports::check_requested_ports(&may_start) {
         return Err(e.into());
     }
+    ctx.services.reserve_requested_ports(&may_start);
     let job_wide_count = ctx.services.job_wide_count();
     if job_runs_tasks {
         ctx.services.activate_job_wide();
