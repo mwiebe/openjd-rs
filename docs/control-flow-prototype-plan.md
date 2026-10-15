@@ -81,8 +81,13 @@ Each of these was checked against the code at `be266ed` or by running the releas
     that a job-parameter check implies when a property is omitted must be turned off for outputs. Test that a
     `RANGE_EXPR` output longer than 1024 characters is accepted when it declares no `maxLength`.
   * Error paths must say `outputVariables[i]`, not `parameterDefinitions[i]`.
-* `job::Step` (`job/mod.rs:105`) gets `output_variables: Option<Vec<job::OutputVariable>>` (name and type, plus the
-  constraints needed to check values) and `binding: StepBinding`. `job::Environment` (`job/mod.rs:147`) gets
+* `job::Step` (`job/mod.rs:105`) gets `output_variables: Option<Vec<job::OutputVariable>>` and
+  `binding: StepBinding`. `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`
+  (`job/mod.rs:103`), and `JobParameterDefinition` implements none of the first three, so `job::OutputVariable`
+  cannot hold the M1 wrapper. It is its own struct: a name, a `JobParameterType`, and an `OutputConstraints` value
+  that holds the declared constraint properties in hashable, serializable form (`Float64` for floats). It has a
+  `check_constraints(&ExprValue)` that applies the same rules as the job-parameter checks, and it is built from the
+  template definition in `create_job`. `job::Environment` (`job/mod.rs:147`) gets
   `enabled: bool`. New fields use `skip_serializing_if` so that the serialized form of existing jobs doesn't change
   (`tests/integration/test_job_step_serde.rs`). They also need `#[serde(default)]`, with `Bound` as the default
   binding and `true` as the default for `enabled`. Without it, a job serialized before the change, or one whose
@@ -145,13 +150,18 @@ It is a pure function, so sessions, the CLI, `openjd-for-js`, and a scheduler th
   apply to the last line for each variable. Rule 6 covers declared variables with no line. Rule 7, the size limit, is
   enforced by the caller before it reads the bytes. Messages give the 1-based line number and the variable name.
   Messages never repeat raw line content beyond the variable name; see S3 for why.
-* Type conversion: use `json_to_expr_value` (`parameters.rs:1381`) for the natural JSON typing, then coerce to the
-  declared type with EXPR's implicit coercion, `ExprValue::coerce` (`value.rs:904`), as the RFC's §Type conversion
-  requires. Do not reuse `coerce_json_to_job_parameter_type`: it follows job-parameter rules, which are more lenient
-  (for example `1` is accepted as a `BOOL` at `parameters.rs:691`). Ambiguity A7 asks the RFC which of the two it
-  means. Before converting, reject `null` and objects at any depth, and nesting deeper than the declared type. Each row
-  of the RFC's conversion table becomes a unit test.
-* Constraints: the `check_constraints` of the wrapped definition from M1.
+* Type conversion: type each JSON value against the declared type, then coerce with EXPR's implicit coercion,
+  `ExprValue::coerce` (`value.rs:904`), as the RFC's §Type conversion requires. The RFC infers an array "as a list
+  literal with the declared type as its target" (§1.2.6), so arrays are converted element by element toward the
+  declared element type. `json_to_expr_value` (`parameters.rs:1381`) can't be reused as is: it builds lists with a
+  `NULLTYPE` hint (`parameters.rs:1404`), so the RFC row `LIST[STRING] L=[1, "a"]` fails with
+  `make_list expected int element, got string`. Reuse its scalar arms, and keep a number's written spelling in
+  `Float64` so that A6 can be answered either way. Do not reuse `coerce_json_to_job_parameter_type` either: it
+  follows job-parameter rules, which are more lenient (for example `1` is accepted as a `BOOL` at
+  `parameters.rs:691`). Ambiguity A7 asks the RFC which of the two it means. Before converting, reject `null` and
+  objects at any depth, and nesting deeper than the declared type. Each row of the RFC's conversion table becomes a
+  unit test.
+* Constraints: `job::OutputVariable::check_constraints` from M1.
 
 ### M4. Job creation and binding
 
@@ -176,8 +186,18 @@ Environments are kept as they are, because they are carried forward as format st
    still counts. The materialization set of a Step is the union of `accessed_symbols()` over its `enableIf`, step
    `let`, `hostRequirements` fields, Task parameter `range`s, `chunks` fields, the TEMPLATE-scope fields of its
    step Environments (including their `enableIf`), and the `timeout` and `cancelation` fields of its script. Expand
-   step-`let` names to the symbols they read, transitively. The Step is pending if the set contains a
-   `Steps.P.Output.*` symbol, or a `Steps.P.TaskParam.*` symbol of a producer that is itself pending.
+   step-`let` names to the symbols they read, transitively. The Step is pending if the set contains a `Steps.P.*`
+   symbol that is not concrete at Job creation (§When a Step is bound):
+   * `Steps.P.Output.*` is concrete at creation only when `P` is statically `Skipped`, as `null`. For example, with
+     `EncodeVideo=false`, `Publish` in the render sample binds at creation.
+   * `Steps.P.TaskParam.*` is concrete at creation when `P` is `Bound` or statically `Skipped` at creation.
+
+   `create_job` loops over Steps in template order (`create_job/mod.rs:265`), and a Step may appear before a Step it
+   depends on (the existing `reverse_dependency_order.yaml` CLI test template). So `create_job` needs to instantiate
+   Steps in dependency order, building `StepInputs` from the Steps it has already instantiated, while it still stores
+   the Steps in template order. `StepDependencyGraph` is built from a `job::Job`, so it can't supply that order before
+   the Job exists. Instead, factor the Kahn's-algorithm pass out of `detect_dependency_cycles`
+   (`validate_v2023_09/structure.rs:1074`) so that it returns the order of the template's Steps.
 2. **Static `enableIf`.** An `enableIf` that reads no `Steps.*` is evaluated in `create_job`. If it is false, the Step
    becomes `Skipped` and nothing after `enableIf` is evaluated. That includes the step `let` evaluation and carried-forward checks that
    `instantiate_step` runs today (`instantiate.rs:62`–`:149`), so a skipped Step's `let` may assume the Step runs.
@@ -192,13 +212,23 @@ Environments are kept as they are, because they are carried forward as format st
        job: &job::Job,
        step_index: usize,
        inputs: &StepInputs,
+       committed_task_count: u64,   // Tasks of Steps already bound, for max_task_count (item 7)
    ) -> Result<job::Step, ModelError>;   // Bound or Skipped; Err = the Step FAILS at binding
    ```
 
    `bind_step` refactors `instantiate_step` (`instantiate.rs:37`) so that one code path serves both `create_job` and
    binding: the Step's symbol table is the job symbol table plus the concrete `Steps.*` symbols from `inputs`. The
+   other inputs `instantiate_step` takes today (the job symbol table, `has_expr`, `EffectiveLimits`, `EvalBudgets`)
+   are rebuilt from `ctx`, the parameter values, and `job.name`, as `create_job` builds them. The
    evaluation order follows §Materialization expressions. Binding is atomic because the function returns a new Step;
    the caller swaps it in.
+
+   Job creation runs its own format-string checks, separate from pass 8. `instantiate_step` re-checks every Step's
+   script and Environments (`instantiate.rs:118`, `:142`) against tables from `build_task_check_symtab`
+   (`instantiate.rs:277`) and `build_env_check_symtab` (`:359`). Those tables must seed the new symbols too:
+   `Task.OutputFile` as unresolved, and each `Steps.*` symbol as concrete when it is known and unresolved otherwise.
+   Without that, every producer script fails `create_job` with `Undefined variable: 'Task.OutputFile'`, and so does
+   every script that reads `Steps.*`. `add_unresolved_session_symbols` (`instantiate.rs:224`) is the natural place.
 4. **Assembling inputs.** Schedulers and the CLI should not have to reimplement the shape rules, so the model provides
    them:
 
@@ -227,15 +257,18 @@ Environments are kept as they are, because they are carried forward as format st
    values a Step needs before dispatch as `job::Step::input_producers()`.
 6. **Range rules under `CONTROL_FLOW`.**
    * An empty list from a format-string range is already accepted (see the table above). Add tests for it under
-     `CONTROL_FLOW`, and do not add a new code path. Whether it stays accepted *without* `CONTROL_FLOW` is ambiguity
-     A2.
+     `CONTROL_FLOW`. Whether it stays accepted *without* `CONTROL_FLOW` is ambiguity A2.
+   * A list-literal range whose evaluated items flatten to nothing needs new code. The RFC allows it to be empty
+     (§Empty parameter spaces), but openjd-rs errors today, with `EXPR` alone: `range: ["{{Param.L}}"]` with `L=[]`
+     fails with `Task parameter 'X' range has no elements after resolution` (`ranges.rs:528`). Under
+     `CONTROL_FLOW`, accept the empty result. See also A14.
    * Lift the 1024-element cap (`ranges.rs:336`, `:475`, `:556`) for format-string ranges when `CONTROL_FLOW` is
      enabled. List literals stay capped as written. This depends on how A3 is answered, so the cap is decided in one
      function that the answer can change.
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
 7. **Task-count limits.** Keep `max_task_count` as the job total. In `create_job`, count only bound Steps. In
-   `bind_step`, add a parameter for the count already committed, and fail the binding that would exceed the limit,
-   naming the limit. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 3.
+   `bind_step`, `committed_task_count` carries the count already committed, and the binding that would exceed the
+   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 3.
    See A5.
 8. **`StepDependencyGraph`** (`job/step_dependency_graph.rs`) is unchanged. The step graph is fixed.
 
@@ -279,9 +312,12 @@ The expr specs need no change unless the warning lands.
 When `output_variables` is `Some`:
 
 1. Create an empty file `<working_dir>/.openjd/task_outputs/<uuid>.txt`, which is inside the Session working
-   directory, as §The output file recommends. Under cross-user execution, give the job user write access with
-   `chown_for_user` (`embedded_files.rs:102`) on Unix and the `win32_permissions` ACL helper on Windows, as embedded
-   files are handled today.
+   directory, as §The output file recommends. The runtime creates `.openjd/task_outputs` and keeps it unwritable by
+   the job user. Under cross-user execution the working directory itself is group-writable (mode `0o770`,
+   `tempdir.rs:174`–`:186`), so a
+   writable subdirectory would let the job user swap a path component. Give the job user write access to the file only,
+   with `chown_for_user` (`embedded_files.rs:102`) on Unix and the `win32_permissions` ACL helper on Windows, as
+   embedded files are handled today.
 2. Seed `Task.OutputFile` as a `path` in `action_symtab` before the WRAP_ACTIONS block (`action_symtab` is built
    at `session.rs:1786`). The
    wrapped inner scope (`build_wrapped_inner_scope`) and `WrappedAction.*` then see the same path.
@@ -293,8 +329,9 @@ When `output_variables` is `Some`:
 
 * If the state is not `Success`, delete the file unread and return `outputs: None`. This covers failure,
   cancellation, and timeout.
-* If the state is `Success`, open the path without following symlinks (`O_NOFOLLOW` on Unix, and a reparse-point
-  check on Windows) and require a regular file. A missing file is treated as empty. Read at most `limit + 1` bytes,
+* If the state is `Success`, open the file relative to a handle on the directory created in S2, without following
+  symlinks (`openat` with `O_NOFOLLOW` on Unix, and a reparse-point check on Windows). Require a regular file with one
+  link, which rejects hardlinks. A missing file is treated as empty. Read at most `limit + 1` bytes,
   then call `openjd_model::outputs::parse_task_output_file`. On error, log the message and return
   `state: Failed`, with the same logging as an `openjd_fail` message. The runtime can read with more privilege than
   the job user, so a symlink or a message that echoes content could disclose another file. That is the reason M3
@@ -402,10 +439,14 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   expression.
 * Parser: every row of the RFC's conversion table, each of the seven read rules, BOM, CRLF, a final line without a
   newline, last write wins, and whitespace-only lines.
-* Binding: pending detection directly and through a `let`; a static skip that never evaluates the Step's `let`; a
-  dynamic skip; `fail(...)` at binding; an empty product space; empty with associated ranges; the 1024 cap lifted;
+* Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
+  consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
+  template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
+  product space; empty with associated ranges; a list-literal range that flattens to nothing; the 1024 cap lifted;
   `max_task_count` across bindings; and `TaskParam` alignment and iteration order under a
   `combination: "A * B"` with `B` varying fastest.
+* Job creation: a producer script that uses `Task.OutputFile`, and a script that reads `Steps.*`, both pass
+  `create_job`'s own carried-forward checks.
 
 **openjd-sessions** (`tests/integration/test_control_flow.rs`):
 
@@ -508,3 +549,9 @@ picks a behavior for each and records it in the specs.
   `list[list[T]]` (§Reductions item 4), and `repr_sh` has no signature for nested lists, while `repr_py`,
   `repr_json`, and `flatten` do. A short note in §Reductions ("`flatten` first for shell use") would spare authors a
   validation error.
+* **A14. Which list-literal items may be list-valued.** §Empty parameter spaces says that after a list literal's items
+  are evaluated, "EXPR flattens a list-valued item". In openjd-rs that holds for `FLOAT`, `STRING`, and `PATH` ranges.
+  An `INT` list literal accepts only integers: `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter fails `openjd
+  check` with `Cannot parse '{{Param.L}}' as integer`. The Expression Language's §1.3.12 table gives the `INT` range type as `list[int | FormatString] | RangeString`,
+  which suggests such an item is allowed. The RFC, or the EXPR spec, should say whether an
+  `INT` list item may be a list-valued expression.
