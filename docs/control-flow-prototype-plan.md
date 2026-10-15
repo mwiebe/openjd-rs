@@ -13,7 +13,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
   openjd-specifications commit `5a86c21`.
 
-The goal is a prototype that runs the five RFC sample templates end to end with `openjd run`. The prototype also
+The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
 [RFC ambiguities surfaced](#rfc-ambiguities-surfaced).
 
@@ -86,7 +86,7 @@ Each of these was checked against the code at `be266ed` or by running the releas
   `unit` (an `Option<String>`) are not job-parameter fields, so the wrapper takes them out of the mapping before it
   deserializes the union, which would otherwise reject them as unknown keys. The wrapper exposes `name`,
   `job_param_type`, `collect`, `unit`, and `check_constraints`. Three cautions:
-  * The RFC says that only declared constraint properties apply (`<OutputVariableDefinition>` item 4). Any default
+  * The RFC says that only declared constraint properties apply (`<OutputVariableDefinition>` item 6). Any default
     that a job-parameter check implies when a property is omitted must be turned off for outputs. Test that a
     `RANGE_EXPR` output longer than 1024 characters is accepted when it declares no `maxLength`.
   * Error paths must say `outputVariables[i]`, not `parameterDefinitions[i]`.
@@ -175,7 +175,8 @@ impl OutputCollector {
 ```
 
 * The grammar is the RFC's §The `openjd_output_var` directive: leading spaces or tabs, an `<Identifier>`, `=` with
-  nothing before it, then either `@` and a non-empty path (trailing spaces and tabs removed) or one JSON value. The
+  nothing before it, optional spaces or tabs, then either `@` and a non-empty path (trailing spaces and tabs removed)
+  or one JSON value with optional trailing spaces or tabs. The
   caller strips the line terminator. File content may start with a BOM and may span lines, and must be valid UTF-8
   without NUL; `accept` checks that when `from_file` is set.
 * `NaN`, `Infinity`, and numbers that overflow `f64` are invalid. `serde_json` rejects all three without
@@ -320,7 +321,7 @@ Environments are kept as they are, because they are carried forward as format st
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
 7. **Task-count limits.** Keep `max_task_count` as the job total. In `create_job`, count only bound Steps. In
    `bind_step`, `committed_task_count` carries the count already committed, and the binding that would exceed the
-   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 3.
+   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 4.
    See A5.
 8. **`StepDependencyGraph`** (`job/step_dependency_graph.rs`) is unchanged. The step graph is fixed.
 
@@ -354,13 +355,18 @@ The expr specs need no change unless the warning lands.
 * `run_task` (`session.rs:1758`) needs the Step's output declarations. Add a parameter
   `output_variables: Option<&[openjd_model::job::OutputVariable]>`. The crate is pre-1.0, so this change is
   allowed. A `RunTaskOptions` struct is an alternative if the signature keeps growing.
-* The Session must know whether the Job lists `CONTROL_FLOW` (a field on `SessionConfig`), and for each Environment
-  it enters whether a Job Template or an Environment Template defines it (a parameter on `enter_environment` and
-  `exit_environment`). Today it knows neither: extensions come only from the session-wide profile, and
-  `enter_environment` takes a bare `Environment`. Both decide whether a directive fails its Action or is ordinary
-  output.
-* `ActionMessage` (`action.rs:39`) gets `OutputVar { name: String, value: ExprValue }`, and `ActionStatus` gets the
-  values accepted so far, so the existing callback forwards each value as it arrives (RFC §Committing values).
+* The Session must know whether the Job lists `CONTROL_FLOW`, and for each Environment it enters whether a Job
+  Template or an Environment Template defines it. Both decide whether a directive fails its Action or is ordinary
+  output. For the first, `openjd run` already passes the Job Template's own profile (`execution.rs:128`), which
+  carries its extensions, but the profile is documented as selecting functions and redaction, and a caller may pass a
+  wider one. Add an explicit `SessionConfig` field so the rule doesn't depend on how a caller built the profile. For
+  the second, `enter_environment` (`session.rs:1133`) takes a bare `&Environment`; add a parameter for its origin to
+  it and to `exit_environment`.
+* `ActionMessage` (`action.rs:39`) gets `OutputVar { name: String, value: ExprValue }`, and `SessionConfig` gets an
+  optional output callback, `Fn(&session_id, &name, &ExprValue)`, called once per accepted value, so a caller can
+  forward each value as it arrives (RFC §Committing values). Putting the values on `ActionStatus` instead would
+  re-clone a growing `APPEND` list on every status callback, because `action_status()` builds a new struct each time
+  (`session.rs:915`–`:925`).
 * `ActionResult` (`action.rs:74`) gets `outputs: Option<IndexMap<String, ExprValue>>`. The value is `Some` only when
   the Step declares outputs and the Task succeeded.
 * `SessionLimits` (`limits.rs:23`) gets `max_task_output_bytes: Option<usize>`, with a default of at least 1 MiB and
@@ -368,42 +374,66 @@ The expr specs need no change unless the warning lands.
 
 ### S2. Recognizing the directive
 
-* `parse_directive` (`action_filter.rs:45`) gets the kind `output_var`. The filter is built with a flag that says
-  whether the current Action may report outputs (`Allowed`, a Job Template Action that may not (`Forbidden`), or
-  ordinary output (`Ignored`: no `CONTROL_FLOW`, or an Environment Template Action). `run_task` sets `Allowed` only
-  when `output_variables` is `Some`. Under WRAP_ACTIONS, the flag follows the Action the hook runs in place of, which
-  `run_task` and `enter_environment` already know.
+* The directive needs its own recognizer. `parse_directive` (`action_filter.rs:45`) matches only
+  `openjd_<kind>: ` with a non-empty payload (`:47`–`:52`), but the RFC recognizes any line that begins with
+  `openjd_output_var:`, with optional whitespace after the colon. So `openjd_output_var:N=1` is a valid directive and
+  `openjd_output_var: ` with nothing after it is an invalid one; neither may fall through as ordinary output. Check
+  the `openjd_output_var:` prefix before `parse_directive`, and test both lines.
+* The filter is built with a treatment for the current Action: `Allowed` (the Action may report outputs),
+  `Forbidden` (a Job Template Action that may not), or `Ignored` (ordinary output: no `CONTROL_FLOW`, or an
+  Environment Template Action). `run_task` uses `Allowed` only when `output_variables` is `Some`. Under
+  WRAP_ACTIONS, the treatment follows the Action the hook runs in place of, which `run_task` and `enter_environment`
+  already know.
 * With `Ignored`, the line falls through as today. With `Forbidden`, the filter returns a cancel callback, as a
   malformed `openjd_env` does, and the Action fails with a message that names the directive.
 * With `Allowed`, `process_line` (`subprocess.rs:1219`) hands the payload to an `OutputCollector` (M3) owned by the
   line reader for this Action. Processing is synchronous in the reader, so an `@` file is read before any later line
-  is processed, as the RFC requires. An invalid directive sends `CancelMarkFailed` with the collector's message. The
-  RFC allows either cancelling at once or failing at exit; cancelling at once is simpler here, because it reuses the
-  existing path.
+  is processed, as the RFC requires. An invalid directive cancels the Action and fails it. The RFC allows either
+  cancelling at once or failing at exit; cancelling at once reuses `CancelMarkFailed`. That path needs one change:
+  `process_line` sends a fixed `"Action canceled due to malformed command"` (`subprocess.rs:1275`–`:1278`) and drops
+  the callback's error text (`:1249`–`:1254`), and the RFC requires the failure to name the output, the problem, and
+  the offending text. Pass the collector's message through as the `fail_message`.
 * Truncation: `truncate_line` (`subprocess.rs:62`), and the helper's `decode_and_truncate` (`framer.rs:89`) and
   `fit_out_payload` (`framer.rs:116`), cut long lines silently today. Each must report that it truncated (for the
   helper, a flag in `Response::Out`, which is a protocol change on both sides of the helper boundary). A truncated
   line that starts with `openjd_output_var:` is invalid, and the discarded remainder is never treated as a line.
 * Encoding: a line that `decode_backslashreplace` had to escape is not valid UTF-8, so a directive on it is invalid.
-  The reader must carry a "lossy" flag with the decoded line to tell.
+  The reader must carry a "lossy" flag with the decoded line to tell. On the cross-user path the helper decodes the
+  line (`framer.rs:48`, `:89`), so this flag also crosses the helper protocol, beside the truncation flag.
+* Line ends: the helper sends `line.trim_end()` (`helper/src/runner.rs:61`–`:63`), which strips all trailing Unicode
+  whitespace, and the direct path strips only `\n` and `\r` (`subprocess.rs:1121`–`:1126`). The RFC's grammar allows
+  only spaces and tabs around the value, so a directive followed by, say, a form feed would be valid on one path and
+  invalid on the other. Make the helper strip only the line terminator, and let the parser apply the grammar.
 * Logging: the filter drops a recognized directive from the log unless `echo_openjd_directives` is set
   (`action_filter.rs:211`). The RFC says the line is passed through unchanged (A15). The prototype keeps today's
   echo behavior for consistency with the other directives, and logs each accepted value at info level instead.
 
 ### S3. Reading `@` files
 
-* Resolve a relative path against the Session working directory. Open the file without following links, then check
-  that the opened handle is a regular file whose final path is inside the working directory: on Linux,
-  `openat2(RESOLVE_BENEATH)` from a handle to the working directory, with a fallback of opening and checking
-  `/proc/self/fd/<n>`; on macOS, `F_GETPATH`; on Windows, `GetFinalPathNameByHandleW`. Read at most
+* Resolve a relative path against the Session working directory. An absolute path is used as written, which in
+  practice means it must name something inside the working directory; to use a beneath-the-root resolver with it,
+  first make it relative to the working directory, and treat a path outside it as invalid.
+* Symbolic links are followed, as the RFC's "after following symbolic links" requires: a link that stays inside the
+  working directory is valid. What must be inside is the file actually opened. On Linux, open with
+  `openat2(RESOLVE_BENEATH)` from a handle to the working directory, which follows links but refuses any that leave
+  it, and fall back to opening the path and checking `/proc/self/fd/<n>`. On macOS, open and check `F_GETPATH`; on
+  Windows, `GetFinalPathNameByHandleW`. Then require a regular file, and read at most
   `collector.remaining_bytes_for(name) + 1` bytes.
 * Same-user Sessions read the file directly; that meets the RFC's access rule.
 * Cross-user Sessions must read it as the job user. Add a command to the embedded helper protocol
   (`protocol.rs:49`), such as `ReadOutputFile { token, path, root, max_bytes }`, answered by the helper, which runs as
   the job user. The parent must not read the file itself, even with an owner or link-count check, because the RFC
   requires no more access than the job user. Whether the helper can serve a command while a `Run` is in progress has
-  to be checked first; if it can't, the helper resolves `@` directives itself in its `Out` stream and sends the
-  content to the parent. Either way the helper sub-crate's gates apply.
+  to be checked first. A reply would also arrive on the same response stream that the parent's `select!` loop
+  (`cross_user_helper.rs:620`) reads, interleaved with later `Out` lines, which the parent would have to hold back
+  until the reply arrives to keep the RFC's ordering. The simpler design is for the helper to resolve `@` directives
+  itself, as it reads the Action's output, and send the content to the parent in place of the line, so ordering
+  falls out of the stream. The helper doesn't know the declared outputs, so it reads any `@` directive up to the
+  per-Task maximum (passed in `RunCommand`) and the parent applies `check_name` and the remaining-size check
+  afterwards. The outcome is the same as the RFC's order; the cost is reading a file that is then rejected.
+  Either way the helper sub-crate's gates apply.
+* On the direct path, file reads are blocking I/O inside the async line reader. They are bounded by the size limit;
+  use `spawn_blocking` and await it before the next line, so ordering is kept.
 * The runtime never modifies or deletes the file.
 
 ### S4. At exit, and `Steps.*` values at Task run time
@@ -510,8 +540,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Types: scalar, list, and optional shapes, checked as `ExprType` on the seeded symbol, and `enableIf` given a `bool?`
   expression.
 * Parser and collector: every row of the RFC's conversion table, each "invalid if" rule of §Processing a directive
-  that the model owns, both forms of the directive, leading whitespace, whitespace before `=` rejected, an empty `@`
-  path, `NaN` and `1e400`, file content with a BOM and line breaks; `ONCE` repeated and missing, `LAST` replacing a
+  that the model owns, both forms of the directive, leading whitespace, whitespace before `=` rejected, whitespace
+  after `=` accepted (`N= 1`, `N= @f`), an empty `@` path, `NaN` and `1e400`, file content with a BOM and line breaks; `ONCE` repeated and missing, `LAST` replacing a
   value and its size, `LAST` with an invalid intermediate value, `APPEND` with zero and several values, `item` and
   `maxLength` checked per element and `minLength` at exit, a list value under `APPEND` becoming one element, and the
   size limit for inline and file values.
@@ -529,8 +559,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Values are returned on success and reported through the callback as they arrive, on stdout and on stderr.
   Nothing is returned on failure, cancellation, or timeout, or when the action exits 0 after an invalid directive.
 * Every collector failure surfaces as a failed Task with its message.
-* `@` files: relative and absolute paths; a file written and closed before the directive; a file outside the working
-  directory, a symlink out of it, a directory, and a missing file all fail; a file over the size limit fails without
+* Recognition: `openjd_output_var:N=1` with no space is a directive, and `openjd_output_var: ` with nothing after it
+  fails the Task.
+* `@` files: relative and absolute paths; a file written and closed before the directive; a symlink that stays
+  inside the working directory succeeds; a file outside the working directory, a symlink out of it, a directory, and
+  a missing file all fail; a file over the size limit fails without
   being read in full.
 * The three treatments: a directive in `onRun` of a producer; in a Job Template `onEnter` and in the `onRun` of a Step
   without `outputVariables` (both fail); in an Environment Template action and in a Session without `CONTROL_FLOW`
@@ -554,6 +587,9 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   workspace gets no new dev-dependency such as `insta` (that would need `cargo deny`).
 * Variants:
   * Video frame count: `FrameCount=3`, which gives 3 Tasks and a scalar `FrameRate` in a host-scope field.
+  * Task metrics: a 2×1×1×1 space whose stub prints `frames_done` twice (`LAST`), three `chunk_error_mm` values
+    (`APPEND`), and the three `ONCE` metrics, so the output shows each Task's values with their units. A second
+    variant prints `mpjpe_mm` twice and fails the Task.
   * S3 fan-out: `Keys=[]`, which gives a zero-Task `Transcode` and a manifest with `totalBytes 0`, and a variant with
     two keys.
   * Sweep: a 2×1×1×2 space for a short runtime, run once with a winner and once taking the `fail(...)` path.
@@ -647,8 +683,3 @@ so the numbering stays stable.
   directive or let it finish and fail it. The difference is visible: an Action that would have written its real
   outputs to an external system completes in one runtime and not the other. Consider requiring one. Prototype:
   cancel at once, through the existing `CancelMarkFailed` path.
-* **A17. `@` file reads under cross-user execution.** §File values requires reading "with no more access than the
-  Action's user", and names the helper process as an example. openjd-rs's helper runs the Action but has no
-  file-read command, so the rule adds a protocol change to the cross-user boundary (S3). The RFC is right to require
-  it, but its Implementation Impact should say that a runtime's privilege-separation layer is involved, not just the
-  action filter.
