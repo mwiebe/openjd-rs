@@ -370,7 +370,9 @@ Environments are kept as they are, because they are carried forward as format st
    It evaluates `value` with the job symbol table plus the `Steps.*` symbols from `inputs`, converts to the declared
    type, and checks the constraints (skipped for `null`). `StepInputs` here may hold producers that are not
    dependencies of anything, so `add_producer` doesn't check that. The CLI and a scheduler call
-   `evaluate_job_output` whenever a Step it waits on succeeds or is skipped; deciding when to call it is the caller's
+   `evaluate_job_output` whenever a symbol it waits on becomes concrete: when a Step it reads `Output` or
+   `RawOutput` of succeeds or is skipped, and when a Step it reads `TaskParam` or `TaskRawParam` of is bound or
+   skipped. Deciding when to call it is the caller's
    job, which keeps the scheduling policy (fail the Job, mark stale on re-run) out of the model.
 
 ### Model specs to update
@@ -412,15 +414,28 @@ pub fn unapply_rules(
 pub enum UnmapError { Relative, NoRoundTrip }
 ```
 
-It implements the RFC's reference inverse: a URI is returned unchanged; an empty rule list returns the absolute path
-unchanged; otherwise it normalizes the path, collects the rules whose `destination_path` matches on a component
-boundary (case-insensitively for Windows paths), builds each candidate from the remaining components, tries them by
-decreasing `destination_path` length and then rule order, and returns the first that `apply_rules_with_format` maps
-back to the normalized path. It lives beside the forward code so both share `split_path_parts` and `is_rooted`. Its
+It implements the RFC's reference inverse: a URI is returned unchanged; a relative path is `Relative`; an empty rule
+list returns the absolute path unchanged; otherwise it normalizes the path, collects the rules whose
+`destination_path` matches on a component boundary (case-insensitively for Windows paths), builds each candidate
+from the remaining components, tries them by decreasing `destination_path` length and then in the order the caller
+listed the rules, and returns the first that maps back. The Session passes its rules sorted by `source_path` length
+(`session.rs:682`), so "listed order" there is that order; the RFC's tie-break is only a SHOULD, and the round-trip
+check keeps the result correct either way.
+
+Two details of the existing forward code matter:
+* `apply_rules_with_format` returns its input unchanged when no rule matches, and `apply_with_format` doesn't
+  normalize (a `destination_path` with a trailing separator gives `/mnt/p//x`). So the round trip uses a forward
+  helper that reports whether a rule matched, and compares the normalized forward result with the normalized reported
+  path under the worker format's rules (case-insensitive with both separators on Windows), not as strings.
+* `is_rooted` (`path_mapping.rs:182`) does not treat a Windows drive path such as `C:\x` as rooted, so the `Relative`
+  check needs its own absoluteness test (a drive letter or UNC prefix on Windows, a leading `/` on POSIX).
+
+It lives beside the forward code and reuses `split_path_parts` (`:174`). Its
 tests include the RFC's nested-rule example (`/mnt/p/x/f` is `NoRoundTrip`), a root `source_path` such as `P:\`, a
 URI-source rule, and the conversion table row (`/mnt/proj/shot01/out` → `P:\shot01\out`).
 
-`specs/expr/` gains the reverse-mapping rules beside the forward ones.
+`specs/expr/path-mapping.md` gains the reverse-mapping rules beside the forward ones, and `specs/expr/public-api.md`
+lists `unapply_rules` and `UnmapError`.
 
 ## openjd-sessions
 
@@ -548,17 +563,19 @@ URI-source rule, and the conversion table row (`/mnt/proj/shot01/out` → `P:\sh
 * Otherwise call `collector.finish()`. An error fails the Task with its message; success returns the values.
 * `Steps.*` values arrive in `resolved_symtab` (M4 item 5), with path-typed values only in their `RawOutput` and
   `TaskRawParam` forms. `build_symbol_table` (`session.rs:2461`) already re-maps `PATH` and `LIST[PATH]` `Param.*`
-  values from the base symbol table with the Session's rules (`:2481`–`:2525`). It gets the same loop for `Steps.*`:
-  for each path-typed `RawOutput.<V>` or `TaskRawParam.<N>` in the base, it sets `Output.<V>` or `TaskParam.<N>` to
-  the forward-mapped value, element by element for lists and lists of lists. The model marks which symbols are
-  path-typed in `resolved_symtab`'s metadata, because a `Path` value's type survives serialization but a `STRING`
-  that looks like a path must not be mapped.
+  values with the Session's rules (`:2481`–`:2525`), driven by `self.job_parameter_values`. A second loop does the
+  same for `Steps.*`, driven by the base symbol table: for each `RawOutput.<V>` or `TaskRawParam.<N>` whose value is
+  `Path` or a list (or list of lists) of `Path`, it sets `Output.<V>` or `TaskParam.<N>` to the forward-mapped value,
+  element by element. No extra metadata is needed: `SerializedSymbolTable` keeps each entry's type (`path`,
+  `list[path]`, `list[list[path]]`) and `to_symtab` rebuilds `Path` values, while a `STRING` that looks like a path
+  stays a string.
 
 ### Sessions specs to update
 
 `specs/sessions/action-filter.md` and `action-messages.md` (the new directive and its three treatments),
-`subprocess.md` and `embedded-cross-user-helper.md` (truncation flags, the `@` file read), `session.md` (collection
-and the new configuration), and `public-api.md`.
+`subprocess.md` and `embedded-cross-user-helper.md` (truncation flags, the `@` file read), `session.md` (collection,
+reverse mapping of `PATH` outputs, forward mapping of path-typed `Steps.*`, and the new configuration), and
+`public-api.md`.
 
 ## openjd-cli
 
@@ -584,10 +601,12 @@ For each Step in topological order:
    (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task runs can be printed as they arrive, marked as not
    committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
-6. After each Step succeeds or is skipped, call `evaluate_job_output` for every job output whose inputs are now all
-   concrete, and print `Job output VideoCount = 12`. An error prints the output, expression, and message, marks the
+6. After each Step is bound, succeeds, or is skipped, call `evaluate_job_output` for every job output whose inputs are
+   now all concrete (`job_output_inputs`), and print `Job output VideoCount = 12`. An error prints the output, expression, and message, marks the
    run failed, and stops running Tasks, as a failed Task does. At the end, list the job outputs that were never
-   evaluated, naming the Step each waits on. With `--step` alone, those are the outputs that read Steps not run.
+   evaluated, naming the Step each waits on. With `--step` alone, those are the outputs that read Steps not run. The
+   run is reported as succeeded only after every job output whose inputs are concrete has been evaluated. The CLI
+   imposes no size limit on job outputs, which the RFC's 1 MiB minimum allows.
 
 Job Environments with `enabled == false` are not entered (the loop at `execution.rs:360`).
 
@@ -611,7 +630,8 @@ Options:
 * `summary` (`summary.rs:113`) prints a pending Step as `Tasks: determined at run time from
   Steps.VideoToFrames.Output.FrameCount`, which follows §Implementation strategy. The total becomes
   `Total tasks: N + (determined at run time)`. A statically skipped Step is shown as `SKIPPED`.
-* `summary` lists the job outputs, with their types and units, and which Steps each waits on.
+* `summary` lists the job outputs, with their types and units, and which Steps each waits on. This is the CLI's
+  form of the RFC's SHOULD that a pending job output be shown with what it waits for (§Job outputs item 2).
 * `check` needs no change beyond M2.
 
 ### CLI specs to update
@@ -653,7 +673,7 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Gating: each new field without the extension, `CONTROL_FLOW` without `EXPR`, and `CONTROL_FLOW` in an Environment
   Template.
 * Structure: each `outputVariables` rule, including `LIST[LIST[INT]]` on a multi-Task Step, `CHUNK[INT]`, the 32-item
-  cap, a `PATH` type, `collect: APPEND` on a scalar type, and `unit` length and control characters.
+  cap, `PATH` and `LIST[PATH]` accepted with `objectType` and rejected with `dataFlow`, `collect: APPEND` on a scalar type, and `unit` length and control characters.
 * Scope: one test per `Steps.*` error message (M2), one per forbidden field family, a reference in a branch that is
   never taken, and a reference through a `let`.
 * Types: scalar, list, and optional shapes, checked as `ExprType` on the seeded symbol, and `enableIf` given a `bool?`
@@ -677,8 +697,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   rejects a relative one and one with no round trip, and checks constraints on the stored form.
 * Job outputs: each schema rule; a `value` reading a Step that isn't a dependency of anything is accepted; `Param` of
   a `PATH` type rejected and `RawParam` accepted; evaluation at creation, and a failure there failing `create_job`;
-  `evaluate_job_output` for a later Step, a skipped Step (`null`), a zero-Task Step with `min([])` (error), a
-  constraint violation, and a `null` result with a constraint (not checked).
+  an output reading only `TaskParam` of a Step bound at creation (evaluated at creation), and one reading a
+  statically skipped Step (evaluated at creation, `null`); `evaluate_job_output` for a later Step, a dynamically
+  skipped Step (`null`), a zero-Task Step with `min([])` (error), a constraint violation, and a `null` result with a
+  constraint (not checked). CLI: a run with a failing job output fails, and a run's success is reported after its
+  last evaluable job output.
 
 **openjd-sessions** (`tests/integration/test_control_flow.rs`):
 
