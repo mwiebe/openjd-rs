@@ -87,8 +87,7 @@ Each of these was checked against the code at `be266ed` or by running the releas
   reuses the `OutputVariableDefinition` wrapper, minus `collect` and plus `value: FormatString`. `job::Job` gets
   `outputs: Option<Vec<job::JobOutput>>`, each a `job::OutputVariable`, the unevaluated `value`, and
   `evaluated: Option<JobOutputValue>`, where `enum JobOutputValue { Value(ExprValue), Null }` and `None` means
-  pending, with the same serde
-  defaults as the other new fields. `create_job` fills `evaluated` for the outputs it evaluates; callers fill the rest
+  pending, with the same serde defaults as the other new fields. `create_job` fills `evaluated` for the outputs it evaluates; callers fill the rest
   from `evaluate_job_output`.
 * `template::StepTemplate` (`template/step.rs:233`) gets
   `enable_if: Option<BoolOrFormatString>` and `output_variables: Option<Vec<OutputVariableDefinition>>`.
@@ -152,7 +151,8 @@ family:
   self-reference; no such output; no such Task parameter; a `PATH`-typed `Output` or `TaskParam` in a
   TEMPLATE-scope field ("use `RawOutput`" or "use `TaskRawParam`"). Because the
   check is a static scan, it also catches a reference inside a branch that is never evaluated.
-* `jobOutputDefinitions`: 1–50 elements, unique names, types and constraints as for outputs. Each `value` is checked
+* `jobOutputDefinitions`: 1–50 elements, unique names, types and constraints as for outputs, except that
+  `LIST[LIST[INT]]` is allowed (there is no `parameterSpace` to nest it in). Each `value` is checked
   against a symbol table with `Param.*` (minus `PATH` types), `RawParam.*`, `Job.Name`, and the `Steps.*` symbols of
   every Step with an `<Identifier>` name (with `add_steps_scope` in a mode that skips the direct-dependency rule and
   seeds `PATH`-typed values only in their `Raw` forms), with the target type made optional.
@@ -230,7 +230,9 @@ impl OutputCollector {
   conversion table, including its three `APPEND` rows, becomes a unit test.
 * `PATH` values: after conversion, `accept` maps each `PATH` value or `LIST[PATH]` element back with
   `unapply_rules` (E1); a `Relative` or `NoRoundTrip` error makes the directive invalid (RFC invalid-directive item
-  10). Constraints and the size accounting then use the stored form, and so does the value `accept` returns. For a
+  10). The stored `ExprValue::Path` carries the matching rule's `source_path_format` (the value's own format when
+  the Session has no rules). Constraints and the size accounting then use the stored form, and so does the value
+  `accept` returns. For a
   `PATH` value the size counted is the larger of the reported bytes and the stored value's JSON serialization.
 * Constraints: `job::OutputVariable::check_constraints`, `check_element`, and `check_length` from M1.
 
@@ -329,7 +331,8 @@ Environments are kept as they are, because they are carried forward as format st
    one element per Task even for a `CHUNK[INT]` parameter. It fills `RawOutput` and `TaskRawParam` with the same values
    (the stored, submission-context form), and for a type that is or contains `path` leaves `Output` and `TaskParam` to
    be derived on the worker (item 5 and S4). A skipped producer sets every symbol to `null`, including `Output` and
-   `TaskParam` of path types, so nothing is left to derive. A `Bound` producer contributes `TaskParam` only. The list
+   `TaskParam` of path types, so nothing is left to derive; M4.5 then copies those `null`s directly, and they are not
+   added to `path_inputs`. A `Bound` producer contributes `TaskParam` only. The list
    type hint follows the declared type, so `[]` becomes a typed empty list.
 5. **Host-scope `Steps.*` in Steps bound at creation.** A Step such as `FramesToVideo` reads `Steps.*` only in its
    script, so it binds at job creation but needs the values before its Tasks run. Add
@@ -341,7 +344,8 @@ Environments are kept as they are, because they are carried forward as format st
    path-typed `Steps.P.Output.X` or `TaskParam.N` that the Step reads, `inputs` holds only the `Raw` twin, so copy
    that instead, as `include_raw_param_fallbacks` (`instantiate.rs:993`) does for `PATH` `Param.*`. Every path-typed
    `Raw` value it stores, whether the Step reads it directly or through this fallback, is stored as a `string` (or
-   list of strings) and recorded in a new `job::Step::path_inputs` list (name and declared type), which S4 uses.
+   list of strings) and recorded in a new `job::Step::path_inputs: Vec<job::PathInput>` list (`PathInput { symbol, ty }`), which S4
+   uses.
    Every bound Step that reads `Steps.*` in host-scope fields goes through `attach_step_inputs`, including one bound
    by `bind_step`; `bind_step` doesn't put path-typed `Steps.*` values into `resolved_symtab` itself. Expose the list
    of producers whose values a Step needs before dispatch as `job::Step::input_producers()`.
@@ -391,7 +395,7 @@ Environments are kept as they are, because they are carried forward as format st
 
 `specs/model/template-types.md`, `validation.md`, `job-creation.md`, `job-types.md`, `parameter-space.md`,
 `step-dependencies.md` (skipped and zero-Task dependencies), `public-api.md`, and a new `job-outputs.md`. Also update
-`specs/architecture.md` with the binding stage.
+`specs/architecture.md` with the binding and job output evaluation stages.
 
 ## openjd-expr
 
@@ -455,9 +459,10 @@ lists `unapply_rules` and `UnmapError`.
 
 ### S1. API
 
-* `run_task` (`session.rs:1758`) needs the Step's output declarations. Add a parameter
-  `output_variables: Option<&[openjd_model::job::OutputVariable]>`. The crate is pre-1.0, so this change is
-  allowed. A `RunTaskOptions` struct is an alternative if the signature keeps growing.
+* `run_task` (`session.rs:1758`) takes a `StepScript` and a `resolved_symtab`, not a `job::Step`, so the new inputs
+  arrive in a `RunTaskOptions` struct: `output_variables: Option<&[openjd_model::job::OutputVariable]>`, the Step's
+  output declarations, and `path_inputs: &[openjd_model::job::PathInput]`, the list M4.5 records (S4 uses it).
+  The crate is pre-1.0, so this change is allowed.
 * The Session must know whether the Job lists `CONTROL_FLOW`, and for each Environment it enters whether a Job
   Template or an Environment Template defines it. Both decide whether a directive fails its Action or is ordinary
   output. For the first, `openjd run` already passes the Job Template's own profile (`execution.rs:128`), which
@@ -676,12 +681,13 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 3a | `feat(expr): reverse path mapping` | — | E1 |
 | 3 | `feat(model): output directive parser and collector` | 1, 3a | M3 |
 | 4 | `feat(model): step input binding` | 2, 3 | M4: `StepBinding`, static `enableIf`, `bind_step`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
-| 5 | `feat(sessions): openjd_output_var directive` | 3 | S1–S4, including the helper protocol and truncation changes, so the helper sub-crate's gates and the cross-user tests apply |
+| 5 | `feat(sessions): openjd_output_var directive` | 3, 4 | S1–S4, including the helper protocol and truncation changes, so the helper sub-crate's gates and the cross-user tests apply |
 | 4a | `feat(model): job outputs` | 2, 4 | the M1 `jobOutputDefinitions` schema, the M2 job output scope, and M4 item 9 |
 | 6 | `feat(cli): simulate step input binding in openjd run` | 4, 4a, 5 | C1, C2 |
 | 7 | `test(cli): golden tests for the RFC sample templates` | 6 | the sample tests below |
 
-PRs 3 and 5 can proceed in parallel with 2 and 4. PR 7 can start early as a list of failing tests, and the tests turn
+PR 3 can proceed in parallel with 2 and 4. PR 5's directive work (S1–S3) can start after 3, but its S4 part needs
+`job::Step::path_inputs` from PR 4. PR 7 can start early as a list of failing tests, and the tests turn
 on as PR 6 lands.
 
 ## Test strategy
@@ -729,13 +735,13 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 **openjd-sessions** (`tests/integration/test_control_flow.rs`):
 
 * Values are returned on success and reported through the callback as they arrive, on stdout and on stderr.
+  Nothing is returned on failure, cancellation, or timeout, or when the action exits 0 after an invalid directive.
 * On a Windows worker with a POSIX submission path and a POSIX rule (or simulated with `to_symtab(Windows)` and
   `PathFormat::Windows`), a consumer's `RawOutput` keeps `/` and its `Output` is mapped. A script that reads only
   `Steps.P.RawOutput.X.name` gets a `path`, not a `string`.
 * With path mapping rules, a `PATH` output is returned in the submission form; a consumer's script sees
   `Steps.P.Output.X` forward-mapped and `Steps.P.RawOutput.X` unmapped; a `LIST[PATH]` `TaskParam` of a `PATH`
   parameter is mapped element by element.
-  Nothing is returned on failure, cancellation, or timeout, or when the action exits 0 after an invalid directive.
 * Every collector failure surfaces as a failed Task with its message.
 * Logging: with `echo_openjd_directives = false`, a valid directive is hidden and an invalid one stays in the log with
   its error; with the default, both appear.
