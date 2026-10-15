@@ -132,7 +132,10 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   both reports `a dependency names a Step with dependsOn or a Service with service, not both:
   {dependsOn: A, service: X} (Template Schemas §3.2).`, one with neither `a dependency must name
   a Step with dependsOn or a Service with service; this entry gives neither (Template Schemas
-  §3.2).`, and such an entry is no dependency (not checked further, not an edge, not a listing);
+  §3.2).`, and such an entry is no dependency (not checked further, not an edge, not a listing —
+  so the scope and listing checks of pass 11 see the Step as not listing the Service: a
+  `Service.*` reference in it is also reported as `does not list service: X`, and a Service only
+  that entry names as `unused`; fixing the entry clears all three);
   no self-dependency (`cannot depend on itself.`); no duplicates (`duplicate dependency 'A'.` for a
   Step, `duplicate dependency 'service: X'.` for a Service — `service::duplicate_dependency`);
   and a `dependsOn` entry must name a Step (`dependency '<step>' not found.`). A `service` entry
@@ -391,7 +394,9 @@ a Step Environment, an Environment Template's
 `<StepTemplate>`'s or `<Service>`'s; a `<StepScript>`, `<ServiceScript>` or
 `<EnvironmentScript>` `let` is a session-scope site), a `parameterSpace` range, `timeout` /
 `notifyPeriodInSeconds`, a Service's `port` / `maxAttempts` / the four `<ServiceHealthCheck>`
-numeric fields); the declarations are the document's `services`, and a
+numeric fields — the path segment after `variables` or `let` is a name the author chose
+and never a field, so a variable named `timeout` is a variable); the declarations are the
+document's `services`, and a
 Job Template's `externalServices` count as known with their declared ports. Rules, in the
 order tried:
 

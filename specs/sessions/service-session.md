@@ -225,8 +225,12 @@ returns it; `end()` is still required.
    `SessionError::ServiceScriptFailed { name, action: "onEnter", reason }`
    with reason `exit code: N` / `canceled` / `timed out`, followed by
    `; openjd_fail: <message>` when the action emitted one (RFC 0009
-   `<ServiceActions>`: "the message accompanies it"). The same shape is
-   used for an `onExit` failure in `end()`.
+   `<ServiceActions>`: "the message accompanies it") — or, when the action
+   exited 0 and failed only because of the `openjd_fail` line (the crate's
+   rule for every action; open question Q1 in
+   `specs/service-extension-status.md`), `openjd_fail: <message> (exit code:
+   0)`, so the reason leads with its cause. The same shape is used for an
+   `onExit` failure in `end()`.
 
 ## Environment variables of a Service action
 

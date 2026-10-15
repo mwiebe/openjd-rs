@@ -1725,6 +1725,12 @@ fn failure_reason(result: &SubprocessResult, fail_message: Option<&str>) -> Stri
         _ => format_exit_code(result.exit_code),
     };
     match fail_message {
+        // The action exited 0 and failed only because it emitted
+        // `openjd_fail` (the crate's rule for every action; see open question
+        // Q1 in specs/service-extension-status.md): lead with the cause.
+        Some(msg) if !msg.is_empty() && result.exit_code == Some(0) => {
+            format!("openjd_fail: {msg} ({base})")
+        }
         Some(msg) if !msg.is_empty() => format!("{base}; openjd_fail: {msg}"),
         _ => base,
     }
@@ -2616,6 +2622,18 @@ fn log_check_message_ignored(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defaults the spec fixes: `onHealthCheck` 30 s per invocation
+    /// (Template Schemas §9.4 item 1, RFC 0009 `<ServiceActions>`), `onExit`
+    /// 300 s (§5 defaults table).
+    #[test]
+    fn default_action_timeouts_match_the_specification() {
+        assert_eq!(
+            SERVICE_HEALTH_CHECK_DEFAULT_TIMEOUT,
+            Duration::from_secs(30)
+        );
+        assert_eq!(SERVICE_EXIT_DEFAULT_TIMEOUT, Duration::from_secs(300));
+    }
 
     #[test]
     fn probe_address_maps_wildcards_to_loopback() {

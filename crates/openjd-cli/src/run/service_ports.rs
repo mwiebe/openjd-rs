@@ -23,26 +23,35 @@
 //! The allocation table lives for the whole run so that two Services never
 //! receive the same port number in one run, even when one of them has
 //! already released it: a Task that resolved the old endpoint could
-//! otherwise connect to the wrong Service. TCP and UDP numbers are separate
+//! otherwise connect to the wrong Service. A port a Service *requested*
+//! (`<ServicePort>.port`) is the one exception: a new Service Session of the
+//! same Service asks for the same number again, and receives it (bound once
+//! more to confirm it is free) — the number was always that Service's, so
+//! no stale endpoint can point elsewhere. TCP and UDP numbers are separate
 //! spaces (§9.3 item 3): the table is kept per protocol, so a TCP port and a
 //! UDP port of the same number are independent allocations.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener, UdpSocket};
 
 use openjd_model::job::service_symbols::{ServiceEndpoint, ServiceEndpoints};
-use openjd_model::job::{Service, ServicePortProtocol};
+use openjd_model::job::{Document, Service, ServicePortProtocol};
 
 /// The loopback address every Service of a local run binds to and is
 /// reached at.
 pub(super) const LOOPBACK: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
+/// The Service a port number was handed to: its document and name.
+type Owner = (Document, String);
+
 /// Allocates loopback TCP and UDP ports for the Services of one run.
 #[derive(Debug, Default)]
 pub(super) struct PortAllocator {
-    /// Every port number handed out during the run (never reused), per
-    /// protocol: `(protocol, port)`.
-    allocated: BTreeSet<(ServicePortProtocol, u16)>,
+    /// Every port number handed out during the run, per protocol
+    /// (`(protocol, port)`), and the Service that received it. A number is
+    /// never handed out again — except a requested one, to the same Service
+    /// in a new Session.
+    allocated: BTreeMap<(ServicePortProtocol, u16), Owner>,
 }
 
 impl PortAllocator {
@@ -65,6 +74,18 @@ impl PortAllocator {
     /// interface. Both are *start failures* of the Service (RFC 0009
     /// "Failure and restart").
     pub(super) fn allocate(&mut self, service: &Service) -> Result<ServiceEndpoints, String> {
+        self.allocate_with(service, &mut bind_loopback)
+    }
+
+    /// [`allocate`](Self::allocate) with `bind` in place of the loopback
+    /// bind: `bind(protocol, port)` confirms a requested `port`, or picks a
+    /// free one for `0`, and returns the bound number.
+    fn allocate_with(
+        &mut self,
+        service: &Service,
+        bind: &mut dyn FnMut(ServicePortProtocol, u16) -> std::io::Result<u16>,
+    ) -> Result<ServiceEndpoints, String> {
+        let owner: Owner = (service.document.clone(), service.name.clone());
         let mut ports = Vec::with_capacity(service.ports.len());
         // Allocate into a local set first so a failure part-way through
         // does not leave the earlier ports of this Service marked as taken.
@@ -72,18 +93,24 @@ impl PortAllocator {
         for declared in &service.ports {
             let protocol = declared.protocol;
             let is_used = |port: u16, taken: &[(ServicePortProtocol, u16)]| {
-                self.allocated.contains(&(protocol, port)) || taken.contains(&(protocol, port))
+                self.allocated.contains_key(&(protocol, port)) || taken.contains(&(protocol, port))
             };
             let port = match declared.port {
                 Some(requested) => {
-                    if is_used(requested, &taken) {
+                    // A number this Service received before (an earlier
+                    // Session of it) is its own to request again.
+                    let other_owner = self
+                        .allocated
+                        .get(&(protocol, requested))
+                        .is_some_and(|o| *o != owner);
+                    if other_owner || taken.contains(&(protocol, requested)) {
                         return Err(format!(
                             "Service '{}' port '{}' requests {protocol} port {requested}, which is \
                              already allocated to another Service of this run",
                             service.name, declared.name
                         ));
                     }
-                    bind_loopback(protocol, requested).map_err(|e| {
+                    bind(protocol, requested).map_err(|e| {
                         format!(
                             "Service '{}' port '{}' requests {protocol} port {requested}, which is \
                              not available on {LOOPBACK}: {e}",
@@ -92,8 +119,8 @@ impl PortAllocator {
                     })?
                 }
                 None => {
-                    let bind_free = || {
-                        bind_loopback(protocol, 0).map_err(|e| {
+                    let mut bind_free = || {
+                        bind(protocol, 0).map_err(|e| {
                             format!(
                                 "Service '{}' port '{}': failed to allocate a free {protocol} port \
                                  on {LOOPBACK}: {e}",
@@ -131,7 +158,8 @@ impl PortAllocator {
                 },
             ));
         }
-        self.allocated.extend(taken);
+        self.allocated
+            .extend(taken.into_iter().map(|k| (k, owner.clone())));
         Ok(ServiceEndpoints::new(service.name.clone(), ports))
     }
 }
@@ -309,6 +337,54 @@ mod tests {
         );
     }
 
+    /// A new Session of the same Service asks for its pinned number again
+    /// and receives it; another Service still cannot.
+    #[test]
+    fn a_service_may_request_its_own_pinned_port_again() {
+        let mut alloc = PortAllocator::default();
+        let free = bind_loopback(ServicePortProtocol::Tcp, 0).unwrap();
+        let svc = service("A", &[("main", Some(free))]);
+        assert_eq!(alloc.allocate(&svc).unwrap().ports[0].1.port, free);
+        assert_eq!(alloc.allocate(&svc).unwrap().ports[0].1.port, free);
+        // The same name from another document is another Service.
+        let mut other = service("A", &[("main", Some(free))]);
+        other.document = Document::EnvironmentTemplate {
+            index: 0,
+            label: Some("env.yaml".into()),
+        };
+        let err = alloc.allocate(&other).unwrap_err();
+        assert!(
+            err.ends_with("already allocated to another Service of this run"),
+            "{err}"
+        );
+    }
+
+    /// A free port number the OS hands out again after this run released it
+    /// is skipped: the run never reuses a number (a Task holding the old
+    /// endpoint could otherwise reach the wrong Service).
+    #[test]
+    fn a_free_port_number_this_run_already_used_is_not_handed_out_again() {
+        let mut alloc = PortAllocator::default();
+        // The "OS" offers 40001 twice, then 40002.
+        let mut offers = vec![40002u16, 40001, 40001].into_iter().collect::<Vec<_>>();
+        let mut bind = |_: ServicePortProtocol, port: u16| -> std::io::Result<u16> {
+            assert_eq!(port, 0);
+            Ok(offers.pop().unwrap())
+        };
+        let first = alloc
+            .allocate_with(&service("A", &[("main", None)]), &mut bind)
+            .unwrap();
+        assert_eq!(first.ports[0].1.port, 40001);
+        let second = alloc
+            .allocate_with(&service("B", &[("main", None)]), &mut bind)
+            .unwrap();
+        assert_eq!(
+            second.ports[0].1.port, 40002,
+            "40001 was offered again and must be skipped"
+        );
+        assert!(offers.is_empty());
+    }
+
     #[test]
     fn a_requested_port_held_by_another_process_is_a_start_failure() {
         let mut alloc = PortAllocator::default();
@@ -348,10 +424,10 @@ mod tests {
         // and was never reserved as TCP.
         assert!(alloc
             .allocated
-            .contains(&(ServicePortProtocol::Udp, e.ports[0].1.port)));
+            .contains_key(&(ServicePortProtocol::Udp, e.ports[0].1.port)));
         assert!(!alloc
             .allocated
-            .contains(&(ServicePortProtocol::Tcp, e.ports[0].1.port)));
+            .contains_key(&(ServicePortProtocol::Tcp, e.ports[0].1.port)));
     }
 
     #[test]

@@ -230,6 +230,31 @@ fn step_reference_to_a_required_service_without_dependency_is_rejected() {
     assert!(!err.contains("Undefined variable"), "{err}");
 }
 
+/// A variable named like a job-creation field (`timeout`, `let`) is still a
+/// variable: the message names the missing dependency, not a job-creation
+/// site.
+#[test]
+fn step_environment_variable_named_like_a_job_creation_field_gets_the_dependency_message() {
+    for var in ["timeout", "let", "maxAttempts"] {
+        let t = job_unlisted(CACHE_REQ, "", LISTER_ENV, "[x]").replace(
+            "  - name: S\n",
+            &format!(
+                "  - name: S\n    stepEnvironments:\n      - name: Tools\n        variables: {{ {var}: \"{{{{ Service.Cache.main.port }}}}\" }}\n"
+            ),
+        );
+        let err = job_err(&t);
+        assert_errs(
+            &err,
+            1,
+            &[
+                &format!("steps[0] -> stepEnvironments[0] -> variables -> {var}:"),
+                "Step 'S' references Service.Cache.main.port in stepEnvironments 'Tools' but does not list service: Cache in dependencies.",
+            ],
+        );
+        assert!(!err.contains("is not available in"), "{var}: {err}");
+    }
+}
+
 #[test]
 fn step_environment_reference_to_a_required_service_without_dependency_is_rejected() {
     // A Step Environment follows its Step's dependencies (§9 scope rule 3).

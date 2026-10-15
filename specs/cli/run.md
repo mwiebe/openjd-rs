@@ -504,17 +504,22 @@ Service binds and is reached on the loopback interface. For each declared port i
 binds `127.0.0.1:0` with a socket of the port's `protocol` — a `TcpListener` for a
 TCP port, a `UdpSocket` for a UDP port (§9.3 item 3) — to find a free port in that
 protocol's space (or binds the requested `port` once, the same way, to confirm it is
-available), releases the socket, and records `(protocol, number)` so that no two
-Services of the run ever receive the same port of one protocol — numbers are never
-reused within a run, even after a Service Session ends, so a Task that resolved an old
-endpoint cannot reach the wrong Service. TCP and UDP are independent spaces: a TCP
-port and a UDP port may be allocated, or requested, with the same number.
-`bindAddress` and `connectAddress` are both `127.0.0.1`, as bare addresses (RFC 0009
-"Address forms"; templates join an address and a port with `join_host_port`). A
-requested port that is already allocated in its protocol or cannot be bound (`Service
-'A' port 'dgram' requests UDP port 8125, which is not available on 127.0.0.1: …`) is
-a *start failure* of the Service. Endpoints are allocated when the Service Session is
-opened, before any of its actions runs; a new Service Session gets new ports.
+available), releases the socket, and records `(protocol, number)` with the Service
+that received it, so that no two Services of the run ever receive the same port of one
+protocol — numbers are never reused within a run, even after a Service Session ends,
+so a Task that resolved an old endpoint cannot reach the wrong Service. The one
+exception is a *requested* port: a new Service Session of the same Service (same
+document and name) asks for its pinned number again and receives it, bound once more
+to confirm it is free — the number was always that Service's, so no stale endpoint can
+point elsewhere. TCP and UDP are independent spaces: a TCP port and a UDP port may be
+allocated, or requested, with the same number. `bindAddress` and `connectAddress` are
+both `127.0.0.1`, as bare addresses (RFC 0009 "Address forms"; templates join an
+address and a port with `join_host_port`). A requested port that is already allocated
+in its protocol to *another* Service, or that cannot be bound (`Service 'A' port
+'dgram' requests UDP port 8125, which is not available on 127.0.0.1: …`), is a *start
+failure* of the Service. Endpoints are allocated when the Service Session is opened,
+before any of its actions runs; a new Service Session gets new free ports and the same
+requested ones.
 
 ### Start ordering (constraints 2, 9)
 
@@ -664,7 +669,7 @@ exit of a READY instance, an UNHEALTHY verdict (the relaunch first awaits the ex
 the `onRun` the Session canceled — "Failure and restart" step 2, constraint 5), or a
 ready timeout (which first cancels `onRun` and awaits its exit — step 2), but in a
 **new Service Session**
-(new working directory, new ports, Environments re-entered, `onEnter` re-run) when the
+(new working directory, new free ports — a requested port stays the Service's — Environments re-entered, `onEnter` re-run) when the
 failure may be a port conflict — `onRun` exited before becoming READY — or was a
 start failure (requested port unavailable, Environment `onEnter` failed, Service
 `onEnter` failed, Session could not be created). Otherwise the Service is FAILED: its
@@ -947,12 +952,13 @@ Tasks run: 100
 ```
 
 When a Service failed its scope (RFC 0009) the result additionally carries
-`"failed_services": [{"name": "Cache", "scope": "Job", "reason": "..."}]` (the
-`scope` is `Job` or `Step '<name>'`; an external Service's entry also carries
-`"document": "<path given to --environment>"`, since Service names are scoped to
-their document), the `status` is `error`, and the `message` names the first failed
-Service; the human-readable output appends a `Failed Service: <name>[ (from
-<document>)] (<scope> scope): <reason>` line per Service.
+`"failed_services": [{"name": "Cache", "scope": "every Step", "reason": "..."}]` (the
+`scope` is the same label the log uses — `every Step`, `Step A`, or `Steps A, B` — see
+§ Output; an external Service's entry also carries `"document": "<path given to
+--environment>"`, since Service names are scoped to their document), the `status` is
+`error`, and the `message` names the first failed Service; the human-readable output
+appends a `Failed Service: <name>[ (from <document>)] (scope: <scope>): <reason>` line
+per Service.
 
 ### YAML
 

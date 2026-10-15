@@ -5764,6 +5764,229 @@ mod services {
         assert_eq!(stdout.matches("Service 'S' stopped").count(), 1, "{stdout}");
     }
 
+    /// A Service with a requested port keeps its number across a new
+    /// Service Session (its own earlier allocation is not "another
+    /// Service's"); so does a pinned dependent restarted for new upstream
+    /// endpoints.
+    #[test]
+    fn test_pinned_ports_survive_a_new_session_and_a_dependent_restart() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let free_port = || {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let (port_p, port_d) = (free_port(), free_port());
+        let (code, stdout, stderr) = run_service_template(
+            "service_pinned_ports_new_session.yaml",
+            &[
+                "-p",
+                &format!("Marker={}", marker.display()),
+                "-p",
+                &format!("PortP={port_p}"),
+                "-p",
+                &format!("PortD={port_d}"),
+            ],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'P' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'D' (scope: Step S) is starting again in a new Service Session: \
+                 Service 'P' is READY"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("already allocated"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert_eq!(
+            stdout
+                .matches(&format!(
+                    "Service 'P' (scope: Step S) endpoints: main -> 127.0.0.1:{port_p}"
+                ))
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches(&format!(
+                    "Service 'D' (scope: Step S) endpoints: main -> 127.0.0.1:{port_d}"
+                ))
+                .count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("TASK_2_SEES P={port_p} D={port_d}")),
+            "{stdout}"
+        );
+    }
+
+    /// The pinned-port precheck considers only the Services the selection
+    /// may start: two Services pinning one port but scoped to different
+    /// Steps run under `--step A`, and fail up front without a selection.
+    #[test]
+    fn test_pinned_port_precheck_covers_only_the_services_the_selection_may_start() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let port_arg = format!("Port={port}");
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_pinned_port_different_steps.yaml",
+            &["-p", &port_arg, "--step", "A"],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains(&format!("STEP_A_RAN {port}")), "{stdout}");
+        assert!(!stdout.contains("Starting Service: SB"), "{stdout}");
+        let (code, stdout, stderr) = run_service_template(
+            "service_same_pinned_port_different_steps.yaml",
+            &["-p", &port_arg],
+        );
+        assert_ne!(code, 0, "stdout:\n{stdout}");
+        assert!(
+            stderr.contains(&format!(
+                "Service 'SB' port 'p' requests TCP port {port}, which is already allocated to \
+                 another Service of this run (Service 'SA' port 'p')"
+            )),
+            "{stderr}"
+        );
+        assert!(!stdout.contains("Starting Service"), "{stdout}");
+    }
+
+    /// A readiness timeout cancels `onRun`, awaits its exit (`canceled; exit
+    /// code: N/A`, before the `is UNREADY` line), and relaunches in the same
+    /// Service Session; a second timeout exhausts the attempts.
+    #[test]
+    fn test_readiness_timeout_relaunches_in_the_same_session_then_fails() {
+        let (code, stdout, stderr) =
+            run_service_template("service_readiness_timeout_relaunch.yaml", &[]);
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let canceled = "Service 'T' onRun (launch 1) canceled; exit code: N/A";
+        let unready = "Service 'T' (scope: Step S) is UNREADY: did not become READY within \
+                       readinessTimeoutSeconds (completedTasks: KEEP)";
+        let relaunch = "Relaunching Service 'T' onRun in its Service Session (relaunch 1 of 1): \
+                        did not become READY within readinessTimeoutSeconds";
+        assert!(pos(&stdout, canceled) < pos(&stdout, unready), "{stdout}");
+        assert!(pos(&stdout, unready) < pos(&stdout, relaunch), "{stdout}");
+        assert!(
+            stdout.contains("Service 'T' onRun (launch 2) canceled; exit code: N/A"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'T' (scope: Step S) is FAILED: did not become READY within \
+                 readinessTimeoutSeconds; 1 of 1 relaunch(es) used (restartPolicy.maxAttempts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
+    }
+
+    /// A Step-scoped Service's new Session re-enters only the Step
+    /// Environments (down to the Step baseline), not the Job Environments,
+    /// and the next Task sees the new port through the Step Environment.
+    #[test]
+    fn test_step_scoped_new_session_reenters_only_the_step_environments() {
+        let dir = TempDir::new().unwrap();
+        let counter = dir.path().join("counter");
+        let (code, stdout, stderr) = run_service_template(
+            "service_step_env_reentered_on_new_session.yaml",
+            &["-p", &format!("Counter={}", counter.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'B' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert_eq!(
+            stdout
+                .matches(
+                    "Re-entering 1 Environment(s): a Service they may reference has new endpoints"
+                )
+                .count(),
+            1,
+            "{stdout}"
+        );
+        // The Task Session's Job Environment is entered once; the Service
+        // Sessions' own entries are tagged.
+        assert_eq!(stdout.matches("\tJOB_ENV_ENTER").count(), 1, "{stdout}");
+        assert_eq!(stdout.matches("\tSE_ENTER ").count(), 2, "{stdout}");
+        let port_of = |line: &str| -> String {
+            stdout
+                .lines()
+                .find(|l| l.contains(line))
+                .unwrap_or_else(|| panic!("no {line} in\n{stdout}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        let (old, new) = (port_of("\tTASK_1 "), port_of("\tTASK_2 "));
+        assert_ne!(old, new, "{stdout}");
+        assert!(stdout.contains(&format!("\tSE_ENTER {new}")), "{stdout}");
+        assert!(
+            stdout.contains(&format!("\tTASK_2 {new} {new}")),
+            "{stdout}"
+        );
+    }
+
+    /// Template Schemas §4 item 3: a Job Environment whose `runScope` is
+    /// `[SERVICE]` is skipped by the Task Session (logged) and entered by the
+    /// Service Session.
+    #[test]
+    fn test_task_session_skips_an_environment_whose_run_scope_excludes_task() {
+        let (code, stdout, stderr) =
+            run_service_template("service_env_run_scope_service_only.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "\tSkipping Environment 'ServiceOnly': its runScope does not include TASK"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("\tSERVICE_ONLY_ENTER"), "{stdout}");
+        assert!(
+            stdout.contains("[Service X] SERVICE_ONLY_ENTER"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("[Service X] SERVICE_SEES svc-value"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_SEES UNSET"), "{stdout}");
+    }
+
+    /// A Job Environment from another document is entered in an attached
+    /// Service's Session under that document's profile: the Job Template's
+    /// REDACTED_ENV_VARS directive is honored there, with no warning, though
+    /// the attachment does not declare the extension.
+    #[test]
+    fn test_service_session_enters_job_environments_under_their_documents_profile() {
+        let env = templates_dir().join("service_env_profile_per_document_env.yaml");
+        let (code, stdout, stderr) = run_service_template(
+            "service_env_profile_per_document.yaml",
+            &["--environment", env.to_str().unwrap()],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("SERVICE_SECRET_SET True"), "{stdout}");
+        assert!(stdout.contains("TASK_SECRET_SET True"), "{stdout}");
+        assert!(
+            !stdout.contains("REDACTED_ENV_VARS extension is not declared"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("hunter2"), "{stdout}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task

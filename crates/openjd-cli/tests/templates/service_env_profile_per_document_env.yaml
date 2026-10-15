@@ -1,0 +1,12 @@
+specificationVersion: "environment-2023-09"
+extensions: [SERVICE, EXPR]
+services:
+  - name: R
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time; print('SERVICE_SECRET_SET', 'MY_SECRET' in os.environ, flush=True); print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }

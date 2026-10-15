@@ -211,13 +211,19 @@ impl<'a> Document<'a> {
 /// The job-creation-time field `path` points into, if any, as the message
 /// names it.
 fn job_creation_field(path: &[PathElement]) -> Option<&'static str> {
-    let fields: Vec<&str> = path
+    let mut fields: Vec<&str> = path
         .iter()
         .filter_map(|e| match e {
             PathElement::Field(f) => Some(f.as_str()),
             PathElement::Index(_) => None,
         })
         .collect();
+    // The segment after `variables` or `let` is a name the author chose (an
+    // environment variable, a binding), not a schema field: a variable named
+    // `timeout` is still a variable.
+    if let Some(i) = fields.iter().position(|f| *f == "variables" || *f == "let") {
+        fields.truncate(i + 1);
+    }
     // The leaf decides for the `@fmtstring` scalars; `hostRequirements` and
     // `parameterSpace` anywhere in the path; `let` only outside a `script`
     // (a `<StepTemplate>`'s or a `<Service>`'s own list, resolved at job
@@ -537,6 +543,28 @@ mod tests {
         assert_eq!(
             job_creation_field(&p(&["steps", "script", "actions", "onRun", "timeout"])),
             Some("timeout")
+        );
+        // A name the author chose, after `variables` or `let`, is not a
+        // schema field, whatever it is called.
+        assert_eq!(
+            job_creation_field(&p(&["steps", "stepEnvironments", "variables", "timeout"])),
+            None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["jobEnvironments", "variables", "let"])),
+            None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["services", "variables", "maxAttempts"])),
+            None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["steps", "script", "let", "timeout"])),
+            None
+        );
+        assert_eq!(
+            job_creation_field(&p(&["steps", "let", "timeout"])),
+            Some("a let binding")
         );
         assert_eq!(
             job_creation_field(&[

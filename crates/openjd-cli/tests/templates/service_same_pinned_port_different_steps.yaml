@@ -1,0 +1,36 @@
+# Two Services pin the same TCP port but are scoped to different Steps. With
+# `--step A` only A's Service may start, so the pinned-port precheck considers
+# only it and the run succeeds; without a selection both could start and the
+# precheck fails the run before either is launched.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: SamePinnedPortDifferentSteps
+parameterDefinitions:
+  - name: Port
+    type: INT
+services:
+  - name: SA
+    ports: [{ name: p, port: "{{ Param.Port }}" }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: a', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+  - name: SB
+    ports: [{ name: p, port: "{{ Param.Port }}" }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: b', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ service: "SA" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_A_RAN {{ Service.SA.p.port }}')"] } } }
+  - name: B
+    dependencies: [{ service: "SB" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_B_RAN {{ Service.SB.p.port }}')"] } } }

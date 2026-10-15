@@ -1106,6 +1106,52 @@ async fn on_enter_failure_is_a_start_failure_and_end_still_runs_on_exit() {
     );
 }
 
+/// As for every action in this crate, `openjd_fail` makes the action
+/// `Failed` even when it exits 0 (open question Q1 in
+/// `specs/service-extension-status.md`); the reason then leads with the
+/// cause rather than reading "failed: exit code: 0".
+#[tokio::test]
+async fn openjd_fail_with_exit_zero_fails_on_enter_and_on_exit_naming_the_message_first() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_enter(sh("echo 'openjd_fail: just a note'; exit 0"))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert_eq!(
+        ss.enter().await.unwrap_err().to_string(),
+        "Service 'svc' onEnter failed: openjd_fail: just a note (exit code: 0)"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::StartFailed);
+    ss.end().await.unwrap();
+
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new("svc", &["main"], sh("sleep 30"))
+        .on_exit(sh("echo 'openjd_fail: cleanup note'; exit 0"))
+        .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    assert_eq!(
+        ss.end().await.unwrap_err().to_string(),
+        "Service 'svc' onExit failed: openjd_fail: cleanup note (exit code: 0)"
+    );
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
+}
+
 #[tokio::test]
 async fn cancel_handle_cancels_a_running_on_enter() {
     let root = TempDir::new().unwrap();

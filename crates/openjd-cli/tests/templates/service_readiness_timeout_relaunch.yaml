@@ -1,0 +1,27 @@
+# "Failure and restart" step 2 for a readiness timeout: readinessTimeoutSeconds
+# elapses before READY, so the runtime cancels onRun, waits for it to exit
+# (logged `canceled; exit code: N/A`), then relaunches in the same Service
+# Session (a timeout is not a suspected port conflict). The second launch
+# times out too and the attempts are exhausted: FAILED, the Job fails.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "ReadinessTimeoutRelaunch"
+services:
+  - name: T
+    ports: [{ name: main }]
+    healthCheck:
+      type: TCP_CONNECT
+      readinessTimeoutSeconds: 1
+    restartPolicy:
+      maxAttempts: 1
+      completedTasks: KEEP
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: S
+    dependencies: [{ service: "T" }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('TASK_MUST_NOT_RUN')"] } } }

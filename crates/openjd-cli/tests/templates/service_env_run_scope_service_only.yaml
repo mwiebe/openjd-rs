@@ -1,0 +1,33 @@
+# Template Schemas §4 item 3: a Job Environment whose runScope is [SERVICE]
+# only is entered by Service Sessions and skipped by the Task Session, which
+# logs the skip; its onEnter never runs for Tasks and its variable does not
+# reach them.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RunScopeServiceOnly"
+services:
+  - name: X
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time; print('SERVICE_SEES', os.environ.get('ONLY_FOR_SERVICES', 'UNSET'), flush=True); print('openjd_service_ready: up', flush=True); time.sleep(600)"]
+          cancelation: { mode: TERMINATE }
+jobEnvironments:
+  - name: ServiceOnly
+    runScope: [SERVICE]
+    variables:
+      ONLY_FOR_SERVICES: "svc-value"
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "print('SERVICE_ONLY_ENTER')"] }
+steps:
+  - name: Use
+    dependencies: [{ service: "X" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os; print('TASK_SEES', os.environ.get('ONLY_FOR_SERVICES', 'UNSET'))"]

@@ -472,6 +472,19 @@ fn split_doubled_open_bracket_is_error() {
     );
 }
 
+/// The same rule without a port: a doubled `[` is malformed, not a host.
+#[test]
+fn split_doubled_open_bracket_without_port_is_error() {
+    assert_err(
+        "split_host_port('[[::1]')",
+        &[
+            "split_host_port failed: unexpected '[' or ']' in '[[::1]'\n",
+            "  split_host_port('[[::1]')\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~~~~",
+        ],
+    );
+}
+
 #[test]
 fn split_bracket_in_port_is_error() {
     assert_err(

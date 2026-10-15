@@ -1,0 +1,44 @@
+# A Step-scoped Service's endpoints change (launch 2 exits before READY, so
+# launch 3 runs in a new Service Session with a new port) while the Step's
+# Tasks run. Only the Step Environment that may hold the old value is
+# re-entered (`Re-entering 1 Environment(s)`), not the Job Environment; the
+# next Task sees the new port through the Step Environment's variable.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "StepEnvReentered"
+parameterDefinitions:
+  - name: Counter
+    type: STRING
+services:
+  - name: B
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxAttempts: 2, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nc = r'{{ Param.Counter }}'\nn = int(open(c).read()) + 1 if os.path.exists(c) else 1\nopen(c, 'w').write(str(n))\nif n == 2:\n    raise SystemExit(7)\nprint('openjd_service_ready: up', flush=True)\nif n == 1:\n    time.sleep(0.6); raise SystemExit(1)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+jobEnvironments:
+  - name: JobEnv
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "print('JOB_ENV_ENTER')"] }
+steps:
+  - name: S
+    dependencies: [{ service: "B" }]
+    stepEnvironments:
+      - name: SE
+        variables:
+          BP: "{{ Service.B.main.port }}"
+        script:
+          actions:
+            onEnter: { command: python, args: ["-c", "import os; print('SE_ENTER', os.environ['BP'])"] }
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time; time.sleep(1.5 if {{ Task.Param.N }} == 1 else 0); print('TASK_{{ Task.Param.N }}', os.environ['BP'], '{{ Service.B.main.port }}')"]

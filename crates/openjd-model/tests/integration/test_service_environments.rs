@@ -1700,6 +1700,43 @@ services:{MINIMAL_SERVICE}{MINIMAL_SERVICE}
     );
 }
 
+/// §3.2 constraints 1–2 for an Environment Template's Services: no
+/// self-dependency, no duplicate `service:` entry (`validation.md`
+/// "Dependencies, environment template").
+#[test]
+fn env_template_service_dependencies_reject_self_and_duplicates() {
+    let svc = |name: &str, deps: &str| {
+        format!(
+            "  - name: {name}\n    ports: [{{ name: main }}]\n    dependencies: {deps}\n    \
+             script: {{ actions: {{ onRun: {{ command: x }} }} }}\n"
+        )
+    };
+    expect_env_err(
+        &format!(
+            "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nservices:\n{}",
+            svc("A", "[{ service: A }]")
+        ),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for EnvironmentTemplate\n",
+            "services[0] -> dependencies[0]:\n\tcannot depend on itself.",
+        ],
+    );
+    expect_env_err(
+        &format!(
+            "specificationVersion: \"environment-2023-09\"\nextensions: [SERVICE, EXPR]\nservices:\n{}{}",
+            svc("A", "[{ service: B }]"),
+            svc("B", "[{ service: A }, { service: A }]")
+        )
+        .replace("    dependencies: [{ service: B }]\n", ""),
+        SERVICE_EXTS,
+        &[
+            "1 validation error for EnvironmentTemplate\n",
+            "services[1] -> dependencies[1]:\n\tduplicate dependency 'service: A'.",
+        ],
+    );
+}
+
 #[test]
 fn env_template_services_reuse_the_service_validator() {
     // The §9 structural checks apply to `services` exactly as to
