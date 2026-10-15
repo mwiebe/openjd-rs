@@ -1,0 +1,46 @@
+# A relaunch that requires a new Session (exit before READY) is in its slow
+# onEnter when the scope's last Task completes. Scope completion cancels the
+# relaunch before it decides anything: it returns Stopped, not FAILED (the
+# onEnter cancelation is not a start failure of a scope that has completed).
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "RelaunchOnEnterCutShort"
+parameterDefinitions:
+  - name: Marker
+    type: STRING
+services:
+  - name: S
+    ports:
+      - name: main
+    healthCheck:
+      type: STDOUT
+    restartPolicy:
+      maxAttempts: 2
+      completedTasks: KEEP
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nif os.path.exists(m):\n    time.sleep(5)"]
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nif not os.path.exists(m + '.first'):\n    open(m + '.first', 'w').close(); print('openjd_service_ready: up', flush=True); time.sleep(0.5); raise SystemExit(1)\nif not os.path.exists(m):\n    open(m, 'w').close(); raise SystemExit(2)\ntime.sleep(600)"]
+          cancelation:
+            mode: TERMINATE
+steps:
+  - name: A
+    dependencies:
+      - service: "S"
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(1.5); print('TASK_A_DONE')"]
+  - name: B
+    dependencies:
+      - dependsOn: A
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('STEP_B_RAN')"]

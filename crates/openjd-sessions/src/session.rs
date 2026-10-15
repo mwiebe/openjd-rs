@@ -797,16 +797,22 @@ impl Session {
             }
         }
 
-        let working_dir = crate::tempdir::TempDir::new(
+        let mut working_dir = crate::tempdir::TempDir::new(
             Some(&root_dir),
             Some(&config.session_id),
             config.user.as_deref(),
         )?;
-        let files_dir = crate::tempdir::TempDir::new(
+        let mut files_dir = crate::tempdir::TempDir::new(
             Some(working_dir.path()),
             Some("embedded_files"),
             config.user.as_deref(),
         )?;
+        if config.retain_working_dir {
+            // Retained directories survive the Session, whether or not
+            // `cleanup` is called: a dropped `TempDir` would remove them.
+            working_dir.keep();
+            files_dir.keep();
+        }
 
         let working_directory = working_dir.path().to_path_buf();
         let files_directory = files_dir.path().to_path_buf();

@@ -552,12 +552,18 @@ No Task runs until the gate reports every active Service READY. A Service scoped
 Steps is activated and started when the first Step of its scope is reached in
 dependency order (the existing topological loop), before the Task Session enters the
 Step's Environments. The order within a Step is therefore: the Step's Services start →
-step Environments entered → Tasks → step Environments exited → Services whose scope is
-now complete stopped. The RFC does not couple the Step's Environment exits (which
-belong to the Task Session) to the Services' stop; this runner exits the Environments
-first so that a TASK-scoped Environment's `onExit` can still reach the Service,
-mirroring the Job level (Job Environments exit, then the Job-wide Services stop) and the
-RFC's execution-order example. A Service whose scope spans several Steps keeps its
+step Environments entered → Tasks → scope completion signaled → step Environments
+exited → Services whose scope is now complete stopped. The RFC does not couple the
+Step's Environment exits (which belong to the Task Session) to the Services' stop; this
+runner exits the Environments first so that a TASK-scoped Environment's `onExit` can
+still reach the Service, mirroring the Job level (Job Environments exit, then the
+Job-wide Services stop) and the RFC's execution-order example. The scope is
+nonetheless *complete* the moment its last Task returns: the manager cancels the stop
+token of every Service whose scope has no Step left (`complete_scopes`; at the end of
+the run `complete_all_scopes`) before the Environments exit, so a relaunch still in
+flight during those exits is cut short rather than deciding FAILED — "an exit observed
+after the scope has completed is not a failure" — and the Session teardown follows once
+the Environments have exited. A Service whose scope spans several Steps keeps its
 Session — and its state — across them (the RFC's coordinator example).
 
 ### Task Sessions see the endpoints
@@ -588,9 +594,16 @@ an instance failure: its `onRun` exits other than by cancelation, or its health 
 declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after READY —
 RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
 and has already canceled `onRun` with its cancelation method, the cancel "Failure and
-restart" step 2 describes). Between Tasks, the gate polls the same health and exit channels. An exit
-observed after the scope completed is never seen (nothing watches after the last
-Task), so it is not a failure — the RFC's stop race.
+restart" step 2 describes). A relaunch that becomes READY *while the Task runs* is
+watched the same way: the watcher also wakes when a background start or relaunch
+finishes and, when it finished READY, holds the instance as READY at once rather than
+leaving it to the next gate (`promote_finished_relaunches`), so a second exit during
+the same Task is detected; a relaunch that began a new Session is remembered
+(`pending_replaced`) for the next gate to restart its dependents exactly as if the gate
+had awaited it. Between Tasks, the gate polls the same health and exit channels. An
+exit observed after the scope completed is not a failure — the RFC's stop race: the
+scope's completion cancels the Service's stop token when its last Task returns (see
+"Task gating"), and nothing watches a READY instance after that.
 
 On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged as
 `is UNHEALTHY: <reason>` first) and the restart decision runs on a background task
@@ -698,7 +711,13 @@ logged). A background start or relaunch in flight is cut short through the Servi
 stop token (the Service's running action is canceled through its cancel handle) and
 its Session ended the same way; the stopped Service returns to idle, with a fresh
 token, so a later `RERUN` can start it again. A Service whose Session never started is
-skipped; a FAILED Service's Session was ended when it failed.
+skipped; a FAILED Service's Session was ended when it failed. A relaunch that had
+already decided FAILED when the stop reaches it (its attempts ran out during the
+scope's last Task, before the scope's completion canceled its token) keeps that
+verdict: `stop_set` returns the failure and the scope fails. An internal error while
+stopping one Service (its background task panicked) does not stop the stopping of the
+others: every Service in the set is stopped, in order, and the first such error is
+returned afterwards.
 
 An interruption (Ctrl-C) cancels the running Task through the shared cancellation
 token as before, and the Services through the manager: a Service Session does **not**
@@ -730,9 +749,12 @@ heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>
 <what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `onRun (launch N) canceled;
 exit code: N/A` or `… exited; exit code: <n>` (how the failed instance's `onRun` ended:
 `canceled` when the runtime canceled it after UNHEALTHY or a readiness timeout, `exited` when
-it exited on its own; logged for every instance failure once the exit is collected, after
-the `is UNREADY` line and before the relaunch or FAILED line, so the old instance is seen
-gone before the new one starts — RFC 0009 "Failure and restart" step 2), `Relaunching Service
+it exited on its own; logged once the exit is collected and always before the relaunch
+or FAILED line, so the old instance is seen gone before the new one starts — RFC 0009
+"Failure and restart" step 2. For a failure detected while the instance was READY it
+follows the `is UNREADY` line; for one the start task itself observes — a readiness
+timeout, or UNHEALTHY before READY was seen — it precedes it. An exit *before* READY
+has no separate line: its `is UNREADY` reason already carries the exit code), `Relaunching Service
 '<name>' onRun in its Service Session (relaunch N of M): <reason>` / `… in a new
 Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
 (restartPolicy.maxAttempts)`, and `stopped` (or `stopped; working directory preserved

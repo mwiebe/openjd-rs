@@ -455,6 +455,11 @@ struct Managed {
     /// the Service is started again from idle.
     stop: CancellationToken,
     state: State,
+    /// Set when a relaunch that began a new Service Session (new endpoints)
+    /// was promoted to `Ready` by the in-Task watcher before any gate saw
+    /// it; the next gate consumes it exactly as it would the `replaced`
+    /// flag of a `Ready` outcome it awaited itself.
+    pending_replaced: bool,
 }
 
 impl Managed {
@@ -484,6 +489,26 @@ struct Shared {
     config: ServiceRunConfig,
     ports: Mutex<PortAllocator>,
     session_counter: AtomicU32,
+    /// Signaled (one permit, `notify_one`) each time a background start or
+    /// relaunch finishes, so the in-Task watcher can re-scan the `Busy`
+    /// Services and promote one that became READY.
+    settled: tokio::sync::Notify,
+}
+
+impl Shared {
+    /// Run a Service's background start or relaunch, signaling `settled`
+    /// when it finishes.
+    fn spawn_background(
+        self: &Arc<Self>,
+        fut: impl Future<Output = (Instance, Outcome)> + Send + 'static,
+    ) -> JoinHandle<(Instance, Outcome)> {
+        let shared = Arc::clone(self);
+        tokio::spawn(async move {
+            let out = fut.await;
+            shared.settled.notify_one();
+            out
+        })
+    }
 }
 
 /// An instance failure observed on a READY Service (RFC 0009 "Failure and
@@ -543,6 +568,7 @@ impl ServiceManager {
                 config,
                 ports: Mutex::new(PortAllocator::default()),
                 session_counter: AtomicU32::new(0),
+                settled: tokio::sync::Notify::new(),
             }),
             services: Vec::new(),
         }
@@ -590,6 +616,7 @@ impl ServiceManager {
                 active: false,
                 stop: self.shared.config.cancel_token.child_token(),
                 state: State::Idle,
+                pending_replaced: false,
             });
         }
     }
@@ -791,7 +818,7 @@ impl ServiceManager {
                     outcome.rerun = Some(merge_scopes(outcome.rerun.take(), &scope));
                 }
             }
-            if !self.any_busy() && !self.any_startable() {
+            if !self.any_busy() && !self.any_startable() && !self.any_pending_replaced() {
                 break;
             }
             let settled = self.await_busy(&mut outcome).await?;
@@ -837,6 +864,37 @@ impl ServiceManager {
         self.stop_set(&done).await
     }
 
+    /// Signal scope completion to every active Service whose scope contains
+    /// none of `remaining` (constraint 6): cancel its stop token so that a
+    /// relaunch in flight returns `Stopped` rather than deciding FAILED.
+    /// Called the moment the scope's last Task returns, before the Task
+    /// Session exits its Environments, so that an exit or readiness timeout
+    /// observed during those exits is not a failure ("an exit observed after
+    /// the scope has completed is not a failure"). The Session teardown
+    /// itself follows in [`stop_completed_scopes`](Self::stop_completed_scopes).
+    pub(super) fn complete_scopes(&mut self, remaining: &BTreeSet<String>) {
+        for m in self
+            .services
+            .iter()
+            .filter(|m| m.active && !m.is_job_wide())
+        {
+            if m.scope
+                .step_names()
+                .is_some_and(|steps| steps.is_disjoint(remaining))
+            {
+                m.stop.cancel();
+            }
+        }
+    }
+
+    /// Signal completion of every scope, as [`complete_scopes`](Self::complete_scopes)
+    /// does for one Step's: the run's last Task has returned.
+    pub(super) fn complete_all_scopes(&mut self) {
+        for m in self.services.iter().filter(|m| m.active) {
+            m.stop.cancel();
+        }
+    }
+
     /// Stop everything, in dependency order (constraint 4), after the Task
     /// Session has exited the Job's Environments. Returns the FAILED
     /// verdicts decided during the run's last Task that no gate collected,
@@ -868,18 +926,28 @@ impl ServiceManager {
         for m in self.services.iter().filter(|m| keys.contains(&m.key)) {
             m.stop.cancel();
         }
+        // A background task that panicked is an internal error, but every
+        // other Service is still stopped (in order) before it is reported.
+        let mut first_error = None;
         for idx in self.stop_order(keys) {
             let m = &mut self.services[idx];
-            if let Some(reason) = stop_managed(m, &self.shared).await? {
-                failures.push(ServiceFailure {
+            match stop_managed(m, &self.shared).await {
+                Ok(Some(reason)) => failures.push(ServiceFailure {
                     name: m.key.name.clone(),
                     document: m.key.document.clone(),
                     scope: m.scope.clone(),
                     reason,
-                });
+                }),
+                Ok(None) => {}
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                }
             }
         }
-        Ok(failures)
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(failures),
+        }
     }
 
     /// The order in which to stop the Services in `keys` (constraint 4):
@@ -929,8 +997,71 @@ impl ServiceManager {
     /// Resolve when a READY Service suffers an instance failure while a Task
     /// runs: its health check declares it UNHEALTHY, or its `onRun` exits
     /// other than by cancelation. Pending forever when no Service is READY.
-    pub(super) async fn wait_instance_failure(&self) -> Detected {
-        let mut watchers: Vec<Pin<Box<dyn Future<Output = Detected> + Send>>> = Vec::new();
+    pub(super) async fn wait_instance_failure(&mut self) -> Detected {
+        loop {
+            // A relaunch that became READY while the Task ran is still
+            // `Busy` (its READY outcome waits in the JoinHandle for a gate
+            // that will not run until the Task ends). Promote it so that
+            // its exit is watched like any READY instance's.
+            self.promote_finished_relaunches().await;
+            if let Some(d) = self.wait_ready_instance_failure().await {
+                return d;
+            }
+        }
+    }
+
+    /// Take every `Busy` background task that has finished with
+    /// `Outcome::Ready` and hold its instance as `State::Ready`, so that it
+    /// is watched. `Failed` and `Stopped` outcomes are left in place for the
+    /// next gate (or scope end) to collect.
+    async fn promote_finished_relaunches(&mut self) {
+        for m in self.services.iter_mut() {
+            let finished_ready = matches!(&m.state, State::Busy(h) if h.is_finished());
+            if !finished_ready {
+                continue;
+            }
+            let State::Busy(handle) = std::mem::replace(&mut m.state, State::Failed) else {
+                unreachable!("checked above");
+            };
+            // `handle` has finished, so this await returns at once; a
+            // panic in the task is reported by the gate that next awaits it,
+            // which cannot happen here — re-wrap it so nothing is lost.
+            match handle.await {
+                Ok((inst, Outcome::Ready { replaced })) => {
+                    // A new-Session relaunch changed the endpoints; the
+                    // gate's dependents check runs next time it is reached.
+                    m.pending_replaced |= replaced;
+                    m.state = State::Ready(Box::new(inst));
+                }
+                Ok((inst, outcome)) => {
+                    // Re-spawn a trivial task carrying the finished outcome,
+                    // so the gate's `await_busy` sees exactly what it would
+                    // have.
+                    m.state = State::Busy(tokio::spawn(async move { (inst, outcome) }));
+                }
+                Err(e) => {
+                    eprintln!("ERROR: {}: background task failed: {e}", m.key);
+                    m.state = State::Failed;
+                }
+            }
+        }
+    }
+
+    /// Wait for a READY instance to exit or become UNHEALTHY, or for a
+    /// background start or relaunch to finish (returning `None`, so the
+    /// caller re-scans and re-arms).
+    async fn wait_ready_instance_failure(&self) -> Option<Detected> {
+        let mut watchers: Vec<Pin<Box<dyn Future<Output = Option<Detected>> + Send>>> = Vec::new();
+        if self.any_busy() {
+            // `notify_one` stores a permit when nothing waits, so a finish
+            // between the caller's scan and this await is not missed; a
+            // stale permit costs one extra scan.
+            let shared = Arc::clone(&self.shared);
+            watchers.push(Box::pin(async move {
+                shared.settled.notified().await;
+                None
+            }));
+        }
         for (idx, m) in self.services.iter().enumerate() {
             let State::Ready(inst) = &m.state else {
                 continue;
@@ -948,29 +1079,29 @@ impl ServiceManager {
                     // UNHEALTHY is reported as soon as the health check
                     // decides it, before the canceled onRun has exited.
                     if let ServiceHealth::Unhealthy(u) = health_rx.borrow_and_update().clone() {
-                        return Detected {
+                        return Some(Detected {
                             idx,
                             failure: InstanceFailure::Unhealthy(u),
-                        };
+                        });
                     }
                     let current = exit_rx.borrow_and_update().clone();
                     match current {
                         Some(exit) if exit.canceled => std::future::pending::<()>().await,
                         Some(exit) => {
-                            return Detected {
+                            return Some(Detected {
                                 idx,
                                 failure: InstanceFailure::from_exit(exit),
-                            }
+                            })
                         }
                         None => {}
                     }
                     tokio::select! {
                         r = exit_rx.changed() => {
                             if r.is_err() {
-                                return Detected {
+                                return Some(Detected {
                                     idx,
                                     failure: InstanceFailure::Exit(driver_lost_exit()),
-                                };
+                                });
                             }
                         }
                         r = health_rx.changed() => {
@@ -979,10 +1110,10 @@ impl ServiceManager {
                                 // reports what happened.
                                 health_rx.mark_unchanged();
                                 if exit_rx.changed().await.is_err() {
-                                    return Detected {
+                                    return Some(Detected {
                                         idx,
                                         failure: InstanceFailure::Exit(driver_lost_exit()),
-                                    };
+                                    });
                                 }
                             }
                         }
@@ -1028,7 +1159,7 @@ impl ServiceManager {
                 kind.describe(),
                 describe_policy(policy)
             ));
-            m.state = State::Busy(tokio::spawn(start_or_recover(
+            m.state = State::Busy(self.shared.spawn_background(start_or_recover(
                 *inst,
                 Some(kind),
                 self.shared.clone(),
@@ -1072,6 +1203,12 @@ impl ServiceManager {
         out
     }
 
+    /// A READY instance the in-Task watcher promoted from a new-Session
+    /// relaunch, whose replaced endpoints no gate has yet acted on.
+    fn any_pending_replaced(&self) -> bool {
+        self.services.iter().any(|m| m.pending_replaced)
+    }
+
     fn any_busy(&self) -> bool {
         self.services
             .iter()
@@ -1091,6 +1228,16 @@ impl ServiceManager {
     async fn await_busy(&mut self, outcome: &mut GateOutcome) -> Result<Vec<ServiceKey>, RunError> {
         let mut replaced = Vec::new();
         for m in self.services.iter_mut() {
+            // A relaunch the in-Task watcher promoted to READY, whose new
+            // Session this gate has not yet accounted for.
+            if std::mem::take(&mut m.pending_replaced) && matches!(m.state, State::Ready(_)) {
+                replaced.push(m.key.clone());
+                if m.is_job_wide() {
+                    outcome.job_wide_endpoints_changed = true;
+                } else {
+                    outcome.step_endpoints_changed = true;
+                }
+            }
             if !matches!(m.state, State::Busy(_)) {
                 continue;
             }
@@ -1259,7 +1406,7 @@ impl ServiceManager {
                 }
                 let mut inst = m.new_instance(retain);
                 inst.in_scope = in_scope;
-                m.state = State::Busy(tokio::spawn(start_or_recover(
+                m.state = State::Busy(self.shared.spawn_background(start_or_recover(
                     inst,
                     None,
                     self.shared.clone(),

@@ -2567,10 +2567,17 @@ steps:
             "",
         ]);
         assert_eq!(code, 0, "stderr: {stderr}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Working directory preserved at:"))
+            .unwrap_or_else(|| panic!("stdout: {stdout}"));
+        // The directory must actually survive the Session's teardown.
+        let path = line.rsplit("preserved at: ").next().unwrap().trim();
         assert!(
-            stdout.contains("Working directory preserved at:"),
-            "stdout: {stdout}"
+            std::path::Path::new(path).is_dir(),
+            "{path} not preserved\n{stdout}"
         );
+        let _ = std::fs::remove_dir_all(path);
     }
 
     #[test]
@@ -5356,6 +5363,11 @@ mod services {
                 .contains("Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)"),
             "{stdout}"
         );
+        // An exit on its own is logged as `exited`, with its code.
+        assert!(
+            stdout.contains("Service 'S' onRun (launch 1) exited; exit code: 1"),
+            "{stdout}"
+        );
         assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
         assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
         assert!(!stdout.contains("is FAILED"), "{stdout}");
@@ -5451,6 +5463,115 @@ mod services {
             "{stdout}"
         );
         assert!(!stdout.contains("is FAILED"), "{stdout}");
+    }
+
+    /// A relaunch that becomes READY during a Task is watched like any READY
+    /// instance: when it exits during the same Task with no attempts left,
+    /// the Service is FAILED, Step B does not run, and the Job fails.
+    #[test]
+    fn test_relaunched_instance_exit_during_task_fails_the_scope() {
+        let (code, stdout, stderr) =
+            run_service_template("service_relaunch_exits_during_task.yaml", &[]);
+        assert_eq!(stdout.matches("SVC_EXITING_5").count(), 2, "{stdout}");
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step A) is FAILED: onRun exited while the scope still had \
+                 work (exit code: 5); 1 of 1 relaunch(es) used (restartPolicy.maxAttempts)"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    }
+
+    /// Scope completion is signaled when the last Task returns, before the
+    /// Step Environments exit: a relaunch that exits during a slow Step
+    /// Environment onExit is not a failure. Step B runs and the Job succeeds.
+    #[test]
+    fn test_relaunch_exit_after_last_task_during_env_exit_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_fails_during_env_exit.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(stdout.contains("TASK_A_DONE"), "{stdout}");
+        assert!(stdout.contains("ENV_EXIT_END"), "{stdout}");
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+    }
+
+    /// A new-Session relaunch still in its onEnter when the scope completes
+    /// is cut short and returns Stopped, not a start failure.
+    #[test]
+    fn test_relaunch_on_enter_cut_short_at_scope_end_is_not_a_failure() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let start = std::time::Instant::now();
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_on_enter_cut_short_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'S' in a new Service Session (relaunch 2 of 2)"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("STEP_B_RAN"), "{stdout}");
+        assert!(!stdout.contains("is FAILED"), "{stdout}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "waited out the slow onEnter: {:?}\n{stdout}",
+            start.elapsed()
+        );
+    }
+
+    /// Two Services that do not depend on one another are stopped in reverse
+    /// registration order (the `stop_order` tie-break).
+    #[test]
+    fn test_independent_services_stop_in_reverse_registration_order() {
+        let (code, stdout, stderr) =
+            run_service_template("service_stop_order_independent_services.yaml", &[]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            pos(&stdout, "Stopping Service: Second") < pos(&stdout, "Stopping Service: First"),
+            "{stdout}"
+        );
+    }
+
+    /// `--preserve` keeps every Service Session's working directory, and the
+    /// Session is still torn down in full (onExit runs) before the
+    /// `preserved at` line.
+    #[test]
+    fn test_preserve_keeps_the_service_working_directory_after_teardown() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("marker");
+        let (code, stdout, stderr) = run_service_template(
+            "service_relaunch_ready_at_scope_end.yaml",
+            &["-p", &format!("Marker={}", marker.display()), "--preserve"],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(stdout.matches("SVC_ONEXIT").count(), 1, "{stdout}");
+        let line = stdout
+            .lines()
+            .find(|l| l.contains("Service 'S' stopped; working directory preserved at: "))
+            .unwrap_or_else(|| panic!("no preserved-at line:\n{stdout}"));
+        let path = line.rsplit("preserved at: ").next().unwrap().trim();
+        assert!(
+            std::path::Path::new(path).is_dir(),
+            "{path} not preserved\n{stdout}"
+        );
+        assert!(
+            pos(&stdout, "SVC_ONEXIT") < pos(&stdout, "preserved at: "),
+            "{stdout}"
+        );
+        let _ = std::fs::remove_dir_all(path);
     }
 
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY

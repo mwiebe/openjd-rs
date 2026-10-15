@@ -1,0 +1,25 @@
+# "Failure and restart" when a relaunch becomes READY while a Task is running
+# and then exits during the same Task: the runtime must keep watching the
+# relaunched instance. Here the attempts are used up by that second exit, so
+# the Service is FAILED, Step B does not run, and the Job fails.
+specificationVersion: jobtemplate-2023-09
+extensions: [SERVICE, EXPR]
+name: RelaunchDiesMidTask
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(0.4); print('SVC_EXITING_5', flush=True); raise SystemExit(5)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: A
+    dependencies: [{ service: S }]
+    script: { actions: { onRun: { command: python, args: ["-c", "import time; time.sleep(2); print('TASK_A_DONE')"] } } }
+  - name: B
+    dependencies: [{ dependsOn: A }]
+    script: { actions: { onRun: { command: python, args: ["-c", "print('STEP_B_RAN')"] } } }

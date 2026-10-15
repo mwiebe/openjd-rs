@@ -1121,10 +1121,16 @@ impl TempDir {
     pub fn path(&self) -> &Path;
 
     pub fn cleanup(&mut self) -> Result<(), SessionError>;
+
+    /// Keep the directory: neither `cleanup()` nor drop removes it.
+    /// `Session::with_config` calls this on both of its directories when
+    /// `retain_working_dir` is set, so a retained working directory
+    /// survives the Session whether or not `cleanup()` is called.
+    pub fn keep(&mut self);
 }
 
 impl AsRef<Path> for TempDir { /* ... */ }
-impl Drop for TempDir { /* best-effort cleanup */ }
+impl Drop for TempDir { /* best-effort cleanup unless kept */ }
 impl std::fmt::Debug for TempDir { /* ... */ }
 ```
 

@@ -496,8 +496,11 @@ to prevent leaked temp directories during development and debugging.
 ### retain_working_dir
 
 When `SessionConfig.retain_working_dir` is `true`, both `cleanup()` and `Drop` skip
-directory removal. The session still transitions to `Ended` state. This is used for
-debugging — the operator can inspect the working directory contents after the session.
+directory removal, and the `TempDir`s the Session owns for its working and embedded
+files directories are marked kept (`TempDir::keep`) when they are created, so their own
+`Drop` does not remove them either. The session still transitions to `Ended` state. This
+is used for debugging — the operator can inspect the working directory contents after
+the session.
 
 ## drive_action
 

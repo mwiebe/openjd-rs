@@ -246,6 +246,12 @@ impl TempDir {
             source: e,
         })
     }
+
+    /// Keep the directory: it will not be removed on drop. For a Session
+    /// whose working directory the caller asked to retain.
+    pub fn keep(&mut self) {
+        self.cleaned_up = true;
+    }
 }
 
 impl Drop for TempDir {

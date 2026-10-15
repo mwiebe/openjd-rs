@@ -569,6 +569,11 @@ async fn run_workload(
                 }
             }
         }
+        if rerun.is_none() || ctx.is_stopping() {
+            // The run's last Task has returned: every remaining scope is
+            // complete (constraint 6), before the Job Environments exit.
+            ctx.services.complete_all_scopes();
+        }
         ctx.exit_environments_down_to(0).await;
         let Some(scope) = rerun.filter(|_| !ctx.is_stopping()) else {
             return Ok(());
@@ -674,6 +679,14 @@ async fn execute_step(
     } else {
         execute_step_tasks(ctx, args, step, step_idx, selection).await
     };
+    // Constraint 6: the scope of a Service with no Step left to run is
+    // complete the moment this Step's last Task returns. Signal it now, before
+    // the Step Environments exit, so a relaunch still in flight returns
+    // Stopped rather than deciding FAILED during those exits ("an exit
+    // observed after the scope has completed is not a failure").
+    if !matches!(result, Ok(TasksOutcome::Rerun(_))) || ctx.is_stopping() {
+        ctx.services.complete_scopes(remaining);
+    }
     // This unwind happens before propagating task setup/runtime errors.
     ctx.exit_environments_down_to(environment_baseline).await;
     match result? {

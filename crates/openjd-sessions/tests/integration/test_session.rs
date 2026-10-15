@@ -360,6 +360,46 @@ async fn test_session_drop_without_cleanup_warns() {
     });
 }
 
+/// `retain_working_dir: true` keeps the working directory past the
+/// Session's end, whether the Session is cleaned up or merely dropped.
+#[tokio::test]
+async fn test_retain_working_dir_survives_cleanup_and_drop() {
+    let tmp = TempDir::new().unwrap();
+    let config = |id: &str| SessionConfig {
+        limits: Default::default(),
+        session_id: id.into(),
+        job_parameter_values: Default::default(),
+        session_root_directory: Some(tmp.path().to_path_buf()),
+        path_mapping_rules: None,
+        retain_working_dir: true,
+        callback: None,
+        os_env_vars: None,
+        user: None,
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        log_tag: None,
+        sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+    };
+    let cleaned = {
+        let mut session = Session::with_config(config("retain-cleanup")).unwrap();
+        let dir = session.working_directory().to_path_buf();
+        session.cleanup();
+        dir
+    };
+    let dropped = {
+        let session = Session::with_config(config("retain-drop")).unwrap();
+        session.working_directory().to_path_buf()
+    };
+    assert!(
+        cleaned.is_dir(),
+        "{} removed after cleanup()",
+        cleaned.display()
+    );
+    assert!(dropped.is_dir(), "{} removed on drop", dropped.display());
+}
+
 // === TestSessionRunTask_2023_09 ===
 
 #[tokio::test]
