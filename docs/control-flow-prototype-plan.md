@@ -434,14 +434,14 @@ The expr specs need no change unless the warning lands.
     `Allowed` Action; otherwise the helper leaves `openjd_output_var:` lines alone, so `Ignored` lines stay ordinary
     output and `Forbidden` lines reach the parent unchanged and fail there. The root for path resolution is
     `RunCommand.cwd`, which is the Session working directory (`session.rs:2055`, `:2127`).
-  * The helper sub-crate depends only on `serde`, `serde_json`, `nix`, and `windows`
-    (`helper/Cargo.bundled.toml`), so it can't use the model's parser. It gets a minimal recognizer for the `@` form
-    only, which must accept exactly the lines the M3 parser parses as `File` and extract the same name and path:
-    the `openjd_output_var:` prefix, optional spaces or tabs, an `<Identifier>`, `=`, optional spaces or tabs, `@`,
-    and a non-empty path with trailing spaces and tabs removed. Anything else goes to the parent as an ordinary `Out`
-    line for the model parser. A line the helper truncated or had to decode lossily is not resolved; it is forwarded
-    as an `Out` line with its S2 flags, and the parent rejects it. The file operations need new `nix` features (`fs`) and `windows`
-    features (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
+  * The helper sub-crate depends only on `serde`, `serde_json`, `nix`, and `windows` (`helper/Cargo.bundled.toml`), so
+    it can't use the model's parser. It gets a minimal recognizer for the `@` form only, which must accept exactly the
+    lines the M3 parser parses as `File` and extract the same name and path: the `openjd_output_var:` prefix, optional
+    spaces or tabs, an `<Identifier>`, `=`, optional spaces or tabs, `@`, and a non-empty path with trailing spaces
+    and tabs removed. Anything else goes to the parent as an ordinary `Out` line for the model parser. A line the
+    helper truncated or had to decode lossily is not resolved; it is forwarded as an `Out` line with its S2 flags, and
+    the parent rejects it. The file operations need new `nix` features (`fs`) and `windows` features
+    (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
   * For a `@` directive, the helper reads the file as above, up to `max_bytes + 1`, and sends a new
     `Response::OutputFile { line, content | error }` in place of the `Out` line. The parent reads newline-delimited
     JSON with a 128 KiB line cap (`cross_user_helper.rs:23`, checked at `:119`–`:128`), and content up to 1 MiB
@@ -691,7 +691,7 @@ so the numbering stays stable.
 * ~~**A9. `Task.OutputFile` in TEMPLATE-scope action fields.**~~ Resolved: `Task.OutputFile` no longer exists.
 * ~~**A10. The output file's integrity.**~~ Resolved: there is no session-supplied file. For `@` files, §File values
   now requires the opened file to be a regular file inside the Session working directory, checked on the handle, and
-  read with no more access than the job user.
+  read with no more access than the Action's user.
 * **A11. Step `let` forces `PENDING_INPUTS`.** Step `let` is a materialization expression, so a Step that reads
   `Steps.P.*` only in a step `let` that only its script uses becomes pending. Moving `FramesToVideo`'s `FrameRate`
   into a step `let` is enough. Ordering is unaffected, but the reported state and `openjd summary`'s Task count
