@@ -1,0 +1,37 @@
+# A Step-scoped Service whose first launch exits before READY begins a new
+# Service Session before any Task runs. Its endpoints changed, but nothing in
+# the Task Session held them: the Job Environment (which cannot list a
+# Step-scoped Service) must not be exited and re-entered, and no
+# `Re-entering` line is logged.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "FirstStartNewSession"
+parameterDefinitions:
+  - name: Trace
+    type: STRING
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 10 }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nt = r'{{ Param.Trace }}'\nif 'S1' not in open(t).read():\n    open(t, 'a').write('S1\\n'); raise SystemExit(3)\nprint('openjd_service_ready: up', flush=True)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+jobEnvironments:
+  - name: JE
+    runScope: [TASK]
+    script:
+      actions:
+        onEnter: { command: python, args: ["-c", "open(r'{{ Param.Trace }}', 'a').write('JE enter\\n')"] }
+        onExit: { command: python, args: ["-c", "open(r'{{ Param.Trace }}', 'a').write('JE exit\\n')"] }
+steps:
+  - name: A
+    dependencies: [{ service: "S" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "open(r'{{ Param.Trace }}', 'a').write('A ran {{ Service.S.main.port }}\\n')"]

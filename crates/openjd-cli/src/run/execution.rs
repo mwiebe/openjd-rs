@@ -503,10 +503,9 @@ async fn run_workload(
         })
         .cloned()
         .collect();
-    if let Err(e) = service_ports::check_requested_ports(&may_start) {
+    if let Err(e) = ctx.services.reserve_requested_ports(&may_start) {
         return Err(e.into());
     }
-    ctx.services.reserve_requested_ports(&may_start);
     let job_wide_count = ctx.services.job_wide_count();
     if job_runs_tasks {
         ctx.services.activate_job_wide();
@@ -662,6 +661,12 @@ async fn execute_step(
     // Environments. A Step re-running its Tasks after a RERUN finds its
     // Services still active, or starts them again if their scope had
     // completed.
+    // The Step's baseline is fixed before this gate: a Step-scoped Service
+    // whose first start already needs a new Session (`replaced: true`)
+    // refreshes nothing below it — the Job Environments never held its
+    // endpoints, and no Step Environment is entered yet.
+    let environment_baseline = ctx.entered_envs.len();
+    ctx.step_env_baseline = environment_baseline;
     if runs_tasks && !ctx.is_stopping() {
         ctx.services
             .activate_for_step(&step.name, completed, selected)?;
@@ -677,8 +682,6 @@ async fn execute_step(
             );
         }
     }
-    let environment_baseline = ctx.entered_envs.len();
-    ctx.step_env_baseline = environment_baseline;
     for env in step.step_environments.iter().flatten() {
         if ctx.is_stopping() {
             break;

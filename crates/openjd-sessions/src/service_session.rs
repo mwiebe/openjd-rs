@@ -949,9 +949,13 @@ impl ServiceSession {
     /// the health check's cross-user helper, is returned without changing
     /// the state.
     pub async fn launch(&mut self) -> Result<(), SessionError> {
-        self.require_state(&[ServiceSessionState::Entered, ServiceSessionState::Exited])?;
-        // Reclaim the previous instance's runner (and cross-user helper).
+        // A caller may relaunch straight after observing the exit on
+        // `exit_watch()`, while the state is still `Running` (nothing has
+        // called `wait_exit`/`end` to settle it). Reclaim that exit here —
+        // moving the state to `Exited` — so `launch` is accepted, as the
+        // public API documents.
         self.reclaim_run().await;
+        self.require_state(&[ServiceSessionState::Entered, ServiceSessionState::Exited])?;
 
         let sid = self.session.session_id().to_string();
         let run = self
@@ -1152,7 +1156,9 @@ impl ServiceSession {
     /// Cancel the running `onRun` with the action's `cancelation` method
     /// (`NOTIFY_THEN_TERMINATE` grace capped at `time_limit`; `Some(0)`
     /// terminates immediately). The resulting exit reports
-    /// `canceled: true`. Returns `false` when no `onRun` is running.
+    /// `canceled: true`. Returns `false` when no `onRun` is running —
+    /// including when it has already exited and that exit is published but
+    /// not yet settled (there is nothing left to cancel).
     pub fn cancel_run(&self, time_limit: Option<Duration>) -> bool {
         if self.state != ServiceSessionState::Running {
             return false;
@@ -1160,6 +1166,11 @@ impl ServiceSession {
         let Some(run) = self.run.as_ref() else {
             return false;
         };
+        // The onRun has already exited (its exit is published, awaiting a
+        // `wait_exit`/`launch`/`end` to settle the state): nothing to cancel.
+        if run.exit_rx.borrow().is_some() {
+            return false;
+        }
         run.cancel_requested.store(true, Ordering::SeqCst);
         session_log!(
             info,
@@ -1298,6 +1309,13 @@ impl ServiceSession {
         let Some(run) = self.run.as_mut() else {
             return;
         };
+        // Only reclaim once the driver has actually reported the exit:
+        // joining while `onRun` is still live would block. `wait_exit`
+        // awaits the exit before calling this; `launch` calls it eagerly, so
+        // guard against the still-running case.
+        if run.exit_rx.borrow().is_none() {
+            return;
+        }
         let Some(join) = run.join.take() else {
             return;
         };

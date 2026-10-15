@@ -163,60 +163,51 @@ impl PortAllocator {
         Ok(ServiceEndpoints::new(service.name.clone(), ports))
     }
 
-    /// Record every requested port of `services`, for its owner, before any
-    /// Service starts, so that a free port handed to another Service never
-    /// takes a number a later-starting Service has pinned (which would read,
-    /// wrongly, as a pin collision). Call after
-    /// [`check_requested_ports`] has passed on the same `services`.
-    pub(super) fn reserve_requested(&mut self, services: &[Service]) {
+    /// Before any Service starts: check the requested ports of `services`
+    /// (the Services the selection may start) for two that pin the same
+    /// `(protocol, port)` number, and reserve every pinned number for its
+    /// owner. The allocation table lives for the whole run, so two Services
+    /// pinning one number can never both start, whatever their scopes; the
+    /// single-host runner knows both pins up front and fails before
+    /// launching either (RFC 0009 "Placement": a scheduler places Services so
+    /// that their requests can be met, or rejects the Job) — the error is the
+    /// one [`allocate`](Self::allocate) would raise for the second of them,
+    /// plus the holder. The reservation means a free port handed to an
+    /// earlier-starting Service never takes a number a later one has pinned
+    /// (which would read, wrongly, as a pin collision). Nothing is reserved
+    /// when the check fails.
+    pub(super) fn reserve_requested(&mut self, services: &[Service]) -> Result<(), String> {
+        let mut requested: BTreeMap<(ServicePortProtocol, u16), (Owner, String)> = BTreeMap::new();
         for service in services {
             let owner: Owner = (service.document.clone(), service.name.clone());
-            for declared in &service.ports {
-                if let Some(port) = declared.port {
-                    self.allocated
-                        .entry((declared.protocol, port))
-                        .or_insert_with(|| owner.clone());
-                }
-            }
-        }
-    }
-}
-
-/// Before any Service starts: the first pair of `services` that request
-/// the same `(protocol, port)` number, as the error [`PortAllocator::allocate`]
-/// would raise for the second of them when it started. The allocation
-/// table lives for the whole run, so two Services pinning one number can
-/// never both start, whatever their scopes; the single-host runner knows
-/// both pins up front and fails before launching either (RFC 0009
-/// "Placement": a scheduler places Services so that their requests can be
-/// met, or rejects the Job). `Ok(())` when no two pins collide.
-pub(super) fn check_requested_ports(services: &[Service]) -> Result<(), String> {
-    let mut requested: BTreeMap<(ServicePortProtocol, u16), String> = BTreeMap::new();
-    for service in services {
-        // An external Service is named with its document, as everywhere.
-        let label = |port_name: &str| {
-            format!(
-                "Service '{}'{} port '{port_name}'",
-                service.name,
-                super::services::origin_suffix(&service.document)
-            )
-        };
-        for declared in &service.ports {
-            let Some(port) = declared.port else {
-                continue;
+            // An external Service is named with its document, as everywhere.
+            let label = |port_name: &str| {
+                format!(
+                    "Service '{}'{} port '{port_name}'",
+                    service.name,
+                    super::services::origin_suffix(&service.document)
+                )
             };
-            let protocol = declared.protocol;
-            if let Some(holder) = requested.get(&(protocol, port)) {
-                return Err(format!(
-                    "{} requests {protocol} port {port}, which is already allocated to another \
-                     Service of this run ({holder})",
-                    label(&declared.name)
-                ));
+            for declared in &service.ports {
+                let Some(port) = declared.port else {
+                    continue;
+                };
+                let protocol = declared.protocol;
+                if let Some((_, holder)) = requested.get(&(protocol, port)) {
+                    return Err(format!(
+                        "{} requests {protocol} port {port}, which is already allocated to \
+                         another Service of this run ({holder})",
+                        label(&declared.name)
+                    ));
+                }
+                requested.insert((protocol, port), (owner.clone(), label(&declared.name)));
             }
-            requested.insert((protocol, port), label(&declared.name));
         }
+        for (key, (owner, _)) in requested {
+            self.allocated.entry(key).or_insert(owner);
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// Bind `127.0.0.1:port` (port 0 = any free port) with a socket of
@@ -413,7 +404,9 @@ mod tests {
     fn reserved_requested_ports_are_skipped_by_free_allocation() {
         let mut alloc = PortAllocator::default();
         let pinned = service("A", &[("main", Some(47555))]);
-        alloc.reserve_requested(std::slice::from_ref(&pinned));
+        alloc
+            .reserve_requested(std::slice::from_ref(&pinned))
+            .unwrap();
         // The "OS" offers the pinned number first, then another.
         let mut offers = vec![47556u16, 47555];
         let mut bind = |_: ServicePortProtocol, port: u16| -> std::io::Result<u16> {
@@ -613,20 +606,23 @@ mod tests {
             service("B", &[("main", Some(47201)), ("free", None)]),
             service_with_protocols("C", &[("u", Some(47200), ServicePortProtocol::Udp)]),
         ];
-        assert_eq!(check_requested_ports(&ok), Ok(()));
+        assert_eq!(PortAllocator::default().reserve_requested(&ok), Ok(()));
         // The same TCP number twice: the second Service is named, as the
         // allocator would name it when it started, plus the holder.
         let clash = [
             service("A", &[("main", Some(47200))]),
             service("B", &[("api", Some(47200))]),
         ];
+        let mut alloc = PortAllocator::default();
         assert_eq!(
-            check_requested_ports(&clash),
+            alloc.reserve_requested(&clash),
             Err(
                 "Service 'B' port 'api' requests TCP port 47200, which is already allocated to \
                  another Service of this run (Service 'A' port 'main')"
                     .to_string()
             )
         );
+        // Nothing was reserved by the failed check.
+        assert!(alloc.allocated.is_empty());
     }
 }

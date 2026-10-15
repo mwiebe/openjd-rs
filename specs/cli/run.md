@@ -683,7 +683,7 @@ local runner either fails the run (no further Task runs, exit code 1).
 that began a new Service Session changed the Service's endpoints, so every Service
 that lists it, directly or transitively, holds endpoint values that are no longer
 valid. At the next gate (`restart_dependents`) the runner stops each such dependent
-that has a Session — READY, or still starting — in the order of constraint 4 among
+that has a READY Session, in the order of constraint 4 among
 themselves (dependents before the Services they list, `stop_order`), logging `Service 'Front'
 (scope: Step Work) is stopping: Service 'Back' began a new Service Session
 (completedTasks: KEEP; no relaunch attempt consumed)`, ends its Session, and leaves it
@@ -854,16 +854,17 @@ becomes `Service '<name>' (scope: <scope>) failed: <reason>`), and as `failed_se
 `Session ended with errors.` The exit code is 1.
 
 **Before any Service starts**, the Services the selection may start are checked for two
-that pin the same `(protocol, port)` number (`service_ports::check_requested_ports`):
+that pin the same `(protocol, port)` number (`PortAllocator::reserve_requested`, through
+`ServiceManager::reserve_requested_ports`):
 template validation accepts the template (the two could be placed on different hosts),
 but the single-host runner cannot honor both and fails the run then — `Service 'B' port
 'p' requests TCP port 47200, which is already allocated to another Service of this run
 (Service 'A' port 'p')` — rather than after A is READY. An external Service is named
 with its document on both sides of that line (`Service 'Cache' (from queue.yaml) port
-'main'`), since two documents may each declare a `Cache`. Once the check passes, every
-pinned number is reserved for its owner (`PortAllocator::reserve_requested`) before any
-Service starts, so a free port handed to an earlier-starting Service never takes a
-number a later one has pinned.
+'main'`), since two documents may each declare a `Cache`. The same call reserves every
+pinned number for its owner before any Service starts (nothing when the check fails), so a
+free port handed to an earlier-starting Service never takes a number a later one has
+pinned.
 
 **`--step` without `--run-dependencies`**, when the selected Step's Service lists a Step
 that is not being run: the Service is started as if that Step had completed, as the

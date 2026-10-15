@@ -640,14 +640,14 @@ impl ServiceManager {
             .collect()
     }
 
-    /// Reserve the requested ports of `services` for their owners before any
+    /// Check and reserve the requested ports of `services` before any
     /// Service starts ([`PortAllocator::reserve_requested`]).
-    pub(super) fn reserve_requested_ports(&self, services: &[Service]) {
+    pub(super) fn reserve_requested_ports(&self, services: &[Service]) -> Result<(), String> {
         self.shared
             .ports
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .reserve_requested(services);
+            .reserve_requested(services)
     }
 
     /// `true` when any Service is registered.
@@ -1335,7 +1335,10 @@ impl ServiceManager {
                 if replaced.contains(&m.key) || stale.contains_key(&m.key) {
                     continue;
                 }
-                if !matches!(m.state, State::Ready(_) | State::Busy(_)) {
+                // A dependent that has a Session is READY here: both callers
+                // run `restart_dependents` straight after `await_busy`, which
+                // has drained every `Busy`.
+                if !matches!(m.state, State::Ready(_)) {
                     continue;
                 }
                 let cause = m
@@ -1371,13 +1374,11 @@ impl ServiceManager {
                 outcome.rerun = Some(merge_scopes(outcome.rerun.take(), &m.scope));
             }
             m.stop.cancel();
-            match std::mem::replace(&mut m.state, State::Idle) {
-                State::Busy(handle) => match handle.await {
-                    Ok((mut inst, _)) => end_instance(&mut inst).await,
-                    Err(e) => eprintln!("ERROR: {}: background task failed: {e}", m.key),
-                },
-                State::Ready(mut inst) => end_instance(&mut inst).await,
-                State::Idle | State::Failed => {}
+            // READY by the filter above; its Session is ended and the
+            // Service returns to idle, to be started again once `cause` is
+            // READY (`start_pending`).
+            if let State::Ready(mut inst) = std::mem::replace(&mut m.state, State::Idle) {
+                end_instance(&mut inst).await;
             }
             m.stop = shared.config.cancel_token.child_token();
             m.restart_after = Some(cause.clone());

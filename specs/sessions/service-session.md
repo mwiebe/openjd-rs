@@ -181,8 +181,8 @@ returns it; `end()` is still required.
    `stepEnvironments` are never configured here). For each configured
    Environment in order: if `!env.runs_in(RunScope::Service)` — its explicit
    `runScope` excludes `SERVICE`, or it is absent and job creation
-   materialized the `[TASK]` default of an Environment that references
-   `Service.*` — log `Skipping Environment '<name>': its runScope does not
+   materialized the `[TASK]` default of an Environment that lists a Service
+   in its `dependencies` — log `Skipping Environment '<name>': its runScope does not
    include SERVICE` through `logging::log_session_note_tagged` (a tagged
    `BANNER` line under the Session's `log_tag`, so a runner that prints the
    tagged banners shows it; `PROCESS_CONTROL` without a tag) and continue;

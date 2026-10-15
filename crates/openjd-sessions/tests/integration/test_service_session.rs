@@ -741,6 +741,46 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     assert_eq!(statuses.last().unwrap().state, ActionState::Failed);
 }
 
+/// After `onRun` exits but before the caller settles the state (the exit is
+/// published on `exit_watch` while the state is still RUNNING),
+/// `cancel_run` reports nothing to cancel and `launch` observes the exit and
+/// relaunches — the contract public-api.md states ("relaunch with `launch()`
+/// once exited").
+#[tokio::test]
+async fn launch_after_an_unobserved_exit_relaunches_without_wait_exit() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; exit 3"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: session_config(&root, "svc-test:unobserved"),
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert!(ss.start().await.unwrap().is_ready());
+    // Wait for the exit to be published without calling wait_exit/end.
+    let mut watch = ss.exit_watch().unwrap();
+    watch.changed().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Running);
+    // Nothing to cancel: the onRun has already exited.
+    assert!(!ss.cancel_run(Some(Duration::ZERO)));
+    // launch() reclaims the exit and starts a second instance.
+    ss.launch().await.unwrap();
+    assert_eq!(ss.launch_count(), 2);
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+}
+
 #[tokio::test]
 async fn on_run_command_not_found_is_a_failed_exit() {
     let root = TempDir::new().unwrap();

@@ -6036,6 +6036,39 @@ mod services {
         assert!(!stdout.contains("Starting Service"), "{stdout}");
     }
 
+    /// A Step-scoped Service's new Session at first start (before any Task)
+    /// refreshes no Environment: the Job Environment is entered once and
+    /// exited once, and nothing is re-entered.
+    #[test]
+    fn test_first_start_new_session_does_not_reenter_the_job_environments() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("trace");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_first_start_new_session_no_job_env_reentry.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains("Relaunching Service 'S' in a new Service Session (relaunch 1 of 1)"),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("Re-entering"), "{stdout}");
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let lines: Vec<&str> = trace.lines().collect();
+        assert_eq!(
+            lines.iter().filter(|l| **l == "JE enter").count(),
+            1,
+            "{trace}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| **l == "JE exit").count(),
+            1,
+            "{trace}"
+        );
+        assert!(lines.iter().any(|l| l.starts_with("A ran ")), "{trace}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task
