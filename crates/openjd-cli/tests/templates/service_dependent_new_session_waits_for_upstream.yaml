@@ -1,0 +1,65 @@
+# A dependent that opens a new Service Session on its own failure must still
+# start only after its upstream is READY (constraint 2) and with the
+# upstream's current endpoints. Back and Front both fail during Task 1 (Front
+# lists Back); each needs a new Session (exit before READY) on its first
+# relaunch, then is READY. Front's new Session must be seeded with Back's NEW
+# port — never Back's old one, and never started while Back is UNREADY.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "DependentNewSessionWaits"
+parameterDefinitions:
+  - name: Trace
+    type: STRING
+services:
+  - name: Back
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 2, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["{{ Service.File.Serve }}", "{{ Param.Trace }}", "{{ Service.Back.main.port }}"]
+          cancelation: { mode: TERMINATE }
+      embeddedFiles:
+        - name: Serve
+          type: TEXT
+          data: |
+            import os, sys, time
+            trace, port = sys.argv[1], sys.argv[2]
+            n = open(trace + '.bc').read().count('x') + 1 if os.path.exists(trace + '.bc') else 1
+            open(trace + '.bc', 'a').write('x')
+            open(trace, 'a').write(f'back launch {n} port {port}\n')
+            if n == 2:
+                sys.exit(7)   # exit before READY -> new Session next
+            print('openjd_service_ready: back up', flush=True)
+            if n == 1:
+                # Crash shortly after Task 1 starts, so Front sees it too.
+                while 'task 1 start' not in (open(trace).read() if os.path.exists(trace) else ''):
+                    time.sleep(0.05)
+                time.sleep(0.2)
+                open(trace, 'a').write('back crash\n')
+                sys.exit(1)
+            while True:
+                time.sleep(0.2)
+  - name: Front
+    dependencies: [{ service: "Back" }]
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 2, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nt = r'{{ Param.Trace }}'\nbp = '{{ Service.Back.main.port }}'\nn = open(t + '.fc').read().count('x') + 1 if os.path.exists(t + '.fc') else 1\nopen(t + '.fc', 'a').write('x')\nopen(t, 'a').write(f'front launch {n} backport {bp}\\n')\nif n == 2:\n    raise SystemExit(5)   # exit before READY -> new Session next\nprint('openjd_service_ready: front up', flush=True)\nif n == 1:\n    while 'back crash' not in open(t).read():\n        time.sleep(0.05)\n    open(t, 'a').write('front crash\\n'); raise SystemExit(1)\nwhile True:\n    time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "Front" }, { service: "Back" }]
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; open(r'{{ Param.Trace }}', 'a').write('task {{ Task.Param.N }} start\\n'); time.sleep(2.5 if {{ Task.Param.N }} == 1 else 0.1); open(r'{{ Param.Trace }}', 'a').write('task {{ Task.Param.N }} done\\n')"]

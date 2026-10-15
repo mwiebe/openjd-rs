@@ -408,6 +408,11 @@ enum Outcome {
     /// The Service is stopping; the Service's Session is returned for
     /// `end()`.
     Stopped,
+    /// A new-Session relaunch of a Service that lists other Services: its
+    /// old Session has ended and `relaunches` attempts are consumed. The
+    /// gate returns it to idle and `start_pending` restarts it once its
+    /// dependencies are READY (constraint 2), with their current endpoints.
+    Regate { relaunches: u64 },
 }
 
 type Background = JoinHandle<(Instance, Outcome)>;
@@ -461,6 +466,12 @@ struct Managed {
     /// `Ready` outcome it awaited itself — also when the instance has
     /// failed again by then and the gate awaits a later relaunch of it.
     pending_replaced: bool,
+    /// The relaunch count to carry into the next Session when a Service that
+    /// lists other Services was sent back to the gate for a new-Session
+    /// relaunch (`Outcome::Regate`): the gate restarts it from idle once its
+    /// dependencies are READY (constraint 2), re-seeding its in-scope
+    /// endpoints, instead of relaunching in the background with stale ones.
+    pending_relaunches: u64,
 }
 
 impl Managed {
@@ -476,7 +487,9 @@ impl Managed {
             in_scope: Vec::new(),
             endpoints: None,
             session: None,
-            relaunches: 0,
+            // Carried from a `Regate` so a Service sent back to the gate for
+            // a new-Session relaunch keeps its consumed attempts.
+            relaunches: self.pending_relaunches,
             retain_working_dir,
         }
     }
@@ -618,6 +631,7 @@ impl ServiceManager {
                 stop: self.shared.config.cancel_token.child_token(),
                 state: State::Idle,
                 pending_replaced: false,
+                pending_relaunches: 0,
             });
         }
     }
@@ -1306,6 +1320,15 @@ impl ServiceManager {
                     m.state = State::Idle;
                     m.active = false;
                 }
+                Outcome::Regate { relaunches } => {
+                    // The old Session has ended; restart from idle once the
+                    // Services it lists are READY (constraint 2), carrying
+                    // the consumed attempts. `start_pending`, run next in
+                    // this gate loop, waits for the dependencies and
+                    // re-seeds the new Session's in-scope endpoints.
+                    m.pending_relaunches = relaunches;
+                    m.state = State::Idle;
+                }
             }
         }
         Ok(replaced)
@@ -1435,6 +1458,9 @@ impl ServiceManager {
                     ));
                 }
                 let mut inst = m.new_instance(retain);
+                // Consumed once; a later start of this Service (e.g. a RERUN
+                // re-activation) begins with a fresh counter.
+                m.pending_relaunches = 0;
                 inst.in_scope = in_scope;
                 m.state = State::Busy(self.shared.spawn_background(start_or_recover(
                     inst,
@@ -1532,13 +1558,16 @@ async fn stop_managed(m: &mut Managed, shared: &Shared) -> Result<Option<String>
                     failed = Some(reason);
                     m.state = State::Failed;
                 }
-                Outcome::Ready { .. } | Outcome::Stopped => end_instance(&mut inst).await,
+                Outcome::Ready { .. } | Outcome::Stopped | Outcome::Regate { .. } => {
+                    end_instance(&mut inst).await
+                }
             }
         }
         State::Ready(mut inst) => end_instance(&mut inst).await,
         State::Idle | State::Failed => {}
     }
     m.active = false;
+    m.pending_relaunches = 0;
     m.stop = shared.config.cancel_token.child_token();
     Ok(failed)
 }
@@ -1657,7 +1686,18 @@ async fn start_or_recover(
                     max_attempts,
                     k.describe()
                 ));
+                let relaunches = inst.relaunches;
                 end_instance(&mut inst).await;
+                // A Service that lists other Services must start only after
+                // they are READY (constraint 2) and with their current
+                // endpoints. This background task cannot see their state, so
+                // hand the new Session back to the gate: it restarts the
+                // Service from idle once its dependencies are READY,
+                // re-seeding `in_scope`. (A Service with no dependencies has
+                // nothing to wait for and relaunches here as before.)
+                if inst.service.depends_on_services().next().is_some() {
+                    return (inst, Outcome::Regate { relaunches });
+                }
             } else {
                 log_line(format!(
                     "Relaunching {} onRun in its Service Session (relaunch {} of {}): {}",

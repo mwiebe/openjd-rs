@@ -772,13 +772,62 @@ async fn launch_after_an_unobserved_exit_relaunches_without_wait_exit() {
     assert_eq!(ss.state(), ServiceSessionState::Running);
     // Nothing to cancel: the onRun has already exited.
     assert!(!ss.cancel_run(Some(Duration::ZERO)));
-    // launch() reclaims the exit and starts a second instance.
+    // launch() reclaims the exit and starts a second instance, which itself
+    // runs its own onRun (exit 3 again) and whose exit is then observed.
     ss.launch().await.unwrap();
     assert_eq!(ss.launch_count(), 2);
+    assert!(ss.wait_ready().await.unwrap().is_ready());
+    let exit2 = ss.wait_exit().await.unwrap();
+    assert_eq!(exit2.exit_code, Some(3));
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+    ss.end().await.unwrap();
+}
+
+/// A driver that ends without publishing an exit (its task failed — reachable
+/// through a panicking `SessionConfig::callback`) is still reclaimed by
+/// `wait_exit`: the state leaves `Running` for `Exited`, so a relaunch is
+/// accepted, and `end()` still runs `onExit`.
+#[tokio::test]
+async fn a_lost_driver_is_reclaimed_so_the_state_leaves_running() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; exit 3"),
+    )
+    .health(stdout_check(300))
+    .on_exit(sh("true"))
+    .build();
+    let panicked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = panicked.clone();
+    let mut config = session_config(&root, "svc-test:lostdriver");
+    config.callback = Some(Box::new(move |_, status| {
+        if status.state == ActionState::Failed
+            && !flag.swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("induced driver panic");
+        }
+    }));
+    let mut ss = ServiceSession::with_config(ServiceSessionConfig {
+        session: config,
+        service,
+        environments: vec![],
+        environment_profiles: vec![],
+        endpoints: endpoints("svc", &[("main", 5)]),
+        in_scope_endpoints: vec![],
+    })
+    .unwrap();
+    assert!(ss.start().await.unwrap().is_ready());
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.fail_message.is_some(), "{exit:?}");
+    assert_eq!(ss.state(), ServiceSessionState::Exited);
+    // Relaunch is accepted (the state left Running).
+    ss.launch().await.unwrap();
     assert!(ss.wait_ready().await.unwrap().is_ready());
     ss.cancel_run(Some(Duration::ZERO));
     ss.wait_exit().await.unwrap();
     ss.end().await.unwrap();
+    assert_eq!(ss.state(), ServiceSessionState::Ended);
 }
 
 #[tokio::test]

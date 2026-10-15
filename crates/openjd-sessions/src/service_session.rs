@@ -939,11 +939,16 @@ impl ServiceSession {
     /// and [`Exited`](ServiceSessionState::Exited) (relaunch within the same
     /// Session: same working directory and ports, `onEnter` not re-run, its
     /// environment variables retained — constraint 5 guarantees the previous
-    /// `onRun` has exited).
+    /// `onRun` has exited). Also allowed in
+    /// [`Running`](ServiceSessionState::Running) once that instance's exit
+    /// has been published (observed on `exit_watch`, not yet settled by a
+    /// `wait_exit`/`end`): the exit is reclaimed first, moving the state to
+    /// `Exited`, so a caller may relaunch straight off `exit_watch`.
     ///
     /// # Errors
     ///
-    /// [`SessionError::InvalidServiceState`] in any other state. A failure
+    /// [`SessionError::InvalidServiceState`] in any other state (a `Running`
+    /// instance whose `onRun` has not exited). A failure
     /// to build a wrap hook's scope (`WrappedAction.*` resolution, the
     /// wrapping Environment's `let` bindings or embedded files), or to spawn
     /// the health check's cross-user helper, is returned without changing
@@ -1309,16 +1314,20 @@ impl ServiceSession {
         let Some(run) = self.run.as_mut() else {
             return;
         };
-        // Only reclaim once the driver has actually reported the exit:
-        // joining while `onRun` is still live would block. `wait_exit`
-        // awaits the exit before calling this; `launch` calls it eagerly, so
-        // guard against the still-running case.
-        if run.exit_rx.borrow().is_none() {
-            return;
-        }
-        let Some(join) = run.join.take() else {
+        // Only reclaim once the driver task has finished — it finishes when
+        // `onRun` exits (publishing the exit) or when the task itself ends
+        // without reporting one (e.g. a panic, which `wait_exit` turns into
+        // a synthetic exit). Joining a still-live driver would block, so
+        // `launch` — which calls this eagerly, before any `wait_exit` — must
+        // not. A finished-but-unpublished driver is still reclaimed, so the
+        // state leaves `Running`.
+        let Some(join) = run.join.as_ref() else {
             return;
         };
+        if run.exit_rx.borrow().is_none() && !join.is_finished() {
+            return;
+        }
+        let join = run.join.take().expect("checked above");
         match join.await {
             Ok(output) => {
                 self.session.restore_runner_base(output.runner);

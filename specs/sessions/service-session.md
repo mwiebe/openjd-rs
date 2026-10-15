@@ -279,7 +279,9 @@ is READY. Under wrapping, the action name in these lines is the hook's
 
 ## `launch()` — the background `onRun` driver
 
-Allowed in `Entered` and `Exited`. Banner `Service onRun: <name> (launch N)`
+Allowed in `Entered` and `Exited`, and in `Running` once that instance's exit has been
+published but not yet settled (it is reclaimed first — the state moves to `Exited` — so a
+caller may relaunch directly off `exit_watch`). Banner `Service onRun: <name> (launch N)`
 and `Health check: <TYPE> (readinessTimeoutSeconds N[, readinessIntervalSeconds
 N], healthIntervalSeconds N, failureThreshold N)` — or, for a `STDOUT` check
 without a heartbeat, `Health check: STDOUT (readinessTimeoutSeconds N, no
@@ -612,8 +614,9 @@ Environments after a wrapping one) are wrapped by its `onWrapEnvEnter` /
 directory and endpoints, `onEnter` not re-run, its environment-variable changes
 retained, embedded files already in place, a fresh health check (for
 `COMMAND`, a fresh check driver and invocation count). Constraint
-5 is enforced structurally: `launch()` in `Running` is
-`InvalidServiceState`. Whether to relaunch here or open a new Session (new
+5 is enforced structurally: `launch()` in `Running` whose `onRun` has not yet exited is
+`InvalidServiceState` (once the exit is published it is reclaimed and the relaunch
+proceeds). Whether to relaunch here or open a new Session (new
 ports) is the caller's decision.
 
 ## `end()` — constraint 7

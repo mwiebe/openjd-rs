@@ -6069,6 +6069,43 @@ mod services {
         assert!(lines.iter().any(|l| l.starts_with("A ran ")), "{trace}");
     }
 
+    /// A dependent that opens a new Service Session on its own failure
+    /// starts only after its upstream is READY (constraint 2) and is seeded
+    /// with the upstream's current endpoints — never the stale ones, and
+    /// never while the upstream is UNREADY.
+    #[test]
+    fn test_dependent_new_session_waits_for_upstream_and_sees_new_endpoints() {
+        let dir = TempDir::new().unwrap();
+        let trace = dir.path().join("t");
+        std::fs::write(&trace, "").unwrap();
+        let (code, stdout, stderr) = run_service_template(
+            "service_dependent_new_session_waits_for_upstream.yaml",
+            &["-p", &format!("Trace={}", trace.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let trace = std::fs::read_to_string(&trace).unwrap();
+        let last_port = |prefix: &str| -> String {
+            trace
+                .lines()
+                .rfind(|l| l.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no {prefix} in\n{trace}"))
+                .rsplit(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        // Back's final port and Front's final view of it must agree.
+        let back_port = last_port("back launch 3 port ");
+        let front_backport = last_port("front launch 3 backport ");
+        assert_eq!(
+            front_backport, back_port,
+            "Front holds a stale Back port\n{trace}"
+        );
+        // And Back's first and new ports differ (a new Session really happened).
+        assert_ne!(back_port, last_port("back launch 1 port "), "{trace}");
+        assert!(trace.contains("task 2 done"), "{trace}");
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task

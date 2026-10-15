@@ -674,10 +674,15 @@ ready timeout (which first cancels `onRun` and awaits its exit — step 2), but 
 (new working directory, new free ports — a requested port stays the Service's — Environments re-entered, `onEnter` re-run) when the
 failure may be a port conflict — `onRun` exited before becoming READY — or was a
 start failure (requested port unavailable, Environment `onEnter` failed, Service
-`onEnter` failed, Session could not be created). Otherwise the Service is FAILED: its
-Session is ended, the failure is recorded with its name and scope, and the scope
-fails — every Step in it, and with it the Job when the scope is every Step; in the
-local runner either fails the run (no further Task runs, exit code 1).
+`onEnter` failed, Session could not be created). A new Session of a Service that lists
+other Services does not start in that background task — it cannot see whether those
+Services are READY — so the task ends the old Session and hands the Service back to the
+gate (`Outcome::Regate`, carrying the consumed attempts); `start_pending` restarts it
+from idle once every Service it lists is READY (constraint 2), re-seeding the new
+Session's in-scope endpoints with their current values. Otherwise the Service is
+FAILED: its Session is ended, the failure is recorded with its name and scope, and the
+scope fails — every Step in it, and with it the Job when the scope is every Step; in
+the local runner either fails the run (no further Task runs, exit code 1).
 
 **Dependents of a relaunched Service** (RFC 0009 "Failure and restart"). A relaunch
 that began a new Service Session changed the Service's endpoints, so every Service
