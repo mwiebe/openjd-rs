@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `5a86c21`.
+  openjd-specifications commit `d28dd6f`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -63,7 +63,7 @@ Each of these was checked against the code at `be266ed` or by running the releas
 | Per-action environment variables are computed in `run_task` | `crates/openjd-sessions/src/session.rs:1785`, `evaluate_env_vars` at `:2393` |
 | Directives are recognized by `parse_directive` (prefix `openjd_`, then `<kind>: `) and turned into `ActionMessage`s by `process_line`, on the line-reader side; the Session applies them in `apply_message`. A malformed `openjd_env` sends `CancelMarkFailed` | `crates/openjd-sessions/src/action_filter.rs:45`, `crates/openjd-sessions/src/subprocess.rs:1219`, `crates/openjd-sessions/src/session.rs:2286` |
 | A recognized directive line is dropped from the log unless `echo_openjd_directives` is set | `crates/openjd-sessions/src/action_filter.rs:211` |
-| Lines are silently truncated at 64 KiB in three places: `truncate_line`, and the helper's `decode_and_truncate` and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:62`, `crates/openjd-sessions/src/helper/src/framer.rs:89`, `:116` |
+| Lines are silently truncated at 64 KiB in four places: `truncate_line` on the direct path, and in the helper `LineFramer::accumulate` (which drops the rest of an over-long line before it is decoded), `decode_and_truncate`, and `fit_out_payload` (which can also cut a shorter line that grows when escaped) | `crates/openjd-sessions/src/subprocess.rs:62`, `crates/openjd-sessions/src/helper/src/framer.rs:195`, `:89`, `:116` |
 | Invalid UTF-8 on stdout is decoded with backslash escapes, not rejected | `decode_backslashreplace`, `crates/openjd-sessions/src/subprocess.rs:87` |
 | Under cross-user execution the embedded helper runs the action as the job user and streams `Response::Out` lines; its commands are `Run`, `Cancel`, and `Shutdown` | `crates/openjd-sessions/src/helper/src/protocol.rs:49`, `:69` |
 | `openjd run` runs every Step in topological order in one Session, and stops running Tasks after the first failure | `crates/openjd-cli/src/run/execution.rs:202`, `:341`, `:378` |
@@ -186,8 +186,8 @@ impl OutputCollector {
   constraints, not only the last.
 * Size accounting follows §Limits item 2: for each retained value, the inline JSON's bytes without surrounding
   whitespace, or the whole content of its `@` file.
-* Messages name the variable and the problem, and never quote an `@` file's content. Inline text is already in the
-  log, so quoting it is fine.
+* Messages name the variable and the problem, and never quote an `@` file's content. They may quote an inline
+  value, which the Action printed itself; the RFC asks for the offending text.
 * Type conversion: type each JSON value against the target type (the declared type, or the element type under
   `APPEND`), then coerce with EXPR's implicit coercion, `ExprValue::coerce` (`value.rs:904`), as the RFC's §Type
   conversion requires. The RFC infers an array "as a list literal with the target type" (§1.2.6), so arrays are
@@ -321,8 +321,8 @@ Environments are kept as they are, because they are carried forward as format st
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
 7. **Task-count limits.** Keep `max_task_count` as the job total. In `create_job`, count only bound Steps. In
    `bind_step`, `committed_task_count` carries the count already committed, and the binding that would exceed the
-   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 4.
-   See A5.
+   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from
+   §Limits item 4. See A5.
 8. **`StepDependencyGraph`** (`job/step_dependency_graph.rs`) is unchanged. The step graph is fixed.
 
 ### Model specs to update
@@ -361,7 +361,7 @@ The expr specs need no change unless the warning lands.
   carries its extensions, but the profile is documented as selecting functions and redaction, and a caller may pass a
   wider one. Add an explicit `SessionConfig` field so the rule doesn't depend on how a caller built the profile. For
   the second, `enter_environment` (`session.rs:1133`) takes a bare `&Environment`; add a parameter for its origin to
-  it and to `exit_environment`.
+  it, to `enter_environment_with_output` (`:1147`), which does the work, and to `exit_environment` (`:1479`).
 * `ActionMessage` (`action.rs:39`) gets `OutputVar { name: String, value: ExprValue }`, and `SessionConfig` gets an
   optional output callback, `Fn(&session_id, &name, &ExprValue)`, called once per accepted value, so a caller can
   forward each value as it arrives (RFC §Committing values). Putting the values on `ActionStatus` instead would
@@ -390,20 +390,24 @@ The expr specs need no change unless the warning lands.
   line reader for this Action. Processing is synchronous in the reader, so an `@` file is read before any later line
   is processed, as the RFC requires. An invalid directive cancels the Action and fails it. The RFC allows either
   cancelling at once or failing at exit; cancelling at once reuses `CancelMarkFailed`. That path needs one change:
-  `process_line` sends a fixed `"Action canceled due to malformed command"` (`subprocess.rs:1275`–`:1278`) and drops
-  the callback's error text (`:1249`–`:1254`), and the RFC requires the failure to name the output, the problem, and
-  the offending text. Pass the collector's message through as the `fail_message`.
-* Truncation: `truncate_line` (`subprocess.rs:62`), and the helper's `decode_and_truncate` (`framer.rs:89`) and
-  `fit_out_payload` (`framer.rs:116`), cut long lines silently today. Each must report that it truncated (for the
+  `process_line` sends a fixed `"Action canceled due to malformed command"` as the `CancelMarkFailed` message
+  (`subprocess.rs:1279`–`:1282`), which overwrites any earlier `fail_message` when the Session applies it
+  (`session.rs:2322`), and the RFC requires the failure to name the output, the problem, and the offending text.
+  Pass the collector's message through as the `fail_message`.
+* Truncation: `truncate_line` (`subprocess.rs:62`), and in the helper `LineFramer::accumulate` (`framer.rs:195`),
+  `decode_and_truncate` (`framer.rs:89`), and `fit_out_payload` (`framer.rs:116`), cut long lines silently today.
+  `accumulate` is the one that cuts an ordinary over-long line on the cross-user path; the other two helper sites
+  then see an already-capped line. Each must report that it truncated (for the
   helper, a flag in `Response::Out`, which is a protocol change on both sides of the helper boundary). A truncated
   line that starts with `openjd_output_var:` is invalid, and the discarded remainder is never treated as a line.
 * Encoding: a line that `decode_backslashreplace` had to escape is not valid UTF-8, so a directive on it is invalid.
   The reader must carry a "lossy" flag with the decoded line to tell. On the cross-user path the helper decodes the
   line (`framer.rs:48`, `:89`), so this flag also crosses the helper protocol, beside the truncation flag.
-* Line ends: the helper sends `line.trim_end()` (`helper/src/runner.rs:61`–`:63`), which strips all trailing Unicode
-  whitespace, and the direct path strips only `\n` and `\r` (`subprocess.rs:1121`–`:1126`). The RFC's grammar allows
+* Line ends: the Unix helper sends `line.trim_end()` (`helper/src/runner.rs:61`–`:63`), which strips all trailing
+  Unicode whitespace, while the Windows helper (`runner_win.rs:191`–`:197`) and the direct path
+  (`subprocess.rs:1121`–`:1126`) strip only the line terminator. The RFC's grammar allows
   only spaces and tabs around the value, so a directive followed by, say, a form feed would be valid on one path and
-  invalid on the other. Make the helper strip only the line terminator, and let the parser apply the grammar.
+  invalid on the other. Make the Unix helper strip only the line terminator, and let the parser apply the grammar.
 * Logging: the filter drops a recognized directive from the log unless `echo_openjd_directives` is set
   (`action_filter.rs:211`). The RFC says the line is passed through unchanged (A15). The prototype keeps today's
   echo behavior for consistency with the other directives, and logs each accepted value at info level instead.
@@ -417,8 +421,10 @@ The expr specs need no change unless the warning lands.
   working directory is valid. What must be inside is the file actually opened. On Linux, open with
   `openat2(RESOLVE_BENEATH)` from a handle to the working directory, which follows links but refuses any that leave
   it, and fall back to opening the path and checking `/proc/self/fd/<n>`. On macOS, open and check `F_GETPATH`; on
-  Windows, `GetFinalPathNameByHandleW`. Then require a regular file, and read at most
-  `collector.remaining_bytes_for(name) + 1` bytes.
+  Windows, `GetFinalPathNameByHandleW`. Open without blocking (`O_NONBLOCK` on Unix), because opening a FIFO for
+  reading otherwise blocks until a writer appears, which would stall the line reader and, on the helper path, cancel
+  handling. Then require a regular file with `fstat`, and read at most `collector.remaining_bytes_for(name) + 1`
+  bytes.
 * Same-user Sessions read the file directly; that meets the RFC's access rule.
 * Cross-user Sessions must read it as the job user. Add a command to the embedded helper protocol
   (`protocol.rs:49`), such as `ReadOutputFile { token, path, root, max_bytes }`, answered by the helper, which runs as
@@ -427,10 +433,18 @@ The expr specs need no change unless the warning lands.
   to be checked first. A reply would also arrive on the same response stream that the parent's `select!` loop
   (`cross_user_helper.rs:620`) reads, interleaved with later `Out` lines, which the parent would have to hold back
   until the reply arrives to keep the RFC's ordering. The simpler design is for the helper to resolve `@` directives
-  itself, as it reads the Action's output, and send the content to the parent in place of the line, so ordering
-  falls out of the stream. The helper doesn't know the declared outputs, so it reads any `@` directive up to the
-  per-Task maximum (passed in `RunCommand`) and the parent applies `check_name` and the remaining-size check
-  afterwards. The outcome is the same as the RFC's order; the cost is reading a file that is then rejected.
+  itself, as it reads the Action's output, so ordering falls out of the stream:
+  * `RunCommand` (`protocol.rs:19`) gets an optional `output_files: { max_bytes }`. The parent sets it only for an
+    `Allowed` Action; otherwise the helper leaves `openjd_output_var:` lines alone, so `Ignored` lines stay ordinary
+    output and `Forbidden` lines reach the parent unchanged and fail there.
+  * For a `@` directive, the helper reads the file as above, up to `max_bytes + 1`, and sends a new
+    `Response::OutputFile { line, content | error }` frame in place of the `Out` line. Content up to 1 MiB doesn't
+    fit the parent's 128 KiB response-line limit (`cross_user_helper.rs:23`, checked at `:119`–`:128`), so the frame
+    is sent as a header and length-prefixed chunks, or the limit is raised for this frame only.
+  * The helper doesn't know the declared outputs or the values so far, so it reads before the parent's `check_name`
+    and remaining-size checks. To keep the RFC's outcome, it reports a read failure in the frame rather than failing
+    the line itself, and the parent applies `check_name` first, then the read result, then the size. The only
+    difference from the RFC's order is reading a file whose directive is then rejected.
   Either way the helper sub-crate's gates apply.
 * On the direct path, file reads are blocking I/O inside the async line reader. They are bounded by the size limit;
   use `spawn_blocking` and await it before the next line, so ordering is kept.
@@ -541,8 +555,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   expression.
 * Parser and collector: every row of the RFC's conversion table, each "invalid if" rule of §Processing a directive
   that the model owns, both forms of the directive, leading whitespace, whitespace before `=` rejected, whitespace
-  after `=` accepted (`N= 1`, `N= @f`), an empty `@` path, `NaN` and `1e400`, file content with a BOM and line breaks; `ONCE` repeated and missing, `LAST` replacing a
-  value and its size, `LAST` with an invalid intermediate value, `APPEND` with zero and several values, `item` and
+  after `=` accepted (`N= 1`, `N= @f`), an empty `@` path, `NaN` and `1e400`, file content with a BOM and line
+  breaks; `ONCE` repeated and missing, `LAST` replacing a value and its size, `LAST` with an invalid intermediate value, `APPEND` with zero and several values, `item` and
   `maxLength` checked per element and `minLength` at exit, a list value under `APPEND` becoming one element, and the
   size limit for inline and file values.
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
@@ -570,6 +584,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   (ordinary output).
 * A directive line over 64 KiB is invalid, on the direct path and through the helper, including a line under 64 KiB
   that grows past it when escaped.
+* A directive line that is not valid UTF-8 is invalid, on both paths; a directive followed by a form feed is treated
+  the same on both paths; an `@` file that is not UTF-8 or contains NUL fails the Task.
+* An `@` FIFO fails the Task without hanging the reader, on both paths.
+* Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
+  passed through unchanged and its file is not read.
 * WRAP_ACTIONS: directives from `onWrapTaskRun` and from the wrapped process count for the Task, including when the
   wrapping Environment comes from an Environment Template.
 * Cross-user (Docker, `scripts/run_cross_user_tests.sh`, and the Windows job): an `@` file that the job user can't
