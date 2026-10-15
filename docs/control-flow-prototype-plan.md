@@ -85,7 +85,9 @@ Each of these was checked against the code at `be266ed` or by running the releas
   `binding: StepBinding`. `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`
   (`job/mod.rs:103`), and `JobParameterDefinition` implements none of the first three, so `job::OutputVariable`
   cannot hold the M1 wrapper. It is its own struct: a name, a `JobParameterType`, and an `OutputConstraints` value
-  that holds the declared constraint properties in hashable, serializable form (`Float64` for floats). It has a
+  that holds the declared constraint properties in hashable, serializable form (`Float64` for floats).
+  `JobParameterType` derives `Serialize` but not `Deserialize` (`types.rs:175`), so it needs `Deserialize` added,
+  which is a public API change recorded in `public-api.md`. It has a
   `check_constraints(&ExprValue)` that applies the same rules as the job-parameter checks, and it is built from the
   template definition in `create_job`. `job::Environment` (`job/mod.rs:147`) gets
   `enabled: bool`. New fields use `skip_serializing_if` so that the serialized form of existing jobs doesn't change
@@ -154,9 +156,13 @@ It is a pure function, so sessions, the CLI, `openjd-for-js`, and a scheduler th
   `ExprValue::coerce` (`value.rs:904`), as the RFC's §Type conversion requires. The RFC infers an array "as a list
   literal with the declared type as its target" (§1.2.6), so arrays are converted element by element toward the
   declared element type. `json_to_expr_value` (`parameters.rs:1381`) can't be reused as is: it builds lists with a
-  `NULLTYPE` hint (`parameters.rs:1404`), so the RFC row `LIST[STRING] L=[1, "a"]` fails with
-  `make_list expected int element, got string`. Reuse its scalar arms, and keep a number's written spelling in
-  `Float64` so that A6 can be answered either way. Do not reuse `coerce_json_to_job_parameter_type` either: it
+  `NULLTYPE` hint (`parameters.rs:1406`), so the RFC row `LIST[STRING] L=[1, "a"]` fails with
+  `Invalid list value: make_list expected int element, got string`. Reuse its scalar arms. It is `pub(super)`, so move
+  it to a module that both `create_job` and `outputs` can use. Keeping a number's written spelling (A6) is not free:
+  the workspace's `serde_json` is built without `arbitrary_precision`, so `1.50` is already `1.5` after parsing. If
+  A6 is answered "keep the digits", either enable `arbitrary_precision` (a workspace-wide change, through feature
+  unification) or lex the number tokens of the line separately. Do not reuse `coerce_json_to_job_parameter_type`
+  either: it
   follows job-parameter rules, which are more lenient (for example `1` is accepted as a `BOOL` at
   `parameters.rs:691`). Ambiguity A7 asks the RFC which of the two it means. Before converting, reject `null` and
   objects at any depth, and nesting deeper than the declared type. Each row of the RFC's conversion table becomes a
@@ -197,7 +203,12 @@ Environments are kept as they are, because they are carried forward as format st
    Steps in dependency order, building `StepInputs` from the Steps it has already instantiated, while it still stores
    the Steps in template order. `StepDependencyGraph` is built from a `job::Job`, so it can't supply that order before
    the Job exists. Instead, factor the Kahn's-algorithm pass out of `detect_dependency_cycles`
-   (`validate_v2023_09/structure.rs:1074`) so that it returns the order of the template's Steps.
+   (`validate_v2023_09/structure.rs:1074`) so that it returns the order of the template's Steps. As written, that pass
+   counts in-degree on each *dependency* (`structure.rs:1091`–`:1097`), so it yields Steps that nothing depends on
+   first, and it seeds its queue from `HashMap` iteration. The factored version must therefore reverse the edges
+   and break ties by template index, so the order is deterministic. Errors that `instantiate_step` collects into
+   `check_errors` then arrive in dependency order, so sort them back into template order before reporting, to keep
+   today's message order.
 2. **Static `enableIf`.** An `enableIf` that reads no `Steps.*` is evaluated in `create_job`. If it is false, the Step
    becomes `Skipped` and nothing after `enableIf` is evaluated. That includes the step `let` evaluation and carried-forward checks that
    `instantiate_step` runs today (`instantiate.rs:62`–`:149`), so a skipped Step's `let` may assume the Step runs.
@@ -228,12 +239,20 @@ Environments are kept as they are, because they are carried forward as format st
    (`instantiate.rs:277`) and `build_env_check_symtab` (`:359`). Those tables must seed the new symbols too:
    `Task.OutputFile` as unresolved, and each `Steps.*` symbol as concrete when it is known and unresolved otherwise.
    Without that, every producer script fails `create_job` with `Undefined variable: 'Task.OutputFile'`, and so does
-   every script that reads `Steps.*`. `add_unresolved_session_symbols` (`instantiate.rs:224`) is the natural place.
+   every script that reads `Steps.*`. Seed `Task.OutputFile` in `build_task_check_symtab` only, and only when the
+   Step declares `outputVariables`. Seed the `Steps.*` placeholders in both builders. Do not put them in
+   `add_unresolved_session_symbols` (`instantiate.rs:224`): it takes no Step, and it feeds the Environment tables too,
+   where `Task.OutputFile` must not appear. Do not put unresolved placeholders in the Step symbol table either,
+   because that table becomes `resolved_symtab` through `filter_symtab_for_step`. Only concrete values go there,
+   at binding. This seeding lands in PR 2, together with the validation rules, so that a template that passes
+   `openjd check` also passes `create_job` (see PR and commit order).
 4. **Assembling inputs.** Schedulers and the CLI should not have to reimplement the shape rules, so the model provides
    them:
 
    ```rust
    pub enum ProducerState<'a> {
+       /// Bound but not finished: contributes TaskParam only (Output stays unresolved).
+       Bound,
        Succeeded { task_outputs: &'a [IndexMap<String, ExprValue>] }, // indexed by iteration order
        Skipped,
    }
@@ -244,24 +263,25 @@ Environments are kept as they are, because they are carried forward as format st
 
    `add_producer` makes `Output.<V>` a scalar when the producer has no parameter space, and a list in iteration order
    when it has one. It fills `TaskParam.<N>` from `StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1))`,
-   one element per Task even for a `CHUNK[INT]` parameter. A skipped producer makes every symbol `null`. A producer
-   that is `Bound` but has not finished contributes `TaskParam` only. The list type hint follows the declared type,
+   one element per Task even for a `CHUNK[INT]` parameter. A skipped producer makes every symbol `null`. A `Bound` producer contributes `TaskParam` only. The list type hint follows the declared type,
    so `[]` becomes a typed empty list.
 5. **Host-scope `Steps.*` in Steps bound at creation.** A Step such as `FramesToVideo` reads `Steps.*` only in its
    script, so it binds at job creation but needs the values before its Tasks run. Add
    `pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError>`. It merges the
    concrete `Steps.*` values that the Step reads into `resolved_symtab`. It has to find those symbols itself, because
    `filter_symtab_for_step` (`instantiate.rs:909`) runs only inside `instantiate_step`, where the symbol table has no
-   `Steps.*` entries to keep (`copy_symbol_value` skips a missing symbol, `format_string.rs:613`). Reuse
+   `Steps.*` entries to keep (`copy_symbol_value` skips a missing symbol, `format_string.rs:612`). Reuse
    `collect_all_accessed_symbols` (`instantiate.rs:1014`) and copy the matching values from `inputs`. Expose the list of producers whose
    values a Step needs before dispatch as `job::Step::input_producers()`.
 6. **Range rules under `CONTROL_FLOW`.**
    * An empty list from a format-string range is already accepted (see the table above). Add tests for it under
      `CONTROL_FLOW`. Whether it stays accepted *without* `CONTROL_FLOW` is ambiguity A2.
-   * A list-literal range whose evaluated items flatten to nothing needs new code. The RFC allows it to be empty
-     (§Empty parameter spaces), but openjd-rs errors today, with `EXPR` alone: `range: ["{{Param.L}}"]` with `L=[]`
-     fails with `Task parameter 'X' range has no elements after resolution` (`ranges.rs:528`). Under
-     `CONTROL_FLOW`, accept the empty result. See also A14.
+   * A list-literal range whose evaluated items flatten to nothing needs new code, in two parts. First, `INT` and
+     `FLOAT` list literals must flatten list-valued items as EXPR §1.3.2 requires; today only `STRING` and `PATH` do
+     (A14). Second, the empty result must be accepted. The RFC allows a list literal to evaluate to empty (§Empty
+     parameter spaces), but openjd-rs errors today, with `EXPR` alone: a `STRING` `range: ["{{Param.L}}"]` with
+     `L=[]` fails with `Task parameter 'X' range has no elements after resolution` (`ranges.rs:528`). Under
+     `CONTROL_FLOW`, accept the empty result for all four types.
    * Lift the 1024-element cap (`ranges.rs:336`, `:475`, `:556`) for format-string ranges when `CONTROL_FLOW` is
      enabled. List literals stay capped as written. This depends on how A3 is answered, so the cap is decided in one
      function that the answer can change.
@@ -312,8 +332,9 @@ The expr specs need no change unless the warning lands.
 When `output_variables` is `Some`:
 
 1. Create an empty file `<working_dir>/.openjd/task_outputs/<uuid>.txt`, which is inside the Session working
-   directory, as §The output file recommends. The runtime creates `.openjd/task_outputs` and keeps it unwritable by
-   the job user. Under cross-user execution the working directory itself is group-writable (mode `0o770`,
+   directory, as §The output file recommends. The runtime creates `.openjd/task_outputs` itself when the Session starts, before any job-user action runs. It
+   fails if the path already exists, keeps the directory unwritable by the job user, and checks its owner and mode
+   before each use. Under cross-user execution the working directory itself is group-writable (mode `0o770`,
    `tempdir.rs:174`–`:186`), so a
    writable subdirectory would let the job user swap a path component. Give the job user write access to the file only,
    with `chown_for_user` (`embedded_files.rs:102`) on Unix and the `win32_permissions` ACL helper on Windows, as
@@ -412,7 +433,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | # | PR | Depends on | Contents |
 |---|---|---|---|
 | 1 | `feat(model): CONTROL_FLOW extension, outputVariables and enableIf schema` | — | M1, and M2 items 1–3 (gating, the EXPR prerequisite, structural rules) |
-| 2 | `feat(model): Steps.* and Task.OutputFile scopes in template validation` | 1 | the M2 scope rules and their messages, and `enableIf` typing |
+| 2 | `feat(model): Steps.* and Task.OutputFile scopes in template validation` | 1 | the M2 scope rules and their messages, `enableIf` typing, and the `create_job` check-table seeding from M4.3. Until PR 4, `openjd run` of a template that reads `Steps.*` fails when a Task starts, because the value is unresolved; this is acceptable on the prototype branch |
 | 3 | `feat(model): task output file parser` | 1 | M3 |
 | 4 | `feat(model): step input binding` | 2, 3 | M4: `StepBinding`, static `enableIf`, `bind_step`, `StepInputs`, `attach_step_inputs`, range rules, task-count limits |
 | 5 | `feat(sessions): task output file` | 3 | S1–S4 |
@@ -516,7 +537,7 @@ picks a behavior for each and records it in the specs.
   exponent, a `float` before it is coerced. `S=12345678901234567890` then becomes `"1.2345678901234567e+19"` under EXPR coercion (checked with
   `ExprValue::coerce`), while the job-parameter path keeps the digits. The
   RFC doesn't say whether `S=1.50` gives `"1.50"` or `"1.5"`. Specify whether a `STRING` output keeps the written
-  digits (openjd-rs `Float64` can keep the original spelling), and whether an out-of-range number such as `1e400` is
+  digits (openjd-rs `Float64` can carry an original spelling, but M3 notes the parsing cost), and whether an out-of-range number such as `1e400` is
   an error.
 * **A7. Which coercion, and how lenient (Open Question 16).** The RFC makes two statements that don't agree in
   openjd-rs. It converts with EXPR's implicit coercion (§1.2.3), and it also says a `Steps.*` value behaves exactly
@@ -549,9 +570,13 @@ picks a behavior for each and records it in the specs.
   `list[list[T]]` (§Reductions item 4), and `repr_sh` has no signature for nested lists, while `repr_py`,
   `repr_json`, and `flatten` do. A short note in §Reductions ("`flatten` first for shell use") would spare authors a
   validation error.
-* **A14. Which list-literal items may be list-valued.** §Empty parameter spaces says that after a list literal's items
-  are evaluated, "EXPR flattens a list-valued item". In openjd-rs that holds for `FLOAT`, `STRING`, and `PATH` ranges.
-  An `INT` list literal accepts only integers: `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter fails `openjd
-  check` with `Cannot parse '{{Param.L}}' as integer`. The Expression Language's §1.3.12 table gives the `INT` range type as `list[int | FormatString] | RangeString`,
-  which suggests such an item is allowed. The RFC, or the EXPR spec, should say whether an
-  `INT` list item may be a list-valued expression.
+* **A14. Flattening of list-valued items in `INT` and `FLOAT` range lists.** §Empty parameter spaces says that after a
+  list literal's items are evaluated, "EXPR flattens a list-valued item", which matches the Expression Language's list
+  item rule (§1.3.2: target type `T? | list[T]`, and a list result "is flattened inline"). openjd-rs does this only for
+  `STRING` and `PATH` ranges (`ranges.rs:500`–`:522`). An `INT` list literal accepts only integers:
+  `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter fails `openjd check` with
+  `Cannot parse '{{Param.L}}' as integer`. A `FLOAT` list literal parses each item's text as one float
+  (`ranges.rs:407`), so with a `LIST[FLOAT]` parameter it passes `check` and then fails `openjd run` with
+  `Cannot parse '[1.5, 2.5]' as float`. This is mainly an openjd-rs gap against the EXPR spec (Q5), to be fixed before
+  M4.6. The RFC should still say explicitly that range list items follow §1.3.2, because the §1.3.12 table types the
+  `INT` range as `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
