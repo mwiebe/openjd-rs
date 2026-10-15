@@ -436,9 +436,11 @@ The expr specs need no change unless the warning lands.
     `RunCommand.cwd`, which is the Session working directory (`session.rs:2055`, `:2127`).
   * The helper sub-crate depends only on `serde`, `serde_json`, `nix`, and `windows`
     (`helper/Cargo.bundled.toml`), so it can't use the model's parser. It gets a minimal recognizer for the `@` form
-    only: the `openjd_output_var:` prefix, a name, `=`, optional spaces or tabs, `@`, and the path. Anything else
-    goes to the parent as an ordinary `Out` line for the model parser. It skips a line it truncated or had to decode
-    lossily, which the parent rejects anyway. The file operations need new `nix` features (`fs`) and `windows`
+    only, which must accept exactly the lines the M3 parser parses as `File` and extract the same name and path:
+    the `openjd_output_var:` prefix, optional spaces or tabs, an `<Identifier>`, `=`, optional spaces or tabs, `@`,
+    and a non-empty path with trailing spaces and tabs removed. Anything else goes to the parent as an ordinary `Out`
+    line for the model parser. A line the helper truncated or had to decode lossily is not resolved; it is forwarded
+    as an `Out` line with its S2 flags, and the parent rejects it. The file operations need new `nix` features (`fs`) and `windows`
     features (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
   * For a `@` directive, the helper reads the file as above, up to `max_bytes + 1`, and sends a new
     `Response::OutputFile { line, content | error }` in place of the `Out` line. The parent reads newline-delimited
@@ -450,8 +452,9 @@ The expr specs need no change unless the warning lands.
     parent applies `check_name` first, then the read result, then the remaining-size check. This differs from the
     RFC's order in two ways that don't change the outcome: the helper may read a file whose directive is then
     rejected, and it reads up to the whole per-Task limit rather than what remains.
-  * In the parent, an `@` directive on the cross-user path that arrives as a plain `Out` line, because the helper's
-    recognizer didn't match it, is invalid. The parent never reads the file.
+  * The parent re-parses `OutputFile.line` with the M3 parser and treats a disagreement with the helper's name or
+    path as invalid. An `@` directive on the cross-user path that arrives as a plain `Out` line, because the
+    helper's recognizer didn't match it, is invalid too. The parent never reads the file.
   * A helper command to read a file on request, answered while a `Run` is in progress, was considered. Its reply
     would arrive on the stream the parent's `select!` loop (`cross_user_helper.rs:620`) reads, interleaved with later
     `Out` lines, which the parent would have to hold back to keep the ordering.
@@ -599,6 +602,9 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
   passed through unchanged and its file is not read; a directive in a Job Template `onEnter` fails; an undeclared
   name with a missing `@` file reports the undeclared name.
+* Cross-user parity: `@` directives with a space and with a tab after the colon, with `N= @f`, and with trailing
+  spaces after the path give the same result as on the direct path. Run with the RFC samples' own form
+  (`openjd_output_var: Keys=@keys.json`).
 * WRAP_ACTIONS environment hooks: a directive from `onWrapEnvEnter` or `onWrapEnvExit` that wraps a Job Template
   Environment fails the Action, and one that wraps an Environment Template Environment is ordinary output.
 * `LAST` with no directive fails the Task at exit.
