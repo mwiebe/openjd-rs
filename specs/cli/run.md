@@ -145,6 +145,16 @@ the outer execution phase always unwinds the remaining environments. Thus a
 Selection and RFC 0008 preflight happen before session creation. Invalid runs
 therefore do not create a working directory or print session-start banners.
 
+### CONTROL_FLOW templates (in progress)
+
+`CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension, so `run`
+accepts templates that declare `outputVariables` or `enableIf`. The run itself does not
+implement the extension yet: `create_job` refuses any `enableIf` other than `true`
+(failing in the SETUP phase, before a session exists), Steps run in topological order as
+before, and `openjd_output_var:` lines are ordinary output — declared outputs are not
+collected and a missing value does not fail a Task. Binding, output collection, and job
+outputs are later changes in `docs/control-flow-prototype-plan.md`.
+
 ## Step Selection Logic
 
 The step selection has three modes:

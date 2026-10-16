@@ -8,6 +8,7 @@ use super::actions::{Action, CancelationMode, StepActions};
 use super::constrained_strings::Description;
 use super::environment::{EmbeddedFile, Environment};
 use super::host_requirements::HostRequirements;
+use super::output_variables::{BoolOrFormatString, OutputVariableDefinition};
 use super::task_parameters::StepParameterSpaceDefinition;
 use crate::error::PathElement;
 use crate::format_string::FormatString;
@@ -233,12 +234,17 @@ impl SimpleActionKind {
 pub struct StepTemplate {
     pub name: String,
     pub description: Option<Description>,
+    /// Whether the Step runs (`CONTROL_FLOW`, RFC 0010).
+    pub enable_if: Option<BoolOrFormatString>,
     #[serde(rename = "let")]
     pub let_bindings: Option<Vec<String>>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
+    /// The output variables every Task of the Step reports (`CONTROL_FLOW`,
+    /// RFC 0010).
+    pub output_variables: Option<Vec<OutputVariableDefinition>>,
     pub script: Option<StepScript>,
     // SimpleAction syntax sugar (§3.5, FEATURE_BUNDLE_1)
     pub bash: Option<SimpleAction>,

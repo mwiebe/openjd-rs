@@ -146,11 +146,13 @@ This is deferred until there's demand for it.
 
 ### Extension Default List
 
-All commands that accept `--extensions` default to enabling all supported extensions:
-`["TASK_CHUNKING", "REDACTED_ENV_VARS", "FEATURE_BUNDLE_1", "EXPR"]`. This matches the
-Python CLI's `SUPPORTED_EXTENSIONS` list. The default is hardcoded in each command's
-`execute()` function rather than centralized — a minor duplication that could be extracted
-to a shared constant if more commands are added.
+All commands that accept `--extensions` default to enabling every extension in
+`openjd_model::ModelExtension::ALL`: `TASK_CHUNKING`, `REDACTED_ENV_VARS`,
+`FEATURE_BUNDLE_1`, `EXPR`, `WRAP_ACTIONS`, and `CONTROL_FLOW`. The list comes from
+`common::supported_extensions()`, and `common::parse_extensions()` resolves the
+`--extensions` argument against it, so a new model extension is enabled by default
+without a CLI change. The template-specific help (`openjd run <template> --help`, in
+`help.rs`) resolves `--extensions X` and `--extensions=X` through the same function.
 
 An empty string (`--extensions ""`) disables all extensions, which is useful for testing
 strict base-spec compliance.

@@ -1951,6 +1951,108 @@ mod context_aware_help {
         );
     }
 
+    /// Template help resolves `--extensions` as `check` and `run` do, so a
+    /// template using a newer extension (here WRAP_ACTIONS and CONTROL_FLOW)
+    /// gets help rather than "Unsupported extension names".
+    #[test]
+    fn test_help_enables_every_supported_extension_by_default() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, WRAP_ACTIONS, CONTROL_FLOW]
+name: CfJob
+steps:
+  - name: S
+    outputVariables: [{{name: Count, type: INT}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+"
+        )
+        .unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", f.path().to_str().unwrap(), "--help"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
+    }
+
+    #[test]
+    fn test_help_honors_the_extensions_option() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: CfJob
+steps:
+  - name: S
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+"
+        )
+        .unwrap();
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "EXPR",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported extension names: CONTROL_FLOW"),
+            "stderr: {stderr}"
+        );
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions=EXPR",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported extension names: CONTROL_FLOW"),
+            "stderr: {stderr}"
+        );
+        // `--extensions ""` disables every extension.
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported extension names: CONTROL_FLOW, EXPR"),
+            "stderr: {stderr}"
+        );
+        // Names are case-insensitive, as for `check`.
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "expr,control_flow",
+            "--help",
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
+        // A trailing `--extensions` with no value keeps the defaults.
+        let (code, stdout, stderr) =
+            run_cli(&["run", f.path().to_str().unwrap(), "--help", "--extensions"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "NOT_AN_EXTENSION",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported Open Job Description extension(s): NOT_AN_EXTENSION"),
+            "stderr: {stderr}"
+        );
+    }
+
     #[test]
     fn test_help_includes_standard_options() {
         let tdir = templates_dir();

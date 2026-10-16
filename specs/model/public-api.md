@@ -60,7 +60,8 @@ The structural template types — `template::JobTemplate`,
 `template::HostRequirements`, `template::AmountRequirement`,
 `template::AttributeRequirement`, `template::StepDependency`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
-`template::ExtensionName`, `template::TaskParameterDefinition`
+`template::ExtensionName`, `template::BoolOrFormatString`,
+`template::OutputVariableDefinition`, `template::TaskParameterDefinition`
 and its 5 per-variant inner struct types
 (`IntTaskParameterDefinition`, `FloatTaskParameterDefinition`,
 `StringTaskParameterDefinition`, `PathTaskParameterDefinition`,
@@ -223,7 +224,10 @@ extension the template declares (enabling more is allowed);
 that does not support an extension rejects such templates at decode
 via `supported_extensions` instead. Every expression
 evaluation it performs runs under the caller's evaluation budgets
-(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
+(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`). With `CONTROL_FLOW`, it copies each Step's
+`outputVariables` onto `job::Step::output_variables` and refuses any
+`enableIf` other than `true`, which it does not evaluate yet (see
+[job-creation.md](job-creation.md)).
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,
@@ -385,6 +389,57 @@ impl JobParameterDefinition {
 }
 ```
 
+### CONTROL_FLOW Template Types (RFC 0010)
+
+`CONTROL_FLOW` adds fields to two structural template types:
+
+```rust
+pub struct template::StepTemplate {
+    // ...existing fields...
+    pub enable_if: Option<BoolOrFormatString>,
+    pub output_variables: Option<Vec<OutputVariableDefinition>>,
+}
+
+pub struct template::Environment {
+    // ...existing fields...
+    pub enable_if: Option<BoolOrFormatString>,   // rejected in an Environment Template
+}
+```
+
+and two types:
+
+```rust
+#[derive(Debug, Clone)]
+pub enum template::BoolOrFormatString {
+    Bool(bool),
+    FormatString(FormatString),
+}
+
+/// One `<OutputVariableDefinition>`: the job parameter definition of the
+/// declared type plus `collect` and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::OutputVariableDefinition { /* private fields */ }
+
+impl template::OutputVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn collect(&self) -> OutputCollectMode;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    /// The wrapped job parameter definition (name, description,
+    /// constraint properties, and `objectType` for PATH types).
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    pub fn to_job_output_variable(&self) -> job::OutputVariable;
+    pub fn check_constraints(&self, value: &openjd_expr::ExprValue) -> Result<(), String>;
+    pub fn check_element(&self, element: &openjd_expr::ExprValue) -> Result<(), String>;
+    pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
+}
+```
+
+`BoolOrFormatString` and `OutputVariableDefinition` implement `Deserialize`. See
+[template-types.md](template-types.md) § CONTROL_FLOW Types.
+
 ### Task Parameter Definitions
 
 ```rust
@@ -542,7 +597,10 @@ format preserves original float literals, jobs created from `1.0` vs
 consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 `f64` — `Job`, `Step`, `StepParameterSpace`, `TaskParameter`,
 `HostRequirements`, `AmountRequirement` — implement `PartialEq` but
-not `Eq`; the rest also implement `Eq`.
+not `Eq`, and so do the CONTROL_FLOW types that hold an
+`openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
+but not `Eq`): `OutputVariable`, `OutputConstraints`,
+`OutputAllowedValues`, `OutputBound`. The rest also implement `Eq`.
 
 ```rust
 pub struct job::Job {
@@ -573,6 +631,14 @@ pub struct job::Step {
     /// let bindings. The session deserializes this with `PathFormat::host()`
     /// and layers Session.* and Task.* values on top at runtime.
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    /// CONTROL_FLOW: the Step's output declarations, or `None`.
+    pub output_variables: Option<Vec<OutputVariable>>,
+    /// CONTROL_FLOW: the binding state. `Bound` for every Step
+    /// `create_job` produces today.
+    pub binding: StepBinding,
+    /// CONTROL_FLOW: path-typed `Steps.*` values stored in
+    /// `resolved_symtab` in submission form. Empty today.
+    pub path_inputs: Vec<PathInput>,
 }
 
 pub struct job::StepScript {
@@ -635,6 +701,98 @@ pub enum job::CancelationMode {
     NotifyThenTerminate { notify_period_in_seconds: Option<FormatString> },
 }
 ```
+
+### CONTROL_FLOW Job Types (RFC 0010)
+
+Re-exported from `job`. Every new `job::Step` field has `#[serde(default)]` and is
+skipped when it holds its default, so a Step serialized before `CONTROL_FLOW` still
+deserializes and a Step without `CONTROL_FLOW` features serializes as before.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::OutputVariable {
+    pub name: String,
+    /// Serialized as "type" with the spec string ("LIST[INT]"), read
+    /// case-insensitively.
+    pub param_type: JobParameterType,
+    pub collect: OutputCollectMode,           // skipped when ONCE
+    pub unit: Option<String>,
+    pub constraints: OutputConstraints,       // skipped when empty
+}
+
+impl job::OutputVariable {
+    /// One Task's whole value: its type, then the declared constraints
+    /// (for a list: minLength, maxLength, and every element).
+    pub fn check_constraints(&self, value: &ExprValue) -> Result<(), String>;
+    /// One element reported under `collect: APPEND`. Errors for a
+    /// scalar type.
+    pub fn check_element(&self, element: &ExprValue) -> Result<(), String>;
+    /// The length of a list being collected under APPEND: maxLength
+    /// always, minLength only when `at_exit`. Errors for a scalar type.
+    pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
+}
+
+/// The constraint properties the definition declared, and only those.
+/// Every field is skipped when `None`.
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::OutputConstraints {
+    pub allowed_values: Option<OutputAllowedValues>,
+    pub min_value: Option<OutputBound>,
+    pub max_value: Option<OutputBound>,
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+    pub item: Option<Box<OutputConstraints>>,
+}
+
+impl job::OutputConstraints {
+    pub fn is_empty(&self) -> bool;
+}
+
+/// Externally tagged in lowercase: {"int": [1, 2]}, {"string": ["a"]}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum job::OutputAllowedValues {
+    Int(Vec<i64>),
+    Float(Vec<openjd_expr::value::Float64>),
+    String(Vec<String>),
+}
+
+/// Externally tagged in lowercase: {"int": 1}, {"float": 0.5}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum job::OutputBound {
+    Int(i64),
+    Float(openjd_expr::value::Float64),
+}
+
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED;
+/// `waiting_on` is serialized as "waitingOn".
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]
+pub enum job::StepBinding {
+    #[default]
+    Bound,
+    PendingInputs { waiting_on: Vec<String> },
+    Skipped,
+}
+
+impl job::StepBinding {
+    pub fn is_bound(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::PathInput {
+    pub symbol: String,
+    /// Serialized as "type" with its spelling, e.g. "list[path]".
+    pub ty: openjd_expr::ExprType,
+}
+```
+
+See [job-types.md](job-types.md) § CONTROL_FLOW fields, which has an example of the
+serialized form.
 
 ### Parameter Space (Resolved)
 
@@ -713,6 +871,7 @@ pub enum ModelExtension {
     FeatureBundle1,    // RFC 0004 — "FEATURE_BUNDLE_1"
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
+    ControlFlow,       // RFC 0010 — "CONTROL_FLOW" (requires EXPR; Job Templates only)
 }
 
 impl ModelExtension {
@@ -817,7 +976,10 @@ impl ValidationContext {
 
 ```rust
 /// Job parameter type — the `type` field on a job parameter definition,
-/// after `UPPER_SNAKE_CASE` → Rust-identifier conversion.
+/// after `UPPER_SNAKE_CASE` → Rust-identifier conversion. Also the type of
+/// a CONTROL_FLOW output variable. `Serialize` and `Deserialize` use the
+/// variant names (`"Int"`, `"ListString"`), not the spec strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum JobParameterType {
     String, Int, Float, Path, Bool, RangeExpr,
@@ -889,6 +1051,17 @@ pub enum ObjectType {
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DataFlow {
     None, In, Out, Inout,
+}
+
+/// RFC 0010 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OutputCollectMode {
+    #[default] Once, Last, Append,
+}
+
+impl OutputCollectMode {
+    pub fn as_spec_str(&self) -> &'static str;   // "ONCE", "LAST", "APPEND"
 }
 
 pub enum TemplateSpecificationVersion {
@@ -1342,3 +1515,11 @@ Enums that are marked `#[non_exhaustive]` today:
 they represent decidable logical concepts (newline mode, filesystem
 entity kind, data direction) whose sets of variants are not expected
 to change.
+
+The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
+`OutputCollectMode` (the RFC's three modes), `template::BoolOrFormatString`
+(the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
+binding states), and `job::OutputAllowedValues` / `job::OutputBound` (the
+value kinds the constraint properties take). A change to the RFC that adds
+a variant is a breaking change to these, which the crate's pre-1.0 version
+allows.

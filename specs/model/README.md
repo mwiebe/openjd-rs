@@ -71,3 +71,8 @@ Currently implements `2023-09` with extensions:
   Re-materialization of the wrap environment's embedded files on each task
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
+- `CONTROL_FLOW` (RFC 0010) — prototype, in progress. The `outputVariables` and
+  `enableIf` schema, the extension gate, and the structural rules (validation pass 11);
+  `job::Step` carries the output declarations. The `Steps.*` scope, `enableIf`
+  evaluation, step input binding, output collection, and `jobOutputDefinitions` are not
+  implemented yet (see `docs/control-flow-prototype-plan.md`).

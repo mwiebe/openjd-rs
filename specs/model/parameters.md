@@ -123,7 +123,7 @@ pub struct TaskParameterValue {
 pub type JobParameterInputValues = HashMap<String, ExprValue>;   // Raw user input
 pub type JobParameterValues = HashMap<String, JobParameterValue>; // Processed/typed
 pub type TaskParameterSet = HashMap<String, TaskParameterValue>;  // Single task's params
-pub type Extensions = HashSet<KnownExtension>;                    // Enabled extensions
+pub type Extensions = HashSet<ModelExtension>;                    // Enabled extensions
 ```
 
 ## PATH Parameter Handling

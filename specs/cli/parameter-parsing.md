@@ -174,16 +174,19 @@ JSON for path mapping rules.
 
 ## Extension Parsing
 
-Extension parsing is duplicated across all three commands that accept `--extensions`. The
-logic is identical:
+The commands that accept `--extensions` share `common::parse_extensions()`, which
+resolves the argument against `common::supported_extensions()`, the names of every
+`openjd_model::ModelExtension::ALL` entry:
 
 ```rust
-let default_exts = vec!["TASK_CHUNKING", "REDACTED_ENV_VARS", "FEATURE_BUNDLE_1", "EXPR"];
-let supported: Vec<&str> = match &args.extensions {
-    Some(ext_str) if ext_str.is_empty() => vec![],
-    Some(ext_str) => ext_str.split(',').map(|s| s.trim()).collect(),
-    None => default_exts,
-};
+pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
+    let supported = supported_extensions();
+    match arg {
+        Some(ext_str) if ext_str.is_empty() => Ok(vec![]),
+        Some(ext_str) => { /* split on ',', trim, upper-case, reject unsupported names */ }
+        None => Ok(supported.iter().map(|s| s.to_string()).collect()),
+    }
+}
 ```
 
 Three cases:

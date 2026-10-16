@@ -97,6 +97,13 @@ impl EvalBudgets {
 /// order. Failures that make a step uninstantiable (resolving its host
 /// requirements or parameter space) abort immediately and are reported
 /// alone.
+///
+/// With `CONTROL_FLOW` (RFC 0010), each Step's `outputVariables` are copied
+/// onto [`job::Step::output_variables`] and every Step is
+/// [`StepBinding::Bound`](job::StepBinding::Bound). `enableIf` is not
+/// evaluated yet, so any `enableIf` other than the literal `true` on a Step,
+/// Job Environment, or Step Environment is refused: an error at the field's
+/// path, reported with the carried-forward checks.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -241,6 +248,7 @@ pub fn create_job(
                 crate::error::PathElement::Field("jobEnvironments".to_string()),
                 crate::error::PathElement::Index(i),
             ];
+            reject_unevaluated_enable_if(env.enable_if.as_ref(), &env_path, &mut check_errors);
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
@@ -370,4 +378,25 @@ pub fn create_job(
         steps,
         job_environments,
     })
+}
+
+/// `CONTROL_FLOW` (RFC 0010): job creation does not evaluate `enableIf` yet,
+/// so it refuses any `enableIf` other than the literal `true` rather than
+/// creating a Job that runs a Step or enters an Environment the template
+/// disables. Static and dynamic `enableIf` arrive with step input binding.
+///
+/// `owner_path` is the Step's or Environment's path; the refusal is reported
+/// at its `enableIf`, ahead of that owner's other carried-forward checks.
+pub(super) fn reject_unevaluated_enable_if(
+    enable_if: Option<&crate::template::BoolOrFormatString>,
+    owner_path: &[crate::error::PathElement],
+    check_errors: &mut crate::error::ValidationErrors,
+) {
+    use crate::template::BoolOrFormatString;
+    if !matches!(enable_if, None | Some(BoolOrFormatString::Bool(true))) {
+        check_errors.add(
+            &crate::error::path_field(owner_path, "enableIf"),
+            "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.",
+        );
+    }
 }
