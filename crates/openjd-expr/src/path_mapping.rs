@@ -733,9 +733,10 @@ pub enum UnmapError {
 /// round trip forward-maps with it and must reproduce the Session's forward
 /// mapping. Do not build it from a filtered rule list (for example by source
 /// format): the no-rules case and the round trip are defined on the Session's
-/// full rules. The rule order only breaks ties among candidates.
-/// `PathFormat::Uri` as `worker_format` is treated as
-/// POSIX.
+/// full rules. The RFC's SHOULD to use only rules from the submission path
+/// format is not implemented, since no openjd runtime knows that format. The
+/// rule order only breaks ties among candidates. `PathFormat::Uri` as
+/// `worker_format` is treated as POSIX.
 pub fn unapply_rules(
     mapper: &PathMapper,
     path: &str,
@@ -792,12 +793,13 @@ fn build_candidate(rule: &PathMappingRule, remaining: &[&str]) -> String {
     candidate
 }
 
-/// Whether a filesystem path is absolute in the worker's format, matching
-/// Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`.
+/// Whether a filesystem path is absolute in the worker's format.
 ///
 /// POSIX: a leading `/`. Windows: a drive with a root (`C:\`, `C:/`) or a UNC
 /// path with a non-empty server and share (`\\server\share`). A Windows path
 /// rooted without a drive (`\x`) or drive-relative (`C:x`) is not absolute.
+/// This agrees with `pathlib` on ordinary forms; Python versions disagree on
+/// some edge forms (see `specs/expr/path-mapping.md`).
 fn is_absolute_on_worker(path: &str, windows: bool) -> bool {
     if !windows {
         return path.starts_with('/');
@@ -865,7 +867,10 @@ fn windows_anchor(path: &str) -> WindowsAnchor<'_> {
 /// `.` components and empty components (runs of separators, trailing
 /// separators) are dropped, and `..` removes the preceding component. A `..`
 /// directly below an anchor that has a root is dropped, as the OS resolves
-/// `/..` to `/`. Symbolic links are not resolved.
+/// `/..` to `/`. Symbolic links are not resolved. (`..` handling under an
+/// anchor without a root, and the `\`/empty anchors, only arise for a
+/// non-absolute `destination_path`, which never matches; they are kept so the
+/// normal form is defined for every input.)
 ///
 /// The anchor is kept with canonical separators: POSIX `/` (any number of
 /// leading slashes); Windows `X:\`, `X:`, `\\server\share\`, or `\`.
