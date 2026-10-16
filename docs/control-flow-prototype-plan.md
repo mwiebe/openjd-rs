@@ -310,8 +310,8 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
      `tasks: Known`) or `P` is statically `Skipped`.
 
    `create_job` loops over Steps in template order (`create_job/mod.rs:265`), and a Step may appear before a Step it
-   depends on (the existing `reverse_dependency_order.yaml` CLI test template). So `create_job` needs to instantiate
-   Steps in dependency order, building `StepInputs` from the Steps it has already instantiated, while it still stores
+   depends on (the existing `reverse_dependency_order.yaml` CLI test template). So, under `CONTROL_FLOW`, `create_job`
+   needs to instantiate Steps in dependency order, building `StepInputs` from the Steps it has already instantiated, while it still stores
    the Steps in template order. `StepDependencyGraph` is built from a `job::Job`, so it can't supply that order before
    the Job exists. Instead, factor the Kahn's-algorithm pass out of `detect_dependency_cycles`
    (`validate_v2023_09/structure.rs:1074`) so that it returns the order of the template's Steps. As written, that pass
@@ -339,9 +339,11 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
      `violations_across_steps_and_environments_are_reported_together` keeps its six errors. A resolution error in
      host requirements or the parameter space returns at once through `?` (`instantiate.rs:159`–`:169`) and aborts
      `create_job` alone, as `resolution_failure_aborts_alone_ahead_of_check_failures` pins.
-     * Without `CONTROL_FLOW`, the core keeps exactly today's behavior: a `let` failure is collected and that Step's
-       carried-forward checks still run, so `failed_step_level_let_still_checks_later_steps`
-       (`test_job_creation_resolved_values.rs:974`) keeps its three errors.
+     * Without `CONTROL_FLOW`, the core keeps exactly today's behavior: Steps are instantiated in template order (no
+       Step can read `Steps.*`, so dependency order is not needed; item 1), and a `let` failure is collected and that
+       Step's carried-forward checks still run, so `failed_step_level_let_still_checks_later_steps`
+       (`test_job_creation_resolved_values.rs:974`) keeps its three errors. A test with a bad host requirement in a
+       Step that comes before its dependency, whose range is bad, pins that the first Step's error is reported.
      * Under `CONTROL_FLOW`, the core stops a Step at its first failing group. A `let` error is collected into
        `check_errors`, whichever group's evaluation raised it, and that Step's later groups are not evaluated; a
        failing range or host requirement aborts `create_job` with its error, as today; a failing remaining group adds
@@ -461,9 +463,9 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
      enabled. List literals stay capped as written. This depends on how A3 is answered, so the cap is decided in one
      function that the answer can change.
    * In a Step that declares `outputVariables`, a `CHUNK[INT]` range must have distinct values once evaluated. Check
-     it wherever the range is materialized: in `instantiate_step`, which `create_job` uses for a computed range that
-     reads no `Steps.*` (today `range: "{{[1,1,2]}}"` creates three Tasks), and in `advance_step_binding`'s Task
-     enumeration group. A duplicate fails the Step with a message naming the value.
+     it in the Task enumeration group of the shared core (M4.3), which runs at creation for a range whose inputs are
+     concrete then (today `range: "{{[1,1,2]}}"` creates three Tasks) and in `advance_step_binding` otherwise. A
+     duplicate fails Job creation or the Step, with a message naming the value.
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
 7. **Task-count limits.** Keep `max_task_count` as the job total. The limits are checked in the Task enumeration
    group, when a Step's Tasks become known (§Limits item 4), not when it is bound. In `create_job`, count only Steps
@@ -729,8 +731,8 @@ struct StepRecord { state: SimStepState, task_outputs: Vec<IndexMap<String, Expr
 enum SimStepState { Pending, Bound, Skipped, Succeeded, Failed, Blocked }
 ```
 
-`Pending` holds the `job::Step` with its `PendingBinding`, so the simulator always knows which groups have
-evaluated. A step **advance** is: build `StepInputs` from the records of the Step's direct dependencies with
+The record's `job::Step` lives in the simulator's copy of the `job::Job`; while the record is `Pending`, that Step's
+`binding` is `PendingInputs` with its `PendingBinding`, so the simulator always knows which groups have evaluated. A step **advance** is: build `StepInputs` from the records of the Step's direct dependencies with
 `StepInputs::add_producer` (`Succeeded`, `Skipped`, or `TasksKnown` for a dependency whose Tasks are known), call
 `advance_step_binding`, and swap in the result. For each fact the call adds, print one line, such as
 `Step 'StylizeFrame': Tasks known (1440 tasks)` or `Step 'C': host requirements known`; a Step that becomes `Bound`
@@ -827,7 +829,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 2 | `feat(model): Steps.* scope in template validation` | 1 | the M2 scope rules and their messages except the job output scope, `enableIf` typing, and the `create_job` check-table seeding from M4.3. Until PR 4, `openjd run` of a template that reads `Steps.*` fails when a Task starts, because the value is unresolved; this is acceptable on the prototype branch |
 | 3a | `feat(expr): reverse path mapping` | — | E1 |
 | 3 | `feat(model): output directive parser and collector` | 1, 3a | M3 |
-| 4 | `feat(model): progressive step input binding` | 2, 3 | M4: `StepBinding` with `PendingBinding`, group inputs, Job-creation evaluation of every evaluable group, `advance_step_binding`, `binding_report`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
+| 4 | `feat(model): progressive step input binding` | 2, 3 | M4: `StepBinding` with `PendingBinding`, group inputs, Job-creation evaluation of every evaluable group, `advance_step_binding`, `binding_report`, `tasks_known`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
 | 5 | `feat(sessions): openjd_output_var directive` | 3, 4 | S1–S4, including the helper protocol and truncation changes, so the helper sub-crate's gates and the cross-user tests apply |
 | 4a | `feat(model): job outputs` | 2, 4 | the M1 `jobOutputDefinitions` schema, the M2 job output scope, and M4 item 9 |
 | 6 | `feat(cli): simulate progressive step input binding in openjd run` | 4, 4a, 5 | C1 (advancing pending Steps after each Step, early failure, per-group reports), C2 |
@@ -988,8 +990,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
     `C` failing after `P` and `Q` never running; and `C`'s `enableIf` reads `Q` and is false, which shows the
     failing range never evaluated and `C` skipped.
 
-**Conformance**: propose a `conformance-tests/2023-09/CONTROL_FLOW/` set in openjd-specifications, in the same format
-as `EXPR/jobs/*.test.yaml`. It is a separate repo and a separate task, and it is not part of this plan's PRs.
+**Conformance**: openjd-specifications at the target commit has a `conformance-tests/2023-09/CONTROL_FLOW/` set, in
+the same format as `EXPR/jobs/*.test.yaml`, including the `7.4--*` progressive-binding tests. Its README marks it
+unverified, because it was written before any implementation. Run it against the prototype from PR 6 on, as the
+`AGENTS.md` conformance slice does for the other extensions, and raise any disagreement between a test and the RFC on
+the RFC rather than changing the prototype to match the test.
 
 **Python parity (Q7)**: not applicable until openjd-model-for-python implements the extension. The M3 parser and the
 binding API are shaped so that a Python port can mirror them.
