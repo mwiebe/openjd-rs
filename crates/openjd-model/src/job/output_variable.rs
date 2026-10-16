@@ -68,6 +68,11 @@ mod job_param_type_spec {
 /// The constraint properties an output variable declared, in hashable,
 /// serializable form.
 ///
+/// `create_job` builds it from the template, so each property has the form
+/// the declared type takes. Deserialization does not re-check that: a
+/// property of the wrong form (say a `float` bound on an `INT` output) is
+/// kept and has no effect on the checks.
+///
 /// The meaning of each field follows the job parameter definition of the
 /// same type. For a list type, `min_length`/`max_length` bound the number of
 /// elements and `item` holds the per-element constraints; for `STRING`,
@@ -234,7 +239,10 @@ impl OutputVariable {
             (JobParameterType::ListFloat, ExprValue::ListFloat(v)) => {
                 Some(v.iter().cloned().map(ExprValue::Float).collect())
             }
-            (JobParameterType::ListString, ExprValue::ListString(v, _)) => {
+            // A list of paths is a list of strings, as for a LIST[STRING]
+            // job parameter value.
+            (JobParameterType::ListString, ExprValue::ListString(v, _))
+            | (JobParameterType::ListString, ExprValue::ListPath(v, _, _)) => {
                 Some(v.iter().cloned().map(ExprValue::String).collect())
             }
             (JobParameterType::ListPath, ExprValue::ListPath(v, _, _))
@@ -319,7 +327,9 @@ impl OutputVariable {
         match (ty, value) {
             (JobParameterType::Int, ExprValue::Int(v)) => self.check_int(c, *v, subject),
             (JobParameterType::Float, ExprValue::Float(v)) => self.check_float(c, v, subject),
+            // A path is a string, as for a STRING job parameter value.
             (JobParameterType::String, ExprValue::String(s))
+            | (JobParameterType::String, ExprValue::Path { value: s, .. })
             | (JobParameterType::Path, ExprValue::String(s))
             | (JobParameterType::Path, ExprValue::Path { value: s, .. }) => {
                 self.check_str(c, s, subject)

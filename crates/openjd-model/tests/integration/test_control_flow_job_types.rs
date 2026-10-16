@@ -92,8 +92,10 @@ fn to_job_output_variable_holds_only_declared_constraints() {
 
 #[test]
 fn nested_item_constraints_are_kept() {
-    let ov = def("{name: L, type: 'LIST[LIST[INT]]', maxLength: 4, item: {minLength: 1, item: {maxValue: 9}}}")
-        .to_job_output_variable();
+    let d = def("{name: L, type: 'LIST[LIST[INT]]', maxLength: 4, item: {minLength: 1, item: {maxValue: 9}}}");
+    // The accessor and the job form agree.
+    assert_eq!(*d.constraints(), d.to_job_output_variable().constraints);
+    let ov = d.to_job_output_variable();
     assert_eq!(
         ov.constraints,
         OutputConstraints {
@@ -1014,4 +1016,44 @@ steps:
              steps[1] -> enableIf:\n\t{msg}"
         )
     );
+}
+
+#[test]
+fn constraints_accessor_returns_the_declared_constraints() {
+    let d = def("{name: 'N', type: INT, minValue: 1, allowedValues: [1, 2]}");
+    assert_eq!(
+        *d.constraints(),
+        OutputConstraints {
+            allowed_values: Some(OutputAllowedValues::Int(vec![1, 2])),
+            min_value: Some(OutputBound::Int(1)),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn string_outputs_accept_path_values_as_strings() {
+    // As for STRING and LIST[STRING] job parameter values.
+    let s = def("{name: S, type: STRING, maxLength: 2}");
+    assert_eq!(
+        s.check_constraints(&ExprValue::new_path("/abc", PathFormat::Posix)),
+        Err("Output variable 'S': value length 4 exceeds maximum 2".into())
+    );
+    let l = def("{name: L, type: 'LIST[STRING]', item: {allowedValues: [/a]}}");
+    let paths = ExprValue::make_list(
+        vec![ExprValue::new_path("/a", PathFormat::Posix)],
+        ExprType::PATH,
+    )
+    .unwrap();
+    l.check_constraints(&paths).unwrap();
+}
+
+#[test]
+fn deserialized_constraints_of_the_wrong_form_have_no_effect() {
+    let ov: OutputVariable = serde_json::from_value(serde_json::json!({
+        "name": "A", "type": "INT",
+        "constraints": {"minValue": {"float": 100.0}, "allowedValues": {"string": ["a"]}}
+    }))
+    .unwrap();
+    ov.check_constraints(&ExprValue::Int(5)).unwrap();
 }
