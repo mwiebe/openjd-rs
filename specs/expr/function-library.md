@@ -522,12 +522,16 @@ the default library category modules (see `default_library.rs`).
 ## Function Coverage
 
 224 Rust signatures registered in `default_library.rs` (counted over
-`FunctionLibrary::for_profile(&ExprProfile::current())`), plus the 4 that the
-`SERVICE` extension (RFC 0009) adds to §2.2.4 — `join_host_port`, `split_host_port`,
-`is_ipv4`, `is_ipv6` — for 228 under `ExprProfile::latest()`. Those four are
-registered by `register_service_functions`, which `build_library_skeleton` calls only
-for a profile with `ExprExtension::Service`, and are implemented in
-`functions/host_port.rs`. All function names from the specification are present. Some per-type
+`FunctionLibrary::for_profile(&ExprProfile::current())`), plus the 6 that the
+`SERVICE` extension (RFC 0009) adds — `join_host_port`, `split_host_port`,
+`is_ipv4`, `is_ipv6` (§2.2.4) and the `repr_sh(int)` / `repr_sh(list[int])` signatures
+(§2.2.6) — for 230 under `ExprProfile::latest()`. Those six are registered by
+`register_service_functions`, which `build_library_skeleton` calls only for a profile
+with `ExprExtension::Service`; the host and port functions are implemented in
+`functions/host_port.rs`, and the two `repr_sh` signatures reuse `repr_sh_fn`
+(`functions/repr.rs` already rendered an `int` as its decimal form and a list as its
+space-joined items; only the signatures were absent, so without `SERVICE` the call is
+a type error). All function names from the specification are present. Some per-type
 overloads use generic `T1` signatures where the specification spells out per concrete
 type (e.g., `repr_pwsh` has separate signatures for string, int, float, bool, path,
 range_expr, list in the spec but uses generic `T1` in Rust).
@@ -662,6 +666,9 @@ sections 2.1 (Operators) and 2.2 (Built-in Functions). Key implementation choice
   (Python's `$` ≈ Rust's `(?:\n?\z)`); the intersection dialect allows `$`,
   so results differ on newline-terminated input.
 - **`repr_sh/cmd/pwsh`** produce shell-safe quoting per platform conventions (§2.2.6).
+  Under `SERVICE`, `repr_sh` also accepts `int` (the decimal form; never quoted) and
+  `list[int]` (decimal forms joined with single spaces), so a port number or
+  `WrappedService.Ports` needs no `string()` first (RFC 0009).
   `repr_pwsh` renders nested lists as nested array literals, using the unary
   comma for a one-element outer list (`@(,@(1, 2))`) since `@(@(1, 2))`
   flattens in PowerShell. `repr_sh` and `repr_cmd` reject nested lists at

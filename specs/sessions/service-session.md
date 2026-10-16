@@ -225,12 +225,12 @@ returns it; `end()` is still required.
    `SessionError::ServiceScriptFailed { name, action: "onEnter", reason }`
    with reason `exit code: N` / `canceled` / `timed out`, followed by
    `; openjd_fail: <message>` when the action emitted one (RFC 0009
-   `<ServiceActions>`: "the message accompanies it") — or, when the action
-   exited 0 and failed only because of the `openjd_fail` line (the crate's
-   rule for every action; open question Q1 in
-   `specs/service-extension-status.md`), `openjd_fail: <message> (exit code:
-   0)`, so the reason leads with its cause. The same shape is used for an
-   `onExit` failure in `end()`.
+   `<ServiceActions>`: the message is the failure's reason) — or, when the
+   action exited 0 and failed only because of the `openjd_fail` line (RFC
+   0009 `<ServiceActions>`: from `onEnter` or `onExit` the line marks the
+   action failed whatever its exit status), `openjd_fail: <message> (exit
+   code: 0)`, so the reason leads with its cause. The same shape is used for
+   an `onExit` failure in `end()`.
 
 ## Environment variables of a Service action
 
@@ -259,7 +259,8 @@ wiki's message table, and §9.7.1 rule 2):
 
 | Message | `onEnter` | `onRun` | `onHealthCheck` | `onExit` |
 |---|---|---|---|---|
-| `openjd_status` / `openjd_progress` / `openjd_fail` | honored | honored | ignored (logged) | honored |
+| `openjd_status` / `openjd_progress` | honored | honored | ignored (logged) | honored |
+| `openjd_fail` | honored (fails the action when it exits) | honored (**cancels** `onRun`: an instance failure, see "Reported failure") | ignored (logged) | honored (fails the action when it exits) |
 | `openjd_env` / `openjd_redacted_env` / `openjd_unset_env` | honored | ignored (logged) | ignored (logged) | ignored (logged) |
 | malformed env command (`CancelMarkFailed`) | cancels + fails the action | ignored (logged) | ignored (logged) | ignored (logged) |
 | `openjd_service_ready` | ignored (logged) | honored iff type is `STDOUT` | ignored (logged) | ignored (logged) |
@@ -397,6 +398,22 @@ to the scheduler, which this runtime performs itself. The resulting `ServiceRunE
 and the caller takes the restart decision once the exit arrives. A probe
 result that arrives after probing stopped is discarded.
 
+**Reported failure.** An `openjd_fail: <message>` line on `onRun`'s stdout
+while `onRun` runs is an instance failure in itself (RFC 0009
+`<ServiceActions>`; Template Schemas §9.7): the driver cancels `onRun` at once
+with its own cancelation method, as on UNHEALTHY (`Canceling Service '<name>'
+onRun: it reported openjd_fail: <message>`), stops probing (an in-flight
+`COMMAND` invocation is canceled, no further probe or heartbeat timer is
+armed, a later `openjd_service_ready` line does not make the instance READY),
+and the resulting `ServiceRunExit` has `reported_failure: Some(message)`,
+`fail_message: Some(message)` and `canceled: false`. Only the first such line
+acts; later ones only update the status message. It may arrive before or
+after READY; before READY, `wait_ready` reports `ExitedBeforeReady` once the
+exit lands. A line drained after `onRun` exited on its own is not a reported
+failure (it only sets `fail_message`, as before). When the caller's own
+cancel raced it, `canceled` is also `true` and the exit is not a failure, as
+for UNHEALTHY.
+
 - **`TCP_CONNECT`** — for each probed port (the check's `ports`, which the
   model restricts to TCP ports and defaults to every declared TCP port — a
   UDP port of a mixed Service is never probed, §9 item 7), the probe address
@@ -510,6 +527,7 @@ pub struct ServiceRunExit {
     pub exit_code: Option<i32>,
     pub canceled: bool,             // requested by the caller through this runtime
     pub unhealthy: Option<ServiceUnhealthy>, // Some: the health check canceled onRun (UNHEALTHY)
+    pub reported_failure: Option<String>,    // Some: onRun's openjd_fail line canceled it
     pub fail_message: Option<String>,
     pub stdout: String,             // when debug_collect_stdout
 }
@@ -519,14 +537,17 @@ pub struct ServiceRunExit {
 `end`, or the cancel handle, or the runner reported `Canceled` other than
 because the health check canceled it — i.e. the exit is *not* an instance
 failure under "Failure and restart". An UNHEALTHY exit has `unhealthy:
-Some(..)` and `canceled: false` (it *is* an instance failure); when the
-caller's own cancel races the health check's, both are set and the exit is
-not a failure. A command
+Some(..)` and `canceled: false` (it *is* an instance failure); a reported
+failure (an `openjd_fail` line while `onRun` ran, on which the runtime
+canceled it) has `reported_failure: Some(message)` and `canceled: false`
+(likewise an instance failure); when the caller's own cancel races either,
+`canceled` is also set and the exit is not a failure. A command
 that cannot be started, or a format string that fails to resolve, is a
 `Failed` exit with `exit_code: None` and the error as `fail_message`
-(instance failure, not a `launch()` error). As for every other action in this
-crate, an `openjd_fail` line makes the action `Failed` regardless of exit
-status and supplies `fail_message`.
+(instance failure, not a `launch()` error). `fail_message` carries the
+`openjd_fail` text whenever one was emitted — including one drained after an
+exit `onRun` reached on its own, which is then an ordinary `Failed` exit, as
+for every action in this crate.
 
 Observation API: `wait_ready()` / `health()` / `health_watch()`,
 `wait_exit()` / `run_exit()` / `exit_watch()`, `action_status()` (the Service

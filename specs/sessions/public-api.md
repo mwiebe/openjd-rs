@@ -663,6 +663,10 @@ pub struct ServiceRunExit {
     /// `Some` when the health check canceled onRun on UNHEALTHY — an
     /// instance failure (also set when the caller's cancel raced it).
     pub unhealthy: Option<ServiceUnhealthy>,
+    /// `Some(message)` when onRun's own `openjd_fail` line made the runtime
+    /// cancel it (RFC 0009 `<ServiceActions>`) — an instance failure, the
+    /// message its reason (also set when the caller's cancel raced it).
+    pub reported_failure: Option<String>,
     /// `openjd_fail` text, or why the action could not run.
     pub fail_message: Option<String>,
     /// Captured onRun output when `SessionConfig.debug_collect_stdout`.

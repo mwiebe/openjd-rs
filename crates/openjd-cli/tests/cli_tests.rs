@@ -6197,6 +6197,36 @@ mod services {
         assert!(!stdout.contains("TASK_MUST_NOT_RUN"), "{stdout}");
     }
 
+    /// RFC 0009 `<ServiceActions>`: an `openjd_fail` line from `onRun` is an
+    /// instance failure in itself. The runtime cancels `onRun` at once (the
+    /// process never gets past the line), the `is UNREADY` reason is the
+    /// message, and the relaunch stays in the Session (not a suspected port
+    /// conflict).
+    #[test]
+    fn test_on_run_openjd_fail_cancels_the_instance_and_relaunches_in_the_session() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unready = "Service 'S' (scope: Step Work) is UNREADY: onRun reported openjd_fail: \
+                       store corrupt (completedTasks: KEEP)";
+        let canceled = "Service 'S' onRun (launch 1) canceled; exit code: N/A; store corrupt";
+        let relaunch = "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1): \
+                        onRun reported openjd_fail: store corrupt";
+        assert!(pos(&stdout, unready) < pos(&stdout, canceled), "{stdout}");
+        assert!(pos(&stdout, canceled) < pos(&stdout, relaunch), "{stdout}");
+        assert!(stdout.contains("[Service S] S launch 2"), "{stdout}");
+        assert!(!stdout.contains("S1_SURVIVED"), "{stdout}");
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert!(
+            stdout.contains("TASK_1_DONE") && stdout.contains("TASK_2_DONE"),
+            "{stdout}"
+        );
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task

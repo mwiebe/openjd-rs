@@ -677,10 +677,17 @@ async fn on_run_exit_before_ready_is_detected() {
 #[tokio::test]
 async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     let root = TempDir::new().unwrap();
+    // RFC 0009 <ServiceActions>: the openjd_fail line is itself the
+    // instance failure — the runtime cancels onRun (TERMINATE here) before
+    // the process gets to its own exit, so the sleep after the line never
+    // completes and NEVER_PRINTED does not appear.
     let service = ServiceBuilder::new(
         "svc",
         &["main"],
-        sh("echo openjd_service_ready: up; sleep 1; echo openjd_status: shutting down; echo openjd_fail: disk full; exit 0"),
+        sh(
+            "echo openjd_service_ready: up; sleep 1; echo openjd_status: shutting down; \
+            echo openjd_fail: disk full; sleep 30; echo NEVER_PRINTED; exit 0",
+        ),
     )
     .health(stdout_check(300))
     .build();
@@ -712,12 +719,15 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     let from_watch = watch.borrow().clone().unwrap();
     let exit = ss.wait_exit().await.unwrap();
     assert_eq!(exit, from_watch);
-    // openjd_fail makes the action Failed even on exit 0 (existing runtime
-    // behavior for every action kind) and supplies the reason.
-    assert_eq!(exit.state, ActionState::Failed);
-    assert_eq!(exit.exit_code, Some(0));
+    // The runtime canceled onRun on its openjd_fail line: a runtime cancel,
+    // not the caller's (`canceled` is false — it IS an instance failure), with
+    // the message as the reported failure and the reason.
+    assert_eq!(exit.state, ActionState::Canceled);
+    assert_eq!(exit.exit_code, None);
     assert!(!exit.canceled);
+    assert_eq!(exit.reported_failure.as_deref(), Some("disk full"));
     assert_eq!(exit.fail_message.as_deref(), Some("disk full"));
+    assert!(!exit.stdout.contains("NEVER_PRINTED"), "{}", exit.stdout);
     // Readiness is unchanged by a later exit.
     assert_eq!(
         ss.health(),
@@ -727,10 +737,10 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
         })
     );
     let status = ss.action_status().unwrap();
-    assert_eq!(status.state, ActionState::Failed);
+    assert_eq!(status.state, ActionState::Canceled);
     assert_eq!(status.status_message.as_deref(), Some("shutting down"));
     assert_eq!(status.fail_message.as_deref(), Some("disk full"));
-    assert_eq!(status.exit_code, Some(0));
+    assert_eq!(status.exit_code, None);
     ss.end().await.unwrap();
 
     let statuses = statuses.lock().unwrap();
@@ -738,7 +748,119 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     assert!(statuses
         .iter()
         .any(|s| s.status_message.as_deref() == Some("shutting down")));
-    assert_eq!(statuses.last().unwrap().state, ActionState::Failed);
+    assert_eq!(statuses.last().unwrap().state, ActionState::Canceled);
+}
+
+/// `openjd_fail` before READY is a reported failure too: onRun is canceled
+/// at once, `wait_ready` reports the exit, and the message is carried. The
+/// cancelation uses onRun's own method (NOTIFY_THEN_TERMINATE here: the
+/// trap runs).
+#[tokio::test]
+async fn on_run_openjd_fail_before_ready_cancels_with_its_own_method() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            &format!(
+                "trap 'echo got-term >> {t}; exit 7' TERM; echo openjd_fail: no license; \
+                 while :; do sleep 0.1; done"
+            ),
+            10,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let started = std::time::Instant::now();
+    let health = ss.start().await.unwrap();
+    assert_eq!(health, ServiceHealth::ExitedBeforeReady, "{health:?}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("no license"));
+    assert!(!exit.canceled);
+    assert_eq!(exit.exit_code, Some(7), "the trap ran: {exit:?}");
+    assert_eq!(read_trace(&trace), vec!["got-term"]);
+    ss.end().await.unwrap();
+}
+
+/// Only the first `openjd_fail` line acts; later lines (drained after the
+/// cancel) only update the status message, and a second cancel is not
+/// issued. Probing has stopped: a `openjd_service_ready` line after the
+/// failure does not make the instance READY.
+#[tokio::test]
+async fn on_run_openjd_fail_first_line_wins_and_stops_probing() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_fail: first; echo openjd_fail: second; echo openjd_service_ready: up; sleep 30"),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let health = ss.start().await.unwrap();
+    assert!(!health.is_ready(), "{health:?}");
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("first"));
+    assert!(!exit.canceled);
+    ss.end().await.unwrap();
+}
+
+/// The caller's own cancel racing a reported failure: the caller cancels
+/// with a NOTIFY_THEN_TERMINATE grace period, and onRun prints `openjd_fail`
+/// from its TERM trap, inside that window. Both are recorded — the message
+/// is carried — but `canceled` is true, so the exit is not an instance
+/// failure (as for an UNHEALTHY exit the caller's cancel raced).
+#[tokio::test]
+async fn caller_cancel_racing_a_reported_failure_is_not_an_instance_failure() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            "trap 'echo openjd_fail: shutting down badly; sleep 0.3; exit 3' TERM; \
+             echo openjd_service_ready: up; while :; do sleep 0.1; done",
+            10,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    assert!(ss.cancel_run(None));
+    let exit = ss.wait_exit().await.unwrap();
+    assert!(exit.canceled, "{exit:?}");
+    assert_eq!(exit.exit_code, Some(3), "{exit:?}");
+    assert_eq!(
+        exit.reported_failure.as_deref(),
+        Some("shutting down badly")
+    );
+    ss.end().await.unwrap();
 }
 
 /// After `onRun` exits but before the caller settles the state (the exit is

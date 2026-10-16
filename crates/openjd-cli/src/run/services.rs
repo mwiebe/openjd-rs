@@ -276,16 +276,23 @@ enum FailureKind {
     Start(String),
     /// `onRun` exited before a health-check probe passed — possibly a port
     /// conflict, so the relaunch begins a new Service Session (new ports).
-    ExitedBeforeReady(ServiceRunExit),
+    ExitedBeforeReady(Box<ServiceRunExit>),
     /// `readinessTimeoutSeconds` elapsed while `onRun` kept running (it has
     /// been canceled and has exited by the time this is reported).
     ReadyTimedOut,
     /// `onRun` exited after READY while the scope still had work.
-    Exited(ServiceRunExit),
+    Exited(Box<ServiceRunExit>),
     /// The instance became UNHEALTHY: `failureThreshold` consecutive health
     /// probes failed after READY. The runtime has canceled `onRun`; it has
     /// exited by the time the restart decision is taken.
     Unhealthy(ServiceUnhealthy),
+    /// `onRun` reported with `openjd_fail` that it cannot serve (RFC 0009
+    /// `<ServiceActions>`): an instance failure in itself. The runtime has
+    /// canceled `onRun`, as on UNHEALTHY; the message is the reason. Whether
+    /// the instance was READY does not matter: the Service said so itself,
+    /// so this is not a suspected port conflict and the relaunch stays in
+    /// the Session.
+    Reported(String),
 }
 
 impl FailureKind {
@@ -310,6 +317,7 @@ impl FailureKind {
                 describe_exit(exit)
             ),
             Self::Unhealthy(unhealthy) => format!("instance UNHEALTHY: {unhealthy}"),
+            Self::Reported(message) => format!("onRun reported openjd_fail: {message}"),
         }
     }
 }
@@ -543,22 +551,29 @@ pub(super) struct Detected {
 enum InstanceFailure {
     Exit(ServiceRunExit),
     Unhealthy(ServiceUnhealthy),
+    /// `onRun` reported `openjd_fail`; the runtime canceled it.
+    Reported(String),
 }
 
 impl InstanceFailure {
     /// Classify an `onRun` exit the Session reported: UNHEALTHY when the
-    /// health check forced it, an ordinary exit otherwise.
+    /// health check forced it, a reported failure when `onRun`'s own
+    /// `openjd_fail` did, an ordinary exit otherwise.
     fn from_exit(exit: ServiceRunExit) -> Self {
-        match exit.unhealthy {
-            Some(u) => Self::Unhealthy(u),
+        if let Some(u) = exit.unhealthy {
+            return Self::Unhealthy(u);
+        }
+        match exit.reported_failure {
+            Some(message) => Self::Reported(message),
             None => Self::Exit(exit),
         }
     }
 
     fn into_kind(self) -> FailureKind {
         match self {
-            Self::Exit(exit) => FailureKind::Exited(exit),
+            Self::Exit(exit) => FailureKind::Exited(Box::new(exit)),
             Self::Unhealthy(u) => FailureKind::Unhealthy(u),
+            Self::Reported(message) => FailureKind::Reported(message),
         }
     }
 }
@@ -1569,6 +1584,7 @@ fn driver_lost_exit() -> ServiceRunExit {
         exit_code: None,
         canceled: false,
         unhealthy: None,
+        reported_failure: None,
         fail_message: Some("onRun driver ended without reporting an exit".into()),
         stdout: String::new(),
     }
@@ -1896,7 +1912,7 @@ async fn launch_until_ready(
             if exit.canceled {
                 Ok(false)
             } else {
-                Err(FailureKind::ExitedBeforeReady(exit))
+                Err(FailureKind::ExitedBeforeReady(Box::new(exit)))
             }
         }
         Err(e) => Err(FailureKind::Start(e.to_string())),
@@ -1938,13 +1954,14 @@ mod tests {
             exit_code: Some(3),
             canceled: false,
             unhealthy: None,
+            reported_failure: None,
             fail_message: Some("boom".into()),
             stdout: String::new(),
         };
         let start = FailureKind::Start("port 1 unavailable".into());
-        let before = FailureKind::ExitedBeforeReady(exit.clone());
+        let before = FailureKind::ExitedBeforeReady(Box::new(exit.clone()));
         let timed_out = FailureKind::ReadyTimedOut;
-        let exited = FailureKind::Exited(exit.clone());
+        let exited = FailureKind::Exited(Box::new(exit.clone()));
         let unhealthy = FailureKind::Unhealthy(ServiceUnhealthy {
             failed_probes: 2,
             failure_threshold: 2,
@@ -2000,12 +2017,26 @@ mod tests {
                 last_failure: "no openjd_service_ready line within 5s".into(),
             }),
             fail_message: None,
-            ..exit
+            ..exit.clone()
         };
         assert!(matches!(
             InstanceFailure::from_exit(forced).into_kind(),
             FailureKind::Unhealthy(u) if u.failed_probes == 3
         ));
+        // An exit the runtime forced because onRun reported openjd_fail is
+        // a reported failure: relaunched in the same Session, the message
+        // is the reason.
+        let reported = ServiceRunExit {
+            state: openjd_sessions::ActionState::Canceled,
+            exit_code: None,
+            reported_failure: Some("store corrupt".into()),
+            fail_message: Some("store corrupt".into()),
+            ..exit
+        };
+        let kind = InstanceFailure::from_exit(reported).into_kind();
+        assert!(matches!(&kind, FailureKind::Reported(m) if m == "store corrupt"));
+        assert!(!kind.requires_new_session());
+        assert_eq!(kind.describe(), "onRun reported openjd_fail: store corrupt");
         assert_eq!(
             describe_exit(&driver_lost_exit()),
             "failed; onRun driver ended without reporting an exit"

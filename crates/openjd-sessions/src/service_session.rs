@@ -265,6 +265,14 @@ pub struct ServiceRunExit {
     /// became UNHEALTHY (RFC 0009 "Failure and restart" step 2). Set even when the caller's own cancelation raced it, in
     /// which case `canceled` is also `true` and the exit is not a failure.
     pub unhealthy: Option<ServiceUnhealthy>,
+    /// `Some(message)` when `onRun` itself reported that it had failed with
+    /// an `openjd_fail` line and the runtime canceled it for that reason
+    /// (RFC 0009 `<ServiceActions>`: the message is an instance failure in
+    /// itself, and its reason). Like [`unhealthy`](Self::unhealthy), set even
+    /// when the caller's own cancelation raced it, in which case `canceled`
+    /// is also `true` and the exit is not a failure. [`fail_message`](Self::fail_message)
+    /// carries the same text.
+    pub reported_failure: Option<String>,
     /// The `openjd_fail` message, or the reason the action could not run.
     pub fail_message: Option<String>,
     /// `onRun`'s captured output, when `SessionConfig::debug_collect_stdout`
@@ -1149,6 +1157,7 @@ impl ServiceSession {
                     exit_code: None,
                     canceled: false,
                     unhealthy: None,
+                    reported_failure: None,
                     fail_message: Some("onRun driver ended without reporting an exit".into()),
                     stdout: String::new(),
                 };
@@ -2025,15 +2034,22 @@ impl HealthTracker<'_> {
 
     /// Apply one `onRun` message. `running` is false for messages drained
     /// after `onRun` exited, which cannot make the instance READY or count
-    /// as a heartbeat. Returns `true` when the message was an honored
-    /// `openjd_service_ready` line (the `STDOUT` probe), so the driver can
-    /// reset its heartbeat timer.
-    fn apply(&mut self, msg: ActionMessage, running: bool) -> bool {
-        let mut heartbeat = false;
+    /// as a heartbeat. Returns what the driver must act on: a heartbeat (an
+    /// honored `openjd_service_ready` line, the `STDOUT` probe, so the driver
+    /// re-arms its timer) or a reported failure (an `openjd_fail` line while
+    /// `onRun` runs — RFC 0009 `<ServiceActions>`: an instance failure in
+    /// itself, on which the driver cancels `onRun`).
+    fn apply(&mut self, msg: ActionMessage, running: bool) -> Applied {
+        let mut applied = Applied::Nothing;
         match msg {
             ActionMessage::Progress(v) => self.lock_status().progress = Some(v),
             ActionMessage::Status(s) => self.lock_status().status_message = Some(s),
-            ActionMessage::Fail(s) => self.lock_status().fail_message = Some(s),
+            ActionMessage::Fail(s) => {
+                self.lock_status().fail_message = Some(s.clone());
+                if running {
+                    applied = Applied::ReportedFailure(s);
+                }
+            }
             ActionMessage::ServiceReady(message) => {
                 if !self.stdout_check {
                     session_log!(
@@ -2054,7 +2070,7 @@ impl HealthTracker<'_> {
                         // other effect.
                         self.apply_health_probe(ProbeResult::Ok);
                     }
-                    heartbeat = true;
+                    applied = Applied::Heartbeat;
                 }
             }
             ActionMessage::SetEnv { .. } => {
@@ -2092,8 +2108,19 @@ impl HealthTracker<'_> {
             }
         }
         self.notify();
-        heartbeat
+        applied
     }
+}
+
+/// What [`HealthTracker::apply`] saw in an `onRun` message that the driver
+/// must act on.
+enum Applied {
+    Nothing,
+    /// An honored `openjd_service_ready` line: re-arm the heartbeat timer.
+    Heartbeat,
+    /// An `openjd_fail` line while `onRun` runs: cancel `onRun`, the
+    /// message is the instance failure's reason.
+    ReportedFailure(String),
 }
 
 type ProbeFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ProbeResult> + Send>>;
@@ -2213,6 +2240,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
     let mut next_probe: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut heartbeat: Option<std::pin::Pin<Box<tokio::time::Sleep>>> = None;
     let mut unhealthy: Option<ServiceUnhealthy> = None;
+    let mut reported_failure: Option<String> = None;
 
     let result = {
         let run_fut = runner.run_action(
@@ -2232,18 +2260,45 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 msg = message_rx.recv(), if result.is_none() => {
                     let Some(msg) = msg else { continue };
                     let was_pending = tracker.is_pending();
-                    if tracker.apply(msg, true) {
-                        // A STDOUT probe: READY on the first line; a
-                        // heartbeat afterwards. Either arms the deadline
-                        // anew when the check gives an interval.
-                        if let Some(interval) = plan.health_interval {
-                            if tracker.is_ready() {
-                                heartbeat = Some(Box::pin(tokio::time::sleep(interval)));
+                    match tracker.apply(msg, true) {
+                        Applied::Nothing => {}
+                        Applied::Heartbeat => {
+                            // A STDOUT probe: READY on the first line; a
+                            // heartbeat afterwards. Either arms the deadline
+                            // anew when the check gives an interval.
+                            if let Some(interval) = plan.health_interval {
+                                if tracker.is_ready() {
+                                    heartbeat = Some(Box::pin(tokio::time::sleep(interval)));
+                                }
+                            } else if was_pending {
+                                // No heartbeat: the instance is not monitored
+                                // after READY (its health is that onRun runs).
+                                tracker.phase = HealthPhase::Stopped;
                             }
-                        } else if was_pending {
-                            // No heartbeat: the instance is not monitored
-                            // after READY (its health is that onRun runs).
-                            tracker.phase = HealthPhase::Stopped;
+                        }
+                        Applied::ReportedFailure(message) => {
+                            // RFC 0009 <ServiceActions>: onRun has said it
+                            // cannot serve. The line is an instance failure
+                            // in itself — onRun is canceled with its own
+                            // cancelation method, as on UNHEALTHY, and the
+                            // message is the failure's reason. Only the
+                            // first line counts; probing stops.
+                            if reported_failure.is_none() {
+                                reported_failure = Some(message.clone());
+                                check_stop.cancel();
+                                drop(probe.take());
+                                drop(next_probe.take());
+                                drop(heartbeat.take());
+                                tracker.phase = HealthPhase::Stopped;
+                                session_log!(
+                                    info,
+                                    &session_id,
+                                    LogContent::PROCESS_CONTROL,
+                                    "Canceling Service '{}' {action_name}: it reported openjd_fail: {message}",
+                                    service_name
+                                );
+                                cancel_handle.cancel(None, false);
+                            }
                         }
                     }
                 }
@@ -2353,7 +2408,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 drop(next_probe.take());
                 drop(heartbeat.take());
                 while let Ok(msg) = message_rx.try_recv() {
-                    tracker.apply(msg, false);
+                    let _ = tracker.apply(msg, false);
                 }
                 break;
             }
@@ -2363,14 +2418,18 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
 
     let exit = match result {
         Ok(r) => {
+            // A cancel the runtime itself issued (UNHEALTHY, or a reported
+            // failure) is an instance failure, not the caller's cancel.
+            let runtime_canceled = unhealthy.is_some() || reported_failure.is_some();
             let canceled = cancel_requested.load(Ordering::SeqCst)
-                || (r.state == ActionState::Canceled && unhealthy.is_none());
+                || (r.state == ActionState::Canceled && !runtime_canceled);
             let fail_message = lock_status().fail_message.clone();
             ServiceRunExit {
                 state: r.state,
                 exit_code: r.exit_code,
                 canceled,
                 unhealthy: unhealthy.clone(),
+                reported_failure: reported_failure.clone(),
                 fail_message,
                 stdout: r.stdout,
             }
@@ -2389,6 +2448,7 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 exit_code: None,
                 canceled: cancel_requested.load(Ordering::SeqCst),
                 unhealthy: unhealthy.clone(),
+                reported_failure: reported_failure.clone(),
                 fail_message: Some(e.to_string()),
                 stdout: String::new(),
             }

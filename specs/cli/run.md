@@ -595,11 +595,14 @@ including `None` for job Environments).
 
 While a Task runs, `RunContext::run_task` selects between the Task and
 `ServiceManager::wait_instance_failure`, which resolves when a READY Service suffers
-an instance failure: its `onRun` exits other than by cancelation, or its health check
+an instance failure: its `onRun` exits other than by cancelation, its health check
 declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after READY —
 RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
 and has already canceled `onRun` with its cancelation method, the cancel "Failure and
-restart" step 2 describes). A relaunch that becomes READY *while the Task runs* is
+restart" step 2 describes), or its `onRun` **reports** that it has failed with an
+`openjd_fail` line (RFC 0009 `<ServiceActions>`; the Service Session likewise cancels
+`onRun` at once and the exit carries `reported_failure`, the message being the
+failure's reason — `FailureKind::Reported`). A relaunch that becomes READY *while the Task runs* is
 watched the same way: the watcher also wakes when a background start or relaunch
 finishes and, when it finished READY, holds the instance as READY at once rather than
 leaving it to the next gate (`promote_finished_relaunches`), so a second exit during
@@ -667,8 +670,10 @@ On an instance failure the Service becomes UNREADY (an UNHEALTHY one is logged a
 
 Then, if relaunches so far `< restartPolicy.maxAttempts`, the Service is relaunched
 (consuming one attempt): `ServiceSession::launch()` again in the same Session after an
-exit of a READY instance, an UNHEALTHY verdict (the relaunch first awaits the exit of
-the `onRun` the Session canceled — "Failure and restart" step 2, constraint 5), or a
+exit of a READY instance, an UNHEALTHY verdict or a reported `openjd_fail` (the relaunch
+first awaits the exit of the `onRun` the Session canceled — "Failure and restart" step 2,
+constraint 5; a reported failure stays in the Session whether or not the instance was
+READY, since the Service said so itself and no port conflict is suspected), or a
 ready timeout (which first cancels `onRun` and awaits its exit — step 2), but in a
 **new Service Session**
 (new working directory, new free ports — a requested port stays the Service's — Environments re-entered, `onEnter` re-run) when the
@@ -789,7 +794,8 @@ heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>
 `is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
 <what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `onRun (launch N) canceled;
 exit code: N/A` or `… exited; exit code: <n>` (how the failed instance's `onRun` ended:
-`canceled` when the runtime canceled it after UNHEALTHY or a readiness timeout, `exited` when
+`canceled` when the runtime canceled it after UNHEALTHY, a reported `openjd_fail`, or a
+readiness timeout, `exited` when
 it exited on its own; logged once the exit is collected and always before the relaunch
 or FAILED line, so the old instance is seen gone before the new one starts — RFC 0009
 "Failure and restart" step 2. For a failure detected while the instance was READY it
@@ -802,7 +808,8 @@ Service Session …`, `is FAILED: <reason>; N of M relaunch(es) used
 at: <path>` under `--preserve`). The `<reason>` of a failure is one of
 `failed to start: …`, `onRun exited before becoming READY (exit code: N[; <fail
 message>])`, `did not become READY within readinessTimeoutSeconds`, `onRun exited while the
-scope still had work (…)`, or `instance UNHEALTHY: <the UNHEALTHY detail>`. The
+scope still had work (…)`, `instance UNHEALTHY: <the UNHEALTHY detail>`, or `onRun reported
+openjd_fail: <message>`. The
 Service's subprocess output streams through the session logger like a Task's, with the
 `[onHealthCheck]` tag the runtime adds — including the runtime's
 WARN line when the Service's `onEnter` uses `openjd_redacted_env` without the

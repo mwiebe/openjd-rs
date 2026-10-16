@@ -28,8 +28,9 @@ Expression language for [Open Job Description] (OpenJD) templates. Part of the
 - **Path mapping** — applying source→destination path rules across
   platforms.
 - **Host and port functions** (`SERVICE` extension, RFC 0009) —
-  `join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`, registered only
-  for a profile with `ExprExtension::Service` (`ExprProfile::latest()`, or the
+  `join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`, and the
+  `repr_sh(int)` / `repr_sh(list[int])` signatures, registered only for a
+  profile with `ExprExtension::Service` (`ExprProfile::latest()`, or the
   model layer when a document declares `SERVICE`).
 
 The parser is built on [`ruff_python_parser`], the same Python parser Astral

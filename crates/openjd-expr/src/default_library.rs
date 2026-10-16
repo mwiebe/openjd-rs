@@ -66,12 +66,19 @@ fn build_library_skeleton(profile: &ExprProfile) -> FunctionLibrary {
     lib
 }
 
-/// Register the host and port string functions that the `SERVICE`
-/// extension (RFC 0009) adds to the Expression Language (§2.2.4). They
-/// are available only when a profile enables [`ExprExtension::Service`];
-/// a template that declares `EXPR` without `SERVICE` does not get them.
+/// Register the functions that the `SERVICE` extension (RFC 0009) adds to
+/// the Expression Language: the host and port string functions (§2.2.4) and
+/// the `int` / `list[int]` signatures of `repr_sh` (§2.2.6, so a port number
+/// or `WrappedService.Ports` needs no `string()` first). They are available
+/// only when a profile enables [`ExprExtension::Service`]; a template that
+/// declares `EXPR` without `SERVICE` does not get them.
 fn register_service_functions(lib: &mut FunctionLibrary) {
     use crate::functions::host_port::*;
+    use crate::functions::repr::repr_sh_fn;
+    for signature in ["(int) -> string", "(list[int]) -> string"] {
+        lib.register_sig("repr_sh", signature, repr_sh_fn)
+            .expect("bad builtin signature");
+    }
     lib.register_sig(
         "join_host_port",
         "(string, int) -> string",

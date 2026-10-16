@@ -146,6 +146,71 @@ fn static_typing_without_service_does_not_know_host_port_functions() {
 }
 
 // ══════════════════════════════════════════════════════════════
+// repr_sh(int) / repr_sh(list[int]) — Expression Language §2.2.6, added by
+// RFC 0009 under SERVICE
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn repr_sh_int_signatures_are_registered_only_with_service_extension() {
+    let has_int_sigs = |lib: &FunctionLibrary| {
+        lib.get_signatures("repr_sh")
+            .iter()
+            .map(|s| s.signature.to_string())
+            .filter(|s| s.starts_with("(int)") || s.starts_with("(list[int])"))
+            .count()
+    };
+    assert_eq!(has_int_sigs(&base_lib()), 0);
+    assert_eq!(has_int_sigs(&service_lib()), 2);
+    assert_eq!(
+        has_int_sigs(&FunctionLibrary::for_profile(&ExprProfile::latest())),
+        2
+    );
+    // The base signatures are untouched by the addition.
+    assert_eq!(
+        base_lib().get_signatures("repr_sh").len() + 2,
+        service_lib().get_signatures("repr_sh").len()
+    );
+}
+
+#[test]
+fn repr_sh_of_int_is_its_decimal_form() {
+    assert_eq!(eval_str("repr_sh(6379)"), "6379");
+    assert_eq!(eval_str("repr_sh(-1)"), "-1");
+    assert_eq!(eval_str("repr_sh(0)"), "0");
+    assert_eq!(eval_str("(6379).repr_sh()"), "6379");
+    assert_eq!(
+        eval_type("repr_sh(P)", &st_unresolved(&[("P", "int")])).to_string(),
+        "unresolved[string]"
+    );
+}
+
+#[test]
+fn repr_sh_of_int_list_joins_decimal_forms_with_single_spaces() {
+    assert_eq!(eval_str("repr_sh([80, 443])"), "80 443");
+    assert_eq!(eval_str("repr_sh([6379])"), "6379");
+    assert_eq!(eval_str("repr_sh([-1, 0, 65535])"), "-1 0 65535");
+    assert_eq!(eval_str("[80, 443].repr_sh()"), "80 443");
+    assert_eq!(
+        eval_type("repr_sh(Ports)", &st_unresolved(&[("Ports", "list[int]")])).to_string(),
+        "unresolved[string]"
+    );
+}
+
+#[test]
+fn repr_sh_of_int_without_service_is_a_type_error() {
+    let lib = base_lib();
+    let st = SymbolTable::new();
+    for expr in ["repr_sh(6379)", "repr_sh([80, 443])"] {
+        let e = eval_with(expr, &lib, &st).unwrap_err();
+        assert!(e.contains("repr_sh"), "{expr}: {e}");
+    }
+    // Static typing without SERVICE rejects it too, so a template validated
+    // without the extension never passes.
+    let st = st_unresolved(&[("Ports", "list[int]")]);
+    assert!(eval_with("repr_sh(Ports)", &lib, &st).is_err());
+}
+
+// ══════════════════════════════════════════════════════════════
 // join_host_port
 // ══════════════════════════════════════════════════════════════
 

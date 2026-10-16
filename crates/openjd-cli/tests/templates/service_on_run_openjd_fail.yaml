@@ -1,0 +1,33 @@
+# RFC 0009 <ServiceActions>: an openjd_fail line from onRun is itself an
+# instance failure. The runtime cancels onRun at once (TERMINATE) — the line
+# after the sleep is never printed — and the restart decision runs with the
+# message as the reason: with maxAttempts 1 and KEEP, a same-Session relaunch
+# (the Service said so itself; not a suspected port conflict). Task 1, running
+# under KEEP, completes.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "OnRunOpenjdFail"
+parameterDefinitions:
+  - name: Marker
+    type: STRING
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nn = int(open(m).read()) + 1 if os.path.exists(m) else 1\nopen(m, 'w').write(str(n))\nprint(f'S launch {n}', flush=True)\nprint('openjd_service_ready: up', flush=True)\nif n == 1:\n    while not os.path.exists(m + '.go'):\n        time.sleep(0.05)\n    print('openjd_fail: store corrupt', flush=True)\n    time.sleep(5)\n    print('S1_SURVIVED', flush=True)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "S" }]
+    parameterSpace:
+      taskParameterDefinitions: [{ name: N, type: INT, range: "1-2" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time\nm = r'{{ Param.Marker }}'\nif {{ Task.Param.N }} == 1:\n    open(m + '.go', 'w').close(); time.sleep(1.5)\nprint('TASK_{{ Task.Param.N }}_DONE')"]
