@@ -44,8 +44,10 @@ Source: `crates/openjd-model/src/outputs/` (`mod.rs`, `directive.rs`, `convert.r
 * `<TaskSelector>` is `[`, an optional `-`, one or more ASCII digits, `]`, with no
   whitespace. It is parsed as an `i64`, so `[012]` is 12 and `[-0]` is 0. A selector
   outside the `i64` range is a grammar error: it cannot name a `CHUNK[INT]` value.
-* `=` follows the name or selector directly. Whitespace before it is an error with its
-  own message; spaces and tabs after it are skipped (`N= 1`, `N= @f`).
+* `=` follows the name or selector directly. Whitespace after the name or selector is an
+  error with its own message (`whitespace is not allowed after 'N'`, `... after 'N[1]'`),
+  and any other character is reported as found (`expected '=' after 'N', found 'é'`).
+  Spaces and tabs after `=` are skipped (`N= 1`, `N= @f`).
 * A value that begins with `@` is a file path: the rest of the line, with trailing spaces
   and tabs removed (leading ones are kept, since they follow the `@`). It must not be
   empty. Anything else is the JSON text with surrounding spaces and tabs removed; it must
@@ -63,17 +65,21 @@ the directives of one Action:
 
 | Argument | Meaning |
 |---|---|
-| `declared` | The Step's `job::Step::output_variables`. A repeated name keeps its first declaration (validation rejects repeats). |
+| `declared` | The Step's `job::Step::output_variables` (`step.output_variables.as_deref().unwrap_or_default()`). A repeated name keeps its first declaration (validation rejects repeats). |
 | `max_bytes` | The per-Task size limit. RFC 0010 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
 | `path_rules` | The Session's full path mapping rules, in the order it applies them (`Session::path_mapping_rules()`), unfiltered, as `unapply_rules` requires. |
 | `worker_format` | The worker host's path format: the format a reported `PATH` value is parsed in. |
 | `chunk` | The values of the Step's `CHUNK[INT]` parameter in the chunk being run, in iteration order; `None` for a Step without one. |
 
-A chunk that repeats a value is an error (`OutputErrorKind::Selector`). The RFC requires
-distinct values in a Step with outputs (§Chunked Steps item 1), so that a value names
-one Task; binding rejects duplicates, and the collector refuses them rather than merging
-two Tasks. The plan's signature returned `Self`; this one returns `Result` for that
-reason.
+`new` returns `Result`, where the plan's signature returned `Self`, for two refusals:
+
+* A chunk that repeats a value (`OutputErrorKind::Selector`). The RFC requires distinct
+  values in a Step with outputs (§Chunked Steps item 1), so that a value names one Task;
+  binding rejects duplicates, and the collector refuses them rather than merging two
+  Tasks.
+* A declaration with `collect: APPEND` on a type that is not a list
+  (`OutputErrorKind::Declaration`). Template validation rejects it, but
+  `job::OutputVariable`'s fields are public, and the collector needs an element type.
 
 A runtime calls, for each directive:
 
@@ -106,9 +112,12 @@ In order:
 For `from_file`, the bytes are the `@` file's whole content: a UTF-8 byte order mark is
 removed, the rest must be valid UTF-8 and contain no NUL (`FileContent`), and it may span
 lines. An inline value's bytes are its JSON text; non-UTF-8 bytes there are a `Grammar`
-error, and surrounding spaces and tabs are removed. The text must be exactly one JSON
-value (`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, numbers that
-overflow `f64` (`1e400`), and trailing text.
+error (`Invalid openjd_output_var directive: the value of 'N' is not valid UTF-8`), and
+surrounding spaces and tabs are removed. The text must be exactly one JSON value
+(`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, and trailing text. A number
+too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as the RFC's
+type conversion rules say, does not convert: `serde_json` reports it as a parse error,
+and the collector reports it as a `Conversion` error with its line and column.
 
 Conversion (`Conversion` errors) follows §Processing a directive, "Type conversion":
 
@@ -157,8 +166,13 @@ worker_format)` (RFC §Path values; `specs/expr/path-mapping.md` § Reverse mapp
 `ExprValue::Path` gets the format the function returns: the matching rule's
 `source_path_format`, `Uri` for a URI, or `worker_format` when there are no rules. A
 `LIST[PATH]` value takes its first element's format (an `ExprValue::ListPath` has one
-format; each element's text is kept as stored), or `worker_format` when empty.
-Constraints, the size, and the returned value all use the stored form.
+format; each element's text is kept as stored), or `worker_format` when empty. Elements
+mapped back through rules of different source formats therefore share one format, and
+an element taken out of the list has the list's format; forward mapping works on the
+text and does not read the format, so this matters only to EXPR path operations on the
+stored (`RawOutput`) value, which later PRs expose. Constraints, the size, and the
+returned value all use the stored form. A `Path` error names where the path is
+(`value`, `element`, `item[1]`).
 
 ### Constraints
 
@@ -171,7 +185,11 @@ is checked by `finish` (`check_length(len, true)`). Only declared properties app
 
 A `RANGE_EXPR` value reported as a JSON string is checked in its written spelling, as a
 `RANGE_EXPR` job parameter value is, and stored as the `ExprValue::RangeExpr`, whose
-canonical spelling may be shorter (`"1-10:2"` is 6 characters and displays as `1-9:2`).
+canonical spelling may differ: `"1-10:2"` is 6 characters and displays as `1-9:2`, and
+`"3,1"` displays as `1,3`. This differs from the RFC table, whose `RANGE_EXPR` row shows
+the result `1-10:2`; `ExprValue::RangeExpr` keeps no spelling, as for a `RANGE_EXPR` job
+parameter, so the prototype records the divergence here rather than changing the
+type.
 
 ### Size
 
@@ -205,14 +223,23 @@ or a short `APPEND` list fails the whole call, so one Task fails the whole chunk
 
 ## Errors
 
-`OutputError` carries an `OutputErrorKind` and a message; `Display` is the message. Every
-message except a grammar error begins `Output variable '<name>'`, or
-`Output variable '<name>[<task>]'` with a selector, and names the problem. Messages quote
-an inline value's text and the offending converted element, cut to 200 characters with
-`...`. They never quote an `@` file's text: a JSON error gives only `serde_json`'s line and
-column, and a conversion error names only the element's type. Constraint messages come
-from `job::OutputVariable` and name the value as job parameter constraint messages do.
-The runtime adds the file path and Action context.
+`OutputError` carries an `OutputErrorKind` and a message; `Display` is the message.
+Grammar errors begin `Invalid openjd_output_var directive:`. The two refusals of `new`
+describe the chunk or the declaration. Every other message begins
+`Output variable '<name>'`, or `Output variable '<name>[<task>]'` with a selector, and
+names the problem and, where it has one, the position in the value (`item[1][0]`).
+
+Messages quote an inline value's text and the converted value or element that is
+invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. The
+RFC asks for "the offending text". They never quote an `@` file's text as such: a JSON
+error for a file gives only `serde_json`'s line and column, and a conversion error only
+the element's type. Quoted text is cut to 200 characters with `...`, and control
+characters in it are escaped (`\n`, `\u{1b}`), so a message stays on one line and cannot
+drive a terminal; `job::OutputVariable`'s constraint messages quote strings the same way.
+Constraint messages come from `job::OutputVariable` and name the value as job parameter
+constraint messages do. The plan said messages never quote an `@` file's content; quoting
+the converted invalid value follows the RFC instead. The runtime adds the file path and
+Action context.
 
 | Kind | Cause |
 |---|---|
@@ -222,11 +249,12 @@ The runtime adds the file path and Action context.
 | `Repeated` | A second `ONCE` value |
 | `Json` | Not exactly one JSON value |
 | `FileContent` | An `@` file is not UTF-8 or contains NUL |
-| `Conversion` | `null`, an object, too deep, or no conversion to the target type |
+| `Conversion` | `null`, an object, too deep, a number too large for a float, or no conversion to the target type |
 | `Path` | A relative `PATH` value, or one with no submission-context form |
 | `Constraint` | A declared constraint property is violated |
 | `Size` | The Task's values would exceed `max_bytes` |
 | `Missing` | At exit, a `ONCE`/`LAST` value is missing or an `APPEND` list is too short |
+| `Declaration` | `new` was given `collect: APPEND` on a non-list type |
 
 ## Python parity
 

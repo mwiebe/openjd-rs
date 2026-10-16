@@ -55,13 +55,21 @@ pub enum OutputErrorKind {
     /// At exit: a `ONCE` or `LAST` output has no value, or an `APPEND`
     /// output's list is shorter than its `minLength`.
     Missing,
+    /// A declaration given to [`OutputCollector::new`] cannot be collected:
+    /// `collect: APPEND` on a type that is not a list. Template validation
+    /// rejects such a declaration, so only a hand-built one reaches this.
+    Declaration,
 }
 
 /// An invalid directive, or incomplete outputs at exit.
 ///
 /// The message names the output (with its task selector in a chunked Step)
-/// and the problem. It quotes an inline value's text, shortened when long, and
-/// never quotes an `@` file's text. Its `Display` is the message.
+/// and the problem. It may quote an inline value's text, and the converted
+/// value or element that is invalid (a `PATH` with no submission-context form,
+/// a string not in `allowedValues`), but never an `@` file's text as such: a
+/// JSON or conversion error for a file value gives only a position or a type.
+/// Quoted text is cut to 200 characters and its control characters escaped.
+/// Its `Display` is the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputError {
     kind: OutputErrorKind,
@@ -98,11 +106,26 @@ impl std::error::Error for OutputError {}
 /// The most characters of a value or directive a message quotes.
 const QUOTE_LIMIT: usize = 200;
 
-/// `text` in single quotes, cut to [`QUOTE_LIMIT`] characters with `...`
-/// when longer.
+/// `text` in single quotes for a message: cut to [`QUOTE_LIMIT`] characters
+/// with `...` when longer, and with control characters escaped (`\n`,
+/// `\u{1b}`), so a message stays on one line and cannot drive a terminal.
 pub(crate) fn quote(text: &str) -> String {
-    match text.char_indices().nth(QUOTE_LIMIT) {
-        None => format!("'{text}'"),
-        Some((end, _)) => format!("'{}...'", &text[..end]),
+    let (shown, cut) = match text.char_indices().nth(QUOTE_LIMIT) {
+        None => (text, ""),
+        Some((end, _)) => (&text[..end], "..."),
+    };
+    format!("'{}{cut}'", escape_controls(shown))
+}
+
+/// `text` with its control characters escaped (`\n`, `\u{1b}`).
+pub(crate) fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_control() {
+            out.extend(c.escape_debug());
+        } else {
+            out.push(c);
+        }
     }
+    out
 }

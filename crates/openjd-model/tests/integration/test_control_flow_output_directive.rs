@@ -79,13 +79,12 @@ fn leading_spaces_and_tabs() {
 fn whitespace_before_equals_is_rejected() {
     assert_eq!(
         grammar_err(" N =1"),
-        "Invalid openjd_output_var directive: whitespace is not allowed between 'N' and '=', \
-         in ' N =1'"
+        "Invalid openjd_output_var directive: whitespace is not allowed after 'N', in ' N =1'"
     );
     assert_eq!(
         grammar_err(" N[1]\t=1"),
-        "Invalid openjd_output_var directive: whitespace is not allowed between 'N' and '=', \
-         in ' N[1]\t=1'"
+        "Invalid openjd_output_var directive: whitespace is not allowed after 'N[1]', \
+         in ' N[1]\\t=1'"
     );
 }
 
@@ -136,8 +135,7 @@ fn whitespace_inside_selector_is_rejected() {
 fn whitespace_between_name_and_selector_is_rejected() {
     assert_eq!(
         grammar_err(" N [1]=1"),
-        "Invalid openjd_output_var directive: whitespace is not allowed between 'N' and '=', \
-         in ' N [1]=1'"
+        "Invalid openjd_output_var directive: whitespace is not allowed after 'N', in ' N [1]=1'"
     );
 }
 
@@ -153,7 +151,7 @@ fn empty_file_path() {
     assert_eq!(
         grammar_err(" N=@ \t"),
         "Invalid openjd_output_var directive: the file path after '@' for 'N' is empty, \
-         in ' N=@ \t'"
+         in ' N=@ \\t'"
     );
 }
 
@@ -200,15 +198,16 @@ fn missing_equals() {
     );
     assert_eq!(
         grammar_err(" N:1"),
-        "Invalid openjd_output_var directive: expected '=' after 'N', in ' N:1'"
+        "Invalid openjd_output_var directive: expected '=' after 'N', found ':', in ' N:1'"
     );
     assert_eq!(
         grammar_err(" Né=1"),
-        "Invalid openjd_output_var directive: expected '=' after 'N', in ' Né=1'"
+        "Invalid openjd_output_var directive: expected '=' after 'N', found 'é', in ' Né=1'"
     );
     assert_eq!(
         grammar_err(" N[1]x=1"),
-        "Invalid openjd_output_var directive: expected '=' after 'N', in ' N[1]x=1'"
+        "Invalid openjd_output_var directive: expected '=' after 'N[1]', found 'x', \
+         in ' N[1]x=1'"
     );
 }
 
@@ -301,11 +300,34 @@ fn selector_unclosed() {
 fn two_selectors() {
     assert_eq!(
         grammar_err(" R[1][2]=1"),
-        "Invalid openjd_output_var directive: expected '=' after 'R', in ' R[1][2]=1'"
+        "Invalid openjd_output_var directive: expected '=' after 'R[1]', found '[', \
+         in ' R[1][2]=1'"
     );
 }
 
 // === Messages ===
+
+#[test]
+fn control_characters_are_escaped_in_the_message() {
+    assert_eq!(
+        grammar_err(" N\u{1b}[31m=1"),
+        "Invalid openjd_output_var directive: expected '=' after 'N', found '\\u{1b}', \
+         in ' N\\u{1b}[31m=1'"
+    );
+    assert_eq!(
+        grammar_err(" N\n=1"),
+        "Invalid openjd_output_var directive: expected '=' after 'N', found '\\n', \
+         in ' N\\n=1'"
+    );
+}
+
+#[test]
+fn missing_equals_at_end_after_selector() {
+    assert_eq!(
+        grammar_err(" \tR[2]"),
+        "Invalid openjd_output_var directive: expected '=' after 'R[2]', in ' \\tR[2]'"
+    );
+}
 
 #[test]
 fn long_payload_is_shortened_in_the_message() {
@@ -315,8 +337,8 @@ fn long_payload_is_shortened_in_the_message() {
     assert_eq!(
         msg,
         format!(
-            "Invalid openjd_output_var directive: whitespace is not allowed between 'N' and \
-             '=', in '{quoted}...'"
+            "Invalid openjd_output_var directive: whitespace is not allowed after 'N', \
+             in '{quoted}...'"
         )
     );
 }

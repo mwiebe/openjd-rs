@@ -95,6 +95,20 @@ impl OutputCollector {
                 .entry(var.name.clone())
                 .or_insert_with(|| var.clone());
         }
+        // `accept` and `finish` take an APPEND output's element type.
+        if let Some(var) = by_name.values().find(|v| {
+            v.collect == OutputCollectMode::Append
+                && v.param_type.expr_type().code() != TypeCode::List
+        }) {
+            return Err(OutputError::new(
+                OutputErrorKind::Declaration,
+                format!(
+                    "Output variable '{}': collect mode APPEND requires a LIST type, but it is \
+                     declared {}",
+                    var.name, var.param_type
+                ),
+            ));
+        }
         let chunked = chunk.is_some();
         let mut tasks = IndexMap::new();
         match chunk {
@@ -225,9 +239,12 @@ impl OutputCollector {
             (text, json.len())
         } else {
             let text = std::str::from_utf8(json).map_err(|_| {
-                err(
+                OutputError::new(
                     OutputErrorKind::Grammar,
-                    "the value is not valid UTF-8".to_string(),
+                    format!(
+                        "Invalid openjd_output_var directive: the value of '{label}' is not \
+                         valid UTF-8"
+                    ),
                 )
             })?;
             let text = text.trim_matches([' ', '\t']);
@@ -240,10 +257,25 @@ impl OutputCollector {
             } else {
                 quote(text)
             };
-            err(
-                OutputErrorKind::Json,
-                format!("{shown} is not one valid JSON value: {e}"),
-            )
+            // A number too large for a float is valid JSON (RFC 8259) but
+            // does not convert (RFC 0010 §Processing a directive, "Type
+            // conversion"); serde_json reports it as a parse error.
+            if e.to_string().starts_with("number out of range") {
+                err(
+                    OutputErrorKind::Conversion,
+                    format!(
+                        "{shown} has a number too large to represent as a float (at line {} \
+                         column {})",
+                        e.line(),
+                        e.column()
+                    ),
+                )
+            } else {
+                err(
+                    OutputErrorKind::Json,
+                    format!("{shown} is not one valid JSON value: {e}"),
+                )
+            }
         })?;
 
         let append = var.collect == OutputCollectMode::Append;
@@ -273,10 +305,10 @@ impl OutputCollector {
         // PATH values are stored in the submission path context.
         let mut size = reported;
         if is_path_type(&target) {
-            value = self.unmap(value).map_err(|(path, e)| {
+            value = self.unmap(value, subject).map_err(|(at, path, e)| {
                 err(
                     OutputErrorKind::Path,
-                    format!("the PATH value {} is invalid: {e}", quote(&path)),
+                    format!("{at} {} is not a valid PATH output: {e}", quote(&path)),
                 )
             })?;
             size = size.max(stored_json_len(&value));
@@ -425,21 +457,25 @@ impl OutputCollector {
     }
 
     /// Map a `path` value, or each element of a `list[path]`, back to the
-    /// submission path context. On failure, the path and the reason.
-    fn unmap(&self, value: ExprValue) -> Result<ExprValue, (String, String)> {
-        let unmap_one = |p: &str| {
+    /// submission path context. On failure: where (`value`, `element`,
+    /// `item[1]`), the path, and the reason.
+    fn unmap(
+        &self,
+        value: ExprValue,
+        subject: &str,
+    ) -> Result<ExprValue, (String, String, String)> {
+        let unmap_one = |p: &str, at: String| {
             unapply_rules_with_source_format(&self.path_rules, p, self.worker_format)
-                .map_err(|e| (p.to_string(), e.to_string()))
+                .map(|(stored, format)| ExprValue::new_path(stored, format))
+                .map_err(|e| (at, p.to_string(), e.to_string()))
         };
         match value {
-            ExprValue::Path { value, .. } => {
-                let (stored, format) = unmap_one(&value)?;
-                Ok(ExprValue::new_path(stored, format))
-            }
+            ExprValue::Path { value, .. } => unmap_one(&value, subject.to_string()),
             ExprValue::ListPath(values, ..) => {
                 let elements = values
                     .iter()
-                    .map(|p| unmap_one(p).map(|(s, f)| ExprValue::new_path(s, f)))
+                    .enumerate()
+                    .map(|(i, p)| unmap_one(p, format!("item[{i}]")))
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(build_list(elements, ExprType::PATH, self.worker_format))
             }

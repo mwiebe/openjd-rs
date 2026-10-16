@@ -30,7 +30,7 @@ use openjd_expr::value::Float64;
 use openjd_expr::{ExprType, ExprValue};
 use serde_json::Value;
 
-use super::quote;
+use super::{escape_controls, quote};
 
 /// A conversion failure: where in the value, and what went wrong.
 pub(crate) struct ConvertError {
@@ -201,7 +201,9 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
         };
         let detail = match detail {
             // A list with no type has no coercion message worth showing.
-            Some(d) if self.show_values && !matches!(natural, ExprValue::Null) => format!(": {d}"),
+            Some(d) if self.show_values && !matches!(natural, ExprValue::Null) => {
+                format!(": {}", escape_controls(&d))
+            }
             _ => String::new(),
         };
         ConvertError {

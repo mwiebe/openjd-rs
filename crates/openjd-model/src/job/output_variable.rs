@@ -349,7 +349,8 @@ impl OutputVariable {
             (JobParameterType::RangeExpr, ExprValue::String(s)) => {
                 s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
                     self.msg(format_args!(
-                        "{subject} '{s}' is not a valid range expression"
+                        "{subject} {} is not a valid range expression",
+                        crate::outputs::quote(s)
                     ))
                 })?;
                 self.check_lengths(c, s.chars().count(), subject)
@@ -407,7 +408,10 @@ impl OutputVariable {
         self.check_lengths(c, s.chars().count(), subject)?;
         if let Some(OutputAllowedValues::String(allowed)) = &c.allowed_values {
             if !allowed.iter().any(|a| a == s) {
-                return Err(self.msg(format_args!("{subject} '{s}' is not in allowed values")));
+                return Err(self.msg(format_args!(
+                    "{subject} {} is not in allowed values",
+                    crate::outputs::quote(s)
+                )));
             }
         }
         Ok(())

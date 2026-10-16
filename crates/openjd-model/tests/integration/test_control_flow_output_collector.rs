@@ -498,8 +498,6 @@ fn non_finite_numbers_are_invalid() {
         ("NaN", "expected value at line 1 column 1"),
         ("Infinity", "expected value at line 1 column 1"),
         ("-Infinity", "invalid number at line 1 column 2"),
-        ("1e400", "number out of range at line 1 column 5"),
-        ("-1e400", "number out of range at line 1 column 6"),
     ] {
         let mut c = collector(&["{name: X, type: FLOAT}"]);
         assert_eq!(
@@ -507,6 +505,30 @@ fn non_finite_numbers_are_invalid() {
             format!("Output variable 'X': '{text}' is not one valid JSON value: {detail}")
         );
     }
+}
+
+#[test]
+fn numbers_too_large_for_a_float_do_not_convert() {
+    // Valid JSON (RFC 8259), but RFC 0010 makes it a conversion error.
+    let mut c = collector(&["{name: X, type: FLOAT}"]);
+    assert_eq!(
+        err(&mut c, "X=1e400", OutputErrorKind::Conversion),
+        "Output variable 'X': '1e400' has a number too large to represent as a float (at line \
+         1 column 5)"
+    );
+    let mut c = collector(&["{name: S, type: 'LIST[STRING]'}"]);
+    assert_eq!(
+        err(&mut c, "S=[1, -1e400]", OutputErrorKind::Conversion),
+        "Output variable 'S': '[1, -1e400]' has a number too large to represent as a float \
+         (at line 1 column 10)"
+    );
+    let e = file(&mut c, "S", None, b"[\n1e999]").unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Conversion);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'S': the @ file's content has a number too large to represent as a \
+         float (at line 2 column 5)"
+    );
 }
 
 #[test]
@@ -623,12 +645,71 @@ fn undeclared_name() {
 
 #[test]
 fn accept_repeats_the_name_checks() {
-    let mut c = collector(&["{name: 'N', type: INT}"]);
-    let e = c.accept("M", None, b"1", false).unwrap_err();
+    let mut c = chunked(&["{name: 'N', type: INT}"], &[1]);
+    let e = c.accept("M", Some(1), b"1", false).unwrap_err();
     assert_eq!(e.kind(), OutputErrorKind::Undeclared);
-    c.accept("N", None, b"1", false).unwrap();
-    let e = c.accept("N", None, b"2", false).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'M[1]': the Step does not declare it (declared: 'N')"
+    );
+    let e = c.accept("N", None, b"1", false).unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Selector);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'N': a task selector, as in 'N[<value>]', is required in a Step with \
+         a CHUNK[INT] parameter"
+    );
+    c.accept("N", Some(1), b"1", false).unwrap();
+    let e = c.accept("N", Some(1), b"2", false).unwrap_err();
     assert_eq!(e.kind(), OutputErrorKind::Repeated);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'N[1]': a second value was reported, but its collect mode is ONCE"
+    );
+}
+
+#[test]
+fn accept_trims_spaces_and_tabs_around_an_inline_value() {
+    // Called directly, without parse_output_directive's trimming; the
+    // trimmed text is what counts toward the size.
+    let mut c = with_limit(&["{name: S, type: STRING}"], 5, None);
+    assert_eq!(
+        c.accept("S", None, b" \t\"abc\"\t ", false),
+        Ok(ExprValue::String("abc".into()))
+    );
+    assert_eq!(c.remaining_bytes_for("S", None), 0);
+}
+
+#[test]
+fn inline_value_not_utf8() {
+    let mut c = chunked(&["{name: S, type: STRING}"], &[2]);
+    let e = c.accept("S", Some(2), b"\"a\xFF\"", false).unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Grammar);
+    assert_eq!(
+        e.to_string(),
+        "Invalid openjd_output_var directive: the value of 'S[2]' is not valid UTF-8"
+    );
+}
+
+#[test]
+fn a_repeated_declaration_keeps_the_first() {
+    let mut c = collector(&["{name: 'N', type: INT}", "{name: 'N', type: STRING}"]);
+    assert_eq!(c.accept("N", None, b"\"7\"", false), Ok(ExprValue::Int(7)));
+    assert_eq!(only_task(c).len(), 1);
+}
+
+#[test]
+fn append_on_a_scalar_type_is_refused() {
+    // Validation rejects this; a hand-built declaration reaches `new`.
+    let mut v = var("{name: E, type: 'LIST[INT]', collect: APPEND}");
+    v.param_type = openjd_model::JobParameterType::Int;
+    let e = OutputCollector::new(&[v], MIN_OUTPUT_BYTES_LIMIT, &[], PathFormat::Posix, None)
+        .unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Declaration);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'E': collect mode APPEND requires a LIST type, but it is declared INT"
+    );
 }
 
 #[test]
@@ -906,6 +987,57 @@ fn file_conversion_failure_does_not_quote_the_value() {
 }
 
 #[test]
+fn file_value_path_and_constraint_errors_name_the_converted_value() {
+    // The file's text is never quoted, but the invalid value after conversion
+    // is, as for an inline value (the RFC asks for the offending text).
+    let rules = [rule(PathFormat::Posix, "/proj", "/mnt/proj")];
+    let mut c = with_rules(
+        &["{name: P, type: 'LIST[PATH]'}"],
+        &rules,
+        PathFormat::Posix,
+    );
+    let e = file(&mut c, "P", None, b"[\"/mnt/proj/a\",\n \"/tmp/b\"]").unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Path);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'P': item[1] '/tmp/b' is not a valid PATH output: no path mapping rule \
+         maps the path back to the submission path context, so it names a location only this \
+         worker can see"
+    );
+    let mut c = collector(&["{name: S, type: STRING, allowedValues: [a]}"]);
+    let e = file(&mut c, "S", None, b"\"b\"").unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Constraint);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'S': value 'b' is not in allowed values"
+    );
+}
+
+#[test]
+fn quoted_values_are_cut_and_escaped() {
+    let mut c = collector(&["{name: S, type: STRING, allowedValues: [a]}"]);
+    let long = "x".repeat(300);
+    let e = file(&mut c, "S", None, format!("\"{long}\"").as_bytes()).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "Output variable 'S': value '{}...' is not in allowed values",
+            "x".repeat(200)
+        )
+    );
+    assert_eq!(
+        err(&mut c, "S=\"a\\nb\\u001b[0m\"", OutputErrorKind::Constraint),
+        "Output variable 'S': value 'a\\nb\\u{1b}[0m' is not in allowed values"
+    );
+    let mut c = collector(&["{name: 'N', type: INT}"]);
+    assert_eq!(
+        err(&mut c, "N=\"a\\tb\"", OutputErrorKind::Conversion),
+        "Output variable 'N': value (string) 'a\\tb' does not convert to int: Cannot convert \
+         'a\\tb' to int: invalid digit found in string"
+    );
+}
+
+#[test]
 fn file_under_append_supplies_one_element() {
     let mut c = collector(&["{name: E, type: 'LIST[LIST[INT]]', collect: APPEND}"]);
     file(&mut c, "E", None, b"[1, 2]").unwrap();
@@ -963,6 +1095,16 @@ fn file_size_is_the_whole_content() {
     );
     let mut c = with_limit(&["{name: S, type: STRING}"], 9, None);
     file(&mut c, "S", None, b"\xEF\xBB\xBF \"a\" \n").unwrap();
+}
+
+#[test]
+fn a_failed_size_check_leaves_the_size_unchanged() {
+    let mut c = with_limit(&["{name: E, type: 'LIST[INT]', collect: APPEND}"], 3, None);
+    ok(&mut c, "E=1");
+    err(&mut c, "E=1234", OutputErrorKind::Size);
+    assert_eq!(c.remaining_bytes_for("E", None), 2);
+    ok(&mut c, "E=23");
+    assert_eq!(only_task(c)["E"], ExprValue::ListInt(vec![1, 23]));
 }
 
 #[test]
@@ -1042,7 +1184,7 @@ fn path_relative_is_invalid() {
     let mut c = with_rules(&["{name: P, type: PATH}"], &rules, PathFormat::Posix);
     assert_eq!(
         err(&mut c, "P=\"out/a.exr\"", OutputErrorKind::Path),
-        "Output variable 'P': the PATH value 'out/a.exr' is invalid: the path is relative; a PATH value must be \
+        "Output variable 'P': value 'out/a.exr' is not a valid PATH output: the path is relative; a PATH value must be \
          an absolute path or a URI"
     );
 }
@@ -1052,7 +1194,7 @@ fn path_relative_is_invalid_without_rules() {
     let mut c = collector(&["{name: P, type: PATH}"]);
     assert_eq!(
         err(&mut c, "P=\"a\"", OutputErrorKind::Path),
-        "Output variable 'P': the PATH value 'a' is invalid: the path is relative; a PATH value must be an \
+        "Output variable 'P': value 'a' is not a valid PATH output: the path is relative; a PATH value must be an \
          absolute path or a URI"
     );
 }
@@ -1063,7 +1205,7 @@ fn path_with_no_round_trip_is_invalid() {
     let mut c = with_rules(&["{name: P, type: PATH}"], &rules, PathFormat::Posix);
     assert_eq!(
         err(&mut c, "P=\"/tmp/session/out\"", OutputErrorKind::Path),
-        "Output variable 'P': the PATH value '/tmp/session/out' is invalid: no path mapping rule maps the path \
+        "Output variable 'P': value '/tmp/session/out' is not a valid PATH output: no path mapping rule maps the path \
          back to the submission path context, so it names a location only this worker can see"
     );
 }
@@ -1168,7 +1310,7 @@ fn list_path_elements_are_mapped_back() {
     );
     assert_eq!(
         err(&mut c, "L=[\"/mnt/p/x\", \"/tmp/y\"]", OutputErrorKind::Path),
-        "Output variable 'L': the PATH value '/tmp/y' is invalid: no path mapping rule maps the path back to the \
+        "Output variable 'L': item[1] '/tmp/y' is not a valid PATH output: no path mapping rule maps the path back to the \
          submission path context, so it names a location only this worker can see"
     );
 }
@@ -1228,7 +1370,11 @@ fn chunk_selector_required() {
 #[test]
 fn chunk_of_one_task_still_requires_the_selector() {
     let mut c = chunked(&[RENDER_TIME], &[7]);
-    err(&mut c, "RenderTimeS=1.5", OutputErrorKind::Selector);
+    assert_eq!(
+        err(&mut c, "RenderTimeS=1.5", OutputErrorKind::Selector),
+        "Output variable 'RenderTimeS': a task selector, as in 'RenderTimeS[<value>]', is \
+         required in a Step with a CHUNK[INT] parameter"
+    );
     ok(&mut c, "RenderTimeS[7]=1.5");
 }
 
@@ -1256,6 +1402,20 @@ fn selector_outside_the_chunk() {
         err(&mut c, "RenderTimeS[0]=1.5", OutputErrorKind::Selector),
         "Output variable 'RenderTimeS[0]': 0 is not a value of the chunk being run (chunk \
          values 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ... (12 values))"
+    );
+    let values: Vec<i64> = (1..=11).collect();
+    let mut c = chunked(&[RENDER_TIME], &values);
+    assert_eq!(
+        err(&mut c, "RenderTimeS[0]=1.5", OutputErrorKind::Selector),
+        "Output variable 'RenderTimeS[0]': 0 is not a value of the chunk being run (chunk \
+         values 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ... (11 values))"
+    );
+    let values: Vec<i64> = (1..=10).collect();
+    let mut c = chunked(&[RENDER_TIME], &values);
+    assert_eq!(
+        err(&mut c, "RenderTimeS[0]=1.5", OutputErrorKind::Selector),
+        "Output variable 'RenderTimeS[0]': 0 is not a value of the chunk being run (chunk \
+         values 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)"
     );
     let mut c = chunked(&[RENDER_TIME], &[]);
     assert_eq!(
