@@ -583,7 +583,8 @@ variable's own mapping is reported with an output variable's fields
 `minLength`, `maxLength`, `collect`, `unit``), not the wrapped job parameter
 definition's, which would list `default` and `userInterface`:
 
-- an unknown type (`unknown output variable type: 'DICT'`) or a missing one;
+- an unknown type (`unknown output variable type: 'DICT'`), a missing one, or one that
+  is not a string (`'type' must be a string, got a number`);
 - a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
 - a `unit` that is not a string;
 - a `name` that is not an `<Identifier>`;

@@ -173,7 +173,9 @@ elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a sec
 (`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
 A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
 value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
-path context and checked in that form. A `RANGE_EXPR` value may be an
+path context and checked in that form. Conversely a `STRING` value may be a `Path` and a
+`LIST[STRING]` value a `ListPath`, as for `STRING` and `LIST[STRING]` job parameter
+values; the path's text is checked. A `RANGE_EXPR` value may be an
 `ExprValue::RangeExpr`, whose length is that of its canonical spelling, or an
 `ExprValue::String` holding a valid range expression, whose length is that of the
 string as written (as for a `RANGE_EXPR` job parameter value). The two can differ
@@ -209,6 +211,10 @@ fields as:
 "binding": {"state": "PENDING_INPUTS", "waitingOn": ["Steps.P.Output.N"]},
 "pathInputs": [{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}]
 ```
+
+`OutputConstraints` is checked against the declared type only when `create_job` builds
+it from the template; deserialization keeps a property of the wrong form (a `float`
+bound on an `INT` output, say), which then has no effect on the checks.
 
 `JobParameterType` derives `Deserialize` as well as `Serialize`; both use the variant
 names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
