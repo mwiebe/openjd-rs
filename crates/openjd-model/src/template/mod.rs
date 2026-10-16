@@ -13,6 +13,7 @@ mod environment_template;
 mod expr_parameters;
 mod host_requirements;
 mod job_template;
+mod output_variables;
 mod parameters;
 mod step;
 mod task_parameters;
@@ -43,6 +44,8 @@ pub use expr_parameters::{
     ListFloatItemConstraints, ListIntItemConstraints, ListListIntItemConstraints,
     ListStringItemConstraints,
 };
+// output_variables (CONTROL_FLOW, RFC 0010)
+pub use output_variables::{BoolOrFormatString, OutputVariableDefinition};
 // step
 pub use step::{SimpleAction, SimpleActionKind, StepDependency, StepScript, StepTemplate};
 // environment

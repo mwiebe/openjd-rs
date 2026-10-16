@@ -236,6 +236,12 @@ budgets template validation and the session runtime apply.
 6. Convert environments from template to job types
 7. Build step dependency list
 8. Attach resolved symbol table to each step
+9. With `CONTROL_FLOW` (RFC 0010): copy each Step's `outputVariables` onto
+   `job::Step::output_variables` as `job::OutputVariable` values, and set
+   `binding` to `StepBinding::Bound`. `enableIf` on Steps and Environments is
+   not evaluated yet: every Step is instantiated and every Environment is
+   carried as if enabled. Static `enableIf`, `PENDING_INPUTS` Steps, and the
+   `Steps.*` symbols arrive with step input binding (plan item M4).
 
 #### Resolved-value checks on carried-forward fields
 

@@ -21,6 +21,7 @@
 //! - **EXPR prerequisite.** A template that lists `WRAP_ACTIONS` in
 //!   `extensions:` must also list `EXPR`.
 
+use super::helpers::check_expr_prerequisite;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::actions::EnvironmentActions;
 use crate::template::{Environment, EnvironmentTemplate, JobTemplate};
@@ -81,19 +82,6 @@ fn check_env(
     script.actions.has_any_wrap_hook()
 }
 
-/// Enforce the EXPR prerequisite: when `WRAP_ACTIONS` is listed in a
-/// template's `extensions:`, `EXPR` must also be listed (RFC 0008).
-fn check_expr_prerequisite(ctx: &ValidationContext, errors: &mut ValidationErrors) {
-    let has_wrap = ctx.profile.has_extension(ModelExtension::WrapActions);
-    let has_expr = ctx.profile.has_extension(ModelExtension::Expr);
-    if has_wrap && !has_expr {
-        errors.add(
-            &path_field(&[], "extensions"),
-            "WRAP_ACTIONS requires EXPR; both must be listed in the template's `extensions` (RFC 0008).",
-        );
-    }
-}
-
 /// Validate RFC 0008 constraints for a job template.
 ///
 /// This runs regardless of whether `WRAP_ACTIONS` is enabled:
@@ -107,7 +95,7 @@ pub fn validate_wrap_actions_job_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
-    check_expr_prerequisite(ctx, errors);
+    check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", errors);
 
     // Single-wrap-layer enforcement (RFC 0008).
     //
@@ -184,7 +172,7 @@ pub fn validate_wrap_actions_environment_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::WrapActions);
-    check_expr_prerequisite(ctx, errors);
+    check_expr_prerequisite(ctx, ModelExtension::WrapActions, "RFC 0008", errors);
     let env_path = path_field(&[], "environment");
     check_env(&et.environment, &env_path, active, errors);
 }

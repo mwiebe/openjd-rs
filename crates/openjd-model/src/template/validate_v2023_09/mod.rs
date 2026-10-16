@@ -4,14 +4,16 @@
 
 //! Template validation pipeline.
 //!
-//! Validates templates through multiple passes (passes 5–9 of the decode pipeline):
+//! Validates templates through multiple passes (passes 5–11 of the decode pipeline):
 //! - Pass 5: Enforce limits (EffectiveLimits)
 //! - Pass 6: Structural validation (EffectiveRules)
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
 //! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
+//! - Pass 11: CONTROL_FLOW (validate or reject, RFC 0010)
 
+mod control_flow;
 mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
@@ -203,6 +205,9 @@ pub(crate) fn validate_job_template(
     // Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
     wrap_actions::validate_wrap_actions_job_template(jt, ctx, &mut errors);
 
+    // Pass 11: CONTROL_FLOW (validate or reject, RFC 0010)
+    control_flow::validate_control_flow_job_template(jt, &limits, ctx, &mut errors);
+
     errors.into_result("JobTemplate")
 }
 
@@ -261,6 +266,9 @@ pub fn validate_environment_template(
 
     // WRAP_ACTIONS gating (RFC 0008)
     wrap_actions::validate_wrap_actions_environment_template(et, ctx, &mut errors);
+
+    // CONTROL_FLOW applies to Job Templates only (RFC 0010)
+    control_flow::validate_control_flow_environment_template(et, ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

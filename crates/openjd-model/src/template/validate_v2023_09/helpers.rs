@@ -7,7 +7,8 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use crate::error::{PathElement, ValidationErrors};
+use crate::error::{path_field, PathElement, ValidationErrors};
+use crate::types::{ModelExtension, ValidationContext};
 
 pub static AMOUNT_CAP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^([A-Za-z_][A-Za-z0-9_]*:)?amount\.[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$").unwrap()
@@ -173,5 +174,27 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
             );
             return;
         }
+    }
+}
+
+/// Enforce an extension's EXPR prerequisite: when `ext` is listed in a
+/// template's `extensions:`, `EXPR` must also be listed. RFC 0002 defines no
+/// dependencies between extensions; `WRAP_ACTIONS` (RFC 0008) and
+/// `CONTROL_FLOW` (RFC 0010) each state this rule themselves, and `rfc` names
+/// the one that does.
+pub fn check_expr_prerequisite(
+    ctx: &ValidationContext,
+    ext: ModelExtension,
+    rfc: &str,
+    errors: &mut ValidationErrors,
+) {
+    if ctx.profile.has_extension(ext) && !ctx.profile.has_extension(ModelExtension::Expr) {
+        errors.add(
+            &path_field(&[], "extensions"),
+            format!(
+                "{} requires EXPR; both must be listed in the template's `extensions` ({rfc}).",
+                ext.as_str()
+            ),
+        );
     }
 }

@@ -73,8 +73,14 @@ pub struct Step {
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    pub output_variables: Option<Vec<OutputVariable>>,   // CONTROL_FLOW
+    pub binding: StepBinding,                            // CONTROL_FLOW
+    pub path_inputs: Vec<PathInput>,                     // CONTROL_FLOW
 }
 ```
+
+The three `CONTROL_FLOW` fields (RFC 0010) are described in
+[CONTROL_FLOW fields](#control_flow-fields-rfc-0010) below.
 
 `resolved_symtab` exists to transport symbol values across the network to the worker host
 that runs the job. The worker evaluates the format strings that remain unresolved after job
@@ -94,6 +100,88 @@ plus `Session.*` and `Task.*` values on top at runtime.
 The type is `SerializedSymbolTable` (not `SymbolTable`) — a wire-format type serialized as
 `[{"name": str, "value": ..., "type": str}]` for cross-host transfer in a Python-compatible
 format.
+
+### CONTROL_FLOW fields (RFC 0010)
+
+`job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`. The
+template's `JobParameterDefinition` implements none of the first three, so an output
+declaration is carried on the job in its own form.
+
+```rust
+pub struct OutputVariable {
+    pub name: String,
+    pub param_type: JobParameterType,     // serialized as "type"
+    pub collect: OutputCollectMode,
+    pub unit: Option<String>,
+    pub constraints: OutputConstraints,
+}
+
+pub struct OutputConstraints {
+    pub allowed_values: Option<OutputAllowedValues>,
+    pub min_value: Option<OutputBound>,
+    pub max_value: Option<OutputBound>,
+    pub min_length: Option<usize>,
+    pub max_length: Option<usize>,
+    pub item: Option<Box<OutputConstraints>>,
+}
+pub enum OutputAllowedValues { Int(Vec<i64>), Float(Vec<Float64>), String(Vec<String>) }
+pub enum OutputBound { Int(i64), Float(Float64) }
+
+pub enum StepBinding {
+    Bound,                                     // default
+    PendingInputs { waiting_on: Vec<String> },
+    Skipped,
+}
+
+pub struct PathInput {
+    pub symbol: String,
+    pub ty: openjd_expr::ExprType,             // serialized as "path", "list[path]", ...
+}
+```
+
+`create_job` fills `output_variables` from the template's `outputVariables`
+(`OutputVariableDefinition::to_job_output_variable`), sets `binding` to `Bound`, and
+leaves `path_inputs` empty. Step input binding, which a later change adds, produces the
+other two `StepBinding` states and records `path_inputs`. They are part of the type now
+so that the serialized form of a Step does not change when it lands.
+
+**`OutputConstraints`** holds the constraint properties the definition *declared*, and
+only those. A property that a job parameter of the same type implies when omitted (the
+RFC's example is the 1024-character default `maxLength` of a `RANGE_EXPR` parameter) is
+never added (RFC 0010 `<OutputVariableDefinition>` item 6). Floats are `Float64`, so the
+struct is hashable. For a list type, `min_length`/`max_length` bound the number of
+elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a second
+`item`. For `STRING`, `PATH`, and `RANGE_EXPR`, the lengths count characters.
+
+**Constraint checks.** `OutputVariable` has three checks, each returning
+`Result<(), String>` with a message `Output variable '<name>': <problem>`:
+
+| Method | Checks |
+|--------|--------|
+| `check_constraints(&ExprValue)` | One Task's whole value: its type, then for a scalar the value constraints, and for a list `minLength`, `maxLength`, and every element (`item[i]`, or `item[j][i]` inside `LIST[LIST[INT]]`) |
+| `check_element(&ExprValue)` | One element reported under `collect: APPEND`, against the element type and `item`. An error for a scalar type |
+| `check_length(len, at_exit)` | A list being collected under `APPEND`: `maxLength` always, `minLength` only when `at_exit` |
+
+`check_element` and `check_length` exist because under `APPEND` the constraints split:
+`item` applies to each element as it arrives, `maxLength` to the growing list, and
+`minLength` only when the Action exits. The checks follow the job-parameter rules
+(`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
+A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
+value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
+path context and checked in that form. An empty list built without a type hint
+(`list[nulltype]`) satisfies every list type.
+
+**Serde.** Every new field has `#[serde(default)]` and is skipped when it holds its
+default (`None`, `Bound`, or empty), so a Step serialized before this change still
+deserializes, and the serialized form of a Step without `CONTROL_FLOW` features is
+unchanged. `StepBinding` is internally tagged: `{"state": "BOUND"}`,
+`{"state": "PENDING_INPUTS", "waitingOn": [...]}`, `{"state": "SKIPPED"}`.
+`JobParameterType` derives `Deserialize` for `OutputVariable.param_type`; like its
+`Serialize`, it uses the variant names (`"Int"`, `"ListString"`).
+
+`job::Environment` does not get an `enabled` field yet. Nothing evaluates `enableIf`
+before static `enableIf` lands with step input binding, and that change adds the field
+with the code that sets it.
 
 ### StepScript, StepActions, Action
 
@@ -297,7 +385,8 @@ pub struct StepDependency {
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
 | `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
-| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>` |
+| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is not carried yet |
+| `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |

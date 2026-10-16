@@ -6,6 +6,7 @@
 
 use super::actions::EnvironmentActions;
 use super::constrained_strings::Description;
+use super::output_variables::BoolOrFormatString;
 use crate::format_string::FormatString;
 use crate::types::{EndOfLine, FileType};
 use serde::Deserialize;
@@ -17,6 +18,9 @@ use std::collections::HashMap;
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
+    /// Whether the Environment is entered (`CONTROL_FLOW`, RFC 0010).
+    /// Permitted only in a Job Template.
+    pub enable_if: Option<BoolOrFormatString>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }

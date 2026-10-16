@@ -94,6 +94,40 @@ impl fmt::Display for DataFlow {
     }
 }
 
+/// RFC 0010 `<OutputCollectMode>`: how the directives a Task prints for one
+/// output variable become that Task's value (`CONTROL_FLOW`).
+///
+/// The template default is [`Once`](Self::Once).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum OutputCollectMode {
+    /// Exactly one directive.
+    #[default]
+    Once,
+    /// One or more directives; the last one is the value.
+    Last,
+    /// Zero or more directives, each supplying one element of a `LIST[T]`
+    /// value, in the order printed.
+    Append,
+}
+
+impl OutputCollectMode {
+    /// Returns the canonical spec string (`ONCE`, `LAST`, or `APPEND`).
+    pub fn as_spec_str(&self) -> &'static str {
+        match self {
+            Self::Once => "ONCE",
+            Self::Last => "LAST",
+            Self::Append => "APPEND",
+        }
+    }
+}
+
+impl fmt::Display for OutputCollectMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_spec_str())
+    }
+}
+
 /// Specification revision identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
@@ -172,7 +206,7 @@ impl std::str::FromStr for TemplateSpecificationVersion {
 /// Marked `#[non_exhaustive]` so that future revisions and extensions can
 /// add parameter types (as RFC 0007 already did for `Bool`, `RangeExpr`,
 /// and the `List[…]` family) without a SemVer break.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum JobParameterType {
     String,
@@ -361,6 +395,10 @@ pub enum ModelExtension {
     /// `WRAP_ACTIONS` — enables `onWrapEnvEnter`, `onWrapTaskRun`, and
     /// `onWrapEnvExit` on `<EnvironmentActions>`. See RFC 0008.
     WrapActions,
+    /// `CONTROL_FLOW` — enables `outputVariables` and `enableIf` on
+    /// `<StepTemplate>` and `enableIf` on `<Environment>`. Requires
+    /// `EXPR`. See RFC 0010.
+    ControlFlow,
 }
 
 impl ModelExtension {
@@ -372,6 +410,7 @@ impl ModelExtension {
         Self::FeatureBundle1,
         Self::Expr,
         Self::WrapActions,
+        Self::ControlFlow,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -381,6 +420,7 @@ impl ModelExtension {
             Self::FeatureBundle1 => "FEATURE_BUNDLE_1",
             Self::Expr => "EXPR",
             Self::WrapActions => "WRAP_ACTIONS",
+            Self::ControlFlow => "CONTROL_FLOW",
         }
     }
 }
@@ -394,6 +434,7 @@ impl std::str::FromStr for ModelExtension {
             "FEATURE_BUNDLE_1" => Ok(Self::FeatureBundle1),
             "EXPR" => Ok(Self::Expr),
             "WRAP_ACTIONS" => Ok(Self::WrapActions),
+            "CONTROL_FLOW" => Ok(Self::ControlFlow),
             _ => Err(format!("Unknown extension: {s}")),
         }
     }

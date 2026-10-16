@@ -23,8 +23,13 @@
 //! `Eq`.
 
 pub mod create_job;
+mod output_variable;
 pub mod step_dependency_graph;
 pub mod step_param_space;
+
+pub use output_variable::{
+    OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput, StepBinding,
+};
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -116,6 +121,19 @@ pub struct Step {
     /// Session.* and Task.* values on top at runtime.
     #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    /// The Step's output variable declarations (`CONTROL_FLOW`), or `None`
+    /// when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_variables: Option<Vec<OutputVariable>>,
+    /// The Step's binding state (`CONTROL_FLOW`). [`StepBinding::Bound`]
+    /// for every Step `create_job` produces today.
+    #[serde(default, skip_serializing_if = "StepBinding::is_bound")]
+    pub binding: StepBinding,
+    /// The path-typed `Steps.*` values stored in `resolved_symtab` in their
+    /// submission form (`CONTROL_FLOW`). Empty for every Step `create_job`
+    /// produces today.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path_inputs: Vec<PathInput>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
