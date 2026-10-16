@@ -277,7 +277,8 @@ pub struct PendingBinding {
 pub enum GroupState<T> {
     /// Not evaluated. `on` is the group's own inputs that are not concrete yet (`Steps.*` symbols, sorted), not
     /// counting the enablement group's inputs, which the RFC also counts as inputs of every other group; it is
-    /// empty for a group that waits only for enableIf.
+    /// empty for a group that waits only for enableIf. Every call to `advance_step_binding` recomputes it against
+    /// its `inputs`, also while enablement is still `Waiting`, so a report always shows what is still missing.
     Waiting { on: Vec<String> },
     /// Evaluated successfully, with its result.
     Known(T),
@@ -318,8 +319,8 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    counts in-degree on each *dependency* (`structure.rs:1091`–`:1097`), so it yields Steps that nothing depends on
    first, and it seeds its queue from `HashMap` iteration. The factored version must therefore reverse the edges
    and break ties by template index, so the order is deterministic. Errors that `instantiate_step` collects into
-   `check_errors` then arrive in dependency order, so sort them back into template order before reporting, to keep
-   today's message order.
+   `check_errors` then arrive in dependency order, so sort them back into template order before reporting, so that
+   messages follow the template as they do without `CONTROL_FLOW`.
 2. **Job creation.** `create_job` calls the same internal core as later binding (item 3) for each Step, with the
    inputs that are concrete at creation, so every group whose inputs are concrete is evaluated then (§When groups are
    evaluated, a MUST):
@@ -348,7 +349,10 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
        `check_errors`, whichever group's evaluation raised it, and that Step's later groups are not evaluated; a
        failing range or host requirement aborts `create_job` with its error, as today; a failing remaining group adds
        its errors to `check_errors`. Each `BindingError` from Job creation maps onto one of these two kinds by the
-       error it holds.
+       error it holds: a `let` error or a remaining-group check error is collected; an `enableIf` failure (including
+       `null`), a range or host requirement error, a duplicate `CHUNK[INT]` value, and a Task-count limit abort
+       `create_job`. `BindingError` is `{ group: MaterializationGroup, errors: Vec<ModelError> }`, where
+       `MaterializationGroup` is `Enablement`, `TaskEnumeration`, `HostSelection`, or `Remaining`.
    * The RFC's group order (enablement, Task enumeration, host selection, remaining) applies only under
      `CONTROL_FLOW`. Without it, the core keeps today's order (the carried-forward checks at `instantiate.rs:62`–`:149`,
      then host requirements before the parameter space at `:159`–`:169`), so a template that doesn't list
@@ -829,7 +833,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 2 | `feat(model): Steps.* scope in template validation` | 1 | the M2 scope rules and their messages except the job output scope, `enableIf` typing, and the `create_job` check-table seeding from M4.3. Until PR 4, `openjd run` of a template that reads `Steps.*` fails when a Task starts, because the value is unresolved; this is acceptable on the prototype branch |
 | 3a | `feat(expr): reverse path mapping` | — | E1 |
 | 3 | `feat(model): output directive parser and collector` | 1, 3a | M3 |
-| 4 | `feat(model): progressive step input binding` | 2, 3 | M4: `StepBinding` with `PendingBinding`, group inputs, Job-creation evaluation of every evaluable group, `advance_step_binding`, `binding_report`, `tasks_known`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
+| 4 | `feat(model): progressive step input binding` | 2, 3 | M4: `StepBinding` with `PendingBinding`, group inputs, Job-creation evaluation of every evaluable group, `advance_step_binding`, `BindingError`, `binding_report`, `tasks_known`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
 | 5 | `feat(sessions): openjd_output_var directive` | 3, 4 | S1–S4, including the helper protocol and truncation changes, so the helper sub-crate's gates and the cross-user tests apply |
 | 4a | `feat(model): job outputs` | 2, 4 | the M1 `jobOutputDefinitions` schema, the M2 job output scope, and M4 item 9 |
 | 6 | `feat(cli): simulate progressive step input binding in openjd run` | 4, 4a, 5 | C1 (advancing pending Steps after each Step, early failure, per-group reports), C2 |
