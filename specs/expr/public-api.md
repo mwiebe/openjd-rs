@@ -1383,7 +1383,8 @@ pub fn path_mapping::apply_rules_with_format(
 /// `destination_path` length, then `rules` order) that
 /// `apply_rules_with_format(rules, _, worker_format)` maps back to the
 /// reported path, compared after lexical normalization under
-/// `worker_format`, is returned, or `NoRoundTrip`. See
+/// `worker_format`, is returned, or `NoRoundTrip`. `rules` MUST be the
+/// Session's full, unfiltered rules sorted as for `apply_rules`. See
 /// path-mapping.md § Reverse mapping.
 pub fn path_mapping::unapply_rules(
     rules: &[PathMappingRule], path: &str, worker_format: PathFormat,

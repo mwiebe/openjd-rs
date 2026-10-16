@@ -323,6 +323,24 @@ fn windows_worker_dotdot_stays_at_drive_root() {
 }
 
 #[test]
+fn windows_mixed_separator_unc_is_absolute() {
+    // `PureWindowsPath("\\/srv/sh/f")` has the anchor `\\srv\sh\`.
+    assert_eq!(
+        unmap_windows(&[], "\\/srv/sh/f"),
+        Ok("\\/srv/sh/f".to_string())
+    );
+    let rules = [posix("/p", "\\\\srv\\sh")];
+    assert_eq!(unmap_windows(&rules, "\\/srv/sh/f"), Ok("/p/f".to_string()));
+}
+
+#[test]
+fn posix_relative_destination_never_matches() {
+    // Forward mapping `/a/f` gives `dst/f`, not the reported `/dst/f`.
+    let rules = [posix("/a", "dst")];
+    assert_eq!(unmap_posix(&rules, "/dst/f"), Err(UnmapError::NoRoundTrip));
+}
+
+#[test]
 fn windows_drive_relative_destination_never_matches() {
     // `C:proj` is drive-relative; its anchor `C:` differs from `C:\`.
     let rules = [posix("/proj", "C:proj")];
@@ -380,6 +398,18 @@ fn equal_destinations_are_tried_in_listed_order() {
         Ok("/x/f".to_string())
     );
     assert_eq!(unmap_posix(&[y, x], "/dst/f"), Ok("/y/f".to_string()));
+}
+
+#[test]
+fn listed_order_breaks_ties_among_many_candidates() {
+    // Enough candidates, with mixed destination depths, that an unstable sort
+    // reorders equal lengths. No source nests in another, so their order
+    // cannot change forward mapping.
+    let depths = ["/dst", "/dst/f", "/dst/f/g"];
+    let rules: Vec<PathMappingRule> = (0..300)
+        .map(|i| posix(&format!("/s{i}"), depths[i % 3]))
+        .collect();
+    assert_eq!(unmap_posix(&rules, "/dst/f/g/h"), Ok("/s2/h".to_string()));
 }
 
 #[test]

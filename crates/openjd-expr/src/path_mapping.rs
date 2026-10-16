@@ -260,9 +260,15 @@ pub enum UnmapError {
 ///    Forward mapping is compared normalized because it does not normalize: a
 ///    `destination_path` ending in a separator gives `/mnt/p//x`.
 ///
-/// `rules` are the Session's rules in the order passed to [`apply_rules`]. The
-/// round-trip check makes the result correct for any order; the order only
-/// breaks ties. `PathFormat::Uri` as `worker_format` is treated as POSIX.
+/// `rules` MUST be the producing Session's full rule list, sorted as for
+/// [`apply_rules`] (decreasing `source_path` length), because the round trip
+/// forward-maps with `rules` and must reproduce the Session's own forward
+/// mapping. Unsorted rules can accept a value that the Session maps elsewhere.
+/// Do not filter `rules` (for example by source format) before the call: the
+/// no-rules case and the round trip are defined on the Session's full rules.
+/// Given the sorted rules, the order of equal-length destinations only breaks
+/// ties among candidates. `PathFormat::Uri` as `worker_format` is treated as
+/// POSIX.
 pub fn unapply_rules(
     rules: &[PathMappingRule],
     path: &str,
@@ -319,7 +325,7 @@ fn build_candidate(rule: &PathMappingRule, remaining: &[&str]) -> String {
 }
 
 /// Whether a filesystem path is absolute in the worker's format, matching
-/// `PurePosixPath`/`PureWindowsPath.is_absolute()`.
+/// Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`.
 ///
 /// POSIX: a leading `/`. Windows: a drive with a root (`C:\`, `C:/`) or a UNC
 /// path with a non-empty server and share (`\\server\share`). A Windows path

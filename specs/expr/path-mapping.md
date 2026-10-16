@@ -116,8 +116,14 @@ reference inverse:
 The round trip is what makes the result correct, and it is needed because rules can
 nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
 is `P:\x\f`, which maps forward to `/data/x/f`, so the result is `NoRoundTrip`.
-Because the check decides correctness, the rule order only breaks ties; the Session
-passes its rules sorted by `source_path` length, and that is the "listed order".
+The round trip forward-maps with the `rules` it is given, so `rules` must be the
+producing Session's full rule list in the order the Session applies them: sorted by
+decreasing `source_path` length, as `apply_rules` requires and `Session::new` does.
+With unsorted rules the check reproduces the wrong forward mapping and can accept a
+value the Session maps elsewhere (in the example above, listing `P:\` first accepts
+`P:\x\f`). Given sorted rules, the order of rules with equal-length destinations
+only breaks ties among candidates; that is the RFC's "the order the rules are
+listed".
 
 **Lexical normalization** removes `.` and empty components (runs of separators,
 trailing separators) and applies `..` to the preceding component, without resolving
@@ -138,7 +144,9 @@ normalize: a `destination_path` ending in a separator gives `/mnt/p//x`.
 POSIX paths compare case-sensitively with `/` only. `PathFormat::Uri` as the worker
 format is treated as POSIX.
 
-**Absoluteness** follows `PurePosixPath`/`PureWindowsPath.is_absolute()`: a leading
+**Absoluteness** follows Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`
+(Python 3.12's parser accepts the non-letter drive and empty UNC server or share
+forms below as absolute; Windows itself does not): a leading
 `/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
 server and share (`\\server\share`) on Windows. A Windows path rooted without a
 drive (`\x`), drive-relative (`C:x`), with a non-letter drive (`1:\x`), or a UNC
@@ -156,9 +164,20 @@ helper that reports whether a rule matched; the RFC wins where they disagree. Ev
 candidate comes from a rule whose `destination_path` matched, so this differs only
 for degenerate rules, such as an empty `source_path`.
 
-**Source format filtering.** The RFC says a runtime that knows the submission path
-format SHOULD use only rules whose `source_path_format` is that format or `URI`.
-`unapply_rules` does not know it, so a caller that does filters `rules` first.
+**Source format filtering is not implemented.** The RFC says a runtime that knows the
+submission path format SHOULD use only rules whose `source_path_format` is that
+format or `URI`. `unapply_rules` takes no submission format, and a caller MUST NOT
+filter `rules` itself: the RFC defines the no-rules case "before any filtering by
+source format" and the round trip on the Session's own rules, so a list filtered to
+empty would wrongly return a worker-only path unchanged. Without the filter a
+candidate may be in another format than the submission's; the round trip still
+guarantees it maps forward to the reported path.
+
+**Rejected but valid spellings.** Normalization is lexical, as the RFC defines it, so
+some paths that name a location under a destination are still `NoRoundTrip`: a
+Windows `\\?\C:\...` extended-length path against a `C:\...` destination, and a
+non-ASCII component that differs only in case (folding is ASCII-only). Nothing is
+accepted wrongly; the round trip prevents that.
 
 `UnmapError` implements `Display` and `std::error::Error`. The caller, which knows
 the path and the output's name, builds the user-facing message around it.
