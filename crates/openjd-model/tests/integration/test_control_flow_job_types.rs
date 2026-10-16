@@ -59,6 +59,16 @@ fn float(v: f64) -> ExprValue {
 // ══════════════════════════════════════════════════════════════
 
 #[test]
+fn a_bool_output_has_no_constraints() {
+    let d = def("{name: B, type: BOOL}");
+    assert!(d.constraints().is_empty());
+    assert_eq!(
+        serde_json::to_value(d.to_job_output_variable()).unwrap(),
+        serde_json::json!({"name": "B", "type": "BOOL"})
+    );
+}
+
+#[test]
 fn to_job_output_variable_holds_only_declared_constraints() {
     let ov = def(
         "{name: 'N', type: INT, collect: LAST, unit: frames, minValue: 1, allowedValues: [1, 2]}",
@@ -376,6 +386,26 @@ fn list_list_int_constraints() {
     assert_eq!(
         d.check_constraints(&list_of_int_lists(&[&[1, 6]])),
         Err("Output variable 'L': item[0][1] 6 exceeds maximum 5".into())
+    );
+}
+
+#[test]
+fn a_non_empty_list_list_int_is_checked_element_by_element() {
+    // Whatever the outer hint, each element is checked against list[int].
+    let d = def("{name: L, type: 'LIST[LIST[INT]]'}");
+    let two_untyped_empties = ExprValue::make_list(
+        vec![
+            ExprValue::make_list(vec![], ExprType::NULLTYPE).unwrap(),
+            ExprValue::make_list(vec![], ExprType::NULLTYPE).unwrap(),
+        ],
+        ExprType::NULLTYPE,
+    )
+    .unwrap();
+    d.check_constraints(&two_untyped_empties).unwrap();
+    let strings = ExprValue::make_list(vec![list_string(&["a"])], ExprType::NULLTYPE).unwrap();
+    assert_eq!(
+        d.check_constraints(&strings),
+        Err("Output variable 'L': item[0] has type list[string], expected list[int]".into())
     );
 }
 
@@ -816,6 +846,13 @@ fn range_expr_value_written_as_a_string_is_checked_as_written() {
         d.check_constraints(&ExprValue::String("a-b".into())),
         Err("Output variable 'R': value 'a-b' is not a valid range expression".into())
     );
+    // Counted in characters: U+3000 is whitespace the range parser accepts,
+    // one character of three bytes.
+    let wide = "1-3\u{3000}";
+    assert!(wide.parse::<RangeExpr>().is_ok());
+    def("{name: R, type: RANGE_EXPR, maxLength: 4}")
+        .check_constraints(&ExprValue::String(wide.into()))
+        .unwrap();
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -883,6 +920,50 @@ steps:
              jobEnvironments[1] -> enableIf:\n\t{msg}\n\
              steps[1] -> enableIf:\n\t{msg}\n\
              steps[1] -> stepEnvironments[1] -> enableIf:\n\t{msg}"
+        )
+    );
+}
+
+#[test]
+fn create_job_reports_a_step_enable_if_refusal_before_its_other_checks() {
+    let jt = decode_job_template(
+        yaml(
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: J
+parameterDefinitions: [{name: Z, type: INT}]
+steps:
+  - name: S
+    enableIf: false
+    stepEnvironments:
+      - {name: SE, enableIf: false, variables: {V: '{{1 // Param.Z}}'}}
+    script: {actions: {onRun: {command: echo, timeout: '{{Param.Z}}'}}}
+",
+        ),
+        Some(&["EXPR", "CONTROL_FLOW", "FEATURE_BUNDLE_1"]),
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    let values: JobParameterValues = [(
+        "Z".to_string(),
+        openjd_model::JobParameterValue {
+            param_type: JobParameterType::Int,
+            value: ExprValue::Int(0),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let err = create_job(&jt, &values, &jt.default_validation_context())
+        .expect_err("enableIf: false is refused");
+    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 4 validation errors for JobTemplate\n\
+             steps[0] -> enableIf:\n\t{msg}\n\
+             steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\n\
+             steps[0] -> stepEnvironments[0] -> enableIf:\n\t{msg}\n\
+             steps[0] -> stepEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation expression at [0, 16]. Division by zero\n  1 // Param.Z\n  ~~^~~~~~~~~~"
         )
     );
 }
