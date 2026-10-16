@@ -914,14 +914,9 @@ fn create_job_accepts_steps_in_carried_forward_fields() {
 ",
     ))
     .expect("create_job's carried-forward checks see the Steps.* symbols");
-    // The unresolved placeholders are not part of the Step's resolved symbol
-    // table: only concrete values go there.
-    let c = &job.steps[3];
-    let symtab = serde_json::to_value(c.resolved_symtab.as_ref().unwrap()).unwrap();
-    assert!(
-        !symtab.to_string().contains("Steps"),
-        "resolved_symtab holds Steps.*: {symtab}"
-    );
+    // The Step is instantiated. (Whether placeholders reach its table is not
+    // observable here: a SerializedSymbolTable drops Unresolved values.)
+    assert_eq!(job.steps[3].name, "C");
 }
 
 #[test]
@@ -1310,7 +1305,7 @@ fn a_symbol_that_only_starts_with_steps_is_not_under_the_steps_root() {
 }
 
 #[test]
-fn a_bad_let_read_by_a_range_does_not_cascade_whatever_the_range_does_with_it() {
+fn a_bad_let_read_by_a_range_is_reported_once_for_calls_indexing_and_arithmetic() {
     assert_errs(
         &template(
             "    let: ['x = Steps.Nope.Output.A']
@@ -1370,5 +1365,91 @@ steps:
             ("steps[0] -> enableIf", gate),
             ("steps[0] -> stepEnvironments[0] -> enableIf", gate),
         ],
+    );
+}
+
+#[test]
+fn a_dotted_step_name_does_not_collide_with_another_steps_symbols() {
+    // `A.Output` is not an <Identifier>, so its symbols are not seeded and
+    // cannot overlap Step `A`'s output `Output`.
+    decode_ok(
+        "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+  - name: A
+    outputVariables: [{name: Output, type: INT}]
+    script: {actions: {onRun: {command: echo}}}
+  - name: A.Output
+    outputVariables: [{name: X, type: INT}]
+    script: {actions: {onRun: {command: echo}}}
+  - name: C
+    dependencies: [{dependsOn: A}, {dependsOn: A.Output}]
+    script: {actions: {onRun: {command: echo, args: ['{{Steps.A.Output.Output}}']}}}
+",
+    );
+}
+
+#[test]
+fn check_order_identifier_before_self_and_existence_before_identifier() {
+    let t = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+  - name: Café
+    outputVariables: [{name: Num, type: INT}]
+    script: {actions: {onRun: {command: echo, args: ['{{Steps.Café.Output.Num}}', '{{Steps.Thé.Output.Num}}']}}}
+";
+    let args = "steps[0] -> script -> actions -> onRun -> args";
+    assert_errs(
+        t,
+        &[
+            (
+                &format!("{args}[0]"),
+                "'Steps.Café.Output.Num': Step 'Café' cannot be referenced through Steps.*, because its name is not an <Identifier>.",
+            ),
+            (
+                &format!("{args}[1]"),
+                "'Steps.Thé.Output.Num': there is no Step named 'Thé'.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn check_order_dependency_before_member() {
+    let t = template_with(
+        EXTENSIONS,
+        "",
+        "    script: {actions: {onRun: {command: echo}}}
+  - name: D
+    script: {actions: {onRun: {command: echo, args: ['{{Steps.P.Bogus.A}}']}}}
+",
+    );
+    assert_errs(
+        &t,
+        &[(
+            "steps[4] -> script -> actions -> onRun -> args[0]",
+            "'Steps.P.Bogus.A': Step 'P' is not a direct dependency of Step 'D'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.",
+        )],
+    );
+}
+
+#[test]
+fn enable_if_may_not_read_any_session_symbol() {
+    // `Session.HasPathMappingRules` is covered above.
+    assert_errs(
+        &c_enable_if("'{{Session.WorkingDirectory != null}}'"),
+        &[(
+            "steps[3] -> enableIf",
+            "Failed to parse interpolation expression at [0, 36]. Undefined variable: 'Session.WorkingDirectory'.\n  Session.WorkingDirectory != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~",
+        )],
+    );
+    assert_errs(
+        &c_enable_if("'{{Session.PathMappingRulesFile != null}}'"),
+        &[(
+            "steps[3] -> enableIf",
+            "Failed to parse interpolation expression at [0, 40]. Undefined variable: 'Session.PathMappingRulesFile'.\n  Session.PathMappingRulesFile != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~~",
+        )],
     );
 }
