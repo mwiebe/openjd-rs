@@ -137,7 +137,7 @@ folded into `/`: forward mapping onto a root `destination_path` (`/`) gives `//x
 which must compare equal to `/x`. Windows anchors are `X:\` (either separator),
 `\\server\share`, and, for non-absolute `destination_path` values only, `X:` and `\`.
 A UNC anchor's server ends at the first separator, so `\\srv\\share` has an empty
-share, as `PureWindowsPath` parses it. Normalization is applied to both sides of each
+share, as Python 3.12's `PureWindowsPath` parses it. Normalization is applied to both sides of each
 comparison. It matters on the forward side because `apply_with_format` does not
 normalize: a `destination_path` ending in a separator gives `/mnt/p//x`.
 

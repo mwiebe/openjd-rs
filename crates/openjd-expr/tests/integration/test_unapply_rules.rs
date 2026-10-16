@@ -53,6 +53,17 @@ fn uri_is_unchanged_without_rules() {
     );
 }
 
+#[test]
+fn doubled_separator_drive_path_is_not_a_uri() {
+    // `is_uri` needs a scheme of two or more characters, so `C://proj/a` is a
+    // Windows drive path and is mapped back, not stored unchanged.
+    let rules = [posix("/proj", "C:\\proj")];
+    assert_eq!(
+        unmap_windows(&rules, "C://proj/a"),
+        Ok("/proj/a".to_string())
+    );
+}
+
 // === Step 2: relative paths are invalid ===
 
 #[test]
@@ -114,6 +125,17 @@ fn windows_absolute_forms_are_accepted() {
     for path in ["C:\\x", "c:/x", "C:\\", "\\\\srv\\share", "//srv/share/f"] {
         assert_eq!(unmap_windows(&[], path), Ok(path.to_string()), "{path:?}");
     }
+}
+
+#[test]
+fn windows_mixed_separator_unc_is_absolute() {
+    // The path `\/srv/sh/f` has the `PureWindowsPath` anchor `\\srv\sh\`.
+    assert_eq!(
+        unmap_windows(&[], "\\/srv/sh/f"),
+        Ok("\\/srv/sh/f".to_string())
+    );
+    let rules = [posix("/p", "\\\\srv\\sh")];
+    assert_eq!(unmap_windows(&rules, "\\/srv/sh/f"), Ok("/p/f".to_string()));
 }
 
 // === Step 3: no rules, absolute path returned unchanged ===
@@ -299,9 +321,10 @@ fn posix_round_trip_compares_case_sensitively() {
 
 #[test]
 fn posix_destination_matching_is_case_sensitive() {
-    // Both URI rules' forward mappings map their own candidates, so only
-    // destination matching decides: `/M/Q` must not match `/m/q/f`, or its
-    // candidate `S3://B/f` would be tried first (longer destination).
+    // Only destination matching decides: `/M/Q` must not match `/m/q/f`, or
+    // its candidate `S3://B/f` would be tried first (longer destination), and
+    // it would pass the round trip, because the second rule (its scheme and
+    // authority compare case-insensitively) maps it forward to `/m/q/f`.
     let rules = [
         rule(PathFormat::Uri, "S3://B/", "/M/Q"),
         rule(PathFormat::Uri, "s3://b", "/m/q"),
@@ -347,17 +370,6 @@ fn windows_worker_dotdot_stays_at_drive_root() {
 }
 
 #[test]
-fn windows_mixed_separator_unc_is_absolute() {
-    // The path `\/srv/sh/f` has the `PureWindowsPath` anchor `\\srv\sh\`.
-    assert_eq!(
-        unmap_windows(&[], "\\/srv/sh/f"),
-        Ok("\\/srv/sh/f".to_string())
-    );
-    let rules = [posix("/p", "\\\\srv\\sh")];
-    assert_eq!(unmap_windows(&rules, "\\/srv/sh/f"), Ok("/p/f".to_string()));
-}
-
-#[test]
 fn posix_relative_destination_never_matches() {
     // Forward mapping `/a/f` gives `dst/f`, not the reported `/dst/f`.
     let rules = [posix("/a", "dst")];
@@ -391,6 +403,33 @@ fn windows_worker_drive_must_match() {
         unmap_windows(&rules, "C:\\proj\\a"),
         Err(UnmapError::NoRoundTrip)
     );
+}
+
+#[test]
+fn uri_worker_format_is_treated_as_posix() {
+    let rules = [posix("/a", "/M")];
+    assert_eq!(
+        unapply_rules(&rules, "/m/f", PathFormat::Uri),
+        Err(UnmapError::NoRoundTrip)
+    );
+    assert_eq!(
+        unapply_rules(&rules, "/M/f", PathFormat::Uri),
+        Ok("/a/f".to_string())
+    );
+}
+
+#[test]
+fn posix_source_ending_in_backslash_gets_a_separator() {
+    // Under POSIX `\` is not a separator, so `/src\` needs a `/` appended.
+    let rules = [posix("/src\\", "/dst")];
+    assert_eq!(unmap_posix(&rules, "/dst/f"), Ok("/src\\/f".to_string()));
+}
+
+#[test]
+fn windows_source_ending_in_forward_slash_gets_no_extra_separator() {
+    // `P:/` already ends with a Windows separator, so none is added.
+    let rules = [windows("P:/", "/mnt/p")];
+    assert_eq!(unmap_posix(&rules, "/mnt/p/a"), Ok("P:/a".to_string()));
 }
 
 // === Candidate order ===
@@ -492,26 +531,6 @@ fn forward_result_shallower_than_reported_is_rejected() {
     // reported `/m/x/f`, so the second candidate is the answer.
     let rules = [posix("/a/f", "/m"), posix("/a", "/m/x")];
     assert_eq!(unmap_posix(&rules, "/m/x/f"), Ok("/a/f/x/f".to_string()));
-}
-
-#[test]
-fn uri_worker_format_is_treated_as_posix() {
-    let rules = [posix("/a", "/M")];
-    assert_eq!(
-        unapply_rules(&rules, "/m/f", PathFormat::Uri),
-        Err(UnmapError::NoRoundTrip)
-    );
-    assert_eq!(
-        unapply_rules(&rules, "/M/f", PathFormat::Uri),
-        Ok("/a/f".to_string())
-    );
-}
-
-#[test]
-fn posix_source_ending_in_backslash_gets_a_separator() {
-    // Under POSIX `\` is not a separator, so `/src\` needs a `/` appended.
-    let rules = [posix("/src\\", "/dst")];
-    assert_eq!(unmap_posix(&rules, "/dst/f"), Ok("/src\\/f".to_string()));
 }
 
 // === Errors ===
