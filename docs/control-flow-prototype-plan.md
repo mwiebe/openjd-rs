@@ -408,7 +408,8 @@ Environments are kept as they are, because they are carried forward as format st
 ### Model specs to update
 
 `specs/model/template-types.md`, `validation.md`, `job-creation.md`, `job-types.md`, `parameter-space.md`,
-`step-dependencies.md` (skipped and zero-Task dependencies), `public-api.md`, and a new `job-outputs.md`. Also update
+`step-dependencies.md` (skipped and zero-Task dependencies), `public-api.md` (including `ChunkTaskIndex`), and a new
+`job-outputs.md`. Also update
 `specs/architecture.md` with the binding and job output evaluation stages.
 
 ## openjd-expr
@@ -495,8 +496,11 @@ lists `unapply_rules` and `UnmapError`.
   `range: [5, 1, 3, 2]`, chunks `{1, 5}` and `{2, 3}` against iteration order 5, 1, 3, 2). The value is `Some` only when
   the Step declares outputs and the Action succeeded. `ActionMessage::OutputVar` gets `task: Option<i64>`.
 * `run_task` treats the Step as chunked when an entry of `task_parameter_values` has
-  `param_type == TaskParameterType::ChunkInt`, takes that entry's `ExprValue::RangeExpr` values as the chunk, and
-  passes them to the collector; otherwise it passes `None`.
+  `param_type == TaskParameterType::ChunkInt`, takes that entry's values as the chunk, and passes them to the
+  collector; otherwise it passes `None`. The value may be an `ExprValue::RangeExpr` (as `openjd run` passes) or an
+  `ExprValue::String` such as `"1-10"`, which the session accepts today (`session.rs:2609`, `:2636`; test
+  `task_chunk_int_stays_string`). A string is parsed as a range expression; a parse failure fails the Action with
+  "CHUNK[INT] parameter 'Frame' value '...' is not a range expression".
 * `run_task` builds the `OutputCollector` with the Session's sorted path mapping rules (`session.rs:681`) and
   `PathFormat::host()`, so `PATH` values are mapped back before they are reported or returned.
 * `SessionLimits` (`limits.rs:23`) gets `max_task_output_bytes: Option<usize>`, with a default of at least 1 MiB and
@@ -642,15 +646,18 @@ order:
 3. If the Step is `PendingInputs`, call `bind_step`. On error, print the binding failure (field and expression) and
    mark the Step `Failed`. If it is `Skipped`, print `Step 'X' skipped (enableIf is false)`.
 4. Otherwise call `attach_step_inputs`, enter only the enabled step Environments, and run the Tasks as today. Record
-   `ActionResult.outputs` for each Task index. For a chunked Step, the model provides `ChunkTaskIndex`, built from
-   the per-Task iterator: it maps (the values of the Step's other Task parameters, `CHUNK[INT]` value) to the
-   iteration indices with that key, in order, because a chunk runs with the other parameters fixed, each
-   `CHUNK[INT]` value recurs once per combination of them, and a non-chunk parameter may repeat a value
-   (`STRING [a, a]`). For each chunk, in the chunked iterator's order, and each `CHUNK[INT]` value in it, it hands out
-   the next unused index for the key; both iterators visit repeated combinations in the same relative order. Store
-   each Task's map at its index. Print them after each Action with their units
-   (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task runs can be printed as they arrive, marked as not
-   committed.
+   `ActionResult.outputs` for each Task index, using the model's `ChunkTaskIndex` for a chunked Step.
+
+   * Build: from the per-Task iterator, map each key (the values of the Step's other Task parameters, `CHUNK[INT]`
+     value) to its iteration indices, in order. A chunk runs with the other parameters fixed, so each `CHUNK[INT]`
+     value recurs once per combination of them, and a non-chunk parameter may repeat a value (`STRING [a, a]`), so a
+     key can have several indices.
+   * Assign: for each chunk, in the chunked iterator's order, and each `CHUNK[INT]` value in it, take the next unused
+     index for its key, and store that Task's map there. Repeated keys belong to Tasks with identical parameters, so
+     which one gets which index is not observable.
+
+   Print the outputs after each Action with their units (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task
+   runs can be printed as they arrive, marked as not committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
 6. After each Step is bound, succeeds, or is skipped, call `evaluate_job_output` for every job output that is still
    pending and whose inputs are now all concrete (`job_output_inputs`), store the result, and print it once, as
@@ -799,7 +806,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   passed through unchanged and its file is not read; a directive in a Job Template `onEnter` cancels and fails the
   Action; an undeclared name with a missing `@` file reports the undeclared name.
 * Chunked sessions: `run_task` passes the chunk values for a `CHUNK[INT]` Step and `None` otherwise; the output
-  callback and `ActionResult.outputs` carry each Task's value; cross-user parity for `N[3]=@f`.
+  callback and `ActionResult.outputs` carry each Task's value; a chunk given as `ExprValue::String("10-12")` works,
+  and an unparsable one fails the Action; cross-user parity for `N[3]=@f`.
 * Cross-user parity: `@` directives with a space and with a tab after the colon, with `N= @f`, and with trailing
   spaces after the path give the same result as on the direct path. Run with the RFC samples' own form
   (`openjd_output_var: Keys=@keys.json`).
