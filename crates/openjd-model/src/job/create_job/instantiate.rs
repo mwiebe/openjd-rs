@@ -35,6 +35,11 @@ use super::ranges;
 /// checks still run (as at pass 8), but host requirements and the
 /// parameter space need the concrete values, so they are skipped. The
 /// failure is already recorded in `check_errors`, so job creation fails.
+///
+/// With `CONTROL_FLOW`, it also returns `Ok(None)` for a Step whose step
+/// `let`, host requirements, or parameter space reads `Steps.*`, after
+/// recording a refusal at each such field (see
+/// [`reject_unbound_steps_reads`]): those fields need step input binding.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn instantiate_step(
     jt: &template::JobTemplate,
@@ -319,7 +324,9 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 /// bindings) plus `Unresolved` placeholders for `Session.*`, PATH
 /// `Param.*`, `Task.Param.*` / `Task.RawParam.*`, and `Task.File.*` —
 /// the same scope the session runtime binds when it resolves these
-/// format strings at run time.
+/// format strings at run time. With `steps_scope` set (`CONTROL_FLOW`),
+/// also `Unresolved` placeholders for the `Steps.*` symbols of that Step's
+/// direct dependencies, in host scope (see `add_steps_scope`).
 ///
 /// Script-level `let` bindings are evaluated into the table with
 /// unresolved host context through pass 8's own evaluation helper
@@ -408,7 +415,10 @@ fn build_task_check_symtab(
 /// `Session.*`, PATH `Param.*`, and this environment's `Env.File.*`,
 /// and the environment's script-level `let` bindings evaluated in —
 /// mirroring what the session runtime binds when it resolves the
-/// environment at run time.
+/// environment at run time. For a Step Environment, `steps_scope`
+/// (`CONTROL_FLOW`) adds `Unresolved` placeholders for the `Steps.*`
+/// symbols of the Step's direct dependencies, in host scope; it is `None`
+/// for a Job Environment.
 ///
 /// A `let` binding that fails to evaluate is reported into `errors` at
 /// `<env_path> -> script -> let[j]` exactly as for a step script (see
