@@ -414,9 +414,15 @@ fn reason(
             Known::Declared(_) => "Service",
             Known::Required { .. } => "required Service",
         };
+        // An empty `ports` list is itself reported (`must not be empty.`),
+        // so the reference error says so rather than listing nothing.
+        let declared = if declared_ports.is_empty() {
+            "it declares no ports".to_string()
+        } else {
+            format!("declared ports: {}", declared_ports.join(", "))
+        };
         return Some(Refinement::Rewrite(format!(
-            "{what} '{svc}' has no port '{port}'; declared ports: {}.",
-            declared_ports.join(", ")
+            "{what} '{svc}' has no port '{port}'; {declared}."
         )));
     }
 

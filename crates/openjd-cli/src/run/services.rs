@@ -1145,13 +1145,24 @@ impl ServiceManager {
             };
             watchers.push(Box::pin(async move {
                 loop {
-                    // UNHEALTHY is reported as soon as the health check
-                    // decides it, before the canceled onRun has exited.
-                    if let ServiceHealth::Unhealthy(u) = health_rx.borrow_and_update().clone() {
-                        return Some(Detected {
-                            idx,
-                            failure: InstanceFailure::Unhealthy(u),
-                        });
+                    // UNHEALTHY — and a reported openjd_fail — are published
+                    // as soon as the Session decides them, before the
+                    // canceled onRun has exited: the instance is UNREADY
+                    // now, and no further Task is gated on it.
+                    match health_rx.borrow_and_update().clone() {
+                        ServiceHealth::Unhealthy(u) => {
+                            return Some(Detected {
+                                idx,
+                                failure: InstanceFailure::Unhealthy(u),
+                            });
+                        }
+                        ServiceHealth::Failed { message } => {
+                            return Some(Detected {
+                                idx,
+                                failure: InstanceFailure::Reported(message),
+                            });
+                        }
+                        _ => {}
                     }
                     let current = exit_rx.borrow_and_update().clone();
                     match current {
@@ -1247,14 +1258,22 @@ impl ServiceManager {
             let Some(session) = inst.session.as_ref() else {
                 continue;
             };
-            if let Some(ServiceHealth::Unhealthy(u)) =
-                session.health_watch().map(|rx| rx.borrow().clone())
-            {
-                out.push(Detected {
-                    idx,
-                    failure: InstanceFailure::Unhealthy(u),
-                });
-                continue;
+            match session.health_watch().map(|rx| rx.borrow().clone()) {
+                Some(ServiceHealth::Unhealthy(u)) => {
+                    out.push(Detected {
+                        idx,
+                        failure: InstanceFailure::Unhealthy(u),
+                    });
+                    continue;
+                }
+                Some(ServiceHealth::Failed { message }) => {
+                    out.push(Detected {
+                        idx,
+                        failure: InstanceFailure::Reported(message),
+                    });
+                    continue;
+                }
+                _ => {}
             }
             let Some(rx) = session.exit_watch() else {
                 continue;
@@ -1904,6 +1923,16 @@ async fn launch_until_ready(
             }
             Err(FailureKind::Unhealthy(u))
         }
+        Ok(ServiceHealth::Failed { message }) => {
+            // onRun said so itself, before READY: the Session has canceled
+            // it; wait for the exit (step 2). Not a suspected port conflict,
+            // so the relaunch stays in the Session.
+            let launch = session.launch_count();
+            if let Ok(exit) = session.wait_exit().await {
+                log_run_exit(&label, launch, &exit);
+            }
+            Err(FailureKind::Reported(message))
+        }
         Ok(ServiceHealth::ExitedBeforeReady | ServiceHealth::Pending) => {
             let exit = session
                 .wait_exit()
@@ -1911,6 +1940,10 @@ async fn launch_until_ready(
                 .unwrap_or_else(|_| driver_lost_exit());
             if exit.canceled {
                 Ok(false)
+            } else if let Some(message) = exit.reported_failure {
+                // The exit landed before the health watch's `Failed` was
+                // observed: still a reported failure.
+                Err(FailureKind::Reported(message))
             } else {
                 Err(FailureKind::ExitedBeforeReady(Box::new(exit)))
             }

@@ -6227,6 +6227,100 @@ mod services {
         );
     }
 
+    /// `openjd_fail` BEFORE READY is a reported failure too: the reason is
+    /// the message and the relaunch stays in the Session (onEnter does not
+    /// run again).
+    #[test]
+    fn test_on_run_openjd_fail_before_ready_relaunches_in_the_session() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_before_ready.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(
+            stdout.contains(
+                "Service 'S' (scope: Step Work) is UNREADY: onRun reported openjd_fail: store \
+                 corrupt (completedTasks: KEEP)"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1): onRun \
+                 reported openjd_fail: store corrupt"
+            ),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("exited before becoming READY"), "{stdout}");
+        assert!(!stdout.contains("new Service Session"), "{stdout}");
+        assert_eq!(stdout.matches("S_ONENTER").count(), 1, "{stdout}");
+        assert!(!stdout.contains("S1_SURVIVED"), "{stdout}");
+        assert!(stdout.contains("TASK_DONE"), "{stdout}");
+    }
+
+    /// A redacted value never reaches a Service failure's reason: not the
+    /// `is UNREADY` / `is FAILED` lines, not the Results, not `--output json`.
+    #[test]
+    fn test_openjd_fail_reason_is_redacted_everywhere() {
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_redacted.yaml",
+            &["--output", "json"],
+        );
+        assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert!(!stdout.contains("hunter2xyz"), "{stdout}");
+        assert!(!stderr.contains("hunter2xyz"), "{stderr}");
+        assert!(
+            stdout.contains("is UNREADY: onRun reported openjd_fail: bad ********"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(
+                "\"reason\": \"onRun reported openjd_fail: bad ********; 0 of 0 relaunch(es)"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// After `openjd_fail` the Service is UNREADY at once, while `onRun` is
+    /// still exiting under its NOTIFY_THEN_TERMINATE grace: no further Task
+    /// starts against the failed instance (constraint 3), and the restart
+    /// decision is taken once the exit lands.
+    #[test]
+    fn test_openjd_fail_gates_tasks_while_on_run_exits_under_grace() {
+        let dir = TempDir::new().unwrap();
+        let marker = dir.path().join("m");
+        let (code, stdout, stderr) = run_service_template(
+            "service_on_run_openjd_fail_ntt_gates_tasks.yaml",
+            &["-p", &format!("Marker={}", marker.display())],
+        );
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        let unready = "is UNREADY: onRun reported openjd_fail: store corrupt";
+        let relaunch = "Relaunching Service 'S' onRun in its Service Session (relaunch 1 of 1)";
+        // UNREADY is logged on the line, before the canceled exit (which
+        // waits out the 3 s grace), and the Task that was running completes.
+        assert!(
+            pos(&stdout, unready) < pos(&stdout, "TASK_1_DONE"),
+            "{stdout}"
+        );
+        assert!(
+            pos(&stdout, "TASK_1_DONE") < pos(&stdout, relaunch),
+            "{stdout}"
+        );
+        // Tasks 2 and 3 run only against launch 2.
+        assert!(
+            pos(&stdout, "[Service S] S launch 2") < pos(&stdout, "TASK_2_DONE"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("TASK_3_DONE"), "{stdout}");
+        assert_eq!(
+            stdout.matches("Service 'S' is READY").count(),
+            2,
+            "{stdout}"
+        );
+    }
+
     /// `maxAttempts` exhausted: every relaunch after an exit-before-READY
     /// begins a new Service Session (new ports, onExit each time), then the
     /// Service is FAILED, the Job fails with a non-zero exit code, no Task

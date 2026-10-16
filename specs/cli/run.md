@@ -600,9 +600,13 @@ declares it **UNHEALTHY** (`failureThreshold` consecutive failed probes after RE
 RFC 0009 `<ServiceHealthCheck>`; the Service Session reports it on its health watch
 and has already canceled `onRun` with its cancelation method, the cancel "Failure and
 restart" step 2 describes), or its `onRun` **reports** that it has failed with an
-`openjd_fail` line (RFC 0009 `<ServiceActions>`; the Service Session likewise cancels
-`onRun` at once and the exit carries `reported_failure`, the message being the
-failure's reason — `FailureKind::Reported`). A relaunch that becomes READY *while the Task runs* is
+`openjd_fail` line (RFC 0009 `<ServiceActions>`; the Service Session publishes
+`ServiceHealth::Failed` on its health watch the moment the line is read and cancels
+`onRun` at once, so — exactly as for UNHEALTHY — the Service is UNREADY and no further
+Task is gated on it before the canceled `onRun` has exited, even under a long
+`NOTIFY_THEN_TERMINATE` grace; the exit then carries `reported_failure`, the message
+being the failure's reason — `FailureKind::Reported`, whether the line came before or
+after READY). A relaunch that becomes READY *while the Task runs* is
 watched the same way: the watcher also wakes when a background start or relaunch
 finishes and, when it finished READY, holds the instance as READY at once rather than
 leaving it to the next gate (`promote_finished_relaunches`), so a second exit during
@@ -792,7 +796,8 @@ check names the ports it probes — `TCP_CONNECT on api` — since a Service wit
 probed on its TCP ports only; or `…, no
 heartbeat after READY)` for a `STDOUT` check without one), `is READY[: <message>]`,
 `is UNHEALTHY: N consecutive health probes failed (failureThreshold: N); last probe:
-<what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)`, `onRun (launch N) canceled;
+<what failed>`, `is UNREADY: <reason> (completedTasks: <policy>)` (a reason that quotes
+an `openjd_fail` message carries it redacted, as the echoed line was), `onRun (launch N) canceled;
 exit code: N/A` or `… exited; exit code: <n>` (how the failed instance's `onRun` ended:
 `canceled` when the runtime canceled it after UNHEALTHY, a reported `openjd_fail`, or a
 readiness timeout, `exited` when

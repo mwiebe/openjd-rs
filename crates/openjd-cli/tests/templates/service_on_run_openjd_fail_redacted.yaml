@@ -1,0 +1,30 @@
+# A value registered with openjd_redacted_env must not leak through a Service
+# failure's reason: the openjd_fail message is redacted before it becomes the
+# `is UNREADY` / `is FAILED` reason and the Results' failure text. (The
+# variable itself is only set under REDACTED_ENV_VARS; the redaction applies
+# regardless.) maxAttempts 0, so the Job fails and the reason reaches the
+# Results.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "OnRunOpenjdFailRedacted"
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT }
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "print('openjd_redacted_env: SECRET=hunter2xyz')"]
+        onRun:
+          command: python
+          args: ["-c", "import time; print('openjd_service_ready: up', flush=True); time.sleep(0.3); print('openjd_fail: bad hunter2xyz', flush=True); time.sleep(30)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "S" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "import time; time.sleep(1.5); print('TASK_DONE')"]

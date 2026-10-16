@@ -34,7 +34,7 @@ composes a `Session`:
 1. `ServiceSession::with_config(ServiceSessionConfig { session, service, environments, endpoints, in_scope_endpoints })?`.
 2. `svc.enter().await?` — enter the `SERVICE`-scoped Environments, run `onEnter` (an error is a *start failure*).
 3. `svc.launch().await?` — launch `onRun` in the background and start the health check (for `COMMAND`, the concurrent `onHealthCheck` invocations); it keeps probing after READY and cancels `onRun` on UNHEALTHY.
-4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, or `ExitedBeforeReady`.
+4. `svc.wait_ready().await?` — `Ready`, `TimedOut`, `ExitedBeforeReady`, `Unhealthy` (READY and UNHEALTHY before observed), or `Failed` (onRun reported `openjd_fail`).
 5. Observe with `wait_exit()` / `exit_watch()`; stop with `cancel_run(..)`; relaunch with `launch()` once exited.
 6. `svc.end().await` — cancel a running `onRun`, run `onExit`, exit the Environments, delete the working directory.
 
@@ -639,6 +639,10 @@ pub enum ServiceHealth {
     /// `failureThreshold` consecutive probes failed after READY; the runtime
     /// has canceled onRun with its cancelation method ("Failure and restart" step 2).
     Unhealthy(ServiceUnhealthy),
+    /// onRun reported `openjd_fail` (RFC 0009 `<ServiceActions>`): an instance
+    /// failure in itself, before or after READY. Published at once; the
+    /// runtime has canceled onRun with its cancelation method.
+    Failed { message: String },
 }
 impl ServiceHealth {
     pub fn is_terminal(&self) -> bool;   // !Pending — what wait_ready() returns on

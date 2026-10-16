@@ -396,8 +396,10 @@ pub(super) fn instantiate_service<'a>(
                 })
                 .transpose()?
                 .flatten()
-                // Range-checked above, so the narrowing cannot fail.
-                .map(|v| u16::try_from(v).unwrap_or(u16::MAX));
+                // Range-checked above (1..=65535), so the narrowing cannot
+                // fail; were the range ever widened by mistake, failing loudly
+                // beats silently clamping to 65535.
+                .map(|v| u16::try_from(v).expect("port range-checked to 1..=65535"));
             Ok(job::ServicePort {
                 name: p.name.clone(),
                 port,

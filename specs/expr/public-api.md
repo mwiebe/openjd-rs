@@ -263,8 +263,9 @@ impl ExprRevision {
 #[non_exhaustive]
 pub enum ExprExtension {
     /// SERVICE (RFC 0009): adds join_host_port, split_host_port, is_ipv4,
-    /// is_ipv6 (Expression Language §2.2.4). A profile without it does not
-    /// have these functions; `ExprExtension::ALL == &[Service]`.
+    /// is_ipv6 (Expression Language §2.2.4) and the repr_sh(int) /
+    /// repr_sh(list[int]) signatures (§2.2.6). A profile without it does not
+    /// have them; `ExprExtension::ALL == &[Service]`.
     Service,
 }
 

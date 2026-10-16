@@ -194,17 +194,21 @@ impl ActionFilter {
                         return (callbacks, true, self.apply_redaction(&msg));
                     }
                 },
+                // The status and failure texts travel beyond the log — into
+                // `ActionStatus`, a Service failure's reason, the Results —
+                // so a redacted value is removed from them here, as from the
+                // echoed line.
                 ActionMessageKind::Status => {
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::Status,
-                        value: ActionMessageValue::String(payload.to_string()),
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
                         cancel: false,
                     });
                 }
                 ActionMessageKind::Fail => {
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::Fail,
-                        value: ActionMessageValue::String(payload.to_string()),
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
                         cancel: false,
                     });
                 }

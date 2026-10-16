@@ -47,7 +47,8 @@ in `openjd-model` is the documented bridge between the two.
 #[non_exhaustive]
 pub enum ExprExtension {
     /// RFC 0009 `SERVICE`: adds `join_host_port`, `split_host_port`,
-    /// `is_ipv4`, and `is_ipv6` (Expression Language §2.2.4). No syntax.
+    /// `is_ipv4`, and `is_ipv6` (Expression Language §2.2.4) and the
+    /// `repr_sh(int)` / `repr_sh(list[int])` signatures (§2.2.6). No syntax.
     Service,
 }
 
@@ -60,7 +61,7 @@ Expression-*level* extensions add or modify functions, operators, or types
 beyond the base revision; the model-level "EXPR" extension gates whether the
 expression language is available *at all*, not which features are registered
 once it is. `Service` is the one variant today. `ExprProfile::current()` has
-no extensions, so the four `SERVICE` functions are absent from it;
+no extensions, so the `SERVICE` functions and `repr_sh` signatures are absent from it;
 `ExprProfile::latest()` enables every variant in `ALL`, and the model layer
 enables `Service` when a document declares `SERVICE`.
 

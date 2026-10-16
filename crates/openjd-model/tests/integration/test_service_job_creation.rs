@@ -493,6 +493,45 @@ fn numeric_fields_are_range_checked_at_job_creation() {
     );
 }
 
+/// §9.3 item 2 at the boundaries, through job creation: 65535 is the
+/// largest port and 1 the smallest; 65536 and 0 are rejected (not clamped
+/// to the nearest valid value).
+#[test]
+fn port_range_boundaries_at_job_creation() {
+    const T: &str = r#"
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: Test
+parameterDefinitions:
+  - { name: Port, type: INT, default: 6379 }
+services:
+  - name: Cache
+    ports:
+      - name: main
+        port: "{{ Param.Port }}"
+    script:
+      actions:
+        onRun: { command: valkey-server, args: ["{{ Service.Cache.main.port }}"] }
+steps:
+  - name: S
+    dependencies: [{ service: Cache }]
+    script:
+      actions:
+        onRun: { command: run }
+"#;
+    let port_of = |job: &job::Job| job.services.as_ref().unwrap()[0].ports[0].port;
+    assert_eq!(port_of(&create_ok(T, &[("Port", "65535")])), Some(65535));
+    assert_eq!(port_of(&create_ok(T, &[("Port", "1")])), Some(1));
+    for bad in ["65536", "0", "-1"] {
+        assert_eq!(
+            create_err(T, &[("Port", bad)]),
+            "Model validation error: 1 validation error for JobTemplate\n\
+             services[0] -> ports[0] -> port:\n\tmust be between 1 and 65535.",
+            "Port={bad}"
+        );
+    }
+}
+
 /// Every Service check failure across the template is reported together
 /// with the job-environment and step checks — in pass 8's order
 /// (`jobEnvironments`, `services`, `steps`) — rather than the first failing

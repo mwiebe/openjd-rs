@@ -200,9 +200,18 @@ fn repr_sh_of_int_list_joins_decimal_forms_with_single_spaces() {
 fn repr_sh_of_int_without_service_is_a_type_error() {
     let lib = base_lib();
     let st = SymbolTable::new();
-    for expr in ["repr_sh(6379)", "repr_sh([80, 443])"] {
+    for (expr, expected) in [
+        (
+            "repr_sh(6379)",
+            "No matching signature for repr_sh(int)\n  repr_sh(6379)\n  ^~~~~~~~~~~~~",
+        ),
+        (
+            "repr_sh([80, 443])",
+            "No matching signature for repr_sh(list[int])\n  repr_sh([80, 443])\n  ^~~~~~~~~~~~~~~~~~",
+        ),
+    ] {
         let e = eval_with(expr, &lib, &st).unwrap_err();
-        assert!(e.contains("repr_sh"), "{expr}: {e}");
+        assert!(e.starts_with(expected), "{expr}:\n{e}");
     }
     // Static typing without SERVICE rejects it too, so a template validated
     // without the extension never passes.

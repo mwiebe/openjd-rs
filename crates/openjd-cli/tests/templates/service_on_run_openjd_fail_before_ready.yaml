@@ -1,0 +1,33 @@
+# RFC 0009 <ServiceActions>: an openjd_fail line from onRun BEFORE READY is a
+# reported failure too — the reason is the message, and the relaunch stays in
+# the Service Session (the Service said so itself; no port conflict is
+# suspected), so onEnter does not run again. Launch 1 fails before READY;
+# launch 2 is READY.
+specificationVersion: "jobtemplate-2023-09"
+extensions: [SERVICE, EXPR]
+name: "OnRunOpenjdFailBeforeReady"
+parameterDefinitions:
+  - name: Marker
+    type: STRING
+services:
+  - name: S
+    ports: [{ name: main }]
+    healthCheck: { type: STDOUT, readinessTimeoutSeconds: 20 }
+    restartPolicy: { maxAttempts: 1, completedTasks: KEEP }
+    script:
+      actions:
+        onEnter:
+          command: python
+          args: ["-c", "print('S_ONENTER')"]
+        onRun:
+          command: python
+          args: ["-c", "import os, time\nm = r'{{ Param.Marker }}'\nn = int(open(m).read()) + 1 if os.path.exists(m) else 1\nopen(m, 'w').write(str(n))\nprint(f'S launch {n}', flush=True)\nif n == 1:\n    print('openjd_fail: store corrupt', flush=True)\n    time.sleep(5)\n    print('S1_SURVIVED', flush=True)\nprint('openjd_service_ready: up', flush=True)\nwhile True: time.sleep(0.2)"]
+          cancelation: { mode: TERMINATE }
+steps:
+  - name: Work
+    dependencies: [{ service: "S" }]
+    script:
+      actions:
+        onRun:
+          command: python
+          args: ["-c", "print('TASK_DONE')"]

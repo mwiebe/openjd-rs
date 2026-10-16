@@ -409,7 +409,7 @@ Sessions are excluded because they manage OS processes and filesystem I/O, which
 
 ### `SERVICE` extension (RFC 0009)
 
-`getSupportedExtensions()` includes `SERVICE`, so `decodeJobTemplate` and `decodeEnvironmentTemplate` accept templates that declare it by default, with every validation rule of Template Schemas §9. `FunctionLibrary.default()` is built from `ExprProfile::current()`, which has no expression-level extensions, so the four `SERVICE` string functions (`join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`) are not in it; a caller evaluating a `SERVICE` template's expressions standalone does not have them.
+`getSupportedExtensions()` includes `SERVICE`, so `decodeJobTemplate` and `decodeEnvironmentTemplate` accept templates that declare it by default, with every validation rule of Template Schemas §9. `FunctionLibrary.default()` is built from `ExprProfile::current()`, which has no expression-level extensions, so the `SERVICE` additions to the library — the four string functions (`join_host_port`, `split_host_port`, `is_ipv4`, `is_ipv6`) and the `repr_sh(int)` / `repr_sh(list[int])` signatures — are not in it; a caller evaluating a `SERVICE` template's expressions standalone does not have them.
 
 ## Size Budget
 

@@ -341,7 +341,8 @@ READY or count as a heartbeat ("`onRun` exit wins", constraint 10), and a
 probe result is no longer received. The driver awaits the check driver (so an
 invocation in flight is canceled and reaped before the exit is published —
 and so before `end()` can run `onExit`, rule 5), merges its redacted values,
-then: if readiness is still pending it becomes `ExitedBeforeReady`; it logs
+then: if readiness is still pending (not decided by READY, a timeout, or a
+reported failure) it becomes `ExitedBeforeReady`; it logs
 `Service '<name>' onRun exited: <state> (exit code: N)[, canceled by the
 runtime[: UNHEALTHY]]`, finishes the status, notifies the callback, publishes
 the `ServiceRunExit`, and returns the runner.
@@ -359,6 +360,7 @@ pub enum ServiceHealth {
     TimedOut,                                              // readinessTimeoutSeconds elapsed; onRun may still run
     ExitedBeforeReady,                                     // onRun exited first
     Unhealthy(ServiceUnhealthy),                           // failureThreshold reached; onRun canceled by the runtime
+    Failed { message: String },                            // onRun reported openjd_fail; onRun canceled by the runtime
 }
 
 pub struct ServiceUnhealthy {
@@ -400,19 +402,28 @@ result that arrives after probing stopped is discarded.
 
 **Reported failure.** An `openjd_fail: <message>` line on `onRun`'s stdout
 while `onRun` runs is an instance failure in itself (RFC 0009
-`<ServiceActions>`; Template Schemas §9.7): the driver cancels `onRun` at once
-with its own cancelation method, as on UNHEALTHY (`Canceling Service '<name>'
-onRun: it reported openjd_fail: <message>`), stops probing (an in-flight
-`COMMAND` invocation is canceled, no further probe or heartbeat timer is
-armed, a later `openjd_service_ready` line does not make the instance READY),
-and the resulting `ServiceRunExit` has `reported_failure: Some(message)`,
-`fail_message: Some(message)` and `canceled: false`. Only the first such line
-acts; later ones only update the status message. It may arrive before or
-after READY; before READY, `wait_ready` reports `ExitedBeforeReady` once the
-exit lands. A line drained after `onRun` exited on its own is not a reported
-failure (it only sets `fail_message`, as before). When the caller's own
-cancel raced it, `canceled` is also `true` and the exit is not a failure, as
-for UNHEALTHY.
+`<ServiceActions>`; Template Schemas §9.7): the driver publishes
+`ServiceHealth::Failed { message }` on the health watch **at once** — so the
+scheduler sees the instance UNREADY the moment the line is read, before the
+canceled `onRun` has exited, and gates no further Task on it — cancels
+`onRun` with its own cancelation method, as on UNHEALTHY (`Canceling Service
+'<name>' onRun: it reported openjd_fail: <message>`), and stops probing (an
+in-flight `COMMAND` invocation is canceled with its own method, no further
+probe or heartbeat timer is armed, a later `openjd_service_ready` line does
+not make the instance READY). The resulting `ServiceRunExit` has
+`reported_failure: Some(message)`, `fail_message: Some(message)` and
+`canceled: false`. Only the first such line acts; later ones only update the
+status message, and a line read after an UNHEALTHY verdict already canceled
+`onRun` is likewise a message in passing (`unhealthy` wins). It may arrive
+before or after READY: `Failed` is terminal, so before READY `wait_ready`
+returns it (not `ExitedBeforeReady`). The `running` guard in
+`HealthTracker::apply` means a line that is only drained after `onRun` has
+already exited cannot cancel anything and sets `fail_message` alone. The
+message is redacted like the echoed line (`ActionFilter` applies the Session's
+redactions to the `openjd_fail` and `openjd_status` payloads), so a value
+registered with `openjd_redacted_env` never reaches a failure's reason. When
+the caller's own cancel raced it, `canceled` is also `true` and the exit is
+not a failure, as for UNHEALTHY.
 
 - **`TCP_CONNECT`** — for each probed port (the check's `ports`, which the
   model restricts to TCP ports and defaults to every declared TCP port — a

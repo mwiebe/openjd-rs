@@ -189,6 +189,18 @@ pub enum ServiceHealth {
     /// [`ServiceRunExit::unhealthy`] carries the same detail) and takes the
     /// restart decision.
     Unhealthy(ServiceUnhealthy),
+    /// `onRun` reported with an `openjd_fail` line that it cannot serve
+    /// (RFC 0009 `<ServiceActions>`): an instance failure in itself, before
+    /// or after READY. Published the moment the line is read, and the runtime
+    /// has canceled `onRun` with its cancelation method; the caller awaits
+    /// the exit ([`ServiceSession::wait_exit`], whose
+    /// [`ServiceRunExit::reported_failure`] carries the same message) and
+    /// takes the restart decision — it need not wait for the exit to learn
+    /// the instance is UNREADY.
+    Failed {
+        /// The `openjd_fail` message: the failure's reason.
+        message: String,
+    },
 }
 
 impl ServiceHealth {
@@ -1931,6 +1943,14 @@ impl HealthTracker<'_> {
         let _ = self.health_tx.send(ServiceHealth::ExitedBeforeReady);
     }
 
+    /// `onRun` reported `openjd_fail`: probing stops and the instance is
+    /// FAILED whatever its phase (published at once, so the scheduler sees
+    /// it UNREADY before the canceled `onRun` has exited).
+    fn set_reported_failure(&mut self, message: String) {
+        self.phase = HealthPhase::Stopped;
+        let _ = self.health_tx.send(ServiceHealth::Failed { message });
+    }
+
     /// Apply a phase-2 probe result. Returns `Some` when the instance has
     /// just become UNHEALTHY (`failureThreshold` reached); the caller stops
     /// probing and cancels `onRun`.
@@ -2283,13 +2303,16 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                             // cancelation method, as on UNHEALTHY, and the
                             // message is the failure's reason. Only the
                             // first line counts; probing stops.
-                            if reported_failure.is_none() {
+                            // An UNHEALTHY verdict already canceled onRun:
+                            // the line is a message in passing, not a second
+                            // failure.
+                            if reported_failure.is_none() && unhealthy.is_none() {
                                 reported_failure = Some(message.clone());
                                 check_stop.cancel();
                                 drop(probe.take());
                                 drop(next_probe.take());
                                 drop(heartbeat.take());
-                                tracker.phase = HealthPhase::Stopped;
+                                tracker.set_reported_failure(message.clone());
                                 session_log!(
                                     info,
                                     &session_id,

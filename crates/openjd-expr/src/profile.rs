@@ -73,7 +73,8 @@ impl Default for ExprRevision {
 pub enum ExprExtension {
     /// The `SERVICE` extension (RFC 0009). Adds the host and port string
     /// functions `join_host_port`, `split_host_port`, `is_ipv4`, and
-    /// `is_ipv6` (Expression Language §2.2.4).
+    /// `is_ipv6` (Expression Language §2.2.4) and the `repr_sh(int)` /
+    /// `repr_sh(list[int])` signatures (§2.2.6).
     Service,
 }
 

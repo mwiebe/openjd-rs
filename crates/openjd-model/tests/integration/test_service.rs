@@ -1142,6 +1142,19 @@ fn ports_must_not_be_empty() {
             "services[0] -> ports:\n\tmust not be empty.",
         ],
     );
+    // A reference into an empty list says so, rather than listing nothing
+    // after "declared ports:".
+    expect_job_err(
+        &job_with_service_body(
+            "    ports: []\n    script: {actions: {onRun: {command: run, args: [\"{{ Service.Cache.main.port }}\"]}}}\n",
+        ),
+        SERVICE_EXTS,
+        &[
+            "2 validation errors for JobTemplate\n",
+            "Service 'Cache' has no port 'main'; it declares no ports.",
+            "services[0] -> ports:\n\tmust not be empty.",
+        ],
+    );
 }
 
 #[test]

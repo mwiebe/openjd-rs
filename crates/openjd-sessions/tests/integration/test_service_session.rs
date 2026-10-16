@@ -728,12 +728,12 @@ async fn on_run_exit_after_ready_reports_status_and_fail_message() {
     assert_eq!(exit.reported_failure.as_deref(), Some("disk full"));
     assert_eq!(exit.fail_message.as_deref(), Some("disk full"));
     assert!(!exit.stdout.contains("NEVER_PRINTED"), "{}", exit.stdout);
-    // Readiness is unchanged by a later exit.
+    // The health watch published the failure the moment the line was read,
+    // so a scheduler sees the instance UNREADY before the exit lands.
     assert_eq!(
         ss.health(),
-        Some(ServiceHealth::Ready {
-            message: Some("up".into()),
-            failed_probes: 0
+        Some(ServiceHealth::Failed {
+            message: "disk full".into()
         })
     );
     let status = ss.action_status().unwrap();
@@ -782,7 +782,15 @@ async fn on_run_openjd_fail_before_ready_cancels_with_its_own_method() {
     );
     let started = std::time::Instant::now();
     let health = ss.start().await.unwrap();
-    assert_eq!(health, ServiceHealth::ExitedBeforeReady, "{health:?}");
+    // `wait_ready` returns the published failure (terminal), not
+    // ExitedBeforeReady: the Service said so itself.
+    assert_eq!(
+        health,
+        ServiceHealth::Failed {
+            message: "no license".into()
+        },
+        "{health:?}"
+    );
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "{:?}",
@@ -794,6 +802,169 @@ async fn on_run_openjd_fail_before_ready_cancels_with_its_own_method() {
     assert_eq!(exit.exit_code, Some(7), "the trap ran: {exit:?}");
     assert_eq!(read_trace(&trace), vec!["got-term"]);
     ss.end().await.unwrap();
+}
+
+/// The failure is published on the health watch at once — while `onRun`
+/// is still exiting under a NOTIFY_THEN_TERMINATE grace — so a scheduler
+/// learns the instance is UNREADY without waiting for the exit.
+#[tokio::test]
+async fn reported_failure_is_published_before_on_run_exits() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh_ntt(
+            "trap '' TERM; echo openjd_service_ready: up; sleep 0.3; echo openjd_fail: store corrupt; \
+             while :; do sleep 0.1; done",
+            3,
+        ),
+    )
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    let mut health = ss.health_watch().unwrap();
+    assert!(health.borrow_and_update().is_ready());
+    let started = std::time::Instant::now();
+    health.changed().await.unwrap();
+    assert_eq!(
+        health.borrow().clone(),
+        ServiceHealth::Failed {
+            message: "store corrupt".into()
+        }
+    );
+    // Well before the 3 s terminate: the exit has not landed yet.
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(ss.run_exit().is_none(), "{:?}", ss.run_exit());
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(exit.reported_failure.as_deref(), Some("store corrupt"));
+    assert!(
+        started.elapsed() >= Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    ss.end().await.unwrap();
+}
+
+/// A reported failure cancels a `COMMAND` probe invocation in flight with
+/// the check's own cancelation method, and no further probe starts.
+#[tokio::test]
+async fn reported_failure_cancels_an_in_flight_command_probe() {
+    let root = TempDir::new().unwrap();
+    let trace = root.path().join("trace.txt");
+    let t = trace.display().to_string();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("sleep 0.6; echo openjd_fail: store corrupt; sleep 30"),
+    )
+    .health(command_check(1, 300))
+    .on_health_check(sh_ntt(
+        &format!(
+            "echo check-start >> {t}; trap 'echo check-term >> {t}; exit 1' TERM; \
+             while :; do sleep 0.1; done"
+        ),
+        10,
+    ))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    let health = ss.start().await.unwrap();
+    assert_eq!(
+        health,
+        ServiceHealth::Failed {
+            message: "store corrupt".into()
+        },
+        "{health:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+    ss.wait_exit().await.unwrap();
+    ss.end().await.unwrap();
+    assert_eq!(read_trace(&trace), vec!["check-start", "check-term"]);
+}
+
+/// A reported failure's message is redacted like the echoed line: a value
+/// registered with `openjd_redacted_env` does not reach the reason.
+#[tokio::test]
+async fn reported_failure_message_is_redacted() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        // (The variable itself is set only under REDACTED_ENV_VARS; the
+        // value is redacted regardless, which is what this checks.)
+        sh("echo openjd_service_ready: up; echo openjd_fail: bad hunter2xyz; sleep 30"),
+    )
+    .on_enter(sh("echo openjd_redacted_env: SECRET=hunter2xyz"))
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    ss.enter().await.unwrap();
+    ss.launch().await.unwrap();
+    let exit = ss.wait_exit().await.unwrap();
+    assert_eq!(
+        exit.reported_failure.as_deref(),
+        Some("bad ********"),
+        "{exit:?}"
+    );
+    assert_eq!(exit.fail_message.as_deref(), Some("bad ********"));
+    assert!(!format!("{exit:?}").contains("hunter2xyz"), "{exit:?}");
+    ss.end().await.unwrap();
+}
+
+/// An `openjd_redacted_env` from `onRun` is ignored as an env change but
+/// its value joins the Session's redaction set, so a later action echoing
+/// it is redacted (service-session.md "Messages").
+#[tokio::test]
+async fn on_run_redacted_env_value_is_redacted_in_on_exit() {
+    let root = TempDir::new().unwrap();
+    let service = ServiceBuilder::new(
+        "svc",
+        &["main"],
+        sh("echo openjd_service_ready: up; echo openjd_redacted_env: K=topsecret1; sleep 30"),
+    )
+    .on_exit(sh(
+        "echo EXIT sees topsecret1; echo openjd_fail: leaked topsecret1; exit 1",
+    ))
+    .health(stdout_check(300))
+    .build();
+    let mut ss = service_session(
+        &root,
+        service,
+        vec![],
+        endpoints("svc", &[("main", 5)]),
+        vec![],
+    );
+    assert!(ss.start().await.unwrap().is_ready());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    ss.cancel_run(Some(Duration::ZERO));
+    ss.wait_exit().await.unwrap();
+    // onExit fails (exit 1); its reason carries the redacted message.
+    let err = ss.end().await.unwrap_err().to_string();
+    assert!(err.contains("leaked ********"), "{err}");
+    assert!(!err.contains("topsecret1"), "{err}");
 }
 
 /// Only the first `openjd_fail` line acts; later lines (drained after the

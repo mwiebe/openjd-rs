@@ -531,7 +531,11 @@ with `ExprExtension::Service`; the host and port functions are implemented in
 `functions/host_port.rs`, and the two `repr_sh` signatures reuse `repr_sh_fn`
 (`functions/repr.rs` already rendered an `int` as its decimal form and a list as its
 space-joined items; only the signatures were absent, so without `SERVICE` the call is
-a type error). All function names from the specification are present. Some per-type
+a type error — `No matching signature for repr_sh(int)` — wherever the argument is
+evaluated without a string target; in a whole-field string-target value such as an
+Environment `variables` entry, RFC 0005 target-type propagation coerces the `int` to
+`string` before dispatch and the base `(string)` signature accepts it, exactly as
+`upper(5)` does there). All function names from the specification are present. Some per-type
 overloads use generic `T1` signatures where the specification spells out per concrete
 type (e.g., `repr_pwsh` has separate signatures for string, int, float, bool, path,
 range_expr, list in the spec but uses generic `T1` in Rust).
