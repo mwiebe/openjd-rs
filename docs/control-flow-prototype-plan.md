@@ -642,10 +642,13 @@ order:
 3. If the Step is `PendingInputs`, call `bind_step`. On error, print the binding failure (field and expression) and
    mark the Step `Failed`. If it is `Skipped`, print `Step 'X' skipped (enableIf is false)`.
 4. Otherwise call `attach_step_inputs`, enter only the enabled step Environments, and run the Tasks as today. Record
-   `ActionResult.outputs` for each Task index: from the per-Task iterator, build a map from (the values of the
-   Step's other Task parameters, `CHUNK[INT]` value) to iteration index, since a chunk runs with the other
-   parameters fixed and each `CHUNK[INT]` value recurs once per combination of them. Look up each Task's map with
-   the chunk's other parameter values and its key, and store it at that index. Print them after each Action with their units
+   `ActionResult.outputs` for each Task index. For a chunked Step, the model provides `ChunkTaskIndex`, built from
+   the per-Task iterator: it maps (the values of the Step's other Task parameters, `CHUNK[INT]` value) to the
+   iteration indices with that key, in order, because a chunk runs with the other parameters fixed, each
+   `CHUNK[INT]` value recurs once per combination of them, and a non-chunk parameter may repeat a value
+   (`STRING [a, a]`). For each chunk, in the chunked iterator's order, and each `CHUNK[INT]` value in it, it hands out
+   the next unused index for the key; both iterators visit repeated combinations in the same relative order. Store
+   each Task's map at its index. Print them after each Action with their units
    (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task runs can be printed as they arrive, marked as not
    committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
@@ -740,8 +743,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   that overflows `i64` (a grammar error), and a `range: [5, 1, 3, 2]` chunked producer whose `Steps.P.Output` and
   `TaskParam` lists stay aligned in iteration order. Binding: duplicate `CHUNK[INT]` values in a Step with outputs
   fail (a literal list at validation, a computed range at Job creation and at binding). A chunked producer with a
-  second Task parameter (`CHUNK[INT]` `[5, 1, 3, 2]` × `STRING` `[a, b]`) keeps its outputs aligned with
-  iteration order.
+  second Task parameter (`CHUNK[INT]` `[5, 1, 3, 2]` × `STRING` `[a, b]`, and × `STRING` `[a, a]`) keeps its
+  outputs aligned with iteration order, through `ChunkTaskIndex`.
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
