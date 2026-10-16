@@ -280,22 +280,21 @@ pub fn unapply_rules(
     }
 
     let reported = NormalPath::new(path, windows);
-    // (destination component count, rule index, candidate). The index keeps
-    // the sort stable with respect to the caller's order.
-    let mut candidates: Vec<(usize, usize, String)> = rules
+    // (destination component count, candidate), in the caller's rule order.
+    let mut candidates: Vec<(usize, String)> = rules
         .iter()
-        .enumerate()
-        .filter_map(|(i, rule)| {
+        .filter_map(|rule| {
             let dest = NormalPath::new(&rule.destination_path, windows);
             let remaining = reported.strip_prefix(&dest, windows)?;
-            Some((dest.parts.len(), i, build_candidate(rule, remaining)))
+            Some((dest.parts.len(), build_candidate(rule, remaining)))
         })
         .collect();
-    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    // A stable sort, so equal lengths keep the caller's order.
+    candidates.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
 
     candidates
         .into_iter()
-        .map(|(_, _, candidate)| candidate)
+        .map(|(_, candidate)| candidate)
         .find(|candidate| {
             let forward = apply_rules_with_format(rules, candidate, worker_format);
             NormalPath::new(&forward, windows).equals(&reported, windows)
@@ -331,18 +330,62 @@ fn is_absolute_on_worker(path: &str, windows: bool) -> bool {
     if !windows {
         return path.starts_with('/');
     }
-    let is_sep = |c: char| c == '\\' || c == '/';
-    let mut chars = path.chars();
-    match (chars.next(), chars.next(), chars.next()) {
-        (Some(d), Some(':'), Some(s)) if d.is_ascii_alphabetic() && is_sep(s) => true,
-        (Some(a), Some(b), _) if is_sep(a) && is_sep(b) => {
-            let mut rest = path[2..].split(is_sep);
-            let server = rest.next().unwrap_or("");
-            let share = rest.next().unwrap_or("");
-            !server.is_empty() && !share.is_empty()
-        }
-        _ => false,
+    match windows_anchor(path) {
+        WindowsAnchor::Drive { rooted, .. } => rooted,
+        WindowsAnchor::Unc { server, share, .. } => !server.is_empty() && !share.is_empty(),
+        WindowsAnchor::Root { .. } | WindowsAnchor::None => false,
     }
+}
+
+/// The anchor of a Windows path, as `PureWindowsPath` parses it.
+enum WindowsAnchor<'a> {
+    /// `C:` (drive-relative) or `C:\` (`rooted`), followed by `rest`.
+    Drive {
+        drive: &'a str,
+        rooted: bool,
+        rest: &'a str,
+    },
+    /// `\\server\share`, followed by `rest`. One separator ends the server.
+    Unc {
+        server: &'a str,
+        share: &'a str,
+        rest: &'a str,
+    },
+    /// A root without a drive, `\x`.
+    Root { rest: &'a str },
+    /// A relative path.
+    None,
+}
+
+fn windows_anchor(path: &str) -> WindowsAnchor<'_> {
+    let is_sep = |b: u8| b == b'\\' || b == b'/';
+    let bytes = path.as_bytes();
+    // Every slice below follows ASCII bytes, so it falls on a char boundary.
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let rooted = bytes.get(2).is_some_and(|&b| is_sep(b));
+        return WindowsAnchor::Drive {
+            drive: &path[..2],
+            rooted,
+            rest: &path[if rooted { 3 } else { 2 }..],
+        };
+    }
+    if bytes.len() >= 2 && is_sep(bytes[0]) && is_sep(bytes[1]) {
+        let rest = &path[2..];
+        let (server, after_server) = match rest.find(['\\', '/']) {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, ""),
+        };
+        let share_end = after_server.find(['\\', '/']).unwrap_or(after_server.len());
+        return WindowsAnchor::Unc {
+            server,
+            share: &after_server[..share_end],
+            rest: &after_server[share_end..],
+        };
+    }
+    if bytes.first().is_some_and(|&b| is_sep(b)) {
+        return WindowsAnchor::Root { rest: &path[1..] };
+    }
+    WindowsAnchor::None
 }
 
 /// A filesystem path in lexical normal form: its anchor and its components.
@@ -352,10 +395,8 @@ fn is_absolute_on_worker(path: &str, windows: bool) -> bool {
 /// directly below an anchor that has a root is dropped, as the OS resolves
 /// `/..` to `/`. Symbolic links are not resolved.
 ///
-/// The anchor is kept with canonical separators: POSIX `/`, or `//` for
-/// exactly two leading slashes (the implementation-defined POSIX double-slash
-/// root that `path()` also preserves); Windows `X:\`, `X:`, `\\server\share\`,
-/// or `\`.
+/// The anchor is kept with canonical separators: POSIX `/` (any number of
+/// leading slashes); Windows `X:\`, `X:`, `\\server\share\`, or `\`.
 struct NormalPath<'a> {
     anchor: String,
     parts: Vec<&'a str>,
@@ -412,41 +453,38 @@ fn component_eq(a: &str, b: &str, windows: bool) -> bool {
 }
 
 /// Split a filesystem path into its canonical anchor and the rest.
+///
+/// POSIX's implementation-defined `//` root is folded into `/`: forward mapping
+/// onto a root `destination_path` gives `//x` (it appends a separator to one
+/// that already ends with one), and that must compare equal to `/x`.
 fn split_anchor(path: &str, windows: bool) -> (String, &str) {
     if !windows {
-        let leading = path.len() - path.trim_start_matches('/').len();
-        return match leading {
-            0 => (String::new(), path),
-            2 => ("//".to_string(), &path[2..]),
-            n => ("/".to_string(), &path[n..]),
+        return match path.strip_prefix('/') {
+            Some(_) => ("/".to_string(), path.trim_start_matches('/')),
+            None => (String::new(), path),
         };
     }
-    let is_sep = |c: char| c == '\\' || c == '/';
-    let bytes = path.as_bytes();
-    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-        let drive = &path[..2];
-        return match path[2..].chars().next() {
-            Some(c) if is_sep(c) => (format!("{drive}\\"), &path[3..]),
-            _ => (drive.to_string(), &path[2..]),
-        };
+    match windows_anchor(path) {
+        WindowsAnchor::Drive {
+            drive,
+            rooted,
+            rest,
+        } => (
+            if rooted {
+                format!("{drive}\\")
+            } else {
+                drive.to_string()
+            },
+            rest,
+        ),
+        WindowsAnchor::Unc {
+            server,
+            share,
+            rest,
+        } => (format!("\\\\{server}\\{share}\\"), rest),
+        WindowsAnchor::Root { rest } => ("\\".to_string(), rest),
+        WindowsAnchor::None => (String::new(), path),
     }
-    if bytes.len() >= 2 && is_sep(bytes[0] as char) && is_sep(bytes[1] as char) {
-        // UNC: \\server\share is the anchor.
-        let rest = &path[2..];
-        let server_end = rest.find(is_sep).unwrap_or(rest.len());
-        let server = &rest[..server_end];
-        let after_server = rest[server_end..].trim_start_matches(is_sep);
-        let share_end = after_server.find(is_sep).unwrap_or(after_server.len());
-        let share = &after_server[..share_end];
-        return (
-            format!("\\\\{server}\\{share}\\"),
-            &after_server[share_end..],
-        );
-    }
-    if path.starts_with(is_sep) {
-        return ("\\".to_string(), path.trim_start_matches(is_sep));
-    }
-    (String::new(), path)
 }
 
 /// Check if a string is a URI (has a `scheme://` prefix).

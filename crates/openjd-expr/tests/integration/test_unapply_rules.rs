@@ -83,8 +83,20 @@ fn posix_drive_spelling_is_relative() {
 
 #[test]
 fn windows_non_absolute_forms_are_relative() {
-    // Rooted without a drive, drive-relative, bare drive, UNC without a share.
-    for path in ["\\x\\f", "/x/f", "C:x", "C:", "\\\\srv", "\\\\srv\\"] {
+    // Rooted without a drive, drive-relative, bare drive, non-letter drive,
+    // UNC without a share, UNC without a server, and UNC with an empty share
+    // (the server ends at the first separator), as `PureWindowsPath` has them.
+    for path in [
+        "\\x\\f",
+        "/x/f",
+        "C:x",
+        "C:",
+        "1:\\x",
+        "\\\\srv",
+        "\\\\srv\\",
+        "\\\\\\share\\x",
+        "\\\\srv\\\\share\\x",
+    ] {
         assert_eq!(
             unmap_windows(&[], path),
             Err(UnmapError::Relative),
@@ -237,17 +249,39 @@ fn posix_worker_compares_case_sensitively() {
 }
 
 #[test]
-fn posix_worker_double_slash_root_is_distinct() {
-    // Exactly two leading slashes are the POSIX implementation-defined root,
-    // kept distinct as `path()` keeps it; three or more collapse to `/`.
+fn posix_worker_leading_slashes_fold_to_one_root() {
+    // POSIX's implementation-defined `//` root is folded into `/`, so a
+    // reported `//x` or `///x` matches a destination under `/`.
     let rules = [windows("P:\\", "/mnt/proj")];
-    assert_eq!(
-        unmap_posix(&rules, "//mnt/proj/a"),
-        Err(UnmapError::NoRoundTrip)
-    );
+    assert_eq!(unmap_posix(&rules, "//mnt/proj/a"), Ok("P:\\a".to_string()));
     assert_eq!(
         unmap_posix(&rules, "///mnt/proj/a"),
         Ok("P:\\a".to_string())
+    );
+}
+
+#[test]
+fn posix_root_destination_round_trips() {
+    // Forward mapping onto a root destination gives `//a/b` (it appends a
+    // separator after one), which must compare equal to the reported `/a/b`.
+    let rules = [windows("P:\\", "/")];
+    assert_eq!(unmap_posix(&rules, "/a/b"), Ok("P:\\a\\b".to_string()));
+    assert_eq!(unmap_posix(&rules, "/"), Ok("P:\\".to_string()));
+    let rules = [posix("/proj", "/")];
+    assert_eq!(unmap_posix(&rules, "/a"), Ok("/proj/a".to_string()));
+}
+
+#[test]
+fn windows_root_destinations_round_trip() {
+    let rules = [posix("/proj", "C:\\")];
+    assert_eq!(
+        unmap_windows(&rules, "C:\\a\\b"),
+        Ok("/proj/a/b".to_string())
+    );
+    let rules = [posix("/proj", "\\\\srv\\share\\")];
+    assert_eq!(
+        unmap_windows(&rules, "\\\\SRV\\share\\a"),
+        Ok("/proj/a".to_string())
     );
 }
 
@@ -268,8 +302,32 @@ fn windows_worker_unc_destination() {
         unmap_windows(&rules, "//FS/share/proj/a/b"),
         Ok("/proj/a/b".to_string())
     );
+    // Both the share and the server must match.
     assert_eq!(
         unmap_windows(&rules, "\\\\fs\\other\\proj\\a"),
+        Err(UnmapError::NoRoundTrip)
+    );
+    assert_eq!(
+        unmap_windows(&rules, "\\\\other\\Share\\proj\\a"),
+        Err(UnmapError::NoRoundTrip)
+    );
+}
+
+#[test]
+fn windows_worker_dotdot_stays_at_drive_root() {
+    let rules = [posix("/proj", "C:\\proj")];
+    assert_eq!(
+        unmap_windows(&rules, "C:\\..\\proj\\a"),
+        Ok("/proj/a".to_string())
+    );
+}
+
+#[test]
+fn windows_drive_relative_destination_never_matches() {
+    // `C:proj` is drive-relative; its anchor `C:` differs from `C:\`.
+    let rules = [posix("/proj", "C:proj")];
+    assert_eq!(
+        unmap_windows(&rules, "C:\\proj\\a"),
         Err(UnmapError::NoRoundTrip)
     );
 }
@@ -298,6 +356,19 @@ fn longest_destination_is_tried_first() {
         unmap_posix(&[b, a], "/dst/a/f"),
         Ok("/proj/shots/f".to_string())
     );
+}
+
+#[test]
+fn destination_length_is_counted_in_normalized_components() {
+    // `/d/./b/` is longer as a string than `/d/b` but has the same components,
+    // so the listed order decides.
+    let x = posix("/x", "/d/b");
+    let y = posix("/y", "/d/./b/");
+    assert_eq!(
+        unmap_posix(&[x.clone(), y.clone()], "/d/b/f"),
+        Ok("/x/f".to_string())
+    );
+    assert_eq!(unmap_posix(&[y, x], "/d/b/f"), Ok("/y/f".to_string()));
 }
 
 #[test]
@@ -330,6 +401,42 @@ fn candidate_that_no_rule_matches_round_trips_by_identity() {
     // differs), so it maps forward to itself: the reported path.
     let rules = [posix("", "/")];
     assert_eq!(unmap_posix(&rules, "/f"), Ok("/f".to_string()));
+}
+
+#[test]
+fn forward_result_deeper_than_reported_is_rejected() {
+    // The only candidate is `/a`, which maps forward to `/m/z`, a descendant
+    // of the reported `/m`.
+    let rules = [posix("/a", "/m/z"), posix("/a", "/m")];
+    assert_eq!(unmap_posix(&rules, "/m"), Err(UnmapError::NoRoundTrip));
+}
+
+#[test]
+fn forward_result_shallower_than_reported_is_rejected() {
+    // The first candidate `/a/f` maps forward to `/m`, an ancestor of the
+    // reported `/m/x/f`, so the second candidate is the answer.
+    let rules = [posix("/a/f", "/m"), posix("/a", "/m/x")];
+    assert_eq!(unmap_posix(&rules, "/m/x/f"), Ok("/a/f/x/f".to_string()));
+}
+
+#[test]
+fn uri_worker_format_is_treated_as_posix() {
+    let rules = [posix("/a", "/M")];
+    assert_eq!(
+        unapply_rules(&rules, "/m/f", PathFormat::Uri),
+        Err(UnmapError::NoRoundTrip)
+    );
+    assert_eq!(
+        unapply_rules(&rules, "/M/f", PathFormat::Uri),
+        Ok("/a/f".to_string())
+    );
+}
+
+#[test]
+fn posix_source_ending_in_backslash_gets_a_separator() {
+    // Under POSIX `\` is not a separator, so `/src\` needs a `/` appended.
+    let rules = [posix("/src\\", "/dst")];
+    assert_eq!(unmap_posix(&rules, "/dst/f"), Ok("/src\\/f".to_string()));
 }
 
 // === Errors ===

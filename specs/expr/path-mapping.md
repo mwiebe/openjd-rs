@@ -122,13 +122,16 @@ passes its rules sorted by `source_path` length, and that is the "listed order".
 **Lexical normalization** removes `.` and empty components (runs of separators,
 trailing separators) and applies `..` to the preceding component, without resolving
 symbolic links. A `..` directly below a root is dropped, as `/..` is `/`. The anchor
-is kept separately and is never stripped, so a root keeps its separator. POSIX
-anchors are `/` and `//`: exactly two leading slashes are the POSIX
-implementation-defined root, which `path()` also preserves, and three or more
-collapse to `/`. Windows anchors are `X:\` (either separator) and `\\server\share`.
-Normalization is applied to both sides of each comparison. It matters on the
-forward side because `apply_with_format` does not normalize: a `destination_path`
-ending in a separator gives `/mnt/p//x`.
+is kept separately and is never stripped, so a root keeps its separator. The POSIX
+anchor is `/`, however many leading slashes there are. POSIX lets exactly two be an
+implementation-defined root, and `path()` preserves that spelling, but here it is
+folded into `/`: forward mapping onto a root `destination_path` (`/`) gives `//x`,
+which must compare equal to `/x`. Windows anchors are `X:\` (either separator),
+`\\server\share`, and, for non-absolute `destination_path` values only, `X:` and `\`.
+A UNC anchor's server ends at the first separator, so `\\srv\\share` has an empty
+share, as `PureWindowsPath` parses it. Normalization is applied to both sides of each
+comparison. It matters on the forward side because `apply_with_format` does not
+normalize: a `destination_path` ending in a separator gives `/mnt/p//x`.
 
 **Comparison** under `worker_format`: Windows paths compare case-insensitively
 (ASCII case folding, as forward matching does), with `\` and `/` both separators;
@@ -138,10 +141,12 @@ format is treated as POSIX.
 **Absoluteness** follows `PurePosixPath`/`PureWindowsPath.is_absolute()`: a leading
 `/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
 server and share (`\\server\share`) on Windows. A Windows path rooted without a
-drive (`\x`) or drive-relative (`C:x`) is `Relative`, and so is `\\srv\share` on
-POSIX, where `\` is an ordinary character. This is a separate test from the
-`is_rooted` check that forward matching uses, which does not treat drive paths as
-rooted.
+drive (`\x`), drive-relative (`C:x`), with a non-letter drive (`1:\x`), or a UNC
+path with an empty server or share (`\\\share\x`, `\\srv\\share`) is `Relative`, and
+so is `\\srv\share` on POSIX, where `\` is an ordinary character. The same Windows
+anchor parser serves absoluteness and normalization, so the two agree. This is a
+separate test from the `is_rooted` check that forward matching uses, which does not
+treat drive paths as rooted.
 
 **A candidate no rule matches.** Forward mapping returns a path no rule matches
 unchanged, so such a candidate passes the round trip exactly when it equals the
