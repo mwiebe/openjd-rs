@@ -365,10 +365,10 @@ the first that applies reported:
 | No such output | `'<sym>': Step 'P' has no output variable 'V'.` |
 | `TaskParam` of a Step without a `parameterSpace` | `'<sym>': Step 'P' has no parameterSpace, so it has no Task parameters.` |
 | No such Task parameter | `'<sym>': Step 'P' has no Task parameter 'N'.` |
-| Path-typed `Output`/`TaskParam` in a TEMPLATE-scope field | `'<sym>' has a path type, so it is available only in fields resolved on the worker host. Use Steps.P.RawOutput.V here.` (or `TaskRawParam`) |
+| Path-typed `Output`/`TaskParam` in a TEMPLATE-scope field | `'Steps.P.Output.V' has a path type, so it is available only in fields resolved on the worker host. Use Steps.P.RawOutput.V here.` (or `TaskParam` and `TaskRawParam`) |
 
 `<sym>` is the symbol as the expression reads it, which may include a property after the
-name (`Steps.P.RawOutput.F.name`). Several references in one field are reported in sorted
+name (`Steps.P.RawOutput.F.name`); the path-type message names only the four-part symbol. Several references in one field are reported in sorted
 symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
 ordinary `Undefined variable`.
 
