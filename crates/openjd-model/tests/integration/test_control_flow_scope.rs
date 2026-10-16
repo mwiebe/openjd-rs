@@ -1293,3 +1293,82 @@ fn create_job_refuses_each_materialization_field_family() {
     let errors: Vec<(&str, &str)> = paths.iter().map(|p| (p.as_str(), msg)).collect();
     assert_eq!(err.to_string(), expected(&errors));
 }
+
+// ══════════════════════════════════════════════════════════════
+// Boundaries of the checks
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn a_symbol_that_only_starts_with_steps_is_not_under_the_steps_root() {
+    assert_errs(
+        &c_arg("", "{{StepsFoo}}"),
+        &[(
+            ARG0,
+            "Failed to parse interpolation expression at [0, 12]. Undefined variable: 'StepsFoo'. Did you mean: Step.Name\n  StepsFoo\n  ^~~~~~~~",
+        )],
+    );
+}
+
+#[test]
+fn a_bad_let_read_by_a_range_does_not_cascade_whatever_the_range_does_with_it() {
+    assert_errs(
+        &template(
+            "    let: ['x = Steps.Nope.Output.A']
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: S, type: STRING, range: ['{{x.upper()}}', '{{x[0]}}', '{{x + 1}}']}
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        &[(
+            "steps[3] -> let[0]",
+            &format!("Invalid expression in let binding 'x': {}", nope("A")),
+        )],
+    );
+}
+
+#[test]
+fn environment_enable_if_may_not_read_a_path_param() {
+    let msg = "Failed to parse interpolation expression at [0, 23]. Undefined variable: 'Param.Scene'. Did you mean: RawParam.Scene\n  Param.Scene != null\n  ~~~~~~^~~~~";
+    let value = "'{{Param.Scene != null}}'";
+    let job_env = template_with(
+        EXTENSIONS,
+        &format!("jobEnvironments:\n  - {{name: JE, enableIf: {value}, variables: {{A: a}}}}\n"),
+        ECHO,
+    );
+    assert_errs(&job_env, &[("jobEnvironments[0] -> enableIf", msg)]);
+    let step_env = template(&format!(
+        "    stepEnvironments:\n      - {{name: SE, enableIf: {value}, variables: {{A: a}}}}\n{ECHO}"
+    ));
+    assert_errs(
+        &step_env,
+        &[("steps[3] -> stepEnvironments[0] -> enableIf", msg)],
+    );
+}
+
+#[test]
+fn without_control_flow_enable_if_is_only_gated() {
+    // Pass 8 does not type-check an enableIf without the extension: the
+    // gate is the only error, even for a value that would fail it.
+    let t = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: J
+jobEnvironments:
+  - {name: JE, enableIf: '{{Nope}}', variables: {A: a}}
+steps:
+  - name: S
+    enableIf: 'maybe'
+    stepEnvironments:
+      - {name: SE, enableIf: '{{Nope}}', variables: {A: a}}
+    script: {actions: {onRun: {command: echo}}}
+";
+    let gate = "enableIf requires the CONTROL_FLOW extension.";
+    assert_errs(
+        t,
+        &[
+            ("jobEnvironments[0] -> enableIf", gate),
+            ("steps[0] -> enableIf", gate),
+            ("steps[0] -> stepEnvironments[0] -> enableIf", gate),
+        ],
+    );
+}
