@@ -700,7 +700,10 @@ fn enable_if_accepts_bools_and_bool_expressions() {
         "false",
         "'{{Param.Run}}'",
         "'{{RawParam.Scene != \"\"}}'",
-        "'{{Job.Name == \"J\" and Step.Name == \"C\"}}'",
+        // Each alone: an unresolved left operand of `and` would hide an
+        // undefined name on its right.
+        "'{{Job.Name == \"J\"}}'",
+        "'{{Step.Name == \"C\"}}'",
         "'{{Steps.P.Output.Count > 1}}'",
         // bool? is accepted where bool is required and checked when concrete.
         "'{{Steps.R.Output.Go}}'",
@@ -818,7 +821,9 @@ fn job_environment_enable_if_scope() {
             ECHO,
         )
     };
-    decode_ok(&job_env("'{{Param.Run and Job.Name == \"J\"}}'"));
+    decode_ok(&job_env("'{{Param.Run}}'"));
+    decode_ok(&job_env("'{{Job.Name == \"J\"}}'"));
+    decode_ok(&job_env("'{{RawParam.Scene != \"\"}}'"));
     assert_errs(
         &job_env("'{{Step.Name == \"C\"}}'"),
         &[(
@@ -845,9 +850,9 @@ fn step_environment_enable_if_scope() {
 {ECHO}"
         ))
     };
-    decode_ok(&step_env(
-        "'{{Steps.P.Output.Count > 0 and Step.Name == \"C\"}}'",
-    ));
+    decode_ok(&step_env("'{{Steps.P.Output.Count > 0}}'"));
+    decode_ok(&step_env("'{{Step.Name == \"C\"}}'"));
+    decode_ok(&step_env("'{{Job.Name == \"J\"}}'"));
     assert_errs(
         &step_env("'{{use_env}}'"),
         &[(
@@ -1008,4 +1013,283 @@ fn create_job_refusal_is_reported_with_other_steps_errors() {
             ),
         ])
     );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Every field family gets the specific message
+// ══════════════════════════════════════════════════════════════
+
+/// `'Steps.Nope.Output.<tag>': there is no Step named 'Nope'.`
+fn nope(tag: &str) -> String {
+    format!("'Steps.Nope.Output.{tag}': there is no Step named 'Nope'.")
+}
+
+#[test]
+fn every_template_scope_field_family_explains_a_bad_reference() {
+    let t = template(
+        "    hostRequirements:
+      amounts:
+        - {name: '{{Steps.Nope.Output.AmtName}}', min: '{{Steps.Nope.Output.AmtMin}}', max: '{{Steps.Nope.Output.AmtMax}}'}
+      attributes:
+        - {name: '{{Steps.Nope.Output.AttrName}}', anyOf: ['{{Steps.Nope.Output.AnyOf}}']}
+        - {name: attr.worker.os.family, allOf: ['{{Steps.Nope.Output.AllOf}}']}
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: I, type: INT, range: '{{Steps.Nope.Output.IntRange}}'}
+        - {name: D, type: PATH, range: ['{{Steps.Nope.Output.PathItem}}']}
+        - {name: K, type: 'CHUNK[INT]', range: '{{Steps.Nope.Output.ChunkRange}}', chunks: {defaultTaskCount: '{{Steps.Nope.Output.Count}}', targetRuntimeSeconds: '{{Steps.Nope.Output.Target}}', rangeConstraint: CONTIGUOUS}}
+    script:
+      actions:
+        onRun:
+          command: echo
+          timeout: '{{Steps.Nope.Output.Timeout}}'
+          cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: '{{Steps.Nope.Output.Notify}}'}
+",
+    );
+    let hr = "steps[3] -> hostRequirements";
+    let tpd = "steps[3] -> parameterSpace -> taskParameterDefinitions";
+    let onrun = "steps[3] -> script -> actions -> onRun";
+    let paths = [
+        format!("{hr} -> amounts[0] -> name"),
+        format!("{hr} -> amounts[0] -> min"),
+        format!("{hr} -> amounts[0] -> max"),
+        format!("{hr} -> attributes[0] -> name"),
+        format!("{hr} -> attributes[0] -> anyOf[0]"),
+        format!("{hr} -> attributes[1] -> allOf[0]"),
+        format!("{tpd}[0] -> range"),
+        format!("{tpd}[1] -> range[0]"),
+        format!("{tpd}[2] -> range"),
+        format!("{tpd}[2] -> chunks -> defaultTaskCount"),
+        format!("{tpd}[2] -> chunks -> targetRuntimeSeconds"),
+        format!("{onrun} -> timeout"),
+        format!("{onrun} -> cancelation"),
+    ];
+    let tags = [
+        "AmtName",
+        "AmtMin",
+        "AmtMax",
+        "AttrName",
+        "AnyOf",
+        "AllOf",
+        "IntRange",
+        "PathItem",
+        "ChunkRange",
+        "Count",
+        "Target",
+        "Timeout",
+        "Notify",
+    ];
+    let messages: Vec<String> = tags.iter().map(|t| nope(t)).collect();
+    let errors: Vec<(&str, &str)> = paths
+        .iter()
+        .zip(&messages)
+        .map(|(p, m)| (p.as_str(), m.as_str()))
+        .collect();
+    assert_errs(&t, &errors);
+}
+
+#[test]
+fn every_step_environment_field_family_explains_a_bad_reference() {
+    let t = template(
+        "    stepEnvironments:
+      - name: E
+        variables: {V: '{{Steps.Nope.Output.Var}}'}
+        script:
+          let: ['x = Steps.Nope.Output.Let']
+          actions:
+            onEnter: {command: '{{Steps.Nope.Output.Cmd}}', args: ['{{Steps.Nope.Output.Arg}}'], timeout: '{{Steps.Nope.Output.Timeout}}'}
+          embeddedFiles:
+            - {name: Data, type: TEXT, data: '{{Steps.Nope.Output.Data}}'}
+    script: {actions: {onRun: {command: echo}}}
+",
+    );
+    let e = "steps[3] -> stepEnvironments[0]";
+    let let_msg = format!("Invalid expression in let binding 'x': {}", nope("Let"));
+    let (var, cmd, arg, timeout, data) = (
+        nope("Var"),
+        nope("Cmd"),
+        nope("Arg"),
+        nope("Timeout"),
+        nope("Data"),
+    );
+    assert_errs(
+        &t,
+        &[
+            (&format!("{e} -> script -> let[0]"), &let_msg),
+            (&format!("{e} -> variables -> V"), &var),
+            (
+                &format!("{e} -> script -> actions -> onEnter -> command"),
+                &cmd,
+            ),
+            (
+                &format!("{e} -> script -> actions -> onEnter -> args[0]"),
+                &arg,
+            ),
+            (
+                &format!("{e} -> script -> actions -> onEnter -> timeout"),
+                &timeout,
+            ),
+            (&format!("{e} -> script -> embeddedFiles[0] -> data"), &data),
+        ],
+    );
+}
+
+#[test]
+fn simple_action_template_scope_fields_explain_a_bad_reference() {
+    assert_errs(
+        &template("    bash: {script: echo, timeout: '{{Steps.Nope.Output.Timeout}}'}\n"),
+        &[("steps[3] -> bash -> timeout", &nope("Timeout"))],
+    );
+}
+
+#[test]
+fn a_bad_reference_in_a_let_read_by_a_range_is_reported_once() {
+    assert_errs(
+        &template(
+            "    let: ['x = Steps.Nope.Output.A']
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: I, type: INT, range: '{{x}}'}
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        &[(
+            "steps[3] -> let[0]",
+            &format!("Invalid expression in let binding 'x': {}", nope("A")),
+        )],
+    );
+}
+
+#[test]
+fn a_bad_reference_in_a_let_of_a_step_with_host_requirements() {
+    // Pass 8 evaluates a Step's `let` bindings once for its hostRequirements
+    // and once for its other fields, and reports a failing binding from
+    // both: a duplicate that predates CONTROL_FLOW (any failing `let`
+    // shows it). Both carry the specific message.
+    let msg = format!("Invalid expression in let binding 'x': {}", nope("A"));
+    assert_errs(
+        &template(
+            "    let: ['x = Steps.Nope.Output.A']
+    hostRequirements:
+      amounts: [{name: amount.worker.vcpu, min: '{{x}}'}]
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        &[("steps[3] -> let[0]", &msg), ("steps[3] -> let[0]", &msg)],
+    );
+}
+
+#[test]
+fn a_bare_steps_symbol_is_incomplete() {
+    assert_errs(
+        &c_arg("", "{{len(Steps)}}"),
+        &[(
+            ARG0,
+            "'Steps' is not a complete Steps.* reference; expected Steps.<StepName>.Output.<Name>, .RawOutput.<Name>, .TaskParam.<Name>, or .TaskRawParam.<Name>.",
+        )],
+    );
+}
+
+#[test]
+fn a_field_without_steps_reports_that_before_an_incomplete_reference() {
+    let t = template(ECHO).replacen("name: J\n", "name: '{{Steps.P}}'\n", 1);
+    assert_errs(
+        &t,
+        &[(
+            "name",
+            "'Steps.P': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.",
+        )],
+    );
+}
+
+#[test]
+fn a_non_identifier_step_is_reported_before_the_missing_dependency() {
+    // Adding `dependsOn` would not help, so the Identifier rule wins.
+    let t = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+  - name: Café
+    outputVariables: [{name: Count, type: INT}]
+    script: {actions: {onRun: {command: echo}}}
+  - name: C
+    script: {actions: {onRun: {command: echo, args: ['{{Steps.Café.Output.Count}}']}}}
+";
+    assert_errs(
+        t,
+        &[(
+            "steps[1] -> script -> actions -> onRun -> args[0]",
+            "'Steps.Café.Output.Count': Step 'Café' cannot be referenced through Steps.*, because its name is not an <Identifier>.",
+        )],
+    );
+}
+
+#[test]
+fn without_control_flow_no_steps_symbol_is_seeded_or_explained() {
+    // A producer with Task parameters, so a seeded TaskParam would resolve.
+    let t = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: '{{Steps.P.TaskParam.X[0]}}'
+steps:
+  - name: P
+    parameterSpace:
+      taskParameterDefinitions: [{name: X, type: STRING, range: [a]}]
+    script: {actions: {onRun: {command: echo}}}
+  - name: C
+    dependencies: [{dependsOn: P}]
+    script: {actions: {onRun: {command: echo, args: ['{{Steps.P.TaskParam.X}}']}}}
+";
+    assert_eq!(
+        decode(t).unwrap_err().to_string(),
+        expected(&[
+            (
+                "name",
+                "Failed to parse interpolation expression at [0, 26]. Undefined variable: 'Steps.P.TaskParam.X'.\n  Steps.P.TaskParam.X[0]\n  ~~~~~~~~~~~~~~~~~~^",
+            ),
+            (
+                "steps[1] -> script -> actions -> onRun -> args[0]",
+                "Failed to parse interpolation expression at [0, 23]. Undefined variable: 'Steps.P.TaskParam.X'.\n  Steps.P.TaskParam.X\n  ~~~~~~~~~~~~~~~~~~^",
+            ),
+        ])
+    );
+}
+
+#[test]
+fn create_job_refuses_each_materialization_field_family() {
+    // One consumer per field family, each reading Steps.* in that field
+    // alone, so a field the refusal scan missed would fail resolution with
+    // a different message.
+    let families = [
+        ("hostRequirements: {amounts: [{name: '{{Steps.P.RawOutput.F.name}}', min: 1}]}", "hostRequirements"),
+        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, min: '{{Steps.P.Output.Count}}'}]}", "hostRequirements"),
+        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, max: '{{Steps.P.Output.Count}}'}]}", "hostRequirements"),
+        ("hostRequirements: {attributes: [{name: '{{Steps.P.RawOutput.F.name}}', anyOf: [linux]}]}", "hostRequirements"),
+        ("hostRequirements: {attributes: [{name: attr.worker.os.family, anyOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "hostRequirements"),
+        ("hostRequirements: {attributes: [{name: attr.worker.os.family, allOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "hostRequirements"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: INT, range: '1-{{Steps.P.Output.Count}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-{{Steps.P.Output.Count}}', chunks: {defaultTaskCount: 1, rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: 1, targetRuntimeSeconds: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: [1.5, '{{Steps.P.Output.Count}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: '{{[Steps.P.Output.Count]}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: ['{{Steps.P.Output.Count}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: '{{[string(Steps.P.Output.Count)]}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: ['{{Steps.P.RawOutput.F}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: '{{Steps.P.RawOutput.Fs}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+    ];
+    let mut steps = String::from(ECHO);
+    for (k, (field, _)) in families.iter().enumerate() {
+        steps.push_str(&format!(
+            "  - name: D{k}\n    dependencies: [{{dependsOn: P}}]\n    {field}\n{ECHO}"
+        ));
+    }
+    let err = create(&template(&steps)).expect_err("every D Step is refused");
+    let msg = "reads Steps.* symbols, which are bound at step input binding; create_job does not implement step input binding yet.";
+    let paths: Vec<String> = families
+        .iter()
+        .enumerate()
+        .map(|(k, (_, at))| format!("steps[{}] -> {at}", k + 4))
+        .collect();
+    let errors: Vec<(&str, &str)> = paths.iter().map(|p| (p.as_str(), msg)).collect();
+    assert_eq!(err.to_string(), expected(&errors));
 }
