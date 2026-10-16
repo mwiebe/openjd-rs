@@ -110,7 +110,7 @@ declaration is carried on the job in its own form.
 ```rust
 pub struct OutputVariable {
     pub name: String,
-    pub param_type: JobParameterType,     // serialized as "type"
+    pub param_type: JobParameterType,     // serialized as "type": the spec string, "LIST[INT]"
     pub collect: OutputCollectMode,
     pub unit: Option<String>,
     pub constraints: OutputConstraints,
@@ -135,15 +135,16 @@ pub enum StepBinding {
 
 pub struct PathInput {
     pub symbol: String,
-    pub ty: openjd_expr::ExprType,             // serialized as "path", "list[path]", ...
+    pub ty: openjd_expr::ExprType,             // serialized as "type": "path", "list[path]", ...
 }
 ```
 
 `create_job` fills `output_variables` from the template's `outputVariables`
 (`OutputVariableDefinition::to_job_output_variable`), sets `binding` to `Bound`, and
 leaves `path_inputs` empty. Step input binding, which a later change adds, produces the
-other two `StepBinding` states and records `path_inputs`. They are part of the type now
-so that the serialized form of a Step does not change when it lands.
+other two `StepBinding` states and records `path_inputs`. The plan (M1) defines these
+fields together with the schema, so callers that build or match `job::Step` adapt once,
+and the data shapes the later changes fill in are fixed and tested now.
 
 **`OutputConstraints`** holds the constraint properties the definition *declared*, and
 only those. A property that a job parameter of the same type implies when omitted (the
@@ -168,20 +169,49 @@ elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a sec
 (`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
 A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
 value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
-path context and checked in that form. An empty list built without a type hint
-(`list[nulltype]`) satisfies every list type.
+path context and checked in that form. A `RANGE_EXPR` value may be an
+`ExprValue::RangeExpr`, whose length is that of its canonical spelling, or an
+`ExprValue::String` holding a valid range expression, whose length is that of the
+string as written (as for a `RANGE_EXPR` job parameter value). An empty list built
+without a type hint (`list[nulltype]`) satisfies every list type; a typed empty list must
+have the declared type. `check_element` on a scalar type reports `INT is not a list type,
+so it has no elements`.
 
 **Serde.** Every new field has `#[serde(default)]` and is skipped when it holds its
 default (`None`, `Bound`, or empty), so a Step serialized before this change still
 deserializes, and the serialized form of a Step without `CONTROL_FLOW` features is
 unchanged. `StepBinding` is internally tagged: `{"state": "BOUND"}`,
 `{"state": "PENDING_INPUTS", "waitingOn": [...]}`, `{"state": "SKIPPED"}`.
-`JobParameterType` derives `Deserialize` for `OutputVariable.param_type`; like its
-`Serialize`, it uses the variant names (`"Int"`, `"ListString"`).
 
-`job::Environment` does not get an `enabled` field yet. Nothing evaluates `enableIf`
-before static `enableIf` lands with step input binding, and that change adds the field
-with the code that sets it.
+Names use the template's spellings where it has them: `OutputVariable.param_type` is
+serialized as `"type"` with the spec string (`"FLOAT"`, `"LIST[STRING]"`; read
+case-insensitively, and an unknown name is `unknown output variable type: 'X'`),
+`collect` as `"ONCE"`/`"LAST"`/`"APPEND"`, and the constraint keys in camelCase.
+`OutputAllowedValues` and `OutputBound` are externally tagged by the value kind in
+lowercase, so an `allowedValues` list of strings that look like numbers cannot be read
+back as numbers. `PathInput.ty` is serialized as `"type"` with the expression type's
+spelling. For example, a Step with two outputs and a pending binding serializes these
+fields as:
+
+```json
+"outputVariables": [
+  {"name": "T", "type": "FLOAT", "unit": "s",
+   "constraints": {"minValue": {"float": 0.0}, "allowedValues": {"float": [0.0, 1.5]}}},
+  {"name": "K", "type": "LIST[STRING]", "collect": "APPEND",
+   "constraints": {"maxLength": 9, "item": {"allowedValues": {"string": ["a"]}}}}
+],
+"binding": {"state": "PENDING_INPUTS", "waitingOn": ["Steps.P.Output.N"]},
+"pathInputs": [{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}]
+```
+
+`JobParameterType` derives `Deserialize` as well as `Serialize`; both use the variant
+names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
+
+`job::Environment` does not get the plan's `enabled` field yet. Nothing could set it to
+`false` before static `enableIf` lands with step input binding (until then `create_job`
+refuses an `enableIf` it cannot evaluate), and the field would change every
+`job::Environment` struct literal in the sessions and CLI crates and their tests (about
+60 sites) for no behavior. That change adds the field with the code that sets it.
 
 ### StepScript, StepActions, Action
 

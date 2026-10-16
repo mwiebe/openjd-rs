@@ -29,8 +29,9 @@ use crate::types::{JobParameterType, OutputCollectMode};
 pub struct OutputVariable {
     /// The `<Identifier>` the output is reported and referenced by.
     pub name: String,
-    /// The declared `<OutputVariableType>`.
-    #[serde(rename = "type")]
+    /// The declared `<OutputVariableType>`. Serialized as the spec string
+    /// (`"INT"`, `"LIST[STRING]"`), as in the template.
+    #[serde(rename = "type", with = "job_param_type_spec")]
     pub param_type: JobParameterType,
     /// How a Task's directives for this output become its value.
     #[serde(default, skip_serializing_if = "is_default_collect")]
@@ -45,6 +46,23 @@ pub struct OutputVariable {
 
 fn is_default_collect(c: &OutputCollectMode) -> bool {
     *c == OutputCollectMode::default()
+}
+
+/// Serialize a [`JobParameterType`] as its spec string and parse it back
+/// (case-insensitive, as `JobParameterType::from_spec_str` is).
+mod job_param_type_spec {
+    use crate::types::JobParameterType;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(ty: &JobParameterType, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(ty.as_spec_str())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<JobParameterType, D::Error> {
+        let s = String::deserialize(d)?;
+        JobParameterType::from_spec_str(&s)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown output variable type: '{s}'")))
+    }
 }
 
 /// The constraint properties an output variable declared, in hashable,
@@ -166,7 +184,10 @@ impl OutputVariable {
     /// type is not a list.
     pub fn check_element(&self, element: &ExprValue) -> Result<(), String> {
         if element_type(self.param_type).is_none() {
-            return Err(self.msg(format_args!("a {} output has no elements", self.param_type)));
+            return Err(self.msg(format_args!(
+                "{} is not a list type, so it has no elements",
+                self.param_type
+            )));
         }
         self.check_list_element(element, Subject::Element)
     }
@@ -224,8 +245,10 @@ impl OutputVariable {
                 Some(v.iter().map(|b| ExprValue::Bool(*b)).collect())
             }
             (JobParameterType::ListListInt, ExprValue::ListList(v, _, _)) => Some(v.clone()),
-            // An empty list literal may arrive untyped.
-            (_, ExprValue::ListList(v, _, _)) if v.is_empty() => Some(Vec::new()),
+            // An empty list built without a type hint is `list[nulltype]`.
+            (_, ExprValue::ListList(v, hint, _)) if v.is_empty() && *hint == ExprType::NULLTYPE => {
+                Some(Vec::new())
+            }
             _ => None,
         };
         items.ok_or_else(|| self.type_mismatch(&expected, value, Subject::Value))
@@ -244,7 +267,9 @@ impl OutputVariable {
         // LIST[LIST[INT]]: the element is a list[int].
         let ints: Vec<i64> = match element {
             ExprValue::ListInt(v) => v.clone(),
-            ExprValue::ListList(v, _, _) if v.is_empty() => Vec::new(),
+            ExprValue::ListList(v, hint, _) if v.is_empty() && *hint == ExprType::NULLTYPE => {
+                Vec::new()
+            }
             _ => {
                 return Err(self.type_mismatch(&elem_ty.expr_type(), element, subject));
             }
@@ -294,6 +319,16 @@ impl OutputVariable {
             }
             (JobParameterType::RangeExpr, ExprValue::RangeExpr(r)) => {
                 self.check_lengths(c, r.to_string().chars().count(), subject)
+            }
+            // A range expression as written: checked in that spelling, as a
+            // RANGE_EXPR job parameter value is.
+            (JobParameterType::RangeExpr, ExprValue::String(s)) => {
+                s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
+                    self.msg(format_args!(
+                        "{subject} '{s}' is not a valid range expression"
+                    ))
+                })?;
+                self.check_lengths(c, s.chars().count(), subject)
             }
             (JobParameterType::Bool, ExprValue::Bool(_)) => Ok(()),
             _ => Err(self.type_mismatch(&ty.expr_type(), value, subject)),
@@ -433,9 +468,9 @@ impl StepBinding {
 pub struct PathInput {
     /// The `Steps.*` symbol, such as `Steps.P.RawOutput.X`.
     pub symbol: String,
-    /// `path`, `list[path]`, or `list[list[path]]`. Serialized as the type's
-    /// expression-language spelling.
-    #[serde(with = "expr_type_string")]
+    /// `path`, `list[path]`, or `list[list[path]]`. Serialized under the key
+    /// `type`, as the type's expression-language spelling.
+    #[serde(rename = "type", with = "expr_type_string")]
     pub ty: ExprType,
 }
 

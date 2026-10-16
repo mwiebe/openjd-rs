@@ -55,6 +55,7 @@ pub fn validate_control_flow_job_template(
     errors: &mut ValidationErrors,
 ) {
     let active = ctx.profile.has_extension(ModelExtension::ControlFlow);
+    let chunking = ctx.profile.has_extension(ModelExtension::TaskChunking);
     check_expr_prerequisite(ctx, ModelExtension::ControlFlow, "RFC 0010", errors);
 
     if let Some(envs) = &jt.job_environments {
@@ -82,7 +83,11 @@ pub fn validate_control_flow_job_template(
             let ov_path = path_field(&step_path, "outputVariables");
             if active {
                 check_output_variables(step, outputs, &ov_path, limits, errors);
-                check_chunk_values_distinct(step, &step_path, errors);
+                // Without TASK_CHUNKING, pass 9 already rejects the
+                // CHUNK[INT] parameter itself.
+                if chunking {
+                    check_chunk_values_distinct(step, &step_path, errors);
+                }
             } else {
                 errors.add(
                     &ov_path,

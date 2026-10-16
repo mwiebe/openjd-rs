@@ -235,6 +235,7 @@ pub fn create_job(
     // uninstantiable (host requirements, parameter space) are not
     // checks: they abort immediately, reported alone.
     let mut check_errors = crate::error::ValidationErrors::default();
+    reject_unevaluated_enable_if(job_template, &mut check_errors);
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
             let env_path = [
@@ -370,4 +371,42 @@ pub fn create_job(
         steps,
         job_environments,
     })
+}
+
+/// `CONTROL_FLOW` (RFC 0010): job creation does not evaluate `enableIf` yet,
+/// so it refuses any `enableIf` other than the literal `true` rather than
+/// creating a Job that runs a Step or enters an Environment the template
+/// disables. Static and dynamic `enableIf` arrive with step input binding.
+fn reject_unevaluated_enable_if(
+    job_template: &JobTemplate,
+    check_errors: &mut crate::error::ValidationErrors,
+) {
+    use crate::error::{path_field, path_index};
+    use crate::template::BoolOrFormatString;
+    const MSG: &str =
+        "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
+    let unevaluated =
+        |e: &Option<BoolOrFormatString>| !matches!(e, None | Some(BoolOrFormatString::Bool(true)));
+    if let Some(envs) = &job_template.job_environments {
+        let envs_path = path_field(&[], "jobEnvironments");
+        for (i, env) in envs.iter().enumerate() {
+            if unevaluated(&env.enable_if) {
+                check_errors.add(&path_field(&path_index(&envs_path, i), "enableIf"), MSG);
+            }
+        }
+    }
+    for (i, st) in job_template.steps.iter().enumerate() {
+        let step_path = path_index(&path_field(&[], "steps"), i);
+        if unevaluated(&st.enable_if) {
+            check_errors.add(&path_field(&step_path, "enableIf"), MSG);
+        }
+        if let Some(envs) = &st.step_environments {
+            let envs_path = path_field(&step_path, "stepEnvironments");
+            for (j, env) in envs.iter().enumerate() {
+                if unevaluated(&env.enable_if) {
+                    check_errors.add(&path_field(&path_index(&envs_path, j), "enableIf"), MSG);
+                }
+            }
+        }
+    }
 }

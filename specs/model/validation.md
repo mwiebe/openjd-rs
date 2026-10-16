@@ -552,14 +552,14 @@ undefined variable, because no pass seeds the `Steps` root yet.
 |------|------|---------|
 | At least one element | `outputVariables` | `if provided, must contain at least one element.` |
 | At most 32 elements | `outputVariables` | `must not contain more than 32 elements.` |
-| Name length within the identifier limit (64, or 512 with `FEATURE_BUNDLE_1`) | `outputVariables[k]` | `name exceeds N characters.` |
+| Name length within the identifier limit (64, or 512 with `FEATURE_BUNDLE_1`) | `outputVariables[k]` | `name exceeds N characters.` (a name over 512 characters already fails deserialization: `Identifier length must be 1..=512, got N`) |
 | Unique names within the Step | `outputVariables[k]` (each repeat) | `duplicate output variable name: 'X'` |
 | No `default`, `userInterface`, or (on `PATH` and `LIST[PATH]`) `dataFlow` | `outputVariables[k] -> <property>` | `is not allowed in an output variable definition.` |
 | Constraint properties valid for the type | `outputVariables[k]` | the job parameter definition's message, relabeled `Output variable 'X': ...` |
 | `collect: APPEND` only with a `LIST[...]` type | `outputVariables[k] -> collect` | `APPEND requires a LIST[...] type; 'INT' is not a list type.` |
 | `unit` of 1 to 32 characters, none in Unicode Cc | `outputVariables[k] -> unit` | `must not be empty.`, `exceeds 32 characters.`, `contains control characters.` |
 | No `LIST[LIST[INT]]` on a Step with a `parameterSpace` | `outputVariables[k] -> type` | `LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: ...` |
-| In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
+| In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values (checked only with `TASK_CHUNKING`; without it pass 9 rejects the parameter itself) | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
 
 Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. The distinct-values rule
 applies only to a `range` written as a YAML list: a range string such as `"1-10"` cannot
@@ -582,13 +582,25 @@ message without a path, as other schema errors do:
 - a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
 - a `unit` that is not a string;
 - a `name` that is not an `<Identifier>`;
-- an `enableIf` that is neither a YAML `bool` nor a string, or a string that is not a
-  well-formed format string.
+- an `enableIf` that is a number, list, or mapping, or a string that is not a well-formed
+  format string.
+
+An explicit `null` for `enableIf`, `outputVariables`, or an output's `collect`, `unit`,
+`default`, `userInterface`, or `dataFlow` means the field is omitted, as for the
+template's other optional fields, so it is neither gated nor reported.
 
 **Environment Templates.** `CONTROL_FLOW` applies to Job Templates only. Listing it in an
 Environment Template is an error at `extensions`, and an `enableIf` on the template's
 environment is an error at `environment -> enableIf`, whether or not the template lists
 the extension.
+
+### Known gaps inherited from job parameters
+
+Constraint validity is exactly the job parameter rule, including its gaps: the EXPR-type
+job parameter definitions (`RANGE_EXPR` and the `LIST[...]` types) check `minLength`
+against `maxLength`, `item` bounds, and `RANGE_EXPR` `minLength >= 1` only through their
+`default`, so an output (or a job parameter) declaring `minLength: 5, maxLength: 1`
+passes. Fixing that belongs in `expr_parameters.rs`, for both.
 
 ### Not yet checked
 

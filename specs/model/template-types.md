@@ -394,11 +394,14 @@ pub enum BoolOrFormatString {
 }
 ```
 
-The value of `enableIf`: a YAML `bool`, or a string parsed as a format string. Any other
-JSON type fails deserialization with `expected a bool or a format string, got <kind>`.
-The format string's target type (`bool`) and the symbols it may read are checked by the
-`Steps.*` scope change, not yet; until then the string is parsed but not type-checked,
-and `create_job` ignores `enableIf`.
+The value of `enableIf`: a YAML `bool`, or a string parsed as a format string. A number,
+list, or mapping fails deserialization with `expected a bool or a format string, got
+<kind>`. An explicit `null` means the field is omitted, as for the template's other
+optional fields (`description: null`, `hostRequirements: null`), so it neither enables
+nor disables anything and is not gated. The format string's target type (`bool`) and the
+symbols it may read are checked by the `Steps.*` scope change, not yet; until then the
+string is parsed but not type-checked. `create_job` does not evaluate `enableIf` yet and
+refuses any value other than `true` (see [job-creation.md](job-creation.md)).
 
 ### OutputVariableDefinition
 
@@ -419,6 +422,8 @@ a [`JobParameterDefinition`](parameters.md). Its `Deserialize`:
    records which were present, so that pass 11 can report each at its own path. On
    another type, `dataFlow` stays in the mapping and the job parameter definition rejects
    it as an unknown field;
+   (in steps 2 and 3 an explicit `null` counts as omitted, as it does for the job
+   parameter definition's own optional fields);
 4. deserializes the rest as the `JobParameterDefinition` union, which supplies `name`,
    `description`, the constraint properties, and `objectType`;
 5. builds the declared constraints as a `job::OutputConstraints`.
@@ -426,8 +431,9 @@ a [`JobParameterDefinition`](parameters.md). Its `Deserialize`:
 `objectType` is kept and never checked. The accessors are `name`, `job_param_type`,
 `collect`, `unit`, `description`, `definition` (the wrapped job parameter definition),
 `constraints`, and `to_job_output_variable`, the form `create_job` stores on
-`job::Step`. `check_constraints`, `check_element`, and `check_length` delegate to that
-`job::OutputVariable` (see [job-types.md](job-types.md) § OutputVariable).
+`job::Step`. That job form is built once, during deserialization, and
+`check_constraints`, `check_element`, and `check_length` delegate to it (see
+[job-types.md](job-types.md) § CONTROL_FLOW fields).
 
 ### OutputCollectMode
 

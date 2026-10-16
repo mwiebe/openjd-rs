@@ -135,10 +135,12 @@ fn control_flow_must_be_supported_by_the_caller() {
         &CallerLimits::default(),
     )
     .expect_err("CONTROL_FLOW is not in the supported list");
-    assert!(
-        err.to_string()
-            .contains("Unsupported extension names: CONTROL_FLOW"),
-        "got: {err}"
+    assert_eq!(
+        err.to_string(),
+        expected(
+            "JobTemplate",
+            &[("extensions", "Unsupported extension names: CONTROL_FLOW")]
+        )
     );
 }
 
@@ -357,9 +359,10 @@ fn enable_if_rejects_other_json_types() {
 
 #[test]
 fn enable_if_rejects_a_malformed_format_string() {
-    let err = decode(&job("[EXPR, CONTROL_FLOW]", &["enableIf: '{{Param.X'"]))
-        .expect_err("braces mismatch");
-    assert!(err.to_string().contains("Braces mismatch"), "got: {err}");
+    assert_decode_err(
+        &job("[EXPR, CONTROL_FLOW]", &["enableIf: '{{Param.X'"]),
+        "Failed to parse interpolation expression at [0, 9]. Reason: Braces mismatch.\n  {{Param.X\n  ^~",
+    );
 }
 
 #[test]
@@ -958,3 +961,109 @@ fn int_literal_list_duplicates_with_outputs_are_accepted() {
         ],
     ));
 }
+
+// ══════════════════════════════════════════════════════════════
+// Boundaries, indices, and interactions
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn output_variable_name_of_64_characters_is_accepted() {
+    decode_ok(&with_outputs(&format!(
+        "[{{name: {}, type: INT}}]",
+        "N".repeat(64)
+    )));
+}
+
+#[test]
+fn output_names_are_case_sensitive() {
+    decode_ok(&with_outputs(
+        "[{name: a, type: INT}, {name: A, type: INT}]",
+    ));
+}
+
+#[test]
+fn explicit_null_properties_are_omitted() {
+    let jt = decode_ok(&with_outputs(
+        "[{name: P, type: PATH, collect: null, unit: null, default: null, userInterface: null, dataFlow: null}]",
+    ));
+    let ov = &jt.steps[0].output_variables.as_ref().unwrap()[0];
+    assert_eq!(ov.collect(), OutputCollectMode::Once);
+    assert_eq!(ov.unit(), None);
+}
+
+#[test]
+fn gating_errors_name_the_offending_element() {
+    let t = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR]
+name: J
+jobEnvironments:
+  - {name: JE0, variables: {A: a}}
+  - {name: JE1, enableIf: true, variables: {A: a}}
+steps:
+  - name: S0
+    script: {actions: {onRun: {command: echo}}}
+  - name: S1
+    stepEnvironments:
+      - {name: SE0, variables: {B: b}}
+      - {name: SE1, enableIf: true, variables: {B: b}}
+    outputVariables: [{name: V, type: INT}]
+    script: {actions: {onRun: {command: echo}}}
+";
+    assert_errs(
+        t,
+        "JobTemplate",
+        &[
+            (
+                "jobEnvironments[1] -> enableIf",
+                "enableIf requires the CONTROL_FLOW extension.",
+            ),
+            (
+                "steps[1] -> stepEnvironments[1] -> enableIf",
+                "enableIf requires the CONTROL_FLOW extension.",
+            ),
+            (
+                "steps[1] -> outputVariables",
+                "outputVariables requires the CONTROL_FLOW extension.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn chunk_duplicate_values_error_names_the_parameter() {
+    assert_errs(
+        &job(
+            "[EXPR, CONTROL_FLOW, TASK_CHUNKING]",
+            &[
+                "parameterSpace: {taskParameterDefinitions: [{name: S, type: STRING, range: [a]}, {name: F, type: 'CHUNK[INT]', range: [4, 4], chunks: {defaultTaskCount: 1, rangeConstraint: NONCONTIGUOUS}}]}",
+                "outputVariables: [{name: T, type: INT}]",
+            ],
+        ),
+        "JobTemplate",
+        &[(
+            "steps[0] -> parameterSpace -> taskParameterDefinitions[1] -> range",
+            "must have distinct values in a Step with outputVariables, so that each value names one Task; value 4 appears more than once.",
+        )],
+    );
+}
+
+#[test]
+fn chunk_duplicate_values_are_not_reported_without_task_chunking() {
+    // Pass 9 rejects the CHUNK[INT] parameter itself; no second error.
+    let t = job(
+        "[EXPR, CONTROL_FLOW]",
+        &[
+            "parameterSpace: {taskParameterDefinitions: [{name: F, type: 'CHUNK[INT]', range: [1, 1], chunks: {defaultTaskCount: 1, rangeConstraint: NONCONTIGUOUS}}]}",
+            "outputVariables: [{name: T, type: INT}]",
+        ],
+    );
+    let err = decode(&t).expect_err("CHUNK[INT] needs TASK_CHUNKING");
+    assert_eq!(err.to_string(), CHUNK_WITHOUT_TASK_CHUNKING);
+}
+
+const CHUNK_WITHOUT_TASK_CHUNKING: &str =
+    "Model validation error: 2 validation errors for JobTemplate
+steps[0] -> parameterSpace -> taskParameterDefinitions[0]:
+\ttask parameter type 'CHUNK[INT]' is not allowed.
+steps[0] -> parameterSpace -> taskParameterDefinitions[0]:
+\tCHUNK[INT] requires the TASK_CHUNKING extension.";
