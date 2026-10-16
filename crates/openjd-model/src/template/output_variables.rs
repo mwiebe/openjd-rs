@@ -92,11 +92,20 @@ impl<'de> Deserialize<'de> for OutputVariableDefinition {
             )));
         };
 
-        let type_str = map
-            .get("type")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| D::Error::custom("missing 'type' field in output variable definition"))?
-            .to_string();
+        let type_str = match map.get("type") {
+            None => {
+                return Err(D::Error::custom(
+                    "missing 'type' field in output variable definition",
+                ))
+            }
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(other) => {
+                return Err(D::Error::custom(format!(
+                    "'type' must be a string, got {}",
+                    json_kind(other)
+                )))
+            }
+        };
         let param_type = JobParameterType::from_spec_str(&type_str).ok_or_else(|| {
             D::Error::custom(format!("unknown output variable type: '{type_str}'"))
         })?;

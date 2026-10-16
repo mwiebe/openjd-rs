@@ -2011,6 +2011,34 @@ steps:
             stderr.contains("Unsupported extension names: CONTROL_FLOW"),
             "stderr: {stderr}"
         );
+        // `--extensions ""` disables every extension.
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported extension names: CONTROL_FLOW, EXPR"),
+            "stderr: {stderr}"
+        );
+        // Names are case-insensitive, as for `check`.
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
+            "--extensions",
+            "expr,control_flow",
+            "--help",
+        ]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
+        // A trailing `--extensions` with no value keeps the defaults.
+        let (code, stdout, stderr) =
+            run_cli(&["run", f.path().to_str().unwrap(), "--help", "--extensions"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
         let (code, _stdout, stderr) = run_cli(&[
             "run",
             f.path().to_str().unwrap(),

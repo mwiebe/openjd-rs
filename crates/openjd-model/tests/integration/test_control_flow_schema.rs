@@ -441,6 +441,14 @@ fn unknown_output_variable_type() {
 }
 
 #[test]
+fn output_variable_type_must_be_a_string() {
+    assert_decode_err(
+        &with_outputs("[{name: V, type: 5}]"),
+        "'type' must be a string, got a number",
+    );
+}
+
+#[test]
 fn missing_output_variable_type() {
     assert_decode_err(
         &with_outputs("[{name: V}]"),
