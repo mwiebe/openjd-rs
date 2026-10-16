@@ -252,8 +252,27 @@ budgets template validation and the session runtime apply.
    resolution failure that aborts job creation (a host requirement or
    parameter-space value that cannot be evaluated) happens first; that error
    is reported alone. Static
-   `enableIf`, `PENDING_INPUTS` Steps, and the `Steps.*` symbols arrive with
-   step input binding (plan item M4), which replaces this check.
+   `enableIf`, `PENDING_INPUTS` Steps, and concrete `Steps.*` values arrive
+   with step input binding (plan item M4), which replaces this check.
+10. With `CONTROL_FLOW`: a Step whose materialization fields read `Steps.*`
+   cannot be instantiated yet, because those fields need concrete values that
+   only step input binding supplies. `create_job` refuses each such field, as a
+   carried-forward check failure (`reject_unbound_steps_reads`):
+   `steps[i] -> let[j]` for each step-level `let` binding that reads `Steps.*`
+   directly, `steps[i] -> hostRequirements` if any host requirement field
+   does, and `steps[i] -> parameterSpace -> taskParameterDefinitions[k]` for
+   each Task parameter whose `range` or `chunks` fields do. The message is
+   `reads Steps.* symbols, which are bound at step input binding; create_job
+   does not implement step input binding yet.` The refusals come right after
+   the `enableIf` refusal, ahead of the Step's other checks. The Step's `let`
+   bindings and carried-forward checks still run, with the `Steps.*` symbols
+   of its direct dependencies seeded `Unresolved` into its table (a `let`
+   that reads one evaluates to an unresolved value rather than failing), so
+   its other errors are reported in the same walk; host requirements and the
+   parameter space are not resolved, and the Step is not built. A Step that
+   reads `Steps.*` only in carried-forward fields (its script, its Step
+   Environments, and their `timeout`/`cancelation`) is instantiated: those
+   fields resolve on the worker host.
 
 #### Resolved-value checks on carried-forward fields
 
@@ -314,6 +333,21 @@ time, with everything only a session can know left `Unresolved`:
 - **Session scope** (job and step environments): as above minus
   `Task.*`, plus this environment's `Env.File.*` (`Unresolved`) and its
   script-level `let` bindings evaluated in.
+- **`Steps.*`** (`CONTROL_FLOW` only; RFC 0010): both tables of a Step,
+  and those of its Step Environments, also hold the `Steps.*` symbols of
+  the Step's direct dependencies as `Unresolved` values of their RFC
+  types, seeded by `add_steps_scope` exactly as pass 8 seeds them (see
+  `specs/model/validation.md` § The `Steps.*` scope). Without them, every
+  script that reads `Steps.*` would fail here with `Undefined variable`,
+  so a template that passes `openjd check` would fail `create_job`. The
+  template-scope table that the carried-forward `timeout` /
+  `cancelation` fields resolve against gets the same symbols with path
+  types only in their `Raw` forms, as at pass 8. Job Environments get
+  none. The placeholders are added to clones of the Step's symbol table,
+  never to the table itself, because that table becomes
+  `resolved_symtab`, which holds only concrete values; until step input
+  binding fills them, a Task that reads `Steps.*` fails when its Session
+  resolves the format string.
   An environment `let` binding that fails to evaluate fails job
   creation, under the same error policy as every other evaluation this
   stage performs (see below): the bindings only evaluate when the

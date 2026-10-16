@@ -45,6 +45,7 @@ src/
 │       ├── task_chunking.rs  # Pass 9: TASK_CHUNKING gating
 │       ├── wrap_actions.rs   # Pass 10: WRAP_ACTIONS gating
 │       ├── control_flow.rs   # Pass 11: CONTROL_FLOW gating and structure
+│       ├── steps_scope.rs    # CONTROL_FLOW Steps.* seeding and reference checks (pass 8, create_job)
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.

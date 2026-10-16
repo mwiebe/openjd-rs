@@ -18,6 +18,7 @@ mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
 mod limits;
+pub(crate) mod steps_scope;
 mod structure;
 mod task_chunking;
 mod wrap_actions;

@@ -12,7 +12,9 @@ use crate::error::{path_field, path_index, ModelError, PathElement, ValidationEr
 use crate::job;
 use crate::template;
 use crate::template::validate_v2023_09::helpers::{check_capability_name, CapabilityKind};
+use crate::template::validate_v2023_09::steps_scope::{add_steps_scope, StepsFieldScope};
 use crate::template::validate_v2023_09::EffectiveLimits;
+use crate::types::ModelExtension;
 use openjd_expr::ExpressionError;
 
 use super::ranges;
@@ -35,6 +37,7 @@ use super::ranges;
 /// failure is already recorded in `check_errors`, so job creation fails.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn instantiate_step(
+    jt: &template::JobTemplate,
     st: &template::StepTemplate,
     symtab: &SymbolTable,
     has_expr: bool,
@@ -52,6 +55,19 @@ pub(super) fn instantiate_step(
         PathElement::Index(step_index),
     ];
     super::reject_unevaluated_enable_if(st.enable_if.as_ref(), &step_path, check_errors);
+
+    // CONTROL_FLOW (RFC 0010): a step `let`, host requirement, or
+    // parameter-space field that reads `Steps.*` is evaluated at step input
+    // binding, which create_job does not do yet, so such a Step is refused
+    // at each of those fields. Its `let` bindings and carried-forward checks
+    // still run, with the `Steps.*` symbols unresolved, so the Step's other
+    // errors are reported in the same pass; the Step is not instantiated.
+    let control_flow = ctx.profile.has_extension(ModelExtension::ControlFlow);
+    let needs_binding = control_flow && reject_unbound_steps_reads(st, &step_path, check_errors);
+    if needs_binding {
+        add_steps_scope(&mut step_symtab, jt, step_index, StepsFieldScope::Template)?;
+    }
+    let steps_scope = control_flow.then_some((jt, step_index));
 
     if has_expr {
         step_symtab.set(
@@ -77,6 +93,22 @@ pub(super) fn instantiate_step(
             step_let_failed = check_errors.len() > before;
         }
     }
+
+    // The template-scope check table for the carried-forward `timeout` /
+    // `cancelation` fields: the Step's table plus, with CONTROL_FLOW, the
+    // `Steps.*` symbols of its direct dependencies, unresolved (path-typed
+    // values only as `RawOutput` / `TaskRawParam`, as at pass 8). Kept out
+    // of `step_symtab`, which becomes `resolved_symtab` and holds only
+    // concrete values.
+    let template_check_storage = match steps_scope {
+        Some((jt, i)) => {
+            let mut t = step_symtab.clone();
+            add_steps_scope(&mut t, jt, i, StepsFieldScope::Template)?;
+            Some(t)
+        }
+        None => None,
+    };
+    let template_check_symtab = template_check_storage.as_ref().unwrap_or(&step_symtab);
 
     let script_template = st.resolve_syntax_sugar();
     let script = script_template.as_ref().map(convert_step_script);
@@ -110,12 +142,20 @@ pub(super) fn instantiate_step(
         // values plus `Unresolved` placeholders for everything only a
         // session can bind, with the script-level `let` bindings
         // evaluated in (reported at `<script> -> let[j]`).
-        let cst =
-            build_task_check_symtab(st, s, &step_symtab, has_expr, ctx, &script_path, target)?;
+        let cst = build_task_check_symtab(
+            st,
+            s,
+            &step_symtab,
+            steps_scope,
+            has_expr,
+            ctx,
+            &script_path,
+            target,
+        )?;
         crate::template::validate_v2023_09::format_strings::check_carried_forward_step_script(
             s,
             &cst,
-            &step_symtab,
+            template_check_symtab,
             ctx,
             &script_path,
             target,
@@ -137,12 +177,19 @@ pub(super) fn instantiate_step(
         for (j, env) in envs.iter().enumerate() {
             let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
             super::reject_unevaluated_enable_if(env.enable_if.as_ref(), &env_path, check_errors);
-            let env_symtab =
-                build_env_check_symtab(env, &step_symtab, has_expr, ctx, &env_path, check_errors)?;
+            let env_symtab = build_env_check_symtab(
+                env,
+                &step_symtab,
+                steps_scope,
+                has_expr,
+                ctx,
+                &env_path,
+                check_errors,
+            )?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(
                 env,
                 &env_symtab,
-                &step_symtab,
+                template_check_symtab,
                 ctx,
                 limits.max_env_var_value_len,
                 &env_path,
@@ -154,7 +201,7 @@ pub(super) fn instantiate_step(
     // Host requirements and the parameter space are resolved for real
     // and need the step-level `let` values; with one of those failed
     // (already reported) the step cannot be instantiated.
-    if step_let_failed {
+    if step_let_failed || needs_binding {
         return Ok(None);
     }
 
@@ -283,10 +330,12 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 ///
 /// `Err` only for a failed symbol seed — an internal invariant (see
 /// [`add_unresolved_session_symbols`]).
+#[allow(clippy::too_many_arguments)]
 fn build_task_check_symtab(
     st: &template::StepTemplate,
     script: &template::StepScript,
     step_symtab: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, usize)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     script_path: &[PathElement],
@@ -294,6 +343,9 @@ fn build_task_check_symtab(
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
+    if let Some((jt, step_index)) = steps_scope {
+        add_steps_scope(&mut check_symtab, jt, step_index, StepsFieldScope::Host)?;
+    }
 
     if let Some(ps) = &st.parameter_space {
         for tp in &ps.task_parameter_definitions {
@@ -368,6 +420,7 @@ fn build_task_check_symtab(
 pub(super) fn build_env_check_symtab(
     env: &template::Environment,
     base: &SymbolTable,
+    steps_scope: Option<(&template::JobTemplate, usize)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     env_path: &[PathElement],
@@ -375,6 +428,9 @@ pub(super) fn build_env_check_symtab(
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
+    if let Some((jt, step_index)) = steps_scope {
+        add_steps_scope(&mut symtab, jt, step_index, StepsFieldScope::Host)?;
+    }
     if let Some(script) = &env.script {
         if let Some(files) = &script.embedded_files {
             for f in files {
@@ -398,6 +454,124 @@ pub(super) fn build_env_check_symtab(
         }
     }
     Ok(symtab)
+}
+
+/// Whether any symbol in `symbols` is under the `Steps` root.
+fn reads_steps(symbols: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
+    symbols.into_iter().any(|s| {
+        let s = s.as_ref();
+        s == "Steps" || s.starts_with("Steps.")
+    })
+}
+
+/// The message for a materialization field that create_job cannot
+/// evaluate because it reads `Steps.*`.
+const NEEDS_STEP_INPUT_BINDING: &str = "reads Steps.* symbols, which are bound at step input binding; create_job does not implement step input binding yet.";
+
+/// Record a refusal at each of the Step's materialization fields evaluated
+/// at job creation (step `let` bindings, `hostRequirements`, and each Task
+/// parameter of `parameterSpace`) that reads `Steps.*`. Returns whether any
+/// was recorded. RFC 0010 evaluates these fields at step input binding,
+/// once their `Steps.*` inputs are concrete.
+fn reject_unbound_steps_reads(
+    st: &template::StepTemplate,
+    step_path: &[PathElement],
+    check_errors: &mut ValidationErrors,
+) -> bool {
+    let before = check_errors.len();
+    if let Some(bindings) = &st.let_bindings {
+        let let_path = path_field(step_path, "let");
+        for (j, binding) in bindings.iter().enumerate() {
+            let Some(eq_pos) = binding.find('=') else {
+                continue;
+            };
+            if let Ok(parsed) =
+                openjd_expr::eval::ParsedExpression::new(binding[eq_pos + 1..].trim())
+            {
+                if reads_steps(parsed.accessed_symbols()) {
+                    check_errors.add(&path_index(&let_path, j), NEEDS_STEP_INPUT_BINDING);
+                }
+            }
+        }
+    }
+    if let Some(hr) = &st.host_requirements {
+        let mut fields: Vec<&openjd_expr::FormatString> = Vec::new();
+        for amt in hr.amounts.iter().flatten() {
+            fields.push(&amt.name);
+            fields.extend(amt.min.iter());
+            fields.extend(amt.max.iter());
+        }
+        for attr in hr.attributes.iter().flatten() {
+            fields.push(&attr.name);
+            fields.extend(attr.any_of.iter().flatten());
+            fields.extend(attr.all_of.iter().flatten());
+        }
+        if fields.iter().any(|fs| reads_steps(fs.accessed_symbols())) {
+            check_errors.add(
+                &path_field(step_path, "hostRequirements"),
+                NEEDS_STEP_INPUT_BINDING,
+            );
+        }
+    }
+    if let Some(ps) = &st.parameter_space {
+        let tpd_path = path_field(
+            &path_field(step_path, "parameterSpace"),
+            "taskParameterDefinitions",
+        );
+        for (k, tp) in ps.task_parameter_definitions.iter().enumerate() {
+            if task_parameter_format_strings(tp)
+                .iter()
+                .any(|fs| reads_steps(fs.accessed_symbols()))
+            {
+                check_errors.add(&path_index(&tpd_path, k), NEEDS_STEP_INPUT_BINDING);
+            }
+        }
+    }
+    check_errors.len() > before
+}
+
+/// Every format string of a Task parameter definition that job creation
+/// evaluates: its `range` (whole or per list item) and, for `CHUNK[INT]`,
+/// its `chunks` fields.
+fn task_parameter_format_strings(
+    tp: &template::TaskParameterDefinition,
+) -> Vec<&openjd_expr::FormatString> {
+    use template::{FloatRange, FloatRangeItem, IntOrFormatString, IntRange, StringRange};
+    let mut out = Vec::new();
+    match tp {
+        template::TaskParameterDefinition::INT(t) => {
+            if let IntRange::Expression(fs) = &t.range {
+                out.push(fs);
+            }
+        }
+        template::TaskParameterDefinition::CHUNK_INT(t) => {
+            if let IntRange::Expression(fs) = &t.range {
+                out.push(fs);
+            }
+            if let IntOrFormatString::FormatString(fs) = &t.chunks.default_task_count {
+                out.push(fs);
+            }
+            if let Some(IntOrFormatString::FormatString(fs)) = &t.chunks.target_runtime_seconds {
+                out.push(fs);
+            }
+        }
+        template::TaskParameterDefinition::FLOAT(t) => match &t.range {
+            FloatRange::List(items) => out.extend(items.iter().filter_map(|i| match i {
+                FloatRangeItem::FormatString(fs) => Some(fs),
+                FloatRangeItem::Float(_) => None,
+            })),
+            FloatRange::Expression(fs) => out.push(fs),
+        },
+        template::TaskParameterDefinition::STRING(t) => match &t.range {
+            StringRange::List(items) => out.extend(items.iter()),
+            StringRange::Expression(fs) => out.push(fs),
+        },
+        template::TaskParameterDefinition::PATH(t) => match &t.range {
+            StringRange::List(items) => out.extend(items.iter()),
+            StringRange::Expression(fs) => out.push(fs),
+        },
+    }
+    out
 }
 
 fn convert_action(a: &template::Action) -> job::Action {

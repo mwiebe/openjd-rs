@@ -73,6 +73,8 @@ Currently implements `2023-09` with extensions:
   follow-up.
 - `CONTROL_FLOW` (RFC 0010) — prototype, in progress. The `outputVariables` and
   `enableIf` schema, the extension gate, and the structural rules (validation pass 11);
-  `job::Step` carries the output declarations. The `Steps.*` scope, `enableIf`
-  evaluation, step input binding, output collection, and `jobOutputDefinitions` are not
-  implemented yet (see `docs/control-flow-prototype-plan.md`).
+  `job::Step` carries the output declarations. Validation pass 8 seeds and checks the
+  `Steps.*` scope and types `enableIf` as `bool`, and `create_job`'s own checks see the
+  same `Steps.*` symbols. `enableIf` evaluation, step input binding, output collection,
+  and `jobOutputDefinitions` are not implemented yet (see
+  `docs/control-flow-prototype-plan.md`).

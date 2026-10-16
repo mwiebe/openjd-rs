@@ -398,10 +398,11 @@ The value of `enableIf`: a YAML `bool`, or a string parsed as a format string. A
 list, or mapping fails deserialization with `expected a bool or a format string, got
 <kind>`. An explicit `null` means the field is omitted, as for the template's other
 optional fields (`description: null`, `hostRequirements: null`), so it neither enables
-nor disables anything and is not gated. The format string's target type (`bool`) and the
-symbols it may read are checked by the `Steps.*` scope change, not yet; until then the
-string is parsed but not type-checked. `create_job` does not evaluate `enableIf` yet and
-refuses any value other than `true` (see [job-creation.md](job-creation.md)).
+nor disables anything and is not gated. Validation pass 8 checks a format string's
+symbols and its target type, `bool`, and requires it to be one whole-field expression (see
+[validation.md](validation.md) § The `Steps.*` Scope and `enableIf`). `create_job` does
+not evaluate `enableIf` yet and refuses any value other than `true` (see
+[job-creation.md](job-creation.md)).
 
 ### OutputVariableDefinition
 
