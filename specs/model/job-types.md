@@ -179,8 +179,8 @@ values; the path's text is checked. A `RANGE_EXPR` value may be an
 `ExprValue::RangeExpr`, whose length is that of its canonical spelling, or an
 `ExprValue::String` holding a valid range expression, whose length is that of the
 string as written (as for a `RANGE_EXPR` job parameter value). The two can differ
-(`1,2,3` is the range `1-3`); which spelling a reported directive value is measured in is
-decided with output collection, which builds the stored value. An empty list built
+(`1,2,3` is the range `1-3`); the output collector checks a reported value in its
+written spelling and stores the `RangeExpr` ([outputs.md](outputs.md) § Constraints). An empty list built
 without a type hint (`list[nulltype]`) satisfies every list type; a typed empty list must
 have the declared type. `check_element` on a scalar type reports `INT is not a list type,
 so it has no elements`, and so does `check_length` (a scalar's `minLength`/`maxLength`

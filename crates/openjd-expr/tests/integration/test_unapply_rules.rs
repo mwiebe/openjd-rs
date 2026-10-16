@@ -7,7 +7,8 @@
 //! `specs/expr/path-mapping.md` § Reverse mapping.
 
 use openjd_expr::path_mapping::{
-    unapply_rules, PathFormat, PathMapper, PathMappingRule, UnmapError,
+    unapply_rules, unapply_rules_with_source_format, PathFormat, PathMapper, PathMappingRule,
+    UnmapError,
 };
 
 fn rule(format: PathFormat, src: &str, dst: &str) -> PathMappingRule {
@@ -585,5 +586,63 @@ fn error_messages() {
         UnmapError::NoRoundTrip.to_string(),
         "no path mapping rule maps the path back to the submission path context, \
          so it names a location only this worker can see"
+    );
+}
+
+// === unapply_rules_with_source_format ===
+
+#[test]
+fn source_format_of_a_uri_is_uri() {
+    let rules = [posix("/proj", "/mnt/proj")];
+    assert_eq!(
+        unapply_rules_with_source_format(&mapper(&rules), "s3://b/k", PathFormat::Posix),
+        Ok(("s3://b/k".to_string(), PathFormat::Uri))
+    );
+    assert_eq!(
+        unapply_rules_with_source_format(&PathMapper::default(), "s3://b/k", PathFormat::Windows),
+        Ok(("s3://b/k".to_string(), PathFormat::Uri))
+    );
+}
+
+#[test]
+fn source_format_without_rules_is_the_worker_format() {
+    assert_eq!(
+        unapply_rules_with_source_format(&PathMapper::default(), "C:\\a\\b", PathFormat::Windows),
+        Ok(("C:\\a\\b".to_string(), PathFormat::Windows))
+    );
+    assert_eq!(
+        unapply_rules_with_source_format(&PathMapper::default(), "/a/b", PathFormat::Posix),
+        Ok(("/a/b".to_string(), PathFormat::Posix))
+    );
+}
+
+#[test]
+fn source_format_is_the_returned_candidate_rules_format() {
+    // Two rules match; the longer destination's candidate (a URI rule) is
+    // returned, so its format is reported, not the other rule's.
+    let rules = [
+        rule(PathFormat::Uri, "s3://bucket/assets", "/mnt/p/assets"),
+        windows("P:\\", "/mnt/p"),
+    ];
+    assert_eq!(
+        unapply_rules_with_source_format(&mapper(&rules), "/mnt/p/assets/a.exr", PathFormat::Posix),
+        Ok(("s3://bucket/assets/a.exr".to_string(), PathFormat::Uri))
+    );
+    assert_eq!(
+        unapply_rules_with_source_format(&mapper(&rules), "/mnt/p/shot/a.exr", PathFormat::Posix),
+        Ok(("P:\\shot\\a.exr".to_string(), PathFormat::Windows))
+    );
+}
+
+#[test]
+fn source_format_errors_match_unapply_rules() {
+    let rules = [posix("/proj", "/mnt/proj")];
+    assert_eq!(
+        unapply_rules_with_source_format(&mapper(&rules), "rel/x", PathFormat::Posix),
+        Err(UnmapError::Relative)
+    );
+    assert_eq!(
+        unapply_rules_with_source_format(&mapper(&rules), "/tmp/x", PathFormat::Posix),
+        Err(UnmapError::NoRoundTrip)
     );
 }
