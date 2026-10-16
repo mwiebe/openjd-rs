@@ -576,6 +576,17 @@ fn path_values_in_host_requirements_need_the_raw_form() {
 }
 
 #[test]
+fn a_path_message_names_the_symbol_not_a_property_read_from_it() {
+    assert_errs(
+        &c_arg("    let: ['n = Steps.P.Output.F.name']\n", "{{n}}"),
+        &[(
+            "steps[3] -> let[0]",
+            "Invalid expression in let binding 'n': 'Steps.P.Output.F' has a path type, so it is available only in fields resolved on the worker host. Use Steps.P.RawOutput.F here.",
+        )],
+    );
+}
+
+#[test]
 fn raw_path_values_are_available_in_template_scope_fields() {
     decode_ok(&template(
         "    enableIf: '{{len(Steps.P.RawOutput.Fs) > 0}}'
@@ -722,26 +733,42 @@ fn enable_if_may_not_be_a_static_null() {
 }
 
 #[test]
-fn enable_if_must_be_one_whole_field_expression() {
-    let msg = "must be a bool, or a format string that is one expression and nothing else, such as '{{Param.Run}}'.";
+fn enable_if_text_resolves_to_a_string_coerced_to_bool() {
+    // Expression Language §1.3.2 and §1.2.3: a literal, or text around an
+    // expression, resolves to a string, converted with string -> bool.
     for value in [
         "'yes'",
-        "'true'",
+        "'True'",
+        "'off'",
+        "'0'",
+        "\"{{'y'}}es\"",
+        // Not static: converted when it is evaluated.
         "'{{Param.Run}} '",
-        "'{{Param.Run}}{{Param.Run}}'",
+        "'{{Steps.P.Output.Count}}{{Param.Run}}'",
     ] {
-        assert_errs(&c_enable_if(value), &[("steps[3] -> enableIf", msg)]);
+        decode_ok(&c_enable_if(value));
     }
-    // The references are still checked.
+    for (value, text) in [
+        ("'maybe'", "maybe"),
+        ("'true '", "true "),
+        ("'x{{1}}'", "x1"),
+        ("'{{true}}{{true}}'", "truetrue"),
+    ] {
+        assert_errs(
+            &c_enable_if(value),
+            &[(
+                "steps[3] -> enableIf",
+                &format!("must resolve to a bool: Cannot convert '{text}' to bool."),
+            )],
+        );
+    }
+    // The references of a multi-segment string are still checked.
     assert_errs(
         &c_enable_if("'x{{Steps.Nope.Output.A}}'"),
-        &[
-            ("steps[3] -> enableIf", msg),
-            (
-                "steps[3] -> enableIf",
-                "'Steps.Nope.Output.A': there is no Step named 'Nope'.",
-            ),
-        ],
+        &[(
+            "steps[3] -> enableIf",
+            "'Steps.Nope.Output.A': there is no Step named 'Nope'.",
+        )],
     );
 }
 
