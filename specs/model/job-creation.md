@@ -333,6 +333,13 @@ time, with everything only a session can know left `Unresolved`:
 - **Session scope** (job and step environments): as above minus
   `Task.*`, plus this environment's `Env.File.*` (`Unresolved`) and its
   script-level `let` bindings evaluated in.
+  An environment `let` binding that fails to evaluate fails job
+  creation, under the same error policy as every other evaluation this
+  stage performs (see below): the bindings only evaluate when the
+  context profile enables EXPR, their expressions already type-checked
+  at pass 8 with everything unresolved, so a failure here comes from
+  the real parameter values and would deterministically recur in every
+  session that enters the environment.
 - **`Steps.*`** (`CONTROL_FLOW` only; RFC 0010): both tables of a Step,
   and those of its Step Environments, also hold the `Steps.*` symbols of
   the Step's direct dependencies as `Unresolved` values of their RFC
@@ -344,17 +351,12 @@ time, with everything only a session can know left `Unresolved`:
   `cancelation` fields resolve against gets the same symbols with path
   types only in their `Raw` forms, as at pass 8. Job Environments get
   none. The placeholders are added to clones of the Step's symbol table,
-  never to the table itself, because that table becomes
-  `resolved_symtab`, which holds only concrete values; until step input
+  because that table becomes `resolved_symtab`, which holds only
+  concrete values. (A Step refused under item 10 above has them seeded
+  into its own table, so its `let` bindings evaluate; it is never
+  built, so no `resolved_symtab` is made from it.) Until step input
   binding fills them, a Task that reads `Steps.*` fails when its Session
   resolves the format string.
-  An environment `let` binding that fails to evaluate fails job
-  creation, under the same error policy as every other evaluation this
-  stage performs (see below): the bindings only evaluate when the
-  context profile enables EXPR, their expressions already type-checked
-  at pass 8 with everything unresolved, so a failure here comes from
-  the real parameter values and would deterministically recur in every
-  session that enters the environment.
 
 **`let` bindings.** Every `let` block job creation evaluates —
 step-level (template scope, `HostContext::None`), step-script and

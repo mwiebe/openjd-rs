@@ -38,7 +38,7 @@ short-circuiting), so users see all problems at once.
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
 | 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
+| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` scope and types `enableIf` as `bool` |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
 | 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0010) |
@@ -388,12 +388,13 @@ rejecting any `Steps.*`. The target type is `bool`, not `bool?`, so EXPR's coerc
 rejects an `int` (`Cannot coerce int to bool`) or a static `null`
 (`Cannot coerce nulltype to bool`); an unresolved `bool?`, such as a conditional
 producer's output, is accepted and checked when concrete. A YAML `bool` needs no check. A
-format string must be one expression and nothing else: a literal string (`'yes'`,
-`'true'`) or text around an expression (`'{{Param.Run}} '`) would resolve to a string,
-which the RFC does not say how to read as a bool (plan ambiguity A8), so the prototype
-rejects it with `must be a bool, or a format string that is one expression and nothing
-else, such as '{{Param.Run}}'.`, and still scans its references. Without `CONTROL_FLOW`
-pass 8 does not look at `enableIf`; pass 11 rejects the field.
+literal string, or text around an expression, resolves to a string (Expression Language
+§1.3.2), which EXPR's implicit `string` → `bool` coercion then converts (§1.2.3:
+`"true"`/`"yes"`/`"on"`/`"1"` and `"false"`/`"no"`/`"off"`/`"0"`, case-insensitive). A
+literal, or a string that is fully static (`'x{{1}}'`), is converted here, and fails with
+`must resolve to a bool: Cannot convert 'maybe' to bool.`; one that depends on an
+unresolved symbol is converted when it is evaluated. Without `CONTROL_FLOW` pass 8 does not
+look at `enableIf`; pass 11 rejects the field.
 
 ### Let Binding Validation
 
