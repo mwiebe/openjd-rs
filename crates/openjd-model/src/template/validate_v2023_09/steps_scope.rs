@@ -195,12 +195,15 @@ pub(crate) struct StepsRefContext<'a> {
 /// order. Symbols outside the `Steps` root, and available ones, produce
 /// nothing.
 ///
-/// Each message starts with the symbol as written. The checks, in order:
-/// the reference names a member (`Steps.<StepName>.<Member>.<Name>`); the
-/// field allows `Steps.*`; the Step exists; its name is an `<Identifier>`;
-/// it is not the reading Step; it is a direct dependency; the member is one
-/// of the four; the output or Task parameter exists; and a path-typed
-/// `Output` or `TaskParam` is not read in a TEMPLATE-scope field.
+/// Each message starts with the symbol, as written except in the path-type
+/// message, which names only the four-part symbol and not a property read
+/// from it. The checks, in order, the first that fails being reported: the
+/// field allows `Steps.*`; the reference names a member
+/// (`Steps.<StepName>.<Member>.<Name>`); the Step exists; its name is an
+/// `<Identifier>`; it is not the reading Step; it is a direct dependency;
+/// the member is one of the four; the output or Task parameter exists; and
+/// a path-typed `Output` or `TaskParam` is not read in a TEMPLATE-scope
+/// field.
 pub(crate) fn steps_ref_errors<'s>(
     symbols: impl IntoIterator<Item = &'s String>,
     ctx: &StepsRefContext<'_>,
