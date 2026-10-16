@@ -224,6 +224,11 @@ fn string_constraints_count_characters() {
 
 #[test]
 fn path_constraints_apply_to_path_values() {
+    assert_eq!(
+        def("{name: P, type: PATH, minLength: 3}")
+            .check_constraints(&ExprValue::new_path("/a", PathFormat::Posix)),
+        Err("Output variable 'P': value length 2 is less than minimum 3".into())
+    );
     let d = def("{name: P, type: PATH, maxLength: 6, allowedValues: [/a/b]}");
     d.check_constraints(&ExprValue::new_path("/a/b", PathFormat::Posix))
         .unwrap();
@@ -293,6 +298,11 @@ fn an_untyped_empty_list_satisfies_a_list_type() {
 
 #[test]
 fn list_string_item_constraints() {
+    assert_eq!(
+        def("{name: L, type: 'LIST[STRING]', item: {minLength: 2}}")
+            .check_constraints(&list_string(&["ab", "a"])),
+        Err("Output variable 'L': item[1] length 1 is less than minimum 2".into())
+    );
     let d =
         def("{name: L, type: 'LIST[STRING]', item: {maxLength: 2, allowedValues: [a, bb, ccc]}}");
     d.check_constraints(&list_string(&["a", "bb"])).unwrap();
@@ -308,6 +318,11 @@ fn list_string_item_constraints() {
 
 #[test]
 fn list_path_accepts_path_and_string_lists() {
+    assert_eq!(
+        def("{name: L, type: 'LIST[PATH]', item: {minLength: 2}}")
+            .check_constraints(&list_string(&["a"])),
+        Err("Output variable 'L': item[0] length 1 is less than minimum 2".into())
+    );
     let d = def("{name: L, type: 'LIST[PATH]', item: {maxLength: 4}}");
     let paths = ExprValue::make_list(
         vec![ExprValue::new_path("/a", PathFormat::Posix)],
@@ -416,6 +431,11 @@ fn check_element_on_a_list_list_int_output() {
         d.check_element(&ExprValue::ListInt(vec![-1])),
         Err("Output variable 'L': element item[0] -1 is less than minimum 0".into())
     );
+    assert_eq!(
+        def("{name: L, type: 'LIST[LIST[INT]]', collect: APPEND, item: {item: {minValue: 0}}}")
+            .check_element(&ExprValue::ListInt(vec![0, -1])),
+        Err("Output variable 'L': element item[1] -1 is less than minimum 0".into())
+    );
 }
 
 #[test]
@@ -457,8 +477,11 @@ fn default_fields_are_not_serialized() {
 fn control_flow_fields_round_trip() {
     let mut step: Step = serde_json::from_str(STEP_JSON).unwrap();
     step.output_variables = Some(vec![
-        def("{name: T, type: FLOAT, unit: s, minValue: 0}").to_job_output_variable(),
-        def("{name: K, type: 'LIST[STRING]', collect: APPEND, item: {maxLength: 9}}")
+        def("{name: T, type: FLOAT, unit: s, minValue: 0, allowedValues: [0, 1.5]}")
+            .to_job_output_variable(),
+        def("{name: K, type: 'LIST[STRING]', collect: APPEND, maxLength: 9, item: {allowedValues: [a]}}")
+            .to_job_output_variable(),
+        def("{name: C, type: 'LIST[INT]', item: {minValue: 1, allowedValues: [1, 2]}}")
             .to_job_output_variable(),
     ]);
     step.binding = StepBinding::PendingInputs {
@@ -472,8 +495,12 @@ fn control_flow_fields_round_trip() {
     assert_eq!(
         value["outputVariables"],
         serde_json::json!([
-            {"name": "T", "type": "FLOAT", "unit": "s", "constraints": {"minValue": {"float": 0.0}}},
-            {"name": "K", "type": "LIST[STRING]", "collect": "APPEND", "constraints": {"item": {"maxLength": 9}}}
+            {"name": "T", "type": "FLOAT", "unit": "s",
+             "constraints": {"minValue": {"float": 0.0}, "allowedValues": {"float": [0.0, 1.5]}}},
+            {"name": "K", "type": "LIST[STRING]", "collect": "APPEND",
+             "constraints": {"maxLength": 9, "item": {"allowedValues": {"string": ["a"]}}}},
+            {"name": "C", "type": "LIST[INT]",
+             "constraints": {"item": {"minValue": {"int": 1}, "allowedValues": {"int": [1, 2]}}}}
         ])
     );
     assert_eq!(
@@ -556,8 +583,14 @@ fn job_parameter_type_round_trips() {
 #[test]
 fn output_collect_mode_spec_strings() {
     assert_eq!(OutputCollectMode::default(), OutputCollectMode::Once);
-    assert_eq!(OutputCollectMode::Once.to_string(), "ONCE");
-    assert_eq!(OutputCollectMode::Last.as_spec_str(), "LAST");
+    for (mode, spec) in [
+        (OutputCollectMode::Once, "ONCE"),
+        (OutputCollectMode::Last, "LAST"),
+        (OutputCollectMode::Append, "APPEND"),
+    ] {
+        assert_eq!(mode.as_spec_str(), spec);
+        assert_eq!(mode.to_string(), spec);
+    }
     assert_eq!(
         serde_json::to_value(OutputCollectMode::Append).unwrap(),
         serde_json::json!("APPEND")
@@ -719,6 +752,15 @@ fn a_typed_empty_list_must_match_the_declared_type() {
         def("{name: L, type: 'LIST[INT]'}").check_constraints(&list_string(&[])),
         Err("Output variable 'L': value has type list[string], expected list[int]".into())
     );
+    assert_eq!(
+        def("{name: L, type: 'LIST[LIST[INT]]'}").check_constraints(
+            &ExprValue::make_list(vec![], ExprType::list(ExprType::STRING)).unwrap()
+        ),
+        Err(
+            "Output variable 'L': value has type list[list[string]], expected list[list[int]]"
+                .into()
+        )
+    );
     // A typed empty list of the declared type is fine.
     def("{name: L, type: 'LIST[LIST[INT]]'}")
         .check_constraints(&ExprValue::make_list(vec![], ExprType::list(ExprType::INT)).unwrap())
@@ -749,10 +791,19 @@ fn check_element_for_each_list_element_type() {
         l.check_element(&list_string(&[])),
         Err("Output variable 'L': element has type list[string], expected list[int]".into())
     );
+    assert_eq!(
+        l.check_element(&ExprValue::make_list(vec![], ExprType::list(ExprType::INT)).unwrap()),
+        Err("Output variable 'L': element has type list[list[int]], expected list[int]".into())
+    );
 }
 
 #[test]
 fn range_expr_value_written_as_a_string_is_checked_as_written() {
+    assert_eq!(
+        def("{name: R, type: RANGE_EXPR, minLength: 4}")
+            .check_constraints(&ExprValue::String("1-2".into())),
+        Err("Output variable 'R': value length 3 is less than minimum 4".into())
+    );
     let d = def("{name: R, type: RANGE_EXPR, maxLength: 5}");
     d.check_constraints(&ExprValue::String("1-3".into()))
         .unwrap();
@@ -832,6 +883,54 @@ steps:
              jobEnvironments[1] -> enableIf:\n\t{msg}\n\
              steps[1] -> enableIf:\n\t{msg}\n\
              steps[1] -> stepEnvironments[1] -> enableIf:\n\t{msg}"
+        )
+    );
+}
+
+#[test]
+fn create_job_reports_an_enable_if_refusal_with_its_owner() {
+    // Each refusal is reported ahead of the same owner's other checks, and in
+    // template order with the rest: jobEnvironments, then each Step.
+    let jt = decode_job_template(
+        yaml(
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: J
+parameterDefinitions: [{name: Z, type: INT}]
+jobEnvironments:
+  - {name: JE, enableIf: false, variables: {V: '{{1 // Param.Z}}'}}
+steps:
+  - name: S0
+    script: {actions: {onRun: {command: echo, timeout: '{{Param.Z}}'}}}
+  - name: S1
+    enableIf: false
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        Some(&["EXPR", "CONTROL_FLOW", "FEATURE_BUNDLE_1"]),
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    let values: JobParameterValues = [(
+        "Z".to_string(),
+        openjd_model::JobParameterValue {
+            param_type: JobParameterType::Int,
+            value: ExprValue::Int(0),
+        },
+    )]
+    .into_iter()
+    .collect();
+    let err = create_job(&jt, &values, &jt.default_validation_context())
+        .expect_err("enableIf: false is refused");
+    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 4 validation errors for JobTemplate\n\
+             jobEnvironments[0] -> enableIf:\n\t{msg}\n\
+             jobEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation expression at [0, 16]. Division by zero\n  1 // Param.Z\n  ~~^~~~~~~~~~\n\
+             steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\n\
+             steps[1] -> enableIf:\n\t{msg}"
         )
     );
 }

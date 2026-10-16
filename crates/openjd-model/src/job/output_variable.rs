@@ -244,7 +244,15 @@ impl OutputVariable {
             (JobParameterType::ListBool, ExprValue::ListBool(v)) => {
                 Some(v.iter().map(|b| ExprValue::Bool(*b)).collect())
             }
-            (JobParameterType::ListListInt, ExprValue::ListList(v, _, _)) => Some(v.clone()),
+            // A non-empty list's elements are checked one by one; an empty
+            // one has only its hint to go on.
+            (JobParameterType::ListListInt, ExprValue::ListList(v, hint, _))
+                if !v.is_empty()
+                    || *hint == ExprType::list(ExprType::INT)
+                    || *hint == ExprType::NULLTYPE =>
+            {
+                Some(v.clone())
+            }
             // An empty list built without a type hint is `list[nulltype]`.
             (_, ExprValue::ListList(v, hint, _)) if v.is_empty() && *hint == ExprType::NULLTYPE => {
                 Some(Vec::new())
@@ -443,7 +451,8 @@ pub enum StepBinding {
     /// The Step's materialization expressions read `Steps.*` symbols that are
     /// not concrete yet (`PENDING_INPUTS`).
     PendingInputs {
-        /// The `Steps.*` symbols the Step waits on, sorted.
+        /// The `Steps.*` symbols the Step waits on. Binding writes them
+        /// sorted; deserialization keeps the order it is given.
         waiting_on: Vec<String>,
     },
     /// The Step's `enableIf` evaluated to `false` (`SKIPPED`).
@@ -468,8 +477,9 @@ impl StepBinding {
 pub struct PathInput {
     /// The `Steps.*` symbol, such as `Steps.P.RawOutput.X`.
     pub symbol: String,
-    /// `path`, `list[path]`, or `list[list[path]]`. Serialized under the key
-    /// `type`, as the type's expression-language spelling.
+    /// `path`, `list[path]`, or `list[list[path]]` as binding writes it.
+    /// Serialized under the key `type`, as the type's expression-language
+    /// spelling; deserialization accepts any type that spelling parses to.
     #[serde(rename = "type", with = "expr_type_string")]
     pub ty: ExprType,
 }
