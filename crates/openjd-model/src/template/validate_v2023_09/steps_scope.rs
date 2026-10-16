@@ -136,8 +136,12 @@ fn visible_producers(jt: &JobTemplate, step_index: usize) -> Vec<&StepTemplate> 
 /// Never call this for the job name, `jobEnvironments`, or an Environment
 /// Template: `Steps.*` is not available there.
 ///
-/// `Err` only when a key collides with an existing scalar entry, which the
-/// uppercase `Steps` root rules out.
+/// `Err` only when a key collides with an existing scalar entry. No user
+/// symbol can start with the uppercase `Steps` root (a `let` name starts
+/// lowercase), and only `<Identifier>`-named producers are seeded, so
+/// `Steps.<P>` never contains a dot that could make one producer's table
+/// overlap another's (a Step named `A.Output` would otherwise collide with
+/// Step `A`'s output `Output`).
 pub(crate) fn add_steps_scope(
     symtab: &mut SymbolTable,
     jt: &JobTemplate,
