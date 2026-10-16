@@ -918,8 +918,10 @@ impl outputs::OutputCollector {
         -> Result<IndexMap<Option<i64>, outputs::TaskOutputs>, outputs::OutputError>;
 }
 
-/// `Display` is the message. Quoted text is cut to 200 characters with
-/// control characters escaped; an `@` file's text is never quoted.
+/// `Display` is the message. It may quote an inline value's text and the
+/// converted value that is invalid, but never an `@` file's text as such.
+/// Quoted text and an appended EXPR coercion message are cut to 200
+/// characters with control characters escaped. See outputs.md § Errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct outputs::OutputError { /* private */ }
 
@@ -1598,6 +1600,8 @@ Enums that are marked `#[non_exhaustive]` today:
 - `TaskParameterType`
 - `FileType`
 - `ModelError`
+- `outputs::OutputErrorKind`, so a later change can split a kind without
+  breaking callers that match on it
 
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem
@@ -1607,7 +1611,8 @@ to change.
 The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 `OutputCollectMode` (the RFC's three modes), `template::BoolOrFormatString`
 (the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
-binding states), and `job::OutputAllowedValues` / `job::OutputBound` (the
-value kinds the constraint properties take). A change to the RFC that adds
+binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
+value kinds the constraint properties take), and `outputs::OutputDirective`
+(the RFC's two directive forms). A change to the RFC that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows.

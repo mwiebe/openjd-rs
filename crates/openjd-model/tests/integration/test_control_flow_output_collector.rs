@@ -450,6 +450,17 @@ fn numbers_keep_their_written_digits() {
         convert("{name: S, type: STRING}", "S=1E3"),
         Ok(ExprValue::String("1E3".into()))
     );
+    assert_eq!(
+        convert("{name: S, type: STRING}", "S=1e+5"),
+        Ok(ExprValue::String("1e+5".into()))
+    );
+    assert_eq!(
+        convert("{name: S, type: STRING}", "S=2E-3"),
+        Ok(ExprValue::String("2E-3".into()))
+    );
+    let f = convert("{name: X, type: FLOAT}", "X=1e+5").unwrap();
+    assert_eq!(f, float(100000.0));
+    assert_eq!(f.to_display_string(), "1e+5");
     let f = convert("{name: X, type: FLOAT}", "X=1.50").unwrap();
     assert_eq!(f, float(1.5));
     assert_eq!(f.to_display_string(), "1.50");
@@ -528,6 +539,23 @@ fn numbers_too_large_for_a_float_do_not_convert() {
         e.to_string(),
         "Output variable 'S': the @ file's content has a number too large to represent as a \
          float (at line 2 column 5)"
+    );
+}
+
+#[test]
+fn invalid_json_after_a_huge_number_is_invalid_json() {
+    // Validity is decided before conversion, so the text's real problem is
+    // reported.
+    let mut c = collector(&["{name: X, type: FLOAT}"]);
+    assert_eq!(
+        err(&mut c, "X=1e400 garbage", OutputErrorKind::Json),
+        "Output variable 'X': '1e400 garbage' is not one valid JSON value: trailing characters \
+         at line 1 column 7"
+    );
+    assert_eq!(
+        err(&mut c, "X=[1e400", OutputErrorKind::Json),
+        "Output variable 'X': '[1e400' is not one valid JSON value: EOF while parsing a list at \
+         line 1 column 6"
     );
 }
 
@@ -1014,6 +1042,67 @@ fn file_value_path_and_constraint_errors_name_the_converted_value() {
 }
 
 #[test]
+fn coercion_detail_is_cut() {
+    let long = "y".repeat(300);
+    let mut c = collector(&["{name: I, type: INT}"]);
+    assert_eq!(
+        err(
+            &mut c,
+            &format!("I=\"{long}\""),
+            OutputErrorKind::Conversion
+        ),
+        format!(
+            "Output variable 'I': value (string) '{y200}...' does not convert to int: Cannot \
+             convert '{y184}...",
+            y200 = "y".repeat(200),
+            y184 = "y".repeat(184)
+        )
+    );
+}
+
+#[test]
+fn hand_built_names_with_control_characters_are_escaped() {
+    let mut v = var("{name: X, type: INT, maxValue: 1}");
+    v.name = "a\u{1b}b".into();
+    let mut c = OutputCollector::new(
+        std::slice::from_ref(&v),
+        MIN_OUTPUT_BYTES_LIMIT,
+        &[],
+        PathFormat::Posix,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        c.check_name("z", None).unwrap_err().to_string(),
+        "Output variable 'z': the Step does not declare it (declared: 'a\\u{1b}b')"
+    );
+    assert_eq!(
+        c.accept("a\u{1b}b", None, b"2", false)
+            .unwrap_err()
+            .to_string(),
+        "Output variable 'a\\u{1b}b': value 2 exceeds maximum 1"
+    );
+    let mut e = var("{name: E, type: 'LIST[INT]', collect: APPEND, minLength: 1}");
+    e.name = "e\n".into();
+    assert_eq!(
+        OutputCollector::new(&[e.clone()], 10, &[], PathFormat::Posix, None)
+            .unwrap()
+            .finish()
+            .unwrap_err()
+            .to_string(),
+        "Output variable 'e\\n': list length 0 is less than minimum 1"
+    );
+    e.param_type = openjd_model::JobParameterType::Int;
+    assert_eq!(
+        OutputCollector::new(&[e], 10, &[], PathFormat::Posix, None)
+            .unwrap_err()
+            .to_string(),
+        "Output variable 'e\\n': collect mode APPEND requires a LIST type, but it is declared \
+         INT"
+    );
+}
+
+#[test]
 fn quoted_values_are_cut_and_escaped() {
     let mut c = collector(&["{name: S, type: STRING, allowedValues: [a]}"]);
     let long = "x".repeat(300);
@@ -1236,6 +1325,20 @@ fn path_on_a_windows_worker() {
     assert_eq!(
         path_parts(&v),
         ("/proj/a/b.exr".to_string(), PathFormat::Posix)
+    );
+}
+
+#[test]
+fn path_is_parsed_in_the_worker_format() {
+    // On a Windows worker the reported path takes Windows separators before
+    // it is mapped back, which shows in the message when it can't be.
+    let rules = [rule(PathFormat::Posix, "/proj", "Z:\\proj")];
+    let mut c = with_rules(&["{name: P, type: PATH}"], &rules, PathFormat::Windows);
+    assert_eq!(
+        err(&mut c, "P=\"C:/x/y\"", OutputErrorKind::Path),
+        "Output variable 'P': value 'C:\\x\\y' is not a valid PATH output: no path mapping rule \
+         maps the path back to the submission path context, so it names a location only this \
+         worker can see"
     );
 }
 

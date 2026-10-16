@@ -11,7 +11,7 @@ use openjd_expr::types::TypeCode;
 use openjd_expr::{ExprType, ExprValue};
 
 use super::convert::{check_no_null_or_object, number_spellings, ConvertError, Converter};
-use super::{quote, OutputError, OutputErrorKind};
+use super::{escape_controls, quote, OutputError, OutputErrorKind};
 use crate::job::OutputVariable;
 use crate::types::OutputCollectMode;
 
@@ -81,7 +81,9 @@ impl OutputCollector {
     ///   chunk being run, or `None` for a Step without one.
     ///
     /// A chunk that repeats a value is an error
-    /// ([`OutputErrorKind::Selector`]): a value names exactly one Task.
+    /// ([`OutputErrorKind::Selector`]): a value names exactly one Task. So is
+    /// a declaration with `collect: APPEND` on a type that is not a list
+    /// ([`OutputErrorKind::Declaration`]).
     pub fn new(
         declared: &[OutputVariable],
         max_bytes: usize,
@@ -105,7 +107,8 @@ impl OutputCollector {
                 format!(
                     "Output variable '{}': collect mode APPEND requires a LIST type, but it is \
                      declared {}",
-                    var.name, var.param_type
+                    escape_controls(&var.name),
+                    var.param_type
                 ),
             ));
         }
@@ -145,7 +148,7 @@ impl OutputCollector {
     /// yet (for that Task). Call it before reading an `@` file.
     pub fn check_name(&self, name: &str, task: Option<i64>) -> Result<(), OutputError> {
         let var = self.declared.get(name).ok_or_else(|| {
-            let declared: Vec<String> = self.declared.keys().map(|n| format!("'{n}'")).collect();
+            let declared: Vec<String> = self.declared.keys().map(|n| quote(n)).collect();
             let declared = if declared.is_empty() {
                 "the Step declares no output variables".to_string()
             } else {
@@ -251,31 +254,32 @@ impl OutputCollector {
             (text, text.len())
         };
 
-        let parsed: serde_json::Value = serde_json::from_str(text).map_err(|e| {
-            let shown = if from_file {
+        let shown = || {
+            if from_file {
                 "the @ file's content".to_string()
             } else {
                 quote(text)
-            };
-            // A number too large for a float is valid JSON (RFC 8259) but
-            // does not convert (RFC 0010 §Processing a directive, "Type
-            // conversion"); serde_json reports it as a parse error.
-            if e.to_string().starts_with("number out of range") {
-                err(
-                    OutputErrorKind::Conversion,
-                    format!(
-                        "{shown} has a number too large to represent as a float (at line {} \
-                         column {})",
-                        e.line(),
-                        e.column()
-                    ),
-                )
-            } else {
-                err(
-                    OutputErrorKind::Json,
-                    format!("{shown} is not one valid JSON value: {e}"),
-                )
             }
+        };
+        // Validity first, without converting numbers: a number too large for
+        // a float is valid JSON (RFC 8259), and its failure is a conversion
+        // error (RFC 0010 §Processing a directive, "Type conversion").
+        serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|e| {
+            err(
+                OutputErrorKind::Json,
+                format!("{} is not one valid JSON value: {e}", shown()),
+            )
+        })?;
+        let parsed: serde_json::Value = serde_json::from_str(text).map_err(|e| {
+            err(
+                OutputErrorKind::Conversion,
+                format!(
+                    "{} has a number too large to represent as a float (at line {} column {})",
+                    shown(),
+                    e.line(),
+                    e.column()
+                ),
+            )
         })?;
 
         let append = var.collect == OutputCollectMode::Append;
@@ -323,15 +327,7 @@ impl OutputCollector {
         let state = &self.tasks[&task];
         let held = state.held.get(name);
         let constraint = |msg: String| {
-            // The constraint messages name the output without the selector.
-            let msg = match (
-                task,
-                msg.strip_prefix(&format!("Output variable '{name}': ")),
-            ) {
-                (Some(_), Some(rest)) => format!("Output variable '{label}': {rest}"),
-                _ => msg,
-            };
-            OutputError::new(OutputErrorKind::Constraint, msg)
+            OutputError::new(OutputErrorKind::Constraint, relabel(&msg, name, &label))
         };
         if append {
             let count = match held {
@@ -403,13 +399,7 @@ impl OutputCollector {
                         let elem_ty = var.param_type.expr_type().params()[0].clone();
                         let len = elements.len();
                         var.check_length(len, true).map_err(|msg| {
-                            OutputError::new(
-                                OutputErrorKind::Missing,
-                                match msg.strip_prefix(&format!("Output variable '{name}': ")) {
-                                    Some(rest) => format!("Output variable '{label}': {rest}"),
-                                    None => msg,
-                                },
-                            )
+                            OutputError::new(OutputErrorKind::Missing, relabel(&msg, name, &label))
                         })?;
                         build_list(elements, elem_ty, self.worker_format)
                     }
@@ -485,10 +475,21 @@ impl OutputCollector {
 }
 
 /// `N` or `N[3]`.
+/// A `job::OutputVariable` check message, which names the output without its
+/// selector and as written, renamed to `label`.
+fn relabel(msg: &str, name: &str, label: &str) -> String {
+    match msg.strip_prefix(&format!("Output variable '{name}': ")) {
+        Some(rest) => format!("Output variable '{label}': {rest}"),
+        None => msg.to_string(),
+    }
+}
+
+/// `N` or `N[3]`, with control characters in a hand-built name escaped.
 fn label(name: &str, task: Option<i64>) -> String {
+    let name = escape_controls(name);
     match task {
         Some(t) => format!("{name}[{t}]"),
-        None => name.to_string(),
+        None => name,
     }
 }
 

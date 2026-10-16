@@ -29,7 +29,8 @@ pub const MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OutputErrorKind {
-    /// The text after `openjd_output_var:` does not match the grammar.
+    /// The text after `openjd_output_var:` does not match the grammar, or an
+    /// inline value is not valid UTF-8.
     Grammar,
     /// The directive names an output the Step does not declare.
     Undeclared,
@@ -44,7 +45,8 @@ pub enum OutputErrorKind {
     /// An `@` file's content is not valid UTF-8 or contains a NUL character.
     FileContent,
     /// The value is or contains `null` or an object, nests deeper than the
-    /// target type, or does not convert to it.
+    /// target type, has a number too large to represent as a float, or does
+    /// not convert to the target type.
     Conversion,
     /// A `PATH` value is relative or has no submission-context form.
     Path,
@@ -68,7 +70,8 @@ pub enum OutputErrorKind {
 /// value or element that is invalid (a `PATH` with no submission-context form,
 /// a string not in `allowedValues`), but never an `@` file's text as such: a
 /// JSON or conversion error for a file value gives only a position or a type.
-/// Quoted text is cut to 200 characters and its control characters escaped.
+/// Quoted text, and the EXPR coercion message appended to a conversion error,
+/// is cut to 200 characters with its control characters escaped.
 /// Its `Display` is the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputError {
@@ -115,6 +118,14 @@ pub(crate) fn quote(text: &str) -> String {
         Some((end, _)) => (&text[..end], "..."),
     };
     format!("'{}{cut}'", escape_controls(shown))
+}
+
+/// `text` for a message without quotes: cut and escaped as by [`quote`].
+pub(crate) fn shorten(text: &str) -> String {
+    match text.char_indices().nth(QUOTE_LIMIT) {
+        None => escape_controls(text),
+        Some((end, _)) => format!("{}...", escape_controls(&text[..end])),
+    }
 }
 
 /// `text` with its control characters escaped (`\n`, `\u{1b}`).

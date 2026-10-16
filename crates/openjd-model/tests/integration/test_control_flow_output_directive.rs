@@ -322,6 +322,19 @@ fn control_characters_are_escaped_in_the_message() {
 }
 
 #[test]
+fn control_characters_in_a_selector_are_escaped() {
+    assert_eq!(
+        grammar_err("N[\u{1b}]=1"),
+        "Invalid openjd_output_var directive: the task selector of 'N' must be an integer \
+         (an optional '-' then digits, with no whitespace), not '\\u{1b}', in 'N[\\u{1b}]=1'"
+    );
+    assert_eq!(
+        grammar_err("N\0=1"),
+        "Invalid openjd_output_var directive: expected '=' after 'N', found '\\0', in 'N\\0=1'"
+    );
+}
+
+#[test]
 fn missing_equals_at_end_after_selector() {
     assert_eq!(
         grammar_err(" \tR[2]"),

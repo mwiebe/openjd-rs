@@ -116,8 +116,10 @@ error (`Invalid openjd_output_var directive: the value of 'N' is not valid UTF-8
 surrounding spaces and tabs are removed. The text must be exactly one JSON value
 (`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, and trailing text. A number
 too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as the RFC's
-type conversion rules say, does not convert: `serde_json` reports it as a parse error,
-and the collector reports it as a `Conversion` error with its line and column.
+type conversion rules say, does not convert. So validity is checked first without
+converting numbers (`serde::de::IgnoredAny`), and a text that is valid but fails to parse
+into a `serde_json::Value` is a `Conversion` error with the number's line and column:
+`1e400 garbage` is still a `Json` error for its trailing text.
 
 Conversion (`Conversion` errors) follows §Processing a directive, "Type conversion":
 
@@ -234,8 +236,11 @@ invalid: a `PATH` with no submission-context form, a string not in `allowedValue
 RFC asks for "the offending text". They never quote an `@` file's text as such: a JSON
 error for a file gives only `serde_json`'s line and column, and a conversion error only
 the element's type. Quoted text is cut to 200 characters with `...`, and control
-characters in it are escaped (`\n`, `\u{1b}`), so a message stays on one line and cannot
-drive a terminal; `job::OutputVariable`'s constraint messages quote strings the same way.
+characters in it are escaped (`\n`, `\u{1b}`, `\0`), so a message stays on one line and
+cannot drive a terminal; `job::OutputVariable`'s constraint messages quote strings the same
+way. The EXPR coercion message a conversion error appends (which repeats the value) is cut
+and escaped the same way, and so is an output name in a message, which only a hand-built
+declaration can make unusual.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
 the converted invalid value follows the RFC instead. The runtime adds the file path and
