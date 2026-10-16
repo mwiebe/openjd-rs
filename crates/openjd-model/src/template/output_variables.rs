@@ -134,7 +134,8 @@ impl<'de> Deserialize<'de> for OutputVariableDefinition {
         }
 
         let definition: JobParameterDefinition =
-            serde_json::from_value(serde_json::Value::Object(map)).map_err(D::Error::custom)?;
+            serde_json::from_value(serde_json::Value::Object(map))
+                .map_err(|e| D::Error::custom(relist_unknown_field(&e.to_string())))?;
         let constraints = constraints_of(&definition).map_err(D::Error::custom)?;
         let job = OutputVariable {
             name: definition.name().to_string(),
@@ -217,6 +218,40 @@ impl OutputVariableDefinition {
     pub(crate) fn unavailable_properties(&self) -> &[&'static str] {
         &self.unavailable
     }
+}
+
+/// serde's unknown-field message for the wrapped job parameter definition
+/// lists the fields that definition accepts, including `default` and
+/// `userInterface`, which an output variable may not have, and not `collect`
+/// or `unit`, which it may. Rewrite the list to an output variable's fields.
+/// Any other message, including one about a nested `item` mapping, is
+/// returned unchanged.
+fn relist_unknown_field(msg: &str) -> String {
+    let Some(rest) = msg.strip_prefix("unknown field `") else {
+        return msg.to_string();
+    };
+    let Some((field, tail)) = rest.split_once('`') else {
+        return msg.to_string();
+    };
+    let Some(expected) = tail.strip_prefix(", expected ") else {
+        return msg.to_string();
+    };
+    let written: Vec<&str> = expected.split('`').skip(1).step_by(2).collect();
+    // Only the definition's own fields include `name`; a nested `item`
+    // mapping's message is about that mapping and is left alone.
+    if !written.contains(&"name") {
+        return msg.to_string();
+    }
+    let mut names: Vec<&str> = written
+        .into_iter()
+        .filter(|n| !UNAVAILABLE_PROPERTIES.contains(n))
+        .collect();
+    names.extend(["collect", "unit"]);
+    let list: Vec<String> = names.iter().map(|n| format!("`{n}`")).collect();
+    format!(
+        "unknown field `{field}`, expected one of {}",
+        list.join(", ")
+    )
 }
 
 fn float64(f: &FlexFloat) -> Result<Float64, String> {

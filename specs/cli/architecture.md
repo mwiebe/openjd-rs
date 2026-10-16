@@ -151,8 +151,8 @@ All commands that accept `--extensions` default to enabling every extension in
 `FEATURE_BUNDLE_1`, `EXPR`, `WRAP_ACTIONS`, and `CONTROL_FLOW`. The list comes from
 `common::supported_extensions()`, and `common::parse_extensions()` resolves the
 `--extensions` argument against it, so a new model extension is enabled by default
-without a CLI change. (The template-specific help in `help.rs` still has its own list of
-the first four.)
+without a CLI change. The template-specific help (`openjd run <template> --help`, in
+`help.rs`) resolves `--extensions X` and `--extensions=X` through the same function.
 
 An empty string (`--extensions ""`) disables all extensions, which is useful for testing
 strict base-spec compliance.

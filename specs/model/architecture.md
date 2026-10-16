@@ -80,11 +80,11 @@ The crate re-exports a curated public API from `lib.rs`:
 - `PathParameterOptions` — Options for PATH parameter resolution
 - `FormatString`, `SymbolTable` — Re-exported from `openjd-expr`
 - `format_string`, `symbol_table` — Modules re-exported wholesale from `openjd-expr`
-- From `types` module: `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
+- From `types` module: `CallerLimits`, `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
   `JobParameterInputValues`, `JobParameterType`, `JobParameterValue`, `JobParameterValues`,
   `ModelExtension`, `ObjectType`, `OutputCollectMode`, `SpecificationRevision`, `TaskParameterSet`,
   `TaskParameterType`, `TaskParameterValue`, `TemplateSpecificationVersion`,
-  `ValidationContext`
+  `ModelProfile`, `ValidationContext`
 
 **Error types:**
 - `ModelError` — Primary error enum

@@ -51,6 +51,7 @@ pub(super) fn instantiate_step(
         PathElement::Field("steps".to_string()),
         PathElement::Index(step_index),
     ];
+    super::reject_unevaluated_enable_if(st.enable_if.as_ref(), &step_path, check_errors);
 
     if has_expr {
         step_symtab.set(
@@ -135,6 +136,7 @@ pub(super) fn instantiate_step(
     if let Some(envs) = &st.step_environments {
         for (j, env) in envs.iter().enumerate() {
             let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
+            super::reject_unevaluated_enable_if(env.enable_if.as_ref(), &env_path, check_errors);
             let env_symtab =
                 build_env_check_symtab(env, &step_symtab, has_expr, ctx, &env_path, check_errors)?;
             crate::template::validate_v2023_09::format_strings::check_carried_forward_environment(

@@ -36,10 +36,14 @@ pub fn try_context_aware_help(args: &[String]) -> bool {
     let path = Path::new(path_str);
 
     // Find --extensions value if present
-    let extensions = args
-        .windows(2)
-        .find(|w| w[0] == "--extensions")
-        .map(|w| w[1].as_str());
+    // Accept both `--extensions X` and `--extensions=X`, as clap does.
+    let extensions = args.iter().enumerate().find_map(|(i, a)| {
+        if a == "--extensions" {
+            args.get(i + 1).map(String::as_str)
+        } else {
+            a.strip_prefix("--extensions=")
+        }
+    });
 
     match generate_template_help(path, extensions) {
         Ok(help) => {

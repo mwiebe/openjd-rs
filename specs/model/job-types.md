@@ -129,7 +129,7 @@ pub enum OutputBound { Int(i64), Float(Float64) }
 
 pub enum StepBinding {
     Bound,                                     // default
-    PendingInputs { waiting_on: Vec<String> },
+    PendingInputs { waiting_on: Vec<String> }, // sorted when binding writes it
     Skipped,
 }
 
@@ -138,6 +138,10 @@ pub struct PathInput {
     pub ty: openjd_expr::ExprType,             // serialized as "type": "path", "list[path]", ...
 }
 ```
+
+Deserialization does not re-check what binding guarantees when it writes these values:
+`waiting_on` is kept in the order given, and `PathInput.ty` may be any type its spelling
+parses to.
 
 `create_job` fills `output_variables` from the template's `outputVariables`
 (`OutputVariableDefinition::to_job_output_variable`), sets `binding` to `Bound`, and
