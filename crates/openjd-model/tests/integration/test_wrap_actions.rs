@@ -770,7 +770,7 @@ fn wrap_actions_without_expr_extension_rejected_in_env_template() {
             }
         }"#,
         WRAP_EXTS,
-        &["WRAP_ACTIONS requires EXPR"],
+        &["extensions:\n\tWRAP_ACTIONS requires EXPR; both must be listed in the template's `extensions` (RFC 0008)."],
     );
 }
 
@@ -795,7 +795,7 @@ fn wrap_actions_without_expr_extension_rejected_in_job_template() {
             "steps": [{"name": "S", "script": {"actions": {"onRun": {"command": "echo"}}}}]
         }"#,
         WRAP_EXTS,
-        &["WRAP_ACTIONS requires EXPR"],
+        &["extensions:\n\tWRAP_ACTIONS requires EXPR; both must be listed in the template's `extensions` (RFC 0008)."],
     );
 }
 

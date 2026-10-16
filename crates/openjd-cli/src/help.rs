@@ -64,17 +64,10 @@ fn generate_template_help(
         &crate::common::caller_limits(),
     )?;
 
-    let default_exts = vec![
-        "TASK_CHUNKING",
-        "REDACTED_ENV_VARS",
-        "FEATURE_BUNDLE_1",
-        "EXPR",
-    ];
-    let supported_exts: Vec<&str> = match extensions_arg {
-        Some(s) if !s.is_empty() => s.split(',').map(|e| e.trim()).collect(),
-        Some(_) => vec![],
-        None => default_exts,
-    };
+    // The same resolution as `check`, `run`, and `summary`: every
+    // `ModelExtension::ALL` name by default.
+    let extensions = crate::common::parse_extensions(&extensions_arg.map(str::to_string))?;
+    let supported_exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
 
     let template = parse::decode_job_template(
         template_value,
