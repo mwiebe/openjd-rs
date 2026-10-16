@@ -200,7 +200,14 @@ impl OutputVariable {
     /// Check the length of a list being collected under `collect: APPEND`.
     /// `maxLength` applies at every length; `minLength` only when `at_exit`
     /// is `true`, because the list is still growing until the Action exits.
+    /// Errors when the declared type is not a list, as `check_element` does.
     pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String> {
+        if element_type(self.param_type).is_none() {
+            return Err(self.msg(format_args!(
+                "{} is not a list type, so it has no elements",
+                self.param_type
+            )));
+        }
         if at_exit {
             if let Some(min) = self.constraints.min_length {
                 if len < min {

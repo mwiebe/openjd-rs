@@ -183,7 +183,8 @@ string as written (as for a `RANGE_EXPR` job parameter value). The two can diffe
 decided with output collection, which builds the stored value. An empty list built
 without a type hint (`list[nulltype]`) satisfies every list type; a typed empty list must
 have the declared type. `check_element` on a scalar type reports `INT is not a list type,
-so it has no elements`.
+so it has no elements`, and so does `check_length` (a scalar's `minLength`/`maxLength`
+count characters, not elements).
 
 **Serde.** Every new field has `#[serde(default)]` and is skipped when it holds its
 default (`None`, `Bound`, or empty), so a Step serialized before this change still

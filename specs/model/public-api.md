@@ -729,7 +729,7 @@ impl job::OutputVariable {
     /// scalar type.
     pub fn check_element(&self, element: &ExprValue) -> Result<(), String>;
     /// The length of a list being collected under APPEND: maxLength
-    /// always, minLength only when `at_exit`.
+    /// always, minLength only when `at_exit`. Errors for a scalar type.
     pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
 }
 

@@ -476,6 +476,10 @@ fn check_element_on_a_scalar_output_is_an_error() {
         def("{name: 'N', type: INT}").check_element(&ExprValue::Int(1)),
         Err("Output variable 'N': INT is not a list type, so it has no elements".into())
     );
+    assert_eq!(
+        def("{name: S, type: STRING, minLength: 2}").check_length(1, true),
+        Err("Output variable 'S': STRING is not a list type, so it has no elements".into())
+    );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -801,6 +805,31 @@ fn a_typed_empty_list_must_match_the_declared_type() {
 
 #[test]
 fn check_element_for_each_list_element_type() {
+    // A mismatched element names the declared element type.
+    for (ty, expected) in [
+        ("LIST[STRING]", "string"),
+        ("LIST[INT]", "int"),
+        ("LIST[FLOAT]", "float"),
+        ("LIST[BOOL]", "bool"),
+    ] {
+        let found = if ty == "LIST[STRING]" || ty == "LIST[FLOAT]" {
+            ExprValue::Bool(true)
+        } else {
+            ExprValue::String("x".into())
+        };
+        let kind = if matches!(found, ExprValue::Bool(_)) {
+            "bool"
+        } else {
+            "string"
+        };
+        assert_eq!(
+            def(&format!("{{name: E, type: '{ty}', collect: APPEND}}")).check_element(&found),
+            Err(format!(
+                "Output variable 'E': element has type {kind}, expected {expected}"
+            )),
+            "{ty}"
+        );
+    }
     def("{name: B, type: 'LIST[BOOL]', collect: APPEND}")
         .check_element(&ExprValue::Bool(true))
         .unwrap();
