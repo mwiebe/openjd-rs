@@ -39,7 +39,7 @@ src/
 ├── symbol_table.rs         Hierarchical SymbolTable
 ├── format_string.rs        FormatString parsing and resolution
 ├── range_expr.rs           RangeExpr parsing and indexing
-├── path_mapping.rs         PathFormat, PathMappingRule, unapply_rules
+├── path_mapping.rs         PathFormat, PathMappingRule, unapply_rules*
 ├── uri_path.rs             URI-aware path operations
 ├── error.rs                ExpressionError with caret formatting
 ├── json_escape.rs          JSON string escaping shared by list display and repr_json

@@ -22,6 +22,11 @@ src/
 ├── error.rs                  # ModelError, ValidationErrors, PathElement
 ├── types.rs                  # Shared types: ValidationContext, parameter types, limits, rules
 ├── capabilities.rs           # Standard capability constants and validation functions
+├── outputs/                  # CONTROL_FLOW output values (no I/O)
+│   ├── mod.rs                # OutputError, OutputErrorKind, MIN_OUTPUT_BYTES_LIMIT
+│   ├── directive.rs          # parse_output_directive, OutputDirective
+│   ├── convert.rs            # JSON → typed ExprValue (private)
+│   └── collector.rs          # OutputCollector
 ├── template/                 # Unresolved template types (phase 1)
 │   ├── mod.rs
 │   ├── parse.rs              # YAML/JSON decoding, version dispatch
@@ -91,6 +96,8 @@ The crate re-exports a curated public API from `lib.rs`:
 
 Template types such as `TaskParameterDefinition` are reached through the `template`
 module (`openjd_model::template::TaskParameterDefinition`), not the crate root.
+Likewise the `CONTROL_FLOW` output types (`OutputCollector`, `parse_output_directive`,
+`OutputError`, ...) are reached through the `outputs` module; see [outputs.md](outputs.md).
 
 ## Key Dependencies
 
