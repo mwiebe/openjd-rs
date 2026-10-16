@@ -246,10 +246,9 @@ impl OutputVariable {
             }
             // A non-empty list's elements are checked one by one; an empty
             // one has only its hint to go on.
+            // (An untyped empty list is the arm below.)
             (JobParameterType::ListListInt, ExprValue::ListList(v, hint, _))
-                if !v.is_empty()
-                    || *hint == ExprType::list(ExprType::INT)
-                    || *hint == ExprType::NULLTYPE =>
+                if !v.is_empty() || *hint == ExprType::list(ExprType::INT) =>
             {
                 Some(v.clone())
             }
