@@ -7,6 +7,10 @@ steps, task counts, environments, and dependencies. It can summarize the entire 
 single step. The command instantiates the job (resolving parameters and creating the job
 object) to produce accurate task counts that reflect parameter space expansion.
 
+Because it calls `create_job`, a `CONTROL_FLOW` template with an `enableIf` other than
+`true` fails here the same way it fails `openjd run` (`create_job` does not evaluate
+`enableIf` yet; see [run.md](run.md) § CONTROL_FLOW templates).
+
 ## Interface
 
 ```

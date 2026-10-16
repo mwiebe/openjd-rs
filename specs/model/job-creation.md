@@ -236,6 +236,24 @@ budgets template validation and the session runtime apply.
 6. Convert environments from template to job types
 7. Build step dependency list
 8. Attach resolved symbol table to each step
+9. With `CONTROL_FLOW` (RFC 0010): copy each Step's `outputVariables` onto
+   `job::Step::output_variables` as `job::OutputVariable` values, and set
+   `binding` to `StepBinding::Bound`. `enableIf` on Steps and Environments is
+   not evaluated yet, so rather than create a Job that runs a Step or enters an
+   Environment the template disables, `create_job` refuses every `enableIf`
+   other than the literal `true` (`reject_unevaluated_enable_if`). Each one is
+   a carried-forward check failure at its own path,
+   `steps[i] -> enableIf`, `jobEnvironments[i] -> enableIf`, or
+   `steps[i] -> stepEnvironments[j] -> enableIf`: `is not evaluated by
+   create_job yet; only `enableIf: true` can be instantiated.` It is reported
+   in the same walk as the other checks, just before its Step's or
+   Environment's own checks, so the template order below still holds. Like
+   every carried-forward check failure, a refusal is not reported when a
+   resolution failure that aborts job creation (a host requirement or
+   parameter-space value that cannot be evaluated) happens first; that error
+   is reported alone. Static
+   `enableIf`, `PENDING_INPUTS` Steps, and the `Steps.*` symbols arrive with
+   step input binding (plan item M4), which replaces this check.
 
 #### Resolved-value checks on carried-forward fields
 

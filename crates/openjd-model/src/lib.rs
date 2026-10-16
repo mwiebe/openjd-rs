@@ -42,8 +42,8 @@ pub use template::parse::{
 pub use types::{
     CallerLimits, DataFlow, EndOfLine, Extensions, FileType, JobParameterInputValues,
     JobParameterType, JobParameterValue, JobParameterValues, ModelExtension, ModelProfile,
-    ObjectType, SpecificationRevision, TaskParameterSet, TaskParameterType, TaskParameterValue,
-    TemplateSpecificationVersion, ValidationContext,
+    ObjectType, OutputCollectMode, SpecificationRevision, TaskParameterSet, TaskParameterType,
+    TaskParameterValue, TemplateSpecificationVersion, ValidationContext,
 };
 
 #[cfg(test)]

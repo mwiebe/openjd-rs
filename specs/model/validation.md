@@ -27,7 +27,7 @@ applicable passes, and return accumulated errors as `ModelError::ModelValidation
 
 ## Pass Architecture
 
-The validation pipeline is passes 5–10 of the overall decode pipeline (passes 1–4 are in
+The validation pipeline is passes 5–11 of the overall decode pipeline (passes 1–4 are in
 the `parse` module — see [parsing.md](parsing.md)). Passes run sequentially. Each pass
 receives the template and the computed limits/rules, and appends errors to a shared
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
@@ -41,6 +41,7 @@ short-circuiting), so users see all problems at once.
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
+| 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0010) |
 
 ### Environment template pipeline
 
@@ -67,6 +68,9 @@ checks have nothing to walk):
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
 - **Pass 10** — WRAP_ACTIONS gating (see below).
+- **Pass 11** — `CONTROL_FLOW` applies to Job Templates only: listing it in an
+  Environment Template, or giving the environment an `enableIf`, is an error
+  whatever the extensions (see below).
 
 ## Pass 5: Limits Enforcement
 
@@ -519,6 +523,105 @@ The single-layer rule runs only in the job-template path. An environment templat
 one environment, so the rule is trivially satisfied for an isolated env template; if
 separately-validated env templates are composed into a session at assembly time
 (worker-side), the cross-layer constraint must be enforced there.
+
+## Pass 11: CONTROL_FLOW Gating and Structure
+
+Validates or rejects the fields `CONTROL_FLOW` (RFC 0010) adds. It implements items 1, 2,
+and the Environment Template part of item 6 of the RFC's §Validation, "At template
+validation".
+
+**Without the extension**, each field is an error at its own path, with the message
+`<field> requires the CONTROL_FLOW extension.`:
+
+- `steps[i] -> enableIf`
+- `steps[i] -> outputVariables`
+- `jobEnvironments[i] -> enableIf` and `steps[i] -> stepEnvironments[j] -> enableIf`
+
+`jobOutputDefinitions` is not part of the schema yet, so it fails deserialization as an
+unknown field with or without the extension. A `Steps.*` reference in any field pass 8
+checks fails there as an undefined variable, because no pass seeds the `Steps` root yet.
+`enableIf` is not one of those fields: its format string is only parsed (see below).
+
+**EXPR prerequisite.** `CONTROL_FLOW` without `EXPR` is an error at `extensions`
+(`CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC
+0010).`). The check is `helpers::check_expr_prerequisite`, which pass 10 shares for
+`WRAP_ACTIONS`.
+
+**With the extension**, each Step's `outputVariables` must satisfy:
+
+| Rule | Path | Message |
+|------|------|---------|
+| At least one element | `outputVariables` | `if provided, must contain at least one element.` |
+| At most 32 elements | `outputVariables` | `must not contain more than 32 elements.` |
+| Name length within the identifier limit (64, or 512 with `FEATURE_BUNDLE_1`) | `outputVariables[k]` | `name exceeds N characters.` (a name over 512 characters already fails deserialization: `Identifier length must be 1..=512, got N`) |
+| Unique names within the Step | `outputVariables[k]` (each repeat) | `duplicate output variable name: 'X'` |
+| No `default`, `userInterface`, or (on `PATH` and `LIST[PATH]`) `dataFlow` | `outputVariables[k] -> <property>` | `is not allowed in an output variable definition.` |
+| Constraint properties valid for the type | `outputVariables[k]` | the job parameter definition's message, relabeled `Output variable 'X': ...` |
+| `collect: APPEND` only with a `LIST[...]` type | `outputVariables[k] -> collect` | `APPEND requires a LIST[...] type; 'INT' is not a list type.` |
+| `unit` of 1 to 32 characters, none in Unicode Cc | `outputVariables[k] -> unit` | `must not be empty.`, `exceeds 32 characters.`, `contains control characters.` |
+| No `LIST[LIST[INT]]` on a Step with a `parameterSpace` | `outputVariables[k] -> type` | `LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: ...` |
+| In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values (checked only with `TASK_CHUNKING`; without it pass 9 rejects the parameter itself) | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
+
+Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. The distinct-values rule
+applies only to a `range` written as a YAML list: a range string such as `"1-10"` cannot
+repeat a value, because its sub-ranges may not overlap, and a computed range is checked
+when it is materialized (RFC 0010 §Chunked Steps item 1), which job creation does not do
+yet.
+
+Constraint validity reuses `JobParameterDefinition::validate_definition` on the wrapped
+definition, so the rules are exactly those of the job parameter of the same type (for
+example, `minValue` may not exceed `maxValue`, and `allowedValues` must respect
+`minLength`/`maxLength`). Its messages start with `Parameter 'X': `, which pass 11
+replaces with `Output variable 'X': `. A constraint property that the type does not have
+(such as `minValue` on a `STRING`, or `allowedValues` on a `BOOL`) is an unknown field of
+that job parameter definition and fails deserialization.
+
+Some rules are enforced while the definition is deserialized, so they report the serde
+message without a path, as other schema errors do. An unknown field in an output
+variable's own mapping is reported with an output variable's fields
+(`unknown field `minValue`, expected one of `name`, `description`, `allowedValues`,
+`minLength`, `maxLength`, `collect`, `unit``), not the wrapped job parameter
+definition's, which would list `default` and `userInterface`:
+
+- an unknown type (`unknown output variable type: 'DICT'`), a missing one, or one that
+  is not a string (`'type' must be a string, got a number`);
+- a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
+- a `unit` that is not a string;
+- a `name` that is not an `<Identifier>`;
+- an `enableIf` that is a number, list, or mapping, or a string that is not a well-formed
+  format string.
+
+An explicit `null` for `enableIf`, `outputVariables`, or an output's `collect`, `unit`,
+`default`, `userInterface`, or `dataFlow` means the field is omitted, as for the
+template's other optional fields, so it is neither gated nor reported.
+
+**Environment Templates.** `CONTROL_FLOW` applies to Job Templates only. Listing it in an
+Environment Template is an error at `extensions`, and an `enableIf` on the template's
+environment is an error at `environment -> enableIf`, whether or not the template lists
+the extension.
+
+### Known gaps inherited from job parameters
+
+Constraint validity is exactly the job parameter rule, including its gaps: the EXPR-type
+job parameter definitions (`RANGE_EXPR` and the `LIST[...]` types) check `minLength`
+against `maxLength`, `item` bounds, and `RANGE_EXPR` `minLength >= 1` only through their
+`default`, so an output (or a job parameter) declaring `minLength: 5, maxLength: 1`
+passes. Fixing that belongs in `expr_parameters.rs`, for both.
+
+### Not yet checked
+
+These RFC rules belong to later changes in the prototype plan
+(`docs/control-flow-prototype-plan.md`):
+
+- The `Steps.*` scope (§Validation items 3–5) and the typing and symbol rules of
+  `enableIf` (items 6 and 7). Until then an `enableIf` format string is only parsed:
+  pass 8 does not check its symbols or its type, so `{{Steps.P.Output.N > 1}}` or
+  `{{Nope.X}}` passes `openjd check`, and `create_job` refuses it. In the other fields,
+  `Steps.*` references fail as undefined variables.
+- `jobOutputDefinitions` (item 10).
+- The warning for a conditional Step's `null` in a discarding position (item 8).
+  openjd-rs has no validation-warning channel; adding one is a public API decision (see
+  ambiguity A1 in the plan).
 
 ## Error Infrastructure
 

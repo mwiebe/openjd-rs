@@ -48,6 +48,9 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
                     )
                 },
                 resolved_symtab: None,
+                output_variables: None,
+                binding: Default::default(),
+                path_inputs: Vec::new(),
             })
             .collect(),
         job_environments: None,

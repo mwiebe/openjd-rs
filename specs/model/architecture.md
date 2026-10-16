@@ -31,20 +31,24 @@ src/
 │   ├── expr_parameters.rs    # EXPR extension parameter types (§2.9-2.16)
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
 │   ├── step.rs               # StepTemplate, SimpleAction (§3)
+│   ├── output_variables.rs   # OutputVariableDefinition, BoolOrFormatString (CONTROL_FLOW)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
 │   ├── actions.rs            # Action, CancelationMode (§5)
 │   ├── host_requirements.rs  # HostRequirements (§3.3)
 │   ├── constrained_strings.rs # Identifier, Description, ExtensionName (§7)
 │   └── validate_v2023_09/    # Validation pipeline for 2023-09 revision
 │       ├── mod.rs            # Orchestrator
-│       ├── limits.rs         # Pass 2: EffectiveLimits enforcement
-│       ├── structure.rs      # Pass 3: Structural validation via EffectiveRules
-│       ├── feature_bundle_1.rs # Pass 4: FEATURE_BUNDLE_1 gating
-│       ├── format_strings.rs # Pass 5: Format string reference validation
-│       ├── task_chunking.rs  # Pass 6: TASK_CHUNKING gating
+│       ├── limits.rs         # Pass 5: EffectiveLimits enforcement
+│       ├── structure.rs      # Pass 6: Structural validation via EffectiveRules
+│       ├── feature_bundle_1.rs # Pass 7: FEATURE_BUNDLE_1 gating
+│       ├── format_strings.rs # Pass 8: Format string reference validation
+│       ├── task_chunking.rs  # Pass 9: TASK_CHUNKING gating
+│       ├── wrap_actions.rs   # Pass 10: WRAP_ACTIONS gating
+│       ├── control_flow.rs   # Pass 11: CONTROL_FLOW gating and structure
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.
+    ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PathInput
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job() entry point
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table
@@ -64,26 +68,29 @@ The crate re-exports a curated public API from `lib.rs`:
 - `preprocess_job_parameters` — Parameter validation and coercion
 - `merge_job_parameter_definitions` — Cross-template parameter merging
 - `build_symbol_table` — Symbol table construction from parameter values
-- `convert_environment` — Template environment to resolved environment
+- `convert_environment`, `convert_environment_with_symtab` — Template environment to resolved environment
 - `evaluate_let_bindings` — Let binding expression evaluation
 
 **Types:**
 - `DecodedTemplate`, `DocumentType` — Parse output types
 - `StepParameterSpaceIterator` — Lazy parameter space iteration
 - `StepDependencyGraph` — Step dependency graph
-- `TaskParameterDefinition` — Task parameter definition (from template module)
 - `MergedParameterDefinition` — Merged parameter from multiple templates
 - `PathParameterOptions` — Options for PATH parameter resolution
 - `FormatString`, `SymbolTable` — Re-exported from `openjd-expr`
 - `format_string`, `symbol_table` — Modules re-exported wholesale from `openjd-expr`
-- From `types` module: `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
+- From `types` module: `CallerLimits`, `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
   `JobParameterInputValues`, `JobParameterType`, `JobParameterValue`, `JobParameterValues`,
-  `KnownExtension`, `ObjectType`, `SpecificationRevision`, `TaskParameterSet`,
+  `ModelExtension`, `ObjectType`, `OutputCollectMode`, `SpecificationRevision`, `TaskParameterSet`,
   `TaskParameterType`, `TaskParameterValue`, `TemplateSpecificationVersion`,
-  `ValidationContext`
+  `ModelProfile`, `ValidationContext`
 
 **Error types:**
 - `ModelError` — Primary error enum
+- `ValidationErrors`, `ValidationError`, `PathElement`, `ErrorDetail`, `DiagnosticSpan` — Structured validation errors
+
+Template types such as `TaskParameterDefinition` are reached through the `template`
+module (`openjd_model::template::TaskParameterDefinition`), not the crate root.
 
 ## Key Dependencies
 
