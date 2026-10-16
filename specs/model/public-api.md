@@ -1512,3 +1512,11 @@ Enums that are marked `#[non_exhaustive]` today:
 they represent decidable logical concepts (newline mode, filesystem
 entity kind, data direction) whose sets of variants are not expected
 to change.
+
+The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
+`OutputCollectMode` (the RFC's three modes), `template::BoolOrFormatString`
+(the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
+binding states), and `job::OutputAllowedValues` / `job::OutputBound` (the
+value kinds the constraint properties take). A change to the RFC that adds
+a variant is a breaking change to these, which the crate's pre-1.0 version
+allows.

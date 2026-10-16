@@ -538,8 +538,9 @@ validation".
 - `jobEnvironments[i] -> enableIf` and `steps[i] -> stepEnvironments[j] -> enableIf`
 
 `jobOutputDefinitions` is not part of the schema yet, so it fails deserialization as an
-unknown field with or without the extension. A `Steps.*` reference fails pass 8 as an
-undefined variable, because no pass seeds the `Steps` root yet.
+unknown field with or without the extension. A `Steps.*` reference in any field pass 8
+checks fails there as an undefined variable, because no pass seeds the `Steps` root yet.
+`enableIf` is not one of those fields: its format string is only parsed (see below).
 
 **EXPR prerequisite.** `CONTROL_FLOW` without `EXPR` is an error at `extensions`
 (`CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC
@@ -576,7 +577,11 @@ replaces with `Output variable 'X': `. A constraint property that the type does 
 that job parameter definition and fails deserialization.
 
 Some rules are enforced while the definition is deserialized, so they report the serde
-message without a path, as other schema errors do:
+message without a path, as other schema errors do. An unknown field in an output
+variable's own mapping is reported with an output variable's fields
+(`unknown field `minValue`, expected one of `name`, `description`, `allowedValues`,
+`minLength`, `maxLength`, `collect`, `unit``), not the wrapped job parameter
+definition's, which would list `default` and `userInterface`:
 
 - an unknown type (`unknown output variable type: 'DICT'`) or a missing one;
 - a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
@@ -608,8 +613,10 @@ These RFC rules belong to later changes in the prototype plan
 (`docs/control-flow-prototype-plan.md`):
 
 - The `Steps.*` scope (§Validation items 3–5) and the typing and symbol rules of
-  `enableIf` (items 6 and 7). Until then an `enableIf` format string is parsed but not
-  type-checked, and `Steps.*` references fail as undefined variables.
+  `enableIf` (items 6 and 7). Until then an `enableIf` format string is only parsed:
+  pass 8 does not check its symbols or its type, so `{{Steps.P.Output.N > 1}}` or
+  `{{Nope.X}}` passes `openjd check`, and `create_job` refuses it. In the other fields,
+  `Steps.*` references fail as undefined variables.
 - `jobOutputDefinitions` (item 10).
 - The warning for a conditional Step's `null` in a discarding position (item 8).
   openjd-rs has no validation-warning channel; adding one is a public API decision (see

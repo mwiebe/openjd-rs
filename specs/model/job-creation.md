@@ -245,7 +245,9 @@ budgets template validation and the session runtime apply.
    a carried-forward check failure at its own path,
    `steps[i] -> enableIf`, `jobEnvironments[i] -> enableIf`, or
    `steps[i] -> stepEnvironments[j] -> enableIf`: `is not evaluated by
-   create_job yet; only `enableIf: true` can be instantiated.` Static
+   create_job yet; only `enableIf: true` can be instantiated.` It is reported
+   in the same walk as the other checks, just before its Step's or
+   Environment's own checks, so the template order below still holds. Static
    `enableIf`, `PENDING_INPUTS` Steps, and the `Steps.*` symbols arrive with
    step input binding (plan item M4), which replaces this check.
 

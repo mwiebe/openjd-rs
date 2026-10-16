@@ -235,13 +235,13 @@ pub fn create_job(
     // uninstantiable (host requirements, parameter space) are not
     // checks: they abort immediately, reported alone.
     let mut check_errors = crate::error::ValidationErrors::default();
-    reject_unevaluated_enable_if(job_template, &mut check_errors);
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
             let env_path = [
                 crate::error::PathElement::Field("jobEnvironments".to_string()),
                 crate::error::PathElement::Index(i),
             ];
+            reject_unevaluated_enable_if(env.enable_if.as_ref(), &env_path, &mut check_errors);
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
@@ -377,36 +377,19 @@ pub fn create_job(
 /// so it refuses any `enableIf` other than the literal `true` rather than
 /// creating a Job that runs a Step or enters an Environment the template
 /// disables. Static and dynamic `enableIf` arrive with step input binding.
-fn reject_unevaluated_enable_if(
-    job_template: &JobTemplate,
+///
+/// `owner_path` is the Step's or Environment's path; the refusal is reported
+/// at its `enableIf`, ahead of that owner's other carried-forward checks.
+pub(super) fn reject_unevaluated_enable_if(
+    enable_if: Option<&crate::template::BoolOrFormatString>,
+    owner_path: &[crate::error::PathElement],
     check_errors: &mut crate::error::ValidationErrors,
 ) {
-    use crate::error::{path_field, path_index};
     use crate::template::BoolOrFormatString;
-    const MSG: &str =
-        "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
-    let unevaluated =
-        |e: &Option<BoolOrFormatString>| !matches!(e, None | Some(BoolOrFormatString::Bool(true)));
-    if let Some(envs) = &job_template.job_environments {
-        let envs_path = path_field(&[], "jobEnvironments");
-        for (i, env) in envs.iter().enumerate() {
-            if unevaluated(&env.enable_if) {
-                check_errors.add(&path_field(&path_index(&envs_path, i), "enableIf"), MSG);
-            }
-        }
-    }
-    for (i, st) in job_template.steps.iter().enumerate() {
-        let step_path = path_index(&path_field(&[], "steps"), i);
-        if unevaluated(&st.enable_if) {
-            check_errors.add(&path_field(&step_path, "enableIf"), MSG);
-        }
-        if let Some(envs) = &st.step_environments {
-            let envs_path = path_field(&step_path, "stepEnvironments");
-            for (j, env) in envs.iter().enumerate() {
-                if unevaluated(&env.enable_if) {
-                    check_errors.add(&path_field(&path_index(&envs_path, j), "enableIf"), MSG);
-                }
-            }
-        }
+    if !matches!(enable_if, None | Some(BoolOrFormatString::Bool(true))) {
+        check_errors.add(
+            &crate::error::path_field(owner_path, "enableIf"),
+            "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.",
+        );
     }
 }

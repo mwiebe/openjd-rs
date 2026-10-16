@@ -125,7 +125,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `getSupportedExtensions` | `() → string[]` | Return the full default extension allowlist, sourced from `openjd_model::KnownExtension::ALL`. The same set used when `supportedExtensions` is omitted. Useful for callers that want to start from the default and remove a specific extension. |
+| `getSupportedExtensions` | `() → string[]` | Return the full default extension allowlist, sourced from `openjd_model::ModelExtension::ALL`. The same set used when `supportedExtensions` is omitted. Useful for callers that want to start from the default and remove a specific extension. |
 
 #### Job Creation
 

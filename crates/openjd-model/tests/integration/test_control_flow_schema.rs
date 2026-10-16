@@ -639,7 +639,7 @@ fn every_unavailable_property_is_reported() {
 fn data_flow_on_a_non_path_type_is_an_unknown_field() {
     assert_decode_err(
         &with_outputs("[{name: S, type: STRING, dataFlow: OUT}]"),
-        "unknown field `dataFlow`, expected one of `name`, `description`, `default`, `allowedValues`, `minLength`, `maxLength`, `userInterface`",
+        "unknown field `dataFlow`, expected one of `name`, `description`, `allowedValues`, `minLength`, `maxLength`, `collect`, `unit`",
     );
 }
 
@@ -714,11 +714,24 @@ fn string_constraint_rules_follow_job_parameters() {
 fn a_constraint_for_another_type_is_an_unknown_field() {
     assert_decode_err(
         &with_outputs("[{name: S, type: STRING, minValue: 1}]"),
-        "unknown field `minValue`, expected one of `name`, `description`, `default`, `allowedValues`, `minLength`, `maxLength`, `userInterface`",
+        "unknown field `minValue`, expected one of `name`, `description`, `allowedValues`, `minLength`, `maxLength`, `collect`, `unit`",
     );
     assert_decode_err(
         &with_outputs("[{name: B, type: BOOL, allowedValues: [true]}]"),
-        "unknown field `allowedValues`, expected one of `name`, `description`, `default`, `userInterface`",
+        "unknown field `allowedValues`, expected one of `name`, `description`, `collect`, `unit`",
+    );
+    // PATH lists objectType and dataFlow's absence.
+    assert_decode_err(
+        &with_outputs("[{name: P, type: PATH, minValue: 1}]"),
+        "unknown field `minValue`, expected one of `name`, `description`, `allowedValues`, `minLength`, `maxLength`, `objectType`, `collect`, `unit`",
+    );
+}
+
+#[test]
+fn an_unknown_field_in_an_item_mapping_keeps_its_own_list() {
+    assert_decode_err(
+        &with_outputs("[{name: L, type: 'LIST[INT]', item: {minLength: 1}}]"),
+        "unknown field `minLength`, expected one of `allowedValues`, `minValue`, `maxValue`",
     );
 }
 
@@ -1067,3 +1080,23 @@ steps[0] -> parameterSpace -> taskParameterDefinitions[0]:
 \ttask parameter type 'CHUNK[INT]' is not allowed.
 steps[0] -> parameterSpace -> taskParameterDefinitions[0]:
 \tCHUNK[INT] requires the TASK_CHUNKING extension.";
+
+#[test]
+fn decode_errors_name_the_json_kind() {
+    assert_decode_err(
+        &job("[EXPR, CONTROL_FLOW]", &["enableIf: [true]"]),
+        "expected a bool or a format string, got a list",
+    );
+    assert_decode_err(
+        &job("[EXPR, CONTROL_FLOW]", &["enableIf: {a: 1}"]),
+        "expected a bool or a format string, got a mapping",
+    );
+    assert_decode_err(
+        &with_outputs("[null]"),
+        "expected an output variable definition mapping, got null",
+    );
+    assert_decode_err(
+        &with_outputs("[{name: V, type: INT, unit: true}]"),
+        "unit: expected a string, got a bool",
+    );
+}

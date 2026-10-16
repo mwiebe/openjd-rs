@@ -2003,6 +2003,17 @@ steps:
         let (code, _stdout, stderr) = run_cli(&[
             "run",
             f.path().to_str().unwrap(),
+            "--extensions=EXPR",
+            "--help",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.contains("Unsupported extension names: CONTROL_FLOW"),
+            "stderr: {stderr}"
+        );
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            f.path().to_str().unwrap(),
             "--extensions",
             "NOT_AN_EXTENSION",
             "--help",
