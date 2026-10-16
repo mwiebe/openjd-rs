@@ -45,7 +45,8 @@ openjd_expr                 — crate root; most commonly used items re-exported
 ├── functions               — sub-library modules (module-path-only — see below)
 │   ├── arithmetic, comparison, conversion, list, math, misc, path,
 │   │   path_parse, regex, repr, string
-├── path_mapping            — PathFormat, PathMappingRule, apply_rules*, is_uri
+├── path_mapping            — PathFormat, PathMappingRule, apply_rules*, unapply_rules,
+│                             UnmapError, is_uri
 ├── profile                 — ExprProfile, ExprRevision, ExprExtension, HostContext
 ├── range_expr              — RangeExpr, IntRange, RangeExprError
 ├── symbol_table            — SymbolTable, SymbolTableEntry, SymbolTableError,
@@ -1373,6 +1374,32 @@ pub fn path_mapping::apply_rules(rules: &[PathMappingRule], path: &str) -> Strin
 pub fn path_mapping::apply_rules_with_format(
     rules: &[PathMappingRule], path: &str, output_format: PathFormat,
 ) -> String;
+
+/// Map a path reported on the worker back to the submission path context:
+/// the reference inverse of RFC 0010 §Path values. A URI is returned
+/// unchanged; a path that is not absolute under `worker_format` is
+/// `Relative`; with no rules an absolute path is returned unchanged;
+/// otherwise the first candidate (by decreasing normalized
+/// `destination_path` length, then `rules` order) that
+/// `apply_rules_with_format(rules, _, worker_format)` maps back to the
+/// reported path, compared after lexical normalization under
+/// `worker_format`, is returned, or `NoRoundTrip`. `rules` MUST be the
+/// Session's full, unfiltered rules in its exact order
+/// (`Session::path_mapping_rules()`). The RFC's SHOULD source-format filter
+/// is not implemented. See path-mapping.md § Reverse mapping.
+pub fn path_mapping::unapply_rules(
+    rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
+) -> Result<String, path_mapping::UnmapError>;
+
+/// Why `unapply_rules` failed. `Display` gives a message without the path;
+/// the caller adds the path and output name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum path_mapping::UnmapError {
+    /// Neither a URI nor absolute under the worker's path format.
+    Relative,
+    /// The Session has rules and no candidate maps forward to the path.
+    NoRoundTrip,
+}
 
 /// True iff `path` has a `scheme://` URI prefix, where the scheme matches
 /// `^[a-zA-Z][a-zA-Z0-9+.-]+://` (at least two characters, so `C://...` is a
