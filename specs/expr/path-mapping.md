@@ -81,7 +81,7 @@ Windows). The source format still dictates how the prefix match is performed.
 `apply_rules(rules, path)` and `apply_rules_with_format(rules, path, output_format)`
 apply the first rule that matches, and return `path` unchanged when none does. Rules
 must be sorted by decreasing `source_path` length; the Session sorts them
-(`Session::new`).
+(`Session::with_config`, `with_path_mapping`, `extend_path_mapping_rules`).
 
 ### Reverse mapping
 

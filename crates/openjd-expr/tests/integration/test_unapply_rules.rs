@@ -322,14 +322,48 @@ fn posix_round_trip_compares_case_sensitively() {
 #[test]
 fn posix_destination_matching_is_case_sensitive() {
     // Only destination matching decides: `/M/Q` must not match `/m/q/f`, or
-    // its candidate `S3://B/f` would be tried first (longer destination), and
-    // it would pass the round trip, because the second rule (its scheme and
-    // authority compare case-insensitively) maps it forward to `/m/q/f`.
+    // its candidate `S3://B/f` would be tried first (equal length, listed
+    // first), and it would pass the round trip, because the second rule (its
+    // scheme and authority compare case-insensitively) maps it forward to
+    // `/m/q/f`.
     let rules = [
         rule(PathFormat::Uri, "S3://B/", "/M/Q"),
         rule(PathFormat::Uri, "s3://b", "/m/q"),
     ];
     assert_eq!(unmap_posix(&rules, "/m/q/f"), Ok("s3://b/f".to_string()));
+}
+
+#[test]
+fn posix_worker_splits_components_on_slash_only() {
+    // Under POSIX `proj\x` is one directory name, so `/mnt/proj\x/f` is not
+    // under `/mnt/proj`.
+    let rules = [posix("/proj", "/mnt/proj")];
+    assert_eq!(
+        unmap_posix(&rules, "/mnt/proj\\x/f"),
+        Err(UnmapError::NoRoundTrip)
+    );
+}
+
+#[test]
+fn round_trip_compares_anchors() {
+    // The candidate `s3://bk/a` matches no rule (forward `apply_uri` does not
+    // match under a source ending in `/`), so it maps forward to itself. Its
+    // parts equal the reported path's, but its anchor (none) does not (`/`).
+    let rules = [rule(PathFormat::Uri, "s3://bk/", "/s3:/bk")];
+    assert_eq!(
+        unmap_posix(&rules, "/s3:/bk/a"),
+        Err(UnmapError::NoRoundTrip)
+    );
+}
+
+#[test]
+fn windows_case_folding_is_ascii_only() {
+    // Documented under "Rejected but valid spellings".
+    let rules = [posix("/p", "C:\\Proj\\\u{c4}")];
+    assert_eq!(
+        unmap_windows(&rules, "c:\\proj\\\u{e4}\\f"),
+        Err(UnmapError::NoRoundTrip)
+    );
 }
 
 #[test]

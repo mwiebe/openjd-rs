@@ -196,7 +196,7 @@ fn has_trailing_slash(path: &str, windows: bool) -> bool {
 /// Apply a list of path mapping rules to a path. First match wins.
 ///
 /// Rules must be pre-sorted by decreasing `source_path` length (longest match first).
-/// The session layer handles this sorting; see `Session::new()`.
+/// The session layer handles this sorting; see `Session::with_config()`.
 #[must_use]
 pub fn apply_rules(rules: &[PathMappingRule], path: &str) -> String {
     apply_rules_with_format(rules, path, PathFormat::host())
