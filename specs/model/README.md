@@ -17,6 +17,7 @@ but redesigned for Rust's type system and performance characteristics.
 | [public-api.md](public-api.md) | Authoritative reference for every public type, function, and re-export |
 | [template-types.md](template-types.md) | Unresolved template types (deserialized from YAML, format strings unevaluated) |
 | [job-types.md](job-types.md) | Instantiated job types (fully resolved, output of `create_job`) |
+| [outputs.md](outputs.md) | `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and the output collector |
 | [parameters.md](parameters.md) | Job and task parameter type systems, value coercion, constraint checking |
 | [parsing.md](parsing.md) | Template decoding pipeline: YAML/JSON → version dispatch → serde → validation |
 | [validation.md](validation.md) | Multi-pass validation pipeline: limits, structure, extensions, format strings |
@@ -73,6 +74,8 @@ Currently implements `2023-09` with extensions:
   follow-up.
 - `CONTROL_FLOW` (RFC 0010) — prototype, in progress. The `outputVariables` and
   `enableIf` schema, the extension gate, and the structural rules (validation pass 11);
-  `job::Step` carries the output declarations. The `Steps.*` scope, `enableIf`
-  evaluation, step input binding, output collection, and `jobOutputDefinitions` are not
-  implemented yet (see `docs/control-flow-prototype-plan.md`).
+  `job::Step` carries the output declarations; and the `outputs` module, which parses
+  `openjd_output_var` directives and collects a Task's values ([outputs.md](outputs.md)).
+  The `Steps.*` scope, `enableIf` evaluation, step input binding, recognizing the
+  directive in a Session, and `jobOutputDefinitions` are not implemented yet (see
+  `docs/control-flow-prototype-plan.md`).

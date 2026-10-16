@@ -86,6 +86,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
 - **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs.
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
+- **Outputs** (`src/outputs/`) — CONTROL_FLOW `openjd_output_var` directive parser and output collector (no I/O).
 
 Spec entry point: `specs/model/README.md`
 

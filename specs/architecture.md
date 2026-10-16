@@ -36,6 +36,7 @@ openjd-rs/
 │   │       ├── format_string.rs
 │   │       ├── validate.rs
 │   │       ├── template/        # Template model types (revision-independent)
+│   │       ├── outputs/         # CONTROL_FLOW output directive parser + collector
 │   │       └── job/             # Instantiated job types (result of create_job)
 │   ├── openjd-sessions/        # Session runtime
 │   │   └── src/
@@ -88,6 +89,7 @@ Core template library. Depends on openjd-expr. Provides:
 - Schema validation (structural + cross-field constraints)
 - Format string parsing and resolution
 - All v2023-09 model types
+- `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and collector
 
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:

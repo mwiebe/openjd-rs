@@ -45,7 +45,7 @@ openjd_expr                 — crate root; most commonly used items re-exported
 ├── functions               — sub-library modules (module-path-only — see below)
 │   ├── arithmetic, comparison, conversion, list, math, misc, path,
 │   │   path_parse, regex, repr, string
-├── path_mapping            — PathFormat, PathMappingRule, apply_rules*, unapply_rules,
+├── path_mapping            — PathFormat, PathMappingRule, apply_rules*, unapply_rules*,
 │                             UnmapError, is_uri
 ├── profile                 — ExprProfile, ExprRevision, ExprExtension, HostContext
 ├── range_expr              — RangeExpr, IntRange, RangeExprError
@@ -1390,6 +1390,14 @@ pub fn path_mapping::apply_rules_with_format(
 pub fn path_mapping::unapply_rules(
     rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
 ) -> Result<String, path_mapping::UnmapError>;
+
+/// `unapply_rules`, also returning the stored form's path format: `Uri`
+/// for a URI returned unchanged, `worker_format` for an absolute path
+/// returned unchanged with no rules, otherwise the returned candidate's
+/// rule's `source_path_format`.
+pub fn path_mapping::unapply_rules_with_source_format(
+    rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
+) -> Result<(String, PathFormat), path_mapping::UnmapError>;
 
 /// Why `unapply_rules` failed. `Display` gives a message without the path;
 /// the caller adds the path and output name.
