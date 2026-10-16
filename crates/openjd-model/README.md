@@ -25,8 +25,8 @@ validation, and job creation for OpenJD templates. Part of the
   runtime capabilities.
 - **Extensions** — the `EXPR`, `FEATURE_BUNDLE_1`, `TASK_CHUNKING`,
   `REDACTED_ENV_VARS`, and `WRAP_ACTIONS` extensions from the 2023-09
-  specification, and the draft `CONTROL_FLOW` extension (in progress: schema
-  and structural validation only).
+  specification, and the draft `CONTROL_FLOW` extension (in progress: schema,
+  structural validation, and the `Steps.*` scope in template validation).
 
 The crate passes 100% of the upstream [OpenJD conformance test suite] —
 over 700 template validation and environment-template tests on Linux,

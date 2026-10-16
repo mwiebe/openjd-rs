@@ -297,6 +297,104 @@ for an authored `script`).
 like every other format-string field; it no longer survives to job
 creation.
 
+### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0010)
+
+With `CONTROL_FLOW`, pass 8 implements items 3 to 7 of the RFC's §Validation, "At
+template validation". The shared code is `validate_v2023_09/steps_scope.rs`, which job
+creation also uses (see `specs/model/job-creation.md`).
+
+**Seeding.** `add_steps_scope(symtab, jt, step_index, scope)` adds, for each Step `P` that
+Step `S` lists in its `dependencies`, that is not `S`, and whose name is an
+`<Identifier>`, the symbols `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of
+`P`'s output variables and, when `P` has a `parameterSpace`, `Steps.P.TaskParam.<N>` and
+`Steps.P.TaskRawParam.<N>` for each Task parameter. Each is `ExprValue::unresolved(T)`,
+typed by the RFC's table:
+
+| Producer `P` | `Output.<V>` | `TaskParam.<N>` |
+|---|---|---|
+| no `parameterSpace`, no `enableIf` | `T` | not seeded |
+| no `parameterSpace`, `enableIf` | `T?` | not seeded |
+| `parameterSpace`, no `enableIf` | `list[T]` | `list[U]` |
+| `parameterSpace`, `enableIf` | `list[T]?` | `list[U]?` |
+
+`T` is the output type's expression type (`LIST[INT]` gives `list[int]`, so a multi-Task
+producer's `LIST[INT]` output is `list[list[int]]`). `U` is `int`, `float`, `string`, or
+`path` for an `INT`, `FLOAT`, `STRING`, or `PATH` Task parameter, and `int` for
+`CHUNK[INT]`, one element per Task. Any `enableIf`, including a literal `true`, makes the
+type optional, because the RFC's table is keyed on the field being present. The `Raw`
+forms have the same types. In a TEMPLATE-scope field, an `Output` or `TaskParam` whose
+type is or contains `path` (`PATH`, `LIST[PATH]` outputs; `PATH` Task parameters) is not
+seeded; its `Raw` form is.
+
+**Where each field family is seeded.** A Step's fields are seeded with its own direct
+dependencies' symbols:
+
+| Field | Scope |
+|---|---|
+| `enableIf` | TEMPLATE |
+| step `let` | TEMPLATE |
+| `hostRequirements` (names, `min`/`max`, `anyOf`/`allOf`) | TEMPLATE |
+| `parameterSpace` Task parameter `range`s and `chunks` fields | TEMPLATE |
+| Step Environment `enableIf`, `timeout`, `notifyPeriodInSeconds`, deferred `mode` | TEMPLATE |
+| Step Environment `variables`, script `let`, action `command`/`args`, embedded `data` | host |
+| script `timeout`, `notifyPeriodInSeconds`, deferred `mode` | TEMPLATE |
+| script `let`, `onRun` `command`/`args`, embedded `data`, and the SimpleAction fields | host |
+
+The job name and every field of `jobEnvironments` (including their `enableIf`) are never
+seeded. Environment Templates are not either; pass 11 rejects `CONTROL_FLOW` in them.
+
+**Reference messages.** Before a field is evaluated, `steps_ref_errors` scans the symbols
+it reads (`FormatString::accessed_symbols`, or a `let` binding's
+`ParsedExpression::accessed_symbols`) for the `Steps` root, and gives each unavailable
+reference its own message instead of EXPR's `Undefined variable`. A field with any such
+reference is reported with those messages only and is not evaluated. Because the scan is
+static, a reference in a branch that is never taken is caught too. In a `let` binding the
+message is prefixed `Invalid expression in let binding '<name>': ` and the binding is
+bound `unresolved(ANY)`, so later uses of it don't cascade. The checks, in order, with
+the first that applies reported:
+
+| Case | Message |
+|---|---|
+| A field that allows no `Steps.*` (job name, `jobEnvironments`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.` |
+| Fewer than four parts (`Steps.P.Output`) | `'<sym>' is not a complete Steps.* reference; expected Steps.<StepName>.Output.<Name>, .RawOutput.<Name>, .TaskParam.<Name>, or .TaskRawParam.<Name>.` |
+| No such Step | `'<sym>': there is no Step named 'P'.` |
+| The Step's name is not an `<Identifier>` | `'<sym>': Step 'P' cannot be referenced through Steps.*, because its name is not an <Identifier>.` |
+| Self-reference | `'<sym>': a Step cannot read its own Steps.* symbols.` |
+| Not a direct dependency (a transitive one is not enough) | `'<sym>': Step 'P' is not a direct dependency of Step 'S'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.` |
+| Unknown member | `'<sym>': 'X' is not a member of Steps.P; expected Output, RawOutput, TaskParam, TaskRawParam.` |
+| No such output | `'<sym>': Step 'P' has no output variable 'V'.` |
+| `TaskParam` of a Step without a `parameterSpace` | `'<sym>': Step 'P' has no parameterSpace, so it has no Task parameters.` |
+| No such Task parameter | `'<sym>': Step 'P' has no Task parameter 'N'.` |
+| Path-typed `Output`/`TaskParam` in a TEMPLATE-scope field | `'<sym>' has a path type, so it is available only in fields resolved on the worker host. Use Steps.P.RawOutput.V here.` (or `TaskRawParam`) |
+
+`<sym>` is the symbol as the expression reads it, which may include a property after the
+name (`Steps.P.RawOutput.F.name`). Several references in one field are reported in sorted
+symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
+ordinary `Undefined variable`.
+
+Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
+`FLOAT` Task parameter, nor a format-string item of a `FLOAT` range list: they are
+checked only when job creation resolves them, a gap that predates `CONTROL_FLOW` (a
+`range: "{{Param.Nope}}"` passes `openjd check`). For those fields pass 8 runs the
+reference scan alone, so the `Steps.*` scope rules hold there, but their expressions are
+not type-checked.
+
+**`enableIf`.** A Step's `enableIf` is checked against a table of its own: `Param.*`
+(minus `PATH` types), `RawParam.*`, `Job.Name`, `Step.Name`, and the TEMPLATE-scope
+`Steps.*` of the Step's direct dependencies, with no `let` names, `Task.*`, or
+`Session.*`. A Step Environment's `enableIf` uses the same table. A Job Environment's
+uses `Param.*` (minus `PATH`), `RawParam.*`, and `Job.Name`, with the reference scan
+rejecting any `Steps.*`. The target type is `bool`, not `bool?`, so EXPR's coercion
+rejects an `int` (`Cannot coerce int to bool`) or a static `null`
+(`Cannot coerce nulltype to bool`); an unresolved `bool?`, such as a conditional
+producer's output, is accepted and checked when concrete. A YAML `bool` needs no check. A
+format string must be one expression and nothing else: a literal string (`'yes'`,
+`'true'`) or text around an expression (`'{{Param.Run}} '`) would resolve to a string,
+which the RFC does not say how to read as a bool (plan ambiguity A8), so the prototype
+rejects it with `must be a bool, or a format string that is one expression and nothing
+else, such as '{{Param.Run}}'.`, and still scans its references. Without `CONTROL_FLOW`
+pass 8 does not look at `enableIf`; pass 11 rejects the field.
+
 ### Let Binding Validation
 
 Let bindings are validated with these rules:
@@ -528,7 +626,7 @@ separately-validated env templates are composed into a session at assembly time
 
 Validates or rejects the fields `CONTROL_FLOW` (RFC 0010) adds. It implements items 1, 2,
 and the Environment Template part of item 6 of the RFC's §Validation, "At template
-validation".
+validation". Items 3 to 7 (the `Steps.*` scope and `enableIf`) are in pass 8.
 
 **Without the extension**, each field is an error at its own path, with the message
 `<field> requires the CONTROL_FLOW extension.`:
@@ -538,9 +636,10 @@ validation".
 - `jobEnvironments[i] -> enableIf` and `steps[i] -> stepEnvironments[j] -> enableIf`
 
 `jobOutputDefinitions` is not part of the schema yet, so it fails deserialization as an
-unknown field with or without the extension. A `Steps.*` reference in any field pass 8
-checks fails there as an undefined variable, because no pass seeds the `Steps` root yet.
-`enableIf` is not one of those fields: its format string is only parsed (see below).
+unknown field with or without the extension. A `Steps.*` reference fails in pass 8 as an
+undefined variable, because without the extension nothing seeds the `Steps` root. Pass 8
+checks `enableIf` and the `Steps.*` scope only with the extension (see § The `Steps.*`
+Scope and `enableIf`).
 
 **EXPR prerequisite.** `CONTROL_FLOW` without `EXPR` is an error at `extensions`
 (`CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC
@@ -613,12 +712,8 @@ passes. Fixing that belongs in `expr_parameters.rs`, for both.
 These RFC rules belong to later changes in the prototype plan
 (`docs/control-flow-prototype-plan.md`):
 
-- The `Steps.*` scope (§Validation items 3–5) and the typing and symbol rules of
-  `enableIf` (items 6 and 7). Until then an `enableIf` format string is only parsed:
-  pass 8 does not check its symbols or its type, so `{{Steps.P.Output.N > 1}}` or
-  `{{Nope.X}}` passes `openjd check`, and `create_job` refuses it. In the other fields,
-  `Steps.*` references fail as undefined variables.
-- `jobOutputDefinitions` (item 10).
+- `jobOutputDefinitions` (item 10), including its `Steps.*` scope, in which any Step is
+  readable without a dependency.
 - The warning for a conditional Step's `null` in a discarding position (item 8).
   openjd-rs has no validation-warning channel; adding one is a public API decision (see
   ambiguity A1 in the plan).

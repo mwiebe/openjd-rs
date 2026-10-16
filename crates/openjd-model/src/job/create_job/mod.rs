@@ -252,6 +252,7 @@ pub fn create_job(
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
+                None,
                 has_expr,
                 ctx,
                 &env_path,
@@ -272,6 +273,7 @@ pub fn create_job(
     let mut steps = Vec::with_capacity(job_template.steps.len());
     for (step_index, st) in job_template.steps.iter().enumerate() {
         steps.push(instantiate::instantiate_step(
+            job_template,
             st,
             &symtab,
             has_expr,
