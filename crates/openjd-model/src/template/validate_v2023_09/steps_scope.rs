@@ -304,7 +304,7 @@ mod tests {
     use crate::types::CallerLimits;
 
     /// A job template with producers `P` (no parameterSpace), `Q`
-    /// (parameterSpace, CHUNK[INT] and PATH Task parameters), `R`
+    /// (parameterSpace, CHUNK[INT], PATH, FLOAT, and INT Task parameters), `R`
     /// (enableIf, no parameterSpace), `M` (enableIf and parameterSpace), and
     /// a consumer `C` that depends on all four.
     const TEMPLATE: &str = r#"
@@ -325,6 +325,7 @@ steps:
         - {name: Frame, type: "CHUNK[INT]", range: "1-10", chunks: {defaultTaskCount: 2, rangeConstraint: NONCONTIGUOUS}}
         - {name: D, type: PATH, range: ["/a", "/b"]}
         - {name: X, type: FLOAT, range: [1.5]}
+        - {name: I, type: INT, range: [1]}
     outputVariables:
       - {name: T, type: FLOAT}
       - {name: Fs, type: "LIST[PATH]"}
@@ -400,6 +401,8 @@ steps:
             ("Steps.Q.TaskParam.D", list(ExprType::PATH)),
             ("Steps.Q.TaskRawParam.D", list(ExprType::PATH)),
             ("Steps.Q.TaskParam.X", list(ExprType::FLOAT)),
+            ("Steps.Q.TaskParam.I", list(ExprType::INT)),
+            ("Steps.Q.TaskRawParam.I", list(ExprType::INT)),
             // enableIf (even a literal one): T?.
             ("Steps.R.Output.B", opt(ExprType::BOOL)),
             ("Steps.R.RawOutput.B", opt(ExprType::BOOL)),
