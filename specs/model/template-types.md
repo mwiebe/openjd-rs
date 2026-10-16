@@ -63,11 +63,13 @@ pub struct EnvironmentTemplate {
 pub struct StepTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
+    pub enable_if: Option<BoolOrFormatString>,       // CONTROL_FLOW
     pub let_bindings: Option<Vec<String>>,           // "let" field in YAML
     pub dependencies: Option<Vec<StepDependency>>,
     pub step_environments: Option<Vec<Environment>>,
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
+    pub output_variables: Option<Vec<OutputVariableDefinition>>, // CONTROL_FLOW
     pub script: Option<StepScript>,
     // SimpleAction syntax sugar (FEATURE_BUNDLE_1)
     pub bash: Option<SimpleAction>,
@@ -144,10 +146,15 @@ pub struct StepDependency {
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
+    pub enable_if: Option<BoolOrFormatString>,       // CONTROL_FLOW, Job Templates only
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
 ```
+
+The same struct serves Job Templates and Environment Templates. `enable_if`
+deserializes in both, and validation rejects it in an Environment Template (see
+[validation.md](validation.md) § Pass 11).
 
 ### EnvironmentScript (§4.1)
 
@@ -371,6 +378,65 @@ pub enum RangeConstraint {
     Noncontiguous,
 }
 ```
+
+## CONTROL_FLOW Types (RFC 0010)
+
+The `CONTROL_FLOW` extension adds `enableIf` to `<StepTemplate>` and `<Environment>`,
+and `outputVariables` to `<StepTemplate>`. Pass 11 gates them on the extension and
+checks their structure ([validation.md](validation.md) § Pass 11).
+
+### BoolOrFormatString
+
+```rust
+pub enum BoolOrFormatString {
+    Bool(bool),
+    FormatString(FormatString),
+}
+```
+
+The value of `enableIf`: a YAML `bool`, or a string parsed as a format string. Any other
+JSON type fails deserialization with `expected a bool or a format string, got <kind>`.
+The format string's target type (`bool`) and the symbols it may read are checked by the
+`Steps.*` scope change, not yet; until then the string is parsed but not type-checked,
+and `create_job` ignores `enableIf`.
+
+### OutputVariableDefinition
+
+```rust
+pub struct OutputVariableDefinition { /* private fields */ }
+```
+
+One `<OutputVariableDefinition>`. Its mapping is the `<JobParameterDefinition>` of the
+declared type plus `collect` and `unit`, so instead of a parallel set of structs it wraps
+a [`JobParameterDefinition`](parameters.md). Its `Deserialize`:
+
+1. requires a mapping with a `type`, and checks the type with
+   `JobParameterType::from_spec_str` (case-insensitive), so an unknown type reads
+   `unknown output variable type: 'X'` rather than the job parameter message;
+2. removes `collect` (an [`OutputCollectMode`](#outputcollectmode), `ONCE` when omitted)
+   and `unit` (a string) from the mapping;
+3. removes `default`, `userInterface`, and, for `PATH` and `LIST[PATH]`, `dataFlow`, and
+   records which were present, so that pass 11 can report each at its own path. On
+   another type, `dataFlow` stays in the mapping and the job parameter definition rejects
+   it as an unknown field;
+4. deserializes the rest as the `JobParameterDefinition` union, which supplies `name`,
+   `description`, the constraint properties, and `objectType`;
+5. builds the declared constraints as a `job::OutputConstraints`.
+
+`objectType` is kept and never checked. The accessors are `name`, `job_param_type`,
+`collect`, `unit`, `description`, `definition` (the wrapped job parameter definition),
+`constraints`, and `to_job_output_variable`, the form `create_job` stores on
+`job::Step`. `check_constraints`, `check_element`, and `check_length` delegate to that
+`job::OutputVariable` (see [job-types.md](job-types.md) § OutputVariable).
+
+### OutputCollectMode
+
+```rust
+pub enum OutputCollectMode { #[default] Once, Last, Append }
+```
+
+Defined in `types` because both the template and the job types use it. Serializes as
+`ONCE`, `LAST`, `APPEND`; matching is case-sensitive.
 
 ## Flexible Deserialization Types
 

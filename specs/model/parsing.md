@@ -47,8 +47,8 @@ pub enum DecodedTemplate {
 
 ## Decode Pipeline
 
-The `decode_*` functions run passes 1–9 of the template processing pipeline. Passes 1–4
-live in the `parse` module; passes 5–9 live in the `validate_v2023_09` module (see
+The `decode_*` functions run passes 1–11 of the template processing pipeline. Passes 1–4
+live in the `parse` module; passes 5–11 live in the `validate_v2023_09` module (see
 [validation.md](validation.md)).
 
 ### Pass 1: Raw Parsing

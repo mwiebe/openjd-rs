@@ -207,6 +207,13 @@ pub(super) fn instantiate_step(
         resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(
             &filtered_symtab,
         )),
+        output_variables: st.output_variables.as_ref().map(|ovs| {
+            ovs.iter()
+                .map(template::OutputVariableDefinition::to_job_output_variable)
+                .collect()
+        }),
+        binding: job::StepBinding::Bound,
+        path_inputs: Vec::new(),
     }))
 }
 
