@@ -32,6 +32,8 @@ fn unmap_windows(rules: &[PathMappingRule], path: &str) -> Result<String, UnmapE
     unapply_rules(rules, path, PathFormat::Windows)
 }
 
+// Steps follow specs/expr/path-mapping.md § Reverse mapping.
+
 // === Step 1: URIs pass through ===
 
 #[test]
@@ -83,11 +85,13 @@ fn posix_drive_spelling_is_relative() {
 
 #[test]
 fn windows_non_absolute_forms_are_relative() {
-    // Rooted without a drive, drive-relative, bare drive, non-letter drive,
-    // UNC without a share, UNC without a server, and UNC with an empty share
-    // (the server ends at the first separator), as `PureWindowsPath` has them.
+    // Rooted without a drive (with one- and multi-character names),
+    // drive-relative, bare drive, non-letter drive, UNC without a share, UNC
+    // without a server, and UNC with an empty share (the server ends at the
+    // first separator).
     for path in [
         "\\x\\f",
+        "\\ab\\cd\\f",
         "/x/f",
         "C:x",
         "C:",
@@ -112,7 +116,7 @@ fn windows_absolute_forms_are_accepted() {
     }
 }
 
-// === Step 6: no rules, absolute path stored unchanged ===
+// === Step 3: no rules, absolute path returned unchanged ===
 
 #[test]
 fn no_rules_returns_absolute_path_unchanged_without_normalizing() {
@@ -122,7 +126,7 @@ fn no_rules_returns_absolute_path_unchanged_without_normalizing() {
     );
 }
 
-// === Steps 3–5: candidates and the round trip ===
+// === Steps 4–5: candidates and the round trip ===
 
 #[test]
 fn rfc_conversion_table_row() {
@@ -233,7 +237,7 @@ fn reported_path_is_normalized() {
 
 #[test]
 fn destination_path_is_normalized() {
-    // Forward mapping with this rule gives `/mnt/proj//b` (it does not
+    // Forward mapping with this rule gives `/mnt/./proj//b` (it does not
     // normalize), which still compares equal to `/mnt/proj/b`.
     let rules = [windows("P:\\", "/mnt/./proj/")];
     assert_eq!(unmap_posix(&rules, "/mnt/proj/b"), Ok("P:\\b".to_string()));
@@ -286,6 +290,26 @@ fn windows_root_destinations_round_trip() {
 }
 
 #[test]
+fn posix_round_trip_compares_case_sensitively() {
+    // The candidate `/s/f` maps forward through the first rule to `/M/c/f`,
+    // which differs from the reported `/m/c/f` only in case.
+    let rules = [posix("/s/f", "/M/c/f"), posix("/s", "/m/c")];
+    assert_eq!(unmap_posix(&rules, "/m/c/f"), Err(UnmapError::NoRoundTrip));
+}
+
+#[test]
+fn posix_destination_matching_is_case_sensitive() {
+    // Both URI rules' forward mappings map their own candidates, so only
+    // destination matching decides: `/M/Q` must not match `/m/q/f`, or its
+    // candidate `S3://B/f` would be tried first (longer destination).
+    let rules = [
+        rule(PathFormat::Uri, "S3://B/", "/M/Q"),
+        rule(PathFormat::Uri, "s3://b", "/m/q"),
+    ];
+    assert_eq!(unmap_posix(&rules, "/m/q/f"), Ok("s3://b/f".to_string()));
+}
+
+#[test]
 fn windows_worker_compares_case_insensitively_with_both_separators() {
     let rules = [posix("/home/u", "C:\\Users\\U")];
     // Remaining components keep the reported spelling.
@@ -324,7 +348,7 @@ fn windows_worker_dotdot_stays_at_drive_root() {
 
 #[test]
 fn windows_mixed_separator_unc_is_absolute() {
-    // `PureWindowsPath("\\/srv/sh/f")` has the anchor `\\srv\sh\`.
+    // The path `\/srv/sh/f` has the `PureWindowsPath` anchor `\\srv\sh\`.
     assert_eq!(
         unmap_windows(&[], "\\/srv/sh/f"),
         Ok("\\/srv/sh/f".to_string())
@@ -338,6 +362,16 @@ fn posix_relative_destination_never_matches() {
     // Forward mapping `/a/f` gives `dst/f`, not the reported `/dst/f`.
     let rules = [posix("/a", "dst")];
     assert_eq!(unmap_posix(&rules, "/dst/f"), Err(UnmapError::NoRoundTrip));
+}
+
+#[test]
+fn windows_root_relative_destination_never_matches_drive_path() {
+    // `\proj` has a root but no drive; its anchor `\` differs from `C:\`.
+    let rules = [posix("/p", "\\proj")];
+    assert_eq!(
+        unmap_windows(&rules, "C:\\proj\\a"),
+        Err(UnmapError::NoRoundTrip)
+    );
 }
 
 #[test]
@@ -410,6 +444,17 @@ fn listed_order_breaks_ties_among_many_candidates() {
         .map(|i| posix(&format!("/s{i}"), depths[i % 3]))
         .collect();
     assert_eq!(unmap_posix(&rules, "/dst/f/g/h"), Ok("/s2/h".to_string()));
+}
+
+#[test]
+fn session_order_matters_for_equal_length_sources() {
+    // The round trip reproduces forward mapping with the rules as given. In
+    // this order `P:/a\f` maps forward to `/x/f`, so `/y/f` has no stored
+    // form; swapping the equal-length sources would accept it wrongly, which
+    // is why `rules` must be in the Session's exact order.
+    let rules = [windows("P:\\a", "/x"), windows("P:/a", "/y")];
+    assert_eq!(unmap_posix(&rules, "/y/f"), Err(UnmapError::NoRoundTrip));
+    assert_eq!(unmap_posix(&rules, "/x/f"), Ok("P:\\a\\f".to_string()));
 }
 
 #[test]

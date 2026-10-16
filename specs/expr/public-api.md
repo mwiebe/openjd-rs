@@ -1384,8 +1384,9 @@ pub fn path_mapping::apply_rules_with_format(
 /// `apply_rules_with_format(rules, _, worker_format)` maps back to the
 /// reported path, compared after lexical normalization under
 /// `worker_format`, is returned, or `NoRoundTrip`. `rules` MUST be the
-/// Session's full, unfiltered rules sorted as for `apply_rules`. See
-/// path-mapping.md § Reverse mapping.
+/// Session's full, unfiltered rules in its exact order
+/// (`Session::path_mapping_rules()`). The RFC's SHOULD source-format filter
+/// is not implemented. See path-mapping.md § Reverse mapping.
 pub fn path_mapping::unapply_rules(
     rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
 ) -> Result<String, path_mapping::UnmapError>;

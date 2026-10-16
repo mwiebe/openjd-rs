@@ -117,11 +117,13 @@ The round trip is what makes the result correct, and it is needed because rules 
 nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
 is `P:\x\f`, which maps forward to `/data/x/f`, so the result is `NoRoundTrip`.
 The round trip forward-maps with the `rules` it is given, so `rules` must be the
-producing Session's full rule list in the order the Session applies them: sorted by
-decreasing `source_path` length, as `apply_rules` requires and `Session::new` does.
-With unsorted rules the check reproduces the wrong forward mapping and can accept a
-value the Session maps elsewhere (in the example above, listing `P:\` first accepts
-`P:\x\f`). Given sorted rules, the order of rules with equal-length destinations
+producing Session's full rule list in the exact order the Session applies them, as
+`Session::path_mapping_rules()` returns it: sorted by decreasing `source_path` length
+(a stable sort, so ties keep a fixed order). With another order the check reproduces
+the wrong forward mapping and can accept a value the Session maps elsewhere: in the
+example above, listing `P:\` first accepts `P:\x\f`; and swapping the equal-length
+sources `P:\a` → `/x` and `P:/a` → `/y` accepts `P:/a\f` for `/y/f`, which the
+Session maps to `/x/f`. Given sorted rules, the order of rules with equal-length destinations
 only breaks ties among candidates; that is the RFC's "the order the rules are
 listed".
 
@@ -144,16 +146,18 @@ normalize: a `destination_path` ending in a separator gives `/mnt/p//x`.
 POSIX paths compare case-sensitively with `/` only. `PathFormat::Uri` as the worker
 format is treated as POSIX.
 
-**Absoluteness** follows Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`
-(Python 3.12's parser accepts the non-letter drive and empty UNC server or share
-forms below as absolute; Windows itself does not): a leading
-`/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
+**Absoluteness** agrees with `PurePosixPath`/`PureWindowsPath.is_absolute()` on
+ordinary forms: a leading `/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
 server and share (`\\server\share`) on Windows. A Windows path rooted without a
 drive (`\x`), drive-relative (`C:x`), with a non-letter drive (`1:\x`), or a UNC
 path with an empty server or share (`\\\share\x`, `\\srv\\share`) is `Relative`, and
 so is `\\srv\share` on POSIX, where `\` is an ordinary character. The same Windows
-anchor parser serves absoluteness and normalization, so the two agree. This is a
-separate test from the `is_rooted` check that forward matching uses, which does not
+anchor parser serves absoluteness and normalization, so the two agree. Python
+versions disagree on the edge forms, so this follows neither exactly: Python 3.9
+treats `\\srv\` (a UNC server with an empty share) as absolute, and Python 3.12
+treats `1:\x`, `\\\share\x`, and `\\srv\\share` as absolute; here all four are
+`Relative`, as none names a usable Windows location. This is a separate test from
+the `is_rooted` check that forward matching uses, which does not
 treat drive paths as rooted.
 
 **A candidate no rule matches.** Forward mapping returns a path no rule matches
@@ -166,7 +170,9 @@ for degenerate rules, such as an empty `source_path`.
 
 **Source format filtering is not implemented.** The RFC says a runtime that knows the
 submission path format SHOULD use only rules whose `source_path_format` is that
-format or `URI`. `unapply_rules` takes no submission format, and a caller MUST NOT
+format or `URI`. `unapply_rules` takes no submission format, since no openjd runtime
+knows it (a Session has its rules but not the Job's submission path format), and a
+caller MUST NOT
 filter `rules` itself: the RFC defines the no-rules case "before any filtering by
 source format" and the round trip on the Session's own rules, so a list filtered to
 empty would wrongly return a worker-only path unchanged. Without the filter a

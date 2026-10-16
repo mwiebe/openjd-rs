@@ -260,15 +260,18 @@ pub enum UnmapError {
 ///    Forward mapping is compared normalized because it does not normalize: a
 ///    `destination_path` ending in a separator gives `/mnt/p//x`.
 ///
-/// `rules` MUST be the producing Session's full rule list, sorted as for
-/// [`apply_rules`] (decreasing `source_path` length), because the round trip
-/// forward-maps with `rules` and must reproduce the Session's own forward
-/// mapping. Unsorted rules can accept a value that the Session maps elsewhere.
+/// `rules` MUST be the producing Session's full rule list in the exact order
+/// the Session applies them (as `openjd_sessions::Session::path_mapping_rules`
+/// returns it: sorted by decreasing `source_path` length, ties in a fixed
+/// order), because the round trip forward-maps with `rules` and must
+/// reproduce the Session's own forward mapping. A different order, even among
+/// equal-length sources, can accept a value that the Session maps elsewhere.
 /// Do not filter `rules` (for example by source format) before the call: the
 /// no-rules case and the round trip are defined on the Session's full rules.
-/// Given the sorted rules, the order of equal-length destinations only breaks
-/// ties among candidates. `PathFormat::Uri` as `worker_format` is treated as
-/// POSIX.
+/// The RFC's SHOULD to use only rules from the submission path format is not
+/// implemented, since no openjd runtime knows that format. Given the Session's
+/// order, the order of equal-length destinations only breaks ties among
+/// candidates. `PathFormat::Uri` as `worker_format` is treated as POSIX.
 pub fn unapply_rules(
     rules: &[PathMappingRule],
     path: &str,
@@ -324,12 +327,13 @@ fn build_candidate(rule: &PathMappingRule, remaining: &[&str]) -> String {
     candidate
 }
 
-/// Whether a filesystem path is absolute in the worker's format, matching
-/// Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`.
+/// Whether a filesystem path is absolute in the worker's format.
 ///
 /// POSIX: a leading `/`. Windows: a drive with a root (`C:\`, `C:/`) or a UNC
 /// path with a non-empty server and share (`\\server\share`). A Windows path
 /// rooted without a drive (`\x`) or drive-relative (`C:x`) is not absolute.
+/// This agrees with `pathlib` on ordinary forms; Python versions disagree on
+/// some edge forms (see `specs/expr/path-mapping.md`).
 /// This differs from `is_rooted`, which serves forward matching and does not
 /// treat drive paths as rooted.
 fn is_absolute_on_worker(path: &str, windows: bool) -> bool {
@@ -399,7 +403,10 @@ fn windows_anchor(path: &str) -> WindowsAnchor<'_> {
 /// `.` components and empty components (runs of separators, trailing
 /// separators) are dropped, and `..` removes the preceding component. A `..`
 /// directly below an anchor that has a root is dropped, as the OS resolves
-/// `/..` to `/`. Symbolic links are not resolved.
+/// `/..` to `/`. Symbolic links are not resolved. (`..` handling under an
+/// anchor without a root, and the `\`/empty anchors, only arise for a
+/// non-absolute `destination_path`, which never matches; they are kept so the
+/// normal form is defined for every input.)
 ///
 /// The anchor is kept with canonical separators: POSIX `/` (any number of
 /// leading slashes); Windows `X:\`, `X:`, `\\server\share\`, or `\`.
