@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `d9634a5`.
+  openjd-specifications commit `00dac7b`.
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -132,7 +132,8 @@ rules (§Validation, "At template validation"):
    is an error, and so is `enableIf` in one.
 3. `outputVariables`: 1–32 elements, unique names, an allowed type, valid constraints, `collect: APPEND` only with a
    `LIST[...]` type, a `unit` of 1–32 characters with no Unicode Cc characters, and no `LIST[LIST[INT]]` on a Step
-   with a `parameterSpace`. Outputs on a Step with a `CHUNK[INT]` parameter are allowed (M3, chunked Steps).
+   with a `parameterSpace`. Outputs on a Step with a `CHUNK[INT]` parameter are allowed (M3), and a literal-list
+   `CHUNK[INT]` range in such a Step must have distinct values; a computed one is checked at binding (M4).
 
 The scope rules go into pass 8 (`format_strings.rs`), because that pass already builds one symbol table per field
 family:
@@ -179,7 +180,7 @@ pub enum OutputDirective<'a> {
 }
 pub fn parse_output_directive(payload: &str) -> Result<OutputDirective<'_>, OutputError>;
 
-/// Collects one Task attempt's directives.
+/// Collects the directives of one Action: one Task, or every Task of a chunk.
 pub struct OutputCollector { /* declared outputs, values so far, retained size, limit */ }
 impl OutputCollector {
     pub fn new(
@@ -189,7 +190,8 @@ impl OutputCollector {
         worker_format: PathFormat,
         chunk: Option<&[i64]>,            // the chunk's CHUNK[INT] values, or None for an unchunked Step
     ) -> Self;
-    /// Steps 1-2 of §Processing a directive: name declared, ONCE not repeated. Called before an `@` file is read.
+    /// Steps 1-2 of §Processing a directive: name declared, selector valid, ONCE not repeated for that Task.
+    /// Called before an `@` file is read.
     pub fn check_name(&self, name: &str, task: Option<i64>) -> Result<(), OutputError>;
     /// Bytes an `@` file for `name` may have, not counting the LAST value it would replace.
     pub fn remaining_bytes_for(&self, name: &str, task: Option<i64>) -> usize;
@@ -198,16 +200,16 @@ impl OutputCollector {
     pub fn accept(&mut self, name: &str, task: Option<i64>, json: &[u8], from_file: bool)
         -> Result<ExprValue, OutputError>;
     /// At exit: ONCE and LAST outputs present, APPEND minLength met, for every Task of the chunk.
-    /// One map per Task, in the chunk's order (one map for an unchunked Step).
-    pub fn finish(self) -> Result<Vec<IndexMap<String, ExprValue>>, OutputError>;
+    /// Keyed by CHUNK[INT] value (`None` for an unchunked Step).
+    pub fn finish(self) -> Result<IndexMap<Option<i64>, IndexMap<String, ExprValue>>, OutputError>;
 }
 ```
 
 * The grammar is the RFC's §The `openjd_output_var` directive: leading spaces or tabs, an `<Identifier>`, an optional
-  `[<Int>]` task selector (an optional `-` then digits, parsed as `i64`, no whitespace), `=` with nothing before it, optional spaces or tabs, then either `@` and a non-empty path (trailing spaces and tabs removed)
-  or one JSON value with optional trailing spaces or tabs. The
-  caller strips the line terminator. File content may start with a BOM and may span lines, and must be valid UTF-8
-  without NUL; `accept` checks that when `from_file` is set.
+  `[<Int>]` task selector (an optional `-` then digits, parsed as `i64`, no whitespace), `=` with nothing before it,
+  optional spaces or tabs, then either `@` and a non-empty path (trailing spaces and tabs removed) or one JSON value
+  with optional trailing spaces or tabs. The caller strips the line terminator. File content may start with a BOM and
+  may span lines, and must be valid UTF-8 without NUL; `accept` checks that when `from_file` is set.
 * `NaN`, `Infinity`, and numbers that overflow `f64` are invalid. `serde_json` rejects all three without
   `arbitrary_precision`; pin each with a test.
 * Collect modes: `ONCE` rejects a second value (in `check_name`); `LAST` replaces the value and subtracts the
@@ -334,11 +336,12 @@ Environments are kept as they are, because they are carried forward as format st
 
    `add_producer` makes `Output.<V>` a scalar when the producer has no parameter space, and a list in iteration order
    when it has one. It fills `TaskParam.<N>` from `StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1))`,
-   one element per Task even for a `CHUNK[INT]` parameter. It fills `RawOutput` and `TaskRawParam` with the same values
-   (the stored, submission-context form), and for a type that is or contains `path` leaves `Output` and `TaskParam` to
-   be derived on the worker (item 5 and S4). A skipped producer sets every symbol to `null`, including `Output` and
-   `TaskParam` of path types, so nothing is left to derive; M4.5 then copies those `null`s directly, and they are not
-   added to `path_inputs`. A `Bound` producer contributes `TaskParam` only. The list
+   one element per Task even for a `CHUNK[INT]` parameter. That iterator yields a one-value `RangeExpr` for a
+   `CHUNK[INT]` parameter, which `add_producer` converts to its `int`, as the RFC types it. It fills `RawOutput` and
+   `TaskRawParam` with the same values (the stored, submission-context form), and for a type that is or contains `path`
+   leaves `Output` and `TaskParam` to be derived on the worker (item 5 and S4). A skipped producer sets every symbol to
+   `null`, including `Output` and `TaskParam` of path types, so nothing is left to derive; M4.5 then copies those
+   `null`s directly, and they are not added to `path_inputs`. A `Bound` producer contributes `TaskParam` only. The list
    type hint follows the declared type, so `[]` becomes a typed empty list.
 5. **Host-scope `Steps.*` in Steps bound at creation.** A Step such as `FramesToVideo` reads `Steps.*` only in its
    script, so it binds at job creation but needs the values before its Tasks run. Add
@@ -477,15 +480,18 @@ lists `unapply_rules` and `UnmapError`.
   the second, `enter_environment` (`session.rs:1133`) takes a bare `&Environment`; add a parameter for its origin to
   it, to `enter_environment_with_output` (`:1147`), which does the work, and to `exit_environment` (`:1479`).
 * `ActionMessage` (`action.rs:39`) gets `OutputVar { name: String, value: ExprValue }`, and `SessionConfig` gets an
-  optional output callback, `Fn(&session_id, &name, &ExprValue)`, called once per accepted value, so a caller can
-  forward each value as it arrives (RFC §Committing values). Putting the values on `ActionStatus` instead would
-  re-clone a growing `APPEND` list on every status callback, because `action_status()` builds a new struct each time
-  (`session.rs:915`–`:925`).
-* `ActionResult` (`action.rs:74`) gets `outputs: Option<Vec<IndexMap<String, ExprValue>>>`: one map per Task, in the
-  chunk's order, or a single map for an unchunked Step. The value is `Some` only when the Step declares outputs and
-  the Action succeeded. `ActionMessage::OutputVar` gets `task: Option<i64>`.
-* For a chunked Step, `run_task` takes the chunk's values from the `CHUNK[INT]` entry of `task_parameter_values` (a
-  `range_expr`) and passes them to the collector.
+  optional output callback, `Fn(&session_id, task: Option<i64>, &name, &ExprValue)`, called once per accepted value, so
+  a caller can forward each value as it arrives (RFC §Committing values). Putting the values on `ActionStatus` instead
+  would re-clone a growing `APPEND` list on every status callback, because `action_status()` builds a new struct each
+  time (`session.rs:915`–`:925`).
+* `ActionResult` (`action.rs:74`) gets `outputs: Option<IndexMap<Option<i64>, IndexMap<String, ExprValue>>>`, keyed by
+  the Task's `CHUNK[INT]` value (`None` for an unchunked Step). It is keyed by value, not position, because a chunk's
+  `range_expr` is sorted and deduplicated while per-Task iteration keeps a list range's written order (for
+  `range: [5, 1, 3, 2]`, chunks `{1, 5}` and `{2, 3}` against iteration order 5, 1, 3, 2). The value is `Some` only when
+  the Step declares outputs and the Action succeeded. `ActionMessage::OutputVar` gets `task: Option<i64>`.
+* `run_task` treats the Step as chunked when an entry of `task_parameter_values` has
+  `param_type == TaskParameterType::ChunkInt`, takes that entry's `ExprValue::RangeExpr` values as the chunk, and
+  passes them to the collector; otherwise it passes `None`.
 * `run_task` builds the `OutputCollector` with the Session's sorted path mapping rules (`session.rs:681`) and
   `PathFormat::host()`, so `PATH` values are mapped back before they are reported or returned.
 * `SessionLimits` (`limits.rs:23`) gets `max_task_output_bytes: Option<usize>`, with a default of at least 1 MiB and
@@ -545,7 +551,7 @@ lists `unapply_rules` and `UnmapError`.
   it, and fall back to opening the path and checking `/proc/self/fd/<n>`. On macOS, open and check `F_GETPATH`; on
   Windows, `GetFinalPathNameByHandleW`. Open without blocking (`O_NONBLOCK` on Unix), because opening a FIFO for
   reading otherwise blocks until a writer appears, which would stall the line reader and, on the helper path, cancel
-  handling. Then require a regular file with `fstat`, and read at most `collector.remaining_bytes_for(name) + 1`
+  handling. Then require a regular file with `fstat`, and read at most `collector.remaining_bytes_for(name, task) + 1`
   bytes.
 * Same-user Sessions read the file directly; that meets the RFC's access rule.
 * Cross-user Sessions must read it as the job user. The parent must not read the file itself, even with an owner or
@@ -558,12 +564,12 @@ lists `unapply_rules` and `UnmapError`.
     `RunCommand.cwd`, which is the Session working directory (`session.rs:2055`, `:2127`).
   * The helper sub-crate depends only on `serde`, `serde_json`, `nix`, and `windows` (`helper/Cargo.bundled.toml`), so
     it can't use the model's parser. It gets a minimal recognizer for the `@` form only, which must accept exactly the
-    lines the M3 parser parses as `File` and extract the same name, selector, and path: the `openjd_output_var:`
-    prefix, optional spaces or tabs, an `<Identifier>`, an optional `[<Int>]` selector, `=`, optional spaces or tabs,
-    `@`, and a non-empty path with trailing spaces and tabs removed. Anything else goes to the parent as an ordinary `Out` line for the model parser. A line the
-    helper truncated or had to decode lossily is not resolved; it is forwarded as an `Out` line with its S2 flags, and
-    the parent rejects it. The file operations need new `nix` features (`fs`) and `windows` features
-    (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
+    lines the M3 parser parses as `File` and extract the same name, selector, and path: the `openjd_output_var:` prefix,
+    optional spaces or tabs, an `<Identifier>`, an optional `[<Int>]` selector, `=`, optional spaces or tabs, `@`, and a
+    non-empty path with trailing spaces and tabs removed. Anything else goes to the parent as an ordinary `Out` line for
+    the model parser. A line the helper truncated or had to decode lossily is not resolved; it is forwarded as an `Out`
+    line with its S2 flags, and the parent rejects it. The file operations need new `nix` features (`fs`) and `windows`
+    features (`Win32_Storage_FileSystem`), which go through the helper's own `deny.toml` and gates.
   * For a `@` directive, the helper reads the file as above, up to `max_bytes + 1`, and sends a new
     `Response::OutputFile { line, content | error }` in place of the `Out` line. The parent reads newline-delimited
     JSON with a 128 KiB line cap (`cross_user_helper.rs:23`, checked at `:119`–`:128`), and content up to 1 MiB
@@ -574,9 +580,9 @@ lists `unapply_rules` and `UnmapError`.
     parent applies `check_name` first, then the read result, then the remaining-size check. This differs from the
     RFC's order in two ways that don't change the outcome: the helper may read a file whose directive is then
     rejected, and it reads up to the whole per-Task limit rather than what remains.
-  * The parent re-parses `OutputFile.line` with the M3 parser and treats a disagreement with the helper's name or
-    path as invalid. An `@` directive on the cross-user path that arrives as a plain `Out` line, because the
-    helper's recognizer didn't match it, is invalid too. The parent never reads the file.
+  * The parent re-parses `OutputFile.line` with the M3 parser and treats a disagreement with the helper's name,
+    selector, or path as invalid. An `@` directive on the cross-user path that arrives as a plain `Out` line, because
+    the helper's recognizer didn't match it, is invalid too. The parent never reads the file.
   * A helper command to read a file on request, answered while a `Run` is in progress, was considered. Its reply
     would arrive on the stream the parent's `select!` loop (`cross_user_helper.rs:620`) reads, interleaved with later
     `Out` lines, which the parent would have to hold back to keep the ordering.
@@ -631,8 +637,8 @@ order:
 3. If the Step is `PendingInputs`, call `bind_step`. On error, print the binding failure (field and expression) and
    mark the Step `Failed`. If it is `Skipped`, print `Step 'X' skipped (enableIf is false)`.
 4. Otherwise call `attach_step_inputs`, enter only the enabled step Environments, and run the Tasks as today. Record
-   `ActionResult.outputs` for each Task index (for a chunk, each map goes to the Task whose `CHUNK[INT]` value it is
-   for), and print them after each Task with their units
+   `ActionResult.outputs` for each Task index: build a map from `CHUNK[INT]` value to iteration index from the
+   per-Task iterator, and store each Task's map at its index. Print them after each Action with their units
    (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task runs can be printed as they arrive, marked as not
    committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
@@ -724,7 +730,10 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   `APPEND` with zero and several values, `item` and `maxLength` checked per element and `minLength` at exit, a list
   value under `APPEND` becoming one element, and the size limit for inline and file values. Chunked: a selector
   required, forbidden, and outside the chunk (each invalid), `[012]` matching 12, `ONCE` per Task, the size limit per
-  Task, a missing value for one Task failing `finish`, and a chunk of one Task still requiring the selector.
+  Task, a missing value for one Task failing `finish`, a chunk of one Task still requiring the selector, a selector
+  that overflows `i64` (a grammar error), and a `range: [5, 1, 3, 2]` chunked producer whose `Steps.P.Output` and
+  `TaskParam` lists stay aligned in iteration order. Binding: duplicate `CHUNK[INT]` values in a Step with outputs
+  fail (a literal list at validation, a computed range at binding).
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
@@ -778,6 +787,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Cross-user: an `@` file between 128 KiB and 1 MiB succeeds; an `@` directive in an Environment Template action is
   passed through unchanged and its file is not read; a directive in a Job Template `onEnter` cancels and fails the
   Action; an undeclared name with a missing `@` file reports the undeclared name.
+* Chunked sessions: `run_task` passes the chunk values for a `CHUNK[INT]` Step and `None` otherwise; the output
+  callback and `ActionResult.outputs` carry each Task's value; cross-user parity for `N[3]=@f`.
 * Cross-user parity: `@` directives with a space and with a tab after the colon, with `N= @f`, and with trailing
   spaces after the path give the same result as on the direct path. Run with the RFC samples' own form
   (`openjd_output_var: Keys=@keys.json`).
