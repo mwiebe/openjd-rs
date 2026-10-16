@@ -319,9 +319,9 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    and break ties by template index, so the order is deterministic. Errors that `instantiate_step` collects into
    `check_errors` then arrive in dependency order, so sort them back into template order before reporting, to keep
    today's message order.
-2. **Job creation.** `create_job` calls the same code as later binding (item 3) for each Step, with the inputs that
-   are concrete at creation, so every group whose inputs are concrete is evaluated then (§When groups are evaluated,
-   a MUST):
+2. **Job creation.** `create_job` calls the same internal core as later binding (item 3) for each Step, with the
+   inputs that are concrete at creation, so every group whose inputs are concrete is evaluated then (§When groups are
+   evaluated, a MUST):
    * An `enableIf` that reads no `Steps.*` is evaluated. If it is false, the Step becomes `Skipped` and nothing else
      of it is evaluated. That includes the step `let` evaluation and carried-forward checks that `instantiate_step`
      runs today (`instantiate.rs:62`–`:149`), so a skipped Step's `let` may assume the Step runs. Environment
@@ -329,8 +329,18 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    * An `enableIf` that reads `Steps.*` leaves the Step `PendingInputs` with `enablement: Waiting`, and no other group
      of it is evaluated at creation, even one whose inputs are all static.
    * Otherwise, every group whose inputs are concrete is evaluated. A failure in any of them fails `create_job`, as
-     an invalid parameter does, whether the Step would then be bound or stay pending. So a pending Step's static
-     host requirements, or a static range, are checked at submission.
+     an invalid parameter does, whether the Step would then be bound or stay pending. So a pending Step's host
+     requirements or range that read no `Steps.*` are checked at submission.
+   * Errors are still collected across Steps into `check_errors`, as today (`create_job/mod.rs:265`–`:276`), so
+     `create_job` reports every failing Step at once, and the test
+     `violations_across_steps_and_environments_are_reported_together` keeps its six errors. Within one Step, the
+     core stops at the first failing group; a group's own checks, such as the remaining group's carried-forward
+     checks of the script and every Environment, are collected together, as today. Each `BindingError` becomes its
+     `ModelError` entries in `check_errors`.
+   * The RFC's group order (enablement, Task enumeration, host selection, remaining) applies only under
+     `CONTROL_FLOW`. Without it, the core keeps today's order (the carried-forward checks at `instantiate.rs:62`–`:149`,
+     then host requirements before the parameter space at `:159`–`:169`), so a template that doesn't list
+     `CONTROL_FLOW` reports the same first error as today.
 3. **Binding API.**
 
    ```rust
@@ -350,15 +360,17 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    enumeration (materialize the parameter space, check distinct `CHUNK[INT]` values (item 6) and the Task-count
    limits (item 7)); then host selection; then the remaining group (Step Environment `enableIf`, which sets
    `job::Environment.enabled`, and the carried-forward checks of the script and Environments). It stops at the first
-   failure and returns `Err`: the Step is `FAILED` at once, whatever its other groups are waiting for.
-   `BindingError` wraps the `ModelError` and names the group, the field, and the expression. When every group is
+   failing group and returns `Err`: the Step is `FAILED` at once, whatever its other groups are waiting for.
+   `BindingError` names the group and holds that group's `ModelError`s, each naming the field and the expression. When every group is
    `Known`, it moves the parameter space and host requirements into the Step's fields, builds `resolved_symtab`, and
    returns a `Bound` Step. Called with no new inputs, it returns the Step unchanged, so a caller can call it after
    every change without tracking which groups are evaluable. Called on a `Bound` or `Skipped` Step, it returns the
    Step unchanged.
 
-   It refactors `instantiate_step` (`instantiate.rs:37`) so that one code path serves both `create_job` and later
-   binding: the Step's symbol table is the job symbol table plus the concrete `Steps.*` symbols from `inputs`. The
+   It refactors `instantiate_step` (`instantiate.rs:37`) into an internal core that serves both `create_job`, which
+   has no `job::Job` yet (item 1), and later binding, for which `advance_step_binding` is the public wrapper over a
+   `job::Job`. The core takes the template-level inputs, the Step being built, and the `StepInputs`. The Step's
+   symbol table is the job symbol table plus the concrete `Steps.*` symbols from `inputs`. The
    other inputs `instantiate_step` takes today (the job symbol table, `has_expr`, `EffectiveLimits`, `EvalBudgets`)
    are rebuilt from `ctx`, the parameter values, and `job.name`, as `create_job` builds them. Step `let` bindings
    are evaluated on demand, only the ones the group being evaluated uses, in declaration order. The prototype
@@ -771,8 +783,9 @@ Options:
 * `summary` (`summary.rs:113`) prints what `create_job` knows of each pending Step, from `binding_report()`, which
   follows §Implementation strategy: one line each for whether it runs, its Tasks, and its host requirements, either
   known or with the outputs it waits for. For example, `StylizeFrame` shows `Tasks: determined at run time from
-  Steps.VideoToFrames.Output.FrameCount`, and a Step whose range is static but whose script `let` reads an upstream
-  output shows `Tasks: 240 (known; Step pending inputs for Steps.P.Output.X)`. A Step with a dynamic `enableIf`
+  Steps.VideoToFrames.Output.FrameCount`, and a Step whose range reads no `Steps.*` but whose step `let`, read only
+  by its script, reads an upstream output (the A11 case) shows `Tasks: 240 (known; Step pending inputs for
+  Steps.P.Output.X)`. A Step with a dynamic `enableIf`
   shows `Enabled: determined at run time from ...` and its Tasks as waiting for it. The total becomes
   `Total tasks: N + (determined at run time)`, where `N` counts every Step whose Tasks are known, pending or not. A
   statically skipped Step is shown as `SKIPPED` with 0 Tasks.
@@ -852,13 +865,15 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   `advance_step_binding` call: a Step whose range reads `P` and whose host requirements read `Q` gets Tasks known
   after `P` alone and host requirements known after `Q` alone, and the same with the order reversed; it is `Bound`
   only after both and the remaining group; a dynamic `enableIf` keeps every group `Waiting` (with each group's own
-  `on` set) even when their inputs are concrete, and a static range that would `fail(...)` is not evaluated at
-  creation; with `enableIf` false the Step is `Skipped` though its range would fail; with `enableIf` true, a failing
-  range returns `Err` naming the group, field, and expression while the remaining group still waits; a failing
-  static group of a pending Step fails `create_job`; a call with no new inputs returns the Step unchanged; a
-  consumer's Tasks become known from the `TaskParam` of a producer that is still pending with Tasks known; the
-  Task-count limit fails the Step when its Tasks become known; and a `let` used only by the remaining group is not
-  evaluated when the Task enumeration group is.
+  `on` set) even when their inputs are concrete, and a range that reads no `Steps.*` and would `fail(...)` (guarded by
+  a `Param.*`, because a bare `{{fail('x')}}` range is rejected at validation) is not evaluated at creation; with
+  `enableIf` false the Step is `Skipped` though its range would fail; with `enableIf` true, a failing range returns
+  `Err` naming the group, field, and expression while the remaining group still waits; a failing group that reads no
+  `Steps.*` in a pending Step fails `create_job`, alongside another Step's errors; without `CONTROL_FLOW`, a template
+  with both a bad host requirement and a bad range still reports the host requirement; a call with no new inputs
+  returns the Step unchanged; a consumer's Tasks become known from the `TaskParam` of a producer that is still pending
+  with Tasks known; the Task-count limit fails the Step when its Tasks become known; and a `let` used only by the
+  remaining group is not evaluated when the Task enumeration group is.
 * Job creation: a script that reads `Steps.*` passes `create_job`'s own carried-forward checks.
 * `PATH` outputs: `PATH` and `LIST[PATH]` declarations; `Output` of a `PATH` producer in a TEMPLATE-scope field is
   rejected with the `RawOutput` hint, and `RawOutput` there is accepted; the collector maps a reported path back,
@@ -947,11 +962,14 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   * Render and QC: `EncodeVideo=false` (static skip, so `Publish` prints `frames only`), noise above and below the
     threshold (dynamic skip), and `BadFrames=[]` (zero Tasks).
   * Plus a `--step` run with `--step-inputs`, and a `--maximum-tasks` run that blocks the consumer.
-  * Progressive binding (not an RFC sample, `control_flow/progressive.yaml`): a Step whose range reads `P` and whose
-    host requirements and script `let` read `Q`, where `Q` depends on `P`. The output shows `Tasks known` after `P`
-    and `ready` after `Q`; `openjd summary` shows its provisional Task count; a variant where the range
-    `fail(...)`s shows the Step failing after `P` and `Q` never running; a variant whose `enableIf` reads `Q` and is
-    false shows the failing range never evaluated and the Step skipped.
+  * Progressive binding (not an RFC sample, `control_flow/progressive.yaml`): a Step `C` whose range reads
+    `Steps.P.Output.N` and whose host requirements read `Q`, where `Q` depends on `P`. The `openjd run` output shows
+    `Tasks known` for `C` after `P` and `ready` after `Q`, and `openjd summary` shows `C`'s Tasks as determined at
+    run time from `Steps.P.Output.N` and its host requirements as waiting for `Q`. A second template, whose range
+    reads only a job parameter and whose step `let`, read only by its script, reads `Q`, shows in `openjd summary`
+    a known Task count for a pending Step. Variants: the range `fail(...)`s (guarded by `P`'s value), which shows
+    `C` failing after `P` and `Q` never running; and `C`'s `enableIf` reads `Q` and is false, which shows the
+    failing range never evaluated and `C` skipped.
 
 **Conformance**: propose a `conformance-tests/2023-09/CONTROL_FLOW/` set in openjd-specifications, in the same format
 as `EXPR/jobs/*.test.yaml`. It is a separate repo and a separate task, and it is not part of this plan's PRs.
@@ -1034,10 +1052,11 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
   and S2 adds the second.
 * ~~**A16. Cancel at once, or fail at exit?**~~ Resolved in `1e89748`: an invalid directive MUST cancel and fail its
   Action at once.
-* **A17. `TaskParam` read from a producer that then fails.** Under progressive binding, `Steps.P.TaskParam.*` is
-  concrete once `P`'s Tasks are known, which can be before `P` is bound (RFC §The `Steps.*` scope, Concreteness).
-  If `P` then fails in another group, a job output that read only `P`'s `TaskParam` has already been evaluated and
-  committed, although §Job outputs item 4 says an output that references a failed Step is not evaluated while it
-  stays failed. The RFC should say whether such an output is withdrawn, kept, or shown as unavailable. The Job
+* **A17. `TaskParam` read from a producer that then fails.** `Steps.P.TaskParam.*` is concrete once `P`'s Tasks
+  are known, before `P` has run, so a job output that reads only `P`'s `TaskParam` is evaluated and committed early.
+  If `P` then fails, §Job outputs item 4 says an output that references a failed Step is not evaluated while it
+  stays failed, but this one already was. The case exists without progressive binding, for a `P` bound at creation
+  whose Task fails later; progressive binding widens it to a pending `P` whose Tasks are known and which then fails
+  another group (RFC §The `Steps.*` scope, Concreteness). The RFC should say whether such an output is withdrawn, kept, or shown as unavailable. The Job
   fails either way, because `P` failed. Prototype: keep the value, and list the output as reading a failed Step in
   the run's final report.
