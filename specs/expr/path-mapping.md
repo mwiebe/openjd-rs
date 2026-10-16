@@ -6,7 +6,8 @@ Path mapping transforms filesystem paths between different formats and locations
 is essential for render farms where jobs are authored on one OS but executed on another,
 or where storage mount points differ between submission and execution hosts.
 
-Defined in `path_mapping.rs` (PathFormat, PathMappingRule) and `uri_path.rs` (URI-aware
+Defined in `path_mapping.rs` (PathFormat, PathMappingRule, the rule-list helpers, and
+the reverse mapping `unapply_rules`/`UnmapError`) and `uri_path.rs` (URI-aware
 path operations).
 
 ## PathFormat
@@ -74,6 +75,88 @@ component, and mirrors Python's `PurePosixPath`/`PureWindowsPath`
 `rule.apply_with_format(path, output_format) -> Option<String>` is the same as
 `apply` but lets the caller pick the output separator (`/` for Posix/Uri, `\` for
 Windows). The source format still dictates how the prefix match is performed.
+
+### Rule lists
+
+`apply_rules(rules, path)` and `apply_rules_with_format(rules, path, output_format)`
+apply the first rule that matches, and return `path` unchanged when none does. Rules
+must be sorted by decreasing `source_path` length; the Session sorts them
+(`Session::new`).
+
+### Reverse mapping
+
+`unapply_rules(rules, path, worker_format) -> Result<String, UnmapError>` maps a
+path reported on a worker back to the submission path context, the form in which
+`PATH` job parameters are given. The CONTROL_FLOW extension stores `PATH` output
+values in that form (RFC 0010 §Path values, Design Choice 14). The RFC states the
+requirement on the outcome: the stored value must map forward, with the producing
+Session's rules, to the reported path. `unapply_rules` implements the RFC's
+reference inverse:
+
+1. A URI (`is_uri`) is returned unchanged, with or without rules.
+2. Any other path must be absolute under `worker_format`, or the result is
+   `UnmapError::Relative`. This holds with no rules too: a relative path would be
+   relative to a Session Working Directory no consumer can see.
+3. With no rules, the absolute path is returned unchanged, not normalized.
+4. Otherwise the path and each rule's `destination_path` are lexically normalized
+   and compared under `worker_format`'s rules. A rule matches when its
+   `destination_path` is the path or a prefix of it ending on a component
+   boundary. Its candidate is the remaining components joined with the separator
+   of its `source_path_format` (`\` for Windows, `/` for POSIX and URI), appended to
+   `source_path` with one more separator unless `source_path` already ends with
+   one, or `source_path` itself when no components remain. Components keep the
+   spelling they have in the reported path, and are appended to a URI unchanged.
+5. Candidates are tried by decreasing `destination_path` length, counted in
+   normalized components, then in the order of `rules`. The first candidate that
+   `apply_rules_with_format(rules, candidate, worker_format)` maps to a path equal
+   to the reported one is returned. If none does, the result is
+   `UnmapError::NoRoundTrip`. The common case is a path under the Session Working
+   Directory, which no rule's `destination_path` covers.
+
+The round trip is what makes the result correct, and it is needed because rules can
+nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
+is `P:\x\f`, which maps forward to `/data/x/f`, so the result is `NoRoundTrip`.
+Because the check decides correctness, the rule order only breaks ties; the Session
+passes its rules sorted by `source_path` length, and that is the "listed order".
+
+**Lexical normalization** removes `.` and empty components (runs of separators,
+trailing separators) and applies `..` to the preceding component, without resolving
+symbolic links. A `..` directly below a root is dropped, as `/..` is `/`. The anchor
+is kept separately and is never stripped, so a root keeps its separator. POSIX
+anchors are `/` and `//`: exactly two leading slashes are the POSIX
+implementation-defined root, which `path()` also preserves, and three or more
+collapse to `/`. Windows anchors are `X:\` (either separator) and `\\server\share`.
+Normalization is applied to both sides of each comparison. It matters on the
+forward side because `apply_with_format` does not normalize: a `destination_path`
+ending in a separator gives `/mnt/p//x`.
+
+**Comparison** under `worker_format`: Windows paths compare case-insensitively
+(ASCII case folding, as forward matching does), with `\` and `/` both separators;
+POSIX paths compare case-sensitively with `/` only. `PathFormat::Uri` as the worker
+format is treated as POSIX.
+
+**Absoluteness** follows `PurePosixPath`/`PureWindowsPath.is_absolute()`: a leading
+`/` on POSIX; a drive with a root (`C:\`, `C:/`) or a UNC path with a non-empty
+server and share (`\\server\share`) on Windows. A Windows path rooted without a
+drive (`\x`) or drive-relative (`C:x`) is `Relative`, and so is `\\srv\share` on
+POSIX, where `\` is an ordinary character. This is a separate test from the
+`is_rooted` check that forward matching uses, which does not treat drive paths as
+rooted.
+
+**A candidate no rule matches.** Forward mapping returns a path no rule matches
+unchanged, so such a candidate passes the round trip exactly when it equals the
+reported path. That follows the RFC, whose requirement is on the forward mapping's
+result. The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward
+helper that reports whether a rule matched; the RFC wins where they disagree. Every
+candidate comes from a rule whose `destination_path` matched, so this differs only
+for degenerate rules, such as an empty `source_path`.
+
+**Source format filtering.** The RFC says a runtime that knows the submission path
+format SHOULD use only rules whose `source_path_format` is that format or `URI`.
+`unapply_rules` does not know it, so a caller that does filters `rules` first.
+
+`UnmapError` implements `Display` and `std::error::Error`. The caller, which knows
+the path and the output's name, builds the user-facing message around it.
 
 ### Serde
 
@@ -285,3 +368,6 @@ path manipulation; the Rust version uses string operations directly, which avoid
 overhead of constructing path objects for simple prefix matching.
 
 URI path handling is functionally identical between implementations.
+
+The reverse mapping, `unapply_rules`, has no Python counterpart yet: it is part of the
+draft CONTROL_FLOW extension (RFC 0010), which this crate prototypes first.

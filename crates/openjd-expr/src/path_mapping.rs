@@ -219,6 +219,236 @@ pub fn apply_rules_with_format(
     path.to_string()
 }
 
+/// Why [`unapply_rules`] could not map a path back to the submission path
+/// context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UnmapError {
+    /// The path is neither a URI nor absolute under the worker's path format.
+    #[error("the path is relative; a PATH value must be an absolute path or a URI")]
+    Relative,
+    /// The Session has path mapping rules, and no candidate built from them
+    /// maps forward to the reported path.
+    #[error(
+        "no path mapping rule maps the path back to the submission path context, \
+         so it names a location only this worker can see"
+    )]
+    NoRoundTrip,
+}
+
+/// Map a path reported on the worker back to the submission path context.
+///
+/// Implements the reference inverse of the CONTROL_FLOW RFC's "Path values"
+/// section:
+///
+/// 1. A URI (see [`is_uri`]) is returned unchanged.
+/// 2. Any other path must be absolute under `worker_format`, or the result is
+///    [`UnmapError::Relative`].
+/// 3. With no rules, the absolute path is returned unchanged.
+/// 4. Otherwise the path and each rule's `destination_path` are lexically
+///    normalized (`.` removed, `..` applied, trailing separators dropped) and
+///    compared under `worker_format`'s rules (Windows: case-insensitive, `\`
+///    and `/` both separators). Each rule whose `destination_path` is the path,
+///    or a prefix of it ending on a component boundary, gives a candidate: the
+///    remaining components joined with the separator of the rule's
+///    `source_path_format` (`/` for `URI`) and appended to `source_path`, or
+///    `source_path` itself when none remain.
+/// 5. Candidates are tried by decreasing `destination_path` length (in
+///    components), then in the order of `rules`. The first candidate that
+///    [`apply_rules_with_format`] maps forward, with output separators of
+///    `worker_format`, to a path equal to the reported one after normalization
+///    is returned. If none does, the result is [`UnmapError::NoRoundTrip`].
+///    Forward mapping is compared normalized because it does not normalize: a
+///    `destination_path` ending in a separator gives `/mnt/p//x`.
+///
+/// `rules` are the Session's rules in the order passed to [`apply_rules`]. The
+/// round-trip check makes the result correct for any order; the order only
+/// breaks ties. `PathFormat::Uri` as `worker_format` is treated as POSIX.
+pub fn unapply_rules(
+    rules: &[PathMappingRule],
+    path: &str,
+    worker_format: PathFormat,
+) -> Result<String, UnmapError> {
+    if is_uri(path) {
+        return Ok(path.to_string());
+    }
+    let windows = worker_format == PathFormat::Windows;
+    if !is_absolute_on_worker(path, windows) {
+        return Err(UnmapError::Relative);
+    }
+    if rules.is_empty() {
+        return Ok(path.to_string());
+    }
+
+    let reported = NormalPath::new(path, windows);
+    // (destination component count, rule index, candidate). The index keeps
+    // the sort stable with respect to the caller's order.
+    let mut candidates: Vec<(usize, usize, String)> = rules
+        .iter()
+        .enumerate()
+        .filter_map(|(i, rule)| {
+            let dest = NormalPath::new(&rule.destination_path, windows);
+            let remaining = reported.strip_prefix(&dest, windows)?;
+            Some((dest.parts.len(), i, build_candidate(rule, remaining)))
+        })
+        .collect();
+    candidates.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+
+    candidates
+        .into_iter()
+        .map(|(_, _, candidate)| candidate)
+        .find(|candidate| {
+            let forward = apply_rules_with_format(rules, candidate, worker_format);
+            NormalPath::new(&forward, windows).equals(&reported, windows)
+        })
+        .ok_or(UnmapError::NoRoundTrip)
+}
+
+/// Join the components left after a rule's `destination_path` onto its
+/// `source_path`, with the separator of its `source_path_format`.
+fn build_candidate(rule: &PathMappingRule, remaining: &[&str]) -> String {
+    if remaining.is_empty() {
+        return rule.source_path.clone();
+    }
+    let source_windows = rule.source_path_format == PathFormat::Windows;
+    let sep = if source_windows { '\\' } else { '/' };
+    let mut candidate = rule.source_path.clone();
+    if !has_trailing_slash(&candidate, source_windows) {
+        candidate.push(sep);
+    }
+    candidate.push_str(&remaining.join(&sep.to_string()));
+    candidate
+}
+
+/// Whether a filesystem path is absolute in the worker's format, matching
+/// `PurePosixPath`/`PureWindowsPath.is_absolute()`.
+///
+/// POSIX: a leading `/`. Windows: a drive with a root (`C:\`, `C:/`) or a UNC
+/// path with a non-empty server and share (`\\server\share`). A Windows path
+/// rooted without a drive (`\x`) or drive-relative (`C:x`) is not absolute.
+/// This differs from `is_rooted`, which serves forward matching and does not
+/// treat drive paths as rooted.
+fn is_absolute_on_worker(path: &str, windows: bool) -> bool {
+    if !windows {
+        return path.starts_with('/');
+    }
+    let is_sep = |c: char| c == '\\' || c == '/';
+    let mut chars = path.chars();
+    match (chars.next(), chars.next(), chars.next()) {
+        (Some(d), Some(':'), Some(s)) if d.is_ascii_alphabetic() && is_sep(s) => true,
+        (Some(a), Some(b), _) if is_sep(a) && is_sep(b) => {
+            let mut rest = path[2..].split(is_sep);
+            let server = rest.next().unwrap_or("");
+            let share = rest.next().unwrap_or("");
+            !server.is_empty() && !share.is_empty()
+        }
+        _ => false,
+    }
+}
+
+/// A filesystem path in lexical normal form: its anchor and its components.
+///
+/// `.` components and empty components (runs of separators, trailing
+/// separators) are dropped, and `..` removes the preceding component. A `..`
+/// directly below an anchor that has a root is dropped, as the OS resolves
+/// `/..` to `/`. Symbolic links are not resolved.
+///
+/// The anchor is kept with canonical separators: POSIX `/`, or `//` for
+/// exactly two leading slashes (the implementation-defined POSIX double-slash
+/// root that `path()` also preserves); Windows `X:\`, `X:`, `\\server\share\`,
+/// or `\`.
+struct NormalPath<'a> {
+    anchor: String,
+    parts: Vec<&'a str>,
+}
+
+impl<'a> NormalPath<'a> {
+    fn new(path: &'a str, windows: bool) -> Self {
+        let (anchor, rest) = split_anchor(path, windows);
+        let rooted = anchor.ends_with(['/', '\\']);
+        let mut parts: Vec<&str> = Vec::new();
+        for part in split_path_parts(rest, windows) {
+            match part {
+                "." => {}
+                ".." => match parts.last() {
+                    Some(&last) if last != ".." => {
+                        parts.pop();
+                    }
+                    _ if rooted => {}
+                    _ => parts.push(part),
+                },
+                _ => parts.push(part),
+            }
+        }
+        NormalPath { anchor, parts }
+    }
+
+    /// If `prefix` names this path or an ancestor of it, the components of this
+    /// path below it.
+    fn strip_prefix(&self, prefix: &NormalPath<'_>, windows: bool) -> Option<&[&'a str]> {
+        if !component_eq(&self.anchor, &prefix.anchor, windows)
+            || prefix.parts.len() > self.parts.len()
+        {
+            return None;
+        }
+        let (head, tail) = self.parts.split_at(prefix.parts.len());
+        head.iter()
+            .zip(&prefix.parts)
+            .all(|(a, b)| component_eq(a, b, windows))
+            .then_some(tail)
+    }
+
+    fn equals(&self, other: &NormalPath<'_>, windows: bool) -> bool {
+        self.parts.len() == other.parts.len() && self.strip_prefix(other, windows).is_some()
+    }
+}
+
+/// Compare two components (or anchors) under the worker format's rules.
+fn component_eq(a: &str, b: &str, windows: bool) -> bool {
+    if windows {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// Split a filesystem path into its canonical anchor and the rest.
+fn split_anchor(path: &str, windows: bool) -> (String, &str) {
+    if !windows {
+        let leading = path.len() - path.trim_start_matches('/').len();
+        return match leading {
+            0 => (String::new(), path),
+            2 => ("//".to_string(), &path[2..]),
+            n => ("/".to_string(), &path[n..]),
+        };
+    }
+    let is_sep = |c: char| c == '\\' || c == '/';
+    let bytes = path.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let drive = &path[..2];
+        return match path[2..].chars().next() {
+            Some(c) if is_sep(c) => (format!("{drive}\\"), &path[3..]),
+            _ => (drive.to_string(), &path[2..]),
+        };
+    }
+    if bytes.len() >= 2 && is_sep(bytes[0] as char) && is_sep(bytes[1] as char) {
+        // UNC: \\server\share is the anchor.
+        let rest = &path[2..];
+        let server_end = rest.find(is_sep).unwrap_or(rest.len());
+        let server = &rest[..server_end];
+        let after_server = rest[server_end..].trim_start_matches(is_sep);
+        let share_end = after_server.find(is_sep).unwrap_or(after_server.len());
+        let share = &after_server[..share_end];
+        return (
+            format!("\\\\{server}\\{share}\\"),
+            &after_server[share_end..],
+        );
+    }
+    if path.starts_with(is_sep) {
+        return ("\\".to_string(), path.trim_start_matches(is_sep));
+    }
+    (String::new(), path)
+}
+
 /// Check if a string is a URI (has a `scheme://` prefix).
 ///
 /// Delegates to [`crate::uri_path::is_uri`]: the scheme must be at least two

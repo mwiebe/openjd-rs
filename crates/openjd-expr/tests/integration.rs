@@ -85,6 +85,8 @@ mod test_target_type_union;
 mod test_types;
 #[path = "integration/test_types_evaluate.rs"]
 mod test_types_evaluate;
+#[path = "integration/test_unapply_rules.rs"]
+mod test_unapply_rules;
 #[path = "integration/test_unicode_codepoint.rs"]
 mod test_unicode_codepoint;
 #[path = "integration/test_unresolved_eval.rs"]
