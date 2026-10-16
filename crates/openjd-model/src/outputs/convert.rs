@@ -127,7 +127,7 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
             let Value::Array(items) = value else {
                 let natural = self.natural(value, subject)?;
                 let detail = natural.clone().coerce(target, self.path_format).err();
-                return Err(self.coerce_error(subject, &natural, target, detail));
+                return Err(self.coerce_error(subject, value, &natural, target, detail));
             };
             let mut elements = Vec::with_capacity(items.len());
             for (i, item) in items.iter().enumerate() {
@@ -141,7 +141,7 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
         let natural = self.natural(value, subject)?;
         match natural.clone().coerce(target, self.path_format) {
             Ok(v) => Ok(v),
-            Err(e) => Err(self.coerce_error(subject, &natural, target, Some(e))),
+            Err(e) => Err(self.coerce_error(subject, value, &natural, target, Some(e))),
         }
     }
 
@@ -158,9 +158,14 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
                 if let Ok(i) = spelling.parse::<i64>() {
                     return Ok(ExprValue::Int(i));
                 }
+                // The value comes from the spelling, not `n.as_f64()`:
+                // serde_json without `float_roundtrip` can round differently
+                // from Rust's (and EXPR's) correctly rounded `str::parse`.
                 // serde_json rejected numbers that overflow f64 when it
                 // parsed the text, so this is finite.
-                let f = n.as_f64().unwrap_or_default();
+                let f = spelling
+                    .parse::<f64>()
+                    .unwrap_or_else(|_| n.as_f64().unwrap_or_default());
                 Float64::with_str(f, spelling.to_string())
                     .map(ExprValue::Float)
                     .map_err(|e| ConvertError {
@@ -185,29 +190,36 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
     fn coerce_error(
         &self,
         subject: &str,
+        value: &Value,
         natural: &ExprValue,
         target: &ExprType,
         detail: Option<String>,
     ) -> ConvertError {
-        let ty = match natural {
-            ExprValue::Null => "list".to_string(),
-            // `[]` is `list[nulltype]` in EXPR; that type name means nothing
-            // to an author.
-            v if v.list_len() == Some(0) && v.expr_type() == ExprType::list(ExprType::NULLTYPE) => {
-                "empty list".to_string()
-            }
-            v => v.expr_type().to_string(),
+        // A list with no element type (one that doesn't form a list
+        // literal, stood in for by `Null`, or holds only empty lists, which
+        // EXPR types with `nulltype`) is described without EXPR's type name,
+        // which means nothing to an author, and without EXPR's message,
+        // which would repeat it.
+        let full_ty = natural.expr_type().to_string();
+        let untyped = matches!(natural, ExprValue::Null) || full_ty.contains("nulltype");
+        let ty = if natural.list_len() == Some(0) {
+            "empty list".to_string()
+        } else if untyped {
+            "list".to_string()
+        } else {
+            full_ty
         };
-        let shown = if self.show_values && !matches!(natural, ExprValue::Null) {
-            format!(" {}", quote(&natural.to_display_string()))
+        let shown = if self.show_values {
+            let text = match natural {
+                ExprValue::Null => value.to_string(),
+                v => v.to_display_string(),
+            };
+            format!(" {}", quote(&text))
         } else {
             String::new()
         };
         let detail = match detail {
-            // A list with no type has no coercion message worth showing.
-            Some(d) if self.show_values && !matches!(natural, ExprValue::Null) => {
-                format!(": {}", shorten(&d))
-            }
+            Some(d) if self.show_values && !untyped => format!(": {}", shorten(&d)),
             _ => String::new(),
         };
         ConvertError {
