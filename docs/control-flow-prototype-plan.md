@@ -11,7 +11,8 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `00dac7b`.
+  openjd-specifications commit `f04e248`, which makes step input binding progressive (RFC §Step input binding,
+  Design Choice 15; 04 §10).
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in
@@ -24,8 +25,10 @@ Every PR below goes through the `implement-change` skill. Each PR updates the cr
 
 * **openjd-model** does most of the work. It gets the schema fields (including `collect` and `unit` on outputs), the
   extension gate, the `Steps.*` scope in template validation, an output directive parser and collector that sessions
-  and schedulers can share, and a binding API. With that API,
-  `create_job` can leave a Step unbound and a caller can bind it later from upstream values. It also gets
+  and schedulers can share, and a progressive binding API. With that API, `create_job` evaluates what it can of each
+  Step and leaves the rest pending, and a caller advances a pending Step as upstream values arrive: its Tasks and its
+  host requirements become known separately, the first error fails it, and it is bound when every group has
+  evaluated. It also gets
   `jobOutputDefinitions` and a function that evaluates one job output, and `PATH` output types with the
   `RawOutput` and `TaskRawParam` symbols.
 * **openjd-expr** needs no new types or functions in the language. `ExprValue::Unresolved` already makes a value
@@ -37,9 +40,11 @@ Every PR below goes through the `implement-change` skill. Each PR updates the cr
   the collected values in `ActionResult`, with `PATH` values mapped back to the submission path context. Its four
   silent line-truncation sites must start marking truncation.
 * **openjd-cli** `openjd run` already runs Steps in topological order in one Session. It becomes a scheduler
-  simulator: it binds each pending Step before running it, skips disabled Steps and Environments, and keeps outputs in
+  simulator: after each Step finishes it advances the binding of every pending Step, reports what each has become
+  known, fails a Step as soon as one of its groups fails, skips disabled Steps and Environments, and keeps outputs in
   memory. It prints each Task's outputs with their units, and each job output as soon as it is evaluated.
-  `openjd summary` reports pending Steps and lists the job outputs.
+  `openjd summary` reports what is known of each pending Step, with provisional Task counts, and lists the job
+  outputs.
 * **openjd-snapshots** needs no change. It is the job-attachments crate and has no dependency on the model. "Snapshot
   test" in this plan means a golden-file test of CLI output.
 
@@ -247,32 +252,61 @@ impl OutputCollector {
 
 ### M4. Job creation and binding
 
-This is the core of the prototype. A `job::Step` is either bound or waiting:
+This is the core of the prototype. Step input binding is progressive (RFC §Step input binding): a Step's
+materialization expressions fall into groups, *enableIf* is decided first, and each other group is evaluated as soon
+as its own inputs are concrete. A `PENDING_INPUTS` Step therefore gains facts ("Tasks known", "host requirements
+known") one at a time, without a new state for each. A `job::Step` records this in its binding:
 
 ```rust
 pub enum StepBinding {
-    /// Tasks are enumerable (today's only state).
+    /// Every group has evaluated: the Step is READY and its Tasks may be dispatched (today's only state).
     Bound,
-    /// Materialization expressions read Steps.* symbols that are not yet concrete.
-    PendingInputs { waiting_on: Vec<String> },   // Steps.* symbols, sorted
-    /// enableIf was false (at job creation, or at binding).
+    /// Not bound yet. What is known so far, per group.
+    PendingInputs(PendingBinding),
+    /// enableIf was false (at job creation, or later). The parameter space is empty: zero Tasks.
     Skipped,
+}
+
+pub struct PendingBinding {
+    pub enablement: GroupState<()>,                               // Known(()) once enableIf is true or absent
+    pub tasks: GroupState<Option<job::StepParameterSpace>>,       // Known(None): no parameterSpace, one Task
+    pub host_requirements: GroupState<Option<job::HostRequirements>>,
+    pub remaining: GroupState<()>,                                // Step Environment and script fields
+}
+
+pub enum GroupState<T> {
+    /// Not evaluated. `on` is the group's inputs that are not concrete yet (`Steps.*` symbols, sorted); it is
+    /// empty for a group that waits only for enableIf.
+    Waiting { on: Vec<String> },
+    /// Evaluated successfully, with its result.
+    Known(T),
 }
 ```
 
-A pending Step keeps `parameter_space` and `host_requirements` as `None` until it is bound. Its script and
-Environments are kept as they are, because they are carried forward as format strings anyway.
+A pending Step keeps `parameter_space` and `host_requirements` as `None`, so a caller that reads those fields
+today never sees a partial Step. The materialized parameter space and the evaluated host requirements wait in
+`PendingBinding` and move into the Step's own fields when it is bound. Its script and Environments are kept as they
+are, because they are carried forward as format strings anyway. `PendingBinding` and `GroupState` derive what
+`job::Step` derives (M1); their payloads already do, because they are `job::Step` field types. The prototype has
+no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the scene-graph golden test).
 
-1. **Which Steps are pending.** Pending status comes from static analysis, not from evaluating with `Unresolved`
-   values. The RFC's rule is about what a field *references*, and a reference inside a branch that is never taken
-   still counts. The materialization set of a Step is the union of `accessed_symbols()` over its `enableIf`, step
-   `let`, `hostRequirements` fields, Task parameter `range`s, `chunks` fields, the TEMPLATE-scope fields of its
-   step Environments (including their `enableIf`), and the `timeout` and `cancelation` fields of its script. Expand
-   step-`let` names to the symbols they read, transitively. The Step is pending if the set contains a `Steps.P.*`
-   symbol that is not concrete at Job creation (§When a Step is bound):
+1. **Group inputs.** Each group's inputs come from static analysis, not from evaluating with `Unresolved` values. The
+   RFC's rule is about what a field *references*, and a reference inside a branch that is never taken still counts.
+   For each group, take the union of `accessed_symbols()` over its fields (§Materialization groups):
+   * enablement: the Step's `enableIf`;
+   * Task enumeration: its Task parameter `range`s and `chunks` fields;
+   * host selection: its `hostRequirements` fields;
+   * remaining: the TEMPLATE-scope fields of its step Environments (including their `enableIf`), and the `timeout`
+     and `cancelation` fields of its script.
+
+   Expand each step-`let` name a group reads to the symbols that binding reads, transitively. The remaining group
+   also uses every step `let`, so its set includes the symbols of all of them. A group's inputs are the `Steps.P.*`
+   symbols in its set. A Step is bound at Job creation if `enableIf` is decided `true` (or is absent) there and
+   every group's inputs are concrete then; otherwise it is `Skipped` or `PendingInputs`:
    * `Steps.P.Output.*` is concrete at creation only when `P` is statically `Skipped`, as `null`. For example, with
      `EncodeVideo=false`, `Publish` in the render sample binds at creation.
-   * `Steps.P.TaskParam.*` is concrete at creation when `P` is `Bound` or statically `Skipped` at creation.
+   * `Steps.P.TaskParam.*` is concrete at creation when `P`'s Tasks are known (`P` is `Bound`, or `PendingInputs` with
+     `tasks: Known`) or `P` is statically `Skipped`.
 
    `create_job` loops over Steps in template order (`create_job/mod.rs:265`), and a Step may appear before a Step it
    depends on (the existing `reverse_dependency_order.yaml` CLI test template). So `create_job` needs to instantiate
@@ -285,30 +319,53 @@ Environments are kept as they are, because they are carried forward as format st
    and break ties by template index, so the order is deterministic. Errors that `instantiate_step` collects into
    `check_errors` then arrive in dependency order, so sort them back into template order before reporting, to keep
    today's message order.
-2. **Static `enableIf`.** An `enableIf` that reads no `Steps.*` is evaluated in `create_job`. If it is false, the Step
-   becomes `Skipped` and nothing after `enableIf` is evaluated. That includes the step `let` evaluation and carried-forward checks that
-   `instantiate_step` runs today (`instantiate.rs:62`–`:149`), so a skipped Step's `let` may assume the Step runs.
-   Environment `enableIf` works the same way and sets `job::Environment.enabled`.
+2. **Job creation.** `create_job` calls the same code as later binding (item 3) for each Step, with the inputs that
+   are concrete at creation, so every group whose inputs are concrete is evaluated then (§When groups are evaluated,
+   a MUST):
+   * An `enableIf` that reads no `Steps.*` is evaluated. If it is false, the Step becomes `Skipped` and nothing else
+     of it is evaluated. That includes the step `let` evaluation and carried-forward checks that `instantiate_step`
+     runs today (`instantiate.rs:62`–`:149`), so a skipped Step's `let` may assume the Step runs. Environment
+     `enableIf` in a Job Environment works the same way and sets `job::Environment.enabled`.
+   * An `enableIf` that reads `Steps.*` leaves the Step `PendingInputs` with `enablement: Waiting`, and no other group
+     of it is evaluated at creation, even one whose inputs are all static.
+   * Otherwise, every group whose inputs are concrete is evaluated. A failure in any of them fails `create_job`, as
+     an invalid parameter does, whether the Step would then be bound or stay pending. So a pending Step's static
+     host requirements, or a static range, are checked at submission.
 3. **Binding API.**
 
    ```rust
-   pub fn bind_step(
+   pub fn advance_step_binding(
        job_template: &JobTemplate,
        job_parameter_values: &JobParameterValues,
        ctx: &ValidationContext,
        job: &job::Job,
        step_index: usize,
        inputs: &StepInputs,
-       committed_task_count: u64,   // Tasks of Steps already bound, for max_task_count (item 7)
-   ) -> Result<job::Step, ModelError>;   // Bound or Skipped; Err = the Step FAILS at binding
+       committed_task_count: u64,   // Tasks of other Steps whose Tasks are known, for max_task_count (item 7)
+   ) -> Result<job::Step, BindingError>;   // PendingInputs (possibly with more known), Bound, or Skipped
    ```
 
-   `bind_step` refactors `instantiate_step` (`instantiate.rs:37`) so that one code path serves both `create_job` and
+   `advance_step_binding` evaluates every group of a `PendingInputs` Step that has not been evaluated and whose inputs
+   are now concrete in `inputs`, in the RFC's order: enablement first, and nothing else until it is `true`; then Task
+   enumeration (materialize the parameter space, check distinct `CHUNK[INT]` values (item 6) and the Task-count
+   limits (item 7)); then host selection; then the remaining group (Step Environment `enableIf`, which sets
+   `job::Environment.enabled`, and the carried-forward checks of the script and Environments). It stops at the first
+   failure and returns `Err`: the Step is `FAILED` at once, whatever its other groups are waiting for.
+   `BindingError` wraps the `ModelError` and names the group, the field, and the expression. When every group is
+   `Known`, it moves the parameter space and host requirements into the Step's fields, builds `resolved_symtab`, and
+   returns a `Bound` Step. Called with no new inputs, it returns the Step unchanged, so a caller can call it after
+   every change without tracking which groups are evaluable. Called on a `Bound` or `Skipped` Step, it returns the
+   Step unchanged.
+
+   It refactors `instantiate_step` (`instantiate.rs:37`) so that one code path serves both `create_job` and later
    binding: the Step's symbol table is the job symbol table plus the concrete `Steps.*` symbols from `inputs`. The
    other inputs `instantiate_step` takes today (the job symbol table, `has_expr`, `EffectiveLimits`, `EvalBudgets`)
-   are rebuilt from `ctx`, the parameter values, and `job.name`, as `create_job` builds them. The
-   evaluation order follows §Materialization expressions. Binding is atomic because the function returns a new Step;
-   the caller swaps it in.
+   are rebuilt from `ctx`, the parameter values, and `job.name`, as `create_job` builds them. Step `let` bindings
+   are evaluated on demand, only the ones the group being evaluated uses, in declaration order. The prototype
+   re-evaluates them in each call rather than caching their values in `PendingBinding`; that is observably the same
+   as the RFC's "evaluated once", because a binding whose inputs are concrete always gives the same value, and its
+   first failure fails the Step. Binding stays atomic for dispatch because the function returns a new Step and the
+   caller swaps it in; a caller dispatches Tasks only of a `Bound` Step.
 
    Job creation runs its own format-string checks, separate from pass 8. `instantiate_step` re-checks every Step's
    script and Environments (`instantiate.rs:118`, `:142`) against tables from `build_task_check_symtab`
@@ -318,15 +375,20 @@ Environments are kept as they are, because they are carried forward as format st
    direct dependencies. Do not put them in `add_unresolved_session_symbols` (`instantiate.rs:224`): it takes no Step,
    so it can't know which producers are visible. Do not put unresolved placeholders in the Step symbol table either,
    because that table becomes `resolved_symtab` through `filter_symtab_for_step`. Only concrete values go there,
-   at binding. This seeding lands in PR 2, together with the validation rules, so that a template that passes
-   `openjd check` also passes `create_job` (see PR and commit order).
+   when the Step is bound. This seeding lands in PR 2, together with the validation rules, so that a template that
+   passes `openjd check` also passes `create_job` (see PR and commit order).
+
+   Two read-only helpers serve reporting (C1, C2) and schedulers: `job::Step::tasks_known() -> Option<u64>`, the Task
+   count once Tasks are known (`Some(0)` for `Skipped`), and `job::Step::binding_report()`, which lists, for
+   enablement, Tasks, and host requirements, whether each is known and the `Steps.*` symbols it waits for.
 4. **Assembling inputs.** Schedulers and the CLI should not have to reimplement the shape rules, so the model provides
    them:
 
    ```rust
    pub enum ProducerState<'a> {
-       /// Bound but not finished: contributes TaskParam only (Output stays unresolved).
-       Bound,
+       /// Tasks known (Bound, or PendingInputs with `tasks: Known`) but not finished:
+       /// contributes TaskParam only (Output stays unresolved).
+       TasksKnown,
        Succeeded { task_outputs: &'a [IndexMap<String, ExprValue>] }, // indexed by iteration order
        Skipped,
    }
@@ -342,7 +404,9 @@ Environments are kept as they are, because they are carried forward as format st
    `TaskRawParam` with the same values (the stored, submission-context form), and for a type that is or contains `path`
    leaves `Output` and `TaskParam` to be derived on the worker (item 5 and S4). A skipped producer sets every symbol to
    `null`, including `Output` and `TaskParam` of path types, so nothing is left to derive; M4.5 then copies those
-   `null`s directly, and they are not added to `path_inputs`. A `Bound` producer contributes `TaskParam` only. The list
+   `null`s directly, and they are not added to `path_inputs`. A `TasksKnown` producer contributes `TaskParam` only,
+   read from its own `parameter_space` when it is `Bound` and from `PendingBinding.tasks` when it is pending, so a
+   consumer can know its Tasks before its producer is bound (RFC §The `Steps.*` scope, Concreteness). The list
    type hint follows the declared type, so `[]` becomes a typed empty list.
 5. **Host-scope `Steps.*` in Steps bound at creation.** A Step such as `FramesToVideo` reads `Steps.*` only in its
    script, so it binds at job creation but needs the values before its Tasks run. Add
@@ -357,8 +421,8 @@ Environments are kept as they are, because they are carried forward as format st
    list of strings) and recorded in `job::Step::path_inputs` (`PathInput { symbol: String, ty: openjd_expr::ExprType }`, where `ty`
    is `path`, `list[path]`, or `list[list[path]]` for a multi-Task producer's `LIST[PATH]` output), which S4 uses.
    Every bound Step that reads `Steps.*` in host-scope fields goes through `attach_step_inputs`, including one bound
-   by `bind_step`; `bind_step` doesn't put path-typed `Steps.*` values into `resolved_symtab` itself. Expose the list
-   of producers whose values a Step needs before dispatch as `job::Step::input_producers()`.
+   by `advance_step_binding`, which doesn't put path-typed `Steps.*` values into `resolved_symtab` itself. Expose
+   the list of producers whose values a Step needs before dispatch as `job::Step::input_producers()`.
 6. **Range rules under `CONTROL_FLOW`.**
    * An empty list from a format-string range is already accepted (see the table above). Add tests for it under
      `CONTROL_FLOW`. Whether it stays accepted *without* `CONTROL_FLOW` is ambiguity A2.
@@ -373,13 +437,15 @@ Environments are kept as they are, because they are carried forward as format st
      function that the answer can change.
    * In a Step that declares `outputVariables`, a `CHUNK[INT]` range must have distinct values once evaluated. Check
      it wherever the range is materialized: in `instantiate_step`, which `create_job` uses for a computed range that
-     reads no `Steps.*` (today `range: "{{[1,1,2]}}"` creates three Tasks), and in `bind_step`. A duplicate fails the
-     Step with a message naming the value.
+     reads no `Steps.*` (today `range: "{{[1,1,2]}}"` creates three Tasks), and in `advance_step_binding`'s Task
+     enumeration group. A duplicate fails the Step with a message naming the value.
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
-7. **Task-count limits.** Keep `max_task_count` as the job total. In `create_job`, count only bound Steps. In
-   `bind_step`, `committed_task_count` carries the count already committed, and the binding that would exceed the
-   limit fails, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from
-   §Limits item 4. See A5.
+7. **Task-count limits.** Keep `max_task_count` as the job total. The limits are checked in the Task enumeration
+   group, when a Step's Tasks become known (§Limits item 4), not when it is bound. In `create_job`, count only Steps
+   whose Tasks are known at creation. In `advance_step_binding`, `committed_task_count` carries the Tasks of the
+   other Steps whose Tasks are already known, and the Task enumeration that would exceed the limit fails the Step at
+   once, naming it. Also add an optional `CallerLimits::max_step_task_count`, the per-Step limit from §Limits item 4.
+   See A5.
 8. **`StepDependencyGraph`** (`job/step_dependency_graph.rs`) is unchanged. The step graph is fixed.
 9. **Job outputs.** `create_job` evaluates every job output whose `value` reads no `Steps.*` symbol that is not
    concrete yet, and fails Job creation if one fails, as an invalid parameter does. The rest are evaluated later
@@ -401,8 +467,8 @@ Environments are kept as they are, because they are carried forward as format st
    type, and checks the constraints (skipped for `null`). `StepInputs` here may hold producers that are not
    dependencies of anything, so `add_producer` doesn't check that. The CLI and a scheduler call
    `evaluate_job_output` whenever a symbol it waits on becomes concrete: when a Step it reads `Output` or
-   `RawOutput` of succeeds or is skipped, and when a Step it reads `TaskParam` or `TaskRawParam` of is bound or
-   skipped. Deciding when to call it is the caller's
+   `RawOutput` of succeeds or is skipped, and when a Step it reads `TaskParam` or `TaskRawParam` of has its Tasks
+   become known or is skipped. Deciding when to call it is the caller's
    job, which keeps the scheduling policy (fail the Job, mark stale on re-run) out of the model.
 
 ### Model specs to update
@@ -410,7 +476,8 @@ Environments are kept as they are, because they are carried forward as format st
 `specs/model/template-types.md`, `validation.md`, `job-creation.md`, `job-types.md`, `parameter-space.md`,
 `step-dependencies.md` (skipped and zero-Task dependencies), `public-api.md` (including `ChunkTaskIndex`), and a new
 `job-outputs.md`. Also update
-`specs/architecture.md` with the binding and job output evaluation stages.
+`specs/architecture.md` with the progressive binding and job output evaluation stages; `job-creation.md` gets the
+materialization groups, the group inputs, and the evaluation order of `advance_step_binding`.
 
 ## openjd-expr
 
@@ -637,14 +704,26 @@ struct StepRecord { state: SimStepState, task_outputs: Vec<IndexMap<String, Expr
 enum SimStepState { Pending, Bound, Skipped, Succeeded, Failed, Blocked }
 ```
 
-Before the loop, print the job outputs that `create_job` already evaluated. Then, for each Step in topological
-order:
+`Pending` holds the `job::Step` with its `PendingBinding`, so the simulator always knows which groups have
+evaluated. A step **advance** is: build `StepInputs` from the records of the Step's direct dependencies with
+`StepInputs::add_producer` (`Succeeded`, `Skipped`, or `TasksKnown` for a dependency whose Tasks are known), call
+`advance_step_binding`, and swap in the result. For each fact the call adds, print one line, such as
+`Step 'StylizeFrame': Tasks known (1440 tasks)` or `Step 'C': host requirements known`; a Step that becomes `Bound`
+prints `Step 'X' is ready`; a `Skipped` result prints `Step 'X' skipped (enableIf is false)`. On error, print the
+failure (the group, field, and expression), mark the Step `Failed`, and set `ctx.session_failed`, so the run stops
+before it starts any more Tasks, as it does after a failed Task. This is how the CLI shows the RFC's early failure: a
+Step whose parameter space fails fails as soon as the producer it reads finishes, before a later producer that only
+its script reads has run.
 
-1. If a dependency is `Failed` or `Blocked`, mark the Step `Blocked` and print why. The current stop-on-first-failure
-   behavior (`ctx.session_failed`) already prevents it from running.
-2. Build `StepInputs` from the records of its direct dependencies with `StepInputs::add_producer`.
-3. If the Step is `PendingInputs`, call `bind_step`. On error, print the binding failure (field and expression) and
-   mark the Step `Failed`. If it is `Skipped`, print `Step 'X' skipped (enableIf is false)`.
+Before the loop, print the job outputs that `create_job` already evaluated and, for each pending Step, what is
+known of it (the `binding_report()` of M4.3). Then, for each Step in topological order:
+
+1. If the Step is already `Failed`, skip it. If a dependency is `Failed` or `Blocked`, mark the Step `Blocked` and
+   print why. The current stop-on-first-failure behavior (`ctx.session_failed`) already prevents it from running.
+2. If it is still `Pending`, advance it. Every one of its direct dependencies is terminal by now, so every input is
+   concrete and the result is `Bound`, `Skipped`, or an error. A `Pending` result here is a bug in the simulator
+   or the model, and is reported as an internal error naming the groups still waiting.
+3. If it is `Skipped`, it has zero Tasks; record it and continue at item 6.
 4. Otherwise call `attach_step_inputs`, enter only the enabled step Environments, and run the Tasks as today. Record
    `ActionResult.outputs` for each Task index, using the model's `ChunkTaskIndex` for a chunked Step.
 
@@ -659,9 +738,12 @@ order:
    Print the outputs after each Action with their units (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task
    runs can be printed as they arrive, marked as not committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
-6. After each Step is bound, succeeds, or is skipped, call `evaluate_job_output` for every job output that is still
-   pending and whose inputs are now all concrete (`job_output_inputs`), store the result, and print it once, as
-   `Job output VideoCount = 12`. An error prints the output, expression, and message, marks the run failed, and stops
+6. After each Step succeeds or is skipped, advance every other `Pending` Step, in topological order, repeating until
+   a pass changes nothing (a Step whose Tasks become known can make its own consumers' `TaskParam` inputs concrete).
+   This is the simulator's form of the RFC's SHOULD to evaluate each group as soon as its inputs are concrete.
+7. After each Step's Tasks become known, or it succeeds or is skipped, call `evaluate_job_output` for every job
+   output that is still pending and whose inputs are now all concrete (`job_output_inputs`), store the result, and
+   print it once, as `Job output VideoCount = 12`. An error prints the output, expression, and message, marks the run failed, and stops
    running Tasks, as a failed Task does. At the end, list the job outputs that were never evaluated, naming the Step
    each waits on. With `--step` alone, those are the outputs that read Steps not run. The run is reported as succeeded
    only after every job output whose inputs are concrete has been evaluated. The CLI imposes no size limit on job
@@ -686,9 +768,14 @@ Options:
 
 ### C2. `openjd summary` and `openjd check`
 
-* `summary` (`summary.rs:113`) prints a pending Step as `Tasks: determined at run time from
-  Steps.VideoToFrames.Output.FrameCount`, which follows §Implementation strategy. The total becomes
-  `Total tasks: N + (determined at run time)`. A statically skipped Step is shown as `SKIPPED`.
+* `summary` (`summary.rs:113`) prints what `create_job` knows of each pending Step, from `binding_report()`, which
+  follows §Implementation strategy: one line each for whether it runs, its Tasks, and its host requirements, either
+  known or with the outputs it waits for. For example, `StylizeFrame` shows `Tasks: determined at run time from
+  Steps.VideoToFrames.Output.FrameCount`, and a Step whose range is static but whose script `let` reads an upstream
+  output shows `Tasks: 240 (known; Step pending inputs for Steps.P.Output.X)`. A Step with a dynamic `enableIf`
+  shows `Enabled: determined at run time from ...` and its Tasks as waiting for it. The total becomes
+  `Total tasks: N + (determined at run time)`, where `N` counts every Step whose Tasks are known, pending or not. A
+  statically skipped Step is shown as `SKIPPED` with 0 Tasks.
 * `summary` lists the job outputs, with their types and units, and which Steps each waits on. This is the CLI's
   form of the RFC's SHOULD that a pending job output be shown with what it waits for (§Job outputs item 2).
 * `check` needs no change beyond M2.
@@ -701,7 +788,8 @@ Options:
 
 * **openjd-snapshots**: no change (see the summary).
 * **openjd-for-js**: it builds on `openjd-model`, so validation picks up `CONTROL_FLOW` automatically. Rebuild and run
-  its vitest suite in the PRs that touch the model. JS bindings for `bind_step` are out of scope for the prototype.
+  its vitest suite in the PRs that touch the model. JS bindings for `advance_step_binding` are out of scope for the
+  prototype.
 
 ## PR and commit order
 
@@ -713,10 +801,10 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 2 | `feat(model): Steps.* scope in template validation` | 1 | the M2 scope rules and their messages except the job output scope, `enableIf` typing, and the `create_job` check-table seeding from M4.3. Until PR 4, `openjd run` of a template that reads `Steps.*` fails when a Task starts, because the value is unresolved; this is acceptable on the prototype branch |
 | 3a | `feat(expr): reverse path mapping` | — | E1 |
 | 3 | `feat(model): output directive parser and collector` | 1, 3a | M3 |
-| 4 | `feat(model): step input binding` | 2, 3 | M4: `StepBinding`, static `enableIf`, `bind_step`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
+| 4 | `feat(model): progressive step input binding` | 2, 3 | M4: `StepBinding` with `PendingBinding`, group inputs, Job-creation evaluation of every evaluable group, `advance_step_binding`, `binding_report`, `StepInputs`, `attach_step_inputs`, range rules (including the `INT`/`FLOAT` list-item flattening of A14), task-count limits |
 | 5 | `feat(sessions): openjd_output_var directive` | 3, 4 | S1–S4, including the helper protocol and truncation changes, so the helper sub-crate's gates and the cross-user tests apply |
 | 4a | `feat(model): job outputs` | 2, 4 | the M1 `jobOutputDefinitions` schema, the M2 job output scope, and M4 item 9 |
-| 6 | `feat(cli): simulate step input binding in openjd run` | 4, 4a, 5 | C1, C2 |
+| 6 | `feat(cli): simulate progressive step input binding in openjd run` | 4, 4a, 5 | C1 (advancing pending Steps after each Step, early failure, per-group reports), C2 |
 | 7 | `test(cli): golden tests for the RFC sample templates` | 6 | the sample tests below |
 
 PR 3 can proceed in parallel with 2. PR 5's directive work (S1–S3) can start after 3, but its S4 part needs
@@ -752,13 +840,25 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   fail (a literal list at validation, a computed range at Job creation and at binding). A chunked producer with a
   second Task parameter (`CHUNK[INT]` `[5, 1, 3, 2]` × `STRING` `[a, b]`, and × `STRING` `[a, a]`) keeps its
   outputs aligned with iteration order, through `ChunkTaskIndex`.
-* Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
+* Binding: group inputs directly and through a `let` (including a `let` read only by the script, which puts only
+  the remaining group behind its producer); a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
   product space; empty with associated ranges; non-empty `INT` and `FLOAT` list-literal ranges with a list-valued item
   (`["{{Param.L}}"]`); a list-literal range that flattens to nothing; the 1024 cap lifted;
-  `max_task_count` across bindings; and `TaskParam` alignment and iteration order under a
+  `max_task_count` across Steps as their Tasks become known; and `TaskParam` alignment and iteration order under a
   `combination: "A * B"` with `B` varying fastest.
+* Progressive binding (`test_control_flow_progressive.rs`), each asserting the `PendingBinding` after every
+  `advance_step_binding` call: a Step whose range reads `P` and whose host requirements read `Q` gets Tasks known
+  after `P` alone and host requirements known after `Q` alone, and the same with the order reversed; it is `Bound`
+  only after both and the remaining group; a dynamic `enableIf` keeps every group `Waiting` (with each group's own
+  `on` set) even when their inputs are concrete, and a static range that would `fail(...)` is not evaluated at
+  creation; with `enableIf` false the Step is `Skipped` though its range would fail; with `enableIf` true, a failing
+  range returns `Err` naming the group, field, and expression while the remaining group still waits; a failing
+  static group of a pending Step fails `create_job`; a call with no new inputs returns the Step unchanged; a
+  consumer's Tasks become known from the `TaskParam` of a producer that is still pending with Tasks known; the
+  Task-count limit fails the Step when its Tasks become known; and a `let` used only by the remaining group is not
+  evaluated when the Task enumeration group is.
 * Job creation: a script that reads `Steps.*` passes `create_job`'s own carried-forward checks.
 * `PATH` outputs: `PATH` and `LIST[PATH]` declarations; `Output` of a `PATH` producer in a TEMPLATE-scope field is
   rejected with the `RawOutput` hint, and `RawOutput` there is accepted; the collector maps a reported path back,
@@ -766,7 +866,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Job outputs: each schema rule; a `value` reading a Step that isn't a dependency of anything is accepted; `Param` of
   a `PATH` type rejected and `RawParam` accepted; a path-typed `Steps.P.Output.X` rejected with the `RawOutput`
   hint and `RawOutput` accepted; evaluation at creation, and a failure there failing `create_job`;
-  an output reading only `TaskParam` of a Step bound at creation (evaluated at creation), and one reading a
+  an output reading only `TaskParam` of a Step whose Tasks are known at creation (evaluated at creation, including
+  for a Step that is still pending), and one reading a
   statically skipped Step (evaluated at creation, `null`); `evaluate_job_output` for a later Step, a dynamically
   skipped Step (`null`), a zero-Task Step with `min([])` (error), a constraint violation, and a `null` result with a
   constraint (not checked). CLI: a run with a failing job output fails, and a run's success is reported after its
@@ -846,6 +947,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   * Render and QC: `EncodeVideo=false` (static skip, so `Publish` prints `frames only`), noise above and below the
     threshold (dynamic skip), and `BadFrames=[]` (zero Tasks).
   * Plus a `--step` run with `--step-inputs`, and a `--maximum-tasks` run that blocks the consumer.
+  * Progressive binding (not an RFC sample, `control_flow/progressive.yaml`): a Step whose range reads `P` and whose
+    host requirements and script `let` read `Q`, where `Q` depends on `P`. The output shows `Tasks known` after `P`
+    and `ready` after `Q`; `openjd summary` shows its provisional Task count; a variant where the range
+    `fail(...)`s shows the Step failing after `P` and `Q` never running; a variant whose `enableIf` reads `Q` and is
+    false shows the failing range never evaluated and the Step skipped.
 
 **Conformance**: propose a `conformance-tests/2023-09/CONTROL_FLOW/` set in openjd-specifications, in the same format
 as `EXPR/jobs/*.test.yaml`. It is a separate repo and a separate task, and it is not part of this plan's PRs.
@@ -858,7 +964,7 @@ binding API are shaped so that a Python port can mirror them.
 These are the questions the RFC needs to answer before an implementation can be called conformant. The prototype
 picks a behavior for each and records it in the specs. A9, A10, and A12 were about the session-supplied output file,
 and the RFC revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in
-`1e89748` and `61f27ee`. Resolved items are kept, struck through, so the numbering stays stable.
+`1e89748` and `61f27ee`, and A11 in `f04e248`. Resolved items are kept, struck through, so the numbering stays stable.
 
 * **A1. The validation warning has no channel.** §Modifications to the Expression Language says that template
   validation "MUST emit a warning". No OpenJD specification, the conformance runner, nor openjd-rs has a warning
@@ -877,10 +983,10 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
   (§Empty parameter spaces, "some implementations reject it instead", and Open Question 11). The Video example's note
   says only that `"1-0"` is `[1]` under §3.4.1.1.1. It should mention the divergence too, because openjd-rs fails with
   `Descending range 1-0 requires a negative step`, and `minValue: 1` is the only guard that works everywhere.
-* **A5. Task-count limits.** The RFC allows a per-Step limit checked at binding. openjd-rs and services already have a
-  per-Job total (`CallerLimits::max_task_count`) that is checked at creation. The RFC should say whether a Job-total
-  limit applies cumulatively at each binding, so that the binding that crosses it fails, and that pending Steps count
-  as zero at creation.
+* **A5. Task-count limits.** The RFC allows a per-Step limit checked when the Step's Tasks become known. openjd-rs
+  and services already have a per-Job total (`CallerLimits::max_task_count`) that is checked at creation. The RFC
+  should say whether a Job-total limit applies cumulatively as each Step's Tasks become known, so that the Task
+  enumeration that crosses it fails the Step, and that Steps whose Tasks are not known yet count as zero.
 * **A6. JSON numbers coerced to `STRING`.** The conversion rule makes any number outside `i64`, or with a fraction or
   exponent, a `float` before it is coerced. `S=12345678901234567890` then becomes `"1.2345678901234567e+19"` under EXPR coercion (checked with
   `ExprValue::coerce`), while the job-parameter path keeps the digits. The
@@ -902,11 +1008,11 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
 * ~~**A10. The output file's integrity.**~~ Resolved: there is no session-supplied file. For `@` files, §File values
   now requires the opened file to be a regular file inside the Session working directory, checked on the handle, and
   read with no more access than the Action's user.
-* **A11. Step `let` forces `PENDING_INPUTS`.** Step `let` is a materialization expression, so a Step that reads
-  `Steps.P.*` only in a step `let` that only its script uses becomes pending. Moving `FramesToVideo`'s `FrameRate`
-  into a step `let` is enough. Ordering is unaffected, but the reported state and `openjd summary`'s Task count
-  change. Confirm that this is intended, or narrow the rule to `let` names that other materialization expressions
-  read.
+* ~~**A11. Step `let` forces `PENDING_INPUTS`.**~~ Resolved in `f04e248`: with progressive binding, a step `let`
+  belongs to the groups that use it, and the remaining group uses every one, so a `let` that only the script reads
+  holds back only the remaining group. Such a Step is still `PENDING_INPUTS` until its producer finishes (every
+  `let` is evaluated before dispatch, as today), but its Tasks and host requirements are known at creation, so
+  `openjd summary`'s Task count no longer changes.
 * ~~**A12. Editorial: `<BlankLine>`.**~~ Resolved: the line grammar that used it is gone.
 * **A13. Nested-list fan-in and `repr_sh`.** A per-Task `LIST[T]` output from a multi-Task producer becomes
   `list[list[T]]` (§Reductions item 4), and `repr_sh` has no signature for nested lists, while `repr_py`,
@@ -928,3 +1034,10 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
   and S2 adds the second.
 * ~~**A16. Cancel at once, or fail at exit?**~~ Resolved in `1e89748`: an invalid directive MUST cancel and fail its
   Action at once.
+* **A17. `TaskParam` read from a producer that then fails.** Under progressive binding, `Steps.P.TaskParam.*` is
+  concrete once `P`'s Tasks are known, which can be before `P` is bound (RFC §The `Steps.*` scope, Concreteness).
+  If `P` then fails in another group, a job output that read only `P`'s `TaskParam` has already been evaluated and
+  committed, although §Job outputs item 4 says an output that references a failed Step is not evaluated while it
+  stays failed. The RFC should say whether such an output is withdrawn, kept, or shown as unavailable. The Job
+  fails either way, because `P` failed. Prototype: keep the value, and list the output as reading a failed Step in
+  the run's final report.
