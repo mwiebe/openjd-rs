@@ -809,6 +809,15 @@ fn check_element_for_each_list_element_type() {
         .unwrap();
     p.check_element(&ExprValue::String("/a".into())).unwrap();
     assert_eq!(
+        p.check_element(&ExprValue::Int(3)),
+        Err("Output variable 'P': element has type int, expected path".into())
+    );
+    let ints = ExprValue::make_list(vec![ExprValue::Int(3)], ExprType::INT).unwrap();
+    assert_eq!(
+        def("{name: P, type: 'LIST[PATH]'}").check_constraints(&ints),
+        Err("Output variable 'P': value has type list[int], expected list[path]".into())
+    );
+    assert_eq!(
         p.check_element(&ExprValue::new_path("/b", PathFormat::Posix)),
         Err("Output variable 'P': element '/b' is not in allowed values".into())
     );

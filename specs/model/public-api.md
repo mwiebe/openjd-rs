@@ -597,7 +597,10 @@ format preserves original float literals, jobs created from `1.0` vs
 consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 `f64` — `Job`, `Step`, `StepParameterSpace`, `TaskParameter`,
 `HostRequirements`, `AmountRequirement` — implement `PartialEq` but
-not `Eq`; the rest also implement `Eq`.
+not `Eq`, and so do the CONTROL_FLOW types that hold an
+`openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
+but not `Eq`): `OutputVariable`, `OutputConstraints`,
+`OutputAllowedValues`, `OutputBound`. The rest also implement `Eq`.
 
 ```rust
 pub struct job::Job {

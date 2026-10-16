@@ -204,7 +204,7 @@ fields as:
 ```json
 "outputVariables": [
   {"name": "T", "type": "FLOAT", "unit": "s",
-   "constraints": {"minValue": {"float": 0.0}, "allowedValues": {"float": [0.0, 1.5]}}},
+   "constraints": {"allowedValues": {"float": [0.0, 1.5]}, "minValue": {"float": 0.0}}},
   {"name": "K", "type": "LIST[STRING]", "collect": "APPEND",
    "constraints": {"maxLength": 9, "item": {"allowedValues": {"string": ["a"]}}}}
 ],
