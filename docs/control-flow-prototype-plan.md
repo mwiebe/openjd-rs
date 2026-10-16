@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `a876d88`, which makes step input binding progressive (RFC §Step input binding,
+  openjd-specifications commit `66b6215`, which makes step input binding progressive (RFC §Step input binding,
   Design Choice 15; 04 §10).
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
@@ -409,7 +409,7 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    Two read-only helpers serve reporting (C1, C2) and schedulers: `job::Step::tasks_known() -> Option<u64>`, the Task
    count once Tasks are known (`Some(0)` for `Skipped`), and `job::Step::binding_report()`, which lists, for
    enablement, Tasks, host requirements, and the remaining group, whether each is known and what it waits for (the
-   `Steps.*` symbols that are not concrete, or the undecided `enableIf`). The RFC requires the first three in a
+   `Steps.*` symbols that are not concrete, or the undecided `enableIf`). The RFC recommends the first three in a
    report; the remaining group's waiting set says why a Step whose Tasks and host requirements are known is still
    pending (C2).
 4. **Assembling inputs.** Schedulers and the CLI should not have to reimplement the shape rules, so the model provides
@@ -479,7 +479,9 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    See A5.
 8. **`StepDependencyGraph`** (`job/step_dependency_graph.rs`) is unchanged. The step graph is fixed.
 9. **Job outputs.** `create_job` evaluates every job output whose `value` reads no `Steps.*` symbol that is not
-   concrete yet, and fails Job creation if one fails, as an invalid parameter does. The rest are evaluated later
+   concrete yet, including a `TaskParam` of a Step whose Tasks are known at creation though it is still pending, and
+   fails Job creation if one fails, as an invalid parameter does. An evaluated job output stays committed even if a
+   Step it reads later fails (§Job outputs item 4). The rest are evaluated later
    through:
 
    ```rust
@@ -774,8 +776,9 @@ known of it (the `binding_report()` of M4.3). Then, for each Step in topological
    This is the simulator's form of the RFC's SHOULD to evaluate each group as soon as its inputs are concrete.
 7. After each Step's Tasks become known, or it succeeds or is skipped, call `evaluate_job_output` for every job
    output that is still pending and whose inputs are now all concrete (`job_output_inputs`), store the result, and
-   print it once, as `Job output VideoCount = 12`. An error prints the output, expression, and message, marks the run failed, and stops
-   running Tasks, as a failed Task does. At the end, list the job outputs that were never evaluated, naming the Step
+   print it once, as `Job output VideoCount = 12`. An output evaluated from a Step's `TaskParam` before that Step ran
+   stays committed if the Step then fails. An error prints the output, expression, and message, marks the run
+   failed, and stops running Tasks, as a failed Task does. At the end, list the job outputs that were never evaluated, naming the Step
    each waits on. With `--step` alone, those are the outputs that read Steps not run. The run is reported as succeeded
    only after every job output whose inputs are concrete has been evaluated. The CLI imposes no size limit on job
    outputs, which the RFC's 1 MiB minimum allows.
@@ -1008,7 +1011,8 @@ binding API are shaped so that a Python port can mirror them.
 These are the questions the RFC needs to answer before an implementation can be called conformant. The prototype
 picks a behavior for each and records it in the specs. A9, A10, and A12 were about the session-supplied output file,
 and the RFC revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in
-`1e89748` and `61f27ee`, and A11 in `a876d88`. Resolved items are kept, struck through, so the numbering stays stable.
+`1e89748` and `61f27ee`, A11 in `a876d88`, and A17 in `66b6215`. Resolved items are kept, struck through, so the
+numbering stays stable.
 
 * **A1. The validation warning has no channel.** §Modifications to the Expression Language says that template
   validation "MUST emit a warning". No OpenJD specification, the conformance runner, nor openjd-rs has a warning
@@ -1078,11 +1082,8 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
   and S2 adds the second.
 * ~~**A16. Cancel at once, or fail at exit?**~~ Resolved in `1e89748`: an invalid directive MUST cancel and fail its
   Action at once.
-* **A17. `TaskParam` read from a producer that then fails.** `Steps.P.TaskParam.*` is concrete once `P`'s Tasks
-  are known, before `P` has run, so a job output that reads only `P`'s `TaskParam` is evaluated and committed early.
-  If `P` then fails, §Job outputs item 4 says an output that references a failed Step is not evaluated while it
-  stays failed, but this one already was. The case exists without progressive binding, for a `P` bound at creation
-  whose Task fails later; progressive binding widens it to a pending `P` whose Tasks are known and which then fails
-  another group (RFC §The `Steps.*` scope, Concreteness). The RFC should say whether such an output is withdrawn, kept, or shown as unavailable. The Job
-  fails either way, because `P` failed. Prototype: keep the value, and list the output as reading a failed Step in
-  the run's final report.
+* ~~**A17. `TaskParam` read from a producer that then fails.**~~ Resolved in `66b6215`: a job output is evaluated
+  as soon as every symbol it reads is concrete, including a `TaskParam` that is concrete because `P`'s Tasks are
+  known before `P` is bound, and once evaluated it stays committed even if `P` later fails; the Job then fails as it
+  otherwise would (RFC §Job outputs item 4). Which job outputs of a failed Job have been evaluated depends on
+  evaluation timing and is not specified (Design Choice 15). Prototype: keep the value (M4 item 9, C1 item 7).
