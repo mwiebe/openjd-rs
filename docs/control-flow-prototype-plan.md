@@ -133,7 +133,8 @@ rules (§Validation, "At template validation"):
 3. `outputVariables`: 1–32 elements, unique names, an allowed type, valid constraints, `collect: APPEND` only with a
    `LIST[...]` type, a `unit` of 1–32 characters with no Unicode Cc characters, and no `LIST[LIST[INT]]` on a Step
    with a `parameterSpace`. Outputs on a Step with a `CHUNK[INT]` parameter are allowed (M3), and a literal-list
-   `CHUNK[INT]` range in such a Step must have distinct values; a computed one is checked at binding (M4).
+   `CHUNK[INT]` range in such a Step must have distinct values; a computed one is checked when it is materialized
+   (M4 item 6).
 
 The scope rules go into pass 8 (`format_strings.rs`), because that pass already builds one symbol table per field
 family:
@@ -188,7 +189,7 @@ impl OutputCollector {
         max_bytes: usize,
         path_rules: &[PathMappingRule],   // the Session's rules, for PATH values
         worker_format: PathFormat,
-        chunk: Option<&[i64]>,            // the chunk's CHUNK[INT] values, or None for an unchunked Step
+        chunk: Option<Vec<i64>>,          // the chunk's CHUNK[INT] values (copied), or None if unchunked
     ) -> Self;
     /// Steps 1-2 of §Processing a directive: name declared, selector valid, ONCE not repeated for that Task.
     /// Called before an `@` file is read.
@@ -370,6 +371,10 @@ Environments are kept as they are, because they are carried forward as format st
    * Lift the 1024-element cap (`ranges.rs:336`, `:475`, `:556`) for format-string ranges when `CONTROL_FLOW` is
      enabled. List literals stay capped as written. This depends on how A3 is answered, so the cap is decided in one
      function that the answer can change.
+   * In a Step that declares `outputVariables`, a `CHUNK[INT]` range must have distinct values once evaluated. Check
+     it wherever the range is materialized: in `instantiate_step`, which `create_job` uses for a computed range that
+     reads no `Steps.*` (today `range: "{{[1,1,2]}}"` creates three Tasks), and in `bind_step`. A duplicate fails the
+     Step with a message naming the value.
    * Range strings are unchanged. `"1-0"` stays an error in openjd-rs until A4 is settled.
 7. **Task-count limits.** Keep `max_task_count` as the job total. In `create_job`, count only bound Steps. In
    `bind_step`, `committed_task_count` carries the count already committed, and the binding that would exceed the
@@ -637,8 +642,10 @@ order:
 3. If the Step is `PendingInputs`, call `bind_step`. On error, print the binding failure (field and expression) and
    mark the Step `Failed`. If it is `Skipped`, print `Step 'X' skipped (enableIf is false)`.
 4. Otherwise call `attach_step_inputs`, enter only the enabled step Environments, and run the Tasks as today. Record
-   `ActionResult.outputs` for each Task index: build a map from `CHUNK[INT]` value to iteration index from the
-   per-Task iterator, and store each Task's map at its index. Print them after each Action with their units
+   `ActionResult.outputs` for each Task index: from the per-Task iterator, build a map from (the values of the
+   Step's other Task parameters, `CHUNK[INT]` value) to iteration index, since a chunk runs with the other
+   parameters fixed and each `CHUNK[INT]` value recurs once per combination of them. Look up each Task's map with
+   the chunk's other parameter values and its key, and store it at that index. Print them after each Action with their units
    (`Output mpjpe_mm = 52.6 mm`). Values reported while a Task runs can be printed as they arrive, marked as not
    committed.
 5. A Step with zero Tasks prints `Step 'X' has 0 tasks` and succeeds.
@@ -716,9 +723,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Gating: each new field without the extension, `CONTROL_FLOW` without `EXPR`, and `CONTROL_FLOW` in an Environment
   Template.
 * Structure: each `outputVariables` rule, including `LIST[LIST[INT]]` on a multi-Task Step, outputs accepted on a
-  `CHUNK[INT]` Step, the 32-item
-  cap, `PATH` and `LIST[PATH]` accepted with `objectType` and rejected with `dataFlow`, `collect: APPEND` on a scalar
-  type, and `unit` length and control characters.
+  `CHUNK[INT]` Step, the 32-item cap, `PATH` and `LIST[PATH]` accepted with `objectType` and rejected with `dataFlow`,
+  `collect: APPEND` on a scalar type, and `unit` length and control characters.
 * Scope: one test per `Steps.*` error message (M2), one per forbidden field family, a reference in a branch that is
   never taken, and a reference through a `let`.
 * Types: scalar, list, and optional shapes, checked as `ExprType` on the seeded symbol, and `enableIf` given a `bool?`
@@ -733,7 +739,9 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   Task, a missing value for one Task failing `finish`, a chunk of one Task still requiring the selector, a selector
   that overflows `i64` (a grammar error), and a `range: [5, 1, 3, 2]` chunked producer whose `Steps.P.Output` and
   `TaskParam` lists stay aligned in iteration order. Binding: duplicate `CHUNK[INT]` values in a Step with outputs
-  fail (a literal list at validation, a computed range at binding).
+  fail (a literal list at validation, a computed range at Job creation and at binding). A chunked producer with a
+  second Task parameter (`CHUNK[INT]` `[5, 1, 3, 2]` × `STRING` `[a, b]`) keeps its outputs aligned with
+  iteration order.
 * Binding: pending detection directly and through a `let`; a consumer of a statically skipped producer, and a
   consumer of `TaskParam` only, both bound at creation, including when the consumer comes before the producer in the
   template; a static skip that never evaluates the Step's `let`; a dynamic skip; `fail(...)` at binding; an empty
