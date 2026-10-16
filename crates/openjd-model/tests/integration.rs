@@ -19,6 +19,10 @@ mod test_chunk_int;
 mod test_chunk_scaling;
 #[path = "integration/test_combination_expr.rs"]
 mod test_combination_expr;
+#[path = "integration/test_control_flow_job_types.rs"]
+mod test_control_flow_job_types;
+#[path = "integration/test_control_flow_schema.rs"]
+mod test_control_flow_schema;
 #[path = "integration/test_create_job.rs"]
 mod test_create_job;
 #[path = "integration/test_embedded.rs"]

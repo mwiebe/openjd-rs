@@ -36,10 +36,14 @@ pub fn try_context_aware_help(args: &[String]) -> bool {
     let path = Path::new(path_str);
 
     // Find --extensions value if present
-    let extensions = args
-        .windows(2)
-        .find(|w| w[0] == "--extensions")
-        .map(|w| w[1].as_str());
+    // Accept both `--extensions X` and `--extensions=X`, as clap does.
+    let extensions = args.iter().enumerate().find_map(|(i, a)| {
+        if a == "--extensions" {
+            args.get(i + 1).map(String::as_str)
+        } else {
+            a.strip_prefix("--extensions=")
+        }
+    });
 
     match generate_template_help(path, extensions) {
         Ok(help) => {
@@ -64,17 +68,10 @@ fn generate_template_help(
         &crate::common::caller_limits(),
     )?;
 
-    let default_exts = vec![
-        "TASK_CHUNKING",
-        "REDACTED_ENV_VARS",
-        "FEATURE_BUNDLE_1",
-        "EXPR",
-    ];
-    let supported_exts: Vec<&str> = match extensions_arg {
-        Some(s) if !s.is_empty() => s.split(',').map(|e| e.trim()).collect(),
-        Some(_) => vec![],
-        None => default_exts,
-    };
+    // The same resolution as `check`, `run`, and `summary`: every
+    // `ModelExtension::ALL` name by default.
+    let extensions = crate::common::parse_extensions(&extensions_arg.map(str::to_string))?;
+    let supported_exts: Vec<&str> = extensions.iter().map(String::as_str).collect();
 
     let template = parse::decode_job_template(
         template_value,
