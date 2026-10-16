@@ -410,8 +410,9 @@ enum ResolvedConstraint<'a> {
     ArgListItem { max_len: usize },
     /// RFC 0010 `enableIf`, on a Step or an Environment: target type
     /// `bool`, not `bool?`, so a `null` result is an error rather than an
-    /// omitted field. EXPR's coercion rejects a static non-bool value,
-    /// including `null`, so there is nothing further to check.
+    /// omitted field. A whole-field expression's static non-bool value,
+    /// `null` included, fails EXPR's coercion; a fully static multi-segment
+    /// string must be one of the spellings `string` → `bool` accepts.
     Bool,
 }
 
@@ -787,9 +788,15 @@ fn check_resolved_constraint(
                 }
             }
         }
-        // The target type is the whole check: EXPR's coercion rejects a
-        // static non-bool value, `null` included.
-        ResolvedConstraint::Bool => {}
+        // A single whole-field expression already resolved with target type
+        // `bool`, so EXPR's coercion rejected a static non-bool value, `null`
+        // included. A multi-segment string resolves to text, which is then
+        // coerced to `bool`; check that when the text is fully static.
+        ResolvedConstraint::Bool => {
+            if let Some(ExprValue::String(text)) = &sr.resolved_value {
+                check_string_is_bool(text, path, errors);
+            }
+        }
         ResolvedConstraint::CancelationMode => {
             if sr.min_resolved_string_len > MODE_MAX_LEN {
                 errors.add(
@@ -1326,11 +1333,14 @@ fn check_steps_refs_only(
 /// Validate an RFC 0010 `enableIf` (Step or Environment) against `symtab`,
 /// the restricted scope its location allows.
 ///
-/// A YAML bool needs no check. A format string must be a single whole-field
-/// expression, such as `"{{Param.Run}}"`: a literal string or text around an
-/// expression would resolve to a string, which the RFC does not say how to
-/// read as a bool (plan ambiguity A8), so this prototype rejects both. The
-/// expression's target type is `bool`, not `bool?`.
+/// A YAML bool needs no check. A format string resolves as any typed field
+/// does (Expression Language §1.3.2): a single whole-field expression with
+/// target type `bool`, not `bool?`; anything else to a string, which is
+/// then converted to `bool` by EXPR's implicit `string` → `bool` coercion
+/// (§1.2.3: `"true"`/`"yes"`/`"on"`/`"1"` and `"false"`/`"no"`/`"off"`/`"0"`,
+/// case-insensitive). A literal string, or a string whose value is fully
+/// static, is converted here; one that depends on unresolved symbols is
+/// converted when it is evaluated.
 fn validate_enable_if(
     enable_if: Option<&BoolOrFormatString>,
     symtab: &SymbolTable,
@@ -1341,14 +1351,8 @@ fn validate_enable_if(
     let Some(BoolOrFormatString::FormatString(fs)) = enable_if else {
         return;
     };
-    if fs.is_literal() || fs.segment_count() != 1 {
-        errors.add(
-            path,
-            "must be a bool, or a format string that is one expression and nothing else, such as '{{Param.Run}}'.",
-        );
-        // Still check the references, so an unavailable symbol is reported
-        // in the same pass.
-        validate_fs(fs, symtab, ev, path, errors);
+    if fs.is_literal() {
+        check_string_is_bool(fs.raw(), path, errors);
         return;
     }
     validate_fs_with(
@@ -1359,6 +1363,16 @@ fn validate_enable_if(
         Some(&ResolvedConstraint::Bool),
         errors,
     );
+}
+
+/// EXPR's implicit `string` → `bool` coercion (§1.2.3) applied to the text an
+/// `enableIf` resolves to, reporting a failure at `path`.
+fn check_string_is_bool(text: &str, path: &[PathElement], errors: &mut ValidationErrors) {
+    if let Err(message) =
+        ExprValue::String(text.to_string()).coerce(&ExprType::BOOL, PathFormat::Posix)
+    {
+        errors.add(path, format!("must resolve to a bool: {message}."));
+    }
 }
 
 /// Validate an action's template-scope numeric/enum fields: `timeout`

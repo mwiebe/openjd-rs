@@ -399,8 +399,9 @@ list, or mapping fails deserialization with `expected a bool or a format string,
 <kind>`. An explicit `null` means the field is omitted, as for the template's other
 optional fields (`description: null`, `hostRequirements: null`), so it neither enables
 nor disables anything and is not gated. Validation pass 8 checks a format string's
-symbols and its target type, `bool`, and requires it to be one whole-field expression (see
-[validation.md](validation.md) § The `Steps.*` Scope and `enableIf`). `create_job` does
+symbols and its target type, `bool`; text that resolves to a string must be one of the
+spellings EXPR converts to a bool (see [validation.md](validation.md) § The `Steps.*`
+Scope and `enableIf`). `create_job` does
 not evaluate `enableIf` yet and refuses any value other than `true` (see
 [job-creation.md](job-creation.md)).
 

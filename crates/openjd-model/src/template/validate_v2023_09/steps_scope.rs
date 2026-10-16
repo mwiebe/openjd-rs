@@ -287,8 +287,9 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
     };
     let (_, is_path) = found;
     if is_path && ctx.scope == StepsFieldScope::Template && member != raw_member {
+        // Name the symbol itself, not a property read from it (`.name`).
         return Some(format!(
-            "'{sym}' has a path type, so it is available only in fields resolved on the worker host. Use Steps.{p}.{raw_member}.{name} here."
+            "'Steps.{p}.{member}.{name}' has a path type, so it is available only in fields resolved on the worker host. Use Steps.{p}.{raw_member}.{name} here."
         ));
     }
     None
