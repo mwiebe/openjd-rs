@@ -68,9 +68,9 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct OutputVariableDefinition {
     definition: JobParameterDefinition,
-    collect: OutputCollectMode,
-    unit: Option<String>,
-    constraints: OutputConstraints,
+    /// The job-side form, built once: name, type, `collect`, `unit`, and the
+    /// declared constraints.
+    job: OutputVariable,
     /// Job-parameter properties the author wrote that an output variable may
     /// not have, in the order of [`UNAVAILABLE_PROPERTIES`].
     unavailable: Vec<&'static str>,
@@ -101,14 +101,15 @@ impl<'de> Deserialize<'de> for OutputVariableDefinition {
             D::Error::custom(format!("unknown output variable type: '{type_str}'"))
         })?;
 
+        // An explicit `null` means omitted, as for the other optional fields.
         let collect = match map.remove("collect") {
-            None => OutputCollectMode::default(),
+            None | Some(serde_json::Value::Null) => OutputCollectMode::default(),
             Some(v) => {
                 serde_json::from_value(v).map_err(|e| D::Error::custom(format!("collect: {e}")))?
             }
         };
         let unit = match map.remove("unit") {
-            None => None,
+            None | Some(serde_json::Value::Null) => None,
             Some(serde_json::Value::String(s)) => Some(s),
             Some(other) => {
                 return Err(D::Error::custom(format!(
@@ -127,7 +128,7 @@ impl<'de> Deserialize<'de> for OutputVariableDefinition {
             if key == "dataFlow" && !is_path {
                 continue;
             }
-            if map.remove(key).is_some() {
+            if map.remove(key).is_some_and(|v| !v.is_null()) {
                 unavailable.push(key);
             }
         }
@@ -135,11 +136,16 @@ impl<'de> Deserialize<'de> for OutputVariableDefinition {
         let definition: JobParameterDefinition =
             serde_json::from_value(serde_json::Value::Object(map)).map_err(D::Error::custom)?;
         let constraints = constraints_of(&definition).map_err(D::Error::custom)?;
-        Ok(Self {
-            definition,
+        let job = OutputVariable {
+            name: definition.name().to_string(),
+            param_type,
             collect,
             unit,
             constraints,
+        };
+        Ok(Self {
+            definition,
+            job,
             unavailable,
         })
     }
@@ -158,12 +164,12 @@ impl OutputVariableDefinition {
 
     /// The `collect` mode (`ONCE` when omitted).
     pub fn collect(&self) -> OutputCollectMode {
-        self.collect
+        self.job.collect
     }
 
     /// The display `unit`, if declared.
     pub fn unit(&self) -> Option<&str> {
-        self.unit.as_deref()
+        self.job.unit.as_deref()
     }
 
     /// The `description`, if declared.
@@ -180,36 +186,30 @@ impl OutputVariableDefinition {
 
     /// The declared constraint properties.
     pub fn constraints(&self) -> &OutputConstraints {
-        &self.constraints
+        &self.job.constraints
     }
 
     /// The job-side form `create_job` stores on `job::Step`.
     pub fn to_job_output_variable(&self) -> OutputVariable {
-        OutputVariable {
-            name: self.name().to_string(),
-            param_type: self.job_param_type(),
-            collect: self.collect,
-            unit: self.unit.clone(),
-            constraints: self.constraints.clone(),
-        }
+        self.job.clone()
     }
 
     /// Check one Task's whole value against the declared type and the
     /// declared constraint properties. See [`OutputVariable::check_constraints`].
     pub fn check_constraints(&self, value: &openjd_expr::ExprValue) -> Result<(), String> {
-        self.to_job_output_variable().check_constraints(value)
+        self.job.check_constraints(value)
     }
 
     /// Check one element reported under `collect: APPEND`. See
     /// [`OutputVariable::check_element`].
     pub fn check_element(&self, element: &openjd_expr::ExprValue) -> Result<(), String> {
-        self.to_job_output_variable().check_element(element)
+        self.job.check_element(element)
     }
 
     /// Check the length of a list being collected under `collect: APPEND`.
     /// See [`OutputVariable::check_length`].
     pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String> {
-        self.to_job_output_variable().check_length(len, at_exit)
+        self.job.check_length(len, at_exit)
     }
 
     /// The job-parameter properties the author wrote that an output variable

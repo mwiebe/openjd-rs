@@ -353,6 +353,15 @@ fn list_list_int_constraints() {
         d.check_constraints(&list_of_int_lists(&[&[1], &[2, 9]])),
         Err("Output variable 'L': item[1][1] 9 exceeds maximum 5".into())
     );
+    // The outer index comes first.
+    assert_eq!(
+        d.check_constraints(&list_of_int_lists(&[&[1], &[7, 2]])),
+        Err("Output variable 'L': item[1][0] 7 exceeds maximum 5".into())
+    );
+    assert_eq!(
+        d.check_constraints(&list_of_int_lists(&[&[1, 6]])),
+        Err("Output variable 'L': item[0][1] 6 exceeds maximum 5".into())
+    );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -413,7 +422,7 @@ fn check_element_on_a_list_list_int_output() {
 fn check_element_on_a_scalar_output_is_an_error() {
     assert_eq!(
         def("{name: 'N', type: INT}").check_element(&ExprValue::Int(1)),
-        Err("Output variable 'N': a INT output has no elements".into())
+        Err("Output variable 'N': INT is not a list type, so it has no elements".into())
     );
 }
 
@@ -463,8 +472,8 @@ fn control_flow_fields_round_trip() {
     assert_eq!(
         value["outputVariables"],
         serde_json::json!([
-            {"name": "T", "type": "Float", "unit": "s", "constraints": {"minValue": {"float": 0.0}}},
-            {"name": "K", "type": "ListString", "collect": "APPEND", "constraints": {"item": {"maxLength": 9}}}
+            {"name": "T", "type": "FLOAT", "unit": "s", "constraints": {"minValue": {"float": 0.0}}},
+            {"name": "K", "type": "LIST[STRING]", "collect": "APPEND", "constraints": {"item": {"maxLength": 9}}}
         ])
     );
     assert_eq!(
@@ -473,7 +482,7 @@ fn control_flow_fields_round_trip() {
     );
     assert_eq!(
         value["pathInputs"],
-        serde_json::json!([{"symbol": "Steps.P.RawOutput.Dirs", "ty": "list[path]"}])
+        serde_json::json!([{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}])
     );
     let back: Step = serde_json::from_value(value).unwrap();
     assert_eq!(back, step);
@@ -494,9 +503,33 @@ fn skipped_binding_round_trips() {
 #[test]
 fn path_input_with_an_invalid_type_is_rejected() {
     let err =
-        serde_json::from_value::<PathInput>(serde_json::json!({"symbol": "S", "ty": "list["}))
+        serde_json::from_value::<PathInput>(serde_json::json!({"symbol": "S", "type": "list["}))
             .unwrap_err();
-    assert!(err.to_string().contains("list["), "got: {err}");
+    assert_eq!(err.to_string(), PATH_INPUT_TYPE_ERROR);
+}
+
+/// The `ExprType::parse` message for the malformed type `list[`.
+const PATH_INPUT_TYPE_ERROR: &str = "Unknown type string: list[";
+
+#[test]
+fn output_variable_type_is_serialized_as_the_spec_string() {
+    let ov = def("{name: L, type: 'list[list[int]]'}").to_job_output_variable();
+    let v = serde_json::to_value(&ov).unwrap();
+    // No `collect` (ONCE) and no `constraints` (none declared).
+    assert_eq!(
+        v,
+        serde_json::json!({"name": "L", "type": "LIST[LIST[INT]]"})
+    );
+    assert_eq!(serde_json::from_value::<OutputVariable>(v).unwrap(), ov);
+    // Reading accepts the spec string in any case, and rejects other names.
+    let lower: OutputVariable =
+        serde_json::from_value(serde_json::json!({"name": "L", "type": "list[int]"})).unwrap();
+    assert_eq!(lower.param_type, JobParameterType::ListInt);
+    let err = serde_json::from_value::<OutputVariable>(
+        serde_json::json!({"name": "L", "type": "ListInt"}),
+    )
+    .unwrap_err();
+    assert_eq!(err.to_string(), "unknown output variable type: 'ListInt'");
 }
 
 #[test]
@@ -591,4 +624,214 @@ steps:
     let q = &job.steps[1];
     assert_eq!(q.output_variables, None);
     assert_eq!(q.binding, StepBinding::Bound);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Boundaries and remaining list types
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn bounds_are_inclusive() {
+    let f = def("{name: F, type: FLOAT, minValue: 0.5, maxValue: 2.5}");
+    f.check_constraints(&float(0.5)).unwrap();
+    f.check_constraints(&float(2.5)).unwrap();
+    let i = def("{name: I, type: INT, minValue: -1, maxValue: 1}");
+    i.check_constraints(&ExprValue::Int(-1)).unwrap();
+    i.check_constraints(&ExprValue::Int(1)).unwrap();
+    let s = def("{name: S, type: STRING, minLength: 2, maxLength: 2}");
+    s.check_constraints(&ExprValue::String("ab".into()))
+        .unwrap();
+    let l = def("{name: L, type: 'LIST[INT]', minLength: 2, maxLength: 2}");
+    l.check_constraints(&ExprValue::ListInt(vec![1, 2]))
+        .unwrap();
+    l.check_length(2, false).unwrap();
+    l.check_length(2, true).unwrap();
+}
+
+#[test]
+fn list_length_constraints_apply_to_every_list_type() {
+    let floats = |n: usize| {
+        ExprValue::make_list((0..n).map(|_| float(1.5)).collect(), ExprType::FLOAT).unwrap()
+    };
+    let paths = |n: usize| {
+        ExprValue::make_list(
+            (0..n)
+                .map(|_| ExprValue::new_path("/p", PathFormat::Posix))
+                .collect(),
+            ExprType::PATH,
+        )
+        .unwrap()
+    };
+    let strings = |n: usize| list_string(&vec!["s"; n]);
+    let cases: [(&str, &dyn Fn(usize) -> ExprValue); 5] = [
+        ("LIST[STRING]", &strings),
+        ("LIST[PATH]", &paths),
+        ("LIST[FLOAT]", &floats),
+        ("LIST[BOOL]", &|n| ExprValue::ListBool(vec![true; n])),
+        ("LIST[LIST[INT]]", &|n| {
+            list_of_int_lists(&vec![&[1i64][..]; n])
+        }),
+    ];
+    for (ty, make) in cases {
+        let d = def(&format!(
+            "{{name: L, type: '{ty}', minLength: 2, maxLength: 3}}"
+        ));
+        d.check_constraints(&make(2)).unwrap();
+        assert_eq!(
+            d.check_constraints(&make(1)),
+            Err("Output variable 'L': list length 1 is less than minimum 2".into()),
+            "{ty}"
+        );
+        assert_eq!(
+            d.check_constraints(&make(4)),
+            Err("Output variable 'L': list length 4 exceeds maximum 3".into()),
+            "{ty}"
+        );
+    }
+}
+
+#[test]
+fn list_float_item_allowed_values_and_min_value() {
+    let d = def("{name: L, type: 'LIST[FLOAT]', item: {minValue: 1.0, allowedValues: [1.0, 2.5]}}");
+    d.check_constraints(
+        &ExprValue::make_list(vec![float(1.0), float(2.5)], ExprType::FLOAT).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        d.check_constraints(&ExprValue::make_list(vec![float(0.5)], ExprType::FLOAT).unwrap()),
+        Err("Output variable 'L': item[0] 0.5 is less than minimum 1.0".into())
+    );
+    assert_eq!(
+        d.check_constraints(&ExprValue::make_list(vec![float(2.0)], ExprType::FLOAT).unwrap()),
+        Err("Output variable 'L': item[0] 2.0 is not in allowed values".into())
+    );
+}
+
+#[test]
+fn a_typed_empty_list_must_match_the_declared_type() {
+    let empty_list_of_string_lists =
+        ExprValue::make_list(vec![], ExprType::list(ExprType::STRING)).unwrap();
+    assert_eq!(
+        def("{name: L, type: 'LIST[STRING]'}").check_constraints(&empty_list_of_string_lists),
+        Err("Output variable 'L': value has type list[list[string]], expected list[string]".into())
+    );
+    assert_eq!(
+        def("{name: L, type: 'LIST[INT]'}").check_constraints(&list_string(&[])),
+        Err("Output variable 'L': value has type list[string], expected list[int]".into())
+    );
+    // A typed empty list of the declared type is fine.
+    def("{name: L, type: 'LIST[LIST[INT]]'}")
+        .check_constraints(&ExprValue::make_list(vec![], ExprType::list(ExprType::INT)).unwrap())
+        .unwrap();
+}
+
+#[test]
+fn check_element_for_each_list_element_type() {
+    def("{name: B, type: 'LIST[BOOL]', collect: APPEND}")
+        .check_element(&ExprValue::Bool(true))
+        .unwrap();
+    let p = def("{name: P, type: 'LIST[PATH]', collect: APPEND, item: {allowedValues: [/a]}}");
+    p.check_element(&ExprValue::new_path("/a", PathFormat::Posix))
+        .unwrap();
+    p.check_element(&ExprValue::String("/a".into())).unwrap();
+    assert_eq!(
+        p.check_element(&ExprValue::new_path("/b", PathFormat::Posix)),
+        Err("Output variable 'P': element '/b' is not in allowed values".into())
+    );
+    let l = def("{name: L, type: 'LIST[LIST[INT]]', collect: APPEND, item: {minLength: 0}}");
+    l.check_element(&ExprValue::make_list(vec![], ExprType::NULLTYPE).unwrap())
+        .unwrap();
+    assert_eq!(
+        l.check_element(&ExprValue::String("x".into())),
+        Err("Output variable 'L': element has type string, expected list[int]".into())
+    );
+    assert_eq!(
+        l.check_element(&list_string(&[])),
+        Err("Output variable 'L': element has type list[string], expected list[int]".into())
+    );
+}
+
+#[test]
+fn range_expr_value_written_as_a_string_is_checked_as_written() {
+    let d = def("{name: R, type: RANGE_EXPR, maxLength: 5}");
+    d.check_constraints(&ExprValue::String("1-3".into()))
+        .unwrap();
+    // `1,2,3` is the range `1-3`, but its written length is checked.
+    assert_eq!(
+        d.check_constraints(&ExprValue::String("1,2,3,4".into())),
+        Err("Output variable 'R': value length 7 exceeds maximum 5".into())
+    );
+    assert_eq!(
+        d.check_constraints(&ExprValue::String("a-b".into())),
+        Err("Output variable 'R': value 'a-b' is not a valid range expression".into())
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// create_job does not evaluate enableIf yet
+// ══════════════════════════════════════════════════════════════
+
+fn create(template: &str) -> Result<openjd_model::job::Job, openjd_model::ModelError> {
+    let jt = decode_job_template(
+        yaml(template),
+        Some(&["EXPR", "CONTROL_FLOW"]),
+        &CallerLimits::default(),
+    )
+    .expect("the template is valid");
+    create_job(
+        &jt,
+        &JobParameterValues::new(),
+        &jt.default_validation_context(),
+    )
+}
+
+#[test]
+fn create_job_accepts_enable_if_true() {
+    let job = create(
+        "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+jobEnvironments: [{name: JE, enableIf: true, variables: {A: a}}]
+steps:
+  - name: S
+    enableIf: true
+    stepEnvironments: [{name: SE, enableIf: true, variables: {B: b}}]
+    script: {actions: {onRun: {command: echo}}}
+",
+    )
+    .expect("enableIf: true is instantiated as enabled");
+    assert_eq!(job.steps.len(), 1);
+}
+
+#[test]
+fn create_job_refuses_an_enable_if_it_cannot_evaluate() {
+    let err = create(
+        "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+jobEnvironments:
+  - {name: JE0, variables: {A: a}}
+  - {name: JE1, enableIf: false, variables: {A: a}}
+steps:
+  - name: S0
+    script: {actions: {onRun: {command: echo}}}
+  - name: S1
+    enableIf: '{{Job.Name == \"J\"}}'
+    stepEnvironments:
+      - {name: SE0, enableIf: true, variables: {B: b}}
+      - {name: SE1, enableIf: false, variables: {B: b}}
+    script: {actions: {onRun: {command: echo}}}
+",
+    )
+    .expect_err("enableIf other than true is not evaluated");
+    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 3 validation errors for JobTemplate\n\
+             jobEnvironments[1] -> enableIf:\n\t{msg}\n\
+             steps[1] -> enableIf:\n\t{msg}\n\
+             steps[1] -> stepEnvironments[1] -> enableIf:\n\t{msg}"
+        )
+    );
 }

@@ -224,7 +224,10 @@ extension the template declares (enabling more is allowed);
 that does not support an extension rejects such templates at decode
 via `supported_extensions` instead. Every expression
 evaluation it performs runs under the caller's evaluation budgets
-(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
+(`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`). With `CONTROL_FLOW`, it copies each Step's
+`outputVariables` onto `job::Step::output_variables` and refuses any
+`enableIf` other than `true`, which it does not evaluate yet (see
+[job-creation.md](job-creation.md)).
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,
@@ -704,9 +707,12 @@ deserializes and a Step without `CONTROL_FLOW` features serializes as before.
 
 ```rust
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct job::OutputVariable {
     pub name: String,
-    pub param_type: JobParameterType,         // serialized as "type"
+    /// Serialized as "type" with the spec string ("LIST[INT]"), read
+    /// case-insensitively.
+    pub param_type: JobParameterType,
     pub collect: OutputCollectMode,           // skipped when ONCE
     pub unit: Option<String>,
     pub constraints: OutputConstraints,       // skipped when empty
@@ -725,7 +731,9 @@ impl job::OutputVariable {
 }
 
 /// The constraint properties the definition declared, and only those.
+/// Every field is skipped when `None`.
 #[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct job::OutputConstraints {
     pub allowed_values: Option<OutputAllowedValues>,
     pub min_value: Option<OutputBound>,
@@ -739,21 +747,27 @@ impl job::OutputConstraints {
     pub fn is_empty(&self) -> bool;
 }
 
+/// Externally tagged in lowercase: {"int": [1, 2]}, {"string": ["a"]}.
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum job::OutputAllowedValues {
     Int(Vec<i64>),
     Float(Vec<openjd_expr::value::Float64>),
     String(Vec<String>),
 }
 
+/// Externally tagged in lowercase: {"int": 1}, {"float": 0.5}.
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum job::OutputBound {
     Int(i64),
     Float(openjd_expr::value::Float64),
 }
 
-/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED.
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED;
+/// `waiting_on` is serialized as "waitingOn".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]
 pub enum job::StepBinding {
     #[default]
     Bound,
@@ -766,14 +780,16 @@ impl job::StepBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct job::PathInput {
     pub symbol: String,
-    /// Serialized as its spelling, e.g. "list[path]".
+    /// Serialized as "type" with its spelling, e.g. "list[path]".
     pub ty: openjd_expr::ExprType,
 }
 ```
 
-See [job-types.md](job-types.md) § CONTROL_FLOW fields.
+See [job-types.md](job-types.md) § CONTROL_FLOW fields, which has an example of the
+serialized form.
 
 ### Parameter Space (Resolved)
 
