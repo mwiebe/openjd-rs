@@ -686,8 +686,8 @@ fn has_trailing_slash(path: &str, windows: bool) -> bool {
     }
 }
 
-/// Why [`unapply_rules`] could not map a path back to the submission path
-/// context.
+/// Why [`unapply_rules`] or [`unapply_rules_with_source_format`] could not
+/// map a path back to the submission path context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UnmapError {
     /// The path is neither a URI nor absolute under the worker's path format.

@@ -40,13 +40,14 @@ pub enum OutputErrorKind {
     Selector,
     /// A second directive for a `collect: ONCE` output (of the same Task).
     Repeated,
-    /// The value is not one valid JSON value.
+    /// The value is not one valid JSON value, or holds a string with a lone
+    /// UTF-16 surrogate escape.
     Json,
     /// An `@` file's content is not valid UTF-8 or contains a NUL character.
     FileContent,
     /// The value is or contains `null` or an object, nests deeper than the
-    /// target type, has a number too large to represent as a float, or does
-    /// not convert to the target type.
+    /// target type (or than any type), has a number too large to represent as
+    /// a float, or does not convert to the target type.
     Conversion,
     /// A `PATH` value is relative or has no submission-context form.
     Path,
@@ -63,15 +64,18 @@ pub enum OutputErrorKind {
     Declaration,
 }
 
-/// An invalid directive, or incomplete outputs at exit.
+/// An invalid directive, incomplete outputs at exit, or a refused
+/// [`OutputCollector::new`].
 ///
-/// The message names the output (with its task selector in a chunked Step)
-/// and the problem. It may quote an inline value's text, and the converted
+/// The message names the problem, and the output (with its task selector in
+/// a chunked Step) when there is one: a grammar error may have no name yet,
+/// and a repeated chunk value names the value instead. It may quote an inline value's text, and the converted
 /// value or element that is invalid (a `PATH` with no submission-context form,
 /// a string not in `allowedValues`), but never an `@` file's text as such: a
 /// JSON or conversion error for a file value gives only a position or a type.
-/// Quoted text, and the EXPR coercion message appended to a conversion error,
-/// is cut to 200 characters with its control characters escaped.
+/// Quoted text, an output name, and the EXPR coercion message appended to a
+/// conversion error are cut to 200 characters with control characters
+/// escaped.
 /// Its `Display` is the message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputError {
