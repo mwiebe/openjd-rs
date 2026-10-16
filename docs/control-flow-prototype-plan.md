@@ -11,7 +11,7 @@ This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `6c9c76c`, which makes step input binding progressive (RFC §Step input binding,
+  openjd-specifications commit `a876d88`, which makes step input binding progressive (RFC §Step input binding,
   Design Choice 15; 04 §10).
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
@@ -275,7 +275,8 @@ pub struct PendingBinding {
 }
 
 pub enum GroupState<T> {
-    /// Not evaluated. `on` is the group's inputs that are not concrete yet (`Steps.*` symbols, sorted); it is
+    /// Not evaluated. `on` is the group's own inputs that are not concrete yet (`Steps.*` symbols, sorted), not
+    /// counting the enablement group's inputs, which the RFC also counts as inputs of every other group; it is
     /// empty for a group that waits only for enableIf.
     Waiting { on: Vec<String> },
     /// Evaluated successfully, with its result.
@@ -333,15 +334,19 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    * Otherwise, every group whose inputs are concrete is evaluated. A failure in any of them fails `create_job`, as
      an invalid parameter does, whether the Step would then be bound or stay pending. So a pending Step's host
      requirements or range that read no `Steps.*` are checked at submission.
-   * Error reporting keeps today's two kinds. A `let` error or a carried-forward check error (the script and every
-     Environment, in the remaining group) is collected across Steps into `check_errors`
-     (`create_job/mod.rs:265`–`:276`), so `violations_across_steps_and_environments_are_reported_together` keeps its
-     six errors. A resolution error in host requirements or the parameter space returns at once through `?`
-     (`instantiate.rs:159`–`:169`) and aborts `create_job` alone, as
-     `resolution_failure_aborts_alone_ahead_of_check_failures` pins. The core keeps both behaviors, with and without
-     `CONTROL_FLOW`: a failing Task enumeration or host selection group at creation aborts `create_job` with its
-     error, and a failing remaining group adds its errors to `check_errors`. Within one Step, the core stops at the
-     first failing group.
+   * Error reporting keeps today's two kinds. A step `let` error or a carried-forward check error (the script and
+     every Environment) is collected across Steps into `check_errors` (`create_job/mod.rs:265`–`:276`), so
+     `violations_across_steps_and_environments_are_reported_together` keeps its six errors. A resolution error in
+     host requirements or the parameter space returns at once through `?` (`instantiate.rs:159`–`:169`) and aborts
+     `create_job` alone, as `resolution_failure_aborts_alone_ahead_of_check_failures` pins.
+     * Without `CONTROL_FLOW`, the core keeps exactly today's behavior: a `let` failure is collected and that Step's
+       carried-forward checks still run, so `failed_step_level_let_still_checks_later_steps`
+       (`test_job_creation_resolved_values.rs:974`) keeps its three errors.
+     * Under `CONTROL_FLOW`, the core stops a Step at its first failing group. A `let` error is collected into
+       `check_errors`, whichever group's evaluation raised it, and that Step's later groups are not evaluated; a
+       failing range or host requirement aborts `create_job` with its error, as today; a failing remaining group adds
+       its errors to `check_errors`. Each `BindingError` from Job creation maps onto one of these two kinds by the
+       error it holds.
    * The RFC's group order (enablement, Task enumeration, host selection, remaining) applies only under
      `CONTROL_FLOW`. Without it, the core keeps today's order (the carried-forward checks at `instantiate.rs:62`–`:149`,
      then host requirements before the parameter space at `:159`–`:169`), so a template that doesn't list
@@ -385,7 +390,7 @@ no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the sce
    caller swaps it in; a caller dispatches Tasks only of a `Bound` Step.
 
    Job creation runs its own format-string checks, separate from pass 8. `instantiate_step` re-checks every Step's
-   script and Environments (`instantiate.rs:118`, `:142`) against tables from `build_task_check_symtab`
+   script and Environments (`instantiate.rs:114`, `:140`) against tables from `build_task_check_symtab`
    (`instantiate.rs:277`) and `build_env_check_symtab` (`:359`). Those tables must seed each `Steps.*` symbol too, as
    concrete when it is known and unresolved otherwise. Without that, every script that reads `Steps.*` fails
    `create_job` with `Undefined variable`. Seed the `Steps.*` placeholders in both builders, for the Step's own
@@ -878,12 +883,14 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   `enableIf` false the Step is `Skipped` though its range would fail; with `enableIf` true, a failing range returns
   `Err` naming the group, field, and expression while the remaining group still waits; a failing range that reads no
   `Steps.*` in a pending Step aborts `create_job` with its error, and a failing carried-forward check in a pending
-  Step's remaining group is reported together with another Step's errors; an `enableIf` that reads only a producer
-  skipped at creation is decided at creation (a `null` there fails `create_job`); without `CONTROL_FLOW`, a template
-  with both a bad host requirement and a bad range still reports the host requirement; a call with no new inputs
-  returns the Step unchanged; a consumer's Tasks become known from the `TaskParam` of a producer that is still pending
-  with Tasks known; the Task-count limit fails the Step when its Tasks become known; and a `let` used only by the
-  remaining group is not evaluated when the Task enumeration group is.
+  Step's remaining group is reported together with another Step's errors; a `CONTROL_FLOW` variant of
+  `failed_step_level_let_still_checks_later_steps`, in which the `let` read by the range fails, reports the `let`
+  error and other Steps' errors but not the same Step's step-environment error; an `enableIf` that reads only a
+  producer skipped at creation is decided at creation (a `null` there fails `create_job`); without `CONTROL_FLOW`, a
+  template with both a bad host requirement and a bad range still reports the host requirement; a call with no new
+  inputs returns the Step unchanged; a consumer's Tasks become known from the `TaskParam` of a producer that is still
+  pending with Tasks known; the Task-count limit fails the Step when its Tasks become known; and a `let` used only by
+  the remaining group is not evaluated when the Task enumeration group is.
 * Job creation: a script that reads `Steps.*` passes `create_job`'s own carried-forward checks.
 * `PATH` outputs: `PATH` and `LIST[PATH]` declarations; `Output` of a `PATH` producer in a TEMPLATE-scope field is
   rejected with the `RawOutput` hint, and `RawOutput` there is accepted; the collector maps a reported path back,
@@ -992,7 +999,7 @@ binding API are shaped so that a Python port can mirror them.
 These are the questions the RFC needs to answer before an implementation can be called conformant. The prototype
 picks a behavior for each and records it in the specs. A9, A10, and A12 were about the session-supplied output file,
 and the RFC revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in
-`1e89748` and `61f27ee`, and A11 in `6c9c76c`. Resolved items are kept, struck through, so the numbering stays stable.
+`1e89748` and `61f27ee`, and A11 in `a876d88`. Resolved items are kept, struck through, so the numbering stays stable.
 
 * **A1. The validation warning has no channel.** §Modifications to the Expression Language says that template
   validation "MUST emit a warning". No OpenJD specification, the conformance runner, nor openjd-rs has a warning
@@ -1036,7 +1043,7 @@ and the RFC revision at `5a86c21` that replaced it with the directive settled th
 * ~~**A10. The output file's integrity.**~~ Resolved: there is no session-supplied file. For `@` files, §File values
   now requires the opened file to be a regular file inside the Session working directory, checked on the handle, and
   read with no more access than the Action's user.
-* ~~**A11. Step `let` forces `PENDING_INPUTS`.**~~ Resolved in `6c9c76c`: with progressive binding, a step `let`
+* ~~**A11. Step `let` forces `PENDING_INPUTS`.**~~ Resolved in `a876d88`: with progressive binding, a step `let`
   belongs to the groups that use it, and the remaining group uses every one, so a `let` that only the script reads
   holds back only the remaining group. Such a Step is still `PENDING_INPUTS` until its producer finishes (every
   `let` is evaluated before dispatch, as today), but its Tasks and host requirements are known at creation, so
