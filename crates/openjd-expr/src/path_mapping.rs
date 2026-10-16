@@ -729,9 +729,12 @@ pub enum UnmapError {
 ///    because forward mapping does not apply `..` components and keeps a
 ///    trailing separator.
 ///
-/// `mapper` is the producing Session's [`PathMapper`]. The round-trip check
-/// makes the result correct for any rule order; the order only breaks ties
-/// between candidates. `PathFormat::Uri` as `worker_format` is treated as
+/// `mapper` MUST be the producing Session's own [`PathMapper`], because the
+/// round trip forward-maps with it and must reproduce the Session's forward
+/// mapping. Do not build it from a filtered rule list (for example by source
+/// format): the no-rules case and the round trip are defined on the Session's
+/// full rules. The rule order only breaks ties among candidates.
+/// `PathFormat::Uri` as `worker_format` is treated as
 /// POSIX.
 pub fn unapply_rules(
     mapper: &PathMapper,
@@ -790,7 +793,7 @@ fn build_candidate(rule: &PathMappingRule, remaining: &[&str]) -> String {
 }
 
 /// Whether a filesystem path is absolute in the worker's format, matching
-/// `PurePosixPath`/`PureWindowsPath.is_absolute()`.
+/// Python 3.9's `PurePosixPath`/`PureWindowsPath.is_absolute()`.
 ///
 /// POSIX: a leading `/`. Windows: a drive with a root (`C:\`, `C:/`) or a UNC
 /// path with a non-empty server and share (`\\server\share`). A Windows path
