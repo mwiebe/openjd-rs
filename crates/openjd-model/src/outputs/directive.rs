@@ -129,10 +129,18 @@ pub fn parse_output_directive(payload: &str) -> Result<OutputDirective<'_>, Outp
     };
 
     let Some(after_eq) = rest.strip_prefix('=') else {
-        let problem = if rest.starts_with(is_ws) {
-            format!("whitespace is not allowed between '{name}' and '='")
-        } else {
-            format!("expected '=' after '{name}'")
+        let before = match task {
+            Some(_) => &payload[..payload.len() - rest.len()],
+            None => name,
+        };
+        let before = before.trim_start_matches(is_ws);
+        let problem = match rest.chars().next() {
+            Some(c) if is_ws(c) => format!("whitespace is not allowed after '{before}'"),
+            Some(c) => format!(
+                "expected '=' after '{before}', found {}",
+                quote(&c.to_string())
+            ),
+            None => format!("expected '=' after '{before}'"),
         };
         return Err(grammar_error(&problem, payload));
     };

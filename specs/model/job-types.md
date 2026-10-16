@@ -171,6 +171,8 @@ elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a sec
 `item` applies to each element as it arrives, `maxLength` to the growing list, and
 `minLength` only when the Action exits. The checks follow the job-parameter rules
 (`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
+A string a message quotes is cut to 200 characters with its control characters escaped
+(see [outputs.md](outputs.md) § Errors).
 A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
 value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
 path context and checked in that form. Conversely a `STRING` value may be a `Path` and a
