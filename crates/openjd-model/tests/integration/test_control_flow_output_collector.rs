@@ -480,6 +480,40 @@ fn number_spellings_skip_strings() {
 }
 
 #[test]
+fn strings_keep_their_exact_text() {
+    assert_eq!(
+        convert("{name: S, type: STRING}", "S=\"  a \\t \""),
+        Ok(ExprValue::String("  a \t ".into()))
+    );
+}
+
+#[test]
+fn inline_values_have_no_bom_and_nul_is_a_json_error() {
+    // A BOM is allowed only at the start of an @ file (RFC 0010 §File
+    // values item 4), and a NUL is a file-content problem only for files.
+    let mut c = collector(&["{name: 'N', type: INT}"]);
+    let e = c.accept("N", None, b"\xEF\xBB\xBF1", false).unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Json);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'N': '\u{feff}1' is not one valid JSON value: expected value at line 1 \
+         column 1"
+    );
+    let e = c.accept("N", None, b"1\0", false).unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Json);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'N': '1\\0' is not one valid JSON value: trailing characters at line 1 \
+         column 2"
+    );
+}
+
+#[test]
+fn min_output_bytes_limit_is_one_mebibyte() {
+    assert_eq!(MIN_OUTPUT_BYTES_LIMIT, 1 << 20);
+}
+
+#[test]
 fn integer_spellings() {
     // `-0` has neither fraction nor exponent, so it is the int 0.
     assert_eq!(
@@ -539,6 +573,65 @@ fn numbers_too_large_for_a_float_do_not_convert() {
         e.to_string(),
         "Output variable 'S': the @ file's content has a number too large to represent as a \
          float (at line 2 column 5)"
+    );
+}
+
+#[test]
+fn nesting_past_the_json_recursion_limit_does_not_convert() {
+    let deep = format!("{}1{}", "[".repeat(130), "]".repeat(130));
+    let mut c = collector(&["{name: G, type: 'LIST[LIST[INT]]'}"]);
+    assert_eq!(
+        err(&mut c, &format!("G={deep}"), OutputErrorKind::Conversion),
+        format!(
+            "Output variable 'G': '{}1{}...' nests deeper than any output type (at line 1 \
+             column 128)",
+            "[".repeat(130),
+            "]".repeat(69)
+        )
+    );
+    let e = file(&mut c, "G", None, deep.as_bytes()).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'G': the @ file's content nests deeper than any output type (at line \
+         1 column 128)"
+    );
+    // Below the limit, the depth is a conversion against the target.
+    let deep = format!("{}1{}", "[".repeat(127), "]".repeat(127));
+    assert_eq!(
+        err(&mut c, &format!("G={deep}"), OutputErrorKind::Conversion),
+        "Output variable 'G': item[0][0] (list) does not convert to int"
+    );
+}
+
+#[test]
+fn lone_surrogate_escape_is_invalid_json() {
+    let mut c = collector(&["{name: S, type: STRING}"]);
+    assert_eq!(
+        err(&mut c, "S=\"\\udc00\"", OutputErrorKind::Json),
+        "Output variable 'S': '\"\\udc00\"' is not one valid JSON value: lone leading \
+         surrogate in hex escape at line 1 column 7"
+    );
+    let e = file(&mut c, "S", None, b"\"\\ud800\\u0041 x\"").unwrap_err();
+    assert_eq!(e.kind(), OutputErrorKind::Json);
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'S': the @ file's content is not one valid JSON value: lone leading \
+         surrogate in hex escape at line 1 column 13"
+    );
+}
+
+#[test]
+fn an_empty_list_is_described_as_such() {
+    let mut c = collector(&["{name: L, type: 'LIST[INT]'}"]);
+    assert_eq!(
+        err(&mut c, "L=[[]]", OutputErrorKind::Conversion),
+        "Output variable 'L': item[0] (empty list) '[]' does not convert to int: Cannot coerce \
+         list[nulltype] to int"
+    );
+    let e = file(&mut c, "L", None, b"[[]]").unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'L': item[0] (empty list) does not convert to int"
     );
 }
 
@@ -1042,6 +1135,27 @@ fn file_value_path_and_constraint_errors_name_the_converted_value() {
 }
 
 #[test]
+fn coercion_detail_is_cut_and_escaped() {
+    let long = format!("a\\n{}", "y".repeat(300));
+    let mut c = collector(&["{name: I, type: INT}"]);
+    let msg = err(
+        &mut c,
+        &format!("I=\"{long}\""),
+        OutputErrorKind::Conversion,
+    );
+    assert!(!msg.contains('\n'), "{msg}");
+    assert_eq!(
+        msg,
+        format!(
+            "Output variable 'I': value (string) 'a\\n{y198}...' does not convert to int: \
+             Cannot convert 'a\\n{y182}...",
+            y198 = "y".repeat(198),
+            y182 = "y".repeat(182)
+        )
+    );
+}
+
+#[test]
 fn coercion_detail_is_cut() {
     let long = "y".repeat(300);
     let mut c = collector(&["{name: I, type: INT}"]);
@@ -1056,6 +1170,34 @@ fn coercion_detail_is_cut() {
              convert '{y184}...",
             y200 = "y".repeat(200),
             y184 = "y".repeat(184)
+        )
+    );
+}
+
+#[test]
+fn hand_built_names_are_escaped_in_the_selector_hint_and_cut() {
+    let mut v = var("{name: X, type: INT}");
+    v.name = "a\u{1b}b".into();
+    let c = OutputCollector::new(
+        std::slice::from_ref(&v),
+        MIN_OUTPUT_BYTES_LIMIT,
+        &[],
+        PathFormat::Posix,
+        Some(vec![1]),
+    )
+    .unwrap();
+    assert_eq!(
+        c.check_name("a\u{1b}b", None).unwrap_err().to_string(),
+        "Output variable 'a\\u{1b}b': a task selector, as in 'a\\u{1b}b[<value>]', is \
+         required in a Step with a CHUNK[INT] parameter"
+    );
+    v.name = "N".repeat(300);
+    let c = OutputCollector::new(&[v], 10, &[], PathFormat::Posix, None).unwrap();
+    assert_eq!(
+        c.finish().unwrap_err().to_string(),
+        format!(
+            "Output variable '{}...': no value was reported (collect mode ONCE)",
+            "N".repeat(200)
         )
     );
 }
@@ -1325,6 +1467,25 @@ fn path_on_a_windows_worker() {
     assert_eq!(
         path_parts(&v),
         ("/proj/a/b.exr".to_string(), PathFormat::Posix)
+    );
+}
+
+#[test]
+fn an_invalid_path_is_quoted_cut_and_escaped() {
+    let mut c = collector(&["{name: P, type: PATH}"]);
+    assert_eq!(
+        err(&mut c, "P=\"a\\nb\"", OutputErrorKind::Path),
+        "Output variable 'P': value 'a\\nb' is not a valid PATH output: the path is relative; \
+         a PATH value must be an absolute path or a URI"
+    );
+    let long = "d/".repeat(150);
+    assert_eq!(
+        err(&mut c, &format!("P=\"{long}\""), OutputErrorKind::Path),
+        format!(
+            "Output variable 'P': value '{}...' is not a valid PATH output: the path is \
+             relative; a PATH value must be an absolute path or a URI",
+            "d/".repeat(100)
+        )
     );
 }
 

@@ -117,9 +117,14 @@ surrounding spaces and tabs are removed. The text must be exactly one JSON value
 (`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, and trailing text. A number
 too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as the RFC's
 type conversion rules say, does not convert. So validity is checked first without
-converting numbers (`serde::de::IgnoredAny`), and a text that is valid but fails to parse
-into a `serde_json::Value` is a `Conversion` error with the number's line and column:
-`1e400 garbage` is still a `Json` error for its trailing text.
+converting numbers (`serde::de::IgnoredAny`), so `1e400 garbage` is a `Json` error for
+its trailing text. Valid JSON can still fail to become a `serde_json::Value` in three
+ways, each reported with its line and column: a number too large for a float
+(`Conversion`, "has a number too large to represent as a float"); nesting of 128 levels
+or more, `serde_json`'s recursion limit (`Conversion`, "nests deeper than any output
+type": the deepest output type nests two levels); and a lone UTF-16 surrogate escape such
+as `"\udc00"`, which RFC 8259 §8.2 allows in the grammar but which is not a Unicode
+string (`Json`, with `serde_json`'s message).
 
 Conversion (`Conversion` errors) follows §Processing a directive, "Type conversion":
 
@@ -240,7 +245,8 @@ characters in it are escaped (`\n`, `\u{1b}`, `\0`), so a message stays on one l
 cannot drive a terminal; `job::OutputVariable`'s constraint messages quote strings the same
 way. The EXPR coercion message a conversion error appends (which repeats the value) is cut
 and escaped the same way, and so is an output name in a message, which only a hand-built
-declaration can make unusual.
+declaration can make unusual. A list with no type (an empty JSON array, which EXPR types
+`list[nulltype]`) is described as an `empty list`.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
 the converted invalid value follows the RFC instead. The runtime adds the file path and
@@ -252,9 +258,9 @@ Action context.
 | `Undeclared` | The Step does not declare the name |
 | `Selector` | Selector missing, forbidden, or not in the chunk; or a chunk repeats a value |
 | `Repeated` | A second `ONCE` value |
-| `Json` | Not exactly one JSON value |
+| `Json` | Not exactly one JSON value, or a string with a lone surrogate escape |
 | `FileContent` | An `@` file is not UTF-8 or contains NUL |
-| `Conversion` | `null`, an object, too deep, a number too large for a float, or no conversion to the target type |
+| `Conversion` | `null`, an object, too deep (for the target, or 128 levels), a number too large for a float, or no conversion to the target type |
 | `Path` | A relative `PATH` value, or one with no submission-context form |
 | `Constraint` | A declared constraint property is violated |
 | `Size` | The Task's values would exceed `max_bytes` |

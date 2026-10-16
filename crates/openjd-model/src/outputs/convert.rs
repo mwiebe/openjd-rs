@@ -153,11 +153,10 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
             Value::String(s) => Ok(ExprValue::String(s.clone())),
             Value::Number(n) => {
                 let spelling = self.spellings.next().unwrap_or_default();
-                let integral = !spelling.contains(['.', 'e', 'E']);
-                if integral {
-                    if let Ok(i) = spelling.parse::<i64>() {
-                        return Ok(ExprValue::Int(i));
-                    }
+                // An `i64` parse accepts exactly the spellings with neither a
+                // fraction nor an exponent that fit (`-0` is 0).
+                if let Ok(i) = spelling.parse::<i64>() {
+                    return Ok(ExprValue::Int(i));
                 }
                 // serde_json rejected numbers that overflow f64 when it
                 // parsed the text, so this is finite.
@@ -192,6 +191,11 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
     ) -> ConvertError {
         let ty = match natural {
             ExprValue::Null => "list".to_string(),
+            // `[]` is `list[nulltype]` in EXPR; that type name means nothing
+            // to an author.
+            v if v.list_len() == Some(0) && v.expr_type() == ExprType::list(ExprType::NULLTYPE) => {
+                "empty list".to_string()
+            }
             v => v.expr_type().to_string(),
         };
         let shown = if self.show_values && !matches!(natural, ExprValue::Null) {

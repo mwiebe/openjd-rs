@@ -1399,7 +1399,7 @@ pub fn path_mapping::unapply_rules_with_source_format(
     rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
 ) -> Result<(String, PathFormat), path_mapping::UnmapError>;
 
-/// Why `unapply_rules` failed. `Display` gives a message without the path;
+/// Why `unapply_rules` or `unapply_rules_with_source_format` failed. `Display` gives a message without the path;
 /// the caller adds the path and output name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum path_mapping::UnmapError {

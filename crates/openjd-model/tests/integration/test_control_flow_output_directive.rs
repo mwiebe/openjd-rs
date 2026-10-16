@@ -266,6 +266,42 @@ fn selector_overflow_is_a_grammar_error() {
 }
 
 #[test]
+fn long_overflowing_selector_is_cut_in_the_message() {
+    let digits = "9".repeat(300);
+    let payload = format!("R[{digits}]=1");
+    assert_eq!(
+        grammar_err(&payload),
+        format!(
+            "Invalid openjd_output_var directive: the task selector of 'R', '{}...', is outside \
+             the 64-bit integer range, in '{}...'",
+            "9".repeat(200),
+            &payload[..200]
+        )
+    );
+}
+
+#[test]
+fn only_spaces_and_tabs_are_whitespace() {
+    for (payload, shown) in [
+        ("\rX=1", "\\rX=1"),
+        ("\u{a0}X=1", "\u{a0}X=1"),
+        ("\u{3000}X=1", "\u{3000}X=1"),
+    ] {
+        assert_eq!(
+            grammar_err(payload),
+            format!(
+                "Invalid openjd_output_var directive: expected an output name (an identifier) \
+                 followed by '=', in '{shown}'"
+            )
+        );
+    }
+    assert_eq!(
+        grammar_err("X\r=1"),
+        "Invalid openjd_output_var directive: expected '=' after 'X', found '\\r', in 'X\\r=1'"
+    );
+}
+
+#[test]
 fn selector_not_an_integer() {
     for (payload, inner) in [
         (" R[]=1", ""),

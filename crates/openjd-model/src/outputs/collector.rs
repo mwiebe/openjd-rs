@@ -11,7 +11,7 @@ use openjd_expr::types::TypeCode;
 use openjd_expr::{ExprType, ExprValue};
 
 use super::convert::{check_no_null_or_object, number_spellings, ConvertError, Converter};
-use super::{escape_controls, quote, OutputError, OutputErrorKind};
+use super::{quote, shorten, OutputError, OutputErrorKind};
 use crate::job::OutputVariable;
 use crate::types::OutputCollectMode;
 
@@ -26,15 +26,6 @@ enum Held {
     Value(ExprValue, usize),
     /// The `APPEND` elements so far, each with its counted size.
     Elements(Vec<(ExprValue, usize)>),
-}
-
-impl Held {
-    fn size(&self) -> usize {
-        match self {
-            Self::Value(_, size) => *size,
-            Self::Elements(elements) => elements.iter().map(|(_, size)| size).sum(),
-        }
-    }
 }
 
 /// One Task's state: what it holds for each output, and the total size.
@@ -107,7 +98,7 @@ impl OutputCollector {
                 format!(
                     "Output variable '{}': collect mode APPEND requires a LIST type, but it is \
                      declared {}",
-                    escape_controls(&var.name),
+                    shorten(&var.name),
                     var.param_type
                 ),
             ));
@@ -187,7 +178,9 @@ impl OutputCollector {
             return self.max_bytes;
         };
         let replaced = match (self.declared.get(name), state.held.get(name)) {
-            (Some(var), Some(held)) if var.collect == OutputCollectMode::Last => held.size(),
+            (Some(var), Some(Held::Value(_, size))) if var.collect == OutputCollectMode::Last => {
+                *size
+            }
             _ => 0,
         };
         self.max_bytes
@@ -270,16 +263,31 @@ impl OutputCollector {
                 format!("{} is not one valid JSON value: {e}", shown()),
             )
         })?;
+        // What valid JSON can still fail to become a `serde_json::Value`.
         let parsed: serde_json::Value = serde_json::from_str(text).map_err(|e| {
-            err(
-                OutputErrorKind::Conversion,
-                format!(
-                    "{} has a number too large to represent as a float (at line {} column {})",
-                    shown(),
-                    e.line(),
-                    e.column()
-                ),
-            )
+            let at = format!("at line {} column {}", e.line(), e.column());
+            let reason = e.to_string();
+            if reason.starts_with("number out of range") {
+                err(
+                    OutputErrorKind::Conversion,
+                    format!(
+                        "{} has a number too large to represent as a float ({at})",
+                        shown()
+                    ),
+                )
+            } else if reason.starts_with("recursion limit exceeded") {
+                err(
+                    OutputErrorKind::Conversion,
+                    format!("{} nests deeper than any output type ({at})", shown()),
+                )
+            } else {
+                // A lone UTF-16 surrogate escape: grammatical (RFC 8259
+                // §8.2), but not a Unicode string.
+                err(
+                    OutputErrorKind::Json,
+                    format!("{} is not one valid JSON value: {e}", shown()),
+                )
+            }
         })?;
 
         let append = var.collect == OutputCollectMode::Append;
@@ -430,8 +438,9 @@ impl OutputCollector {
         };
         match (self.chunked, task) {
             (true, None) => Err(selector(format!(
-                "a task selector, as in '{name}[<value>]', is required in a Step with a \
-                 CHUNK[INT] parameter"
+                "a task selector, as in '{}[<value>]', is required in a Step with a \
+                 CHUNK[INT] parameter",
+                shorten(name)
             ))),
             (false, Some(_)) => Err(selector(
                 "a task selector is only allowed in a Step with a CHUNK[INT] parameter".to_string(),
@@ -474,7 +483,6 @@ impl OutputCollector {
     }
 }
 
-/// `N` or `N[3]`.
 /// A `job::OutputVariable` check message, which names the output without its
 /// selector and as written, renamed to `label`.
 fn relabel(msg: &str, name: &str, label: &str) -> String {
@@ -484,9 +492,9 @@ fn relabel(msg: &str, name: &str, label: &str) -> String {
     }
 }
 
-/// `N` or `N[3]`, with control characters in a hand-built name escaped.
+/// `N` or `N[3]`. A hand-built name is cut and escaped as by `shorten`.
 fn label(name: &str, task: Option<i64>) -> String {
-    let name = escape_controls(name);
+    let name = shorten(name);
     match task {
         Some(t) => format!("{name}[{t}]"),
         None => name,
