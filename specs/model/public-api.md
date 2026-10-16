@@ -225,9 +225,13 @@ that does not support an extension rejects such templates at decode
 via `supported_extensions` instead. Every expression
 evaluation it performs runs under the caller's evaluation budgets
 (`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`). With `CONTROL_FLOW`, it copies each Step's
-`outputVariables` onto `job::Step::output_variables` and refuses any
-`enableIf` other than `true`, which it does not evaluate yet (see
-[job-creation.md](job-creation.md)).
+`outputVariables` onto `job::Step::output_variables`, refuses any
+`enableIf` other than `true`, which it does not evaluate yet, and refuses a
+Step whose step `let`, `hostRequirements`, or `parameterSpace` reads
+`Steps.*`, which needs step input binding (see
+[job-creation.md](job-creation.md)). Its own checks of the carried-forward
+fields see the `Steps.*` symbols of each Step's direct dependencies,
+unresolved, as template validation does.
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,

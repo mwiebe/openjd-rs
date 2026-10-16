@@ -21,6 +21,8 @@ mod test_combination_expr;
 mod test_control_flow_job_types;
 #[path = "integration/test_control_flow_schema.rs"]
 mod test_control_flow_schema;
+#[path = "integration/test_control_flow_scope.rs"]
+mod test_control_flow_scope;
 #[path = "integration/test_create_job.rs"]
 mod test_create_job;
 #[path = "integration/test_embedded.rs"]
