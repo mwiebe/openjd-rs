@@ -97,6 +97,13 @@ impl EvalBudgets {
 /// order. Failures that make a step uninstantiable (resolving its host
 /// requirements or parameter space) abort immediately and are reported
 /// alone.
+///
+/// With `CONTROL_FLOW` (RFC 0010), each Step's `outputVariables` are copied
+/// onto [`job::Step::output_variables`] and every Step is
+/// [`StepBinding::Bound`](job::StepBinding::Bound). `enableIf` is not
+/// evaluated yet, so any `enableIf` other than the literal `true` on a Step,
+/// Job Environment, or Step Environment is refused: an error at the field's
+/// path, reported with the carried-forward checks.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
