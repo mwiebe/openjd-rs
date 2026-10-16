@@ -410,7 +410,7 @@ fn a_heterogeneous_list_against_a_scalar_is_described_as_a_list() {
     let mut c = collector(&["{name: 'N', type: INT}"]);
     assert_eq!(
         err(&mut c, "N=[1, \"a\"]", OutputErrorKind::Conversion),
-        "Output variable 'N': value (list) does not convert to int"
+        "Output variable 'N': value (list) '[1,\"a\"]' does not convert to int"
     );
 }
 
@@ -597,9 +597,13 @@ fn nesting_past_the_json_recursion_limit_does_not_convert() {
     );
     // Below the limit, the depth is a conversion against the target.
     let deep = format!("{}1{}", "[".repeat(127), "]".repeat(127));
+    let inner = format!("{}1{}", "[".repeat(125), "]".repeat(125));
     assert_eq!(
         err(&mut c, &format!("G={deep}"), OutputErrorKind::Conversion),
-        "Output variable 'G': item[0][0] (list) does not convert to int"
+        format!(
+            "Output variable 'G': item[0][0] (list) '{}...' does not convert to int",
+            &inner[..200]
+        )
     );
 }
 
@@ -608,15 +612,83 @@ fn lone_surrogate_escape_is_invalid_json() {
     let mut c = collector(&["{name: S, type: STRING}"]);
     assert_eq!(
         err(&mut c, "S=\"\\udc00\"", OutputErrorKind::Json),
-        "Output variable 'S': '\"\\udc00\"' is not one valid JSON value: lone leading \
-         surrogate in hex escape at line 1 column 7"
+        "Output variable 'S': '\"\\udc00\"' holds a string with a lone UTF-16 surrogate escape, \
+         which is not valid Unicode (at line 1 column 7)"
     );
     let e = file(&mut c, "S", None, b"\"\\ud800\\u0041 x\"").unwrap_err();
     assert_eq!(e.kind(), OutputErrorKind::Json);
     assert_eq!(
         e.to_string(),
-        "Output variable 'S': the @ file's content is not one valid JSON value: lone leading \
-         surrogate in hex escape at line 1 column 13"
+        "Output variable 'S': the @ file's content holds a string with a lone UTF-16 surrogate \
+         escape, which is not valid Unicode (at line 1 column 13)"
+    );
+}
+
+#[test]
+fn lone_surrogate_forms_get_one_message() {
+    let mut c = collector(&["{name: S, type: STRING}"]);
+    for (text, column) in [
+        ("\"\\ud800\"", 8),
+        ("\"\\ud800x\"", 8),
+        ("[\"\\ud800\"]", 9),
+    ] {
+        assert_eq!(
+            err(&mut c, &format!("S={text}"), OutputErrorKind::Json),
+            format!(
+                "Output variable 'S': '{text}' holds a string with a lone UTF-16 surrogate \
+                 escape, which is not valid Unicode (at line 1 column {column})"
+            )
+        );
+    }
+}
+
+#[test]
+fn lists_of_empty_lists_are_described_without_nulltype() {
+    let mut c = collector(&["{name: I, type: INT}"]);
+    assert_eq!(
+        err(&mut c, "I=[]", OutputErrorKind::Conversion),
+        "Output variable 'I': value (empty list) '[]' does not convert to int"
+    );
+    assert_eq!(
+        err(&mut c, "I=[[]]", OutputErrorKind::Conversion),
+        "Output variable 'I': value (list) '[[]]' does not convert to int"
+    );
+}
+
+#[test]
+fn an_untyped_list_from_a_file_is_not_quoted() {
+    let mut c = collector(&["{name: I, type: INT}"]);
+    let e = file(&mut c, "I", None, b"[1, \"secret\"]").unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Output variable 'I': value (list) does not convert to int"
+    );
+}
+
+#[test]
+fn floats_are_rounded_as_expr_rounds_them() {
+    // serde_json's own float parsing (without float_roundtrip) rounds these
+    // differently; the value must match the spelling and EXPR.
+    for text in [
+        "99.95284398469323",
+        "9007199254740993.0",
+        "0.30000000000000004",
+    ] {
+        let expected: f64 = text.parse().unwrap();
+        let v = convert("{name: X, type: FLOAT}", &format!("X={text}")).unwrap();
+        let ExprValue::Float(f) = &v else {
+            panic!("{v:?}")
+        };
+        assert_eq!(f.value().to_bits(), expected.to_bits(), "{text}");
+        assert_eq!(v.to_display_string(), text);
+        let via_expr = ExprValue::String(text.into())
+            .coerce(&ExprType::FLOAT, PathFormat::Posix)
+            .unwrap();
+        assert_eq!(v, via_expr, "{text}");
+    }
+    assert_eq!(
+        convert("{name: 'N', type: INT}", "N=9007199254740993.0"),
+        Ok(ExprValue::Int(9007199254740992))
     );
 }
 
@@ -625,8 +697,7 @@ fn an_empty_list_is_described_as_such() {
     let mut c = collector(&["{name: L, type: 'LIST[INT]'}"]);
     assert_eq!(
         err(&mut c, "L=[[]]", OutputErrorKind::Conversion),
-        "Output variable 'L': item[0] (empty list) '[]' does not convert to int: Cannot coerce \
-         list[nulltype] to int"
+        "Output variable 'L': item[0] (empty list) '[]' does not convert to int"
     );
     let e = file(&mut c, "L", None, b"[[]]").unwrap_err();
     assert_eq!(

@@ -282,10 +282,16 @@ impl OutputCollector {
                 )
             } else {
                 // A lone UTF-16 surrogate escape: grammatical (RFC 8259
-                // §8.2), but not a Unicode string.
+                // §8.2), but not a Unicode string. serde_json's own wording
+                // for it varies ("unexpected end of hex escape") and can
+                // mislead, so the message names the problem itself.
                 err(
                     OutputErrorKind::Json,
-                    format!("{} is not one valid JSON value: {e}", shown()),
+                    format!(
+                        "{} holds a string with a lone UTF-16 surrogate escape, which is not \
+                         valid Unicode ({at})",
+                        shown()
+                    ),
                 )
             }
         })?;

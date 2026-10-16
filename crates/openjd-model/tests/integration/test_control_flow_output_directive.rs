@@ -266,6 +266,57 @@ fn selector_overflow_is_a_grammar_error() {
 }
 
 #[test]
+fn long_names_are_cut_in_every_grammar_message() {
+    let name = "N".repeat(1000);
+    let cut = format!("{}...", "N".repeat(200));
+    for (payload, problem) in [
+        (name.clone(), format!("expected '=' after '{cut}'")),
+        (
+            format!("{name} =1"),
+            format!("whitespace is not allowed after '{cut}'"),
+        ),
+        (
+            format!("{name}[1]x=1"),
+            format!("expected '=' after '{cut}', found 'x'"),
+        ),
+        (
+            format!("{name}[1=1"),
+            format!("the task selector of '{cut}' has no closing ']'"),
+        ),
+        (
+            format!("{name}[x]=1"),
+            format!(
+                "the task selector of '{cut}' must be an integer (an optional '-' then \
+                 digits, with no whitespace), not 'x'"
+            ),
+        ),
+        (
+            format!("{name}[99999999999999999999]=1"),
+            format!(
+                "the task selector of '{cut}', '99999999999999999999', is outside the 64-bit \
+                 integer range"
+            ),
+        ),
+        (
+            format!("{name}=@"),
+            format!("the file path after '@' for '{cut}' is empty"),
+        ),
+        (
+            format!("{name}="),
+            format!("'{cut}' has no value after '='"),
+        ),
+    ] {
+        assert_eq!(
+            grammar_err(&payload),
+            format!(
+                "Invalid openjd_output_var directive: {problem}, in '{}...'",
+                &payload[..200]
+            )
+        );
+    }
+}
+
+#[test]
 fn long_overflowing_selector_is_cut_in_the_message() {
     let digits = "9".repeat(300);
     let payload = format!("R[{digits}]=1");

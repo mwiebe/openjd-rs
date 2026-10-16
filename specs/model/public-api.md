@@ -894,8 +894,8 @@ impl outputs::OutputCollector {
     pub fn new(
         declared: &[job::OutputVariable],
         max_bytes: usize,
-        path_rules: &[PathMappingRule],
-        worker_format: PathFormat,
+        path_rules: &[openjd_expr::path_mapping::PathMappingRule],
+        worker_format: openjd_expr::path_mapping::PathFormat,
         chunk: Option<Vec<i64>>,
     ) -> Result<Self, outputs::OutputError>;
     /// Declared name; selector present iff chunked and in the chunk; a

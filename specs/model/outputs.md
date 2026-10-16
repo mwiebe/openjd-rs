@@ -123,8 +123,12 @@ ways, each reported with its line and column: a number too large for a float
 (`Conversion`, "has a number too large to represent as a float"); nesting of 128 levels
 or more, `serde_json`'s recursion limit (`Conversion`, "nests deeper than any output
 type": the deepest output type nests two levels); and a lone UTF-16 surrogate escape such
-as `"\udc00"`, which RFC 8259 §8.2 allows in the grammar but which is not a Unicode
-string (`Json`, with `serde_json`'s message).
+as `"\udc00"` or `"\ud800"`, which RFC 8259 §8.2 allows in the grammar but which is not
+a Unicode string (`Json`, "holds a string with a lone UTF-16 surrogate escape";
+`serde_json`'s own wording for these varies and can mislead). `serde_json` stops at the
+first of these it meets, so a value with two of them is reported for the earlier one:
+`[1e400, "\ud800"]` is a `Conversion` error and `["\ud800", 1e400]` a `Json` error, and
+`null` or an object in the same value is not reported.
 
 Conversion (`Conversion` errors) follows §Processing a directive, "Type conversion":
 
@@ -153,7 +157,10 @@ spelling (below).
 `arbitrary_precision`, so a parsed number has lost its spelling. The collector recovers
 each number's text from the JSON text, in document order (`convert::number_spellings`:
 outside a string, `-` or a digit begins a number), and pairs it with the parsed values in
-the same order. So a `float` keeps its spelling, as a `FLOAT` job parameter value does:
+the same order. A float's value is parsed from that spelling with `str::parse::<f64>`, as
+EXPR parses a float, not taken from `serde_json`, whose parser without the
+`float_roundtrip` feature rounds some spellings differently (`99.95284398469323`). So a
+`float` keeps its spelling, as a `FLOAT` job parameter value does:
 `X=1.50` is the float 1.5 displayed `1.50`, `S=1.50` is the string `"1.50"`, and
 `S=12345678901234567890` is the string `"12345678901234567890"` (the float keeps the
 digits). `-0` is the `int` 0. This answers plan ambiguity A6 for the prototype as "keep
@@ -244,9 +251,12 @@ the element's type. Quoted text is cut to 200 characters with `...`, and control
 characters in it are escaped (`\n`, `\u{1b}`, `\0`), so a message stays on one line and
 cannot drive a terminal; `job::OutputVariable`'s constraint messages quote strings the same
 way. The EXPR coercion message a conversion error appends (which repeats the value) is cut
-and escaped the same way, and so is an output name in a message, which only a hand-built
-declaration can make unusual. A list with no type (an empty JSON array, which EXPR types
-`list[nulltype]`) is described as an `empty list`.
+and escaped the same way, and so is an output name in every message: grammar messages
+show the name as written on the directive line, which the parser does not limit, and
+collector messages the declared name, which only a hand-built declaration can make
+unusual. An array whose elements do not form a typed list (`[1, "a"]` against `INT`, an
+empty array, or arrays of empty arrays, which EXPR types with `nulltype`) is described as
+a `list` or an `empty list`, with the inline value's JSON text quoted and no EXPR detail.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
 the converted invalid value follows the RFC instead. The runtime adds the file path and
