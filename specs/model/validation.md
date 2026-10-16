@@ -337,8 +337,8 @@ dependencies' symbols:
 | `parameterSpace` Task parameter `range`s and `chunks` fields | TEMPLATE |
 | Step Environment `enableIf`, `timeout`, `notifyPeriodInSeconds`, deferred `mode` | TEMPLATE |
 | Step Environment `variables`, script `let`, action `command`/`args`, embedded `data` | host |
-| script `timeout`, `notifyPeriodInSeconds`, deferred `mode` | TEMPLATE |
-| script `let`, `onRun` `command`/`args`, embedded `data`, and the SimpleAction fields | host |
+| script `timeout`, `notifyPeriodInSeconds`, deferred `mode`, and a SimpleAction's `timeout` / `cancelation` | TEMPLATE |
+| script `let`, `onRun` `command`/`args`, embedded `data`, and a SimpleAction's `script` / `args` / `let` | host |
 
 The job name and every field of `jobEnvironments` (including their `enableIf`) are never
 seeded. Environment Templates are not either; pass 11 rejects `CONTROL_FLOW` in them.
@@ -350,7 +350,9 @@ reference its own message instead of EXPR's `Undefined variable`. A field with a
 reference is reported with those messages only and is not evaluated. Because the scan is
 static, a reference in a branch that is never taken is caught too. In a `let` binding the
 message is prefixed `Invalid expression in let binding '<name>': ` and the binding is
-bound `unresolved(ANY)`, so later uses of it don't cascade. The checks, in order, with
+bound `unresolved(ANY)`, so later uses of it are not reported as undefined variables
+(as for any failed binding, an attribute read from it still fails, as `Cannot access
+attribute 'foo' on any`). The checks, in order, with
 the first that applies reported:
 
 | Case | Message |

@@ -432,17 +432,20 @@ fn task_param_of_a_step_without_output_variables_is_available() {
 
 #[test]
 fn several_references_in_one_field_are_reported_in_symbol_order() {
+    // Enough symbols that a hash-set order is very unlikely to be sorted.
     assert_errs(
-        &c_arg("", "{{Steps.Q.Output.Zed + Steps.Nope.Output.A}}"),
+        &c_arg(
+            "",
+            "{{[Steps.Q.Output.Zed, Steps.Nope.Output.E, Steps.Nope.Output.B, Steps.Q.Output.Ya, Steps.Nope.Output.D, Steps.Nope.Output.A, Steps.Nope.Output.C]}}",
+        ),
         &[
-            (
-                ARG0,
-                "'Steps.Nope.Output.A': there is no Step named 'Nope'.",
-            ),
-            (
-                ARG0,
-                "'Steps.Q.Output.Zed': Step 'Q' has no output variable 'Zed'.",
-            ),
+            (ARG0, &nope("A")),
+            (ARG0, &nope("B")),
+            (ARG0, &nope("C")),
+            (ARG0, &nope("D")),
+            (ARG0, &nope("E")),
+            (ARG0, "'Steps.Q.Output.Ya': Step 'Q' has no output variable 'Ya'."),
+            (ARG0, "'Steps.Q.Output.Zed': Step 'Q' has no output variable 'Zed'."),
         ],
     );
 }
@@ -1450,6 +1453,63 @@ fn enable_if_may_not_read_any_session_symbol() {
         &[(
             "steps[3] -> enableIf",
             "Failed to parse interpolation expression at [0, 40]. Undefined variable: 'Session.PathMappingRulesFile'.\n  Session.PathMappingRulesFile != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~~~~~",
+        )],
+    );
+}
+
+#[test]
+fn environment_enable_if_may_not_read_session_env_file_or_its_own_let() {
+    // RFC 0010 <Environment> enableIf constraints 2 and 3, at both
+    // locations: no Session.*, no Env.*, no names bound by let (here the
+    // Environment's own script let), and for a Step Environment no Task.*.
+    let env = |value: &str| {
+        format!(
+            "{{name: E, enableIf: {value}, script: {{let: ['x = true'], embeddedFiles: [{{name: Cfg, type: TEXT, data: d}}], actions: {{onEnter: {{command: echo}}}}}}}}"
+        )
+    };
+    let cases = [
+        (
+            "'{{Session.WorkingDirectory != null}}'",
+            "Failed to parse interpolation expression at [0, 36]. Undefined variable: 'Session.WorkingDirectory'.\n  Session.WorkingDirectory != null\n  ~~~~~~~~^~~~~~~~~~~~~~~~",
+        ),
+        (
+            "'{{Env.File.Cfg != null}}'",
+            "Failed to parse interpolation expression at [0, 24]. Undefined variable: 'Env.File.Cfg'.\n  Env.File.Cfg != null\n  ~~~~~~~~~^~~",
+        ),
+        (
+            "'{{x}}'",
+            "Failed to parse interpolation expression at [0, 5]. Undefined variable: 'x'.\n  x\n  ^",
+        ),
+    ];
+    for (value, msg) in cases {
+        let job_env = template_with(
+            EXTENSIONS,
+            &format!("jobEnvironments:\n  - {}\n", env(value)),
+            ECHO,
+        );
+        assert_errs(&job_env, &[("jobEnvironments[0] -> enableIf", msg)]);
+        let step_env = template(&format!(
+            "    stepEnvironments:\n      - {}\n{ECHO}",
+            env(value)
+        ));
+        assert_errs(
+            &step_env,
+            &[("steps[3] -> stepEnvironments[0] -> enableIf", msg)],
+        );
+    }
+    let step_env = template(&format!(
+        "    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: [1]}}]
+    stepEnvironments:
+      - {}
+{ECHO}",
+        env("'{{Task.Param.X > 1}}'")
+    ));
+    assert_errs(
+        &step_env,
+        &[(
+            "steps[3] -> stepEnvironments[0] -> enableIf",
+            "Failed to parse interpolation expression at [0, 20]. Undefined variable: 'Task.Param.X'.\n  Task.Param.X > 1\n  ~~~~~~~~~~~^",
         )],
     );
 }

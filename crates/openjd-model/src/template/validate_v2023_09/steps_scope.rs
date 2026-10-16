@@ -310,7 +310,8 @@ mod tests {
     /// A job template with producers `P` (no parameterSpace), `Q`
     /// (parameterSpace, CHUNK[INT], PATH, FLOAT, and INT Task parameters), `R`
     /// (enableIf, no parameterSpace), `M` (enableIf and parameterSpace), and
-    /// a consumer `C` that depends on all four.
+    /// a consumer `C` that depends on all four, and `Z`, which depends on `C`
+    /// only.
     const TEMPLATE: &str = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW, TASK_CHUNKING]
@@ -322,6 +323,7 @@ steps:
       - {name: F, type: PATH}
       - {name: Fs, type: "LIST[PATH]"}
       - {name: L, type: "LIST[STRING]"}
+      - {name: S, type: STRING}
     script: {actions: {onRun: {command: x}}}
   - name: Q
     parameterSpace:
@@ -353,6 +355,10 @@ steps:
       - {dependsOn: Q}
       - {dependsOn: R}
       - {dependsOn: M}
+    script: {actions: {onRun: {command: x}}}
+  - name: Z
+    dependencies:
+      - {dependsOn: C}
     script: {actions: {onRun: {command: x}}}
 "#;
 
@@ -393,6 +399,7 @@ steps:
             ("Steps.P.Output.F", ExprType::PATH),
             ("Steps.P.Output.Fs", list(ExprType::PATH)),
             ("Steps.P.Output.L", list(ExprType::STRING)),
+            ("Steps.P.Output.S", ExprType::STRING),
             // The Raw forms have the same types.
             ("Steps.P.RawOutput.Count", ExprType::INT),
             ("Steps.P.RawOutput.F", ExprType::PATH),
@@ -443,9 +450,14 @@ steps:
     #[test]
     fn only_direct_dependencies_are_seeded() {
         let jt = template();
-        let mut s = SymbolTable::new();
         // P depends on nothing.
+        let mut s = SymbolTable::new();
         add_steps_scope(&mut s, &jt, 0, StepsFieldScope::Host).unwrap();
+        assert!(s.get_table("Steps").is_none());
+        // Z depends on C, which depends on P, Q, R, and M: none of their
+        // symbols are seeded, and C has none of its own.
+        let mut s = SymbolTable::new();
+        add_steps_scope(&mut s, &jt, 5, StepsFieldScope::Host).unwrap();
         assert!(s.get_table("Steps").is_none());
     }
 
