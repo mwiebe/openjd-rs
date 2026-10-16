@@ -51,11 +51,15 @@ invalid), it calls `std::process::exit(1)` with an error message.
 2. Checks `args[1] == "run"`
 3. Checks any arg is `-h` or `--help`
 4. Finds the template path: first arg after "run" that doesn't start with `-`
-5. Finds `--extensions` value if present (looks for `--extensions` followed by a value)
+5. Finds the `--extensions` value if present, written `--extensions X` or
+   `--extensions=X`, and resolves it with `common::parse_extensions`, as `check`,
+   `run`, and `summary` do: every `ModelExtension::ALL` name by default, and an unknown
+   name is an error
 
-This is intentionally simple — it doesn't try to fully parse the argument list. Edge cases
-(e.g., `--extensions` as the last arg with no value) are handled by falling through to
-clap's normal error reporting.
+This is intentionally simple — it doesn't try to fully parse the argument list. A
+trailing `--extensions` with no value is ignored, so the defaults apply. Because step 4
+takes the first non-flag argument, `openjd run --extensions EXPR t.yaml --help` treats
+`EXPR` as the template path; put options after the template path.
 
 ## Help Generation Pipeline
 

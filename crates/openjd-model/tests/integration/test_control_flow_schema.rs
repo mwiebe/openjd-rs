@@ -580,6 +580,33 @@ fn default_is_not_allowed() {
 }
 
 #[test]
+fn a_default_is_removed_before_the_job_parameter_rules_see_it() {
+    // A default that the job parameter definition would reject (wrong type,
+    // or outside its constraints) is reported only as not allowed.
+    for outputs in [
+        "[{name: 'N', type: INT, default: abc}]",
+        "[{name: 'N', type: INT, minValue: 10, default: 3}]",
+    ] {
+        assert_errs(
+            &with_outputs(outputs),
+            "JobTemplate",
+            &[(
+                "steps[0] -> outputVariables[0] -> default",
+                "is not allowed in an output variable definition.",
+            )],
+        );
+    }
+    assert_errs(
+        &with_outputs("[{name: S, type: STRING, userInterface: {control: NOT_A_CONTROL}}]"),
+        "JobTemplate",
+        &[(
+            "steps[0] -> outputVariables[0] -> userInterface",
+            "is not allowed in an output variable definition.",
+        )],
+    );
+}
+
+#[test]
 fn user_interface_is_not_allowed() {
     assert_errs(
         &with_outputs("[{name: 'N', type: INT, userInterface: {control: SPIN_BOX}}]"),
