@@ -500,7 +500,7 @@ lists `unapply_rules` and `UnmapError`.
   collector; otherwise it passes `None`. The value may be an `ExprValue::RangeExpr` (as `openjd run` passes) or an
   `ExprValue::String` such as `"1-10"`, which the session accepts today (`session.rs:2609`, `:2636`; test
   `task_chunk_int_stays_string`). A string is parsed as a range expression; a parse failure fails the Action with
-  "CHUNK[INT] parameter 'Frame' value '...' is not a range expression".
+  "CHUNK[INT] parameter '<name>' value '<value>' is not a range expression".
 * `run_task` builds the `OutputCollector` with the Session's sorted path mapping rules (`session.rs:681`) and
   `PathFormat::host()`, so `PATH` values are mapped back before they are reported or returned.
 * `SessionLimits` (`limits.rs:23`) gets `max_task_output_bytes: Option<usize>`, with a default of at least 1 MiB and
