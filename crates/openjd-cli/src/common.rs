@@ -111,7 +111,7 @@ pub fn require_bound_job(job: &openjd_model::job::Job) -> Result<(), String> {
         return Ok(());
     }
     Err(format!(
-        "CONTROL_FLOW step input binding, enableIf, and job outputs are not supported by this command yet:\n  {}",
+        "CONTROL_FLOW step input binding, enableIf, and job outputs evaluated after job creation are not supported by this command yet:\n  {}",
         problems.join("\n  ")
     ))
 }

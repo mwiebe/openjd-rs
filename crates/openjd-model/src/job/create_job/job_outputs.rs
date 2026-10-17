@@ -159,18 +159,27 @@ fn evaluate(
     if value == ExprValue::Null {
         return Ok(None);
     }
-    // These failures have no caret, so the message ends with the value
-    // format string as written, to name the expression (RFC 0010 §Job
-    // outputs item 3).
-    let with_expression = |message: String| format!("{message}\n  {}", output.value.raw());
+    // These failures have no caret, so the message ends with a line holding
+    // the value format string, to name the expression (RFC 0010 §Job
+    // outputs item 3). It and the coercion error, which repeats the value,
+    // are shortened and their control characters escaped, as a Step output
+    // value's messages are, so the message stays on its lines and a value
+    // a Task reported cannot drive the terminal.
+    let with_expression = |message: String| {
+        format!(
+            "{message}\n  {}",
+            crate::outputs::shorten(output.value.raw())
+        )
+    };
     let value = if value.expr_type() == ty {
         value
     } else {
         value.clone().coerce(&ty, PathFormat::Posix).map_err(|e| {
             fail(with_expression(format!(
-                "value {} does not convert to {}: {e}",
+                "value {} does not convert to {}: {}",
                 crate::outputs::quote(&value.to_display_string()),
-                output.declaration.param_type.as_spec_str()
+                output.declaration.param_type.as_spec_str(),
+                crate::outputs::shorten(&e)
             )))
         })?
     };

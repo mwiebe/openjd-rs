@@ -504,9 +504,10 @@ pub struct StepDependency {
 
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
-| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
+| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap`; `jobOutputDefinitions` become `outputs` |
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is decided into `binding` (`Skipped` when `false`) |
 | `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
+| `template::JobOutputDefinition` | `job::JobOutput` | Declaration as an `OutputVariable` (`collect` always `ONCE`); keeps `objectType` and `description`; `value` stays a `FormatString`; `evaluated` filled at creation or by the caller |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab`; `enableIf` is decided into `enabled` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |

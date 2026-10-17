@@ -1400,8 +1400,6 @@ pub enum EndOfLine {
 
 /// Hash since CONTROL_FLOW: job::JobOutput holds one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-/// Hash since CONTROL_FLOW: job::JobOutput holds one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ObjectType {
     File, Directory,

@@ -71,9 +71,11 @@ A job output is evaluated in three steps, at Job creation or through
    properties are not checked.
 2. **Convert.** A result whose type is not the declared type is converted with EXPR's
    implicit coercion (§1.2.3), as a Step's output values are
-   ([outputs.md](outputs.md)). A string converted to `path` keeps its text as written,
-   labelled with the POSIX path format (RFC 0010 §Job outputs item 6: it is whatever the
-   string holds).
+   ([outputs.md](outputs.md)). A string converted to `path` keeps its text as written
+   (RFC 0010 §Job outputs item 6). It is labelled with the POSIX path format whatever the
+   submission path context, because the model holds `RawParam.*` of a `PATH` parameter
+   as a string, so a `PATH` output built from it (`{{RawParam.Out}}`) goes through this
+   conversion too: a caller should read the text, not the `path` value's format.
 3. **Check.** The value is checked against the declared constraint properties with
    `job::OutputVariable::check_constraints`, the check a Step's outputs use. Only the
    declared properties apply.
@@ -88,8 +90,10 @@ A failure at any step is a `ModelError::ModelValidation` with one error at
 | A constraint violation | the output variable check's message with `Job output` for `Output variable`, such as `value 4 exceeds maximum 3` |
 
 The conversion and constraint messages have no caret, so they end with a line holding the
-`value` as written (`\n  {{Param.N}}`), which names the expression as RFC 0010 §Job
-outputs item 3 asks.
+`value` (`\n  {{Param.N}}`), which names the expression as RFC 0010 §Job outputs item 3
+asks. That line and the coercion error, which repeats the value, are cut to 200
+characters with control characters escaped (`\n`, `\u{1b}`), as a Step output value's
+messages are, so a multi-line `value` or a value a Task reported stays on one line.
 
 The size limit of RFC 0010 §Job outputs item 7 (at least 1 MiB of job output values per
 Job) is not enforced by the model: a scheduler applies its own.

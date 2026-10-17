@@ -2011,7 +2011,7 @@ steps:
         )
         .unwrap();
         let expected =
-            "CONTROL_FLOW step input binding, enableIf, and job outputs are not supported by this command yet:
+            "CONTROL_FLOW step input binding, enableIf, and job outputs evaluated after job creation are not supported by this command yet:
   Job Environment 'JE' is disabled by its enableIf
   Step 'C' is pending inputs from the Steps it depends on
   Step 'S' is skipped by its enableIf
