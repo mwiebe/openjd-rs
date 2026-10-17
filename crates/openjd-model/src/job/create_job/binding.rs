@@ -526,9 +526,13 @@ pub(super) fn evaluate_enable_if(
         .map_err(|e| fail(e.to_string()))?;
     match value {
         ExprValue::Bool(b) => Ok(b),
-        other => match other.coerce(&ExprType::BOOL, PathFormat::Posix) {
+        other => match other.clone().coerce(&ExprType::BOOL, PathFormat::Posix) {
             Ok(ExprValue::Bool(b)) => Ok(b),
-            _ => Err(fail(format!("'{}' does not convert to a bool.", fs.raw()))),
+            _ => Err(fail(format!(
+                "'{}' resolved to '{}', which does not convert to a bool.",
+                fs.raw(),
+                other.to_display_string()
+            ))),
         },
     }
 }
