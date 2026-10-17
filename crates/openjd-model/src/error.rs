@@ -38,6 +38,12 @@ pub enum ModelError {
     #[error("Expression error: {0}")]
     Expression(#[source] openjd_expr::ExpressionError),
 
+    /// The inputs do not fit together: a context that does not cover the
+    /// template (`create_job`), incompatible environment-template parameter
+    /// merges (§1.2.1), or, with `CONTROL_FLOW`, a step input binding call
+    /// whose arguments do not match the Job (`advance_step_binding`,
+    /// `StepInputs::add_producer`, `attach_step_inputs`): a caller error, not
+    /// a failed Step.
     #[error("Compatibility error: {0}")]
     Compatibility(String),
 

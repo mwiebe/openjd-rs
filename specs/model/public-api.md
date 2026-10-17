@@ -214,7 +214,8 @@ pub fn advance_step_binding(
 ) -> Result<job::Step, job::BindingError>;
 
 /// CONTROL_FLOW: merge the `Steps.*` values a bound Step's host-scope
-/// fields read into its `resolved_symtab`.
+/// fields read into its `resolved_symtab`. A caller error (Step not bound, a
+/// symbol not concrete) is a ModelError::Compatibility.
 pub fn attach_step_inputs(
     step: &job::Step,
     inputs: &job::StepInputs,
@@ -872,6 +873,7 @@ impl<T> job::GroupState<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive] // TASK_DEPENDENCIES would add a Task graph group
 pub enum job::MaterializationGroup {
     Enablement,
     TaskEnumeration,
@@ -888,7 +890,14 @@ pub struct job::BindingError {
     pub group: MaterializationGroup,
     pub errors: Vec<ModelError>,
 }
-/// "Step '<step>' failed in its <group> group:" then each error on its own line.
+impl job::BindingError {
+    /// Every error is a ModelError::Compatibility: a caller error, which
+    /// does not fail the Step.
+    pub fn is_caller_error(&self) -> bool;
+}
+/// "Step '<step>' failed in its <group> group:" (for a caller error,
+/// "Binding Step '<step>' was refused in its <group> group:") then each
+/// error on its own line.
 impl Display for job::BindingError;
 impl std::error::Error for job::BindingError;
 
@@ -908,7 +917,9 @@ pub struct job::StepInputs { /* private */ }
 impl job::StepInputs {
     pub fn new() -> Self;
     /// Add or replace a producer's `Steps.*` values, typed by the RFC's
-    /// table. Path-typed values are held only in their Raw form.
+    /// table. Path-typed values are held only in their Raw form. TasksKnown
+    /// on a skipped producer is Skipped. A caller error is a
+    /// ModelError::Compatibility.
     pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
         -> Result<(), ModelError>;
     /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
@@ -1386,7 +1397,10 @@ pub enum ModelError {
     /// full `ExpressionError` with its kind and source context.
     Expression(openjd_expr::ExpressionError),
 
-    /// Incompatible env-template parameter merges (§1.2.1).
+    /// Incompatible env-template parameter merges (§1.2.1); a create_job
+    /// context that does not cover the template; with CONTROL_FLOW, a caller
+    /// error in step input binding (advance_step_binding,
+    /// StepInputs::add_producer, attach_step_inputs).
     Compatibility(String),
 
     /// The `specificationVersion` field named a revision this library
@@ -1757,6 +1771,13 @@ Enums that are marked `#[non_exhaustive]` today:
 - `ModelError`
 - `outputs::OutputErrorKind`, so a later change can split a kind without
   breaking callers that match on it
+- `job::MaterializationGroup`, which `TASK_DEPENDENCIES` would extend with a
+  Task graph group
+
+The other `CONTROL_FLOW` enums — `job::StepBinding`, `job::GroupState`,
+`job::GroupReport`, `job::ProducerState`, and `template::IntRangeItem` — are
+closed: they name the RFC's fixed Step states, the two states of a group,
+and the forms the schema allows.
 
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem

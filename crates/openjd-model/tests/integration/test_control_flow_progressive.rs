@@ -836,7 +836,7 @@ fn inputs_must_be_cumulative() {
     ));
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its remaining group:\n\
+        "Binding Step 'C' was refused in its remaining group:\n\
          Compatibility error: the remaining group of Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do not hold; pass every producer's values given before, as well as new ones."
     );
 }
@@ -857,7 +857,7 @@ fn a_step_index_past_the_job_is_a_caller_error() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Step '#9' failed in its enablement group:\n\
+        "Binding Step '#9' was refused in its enablement group:\n\
          Compatibility error: the Job has 3 Steps, so it has no Step 9."
     );
 }
@@ -879,7 +879,7 @@ fn a_template_that_is_not_the_jobs_is_a_caller_error() {
     .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its enablement group:\n\
+        "Binding Step 'C' was refused in its enablement group:\n\
          Compatibility error: Step 2 of the Job is 'C', but the template's is not; pass the template the Job was created from."
     );
 }
@@ -1000,6 +1000,140 @@ fn the_remaining_group_checks_a_concrete_steps_value() {
             expected(&[(
                 "steps[2] -> script -> actions -> onRun -> cancelation",
                 "mode must resolve to TERMINATE or NOTIFY_THEN_TERMINATE, got 'BOGUS'.",
+            )])
+        )
+    );
+}
+
+#[test]
+fn every_known_groups_inputs_must_be_given_again() {
+    let refused = |group: &str, sym: &str| {
+        format!(
+            "Binding Step 'C' was refused in its {group} group:\n\
+             Compatibility error: the {group} group of Step 'C' was evaluated with '{sym}', which the given inputs do not hold; pass every producer's values given before, as well as new ones."
+        )
+    };
+    // Task enumeration known from P, then only Q.
+    let f = Fixture::new(&p_q_c(""), &[]);
+    let mut job = f.job();
+    f.advance(&mut job, "C", |j| n_is(j, 2), 0).unwrap();
+    let err = f.advance(&mut job, "C", |j| gpu_is(j, 1), 0).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        refused("Task enumeration", "Steps.P.Output.Count")
+    );
+    // Host selection known from Q, then only P.
+    let mut job = f.job();
+    f.advance(&mut job, "C", |j| gpu_is(j, 1), 0).unwrap();
+    let err = f.advance(&mut job, "C", |j| n_is(j, 2), 0).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        refused("host selection", "Steps.Q.Output.Gpu")
+    );
+    // Enablement known from P, then only Q.
+    let f = Fixture::new(
+        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
+        &[],
+    );
+    let mut job = f.job();
+    f.advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
+        .unwrap();
+    let only_q = |j: &openjd_model::job::Job| {
+        let mut inputs = StepInputs::new();
+        succeeded(
+            &mut inputs,
+            j,
+            "Q",
+            &[outputs(&[("Count", ExprValue::Int(1))])],
+        );
+        inputs
+    };
+    let err = f.advance(&mut job, "C", only_q, 0).unwrap_err();
+    assert_eq!(err.to_string(), refused("enablement", "Steps.P.Output.Go"));
+    // With two inputs missing, the first in sorted order is named.
+    let f = Fixture::new(
+        &go_gpu_count("    let: ['a = Steps.P.Output.Gpu', 'b = Steps.P.Output.Go']\n"),
+        &[],
+    );
+    let mut job = f.job();
+    f.advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
+        .unwrap();
+    let err = f.advance(&mut job, "C", only_q, 0).unwrap_err();
+    assert_eq!(err.to_string(), refused("remaining", "Steps.P.Output.Go"));
+}
+
+#[test]
+fn a_skipped_step_needs_no_producer() {
+    let f = Fixture::new(
+        &go_gpu_count("    enableIf: false\n").replace(
+            "    enableIf: false\n    script: {actions: {onRun: {command: echo}}}\n",
+            "    enableIf: false\n    script: {actions: {onRun: {command: echo, args: ['{{Steps.P.Output.Gpu}}']}}}\n",
+        ),
+        &[],
+    );
+    let job = f.job();
+    assert_eq!(step(&job, "C").binding, StepBinding::Skipped);
+    assert_eq!(step(&job, "C").input_producers(), Vec::<String>::new());
+}
+
+#[test]
+fn a_deferred_cancelation_periods_inputs_are_remaining_inputs() {
+    let f = Fixture::new(
+        &go_gpu_count("").replace(
+            "  - name: C\n",
+            "  - name: D\n    dependencies: [{dependsOn: P}]\n    script: {actions: {onRun: {command: echo, cancelation: {mode: '{{\"NOTIFY_THEN_TERMINATE\"}}', notifyPeriodInSeconds: '{{Steps.P.Output.Gpu}}'}}}}\n  - name: C\n",
+        ),
+        &[],
+    );
+    let job = f.job();
+    let StepBinding::PendingInputs(p) = &step(&job, "D").binding else {
+        panic!("D is pending");
+    };
+    assert_eq!(p.remaining, waiting(&["Steps.P.Output.Gpu"]));
+}
+
+#[test]
+fn a_host_requirement_may_read_steps_through_a_let() {
+    let f = Fixture::new(
+        &go_gpu_count(
+            "    let: ['g = Steps.P.Output.Gpu']\n    hostRequirements:\n      amounts: [{name: amount.worker.gpu, min: '{{g}}'}]\n",
+        ),
+        &[],
+    );
+    let mut job = f.job();
+    let StepBinding::PendingInputs(p) = &step(&job, "C").binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(p.host_requirements, waiting(&["Steps.P.Output.Gpu"]));
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 3, None), 0)
+        .unwrap();
+    let StepBinding::PendingInputs(p) = &c.binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(p.host_requirements, GroupState::Known(Some(gpu_hr(3.0))));
+}
+
+#[test]
+fn a_host_requirement_check_error_keeps_its_own_path() {
+    let f = Fixture::new(
+        &go_gpu_count(
+            "    hostRequirements:\n      amounts: [{name: amount.worker.gpu, min: '{{Steps.P.Output.Gpu}}', max: 1}]\n",
+        ),
+        &[],
+    );
+    let mut job = f.job();
+    let err = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 5, None), 0)
+        .unwrap_err();
+    assert!(!err.is_caller_error());
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Step 'C' failed in its host selection group:\n{}",
+            expected(&[(
+                "steps[2] -> hostRequirements -> amounts[0]",
+                "min (5) > max (1)."
             )])
         )
     );

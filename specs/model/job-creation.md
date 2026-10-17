@@ -500,7 +500,9 @@ creation), and a `StepInputs`:
      each value names one Task; value 1 appears more than once.`), and checks
      the Task-count limits (below). Every error is located, as RFC 0010 §How a
      Step is bound item 3 asks ("the failure message names the field and the
-     expression"): a range or `chunks` error at
+     expression"). A range string that fails to parse after its expressions
+     are evaluated names the resolved text (`Expected ':' or ',' in '1-0.5'`)
+     rather than the expression. The paths: a range or `chunks` error at
      `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
      `-> chunks`), with the expression and caret where evaluating one failed;
      a combination error at `steps[i] -> parameterSpace`; a Task-count limit
@@ -591,12 +593,13 @@ must hold every value given in earlier calls for the Step as well as new
 ones, because the Step's table and its `let` bindings are rebuilt from it.
 A known group whose input is missing from `inputs` is a caller error. On the first failing group it
 returns `BindingError { step, group, errors }`: the Step is `FAILED` at once.
-`errors` holds the group's `ModelError`: a `ModelValidation` error with a
-path per field for a `let`, `enableIf`, or remaining-group error, or the
-resolution error a range or host requirement gives (which quotes the
-expression with a caret). Its `Display` is `Step '<name>' failed in its
+`errors` holds the group's `ModelError`, a `ModelValidation` error with a
+path per field (see each group above); where evaluating an expression
+failed, the message quotes it with a caret. Its `Display` is `Step '<name>' failed in its
 <group> group:` followed by each error. A caller error says nothing about the
-Step and does not fail it: its error is a `ModelError::Compatibility`. These
+Step and does not fail it: its error is a `ModelError::Compatibility`,
+`BindingError::is_caller_error()` is `true`, and its `Display` begins
+`Binding Step '<name>' was refused in its <group> group:`. These
 are a Step index past the Job's (with `step` `#<index>`), a template whose
 Step there has another name (both in the enablement group), and a known
 group's input missing from `inputs` (in that group: `the remaining group of
@@ -629,9 +632,11 @@ submission-context form, as a `path` value; a `PATH` Task parameter's
 values are `path` values in the Posix format); its `Output` or `TaskParam`
 is concrete (`is_concrete`) but has no value (`get` returns `None`), because
 it is derived on the worker host. `add_producer` replaces a producer added
-before. It refuses a state that does not match the producer's binding, a
-`task_outputs` without one map per Task, a Task that lacks a declared output,
-and a value that does not convert. It does not check that the producer is a
+before. `TasksKnown` on a skipped producer is the same as `Skipped`, since its
+`TaskParam` is concrete as `null` (and `tasks_known()` is `Some(0)`). It
+refuses, as a `ModelError::Compatibility`, a state that does not match the
+producer's binding, a `task_outputs` without one map per Task, a Task that
+lacks a declared output, and a value that does not convert. It does not check that the producer is a
 dependency of anything, because job outputs read any Step.
 
 #### attach_step_inputs
@@ -655,8 +660,9 @@ map `Output` and `TaskParam` forward. A skipped producer's `null`s are
 stored as they are and are not recorded. Every `Steps.*` value in
 `resolved_symtab` and every `path_inputs` record comes from this call's
 `inputs`, so attaching again replaces an earlier call's (calling it again with
-the same inputs gives the same Step). It errors on a Step that is not bound and
-on a symbol that is not concrete in `inputs`, naming it.
+the same inputs gives the same Step). It errors, as a `ModelError::Compatibility`,
+on a Step that is not bound and on a symbol that is not concrete in `inputs`,
+naming it.
 
 #### Reporting
 

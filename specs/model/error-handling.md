@@ -22,7 +22,7 @@ pub enum ModelError {
 | `ModelValidation` | Semantic validation failure: template parsed but violates spec rules. Contains structured `ValidationErrors` with per-field paths |
 | `FormatStringError` | Format string interpolation error, with optional source position for diagnostics |
 | `Expression` | Expression evaluation error (from `openjd-expr`) |
-| `Compatibility` | Parameter merge conflicts between templates |
+| `Compatibility` | Parameter merge conflicts between templates; a `create_job` context that does not cover the template; with `CONTROL_FLOW`, a caller error in step input binding (`advance_step_binding`, `StepInputs::add_producer`, `attach_step_inputs`), which says nothing about the Step |
 | `UnsupportedSchema` | Unknown `specificationVersion` value |
 
 Marked `#[non_exhaustive]` to allow adding variants without breaking downstream code.

@@ -84,7 +84,9 @@ impl TaskParameterDefinition {
 /// Int range: either a list of values or a range expression string.
 #[derive(Debug, Clone)]
 pub enum IntRange {
+    /// An `<IntRangeList>`.
     List(Vec<IntRangeItem>),
+    /// An `<IntRangeExpr>` format string.
     Expression(FormatString),
 }
 
