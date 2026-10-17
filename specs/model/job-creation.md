@@ -256,6 +256,12 @@ budgets template validation and the session runtime apply.
    `let`, each Step's checks, and its symbol table); the job name and the Job
    Environments are resolved and checked as before. See [Step input binding](#step-input-binding-control_flow)
    below.
+10. With `CONTROL_FLOW`, after the Steps: store each `jobOutputDefinitions` entry in
+    `job::Job::outputs`, and evaluate each one whose `Steps.*` inputs are concrete given
+    the Steps just built (none; a skipped Step's `null`s; `TaskParam` of a Step whose
+    Tasks are known, bound or not). A job output that fails fails `create_job`, every
+    such failure reported together in template order. The rest stay pending. See
+    [job-outputs.md](job-outputs.md).
 
 #### Resolved-value checks on carried-forward fields
 

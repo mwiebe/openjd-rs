@@ -36,7 +36,7 @@ src/
 │   ├── expr_parameters.rs    # EXPR extension parameter types (§2.9-2.16)
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
 │   ├── step.rs               # StepTemplate, SimpleAction (§3)
-│   ├── output_variables.rs   # OutputVariableDefinition, BoolOrFormatString (CONTROL_FLOW)
+│   ├── output_variables.rs   # OutputVariableDefinition, JobOutputDefinition, BoolOrFormatString (CONTROL_FLOW)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
 │   ├── actions.rs            # Action, CancelationMode (§5)
 │   ├── host_requirements.rs  # HostRequirements (§3.3)
@@ -56,11 +56,13 @@ src/
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.
     ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PendingBinding, GroupState, PathInput
     ├── binding.rs            # CONTROL_FLOW StepInputs, ProducerState, BindingError, BindingReport, Step::tasks_known
+    ├── job_output.rs         # CONTROL_FLOW JobOutput, JobOutputValue
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job() entry point
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table
     │   ├── instantiate.rs    # Template → job type conversion
     │   ├── binding.rs        # CONTROL_FLOW progressive step input binding: group inputs, the core, advance_step_binding, attach_step_inputs
+    │   ├── job_outputs.rs    # CONTROL_FLOW job output evaluation: at creation, job_output_inputs, evaluate_job_output
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph
@@ -74,6 +76,7 @@ The crate re-exports a curated public API from `lib.rs`:
 - `decode_job_template`, `decode_environment_template`, `decode_template` — Template parsing
 - `create_job` — Full job instantiation pipeline
 - `advance_step_binding`, `attach_step_inputs` — `CONTROL_FLOW` step input binding after job creation
+- `job_output_inputs`, `evaluate_job_output` — `CONTROL_FLOW` job output evaluation after job creation
 - `preprocess_job_parameters` — Parameter validation and coercion
 - `merge_job_parameter_definitions` — Cross-template parameter merging
 - `build_symbol_table` — Symbol table construction from parameter values

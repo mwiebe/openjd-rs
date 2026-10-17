@@ -18,6 +18,7 @@ but redesigned for Rust's type system and performance characteristics.
 | [template-types.md](template-types.md) | Unresolved template types (deserialized from YAML, format strings unevaluated) |
 | [job-types.md](job-types.md) | Instantiated job types (fully resolved, output of `create_job`) |
 | [outputs.md](outputs.md) | `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and the output collector |
+| [job-outputs.md](job-outputs.md) | `CONTROL_FLOW` job outputs: `jobOutputDefinitions`, their scope, evaluation at job creation, `job_output_inputs` and `evaluate_job_output` |
 | [parameters.md](parameters.md) | Job and task parameter type systems, value coercion, constraint checking |
 | [parsing.md](parsing.md) | Template decoding pipeline: YAML/JSON → version dispatch → serde → validation |
 | [validation.md](validation.md) | Multi-pass validation pipeline: limits, structure, extensions, format strings |
@@ -80,6 +81,9 @@ Currently implements `2023-09` with extensions:
   Step input binding is progressive: `create_job` decides each `enableIf` and evaluates
   each materialization group whose inputs are concrete, and `advance_step_binding`,
   `StepInputs`, and `attach_step_inputs` finish a pending Step as upstream values arrive
-  ([job-creation.md](job-creation.md) § Step input binding). Recognizing the directive in
-  a Session, simulating binding in `openjd run`, and `jobOutputDefinitions` are not
-  implemented yet (see `docs/control-flow-prototype-plan.md`).
+  ([job-creation.md](job-creation.md) § Step input binding). `jobOutputDefinitions` are
+  validated, `create_job` evaluates those whose inputs are concrete, and
+  `evaluate_job_output` evaluates the rest ([job-outputs.md](job-outputs.md)).
+  Recognizing the directive in a Session and simulating binding and job output
+  evaluation in `openjd run` are not implemented yet (see
+  `docs/control-flow-prototype-plan.md`).

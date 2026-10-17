@@ -21,6 +21,8 @@ mod test_chunk_int;
 mod test_combination_expr;
 #[path = "integration/test_control_flow_binding.rs"]
 mod test_control_flow_binding;
+#[path = "integration/test_control_flow_job_outputs.rs"]
+mod test_control_flow_job_outputs;
 #[path = "integration/test_control_flow_job_types.rs"]
 mod test_control_flow_job_types;
 #[path = "integration/test_control_flow_output_collector.rs"]

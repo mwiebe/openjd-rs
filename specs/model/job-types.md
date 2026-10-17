@@ -38,11 +38,51 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,      // Insertion-ordered
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    pub outputs: Option<Vec<JobOutput>>,                 // CONTROL_FLOW job outputs
 }
 ```
 
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
 output.
+
+`outputs` holds the template's `jobOutputDefinitions`, in order, or `None` when it has
+none. It has `#[serde(default)]` and is skipped when `None`, so a Job without job outputs
+serializes as before. See [JobOutput](#joboutput-control_flow) below and
+[job-outputs.md](job-outputs.md).
+
+### JobOutput (CONTROL_FLOW)
+
+```rust
+pub struct JobOutput {
+    pub declaration: OutputVariable,      // name, type, unit, constraints
+    pub object_type: Option<ObjectType>,  // PATH and LIST[PATH]: FILE or DIRECTORY
+    pub description: Option<String>,
+    pub value: FormatString,              // as written
+    pub evaluated: Option<JobOutputValue>,
+}
+
+pub enum JobOutputValue { Value(ExprValue), Null }
+```
+
+`declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0010)),
+so its constraint checks are the ones a Step's outputs use; its `collect` is always
+`ONCE`. `object_type` carries a `PATH` or `LIST[PATH]` output's `objectType` for tools and
+user interfaces; it is not checked. `evaluated` is `None` while the output is pending, `Value` with the value
+converted to the declared type, or `Null` when the value evaluated to `null` (no value,
+which is not an error). `create_job` fills it for the outputs whose inputs are concrete at
+creation; a caller fills the rest from `evaluate_job_output`, for example with
+`JobOutputValue::from`. Like `Job`, both types implement `Serialize` but not
+`Deserialize`. `JobOutput`'s `Serialize` is written by hand to emit one plain struct with
+the declaration's fields inline (`#[serde(flatten)]` would serialize as a map, which
+`serde_wasm_bindgen` turns into a JS `Map` for openjd-for-js). A pending output with a
+description serializes as
+`{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, with
+`unit`, `constraints`, and `objectType` after `type` when declared. An evaluated one adds
+`"evaluated": {"state": "VALUE", "value": {"Int": 8}}` (the `ExprValue` serde form that
+`JobParameter.value` also uses), or `"evaluated": {"state": "NULL"}` when it evaluated to
+`null`, so an absent `evaluated` is always a pending output. The `state` tag follows
+`StepBinding`; a bare JSON `null` would read as `undefined` in openjd-for-js, the same as
+an absent field.
 
 ### JobParameter
 
@@ -464,9 +504,10 @@ pub struct StepDependency {
 
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
-| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
+| `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap`; `jobOutputDefinitions` become `outputs` |
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is decided into `binding` (`Skipped` when `false`) |
 | `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
+| `template::JobOutputDefinition` | `job::JobOutput` | Declaration as an `OutputVariable` (`collect` always `ONCE`); keeps `objectType` and `description`; `value` stays a `FormatString`; `evaluated` filled at creation or by the caller |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
 | `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab`; `enableIf` is decided into `enabled` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |

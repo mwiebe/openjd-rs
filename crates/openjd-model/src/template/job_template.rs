@@ -6,6 +6,7 @@
 
 use super::constrained_strings::{Description, ExtensionName};
 use super::environment::Environment;
+use super::output_variables::JobOutputDefinition;
 use super::parameters::JobParameterDefinition;
 use super::step::StepTemplate;
 use crate::format_string::FormatString;
@@ -22,6 +23,8 @@ pub struct JobTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
+    /// The Job's outputs (`CONTROL_FLOW`, RFC 0010 `jobOutputDefinitions`).
+    pub job_output_definitions: Option<Vec<JobOutputDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
     pub steps: Vec<StepTemplate>,
 }
@@ -40,6 +43,11 @@ impl JobTemplate {
             Some(defs) => defs,
             None => &[],
         }
+    }
+
+    /// The `jobOutputDefinitions`, empty when there are none.
+    pub fn job_output_definitions_list(&self) -> &[JobOutputDefinition] {
+        self.job_output_definitions.as_deref().unwrap_or(&[])
     }
 
     /// Derive the [`ModelProfile`](crate::ModelProfile) described by

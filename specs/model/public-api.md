@@ -62,7 +62,8 @@ The structural template types — `template::JobTemplate`,
 `template::AttributeRequirement`, `template::StepDependency`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
 `template::ExtensionName`, `template::BoolOrFormatString`,
-`template::OutputVariableDefinition`, `template::TaskParameterDefinition`
+`template::OutputVariableDefinition`, `template::JobOutputDefinition`,
+`template::TaskParameterDefinition`
 and its 5 per-variant inner struct types
 (`IntTaskParameterDefinition`, `FloatTaskParameterDefinition`,
 `StringTaskParameterDefinition`, `PathTaskParameterDefinition`,
@@ -222,6 +223,24 @@ pub fn attach_step_inputs(
     inputs: &job::StepInputs,
 ) -> Result<job::Step, ModelError>;
 
+/// CONTROL_FLOW: the `Steps.*` symbols job output `output_index` reads
+/// (`Steps.<Step>.<Member>.<Name>`, sorted, no repeats). Empty for an
+/// output that reads none and for an index past the Job's outputs.
+pub fn job_output_inputs(job: &job::Job, output_index: usize) -> Vec<String>;
+
+/// CONTROL_FLOW: evaluate job output `output_index` with the `Steps.*`
+/// values in `inputs`. Ok(None) for a null result (constraints not checked).
+/// A ModelValidation error at `jobOutputDefinitions[i] -> value` fails the
+/// Job; a ModelError::Compatibility is a caller error.
+pub fn evaluate_job_output(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    output_index: usize,
+    inputs: &job::StepInputs,
+) -> Result<Option<openjd_expr::ExprValue>, ModelError>;
+
 pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
@@ -254,7 +273,10 @@ at job creation allow, in dependency order: a Step may come back `Bound`,
 `Skipped`, or `PendingInputs` (see [job-creation.md](job-creation.md)
 § Step input binding). Its own checks of the carried-forward fields see the
 `Steps.*` symbols of each Step's direct dependencies, concrete or
-unresolved.
+unresolved. It also stores each `jobOutputDefinitions` entry in
+`job::Job::outputs`, and evaluates each one whose `Steps.*` inputs are
+concrete at creation; a job output that fails there fails `create_job` (see
+[job-outputs.md](job-outputs.md)).
 
 [`advance_step_binding`] moves a pending Step on as upstream values arrive:
 it evaluates each group of the Step whose inputs are now concrete, `enableIf`
@@ -264,6 +286,11 @@ merges the concrete `Steps.*` values a bound Step's script and Step
 Environments read into its `resolved_symtab`, recording the path-typed ones
 in `job::Step::path_inputs`. Both take a [`job::StepInputs`] assembled with
 `StepInputs::add_producer`.
+
+[`job_output_inputs`] names the `Steps.*` symbols a job output waits on, and
+[`evaluate_job_output`] evaluates it once they are concrete in a
+[`job::StepInputs`]; the caller stores the result in
+`job::JobOutput::evaluated`. See [job-outputs.md](job-outputs.md).
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,
@@ -307,6 +334,7 @@ pub struct JobTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
+    pub job_output_definitions: Option<Vec<JobOutputDefinition>>,  // CONTROL_FLOW
     pub job_environments: Option<Vec<template::Environment>>,
     pub steps: Vec<template::StepTemplate>,
 }
@@ -319,6 +347,8 @@ impl JobTemplate {
     pub fn name(&self) -> &FormatString;
     pub fn description(&self) -> Option<&str>;
     pub fn parameter_definitions_list(&self) -> &[JobParameterDefinition];
+    /// The `jobOutputDefinitions`, empty when there are none.
+    pub fn job_output_definitions_list(&self) -> &[JobOutputDefinition];
 
     /// Build a ModelProfile from the template's declared
     /// specificationVersion + extensions. Entries in `extensions` that
@@ -427,7 +457,8 @@ impl JobParameterDefinition {
 
 ### CONTROL_FLOW Template Types (RFC 0010)
 
-`CONTROL_FLOW` adds fields to two structural template types:
+`CONTROL_FLOW` adds `JobTemplate::job_output_definitions` (above) and fields to
+two structural template types:
 
 ```rust
 pub struct template::StepTemplate {
@@ -442,7 +473,7 @@ pub struct template::Environment {
 }
 ```
 
-and two types:
+and three types:
 
 ```rust
 #[derive(Debug, Clone)]
@@ -471,10 +502,30 @@ impl template::OutputVariableDefinition {
     pub fn check_element(&self, element: &openjd_expr::ExprValue) -> Result<(), String>;
     pub fn check_length(&self, len: usize, at_exit: bool) -> Result<(), String>;
 }
+
+/// One `<JobOutputDefinition>`: the job parameter definition of the
+/// declared type plus `value` and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::JobOutputDefinition { /* private fields */ }
+
+impl template::JobOutputDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn value(&self) -> &FormatString;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    /// The wrapped job parameter definition (name, description,
+    /// constraint properties, and `objectType` for PATH types).
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// The job-side form, with `evaluated: None`.
+    pub fn to_job_output(&self) -> job::JobOutput;
+}
 ```
 
-`BoolOrFormatString` and `OutputVariableDefinition` implement `Deserialize`. See
-[template-types.md](template-types.md) § CONTROL_FLOW Types.
+`BoolOrFormatString`, `OutputVariableDefinition`, and `JobOutputDefinition`
+implement `Deserialize`. See [template-types.md](template-types.md) §
+CONTROL_FLOW Types.
 
 ### Task Parameter Definitions
 
@@ -650,8 +701,9 @@ consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 not `Eq`, and so do the CONTROL_FLOW types that hold an
 `openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
 but not `Eq`): `OutputVariable`, `OutputConstraints`,
-`OutputAllowedValues`, `OutputBound`, as do `StepBinding`, `PendingBinding`,
-and `GroupState`, which can hold a `StepParameterSpace` and `HostRequirements`.
+`OutputAllowedValues`, `OutputBound`, and `JobOutput`, as do `StepBinding`,
+`PendingBinding`, and `GroupState`, which can hold a `StepParameterSpace` and
+`HostRequirements`.
 The rest also implement `Eq`.
 
 ```rust
@@ -662,6 +714,9 @@ pub struct job::Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    /// CONTROL_FLOW job outputs, in template order. `#[serde(default)]`,
+    /// skipped when `None`.
+    pub outputs: Option<Vec<JobOutput>>,
 }
 
 pub struct job::JobParameter {
@@ -961,8 +1016,46 @@ pub struct job::PathInput {
 }
 ```
 
+Job outputs (`job::Job::outputs`). Like `job::Job`, they implement `Serialize` but
+not `Deserialize`, because `openjd_expr::ExprValue` does not.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash)]
+pub struct job::JobOutput {
+    /// Name, type, unit, and declared constraints; serialized inline with
+    /// the other fields. Its `collect` is always ONCE.
+    pub declaration: OutputVariable,
+    /// `objectType` of a PATH or LIST[PATH] output; skipped when None.
+    pub object_type: Option<ObjectType>,
+    pub description: Option<String>,          // skipped when None
+    pub value: FormatString,
+    /// None while pending; skipped when None.
+    pub evaluated: Option<JobOutputValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::JobOutputValue {
+    /// Serialized as {"state": "VALUE", "value": <ExprValue>}.
+    Value(ExprValue),
+    /// The value evaluated to `null`: the output has no value. Serialized
+    /// as {"state": "NULL"}.
+    Null,
+}
+
+impl Serialize for job::JobOutput;      // one plain struct (see job-types.md)
+impl Serialize for job::JobOutputValue;
+
+impl job::JobOutputValue {
+    pub fn value(&self) -> Option<&ExprValue>;
+}
+
+/// `Some(v)` → `Value(v)`, `None` → `Null`, as `evaluate_job_output`
+/// returns them.
+impl From<Option<ExprValue>> for job::JobOutputValue;
+```
+
 See [job-types.md](job-types.md) § CONTROL_FLOW fields, which has an example of the
-serialized form.
+serialized form, and [job-outputs.md](job-outputs.md).
 
 ### Parameter Space (Resolved)
 
@@ -1305,6 +1398,8 @@ pub enum EndOfLine {
     Lf, Crlf, Auto,
 }
 
+/// Hash since CONTROL_FLOW: job::JobOutput holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ObjectType {
     File, Directory,
@@ -1791,7 +1886,7 @@ The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
 (the RFC's two directive forms), `job::GroupState` and `job::GroupReport`
-(the two states of a group), `job::ProducerState` (the states a producer
+(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` (the states a producer
 contributes inputs in), and `template::IntRangeItem` (the two forms of an
 `<IntRangeList>` item). A change to the RFC that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version

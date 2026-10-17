@@ -151,6 +151,29 @@ pub(crate) fn add_steps_scope(
     step_index: usize,
     scope: StepsFieldScope,
 ) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
+    seed_producers(symtab, visible_producers(jt, step_index), scope)
+}
+
+/// Seed `symtab` with the `Steps.*` symbols a `<JobOutputDefinition>`'s
+/// `value` may read: those of every Step with an `<Identifier>` name, with
+/// no dependency required (RFC 0010 §Job outputs), each typed as for
+/// [`add_steps_scope`] in [`StepsFieldScope::Template`], so a value whose
+/// type is or contains `path` is available only through `RawOutput` and
+/// `TaskRawParam`.
+pub(crate) fn add_job_output_steps_scope(
+    symtab: &mut SymbolTable,
+    jt: &JobTemplate,
+) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
+    let producers = jt.steps.iter().filter(|s| is_identifier(&s.name)).collect();
+    seed_producers(symtab, producers, StepsFieldScope::Template)
+}
+
+/// Seed the `Steps.*` symbols of `producers`; see [`add_steps_scope`].
+fn seed_producers(
+    symtab: &mut SymbolTable,
+    producers: Vec<&StepTemplate>,
+    scope: StepsFieldScope,
+) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
     // A symbol already in the table (a concrete value at step input binding)
     // is kept.
     let mut seed = |key: String, ty: ExprType| {
@@ -160,7 +183,7 @@ pub(crate) fn add_steps_scope(
             symtab.set(&key, ExprValue::unresolved(ty))
         }
     };
-    for producer in visible_producers(jt, step_index) {
+    for producer in producers {
         let p = &producer.name;
         for ov in producer.output_variables.iter().flatten() {
             if let Some((ty, is_path)) = output_symbol(producer, ov.name()) {
@@ -184,13 +207,23 @@ pub(crate) fn add_steps_scope(
     Ok(())
 }
 
+/// What reads a field, which decides the `Steps.*` symbols available in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepsReader {
+    /// A field where `Steps.*` is not available at all (the job name,
+    /// `jobEnvironments`).
+    None,
+    /// A field of Step `i`: its direct dependencies' symbols.
+    Step(usize),
+    /// A `<JobOutputDefinition>`'s `value`: any Step's symbols.
+    JobOutput,
+}
+
 /// Where a reference is being checked, for [`steps_ref_errors`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StepsRefContext<'a> {
     pub(crate) jt: &'a JobTemplate,
-    /// The Step whose field this is, or `None` for a field where `Steps.*`
-    /// is not available at all (the job name, `jobEnvironments`).
-    pub(crate) step_index: Option<usize>,
+    pub(crate) reader: StepsReader,
     pub(crate) scope: StepsFieldScope,
 }
 
@@ -204,7 +237,8 @@ pub(crate) struct StepsRefContext<'a> {
 /// from it. The checks, in order, the first that fails being reported: the
 /// field allows `Steps.*`; the reference names a member
 /// (`Steps.<StepName>.<Member>.<Name>`); the Step exists; its name is an
-/// `<Identifier>`; it is not the reading Step; it is a direct dependency;
+/// `<Identifier>`; it is not the reading Step; it is a direct dependency
+/// (these two only for a Step's field: a job output may read any Step);
 /// the member is one of the four; the output or Task parameter exists; and
 /// a path-typed `Output` or `TaskParam` is not read in a TEMPLATE-scope
 /// field.
@@ -225,10 +259,14 @@ pub(crate) fn steps_ref_errors<'s>(
 }
 
 fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
-    let Some(step_index) = ctx.step_index else {
-        return Some(format!(
-            "'{sym}': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them."
-        ));
+    let reader_index = match ctx.reader {
+        StepsReader::None => {
+            return Some(format!(
+                "'{sym}': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them."
+            ));
+        }
+        StepsReader::Step(i) => Some(i),
+        StepsReader::JobOutput => None,
     };
     let parts: Vec<&str> = sym.split('.').collect();
     if parts.len() < 4 {
@@ -238,7 +276,6 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
     }
     let (p, member, name) = (parts[1], parts[2], parts[3]);
     let jt = ctx.jt;
-    let reader = &jt.steps[step_index];
     let Some(producer) = jt.steps.iter().find(|s| s.name == p) else {
         return Some(format!("'{sym}': there is no Step named '{p}'."));
     };
@@ -247,21 +284,23 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
             "'{sym}': Step '{p}' cannot be referenced through Steps.*, because its name is not an <Identifier>."
         ));
     }
-    if p == reader.name {
-        return Some(format!(
-            "'{sym}': a Step cannot read its own Steps.* symbols."
-        ));
-    }
-    let is_direct = reader
-        .dependencies
-        .iter()
-        .flatten()
-        .any(|d| d.depends_on == p);
-    if !is_direct {
-        return Some(format!(
-            "'{sym}': Step '{p}' is not a direct dependency of Step '{}'. Add 'dependsOn: {p}' to its dependencies to read Steps.{p}.*.",
-            reader.name
-        ));
+    if let Some(reader) = reader_index.map(|i| &jt.steps[i]) {
+        if p == reader.name {
+            return Some(format!(
+                "'{sym}': a Step cannot read its own Steps.* symbols."
+            ));
+        }
+        let is_direct = reader
+            .dependencies
+            .iter()
+            .flatten()
+            .any(|d| d.depends_on == p);
+        if !is_direct {
+            return Some(format!(
+                "'{sym}': Step '{p}' is not a direct dependency of Step '{}'. Add 'dependsOn: {p}' to its dependencies to read Steps.{p}.*.",
+                reader.name
+            ));
+        }
     }
     let (found, raw_member) = match member {
         "Output" | "RawOutput" => {
@@ -310,8 +349,8 @@ mod tests {
     /// A job template with producers `P` (no parameterSpace), `Q`
     /// (parameterSpace, CHUNK[INT], PATH, FLOAT, and INT Task parameters), `R`
     /// (enableIf, no parameterSpace), `M` (enableIf and parameterSpace), and
-    /// a consumer `C` that depends on all four, and `Z`, which depends on `C`
-    /// only.
+    /// a consumer `C` that depends on all four, `Z`, which depends on `C`
+    /// only, and `Find Frames`, whose name is not an `<Identifier>`.
     const TEMPLATE: &str = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW, TASK_CHUNKING]
@@ -359,6 +398,10 @@ steps:
   - name: Z
     dependencies:
       - {dependsOn: C}
+    script: {actions: {onRun: {command: x}}}
+  - name: Find Frames
+    outputVariables:
+      - {name: Count, type: INT}
     script: {actions: {onRun: {command: x}}}
 "#;
 
@@ -459,6 +502,36 @@ steps:
         let mut s = SymbolTable::new();
         add_steps_scope(&mut s, &jt, 5, StepsFieldScope::Host).unwrap();
         assert!(s.get_table("Steps").is_none());
+    }
+
+    #[test]
+    fn job_output_scope_seeds_every_step_in_template_scope() {
+        let jt = template();
+        let mut s = SymbolTable::new();
+        add_job_output_steps_scope(&mut s, &jt).unwrap();
+        // No dependency needed: C reads P, Q, R, and M, but none of them
+        // depends on anything, and all are seeded.
+        assert_eq!(ty(&s, "Steps.P.Output.Count"), Some(ExprType::INT));
+        assert_eq!(
+            ty(&s, "Steps.Q.TaskParam.Frame"),
+            Some(ExprType::list(ExprType::INT))
+        );
+        assert_eq!(ty(&s, "Steps.R.Output.B"), Some(opt(ExprType::BOOL)));
+        assert_eq!(
+            ty(&s, "Steps.M.TaskParam.S"),
+            Some(opt(ExprType::list(ExprType::STRING)))
+        );
+        // Path-typed values only in their Raw forms.
+        assert_eq!(ty(&s, "Steps.P.Output.F"), None);
+        assert_eq!(ty(&s, "Steps.Q.TaskParam.D"), None);
+        assert_eq!(ty(&s, "Steps.P.RawOutput.F"), Some(ExprType::PATH));
+        assert_eq!(
+            ty(&s, "Steps.Q.TaskRawParam.D"),
+            Some(ExprType::list(ExprType::PATH))
+        );
+        // Only Steps with an <Identifier> name.
+        let paths = s.all_paths("");
+        assert!(paths.iter().all(|p| !p.contains("Find")), "{paths:?}");
     }
 
     #[test]

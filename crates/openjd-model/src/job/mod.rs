@@ -26,6 +26,7 @@
 
 mod binding;
 pub mod create_job;
+mod job_output;
 mod output_variable;
 pub mod step_dependency_graph;
 pub mod step_param_space;
@@ -33,6 +34,7 @@ pub mod step_param_space;
 pub use binding::{
     BindingError, BindingReport, GroupReport, MaterializationGroup, ProducerState, StepInputs,
 };
+pub use job_output::{JobOutput, JobOutputValue};
 pub use output_variable::{
     GroupState, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput,
     PendingBinding, StepBinding,
@@ -87,6 +89,10 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    /// The Job's outputs (`CONTROL_FLOW`, RFC 0010 `jobOutputDefinitions`),
+    /// in template order, or `None` when the template declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outputs: Option<Vec<JobOutput>>,
 }
 
 /// Manual because `IndexMap` has no `Hash`; parameters hash as
@@ -99,6 +105,7 @@ impl Hash for Job {
         hash_map_entries(self.parameters.iter(), state);
         self.steps.hash(state);
         self.job_environments.hash(state);
+        self.outputs.hash(state);
     }
 }
 

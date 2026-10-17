@@ -1135,3 +1135,37 @@ fn decode_errors_name_the_json_kind() {
         "unit: expected a string, got a bool",
     );
 }
+
+/// One definition's errors come in a fixed order: `collect`, then `unit`,
+/// then the `LIST[LIST[INT]]` rule.
+#[test]
+fn output_variable_errors_are_reported_in_order() {
+    let template = "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+  - name: S
+    parameterSpace:
+      taskParameterDefinitions: [{name: X, type: INT, range: [1]}]
+    outputVariables:
+      - {name: A, type: INT, collect: APPEND, unit: ''}
+      - {name: G, type: 'LIST[LIST[INT]]', unit: ''}
+    script: {actions: {onRun: {command: x}}}
+";
+    assert_errs(
+        template,
+        "JobTemplate",
+        &[
+            (
+                "steps[0] -> outputVariables[0] -> collect",
+                "APPEND requires a LIST[...] type; 'INT' is not a list type.",
+            ),
+            ("steps[0] -> outputVariables[0] -> unit", "must not be empty."),
+            ("steps[0] -> outputVariables[1] -> unit", "must not be empty."),
+            (
+                "steps[0] -> outputVariables[1] -> type",
+                "LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: each output of a multi-Task Step is collected into a list, and EXPR allows two levels of list nesting.",
+            ),
+        ],
+    );
+}
