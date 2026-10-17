@@ -1180,6 +1180,16 @@ fn caller_errors_are_compatibility_errors() {
         eval(&f, &job, 1, &inputs).unwrap_err().to_string(),
         "Compatibility error: the Job has 1 job output, so it has no job output 1."
     );
+    let two = later(
+        "  - {name: Best, type: INT, value: '{{min(Steps.P.Output.Count)}}'}\n  - {name: Two, type: INT, value: '{{2}}'}\n",
+    );
+    let two_job = two.job();
+    assert_eq!(
+        evaluate_job_output(&two.jt, &two.params, &two.ctx, &two_job, 5, &inputs)
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: the Job has 2 job outputs, so it has no job output 5."
+    );
     let none = Fixture::new(&format!("{}{STEP_S}", header("[EXPR, CONTROL_FLOW]")), &[]);
     assert_eq!(
         evaluate_job_output(&none.jt, &f.params, &f.ctx, &job, 0, &inputs)
