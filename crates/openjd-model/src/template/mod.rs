@@ -58,9 +58,10 @@ pub use host_requirements::{AmountRequirement, AttributeRequirement, HostRequire
 // task_parameters
 pub use task_parameters::{
     ChunkIntTaskParameterDefinition, ChunksDefinition, FloatRange, FloatRangeItem,
-    FloatTaskParameterDefinition, IntOrFormatString, IntRange, IntTaskParameterDefinition,
-    PathTaskParameterDefinition, RangeConstraint, StepParameterSpaceDefinition, StringRange,
-    StringTaskParameterDefinition, TaskParameterDefinition,
+    FloatTaskParameterDefinition, IntOrFormatString, IntRange, IntRangeItem,
+    IntTaskParameterDefinition, PathTaskParameterDefinition, RangeConstraint,
+    StepParameterSpaceDefinition, StringRange, StringTaskParameterDefinition,
+    TaskParameterDefinition,
 };
 // constrained_strings
 #[cfg(test)]

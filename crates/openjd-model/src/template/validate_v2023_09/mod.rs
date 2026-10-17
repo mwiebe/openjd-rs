@@ -20,6 +20,7 @@ pub(crate) mod helpers;
 mod limits;
 pub(crate) mod steps_scope;
 mod structure;
+pub(crate) use structure::step_dependency_order;
 mod task_chunking;
 mod wrap_actions;
 

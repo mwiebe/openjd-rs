@@ -10,8 +10,8 @@ use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::value::Float64;
 use openjd_expr::{ExprType, ExprValue, RangeExpr};
 use openjd_model::job::{
-    OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput, Step,
-    StepBinding,
+    GroupState, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput,
+    PendingBinding, Step, StepBinding,
 };
 use openjd_model::template::OutputVariableDefinition;
 use openjd_model::{
@@ -538,9 +538,14 @@ fn control_flow_fields_round_trip() {
         def("{name: C, type: 'LIST[INT]', item: {minValue: 1, allowedValues: [1, 2]}}")
             .to_job_output_variable(),
     ]);
-    step.binding = StepBinding::PendingInputs {
-        waiting_on: vec!["Steps.P.Output.N".into()],
-    };
+    step.binding = StepBinding::PendingInputs(PendingBinding {
+        enablement: GroupState::Known(()),
+        tasks: GroupState::Waiting {
+            on: vec!["Steps.P.Output.N".into()],
+        },
+        host_requirements: GroupState::Known(None),
+        remaining: GroupState::Waiting { on: vec![] },
+    });
     step.path_inputs = vec![PathInput {
         symbol: "Steps.P.RawOutput.Dirs".into(),
         ty: ExprType::list(ExprType::PATH),
@@ -559,7 +564,13 @@ fn control_flow_fields_round_trip() {
     );
     assert_eq!(
         value["binding"],
-        serde_json::json!({"state": "PENDING_INPUTS", "waitingOn": ["Steps.P.Output.N"]})
+        serde_json::json!({
+            "state": "PENDING_INPUTS",
+            "enablement": {"known": null},
+            "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
+            "hostRequirements": {"known": null},
+            "remaining": {"waiting": {"on": []}}
+        })
     );
     assert_eq!(
         value["pathInputs"],
@@ -950,8 +961,8 @@ steps:
 }
 
 #[test]
-fn create_job_refuses_an_enable_if_it_cannot_evaluate() {
-    let err = create(
+fn create_job_decides_a_static_enable_if() {
+    let job = create(
         "specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW]
 name: J
@@ -962,28 +973,61 @@ steps:
   - name: S0
     script: {actions: {onRun: {command: echo}}}
   - name: S1
-    enableIf: '{{Job.Name == \"J\"}}'
+    enableIf: '{{len(Job.Name) == 1}}'
     stepEnvironments:
       - {name: SE0, enableIf: true, variables: {B: b}}
       - {name: SE1, enableIf: false, variables: {B: b}}
     script: {actions: {onRun: {command: echo}}}
+  - name: S2
+    enableIf: '{{len(Job.Name) != 1}}'
+    script: {actions: {onRun: {command: echo}}}
 ",
     )
-    .expect_err("enableIf other than true is not evaluated");
-    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "Model validation error: 3 validation errors for JobTemplate\n\
-             jobEnvironments[1] -> enableIf:\n\t{msg}\n\
-             steps[1] -> enableIf:\n\t{msg}\n\
-             steps[1] -> stepEnvironments[1] -> enableIf:\n\t{msg}"
-        )
-    );
+    .expect("a static enableIf is decided at job creation");
+    let enabled: Vec<bool> = job
+        .job_environments
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| e.enabled)
+        .collect();
+    assert_eq!(enabled, [true, false]);
+    assert_eq!(job.steps[0].binding, StepBinding::Bound);
+    assert_eq!(job.steps[1].binding, StepBinding::Bound);
+    let enabled: Vec<bool> = job.steps[1]
+        .step_environments
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| e.enabled)
+        .collect();
+    assert_eq!(enabled, [true, false]);
+    assert_eq!(job.steps[2].binding, StepBinding::Skipped);
+    assert_eq!(job.steps[2].parameter_space, None);
+    assert_eq!(job.steps[2].resolved_symtab, None);
+    assert_eq!(job.steps[2].tasks_known(), Some(0));
+    // A disabled Environment serializes `enabled: false`; an enabled one
+    // leaves it out, so existing jobs serialize as before.
+    let envs = serde_json::to_value(&job.job_environments).unwrap();
+    assert_eq!(envs[0].get("enabled"), None);
+    assert_eq!(envs[1]["enabled"], serde_json::json!(false));
+}
+
+fn z_zero() -> JobParameterValues {
+    [(
+        "Z".to_string(),
+        openjd_model::JobParameterValue {
+            param_type: JobParameterType::Int,
+            value: ExprValue::Int(0),
+        },
+    )]
+    .into_iter()
+    .collect()
 }
 
 #[test]
-fn create_job_reports_a_step_enable_if_refusal_before_its_other_checks() {
+fn a_statically_skipped_step_checks_none_of_its_fields() {
+    // Its script timeout and its Environment's variable would both fail.
     let jt = decode_job_template(
         yaml(
             "specificationVersion: jobtemplate-2023-09
@@ -993,8 +1037,11 @@ parameterDefinitions: [{name: Z, type: INT}]
 steps:
   - name: S
     enableIf: false
+    let: ['q = 1 // Param.Z']
+    parameterSpace:
+      taskParameterDefinitions: [{name: X, type: INT, range: '{{[1 // Param.Z]}}'}]
     stepEnvironments:
-      - {name: SE, enableIf: false, variables: {V: '{{1 // Param.Z}}'}}
+      - {name: SE, variables: {V: '{{1 // Param.Z}}'}}
     script: {actions: {onRun: {command: echo, timeout: '{{Param.Z}}'}}}
 ",
         ),
@@ -1002,34 +1049,14 @@ steps:
         &CallerLimits::default(),
     )
     .unwrap();
-    let values: JobParameterValues = [(
-        "Z".to_string(),
-        openjd_model::JobParameterValue {
-            param_type: JobParameterType::Int,
-            value: ExprValue::Int(0),
-        },
-    )]
-    .into_iter()
-    .collect();
-    let err = create_job(&jt, &values, &jt.default_validation_context())
-        .expect_err("enableIf: false is refused");
-    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "Model validation error: 4 validation errors for JobTemplate\n\
-             steps[0] -> enableIf:\n\t{msg}\n\
-             steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\n\
-             steps[0] -> stepEnvironments[0] -> enableIf:\n\t{msg}\n\
-             steps[0] -> stepEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation expression at [0, 16]. Division by zero\n  1 // Param.Z\n  ~~^~~~~~~~~~"
-        )
-    );
+    let job = create_job(&jt, &z_zero(), &jt.default_validation_context())
+        .expect("a skipped Step evaluates nothing else");
+    assert_eq!(job.steps[0].binding, StepBinding::Skipped);
 }
 
 #[test]
-fn create_job_reports_an_enable_if_refusal_with_its_owner() {
-    // Each refusal is reported ahead of the same owner's other checks, and in
-    // template order with the rest: jobEnvironments, then each Step.
+fn a_disabled_job_environment_is_not_checked() {
+    // JE's variable would fail; S0's timeout fails and is reported alone.
     let jt = decode_job_template(
         yaml(
             "specificationVersion: jobtemplate-2023-09
@@ -1037,7 +1064,7 @@ extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
 name: J
 parameterDefinitions: [{name: Z, type: INT}]
 jobEnvironments:
-  - {name: JE, enableIf: false, variables: {V: '{{1 // Param.Z}}'}}
+  - {name: JE, enableIf: '{{Param.Z > 0}}', variables: {V: '{{1 // Param.Z}}'}}
 steps:
   - name: S0
     script: {actions: {onRun: {command: echo, timeout: '{{Param.Z}}'}}}
@@ -1050,27 +1077,40 @@ steps:
         &CallerLimits::default(),
     )
     .unwrap();
-    let values: JobParameterValues = [(
-        "Z".to_string(),
-        openjd_model::JobParameterValue {
-            param_type: JobParameterType::Int,
-            value: ExprValue::Int(0),
-        },
-    )]
-    .into_iter()
-    .collect();
-    let err = create_job(&jt, &values, &jt.default_validation_context())
-        .expect_err("enableIf: false is refused");
-    let msg = "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.";
+    let err = create_job(&jt, &z_zero(), &jt.default_validation_context())
+        .expect_err("S0's timeout is 0");
     assert_eq!(
         err.to_string(),
-        format!(
-            "Model validation error: 4 validation errors for JobTemplate\n\
-             jobEnvironments[0] -> enableIf:\n\t{msg}\n\
-             jobEnvironments[0] -> variables -> V:\n\tFailed to parse interpolation expression at [0, 16]. Division by zero\n  1 // Param.Z\n  ~~^~~~~~~~~~\n\
-             steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\n\
-             steps[1] -> enableIf:\n\t{msg}"
-        )
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0."
+    );
+}
+
+#[test]
+fn a_failing_job_environment_enable_if_fails_create_job() {
+    let jt = decode_job_template(
+        yaml(
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+parameterDefinitions: [{name: Z, type: INT}]
+jobEnvironments:
+  - {name: JE, enableIf: '{{1 // Param.Z > 0}}', variables: {V: v}}
+steps:
+  - name: S0
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        Some(&["EXPR", "CONTROL_FLOW"]),
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    let err =
+        create_job(&jt, &z_zero(), &jt.default_validation_context()).expect_err("division by zero");
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobEnvironments[0] -> enableIf:\n\tDivision by zero\n  1 // Param.Z > 0\n  ~~^~~~~~~~~~"
     );
 }
 

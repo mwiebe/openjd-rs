@@ -149,14 +149,15 @@ therefore do not create a working directory or print session-start banners.
 
 `CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension, so `run`
 accepts templates that declare `outputVariables` or `enableIf`. The run itself does not
-implement the extension yet: `create_job` refuses any `enableIf` other than `true`, and
-any Step whose step `let`, `hostRequirements`, or `parameterSpace` reads `Steps.*`
-(failing in the SETUP phase, before a session exists). A Step that reads `Steps.*` only in
-its script or Step Environments is created, but its Task fails when it starts, because
-nothing supplies the value. Steps run in topological order as before, and
+implement the extension yet. `create_job` binds what it can at job creation, and `run`
+refuses, in the SETUP phase before a session exists, a Job in which any Step is still
+pending inputs or is skipped, or any Job or Step Environment is disabled by its `enableIf`
+(`common::require_bound_job`, which lists each one). A Step that reads `Steps.*` only in its
+script or Step Environments is bound at creation and runs, but its Task fails when it
+starts, because nothing supplies the value. Steps run in topological order as before, and
 `openjd_output_var:` lines are ordinary output — declared outputs are not collected and a
-missing value does not fail a Task. Binding, output collection, and job
-outputs are later changes in `docs/control-flow-prototype-plan.md`.
+missing value does not fail a Task. Simulating step input binding, output collection, and
+job outputs are later changes in `docs/control-flow-prototype-plan.md`.
 
 ## Step Selection Logic
 

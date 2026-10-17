@@ -249,9 +249,11 @@ fn check_chunk_values_distinct(
         };
         let mut seen = HashSet::new();
         let mut repeated = BTreeSet::new();
-        for item in items {
-            if !seen.insert(item.0) {
-                repeated.insert(item.0);
+        // A format-string item is checked once it is evaluated, with the
+        // computed ranges (job creation or step input binding).
+        for value in items.iter().filter_map(|item| item.as_int()) {
+            if !seen.insert(value) {
+                repeated.insert(value);
             }
         }
         if !repeated.is_empty() {

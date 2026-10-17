@@ -211,14 +211,25 @@ budgets template validation and the session runtime apply.
      multi-segment strings concatenate and parse with surrounding whitespace
      tolerated.
    - Parameter space ranges (evaluate range expressions, resolve FormatString ranges).
-     STRING/PATH range elements are list items (Expression Language §1.3.2): a
-     whole-field expression targets `string? | list[string]`, so `null` skips the
-     element and a list flattens inline — one range element per list element,
-     mixable with literal elements. A range emptied by null-skips is rejected
-     ("has no elements after resolution"), since the ≥1-element rule was checked
-     on field presence at decode. Attribute `anyOf`/`allOf` values get the same
-     treatment in `instantiate`. String-backed FLOAT range elements are trimmed
-     and must resolve to finite `f64` values.
+     List-literal range elements of every type are list items (Expression Language
+     §1.3.2): a whole-field expression targets `T? | list[T]` (`string` for
+     STRING/PATH, `int` for INT and CHUNK[INT], `float` for FLOAT), so `null`
+     skips the element and a list flattens inline — one range element per list
+     element, mixable with literal elements. An INT or CHUNK[INT] list item may be a
+     `<TaskParameterStringValue>` (any string containing `{{`, kept as
+     `template::IntRangeItem::FormatString`); without EXPR it must resolve to the
+     string form of an integer (§3.4.1.1). A FLOAT item that resolves to a scalar
+     keeps its written spelling (§7.5 rule 2); the elements of a flattened list keep
+     their values only. A list literal emptied by null-skips or empty lists is
+     rejected ("has no elements after resolution") without `CONTROL_FLOW`, since the
+     ≥1-element rule was checked on field presence at decode; with `CONTROL_FLOW` it
+     may be empty (RFC 0010 §Empty parameter spaces). Without `CONTROL_FLOW` every
+     resolved list range is capped at `max_task_param_range_len` (1024); with it, the
+     cap applies only to a list literal's items as written (the structure pass), not
+     to resolved values (RFC 0010 §Range length). Both relaxations are decided in
+     `ranges::RangeRules`. Attribute `anyOf`/`allOf` values get the list-item
+     treatment in `instantiate`. String-backed FLOAT range elements are trimmed and
+     must resolve to finite `f64` values.
    - Step-level let bindings (template scope; a failure is reported at
      `steps[i] -> let[j]` — see the carried-forward checks below)
 3. With EXPR extension: inject `Job.Name` (before step instantiation)
@@ -237,42 +248,12 @@ budgets template validation and the session runtime apply.
 7. Build step dependency list
 8. Attach resolved symbol table to each step
 9. With `CONTROL_FLOW` (RFC 0010): copy each Step's `outputVariables` onto
-   `job::Step::output_variables` as `job::OutputVariable` values, and set
-   `binding` to `StepBinding::Bound`. `enableIf` on Steps and Environments is
-   not evaluated yet, so rather than create a Job that runs a Step or enters an
-   Environment the template disables, `create_job` refuses every `enableIf`
-   other than the literal `true` (`reject_unevaluated_enable_if`). Each one is
-   a carried-forward check failure at its own path,
-   `steps[i] -> enableIf`, `jobEnvironments[i] -> enableIf`, or
-   `steps[i] -> stepEnvironments[j] -> enableIf`: `is not evaluated by
-   create_job yet; only `enableIf: true` can be instantiated.` It is reported
-   in the same walk as the other checks, just before its Step's or
-   Environment's own checks, so the template order below still holds. Like
-   every carried-forward check failure, a refusal is not reported when a
-   resolution failure that aborts job creation (a host requirement or
-   parameter-space value that cannot be evaluated) happens first; that error
-   is reported alone. Static
-   `enableIf`, `PENDING_INPUTS` Steps, and concrete `Steps.*` values arrive
-   with step input binding (plan item M4), which replaces this check.
-10. With `CONTROL_FLOW`: a Step whose materialization fields read `Steps.*`
-   cannot be instantiated yet, because those fields need concrete values that
-   only step input binding supplies. `create_job` refuses each such field, as a
-   carried-forward check failure (`reject_unbound_steps_reads`):
-   `steps[i] -> let[j]` for each step-level `let` binding that reads `Steps.*`
-   directly, `steps[i] -> hostRequirements` if any host requirement field
-   does, and `steps[i] -> parameterSpace -> taskParameterDefinitions[k]` for
-   each Task parameter whose `range` or `chunks` fields do. The message is
-   `reads Steps.* symbols, which are bound at step input binding; create_job
-   does not implement step input binding yet.` The refusals come right after
-   the `enableIf` refusal, ahead of the Step's other checks. The Step's `let`
-   bindings and carried-forward checks still run, with the `Steps.*` symbols
-   of its direct dependencies seeded `Unresolved` into its table (a `let`
-   that reads one evaluates to an unresolved value rather than failing), so
-   its other errors are reported in the same walk; host requirements and the
-   parameter space are not resolved, and the Step is not built. A Step that
-   reads `Steps.*` only in carried-forward fields (its script, its Step
-   Environments, and their `timeout`/`cancelation`) is instantiated: those
-   fields resolve on the worker host.
+   `job::Step::output_variables` as `job::OutputVariable` values, decide each
+   Job Environment's `enableIf` (setting `job::Environment::enabled`; a disabled
+   one's fields are not checked), and bind each Step as far as the values
+   concrete at job creation allow, in dependency order, instead of steps 2 and
+   5–8 of the list above. See [Step input binding](#step-input-binding-control_flow)
+   below.
 
 #### Resolved-value checks on carried-forward fields
 
@@ -342,21 +323,19 @@ time, with everything only a session can know left `Unresolved`:
   session that enters the environment.
 - **`Steps.*`** (`CONTROL_FLOW` only; RFC 0010): both tables of a Step,
   and those of its Step Environments, also hold the `Steps.*` symbols of
-  the Step's direct dependencies as `Unresolved` values of their RFC
-  types, seeded by `add_steps_scope` exactly as pass 8 seeds them (see
-  `specs/model/validation.md` § The `Steps.*` scope). Without them, every
-  script that reads `Steps.*` would fail here with `Undefined variable`,
-  so a template that passes `openjd check` would fail `create_job`. The
-  template-scope table that the carried-forward `timeout` /
-  `cancelation` fields resolve against gets the same symbols with path
-  types only in their `Raw` forms, as at pass 8. Job Environments get
-  none. The placeholders are added to clones of the Step's symbol table,
-  because that table becomes `resolved_symtab`, which holds only
-  concrete values. (A Step refused under item 10 above has them seeded
-  into its own table, so its `let` bindings evaluate; it is never
-  built, so no `resolved_symtab` is made from it.) Until step input
-  binding fills them, a Task that reads `Steps.*` fails when its Session
-  resolves the format string.
+  the Step's direct dependencies: the concrete value for each symbol its
+  materialization groups read that is concrete, and an `Unresolved` value
+  of its RFC type for every other, seeded by `add_steps_scope` exactly as
+  pass 8 seeds them (see `specs/model/validation.md` § The `Steps.*`
+  scope; `add_steps_scope` keeps a key the table already holds). Without
+  them, every script that reads `Steps.*` would fail here with `Undefined
+  variable`, so a template that passes `openjd check` would fail
+  `create_job`. The template-scope table that the carried-forward
+  `timeout` / `cancelation` fields resolve against gets the same symbols
+  with path types only in their `Raw` forms, as at pass 8. Job
+  Environments get none. The placeholders are added to clones of the
+  Step's symbol table, and no `Steps.*` value goes into `resolved_symtab`:
+  `attach_step_inputs` adds the ones a Step's Tasks read.
 
 **`let` bindings.** Every `let` block job creation evaluates —
 step-level (template scope, `HostContext::None`), step-script and
@@ -467,6 +446,205 @@ are always reported.
 Cost note: job creation previously did not evaluate these fields, so the pass
 adds work proportional to what a single worker would do anyway — done
 once at submission instead of per-task-per-worker.
+
+### Step input binding (`CONTROL_FLOW`)
+
+RFC 0010 §Step input binding. A Step's materialization expressions — its
+format strings resolved before a Session exists, plus `enableIf` — fall into
+four groups, evaluated separately (`MaterializationGroup`), and in this order
+when more than one can be:
+
+| Group | Fields | Result |
+|---|---|---|
+| Enablement | the Step's `enableIf` | `true` (or absent): go on; `false`: `StepBinding::Skipped` |
+| Task enumeration | each Task parameter's `range` (whole field or list items) and `chunks` fields | the materialized `StepParameterSpace`: the Step's Tasks are known |
+| Host selection | every `hostRequirements` format string | the evaluated `HostRequirements` |
+| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds`), and the script's | each Step Environment's `enabled`, and the carried-forward checks of the script and of every enabled Step Environment |
+
+There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
+
+**Group inputs** come from static analysis (`binding::StepGroups`), not from
+evaluating with `Unresolved` values: a group's inputs are the `Steps.*`
+symbols its fields reference, as `Steps.<Step>.<Member>.<Name>` (a read such
+as `Steps.P.Output.X.name` counts as `Steps.P.Output.X`), including in a branch
+that is never taken. A field that reads a step `let` name also reads that
+binding's symbols, transitively, and the group *uses* the binding. The
+remaining group uses every step `let` binding. `enableIf` may not read `let`.
+
+**The core** (`binding::bind_step`) serves both `create_job` and
+`advance_step_binding`. Given the Step, its earlier `PendingBinding` (none at
+creation), and a `StepInputs`:
+
+1. It builds the Step's table: the job table, `Step.Name`, and every concrete
+   `Steps.*` value its groups read.
+2. Enablement first. If its inputs are not all concrete, the Step is
+   `PendingInputs` with every group `Waiting` and nothing else evaluated, so a
+   failing range in a Step whose `enableIf` is undecided is not reported. Each
+   group's `on` still lists its own inputs that are not concrete (not counting
+   the enablement group's), so a report shows what is missing. `enableIf`
+   resolves with target type `bool`; a `null` result is an error at
+   `steps[i] -> enableIf`. `false` makes the Step `Skipped`: nothing else of it
+   is evaluated, including its `let` bindings and carried-forward checks, so a
+   skipped Step's `let` may assume that the Step runs.
+3. Then each other group that has not evaluated and whose inputs are concrete,
+   in the order above. A group first evaluates the `let` bindings it uses that
+   this call has not evaluated yet, in declaration order. A known group is
+   kept as it is and never evaluated again. The first group that fails stops
+   the Step.
+   * Task enumeration resolves the parameter space with the `CONTROL_FLOW`
+     range rules, validates its combination (associated ranges must have
+     equal lengths, so an empty range associated with a non-empty one is an
+     error and associated empty ranges give an empty space), checks that a
+     `CHUNK[INT]` range in a Step that declares `outputVariables` has distinct
+     values (`Task parameter 'F' range must have distinct values in a Step with
+     outputVariables, so that each value names one Task; value 1 appears more
+     than once`), and checks the Task-count limits (below).
+   * The remaining group evaluates every `let` binding, then the script's
+     carried-forward checks, then each Step Environment: its `enableIf` (an
+     error is reported at `steps[i] -> stepEnvironments[j] -> enableIf`), and
+     its carried-forward checks if it is enabled. A disabled Environment is
+     never entered, so its fields are not checked.
+4. When every group is known, the parameter space and host requirements move
+   into the Step's own fields, `resolved_symtab` is built from the Step's
+   table (every `let` binding evaluated, no `Steps.*` value), and the Step is
+   `Bound`. Otherwise it is `PendingInputs` with the groups' states; a pending
+   Step keeps `parameter_space`, `host_requirements`, and `resolved_symtab`
+   as `None`, so a caller that reads those fields never sees a partial Step.
+
+Step `let` bindings are re-evaluated in each call rather than cached in
+`PendingBinding`; a binding whose inputs are concrete always gives the same
+value, so this is observably the RFC's "evaluated once".
+
+**At job creation** (`instantiate_steps_with_binding`), Steps are bound in
+dependency order (`validate_v2023_09::step_dependency_order`: Kahn's algorithm
+with ties broken by template index), and stored in template order. Each Step's
+`StepInputs` come from the Steps already bound: a skipped producer contributes
+`null`s, and a producer whose Tasks are known (bound, or pending with
+`tasks: Known`) its `TaskParam`s. `Output` is never concrete at creation
+except as a skipped producer's `null`. A group failure is reported by the
+error it holds:
+
+* A step `let` error (whichever group's evaluation raised it) and the
+  remaining group's check errors are collected per Step and reported
+  together with the other Steps' and the Job Environments' errors, in
+  template order, as one `ModelValidation` error. So
+  `violations_across_steps_and_environments_are_reported_together` keeps
+  its errors.
+* An `enableIf` error, a range or host requirement error, a repeated
+  `CHUNK[INT]` value, and a Task-count limit abort `create_job` with that
+  error alone, as an invalid parameter does — also for a Step that would
+  stay pending. Because Steps are bound in dependency order, the error
+  reported is the first in that order.
+
+Whether this path is taken, and whether the `CONTROL_FLOW` range rules apply, is decided
+by the template's own `extensions`, not by the context, which may enable more: a template
+that does not list `CONTROL_FLOW` behaves exactly as before (RFC 0010 Technical
+Requirement 1). Without `CONTROL_FLOW`, `instantiate_step` keeps today's behavior: Steps in
+template order; a failed step `let` still lets that Step's carried-forward
+checks run; host requirements resolve before the parameter space; and the
+job-total Task-count limit is checked once, after every Step.
+
+**Task-count limits** (RFC 0010 §Limits item 4) are checked in the Task
+enumeration group, when a Step's Tasks become known: `max_step_task_count`
+against the Step's Tasks (`Step 'S' has 5 Tasks, which exceeds the caller
+limit of 4 Tasks per Step.`), and `max_task_count` against the Step's Tasks
+plus the committed count of the other Steps whose Tasks are known (`Total
+task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the
+Steps whose Tasks are known before it have 2.`). In `create_job` the
+committed count is the running total over the Steps already bound; for
+`advance_step_binding` the caller passes it. Without `CONTROL_FLOW`,
+`max_step_task_count` is checked for every Step after it is instantiated.
+
+#### advance_step_binding
+
+```rust
+pub fn advance_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    step_index: usize,
+    inputs: &StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, BindingError>
+```
+
+The public wrapper over the core for a pending Step of an existing Job. It
+rebuilds the job table from the parameter values and `job.name`, and the
+limits and budgets from `ctx`. It returns a new Step for the caller to swap
+in: more known, `Bound`, or `Skipped`; a `Bound` or `Skipped` Step, or a
+call with no new inputs, comes back unchanged. On the first failing group it
+returns `BindingError { step, group, errors }`: the Step is `FAILED` at once.
+`errors` holds the group's `ModelError`: a `ModelValidation` error with a
+path per field for a `let`, `enableIf`, or remaining-group error, or the
+resolution error a range or host requirement gives (which quotes the
+expression with a caret). Its `Display` is `Step '<name>' failed in its
+<group> group:` followed by each error. A Step index past the Job's, or a
+template whose Step there has another name, is reported as a `BindingError`
+in the enablement group.
+
+#### StepInputs and add_producer
+
+`StepInputs` holds the concrete `Steps.*` values a binding reads, per
+producer. `add_producer(producer, state)` fills them, typed as the RFC's §The
+`Steps.*` scope table types them:
+
+* `ProducerState::Succeeded { task_outputs }` (a bound producer):
+  `Output.<V>` and `RawOutput.<V>` for each declared output — the Task's
+  value for a producer without a `parameterSpace`, otherwise a list with one
+  element per Task in iteration order (chunking disabled), typed by the
+  declared type, so zero Tasks give a typed `[]`. Each value is converted to
+  the declared type with EXPR coercion. Plus its `TaskParam`s.
+* `ProducerState::TasksKnown` (bound, or pending with `tasks: Known`):
+  `TaskParam.<N>` and `TaskRawParam.<N>` for each Task parameter, a list
+  with one element per Task from `StepParameterSpaceIterator::
+  new_with_chunk_override(space, Some(1))`; a `CHUNK[INT]` parameter's
+  one-value range becomes its `int`. A pending producer's parameter space is
+  read from `PendingBinding.tasks`, so a consumer's Tasks can become known
+  before its producer is bound.
+* `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
+
+A type that is or contains `path` gets a value only in its `Raw` form (the
+submission-context form, as a `path` value; a `PATH` Task parameter's
+values are `path` values in the Posix format); its `Output` or `TaskParam`
+is concrete (`is_concrete`) but has no value (`get` returns `None`), because
+it is derived on the worker host. `add_producer` replaces a producer added
+before. It refuses a state that does not match the producer's binding, a
+`task_outputs` without one map per Task, a Task that lacks a declared output,
+and a value that does not convert. It does not check that the producer is a
+dependency of anything, because job outputs read any Step.
+
+#### attach_step_inputs
+
+```rust
+pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError>
+```
+
+A bound Step that reads `Steps.*` in its script or Step Environments (its
+host-scope fields) needs those values in `resolved_symtab` before its Tasks
+run; `create_job` and `advance_step_binding` put none there.
+`attach_step_inputs` finds the symbols those fields read
+(`collect_all_accessed_symbols`) and copies each value from `inputs`. For a
+path-typed `Steps.P.Output.X` or `TaskParam.N`, `inputs` holds only the `Raw`
+twin, so the twin is stored instead, as `include_raw_param_fallbacks` does
+for `PATH` `Param.*`. Every path-typed `Raw` value it stores is stored as a
+`string` (or list of strings, or list of lists of strings) and recorded in
+`job::Step::path_inputs` with its type (`path`, `list[path]`, or
+`list[list[path]]`), which the session uses to build the `path` values and
+map `Output` and `TaskParam` forward. A skipped producer's `null`s are
+stored as they are and are not recorded. It errors on a Step that is not
+bound and on a symbol that is not concrete in `inputs`, naming it. Calling it
+again with the same inputs gives the same Step.
+
+#### Reporting
+
+`job::Step::tasks_known()` is the Task count once Tasks are known (`Some(0)`
+for a skipped Step). `job::Step::binding_report()` is, for a pending Step,
+each group's `GroupReport`: `Known`, or `Waiting { on, for_enablement }`
+with its missing `Steps.*` symbols and whether it also waits for the
+undecided `enableIf`. `job::Step::input_producers()` lists the producers
+whose values the Step still needs: those its host-scope fields read, and
+those its waiting groups wait on.
 
 ### convert_environment
 

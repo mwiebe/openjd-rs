@@ -90,6 +90,13 @@ Core template library. Depends on openjd-expr. Provides:
 - Format string parsing and resolution
 - All v2023-09 model types
 - `CONTROL_FLOW` output values: the `openjd_output_var` directive parser and collector
+- `CONTROL_FLOW` progressive step input binding: `create_job` decides each Step's
+  `enableIf` and evaluates each of its materialization groups (Task enumeration, host
+  selection, remaining) whose `Steps.*` inputs are concrete, in dependency order, leaving
+  the rest of the Step `PENDING_INPUTS`; `advance_step_binding` evaluates each further group
+  as upstream values arrive (assembled with `StepInputs::add_producer`) and fails the Step at
+  the first error; `attach_step_inputs` supplies a bound Step's host-scope `Steps.*` values
+  before its Tasks run
 
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:

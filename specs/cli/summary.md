@@ -7,10 +7,10 @@ steps, task counts, environments, and dependencies. It can summarize the entire 
 single step. The command instantiates the job (resolving parameters and creating the job
 object) to produce accurate task counts that reflect parameter space expansion.
 
-Because it calls `create_job`, a `CONTROL_FLOW` template with an `enableIf` other than
-`true`, or with a Step whose step `let`, `hostRequirements`, or `parameterSpace` reads
-`Steps.*`, fails here the same way it fails `openjd run` (`create_job` does not do step
-input binding yet; see [run.md](run.md) § CONTROL_FLOW templates).
+Because it calls `create_job`, a `CONTROL_FLOW` Job with a Step that is still pending
+inputs or is skipped, or with an Environment disabled by its `enableIf`, is refused the
+same way `openjd run` refuses it (see [run.md](run.md) § CONTROL_FLOW templates); reporting
+what is known of a pending Step is a later change.
 
 ## Interface
 
