@@ -55,6 +55,7 @@ serializes as before. See [JobOutput](#joboutput-control_flow) below and
 ```rust
 pub struct JobOutput {
     pub declaration: OutputVariable,      // name, type, unit, constraints
+    pub object_type: Option<ObjectType>,  // PATH and LIST[PATH]: FILE or DIRECTORY
     pub description: Option<String>,
     pub value: FormatString,              // as written
     pub evaluated: Option<JobOutputValue>,
@@ -65,7 +66,8 @@ pub enum JobOutputValue { Value(ExprValue), Null }
 
 `declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0010)),
 so its constraint checks are the ones a Step's outputs use; its `collect` is always
-`ONCE`. `evaluated` is `None` while the output is pending, `Value` with the value
+`ONCE`. `object_type` carries a `PATH` or `LIST[PATH]` output's `objectType` for tools and
+user interfaces; it is not checked. `evaluated` is `None` while the output is pending, `Value` with the value
 converted to the declared type, or `Null` when the value evaluated to `null` (no value,
 which is not an error). `create_job` fills it for the outputs whose inputs are concrete at
 creation; a caller fills the rest from `evaluate_job_output`, for example with
@@ -75,7 +77,7 @@ the declaration's fields inline (`#[serde(flatten)]` would serialize as a map, w
 `serde_wasm_bindgen` turns into a JS `Map` for openjd-for-js). A pending output with a
 description serializes as
 `{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, with
-`unit` and `constraints` after `type` when declared. An evaluated one adds
+`unit`, `constraints`, and `objectType` after `type` when declared. An evaluated one adds
 `"evaluated": {"state": "VALUE", "value": {"Int": 8}}` (the `ExprValue` serde form that
 `JobParameter.value` also uses), or `"evaluated": {"state": "NULL"}` when it evaluated to
 `null`, so an absent `evaluated` is always a pending output. The `state` tag follows

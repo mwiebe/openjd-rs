@@ -686,6 +686,54 @@ fn outputs_whose_inputs_are_concrete_are_evaluated_at_creation() {
 }
 
 #[test]
+fn a_path_output_keeps_the_text_as_written_in_the_posix_form() {
+    // Text around an expression, and a literal, are strings converted to
+    // `path`; the conversion keeps the text and labels it Posix, as every
+    // job-creation value is.
+    let f = Fixture::new(
+        &template(
+            "  - {name: Joined, type: PATH, value: '{{RawParam.Base}}/a.exr', objectType: FILE}
+  - {name: Lit, type: PATH, value: 'x/y/z.exr'}
+  - {name: Back, type: PATH, value: '{{Param.Win}}'}
+",
+            "parameterDefinitions:
+  - {name: Base, type: STRING, default: out/dir}
+  - {name: Win, type: STRING, default: 'C:\\out\\a.exr'}
+steps:
+  - name: S
+    script: {actions: {onRun: {command: x}}}
+",
+        ),
+        &[],
+    );
+    let job = f.job();
+    let posix = |s: &str| {
+        value(ExprValue::new_path(
+            s.to_string(),
+            openjd_expr::PathFormat::Posix,
+        ))
+    };
+    assert_eq!(
+        evaluated(&job),
+        vec![
+            posix("out/dir/a.exr"),
+            posix("x/y/z.exr"),
+            posix("C:\\out\\a.exr")
+        ]
+    );
+    let outputs = job.outputs.as_ref().unwrap();
+    assert_eq!(outputs[0].object_type, Some(openjd_model::ObjectType::File));
+    assert_eq!(outputs[1].object_type, None);
+    let json = serde_json::to_value(&outputs[0]).unwrap();
+    assert_eq!(json["objectType"], "FILE");
+    assert_eq!(json["evaluated"]["value"]["Path"]["format"], "POSIX");
+    assert!(serde_json::to_value(&outputs[1])
+        .unwrap()
+        .get("objectType")
+        .is_none());
+}
+
+#[test]
 fn a_template_without_outputs_has_none() {
     let f = Fixture::new(&format!("{}{STEP_S}", header("[EXPR, CONTROL_FLOW]")), &[]);
     assert_eq!(f.job().outputs, None);
@@ -712,7 +760,7 @@ fn every_output_that_fails_at_creation_fails_create_job_together() {
             ),
             (
                 "jobOutputDefinitions[2] -> value",
-                "Job output 'Checked': value 4 exceeds maximum 3",
+                "Job output 'Checked': value 4 exceeds maximum 3\n  {{Param.Num}}",
             ),
             (
                 "jobOutputDefinitions[3] -> value",
@@ -720,11 +768,11 @@ fn every_output_that_fails_at_creation_fails_create_job_together() {
             ),
             (
                 "jobOutputDefinitions[4] -> value",
-                "Job output 'Listed': list length 3 exceeds maximum 2",
+                "Job output 'Listed': list length 3 exceeds maximum 2\n  {{Steps.P.TaskParam.X}}",
             ),
             (
                 "jobOutputDefinitions[5] -> value",
-                "Job output 'Joined': value 'x4' does not convert to INT: Cannot convert 'x4' to int: invalid digit found in string",
+                "Job output 'Joined': value 'x4' does not convert to INT: Cannot convert 'x4' to int: invalid digit found in string\n  x{{Param.Num}}",
             ),
         ])
     );
@@ -941,7 +989,7 @@ fn a_later_failure_conversion_or_constraint_violation_fails_the_job() {
         eval(&f, &job, 0, &inputs).unwrap_err().to_string(),
         expected(&[(
             "jobOutputDefinitions[0] -> value",
-            "Job output 'Best': value 2 is less than minimum 3"
+            "Job output 'Best': value 2 is less than minimum 3\n  {{min(Steps.P.Output.Count)}}"
         )])
     );
     assert_eq!(
@@ -1037,6 +1085,13 @@ fn caller_errors_are_compatibility_errors() {
     assert_eq!(
         eval(&f, &job, 1, &inputs).unwrap_err().to_string(),
         "Compatibility error: the Job has 1 job output, so it has no job output 1."
+    );
+    let none = Fixture::new(&format!("{}{STEP_S}", header("[EXPR, CONTROL_FLOW]")), &[]);
+    assert_eq!(
+        evaluate_job_output(&none.jt, &f.params, &f.ctx, &job, 0, &inputs)
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: job output 0 of the Job is 'Best', but the template has none; pass the template the Job was created from."
     );
     let other = later("  - {name: Other, type: INT, value: '{{1}}'}\n");
     assert_eq!(

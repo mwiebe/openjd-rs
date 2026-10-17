@@ -1025,6 +1025,8 @@ pub struct job::JobOutput {
     /// Name, type, unit, and declared constraints; serialized inline with
     /// the other fields. Its `collect` is always ONCE.
     pub declaration: OutputVariable,
+    /// `objectType` of a PATH or LIST[PATH] output; skipped when None.
+    pub object_type: Option<ObjectType>,
     pub description: Option<String>,          // skipped when None
     pub value: FormatString,
     /// None while pending; skipped when None.
@@ -1396,6 +1398,10 @@ pub enum EndOfLine {
     Lf, Crlf, Auto,
 }
 
+/// Hash since CONTROL_FLOW: job::JobOutput holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Hash since CONTROL_FLOW: job::JobOutput holds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ObjectType {
     File, Directory,

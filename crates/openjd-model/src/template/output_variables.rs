@@ -387,6 +387,7 @@ impl JobOutputDefinition {
     pub fn to_job_output(&self) -> JobOutput {
         JobOutput {
             declaration: self.job.clone(),
+            object_type: self.definition.path_properties().0,
             description: self.description().map(str::to_string),
             value: self.value.clone(),
             evaluated: None,

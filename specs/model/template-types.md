@@ -474,7 +474,8 @@ differences:
 
 The accessors are `name`, `job_param_type`, `value`, `unit`, `description`,
 `definition`, `constraints`, and `to_job_output`, the `job::JobOutput` that `create_job`
-stores in `job::Job::outputs`, not yet evaluated. Its `value` is checked by pass 8 and
+stores in `job::Job::outputs`, not yet evaluated, which carries the `objectType` of a
+`PATH` or `LIST[PATH]` output (a Step's `job::OutputVariable` does not). Its `value` is checked by pass 8 and
 evaluated as described in [job-outputs.md](job-outputs.md).
 
 ### OutputCollectMode
