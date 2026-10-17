@@ -24,8 +24,8 @@ pub type TaskOutputs = IndexMap<String, ExprValue>;
 enum Held {
     /// The `ONCE` or current `LAST` value, and its counted size.
     Value(ExprValue, usize),
-    /// The `APPEND` elements so far, each with its counted size.
-    Elements(Vec<(ExprValue, usize)>),
+    /// The `APPEND` elements so far. Their sizes are in the Task's total.
+    Elements(Vec<ExprValue>),
 }
 
 /// One Task's state: what it holds for each output, and the total size.
@@ -381,7 +381,7 @@ impl OutputCollector {
                 .entry(name.to_string())
                 .or_insert_with(|| Held::Elements(Vec::new()))
             {
-                elements.push((value.clone(), size));
+                elements.push(value.clone());
             }
         } else {
             state
@@ -405,9 +405,7 @@ impl OutputCollector {
                 let value = match (var.collect, state.held.swap_remove(name)) {
                     (OutputCollectMode::Append, held) => {
                         let elements: Vec<ExprValue> = match held {
-                            Some(Held::Elements(elements)) => {
-                                elements.into_iter().map(|(v, _)| v).collect()
-                            }
+                            Some(Held::Elements(elements)) => elements,
                             _ => Vec::new(),
                         };
                         let elem_ty = var.param_type.expr_type().params()[0].clone();

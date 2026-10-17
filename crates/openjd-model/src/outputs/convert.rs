@@ -201,7 +201,8 @@ impl<'s, I: Iterator<Item = &'s str>> Converter<'s, I> {
         // which means nothing to an author, and without EXPR's message,
         // which would repeat it.
         let full_ty = natural.expr_type().to_string();
-        let untyped = matches!(natural, ExprValue::Null) || full_ty.contains("nulltype");
+        // `Null`'s own type is `nulltype`, so this covers it too.
+        let untyped = full_ty.contains("nulltype");
         let ty = if natural.list_len() == Some(0) {
             "empty list".to_string()
         } else if untyped {
