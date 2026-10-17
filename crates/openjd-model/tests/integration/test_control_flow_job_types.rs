@@ -163,6 +163,24 @@ fn range_expr_longer_than_1024_characters_is_accepted_without_max_length() {
     );
 }
 
+#[test]
+fn quoted_strings_in_check_messages_are_cut_and_escaped() {
+    let r = def("{name: R, type: RANGE_EXPR}");
+    assert_eq!(
+        r.check_constraints(&ExprValue::String("a\u{1b}b\0".into())),
+        Err("Output variable 'R': value 'a\\u{1b}b\\0' is not a valid range expression".into())
+    );
+    let s = def("{name: S, type: STRING, allowedValues: [a]}");
+    let long = format!("{}\n", "é".repeat(250));
+    assert_eq!(
+        s.check_constraints(&ExprValue::String(long)),
+        Err(format!(
+            "Output variable 'S': value '{}...' is not in allowed values",
+            "é".repeat(200)
+        ))
+    );
+}
+
 fn value_len(v: &ExprValue) -> usize {
     match v {
         ExprValue::RangeExpr(r) => r.to_string().chars().count(),

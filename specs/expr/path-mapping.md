@@ -7,7 +7,8 @@ is essential for render farms where jobs are authored on one OS but executed on 
 or where storage mount points differ between submission and execution hosts.
 
 Defined in `path_mapping.rs` (PathFormat, PathMappingRule, PathMapper,
-InvalidPathMappingRule, and the reverse mapping `unapply_rules`/`UnmapError`),
+InvalidPathMappingRule, and the reverse mapping
+`unapply_rules`/`unapply_rules_with_source_format`/`UnmapError`),
 `windows_upcase.rs` (the Windows uppercase table) and `uri_path.rs` (URI-aware
 path operations).
 
@@ -200,6 +201,15 @@ some paths that name a location under a destination are still `NoRoundTrip`: a
 Windows `\\?\C:\...` extended-length path against a `C:\...` destination, and a
 non-ASCII component that differs only in case (folding is ASCII-only). Nothing is
 accepted wrongly; the round trip prevents that.
+
+`unapply_rules_with_source_format` takes the same arguments and returns the stored
+form together with its path format: `PathFormat::Uri` for a URI returned unchanged,
+`worker_format` for an absolute path returned unchanged because there are no rules,
+and otherwise the `source_path_format` of the rule whose candidate was returned.
+`unapply_rules` is this function without the format. A caller that stores the result
+as an `ExprValue::Path`, as the CONTROL_FLOW output collector does
+(`specs/model/outputs.md`), uses the format so the value carries the format of the
+submission path context it is in (RFC 0010 §Path values).
 
 `UnmapError` implements `Display` and `std::error::Error`. The caller, which knows
 the path and the output's name, builds the user-facing message around it.
@@ -659,5 +669,5 @@ rule, UNC anchors), with these differences:
   `/local`), where Rust keeps it.
   Matching for a single URI rule is the same.
 
-The reverse mapping, `unapply_rules`, has no Python counterpart yet: it is part of the
-draft CONTROL_FLOW extension (RFC 0010), which this crate prototypes first.
+The reverse mapping, `unapply_rules` and `unapply_rules_with_source_format`, has no
+Python counterpart yet: it is part of the draft CONTROL_FLOW extension (RFC 0010), which this crate prototypes first.
