@@ -1071,8 +1071,53 @@ fn validate_embedded_files(
     }
 }
 
+// Kept as it was before `step_dependency_order` existed: its name-keyed
+// graph decides which errors a template with a repeated Step name gets, and
+// templates without CONTROL_FLOW must keep getting the same ones.
 fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationErrors) {
-    if step_dependency_order(steps).is_none() {
+    let step_names: HashSet<String> = steps.iter().map(|s| s.name.clone()).collect();
+    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
+    for step in steps {
+        let name = step.name.clone();
+        let deps: Vec<String> = step
+            .dependencies
+            .as_ref()
+            .map(|d| d.iter().map(|dep| dep.depends_on.clone()).collect())
+            .unwrap_or_default();
+        adj.insert(name, deps);
+    }
+    // Kahn's algorithm
+    let mut in_degree: HashMap<String, usize> = HashMap::new();
+    for name in &step_names {
+        in_degree.insert(name.clone(), 0);
+    }
+    for deps in adj.values() {
+        for dep in deps {
+            if let Some(d) = in_degree.get_mut(dep) {
+                *d += 1;
+            }
+        }
+    }
+    let mut queue: Vec<String> = in_degree
+        .iter()
+        .filter(|(_, &d)| d == 0)
+        .map(|(n, _)| n.clone())
+        .collect();
+    let mut visited = 0;
+    while let Some(node) = queue.pop() {
+        visited += 1;
+        if let Some(deps) = adj.get(&node) {
+            for dep in deps {
+                if let Some(d) = in_degree.get_mut(dep) {
+                    *d -= 1;
+                    if *d == 0 {
+                        queue.push(dep.clone());
+                    }
+                }
+            }
+        }
+    }
+    if visited < step_names.len() {
         errors.add(&[], "step dependencies contain a cycle.");
     }
 }

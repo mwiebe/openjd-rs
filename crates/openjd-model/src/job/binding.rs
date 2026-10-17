@@ -72,8 +72,10 @@ pub struct BindingError {
 
 impl BindingError {
     /// `true` when this is a caller error rather than the Step failing:
-    /// every error is a [`ModelError::Compatibility`] (see
+    /// `errors` is not empty and every error is a
+    /// [`ModelError::Compatibility`] (see
     /// [`advance_step_binding`](crate::create_job::advance_step_binding)).
+    /// Every `BindingError` this crate returns holds one error.
     pub fn is_caller_error(&self) -> bool {
         !self.errors.is_empty()
             && self

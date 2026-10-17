@@ -82,15 +82,17 @@ template order where dependency constraints allow.
 ### Cycle Detection at Two Levels
 
 Cycles are detected in two places:
-1. During template validation (Pass 3, `structure.rs`) with Kahn's algorithm
-   (`step_dependency_order`, which also gives `create_job` the dependency order it binds
-   `CONTROL_FLOW` Steps in: every Step after its dependencies, ties broken by template
-   index)
+1. During template validation (Pass 3, `structure.rs`, `detect_dependency_cycles`) with
+   Kahn's algorithm over Step names
 2. During `topo_sorted()` using DFS back-edge detection
 
-The two give different orders when several are valid: `topo_sorted()` follows its DFS,
-while `step_dependency_order` breaks ties by template index. `create_job` uses the
-second, so the error it reports first under `CONTROL_FLOW` is the first in that order.
+`create_job` binds `CONTROL_FLOW` Steps in the order `step_dependency_order`
+(`structure.rs`) gives: a separate Kahn's-algorithm pass over Step indices, every Step
+after its dependencies, ties broken by template index. It is kept apart from the cycle
+check, whose name-keyed graph decides which errors a template with a repeated Step name
+gets. When several orders are valid, `topo_sorted()` follows its DFS and
+`step_dependency_order` the template index, so the error `create_job` reports first under
+`CONTROL_FLOW` is the first in the latter.
 
 The validation check catches cycles in templates before job creation. The `topo_sorted()`
 check catches cycles in programmatically-constructed jobs that bypass template validation.
