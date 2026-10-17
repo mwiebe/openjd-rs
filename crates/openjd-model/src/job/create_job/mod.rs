@@ -8,6 +8,7 @@
 
 mod binding;
 mod instantiate;
+mod job_outputs;
 pub mod parameters;
 mod ranges;
 
@@ -23,6 +24,7 @@ use crate::types::{JobParameterValues, ValidationContext};
 
 pub(crate) use binding::host_scope_symbols;
 pub use binding::{advance_step_binding, attach_step_inputs};
+pub use job_outputs::{evaluate_job_output, job_output_inputs};
 // Re-exports — preserve the existing public API
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -121,6 +123,16 @@ impl EvalBudgets {
 /// Steps whose Tasks are known at creation. Each Job Environment's
 /// `enableIf` is decided here and sets its
 /// [`enabled`](job::Environment::enabled); a disabled one is not checked.
+///
+/// Each `jobOutputDefinitions` entry becomes a [`job::JobOutput`] in
+/// [`job::Job::outputs`]. One whose `value` reads no `Steps.*` symbol that is
+/// not concrete at creation (it reads only job parameters, the `null`s of a
+/// Step skipped here, or `TaskParam` of a Step whose Tasks are known here,
+/// though it may still be pending) is evaluated after the Steps, and its
+/// [`evaluated`](job::JobOutput::evaluated) set; the rest are left for
+/// [`evaluate_job_output`]. A job output that fails to evaluate, convert, or
+/// meet its constraints fails `create_job`, every such failure reported
+/// together.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -361,6 +373,11 @@ pub fn create_job(
         steps
     };
 
+    // CONTROL_FLOW (RFC 0010 §Job outputs item 1): every job output whose
+    // inputs are concrete now is evaluated, and a failure fails Job
+    // creation, as an invalid job parameter value does.
+    let outputs = job_outputs::evaluate_at_creation(job_template, &symtab, &steps, budgets)?;
+
     let job_environments = job_template.job_environments.as_ref().map(|envs| {
         envs.iter()
             .enumerate()
@@ -427,6 +444,7 @@ pub fn create_job(
         parameters,
         steps,
         job_environments,
+        outputs,
     })
 }
 

@@ -182,7 +182,7 @@ fn job_name_may_not_read_steps() {
         &t,
         &[(
             "name",
-            "'Steps.P.Output.Count': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.",
+            "'Steps.P.Output.Count': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them.",
         )],
     );
 }
@@ -198,7 +198,7 @@ fn job_environments_may_not_read_steps() {
       actions:
         onEnter: {command: echo, timeout: '{{Steps.P.Output.Count}}'}
 ";
-    let not_here = "'Steps.P.Output.Count': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.";
+    let not_here = "'Steps.P.Output.Count': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them.";
     let let_msg = format!("Invalid expression in let binding 'x': {not_here}");
     assert_errs(
         &template_with(EXTENSIONS, job_fields, ECHO),
@@ -1262,7 +1262,7 @@ fn a_field_without_steps_reports_that_before_an_incomplete_reference() {
         &t,
         &[(
             "name",
-            "'Steps.P': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.",
+            "'Steps.P': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them.",
         )],
     );
 }

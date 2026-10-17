@@ -371,6 +371,41 @@ describe("createJob", () => {
     opts.free();
     template.free();
   });
+
+  it("job.toJSON() includes CONTROL_FLOW job outputs as plain objects", () => {
+    const template = mod.decodeJobTemplate(
+      JSON.stringify({
+        specificationVersion: "jobtemplate-2023-09",
+        extensions: ["EXPR", "CONTROL_FLOW"],
+        name: "J",
+        jobOutputDefinitions: [
+          { name: "Answer", type: "INT", value: "{{40 + 2}}", unit: "items" },
+          { name: "Later", type: "INT", value: "{{Steps.P.Output.N}}" },
+        ],
+        steps: [
+          {
+            name: "P",
+            outputVariables: [{ name: "N", type: "INT" }],
+            script: { actions: { onRun: { command: "echo" } } },
+          },
+        ],
+      }),
+    );
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    const outputs = job.toJSON().outputs;
+    expect(outputs).toHaveLength(2);
+    expect(outputs[0].name).toBe("Answer");
+    expect(outputs[0].type).toBe("INT");
+    expect(outputs[0].unit).toBe("items");
+    expect(outputs[0].value).toBe("{{40 + 2}}");
+    expect(outputs[0].evaluated).toEqual({ value: { Int: 42 } });
+    expect(outputs[1].name).toBe("Later");
+    expect(outputs[1].evaluated).toBeUndefined();
+    job.free();
+    opts.free();
+    template.free();
+  });
 });
 
 // ── Step Dependency Graph ──────────────────────────────────────────

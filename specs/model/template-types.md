@@ -33,13 +33,15 @@ pub struct JobTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
+    pub job_output_definitions: Option<Vec<JobOutputDefinition>>,  // CONTROL_FLOW
     pub job_environments: Option<Vec<Environment>>,
     pub steps: Vec<StepTemplate>,
 }
 ```
 
-Helper: `parameter_definitions_list()` returns `&[JobParameterDefinition]`, defaulting to
-an empty slice when `parameter_definitions` is `None`.
+Helpers: `parameter_definitions_list()` returns `&[JobParameterDefinition]`, and
+`job_output_definitions_list()` returns `&[JobOutputDefinition]`, each defaulting to an
+empty slice when the field is `None`.
 
 ### EnvironmentTemplate (§1.2)
 
@@ -396,8 +398,9 @@ pub enum RangeConstraint {
 ## CONTROL_FLOW Types (RFC 0010)
 
 The `CONTROL_FLOW` extension adds `enableIf` to `<StepTemplate>` and `<Environment>`,
-and `outputVariables` to `<StepTemplate>`. Pass 11 gates them on the extension and
-checks their structure ([validation.md](validation.md) § Pass 11).
+`outputVariables` to `<StepTemplate>`, and `jobOutputDefinitions` to the Job Template.
+Pass 11 gates them on the extension and checks their structure
+([validation.md](validation.md) § Pass 11).
 
 ### BoolOrFormatString
 
@@ -450,6 +453,29 @@ a [`JobParameterDefinition`](parameters.md). Its `Deserialize`:
 `job::Step`. That job form is built once, during deserialization, and
 `check_constraints`, `check_element`, and `check_length` delegate to it (see
 [job-types.md](job-types.md) § CONTROL_FLOW fields).
+
+### JobOutputDefinition
+
+```rust
+pub struct JobOutputDefinition { /* private fields */ }
+```
+
+One `<JobOutputDefinition>` (Template Schemas §2.17). Its mapping is that of an
+`<OutputVariableDefinition>` with `value` (a format string, required) in place of
+`collect`, and it is deserialized the same way, after `value` is removed. The
+differences:
+
+- a missing or `null` `value` reads `missing 'value' field in job output definition`;
+- `collect` is recorded with `default`, `userInterface`, and `dataFlow`, before them, so
+  pass 11 reports it at its own path (`is not allowed in a job output definition.`)
+  instead of the job parameter definition rejecting it as an unknown field;
+- the messages say `job output` where an output variable's say `output variable`, and an
+  unknown field lists `value` and `unit` as the extra fields.
+
+The accessors are `name`, `job_param_type`, `value`, `unit`, `description`,
+`definition`, `constraints`, and `to_job_output`, the `job::JobOutput` that `create_job`
+stores in `job::Job::outputs`, not yet evaluated. Its `value` is checked by pass 8 and
+evaluated as described in [job-outputs.md](job-outputs.md).
 
 ### OutputCollectMode
 

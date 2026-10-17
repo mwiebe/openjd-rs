@@ -54,6 +54,7 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
             })
             .collect(),
         job_environments: None,
+        outputs: None,
     }
 }
 

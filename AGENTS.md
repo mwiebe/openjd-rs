@@ -84,7 +84,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Parsing** (`src/parse.rs`) — Serde-based YAML/JSON deserialization with post-deserialization validation.
 - **Template types** (`src/template/`) — All v2023-09 model types including parameters, steps, environments, actions, host requirements.
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
-- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs, and CONTROL_FLOW progressive step input binding (`advance_step_binding`, `StepInputs`, `attach_step_inputs`).
+- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs, CONTROL_FLOW progressive step input binding (`advance_step_binding`, `StepInputs`, `attach_step_inputs`), and CONTROL_FLOW job output evaluation (`evaluate_job_output`).
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
 - **Outputs** (`src/outputs/`) — CONTROL_FLOW `openjd_output_var` directive parser and output collector (no I/O).
 

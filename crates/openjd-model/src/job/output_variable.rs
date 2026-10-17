@@ -161,6 +161,9 @@ impl std::fmt::Display for Subject {
     }
 }
 
+/// How [`OutputVariable`]'s messages name their subject.
+const OUTPUT_VARIABLE_LABEL: &str = "Output variable";
+
 impl OutputVariable {
     /// Check a whole value (one Task's value) against the declared type and
     /// constraint properties. For a list type that is the length, with
@@ -226,7 +229,22 @@ impl OutputVariable {
     }
 
     fn msg(&self, detail: std::fmt::Arguments<'_>) -> String {
-        format!("Output variable '{}': {detail}", self.name)
+        format!("{OUTPUT_VARIABLE_LABEL} '{}': {detail}", self.name)
+    }
+
+    /// [`check_constraints`](Self::check_constraints), with each message
+    /// naming its subject as `label` (such as `Job output`) instead of
+    /// `Output variable`.
+    pub(crate) fn check_constraints_as(
+        &self,
+        value: &ExprValue,
+        label: &str,
+    ) -> Result<(), String> {
+        self.check_constraints(value)
+            .map_err(|m| match m.strip_prefix(OUTPUT_VARIABLE_LABEL) {
+                Some(rest) => format!("{label}{rest}"),
+                None => m,
+            })
     }
 
     fn type_mismatch(&self, expected: &ExprType, value: &ExprValue, subject: Subject) -> String {

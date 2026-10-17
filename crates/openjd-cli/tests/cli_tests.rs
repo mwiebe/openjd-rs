@@ -1975,8 +1975,9 @@ steps:
     }
 
     /// `run` and `summary` refuse a CONTROL_FLOW Job with a Step that is
-    /// pending inputs or skipped, or a disabled Environment, until they
-    /// simulate step input binding.
+    /// pending inputs or skipped, a disabled Environment, or a job output
+    /// not evaluated at creation, until they simulate step input binding.
+    /// A job output evaluated at creation is no reason to refuse.
     #[test]
     fn test_run_and_summary_refuse_an_unbound_control_flow_job() {
         let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
@@ -1985,6 +1986,9 @@ steps:
             "specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW]
 name: CfJob
+jobOutputDefinitions:
+  - {{name: Known, type: INT, value: '{{{{1}}}}'}}
+  - {{name: Pending, type: INT, value: '{{{{Steps.P.Output.Count}}}}'}}
 jobEnvironments:
   - {{name: JE, enableIf: false, variables: {{A: a}}}}
 steps:
@@ -2007,15 +2011,19 @@ steps:
         )
         .unwrap();
         let expected =
-            "CONTROL_FLOW step input binding and enableIf are not supported by this command yet:
+            "CONTROL_FLOW step input binding, enableIf, and job outputs are not supported by this command yet:
   Job Environment 'JE' is disabled by its enableIf
   Step 'C' is pending inputs from the Steps it depends on
   Step 'S' is skipped by its enableIf
-  Step Environment 'DE' of Step 'D' is disabled by its enableIf";
+  Step Environment 'DE' of Step 'D' is disabled by its enableIf
+  Job output 'Pending' is pending inputs from the Steps it reads";
         for cmd in ["run", "summary"] {
             let (code, _stdout, stderr) = run_cli(&[cmd, f.path().to_str().unwrap()]);
             assert_ne!(code, 0, "{cmd}");
-            assert!(stderr.contains(expected), "{cmd} stderr: {stderr}");
+            assert!(
+                stderr.ends_with(&format!("{expected}\n")),
+                "{cmd} stderr: {stderr}"
+            );
         }
     }
 
