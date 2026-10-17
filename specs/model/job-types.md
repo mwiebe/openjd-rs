@@ -129,8 +129,20 @@ pub enum OutputBound { Int(i64), Float(Float64) }
 
 pub enum StepBinding {
     Bound,                                     // default
-    PendingInputs { waiting_on: Vec<String> }, // sorted when binding writes it
+    PendingInputs(PendingBinding),
     Skipped,
+}
+
+pub struct PendingBinding {
+    pub enablement: GroupState<()>,                       // Known(()) once enableIf is true or absent
+    pub tasks: GroupState<Option<StepParameterSpace>>,    // Known(None): no parameterSpace, one Task
+    pub host_requirements: GroupState<Option<HostRequirements>>,
+    pub remaining: GroupState<()>,                        // Step Environments and script
+}
+
+pub enum GroupState<T> {
+    Waiting { on: Vec<String> },   // the group's own Steps.* inputs that are not concrete, sorted
+    Known(T),
 }
 
 pub struct PathInput {
@@ -140,15 +152,23 @@ pub struct PathInput {
 ```
 
 Deserialization does not re-check what binding guarantees when it writes these values:
-`waiting_on` is kept in the order given, and `PathInput.ty` may be any type its spelling
-parses to.
+`GroupState::Waiting::on` is kept in the order given, and `PathInput.ty` may be any type
+its spelling parses to.
 
 `create_job` fills `output_variables` from the template's `outputVariables`
-(`OutputVariableDefinition::to_job_output_variable`), sets `binding` to `Bound`, and
-leaves `path_inputs` empty. Step input binding, which a later change adds, produces the
-other two `StepBinding` states and records `path_inputs`. The plan (M1) defines these
-fields together with the schema, so callers that build or match `job::Step` adapt once,
-and the data shapes the later changes fill in are fixed and tested now.
+(`OutputVariableDefinition::to_job_output_variable`). Under `CONTROL_FLOW` it binds each
+Step as far as the values concrete at job creation allow, so `binding` is any of the three
+states, and `advance_step_binding` moves a pending Step on (see
+[job-creation.md](job-creation.md) § Step input binding). A `PendingInputs` Step keeps
+`parameter_space`, `host_requirements`, and `resolved_symtab` as `None`: what is known of
+them waits in its `PendingBinding` and moves into the Step's fields when it is bound. Its
+script, Step Environments, dependencies, and outputs are filled in as for a bound Step. A
+`Skipped` Step has the same three fields `None` for good, and zero Tasks. `path_inputs` is
+recorded by `attach_step_inputs`.
+
+`GroupState::Waiting::on` lists the group's own inputs (`Steps.<Step>.<Member>.<Name>`)
+that are not concrete, not counting the enablement group's inputs, which every other group
+also waits for: it is empty for a group that waits only for `enableIf`.
 
 **`OutputConstraints`** holds the constraint properties the definition *declared*, and
 only those. A property that a job parameter of the same type implies when omitted (the
@@ -192,7 +212,10 @@ count characters, not elements).
 default (`None`, `Bound`, or empty), so a Step serialized before this change still
 deserializes, and the serialized form of a Step without `CONTROL_FLOW` features is
 unchanged. `StepBinding` is internally tagged: `{"state": "BOUND"}`,
-`{"state": "PENDING_INPUTS", "waitingOn": [...]}`, `{"state": "SKIPPED"}`.
+`{"state": "PENDING_INPUTS", "enablement": ..., "tasks": ..., "hostRequirements": ...,
+"remaining": ...}`, `{"state": "SKIPPED"}`. A `GroupState` is externally tagged in
+camelCase: `{"waiting": {"on": [...]}}` or `{"known": <value>}`, with `null` for `()` and
+for a `None` result.
 
 Names use the template's spellings where it has them: `OutputVariable.param_type` is
 serialized as `"type"` with the spec string (`"FLOAT"`, `"LIST[STRING]"`; read
@@ -211,7 +234,9 @@ fields as:
   {"name": "K", "type": "LIST[STRING]", "collect": "APPEND",
    "constraints": {"maxLength": 9, "item": {"allowedValues": {"string": ["a"]}}}}
 ],
-"binding": {"state": "PENDING_INPUTS", "waitingOn": ["Steps.P.Output.N"]},
+"binding": {"state": "PENDING_INPUTS", "enablement": {"known": null},
+            "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
+            "hostRequirements": {"known": null}, "remaining": {"waiting": {"on": []}}},
 "pathInputs": [{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}]
 ```
 
@@ -222,11 +247,11 @@ bound on an `INT` output, say), which then has no effect on the checks.
 `JobParameterType` derives `Deserialize` as well as `Serialize`; both use the variant
 names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
 
-`job::Environment` does not get the plan's `enabled` field yet. Nothing could set it to
-`false` before static `enableIf` lands with step input binding (until then `create_job`
-refuses an `enableIf` it cannot evaluate), and the field would change every
-`job::Environment` struct literal in the sessions and CLI crates and their tests (about
-60 sites) for no behavior. That change adds the field with the code that sets it.
+`job::Environment` has `enabled: bool`: `false` when its `enableIf` evaluated to
+`false`, so a Session leaves it out of its Environment stack (it is not entered and its
+`variables` are not set). It is serialized only when `false` and defaults to `true`, so
+existing jobs read back unchanged. `create_job` decides a Job Environment's; the remaining
+group of step input binding decides a Step Environment's.
 
 ### StepScript, StepActions, Action
 
@@ -272,6 +297,7 @@ pub struct Environment {
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,  // Session-scope
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    pub enabled: bool,                                     // CONTROL_FLOW: false when enableIf is false
 }
 
 pub struct EnvironmentScript {
@@ -430,10 +456,10 @@ pub struct StepDependency {
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
 | `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap` |
-| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is not carried yet |
+| `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is decided into `binding` (`Skipped` when `false`) |
 | `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
 | `template::StepScript` | `job::StepScript` | Structurally identical; action fields remain `FormatString` |
-| `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab` |
+| `template::Environment` | `job::Environment` | `variables` values remain `FormatString` (session-scope); adds `resolved_symtab`; `enableIf` is decided into `enabled` |
 | `template::HostRequirements` | `job::HostRequirements` | `min`/`max` are `f64`; `any_of`/`all_of` are `Vec<String>` |
 | `template::EmbeddedFile` | `job::EmbeddedFile` | `file_type` is `FileType` enum; `end_of_line` is `Option<EndOfLine>` enum |
 | `template::CancelationMode` | `job::CancelationMode` | Both are enums with `Terminate` and `NotifyThenTerminate` variants |

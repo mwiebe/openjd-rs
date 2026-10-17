@@ -36,6 +36,7 @@ fn make_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> En
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -136,6 +137,7 @@ async fn test_env_no_script() {
         script: None,
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     assert!(session
         .enter_environment(&env, None, None, None)
@@ -182,6 +184,7 @@ async fn test_env_with_embedded_files() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let result = session.enter_environment(&env, None, None, None).await;
     assert!(result.is_ok());
@@ -211,6 +214,7 @@ async fn test_env_with_variables() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     let result = session.enter_environment(&env, None, None, None).await;
     assert!(result.is_ok());
@@ -230,6 +234,7 @@ async fn test_env_exit_removes_variables() {
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     session
         .enter_environment(&env, None, None, None)
@@ -503,6 +508,7 @@ async fn test_env_with_resolved_variables() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     let result = session.enter_environment(&env, None, None, None).await;
     assert!(result.is_ok());
@@ -542,6 +548,7 @@ async fn test_env_let_bindings_respect_lowered_memory_budget() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let err = session
         .enter_environment(&env, None, None, None)
@@ -588,6 +595,7 @@ async fn test_env_with_let_bindings_and_embedded_files() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let result = session.enter_environment(&env, None, None, None).await;
     assert!(result.is_ok());

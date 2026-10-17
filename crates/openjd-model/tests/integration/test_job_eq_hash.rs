@@ -229,6 +229,7 @@ fn environment_variables_order_insensitive_eq_and_hash() {
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     let a = env(vars_ab);
     let b = env(vars_ba);
@@ -244,6 +245,7 @@ fn environment_no_variables_distinct_from_empty() {
         script: None,
         variables: vars,
         resolved_symtab: None,
+        enabled: true,
     };
     let none = env(None);
     let empty = env(Some(HashMap::new()));

@@ -7,6 +7,8 @@
 //! Each `tests/integration/test_*.rs` file is included as a module here so
 //! cargo links one test executable for this crate instead of one per file.
 
+#[path = "integration/control_flow_binding_support.rs"]
+mod control_flow_binding_support;
 #[path = "integration/test_actions_and_steps.rs"]
 mod test_actions_and_steps;
 #[path = "integration/test_caller_limits.rs"]
@@ -17,12 +19,16 @@ mod test_capabilities;
 mod test_chunk_int;
 #[path = "integration/test_combination_expr.rs"]
 mod test_combination_expr;
+#[path = "integration/test_control_flow_binding.rs"]
+mod test_control_flow_binding;
 #[path = "integration/test_control_flow_job_types.rs"]
 mod test_control_flow_job_types;
 #[path = "integration/test_control_flow_output_collector.rs"]
 mod test_control_flow_output_collector;
 #[path = "integration/test_control_flow_output_directive.rs"]
 mod test_control_flow_output_directive;
+#[path = "integration/test_control_flow_progressive.rs"]
+mod test_control_flow_progressive;
 #[path = "integration/test_control_flow_schema.rs"]
 mod test_control_flow_schema;
 #[path = "integration/test_control_flow_scope.rs"]

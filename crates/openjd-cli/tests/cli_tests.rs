@@ -1974,6 +1974,51 @@ steps:
         assert!(stdout.contains("Job: CfJob"), "stdout: {stdout}");
     }
 
+    /// `run` and `summary` refuse a CONTROL_FLOW Job with a Step that is
+    /// pending inputs or skipped, or a disabled Environment, until they
+    /// simulate step input binding.
+    #[test]
+    fn test_run_and_summary_refuse_an_unbound_control_flow_job() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            "specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: CfJob
+jobEnvironments:
+  - {{name: JE, enableIf: false, variables: {{A: a}}}}
+steps:
+  - name: P
+    outputVariables: [{{name: Count, type: INT}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{range(Steps.P.Output.Count)}}}}'}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: S
+    enableIf: false
+    stepEnvironments: [{{name: SE, variables: {{B: b}}}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: D
+    stepEnvironments: [{{name: DE, enableIf: false, variables: {{B: b}}}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+"
+        )
+        .unwrap();
+        let expected =
+            "CONTROL_FLOW step input binding and enableIf are not supported by this command yet:
+  Job Environment 'JE' is disabled by its enableIf
+  Step 'C' is pending inputs from the Steps it depends on
+  Step 'S' is skipped by its enableIf
+  Step Environment 'DE' of Step 'D' is disabled by its enableIf";
+        for cmd in ["run", "summary"] {
+            let (code, _stdout, stderr) = run_cli(&[cmd, f.path().to_str().unwrap()]);
+            assert_ne!(code, 0, "{cmd}");
+            assert!(stderr.contains(expected), "{cmd} stderr: {stderr}");
+        }
+    }
+
     #[test]
     fn test_help_honors_the_extensions_option() {
         let mut f = NamedTempFile::with_suffix(".yaml").unwrap();

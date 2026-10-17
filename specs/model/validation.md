@@ -374,6 +374,10 @@ name (`Steps.P.RawOutput.F.name`); the path-type message names only the four-par
 symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
 ordinary `Undefined variable`.
 
+A format-string item of an `INT` or `CHUNK[INT]` range list (a string containing `{{`,
+`template::IntRangeItem::FormatString`) is checked at `range[k]` like an `INT` range
+expression: its symbols and expression, with no target type.
+
 Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
 `FLOAT` Task parameter, nor a format-string item of a `FLOAT` range list: they are
 checked only when job creation resolves them, a gap that predates `CONTROL_FLOW` (a

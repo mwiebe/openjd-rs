@@ -22,13 +22,18 @@
 //! `-0.0 == 0.0`. Types with `f64` fields implement `PartialEq` but not
 //! `Eq`.
 
+mod binding;
 pub mod create_job;
 mod output_variable;
 pub mod step_dependency_graph;
 pub mod step_param_space;
 
+pub use binding::{
+    BindingError, BindingReport, GroupReport, MaterializationGroup, ProducerState, StepInputs,
+};
 pub use output_variable::{
-    OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput, StepBinding,
+    GroupState, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput,
+    PendingBinding, StepBinding,
 };
 
 use std::collections::HashMap;
@@ -125,13 +130,15 @@ pub struct Step {
     /// when it declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_variables: Option<Vec<OutputVariable>>,
-    /// The Step's binding state (`CONTROL_FLOW`). [`StepBinding::Bound`]
-    /// for every Step `create_job` produces today.
+    /// The Step's binding state (`CONTROL_FLOW`): [`StepBinding::Bound`]
+    /// unless the Step is pending inputs or skipped. A pending Step keeps
+    /// `parameter_space`, `host_requirements`, and `resolved_symtab` as
+    /// `None`; a skipped Step keeps them `None` for good.
     #[serde(default, skip_serializing_if = "StepBinding::is_bound")]
     pub binding: StepBinding,
     /// The path-typed `Steps.*` values stored in `resolved_symtab` in their
-    /// submission form (`CONTROL_FLOW`). Empty for every Step `create_job`
-    /// produces today.
+    /// submission form (`CONTROL_FLOW`), recorded by
+    /// [`attach_step_inputs`](crate::create_job::attach_step_inputs).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub path_inputs: Vec<PathInput>,
 }
@@ -171,6 +178,19 @@ pub struct Environment {
     /// environment's format strings (variables, actions, embedded files, let bindings).
     #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    /// `false` when the Environment's `enableIf` evaluated to `false`
+    /// (`CONTROL_FLOW`): it is left out of the Session's Environment stack,
+    /// not entered, and its `variables` are not set. `true` otherwise.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 /// Manual because `HashMap` has no `Hash`; `variables` hashes as
@@ -188,6 +208,7 @@ impl Hash for Environment {
             }
         }
         self.resolved_symtab.hash(state);
+        self.enabled.hash(state);
     }
 }
 
