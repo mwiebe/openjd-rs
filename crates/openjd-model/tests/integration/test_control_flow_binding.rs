@@ -750,11 +750,11 @@ fn add_producer_refuses_a_state_that_does_not_match() {
     let p = step(&job, "P");
     assert_eq!(
         err(inputs.add_producer(p, ProducerState::Skipped)),
-        "Validation error: Step 'P' is not skipped, so it cannot be added as a skipped producer."
+        "Compatibility error: Step 'P' is not skipped, so it cannot be added as a skipped producer."
     );
     assert_eq!(
         err(inputs.add_producer(p, ProducerState::Succeeded { task_outputs: &[] })),
-        "Validation error: Step 'P' has 2 Tasks, but outputs were given for 0."
+        "Compatibility error: Step 'P' has 2 Tasks, but outputs were given for 0."
     );
     let one = outputs(&[("Num", ExprValue::Int(1))]);
     assert_eq!(
@@ -764,7 +764,7 @@ fn add_producer_refuses_a_state_that_does_not_match() {
                 task_outputs: &[one.clone(), outputs(&[])]
             }
         )),
-        "Validation error: Task 1 of Step 'P' has no value for output 'Num'."
+        "Compatibility error: Task 1 of Step 'P' has no value for output 'Num'."
     );
     assert_eq!(
         err(inputs.add_producer(
@@ -773,7 +773,7 @@ fn add_producer_refuses_a_state_that_does_not_match() {
                 task_outputs: &[one, outputs(&[("Num", ExprValue::String("x".into()))])]
             }
         )),
-        "Validation error: Task 1 of Step 'P': output 'Num' does not convert to INT: Cannot convert 'x' to int: invalid digit found in string"
+        "Compatibility error: Task 1 of Step 'P': output 'Num' does not convert to INT: Cannot convert 'x' to int: invalid digit found in string"
     );
     let mut pending = p.clone();
     pending.binding = StepBinding::PendingInputs(openjd_model::job::PendingBinding {
@@ -784,11 +784,11 @@ fn add_producer_refuses_a_state_that_does_not_match() {
     });
     assert_eq!(
         err(inputs.add_producer(&pending, ProducerState::TasksKnown)),
-        "Validation error: the Tasks of Step 'P' are not known, so it cannot be added as a producer whose Tasks are known."
+        "Compatibility error: the Tasks of Step 'P' are not known, so it cannot be added as a producer whose Tasks are known."
     );
     assert_eq!(
         err(inputs.add_producer(&pending, ProducerState::Succeeded { task_outputs: &[] })),
-        "Validation error: Step 'P' is not bound, so it cannot have succeeded."
+        "Compatibility error: Step 'P' is not bound, so it cannot have succeeded."
     );
     assert_eq!(
         inputs.producers().count(),
@@ -919,7 +919,7 @@ fn attach_step_inputs_names_a_symbol_that_is_not_concrete() {
     let err = attach_step_inputs(step(&job, "C"), &inputs).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Validation error: Step 'C' reads 'Steps.M.Output.Ds', which is not concrete in the given inputs."
+        "Compatibility error: Step 'C' reads 'Steps.M.Output.Ds', which is not concrete in the given inputs."
     );
 }
 
@@ -929,7 +929,7 @@ fn attach_step_inputs_needs_a_bound_step() {
     let err = attach_step_inputs(step(&job, "Z"), &StepInputs::new()).unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Validation error: Step 'Z' is not bound, so its Steps.* inputs cannot be attached."
+        "Compatibility error: Step 'Z' is not bound, so its Steps.* inputs cannot be attached."
     );
 }
 
@@ -1157,19 +1157,26 @@ fn a_failing_step_environment_enable_if_is_collected_with_other_errors() {
 }
 
 #[test]
-fn a_skipped_step_cannot_be_added_with_its_tasks_known() {
+fn a_skipped_step_added_with_its_tasks_known_gives_nulls() {
+    // tasks_known() is Some(0) for a skipped Step, and its TaskParam is
+    // concrete as null, so TasksKnown is the same as Skipped.
     let job = Fixture::new(
-        &tpl(CF, "", &format!("  - name: S\n    enableIf: false\n{ECHO}")),
+        &tpl(
+            CF,
+            "",
+            &format!(
+                "  - name: S\n    enableIf: false\n    parameterSpace:\n      taskParameterDefinitions: [{{name: F, type: INT, range: [1]}}]\n{ECHO}"
+            ),
+        ),
         &[],
     )
     .job();
-    let err = StepInputs::new()
+    assert_eq!(step(&job, "S").tasks_known(), Some(0));
+    let mut inputs = StepInputs::new();
+    inputs
         .add_producer(step(&job, "S"), ProducerState::TasksKnown)
-        .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "Validation error: the Tasks of Step 'S' are not known, so it cannot be added as a producer whose Tasks are known."
-    );
+        .unwrap();
+    assert_eq!(inputs.get("Steps.S.TaskParam.F"), Some(&ExprValue::Null));
 }
 
 #[test]
@@ -1240,4 +1247,241 @@ fn a_host_requirement_error_at_binding_is_located() {
             )])
         )
     );
+}
+
+#[test]
+fn a_chunks_error_and_a_later_parameter_are_located() {
+    let template = |chunks: &str, extra: &str| {
+        tpl(
+            CF,
+            "",
+            &format!(
+                "  - name: P
+    outputVariables: [{{name: Num, type: INT}}, {{name: L, type: 'LIST[INT]'}}]
+{ECHO}  - name: S
+    dependencies: [{{dependsOn: P}}]
+{extra}    parameterSpace:
+      taskParameterDefinitions:
+        - {{name: W, type: INT, range: [1]}}
+        - {{name: X, type: 'CHUNK[INT]', range: '{{{{Steps.P.Output.L}}}}', chunks: {chunks}}}
+{ECHO}"
+            ),
+        )
+    };
+    let advance = |template: &str, num: i64, l: &[i64]| {
+        let f = Fixture::new(template, &[]);
+        let mut job = f.job();
+        f.advance(
+            &mut job,
+            "S",
+            |j| {
+                let mut inputs = StepInputs::new();
+                let l = ExprValue::make_list(
+                    l.iter().map(|v| ExprValue::Int(*v)).collect(),
+                    ExprType::INT,
+                )
+                .unwrap();
+                succeeded(
+                    &mut inputs,
+                    j,
+                    "P",
+                    &[outputs(&[("Num", ExprValue::Int(num)), ("L", l)])],
+                );
+                inputs
+            },
+            0,
+        )
+        .unwrap_err()
+        .to_string()
+    };
+    let at = |field: &str, msg: &str| {
+        format!(
+            "Step 'S' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                &format!("steps[1] -> parameterSpace -> taskParameterDefinitions[1] -> {field}"),
+                msg,
+            )])
+        )
+    };
+    let count = template(
+        "{defaultTaskCount: '{{Steps.P.Output.Num}}', rangeConstraint: NONCONTIGUOUS}",
+        "",
+    );
+    assert_eq!(
+        advance(&count, 0, &[1, 2]),
+        at(
+            "chunks",
+            "chunks.defaultTaskCount: resolved to 0, but must be >= 1"
+        )
+    );
+    let runtime = template(
+        "{defaultTaskCount: 1, targetRuntimeSeconds: '{{Steps.P.Output.Num}}', rangeConstraint: NONCONTIGUOUS}",
+        "",
+    );
+    assert_eq!(
+        advance(&runtime, -1, &[1, 2]),
+        at(
+            "chunks",
+            "chunks.targetRuntimeSeconds: resolved to -1, but must be >= 0"
+        )
+    );
+    let plain = template("{defaultTaskCount: 1, rangeConstraint: NONCONTIGUOUS}", "");
+    assert_eq!(
+        advance(&plain, 0, &[1, 1 << 62]),
+        at(
+            "range",
+            "Task parameter 'X': value 4611686018427387904 exceeds the CHUNK[INT] range value bound (magnitude must be below 2^62)"
+        )
+    );
+    let with_outputs = template(
+        "{defaultTaskCount: 1, rangeConstraint: NONCONTIGUOUS}",
+        "    outputVariables: [{name: T, type: INT}]\n",
+    );
+    assert_eq!(
+        advance(&with_outputs, 0, &[1, 1]),
+        at(
+            "range",
+            "must have distinct values in a Step with outputVariables, so that each value names one Task; value 1 appears more than once."
+        )
+    );
+}
+
+#[test]
+fn a_null_float_or_string_range_is_named() {
+    for (ty, out_ty) in [("FLOAT", "LIST[FLOAT]"), ("STRING", "LIST[STRING]")] {
+        let template = tpl(
+            CF,
+            "",
+            &format!(
+                "  - name: P
+    enableIf: false
+    outputVariables: [{{name: L, type: '{out_ty}'}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: {ty}, range: '{{{{Steps.P.Output.L}}}}'}}]
+{ECHO}"
+            ),
+        );
+        let err = Fixture::new(&template, &[])
+            .create()
+            .expect_err("null range");
+        assert_eq!(
+            err.to_string(),
+            expected(&[(
+                "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+                "Task parameter 'X' range must not resolve to null",
+            )]),
+            "{ty}"
+        );
+    }
+}
+
+#[test]
+fn without_control_flow_a_null_range_keeps_its_message() {
+    let template = one_param(
+        EXPR_ONLY,
+        "  - {name: B, type: BOOL, default: false}\n",
+        "{name: X, type: INT, range: '{{[1] if Param.B else null}}'}",
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("null range");
+    assert_eq!(err.to_string(), "Expression error: Empty expression");
+}
+
+#[test]
+fn attach_step_inputs_keeps_the_other_resolved_values() {
+    let template = tpl(
+        CF,
+        "  - {name: V, type: INT, default: 7}\n",
+        &format!(
+            "  - name: P
+    outputVariables: [{{name: Num, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    let: ['w = Param.V + 1']
+    script: {{actions: {{onRun: {{command: echo, args: ['{{{{Param.V}}}}', '{{{{w}}}}', '{{{{Step.Name}}}}', '{{{{Steps.P.Output.Num}}}}']}}}}}}
+"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let c = step(&job, "C");
+    let before = c
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("Num", ExprValue::Int(3))])],
+    );
+    let attached = attach_step_inputs(c, &inputs).unwrap();
+    let after = attached
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    let paths = before.all_paths("");
+    assert_eq!(paths, ["Param.V", "Step.Name", "w"]);
+    for path in &paths {
+        assert_eq!(after.get_value(path), before.get_value(path), "{path}");
+    }
+    assert_eq!(after.get_value("Param.V"), Some(&ExprValue::Int(7)));
+    assert_eq!(
+        after.get_value("Steps.P.Output.Num"),
+        Some(&ExprValue::Int(3))
+    );
+}
+
+#[test]
+fn add_producer_refuses_more_outputs_than_tasks() {
+    let job = producer("", "[{name: Num, type: INT}]");
+    let one = outputs(&[("Num", ExprValue::Int(1))]);
+    let err = StepInputs::new()
+        .add_producer(
+            step(&job, "P"),
+            ProducerState::Succeeded {
+                task_outputs: &[one.clone(), one],
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Compatibility error: Step 'P' has 1 Tasks, but outputs were given for 2."
+    );
+}
+
+#[test]
+fn an_empty_chunk_int_task_param_list_is_typed() {
+    let job = producer(
+        "      taskParameterDefinitions:
+        - {name: F, type: 'CHUNK[INT]', range: '{{[]}}', chunks: {defaultTaskCount: 2, rangeConstraint: NONCONTIGUOUS}}
+",
+        "[{name: T, type: INT}]",
+    );
+    let mut inputs = StepInputs::new();
+    tasks_known(&mut inputs, &job, "P");
+    assert_eq!(
+        inputs.get("Steps.P.TaskParam.F").unwrap().expr_type(),
+        ExprType::list(ExprType::INT)
+    );
+}
+
+#[test]
+fn a_symbol_read_with_a_property_is_not_a_step_input_key() {
+    let job = Fixture::new(&tpl(CF, "", &format!("  - name: P\n    enableIf: false\n    outputVariables: [{{name: A, type: STRING}}]\n{ECHO}")), &[]).job();
+    let mut inputs = StepInputs::new();
+    inputs
+        .add_producer(step(&job, "P"), ProducerState::Skipped)
+        .unwrap();
+    assert_eq!(inputs.get("Steps.P.Output.A"), Some(&ExprValue::Null));
+    assert_eq!(inputs.get("Steps.P.Output.A.b"), None);
+    assert_eq!(inputs.get("Steps.P"), None);
+    assert!(!inputs.is_concrete("Steps.P.Output.A.b"));
 }

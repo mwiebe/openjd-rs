@@ -100,7 +100,9 @@ impl TaskParameterDefinition {
     reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
 )]
 pub enum IntRange {
+    /// An `<IntRangeList>`.
     List(Vec<IntRangeItem>),
+    /// An `<IntRangeExpr>` format string.
     Expression(FormatString),
 }
 

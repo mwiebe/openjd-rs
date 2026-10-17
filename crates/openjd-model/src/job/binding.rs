@@ -26,8 +26,9 @@ use crate::types::JobParameterType;
 
 /// A Step's materialization groups (RFC 0010 §Materialization groups), in the
 /// order they are evaluated when more than one can be. There is no Task
-/// graph group: `TASK_DEPENDENCIES` is not implemented.
+/// graph group: `TASK_DEPENDENCIES` is not implemented, and would add one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum MaterializationGroup {
     /// The Step's `enableIf`.
     Enablement,
@@ -69,13 +70,34 @@ pub struct BindingError {
     pub errors: Vec<ModelError>,
 }
 
+impl BindingError {
+    /// `true` when this is a caller error rather than the Step failing:
+    /// every error is a [`ModelError::Compatibility`] (see
+    /// [`advance_step_binding`](crate::create_job::advance_step_binding)).
+    pub fn is_caller_error(&self) -> bool {
+        !self.errors.is_empty()
+            && self
+                .errors
+                .iter()
+                .all(|e| matches!(e, ModelError::Compatibility(_)))
+    }
+}
+
 impl fmt::Display for BindingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "Step '{}' failed in its {} group:",
-            self.step, self.group
-        )?;
+        if self.is_caller_error() {
+            write!(
+                f,
+                "Binding Step '{}' was refused in its {} group:",
+                self.step, self.group
+            )?;
+        } else {
+            write!(
+                f,
+                "Step '{}' failed in its {} group:",
+                self.step, self.group
+            )?;
+        }
         for e in &self.errors {
             write!(f, "\n{e}")?;
         }
@@ -151,14 +173,17 @@ impl StepInputs {
     ///   per Task, from the parameter space with chunking disabled. A
     ///   `CHUNK[INT]` parameter contributes one `int` per Task.
     /// * [`ProducerState::Skipped`]: every symbol of the producer is `null`.
+    ///   [`ProducerState::TasksKnown`] on a skipped producer is the same,
+    ///   since its `TaskParam` is concrete as `null`.
     ///
     /// For a type that is or contains `path`, only the `Raw` form gets a
     /// value; the other is concrete but derived on the worker host.
     ///
-    /// Errors when the state does not match the producer's binding
-    /// (`Succeeded` needs a bound Step, `TasksKnown` known Tasks, `Skipped`
-    /// a skipped Step), when `task_outputs` does not have one map per Task,
-    /// or when a Task lacks a declared output or holds a value that does not
+    /// Errors, each a [`ModelError::Compatibility`] (a caller error), when
+    /// the state does not match the producer's binding (`Succeeded` needs a
+    /// bound Step, `TasksKnown` known Tasks or a skipped Step, `Skipped` a
+    /// skipped Step), when `task_outputs` does not have one map per Task, or
+    /// when a Task lacks a declared output or holds a value that does not
     /// convert to its type.
     ///
     /// A producer need not be a dependency of anything: job outputs read any
@@ -177,6 +202,12 @@ impl StepInputs {
                         "Step '{p}' is not skipped, so it cannot be added as a skipped producer."
                     )));
                 }
+                entry.skipped = true;
+            }
+            // A skipped producer's TaskParam is concrete too, as `null`
+            // (RFC 0010 §The `Steps.*` scope, Concreteness), and
+            // `tasks_known` reports its zero Tasks.
+            ProducerState::TasksKnown if matches!(producer.binding, StepBinding::Skipped) => {
                 entry.skipped = true;
             }
             ProducerState::TasksKnown => {
@@ -269,7 +300,7 @@ impl StepInputs {
 }
 
 fn misuse(message: String) -> ModelError {
-    ModelError::DecodeValidation(message)
+    ModelError::Compatibility(message)
 }
 
 /// `("P", "Member.Name")` for `Steps.P.Member.Name`.
