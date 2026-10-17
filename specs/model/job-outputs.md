@@ -53,8 +53,9 @@ The `Steps.*` symbols have the types of the RFC's §The `Steps.*` scope table, a
 Step's fields. The target type is the declared type's expression type made optional, so
 a `null` result is allowed and an unresolved `T?` from a conditional producer type-checks.
 A literal value, and a value with text around an expression that is fully static, is
-converted to the declared type at validation; any other value is converted when it is
-evaluated.
+converted to the declared type at validation. A value with text around an expression
+that is not static must have a type a string converts to, so it cannot be a `LIST[...]`
+type; it is converted when it is evaluated, as is a whole-field expression.
 
 ## Evaluation
 
@@ -90,8 +91,10 @@ Job) is not enforced by the model: a scheduler applies its own.
 ### At Job creation
 
 `create_job` stores every definition in `job::Job::outputs` as a `job::JobOutput`
-(`JobOutputDefinition::to_job_output`), after the Steps are built. It evaluates each one
-whose `Steps.*` symbols are all concrete then, given the Steps it built:
+(`JobOutputDefinition::to_job_output`), after the Steps are built. It builds one
+`StepInputs` for all of them (so a Step's `TaskParam` lists are built once, however many
+outputs read them), and evaluates each output whose `Steps.*` symbols are all concrete
+then, given the Steps it built:
 
 - one that reads no `Steps.*` symbol;
 - a symbol of a Step that `create_job` skipped (`null`);
@@ -139,8 +142,8 @@ result and `Ok(Some(v))` the value; the caller stores it in `JobOutput::evaluate
 example with `JobOutputValue::from`. A `ModelError::ModelValidation` fails the Job. A
 `ModelError::Compatibility` is a caller error that says nothing about the Job:
 
-- `the Job has N job outputs, so it has no job output K.`
-- `job output K of the Job is 'X', but the template's is not; pass the template the Job was created from.`
+- `the Job has N job outputs, so it has no job output K.` (`1 job output` for one)
+- `job output K of the Job is 'X', but the template's is 'Y'; pass the template the Job was created from.` (`but the template has none` when it has fewer)
 - `job output 'X' reads 'Steps.P.Output.N', which is not concrete in the given inputs.`
 
 An output evaluated at creation can be evaluated again with the same inputs and gives the

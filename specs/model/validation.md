@@ -411,15 +411,19 @@ dependency required. So a `PATH` or `LIST[PATH]` `Output` or `TaskParam` is avai
 through `RawOutput` or `TaskRawParam`, and gets the path-type message above. The
 reference scan runs with the job output reader, which skips the self-reference and
 direct-dependency checks. `Step.Name`, `Task.*`, `Session.*`, and `let` names are not in
-the table, so EXPR reports them as undefined variables (a `PATH` `Param.*` with its
-`Did you mean: RawParam.X` hint). The target type is the declared type's expression type
+the table, so EXPR reports them as undefined variables (a `PATH` `Param.*` often with a
+`Did you mean: RawParam.X` hint, EXPR's closest-name suggestion, which can name another
+symbol instead). The target type is the declared type's expression type
 made optional (`INT` gives `int?`), because a `null` result means the output has no value:
 a static non-`null` value of another type fails EXPR's coercion (`Cannot coerce list[int]
 to int?`), and an unresolved `T?`, such as a conditional producer's output, is accepted.
 A value with text around an expression resolves to a string, which is converted to the
 declared type when it is evaluated; a literal value, or one that is fully static, is
 converted here, and fails with `must convert to int: Cannot convert 'abc' to int: invalid
-digit found in string.`. A `STRING` value needs no conversion.
+digit found in string.`. One that is not static is checked on its type alone: a string
+converts to `int`, `float`, `bool`, `path`, `range_expr`, and `string`, so for a
+`LIST[...]` type it fails with `resolves to text, which must convert to list[int]: Cannot
+coerce string to list[int].`. A `STRING` value needs no conversion.
 
 ### Let Binding Validation
 

@@ -106,20 +106,24 @@ pub fn evaluate_job_output(
 ) -> Result<Option<ExprValue>, ModelError> {
     let outputs = job.outputs.as_deref().unwrap_or(&[]);
     let Some(output) = outputs.get(output_index) else {
+        let n = outputs.len();
+        let noun = if n == 1 { "job output" } else { "job outputs" };
         return Err(ModelError::Compatibility(format!(
-            "the Job has {} job outputs, so it has no job output {output_index}.",
-            outputs.len()
+            "the Job has {n} {noun}, so it has no job output {output_index}."
         )));
     };
     let name = &output.declaration.name;
-    if job_template
+    let template_name = job_template
         .job_output_definitions_list()
         .get(output_index)
-        .map(|d| d.name())
-        != Some(name.as_str())
-    {
+        .map(|d| d.name());
+    if template_name != Some(name.as_str()) {
+        let theirs = match template_name {
+            Some(t) => format!("the template's is '{t}'"),
+            None => "the template has none".to_string(),
+        };
         return Err(ModelError::Compatibility(format!(
-            "job output {output_index} of the Job is '{name}', but the template's is not; pass the template the Job was created from."
+            "job output {output_index} of the Job is '{name}', but {theirs}; pass the template the Job was created from."
         )));
     }
     let mut symtab = super::build_symbol_table(job_parameter_values)?;
@@ -201,63 +205,64 @@ pub(super) fn evaluate_at_creation(
     let Some(defs) = &job_template.job_output_definitions else {
         return Ok(None);
     };
+    let mut outputs: Vec<JobOutput> = defs.iter().map(|d| d.to_job_output()).collect();
+    let inputs = creation_inputs(&outputs, steps)?;
     let mut errors = ValidationErrors::default();
-    let mut outputs = Vec::with_capacity(defs.len());
-    for (index, def) in defs.iter().enumerate() {
-        let mut output = def.to_job_output();
-        if let Some(output_symtab) = creation_symtab(&output, symtab, steps)? {
-            match evaluate(&output, index, &output_symtab, budgets) {
-                Ok(value) => output.evaluated = Some(JobOutputValue::from(value)),
-                Err(ModelError::ModelValidation(e)) => errors.errors.extend(e.errors),
-                Err(e) => return Err(e),
-            }
+    for (index, output) in outputs.iter_mut().enumerate() {
+        let symbols = steps_inputs(output);
+        if !symbols.iter().all(|s| inputs.is_concrete(s)) {
+            continue;
         }
-        outputs.push(output);
+        let mut output_symtab = symtab.clone();
+        for sym in &symbols {
+            // A path-typed `Output` or `TaskParam` is rejected in a job
+            // output's value at validation, so every symbol has a value.
+            let Some(value) = inputs.get(sym) else {
+                continue;
+            };
+            output_symtab.set(sym, value.clone())?;
+        }
+        match evaluate(output, index, &output_symtab, budgets) {
+            Ok(value) => output.evaluated = Some(JobOutputValue::from(value)),
+            Err(ModelError::ModelValidation(e)) => errors.errors.extend(e.errors),
+            Err(e) => return Err(e),
+        }
     }
     errors.into_result("JobTemplate")?;
     Ok(Some(outputs))
 }
 
-/// The table `output` is evaluated with at Job creation, or `None` when a
-/// `Steps.*` symbol it reads is not concrete then.
-fn creation_symtab(
-    output: &JobOutput,
-    symtab: &SymbolTable,
-    steps: &[job::Step],
-) -> Result<Option<SymbolTable>, ModelError> {
-    let symbols = steps_inputs(output);
-    if symbols.is_empty() {
-        return Ok(Some(symtab.clone()));
+/// The `Steps.*` values concrete at Job creation for `outputs`, built once
+/// for all of them: every Step they read that `create_job` skipped, and,
+/// for a Step whose Tasks are known, its `TaskParam` lists when some output
+/// reads its `TaskParam` or `TaskRawParam` (building them walks the Step's
+/// whole parameter space, so once per Step, not once per output).
+fn creation_inputs(outputs: &[JobOutput], steps: &[job::Step]) -> Result<StepInputs, ModelError> {
+    let mut read: BTreeSet<String> = BTreeSet::new();
+    let mut reads_task_params: BTreeSet<String> = BTreeSet::new();
+    for output in outputs {
+        for sym in steps_inputs(output) {
+            let mut parts = sym.split('.').skip(1);
+            let (Some(p), Some(member)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if matches!(member, "TaskParam" | "TaskRawParam") {
+                reads_task_params.insert(p.to_string());
+            }
+            read.insert(p.to_string());
+        }
     }
     let mut inputs = StepInputs::new();
-    let producers: BTreeSet<&str> = symbols.iter().filter_map(|s| s.split('.').nth(1)).collect();
-    for p in producers {
+    for p in &read {
         // Validation rejects a reference to a Step that does not exist.
-        let Some(step) = steps.iter().find(|s| s.name == p) else {
-            return Ok(None);
+        let Some(step) = steps.iter().find(|s| &s.name == p) else {
+            continue;
         };
         if matches!(step.binding, StepBinding::Skipped) {
             inputs.add_producer(step, job::ProducerState::Skipped)?;
-        } else if step.tasks_known().is_some() {
-            // Building the TaskParam lists walks the Step's whole
-            // parameter space, so only for a producer whose TaskParam the
-            // output reads.
-            let reads_task_params = symbols.iter().any(|s| {
-                let mut parts = s.split('.').skip(1);
-                parts.next() == Some(p)
-                    && matches!(parts.next(), Some("TaskParam" | "TaskRawParam"))
-            });
-            if reads_task_params {
-                inputs.add_producer(step, job::ProducerState::TasksKnown)?;
-            }
+        } else if reads_task_params.contains(p) && step.tasks_known().is_some() {
+            inputs.add_producer(step, job::ProducerState::TasksKnown)?;
         }
     }
-    let mut output_symtab = symtab.clone();
-    for sym in &symbols {
-        let Some(value) = inputs.get(sym) else {
-            return Ok(None);
-        };
-        output_symtab.set(sym, value.clone())?;
-    }
-    Ok(Some(output_symtab))
+    Ok(inputs)
 }

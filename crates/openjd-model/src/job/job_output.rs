@@ -72,8 +72,12 @@ impl Serialize for JobOutput {
 }
 
 /// An evaluated job output.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// Serialized with a `state` tag, as `job::StepBinding` is:
+/// `{"state": "VALUE", "value": <ExprValue>}` or `{"state": "NULL"}`. (A
+/// bare `null` would read back as `undefined` through `serde_wasm_bindgen`,
+/// the same as a pending output's absent `evaluated`.)
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum JobOutputValue {
     /// The value, converted to the declared type and checked against its
     /// constraint properties.
@@ -81,6 +85,24 @@ pub enum JobOutputValue {
     /// The `value` evaluated to `null`: the output has no value, which is not
     /// an error (for example, it reads a skipped Step).
     Null,
+}
+
+impl Serialize for JobOutputValue {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Value(v) => {
+                let mut s = serializer.serialize_struct("JobOutputValue", 2)?;
+                s.serialize_field("state", "VALUE")?;
+                s.serialize_field("value", v)?;
+                s.end()
+            }
+            Self::Null => {
+                let mut s = serializer.serialize_struct("JobOutputValue", 1)?;
+                s.serialize_field("state", "NULL")?;
+                s.end()
+            }
+        }
+    }
 }
 
 impl JobOutputValue {

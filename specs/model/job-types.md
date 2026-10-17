@@ -54,7 +54,6 @@ serializes as before. See [JobOutput](#joboutput-control_flow) below and
 
 ```rust
 pub struct JobOutput {
-    #[serde(flatten)]
     pub declaration: OutputVariable,      // name, type, unit, constraints
     pub description: Option<String>,
     pub value: FormatString,              // as written
@@ -71,10 +70,17 @@ converted to the declared type, or `Null` when the value evaluated to `null` (no
 which is not an error). `create_job` fills it for the outputs whose inputs are concrete at
 creation; a caller fills the rest from `evaluate_job_output`, for example with
 `JobOutputValue::from`. Like `Job`, both types implement `Serialize` but not
-`Deserialize`. A pending output with a description serializes as
-`{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, and
-an evaluated one adds `"evaluated": {"value": {"Int": 8}}` (the `ExprValue` serde form
-that `JobParameter.value` also uses) or `"evaluated": "null"`.
+`Deserialize`. `JobOutput`'s `Serialize` is written by hand to emit one plain struct with
+the declaration's fields inline (`#[serde(flatten)]` would serialize as a map, which
+`serde_wasm_bindgen` turns into a JS `Map` for openjd-for-js). A pending output with a
+description serializes as
+`{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, with
+`unit` and `constraints` after `type` when declared. An evaluated one adds
+`"evaluated": {"state": "VALUE", "value": {"Int": 8}}` (the `ExprValue` serde form that
+`JobParameter.value` also uses), or `"evaluated": {"state": "NULL"}` when it evaluated to
+`null`, so an absent `evaluated` is always a pending output. The `state` tag follows
+`StepBinding`; a bare JSON `null` would read as `undefined` in openjd-for-js, the same as
+an absent field.
 
 ### JobParameter
 

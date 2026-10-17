@@ -809,14 +809,27 @@ fn check_resolved_constraint(
         }
         // As for `enableIf`: a whole-field expression was already resolved
         // with the target type; a multi-segment string resolves to text,
-        // which is then converted.
-        ResolvedConstraint::JobOutputValue { ty } => {
-            if let Some(ExprValue::String(text)) = &sr.resolved_value {
+        // which is then converted. When the text is fully static it is
+        // converted here; otherwise its type must be one that a string can
+        // convert to (not a list), decided on the type alone.
+        ResolvedConstraint::JobOutputValue { ty } => match &sr.resolved_value {
+            Some(ExprValue::String(text)) => {
                 if **ty != ExprType::STRING {
                     check_string_converts(text, ty, path, errors);
                 }
             }
-        }
+            None if sr.resolved_type == ExprType::STRING => {
+                if let Err(message) =
+                    ExprValue::unresolved(ExprType::STRING).coerce(ty, PathFormat::Posix)
+                {
+                    errors.add(
+                        path,
+                        format!("resolves to text, which must convert to {ty}: {message}."),
+                    );
+                }
+            }
+            _ => {}
+        },
         ResolvedConstraint::CancelationMode => {
             if sr.min_resolved_string_len > MODE_MAX_LEN {
                 errors.add(
