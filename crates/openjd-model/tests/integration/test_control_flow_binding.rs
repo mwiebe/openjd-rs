@@ -1486,3 +1486,118 @@ fn a_symbol_read_with_a_property_is_not_a_step_input_key() {
     assert_eq!(inputs.get("Steps.P"), None);
     assert!(!inputs.is_concrete("Steps.P.Output.A.b"));
 }
+
+#[test]
+fn a_pending_binding_without_producers_reads_back() {
+    // `producers` is skipped when empty, and a Step serialized without it
+    // still names the producers its waiting groups wait on.
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    outputVariables: [{{name: Count, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{range(Steps.P.Output.Count)}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let mut json = serde_json::to_value(step(&job, "C")).unwrap();
+    assert_eq!(json["binding"]["producers"], serde_json::json!(["P"]));
+    json["binding"].as_object_mut().unwrap().remove("producers");
+    let back: openjd_model::job::Step = serde_json::from_value(json).unwrap();
+    assert_eq!(back.input_producers(), ["P"]);
+    let StepBinding::PendingInputs(mut pending) = back.binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(pending.producers, Vec::<String>::new());
+    pending.producers.clear();
+    let json = serde_json::to_value(StepBinding::PendingInputs(pending.clone())).unwrap();
+    assert_eq!(json.get("producers"), None);
+    let again: StepBinding = serde_json::from_value(json).unwrap();
+    assert_eq!(again, StepBinding::PendingInputs(pending));
+}
+
+#[test]
+fn a_host_selection_let_error_is_collected() {
+    let template = tpl(
+        CF,
+        "  - {name: X, type: STRING}\n",
+        &format!(
+            "  - name: A
+    let: ['q = 1 / int(Param.X)']
+    hostRequirements:
+      amounts: [{{name: amount.worker.gpu, min: '{{{{ q }}}}'}}]
+{ECHO}  - name: B
+    stepEnvironments: [{{name: E, variables: {{V: '{{{{ Param.X * 3000 }}}}'}}}}]
+{ECHO}"
+        ),
+    );
+    let err = Fixture::new(&template, &[("X", "0")])
+        .create()
+        .expect_err("both fail");
+    assert_eq!(
+        err.to_string(),
+        expected(&[
+            (
+                "steps[0] -> let[0]",
+                "Invalid expression in let binding 'q': Division by zero\n  q = 1 / int(Param.X)\n      ~~^~~~~~~~~~~~~~",
+            ),
+            (
+                "steps[1] -> stepEnvironments[0] -> variables -> V",
+                "resolves to at least 3000 characters, exceeding the maximum of 2048.",
+            ),
+        ])
+    );
+}
+
+#[test]
+fn an_enable_if_with_text_that_is_not_a_bool_fails() {
+    for (enable_if, x) in [("a{{Param.X}}", "b"), ("{{Param.X}}x", "true")] {
+        let template = tpl(
+            CF,
+            "  - {name: X, type: STRING}\n",
+            &format!("  - name: S\n    enableIf: '{enable_if}'\n{ECHO}"),
+        );
+        let err = Fixture::new(&template, &[("X", x)])
+            .create()
+            .expect_err(enable_if);
+        let resolved = enable_if.replace("{{Param.X}}", x);
+        assert_eq!(
+            err.to_string(),
+            expected(&[(
+                "steps[0] -> enableIf",
+                &format!(
+                    "'{enable_if}' resolved to '{resolved}', which does not convert to a bool."
+                ),
+            )])
+        );
+    }
+}
+
+#[test]
+fn attach_step_inputs_stores_path_values_as_strings() {
+    let job = Fixture::new(&attach_template(), &[]).job();
+    let attached = attach_step_inputs(step(&job, "C"), &attach_inputs(&job)).unwrap();
+    let symtab = attached
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    // `ExprValue::String` and `ExprValue::Path` compare equal, so compare types.
+    assert_eq!(
+        symtab.get_value("Steps.P.RawOutput.F").unwrap().expr_type(),
+        ExprType::STRING
+    );
+    assert_eq!(
+        symtab
+            .get_value("Steps.M.RawOutput.Ds")
+            .unwrap()
+            .expr_type(),
+        ExprType::list(ExprType::list(ExprType::STRING))
+    );
+}

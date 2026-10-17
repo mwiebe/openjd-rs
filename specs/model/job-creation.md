@@ -485,7 +485,9 @@ creation), and a `StepInputs`:
    group's `on` still lists its own inputs that are not concrete (not counting
    the enablement group's), so a report shows what is missing. `enableIf`
    resolves with target type `bool`; a `null` result is an error at
-   `steps[i] -> enableIf`. `false` makes the Step `Skipped`: nothing else of it
+   `steps[i] -> enableIf`, and so is text around an expression that does not
+   resolve to a bool spelling (`'a{{Param.X}}' resolved to 'ab', which does
+   not convert to a bool.`). `false` makes the Step `Skipped`: nothing else of it
    is evaluated, including its `let` bindings and carried-forward checks, so a
    skipped Step's `let` may assume that the Step runs.
 3. Then each other group that has not evaluated and whose inputs are concrete,
