@@ -86,7 +86,11 @@ Cycles are detected in two places:
    (`step_dependency_order`, which also gives `create_job` the dependency order it binds
    `CONTROL_FLOW` Steps in: every Step after its dependencies, ties broken by template
    index)
-2. During `topo_sorted()` using the same DFS back-edge detection algorithm
+2. During `topo_sorted()` using DFS back-edge detection
+
+The two give different orders when several are valid: `topo_sorted()` follows its DFS,
+while `step_dependency_order` breaks ties by template index. `create_job` uses the
+second, so the error it reports first under `CONTROL_FLOW` is the first in that order.
 
 The validation check catches cycles in templates before job creation. The `topo_sorted()`
 check catches cycles in programmatically-constructed jobs that bypass template validation.

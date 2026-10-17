@@ -212,7 +212,10 @@ fn empty_associated_ranges() {
         .expect_err("0 and 2 values");
     assert_eq!(
         err.to_string(),
-        "Validation error: Associative combination: all members must have the same number of values, got 0 and 2"
+        expected(&[(
+            "steps[0] -> parameterSpace",
+            "Associative combination: all members must have the same number of values, got 0 and 2",
+        )])
     );
 }
 
@@ -287,7 +290,10 @@ steps:
 
 #[test]
 fn a_computed_chunk_range_repeating_a_value_fails_job_creation() {
-    let msg = "Validation error: Task parameter 'F' range must have distinct values in a Step with outputVariables, so that each value names one Task; value 1 appears more than once";
+    let msg = expected(&[(
+        "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+        "must have distinct values in a Step with outputVariables, so that each value names one Task; value 1 appears more than once.",
+    )]);
     for range in ["'{{[1, 1, 2]}}'", "[1, '{{Param.One}}', 2]"] {
         let err = Fixture::new(&chunked(true, range), &[])
             .create()
@@ -320,8 +326,13 @@ fn a_chunk_range_repeating_values_at_binding_fails_the_step() {
         .expect_err("3 and 2 repeat");
     assert_eq!(
         err.to_string(),
-        "Step 'S' failed in its Task enumeration group:\n\
-         Validation error: Task parameter 'F' range must have distinct values in a Step with outputVariables, so that each value names one Task; values 2, 3 appear more than once"
+        format!(
+            "Step 'S' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+                "must have distinct values in a Step with outputVariables, so that each value names one Task; values 2, 3 appear more than once.",
+            )])
+        )
     );
 }
 
@@ -485,7 +496,10 @@ fn which_resolution_error_aborts_create_job() {
         .expect_err("S1 fails first");
     assert_eq!(
         err.to_string(),
-        "Expression error: Division by zero\n  [1 // Param.Z]\n   ~~^~~~~~~~~~"
+        expected(&[(
+            "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "Division by zero\n  [1 // Param.Z]\n   ~~^~~~~~~~~~",
+        )])
     );
 }
 
@@ -521,8 +535,10 @@ fn max_task_count_counts_the_steps_whose_tasks_are_known_at_creation() {
         .expect_err("3 + 2 > 4");
     assert_eq!(
         err.to_string(),
-        "Model validation error: 1 validation error for Template\n\
-         Template: Total task count (5) exceeds caller limit of 4: Step 'D' has 2 Tasks, and the Steps whose Tasks are known before it have 3."
+        expected(&[(
+            "steps[2]",
+            "Total task count (5) exceeds caller limit of 4: Step 'D' has 2 Tasks, and the Steps whose Tasks are known before it have 3.",
+        )])
     );
 }
 
@@ -914,5 +930,314 @@ fn attach_step_inputs_needs_a_bound_step() {
     assert_eq!(
         err.to_string(),
         "Validation error: Step 'Z' is not bound, so its Steps.* inputs cannot be attached."
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// More edges
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn collected_errors_are_reported_in_template_order() {
+    // B (steps[0]) depends on A (steps[1]), so A is bound first; both
+    // `let`s fail, and B's error is still reported first.
+    let template = tpl(
+        CF,
+        "  - {name: X, type: INT, default: 0}\n",
+        &format!(
+            "  - name: B
+    dependencies: [{{dependsOn: A}}]
+    let: ['q = 1 / Param.X']
+    parameterSpace:
+      taskParameterDefinitions: [{{name: Nn, type: INT, range: '{{{{[q]}}}}'}}]
+{ECHO}  - name: A
+    let: ['r = 1 / Param.X']
+    parameterSpace:
+      taskParameterDefinitions: [{{name: Nn, type: INT, range: '{{{{[r]}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("both lets fail");
+    assert_eq!(
+        err.to_string(),
+        expected(&[
+            (
+                "steps[0] -> let[0]",
+                "Invalid expression in let binding 'q': Division by zero\n  q = 1 / Param.X\n      ~~^~~~~~~~~",
+            ),
+            (
+                "steps[1] -> let[0]",
+                "Invalid expression in let binding 'r': Division by zero\n  r = 1 / Param.X\n      ~~^~~~~~~~~",
+            ),
+        ])
+    );
+}
+
+#[test]
+fn an_empty_float_task_param_list_is_typed() {
+    let job = producer(
+        "      taskParameterDefinitions: [{name: F, type: FLOAT, range: '{{[]}}'}]\n",
+        "[{name: T, type: INT}]",
+    );
+    let mut inputs = StepInputs::new();
+    tasks_known(&mut inputs, &job, "P");
+    assert_eq!(
+        inputs.get("Steps.P.TaskParam.F").unwrap().expr_type(),
+        ExprType::list(ExprType::FLOAT)
+    );
+}
+
+#[test]
+fn attach_step_inputs_falls_back_to_a_path_task_params_raw_twin() {
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    parameterSpace:
+      taskParameterDefinitions: [{{name: D, type: PATH, range: ['/a', '/b']}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    script: {{actions: {{onRun: {{command: echo, args: ['{{{{Steps.P.TaskParam.D}}}}']}}}}}}
+"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let mut inputs = StepInputs::new();
+    tasks_known(&mut inputs, &job, "P");
+    let attached = attach_step_inputs(step(&job, "C"), &inputs).unwrap();
+    let symtab = attached
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(
+        symtab
+            .get_value("Steps.P.TaskRawParam.D")
+            .unwrap()
+            .to_display_string(),
+        "[\"/a\", \"/b\"]"
+    );
+    assert_eq!(
+        attached.path_inputs,
+        vec![PathInput {
+            symbol: "Steps.P.TaskRawParam.D".into(),
+            ty: ExprType::list(ExprType::PATH),
+        }]
+    );
+}
+
+#[test]
+fn reattaching_replaces_a_path_input_that_is_no_longer_a_path() {
+    let job = Fixture::new(&attach_template(), &[]).job();
+    let attached = attach_step_inputs(step(&job, "C"), &attach_inputs(&job)).unwrap();
+    assert_eq!(attached.path_inputs.len(), 2);
+    // The same Step attached again with every producer skipped: each value
+    // is null, so no path_inputs record stays behind.
+    let mut inputs = StepInputs::new();
+    for name in ["P", "M", "Z"] {
+        let mut skipped = step(&job, name).clone();
+        skipped.binding = StepBinding::Skipped;
+        inputs
+            .add_producer(&skipped, ProducerState::Skipped)
+            .unwrap();
+    }
+    let again = attach_step_inputs(&attached, &inputs).unwrap();
+    assert_eq!(again.path_inputs, vec![]);
+    let symtab = again
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    let steps: Vec<String> = symtab
+        .all_paths("")
+        .into_iter()
+        .filter(|p| p.starts_with("Steps."))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "Steps.M.Output.Ds",
+            "Steps.P.Output.F",
+            "Steps.P.Output.Num",
+            "Steps.P.RawOutput.F",
+            "Steps.Z.Output.V"
+        ]
+    );
+    assert!(steps
+        .iter()
+        .all(|p| symtab.get_value(p) == Some(&ExprValue::Null)));
+}
+
+#[test]
+fn without_control_flow_a_flattened_int_list_literal_is_capped() {
+    let x = "{name: X, type: INT, range: ['{{range(2000)}}']}";
+    let err = Fixture::new(&one_param(EXPR_ONLY, "", x), &[])
+        .create()
+        .expect_err("over 1024");
+    assert_eq!(
+        err.to_string(),
+        "Validation error: Task parameter 'X' range exceeds 1024 elements (2000 elements)"
+    );
+    let job = Fixture::new(&one_param(CF, "", x), &[]).job();
+    assert_eq!(step(&job, "S").tasks_known(), Some(2000));
+}
+
+#[test]
+fn a_step_with_exactly_the_per_step_limit_is_accepted() {
+    for ext in [CF, EXPR_ONLY] {
+        let template = one_param(ext, "", "{name: X, type: INT, range: [1, 2, 3]}");
+        let limits = CallerLimits {
+            max_step_task_count: Some(3),
+            max_task_count: Some(3),
+            ..Default::default()
+        };
+        let job = Fixture::with_limits(&template, &[], limits).job();
+        assert_eq!(step(&job, "S").tasks_known(), Some(3), "{ext}");
+    }
+}
+
+#[test]
+fn a_disabled_step_environment_is_not_checked() {
+    let template = tpl(
+        CF,
+        "  - {name: Z, type: INT, default: 0}\n",
+        &format!(
+            "  - name: S
+    stepEnvironments:
+      - {{name: E, enableIf: false, script: {{actions: {{onEnter: {{command: echo, timeout: '{{{{Param.Z}}}}'}}}}}}}}
+      - {{name: F, variables: {{V: v}}}}
+{ECHO}"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let enabled: Vec<bool> = step(&job, "S")
+        .step_environments
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|e| e.enabled)
+        .collect();
+    assert_eq!(enabled, [false, true]);
+}
+
+#[test]
+fn a_failing_step_environment_enable_if_is_collected_with_other_errors() {
+    let template = tpl(
+        CF,
+        "  - {name: Z, type: INT, default: 0}\n",
+        &format!(
+            "  - name: S
+    stepEnvironments: [{{name: E, enableIf: '{{{{1 // Param.Z > 0}}}}', variables: {{V: v}}}}]
+{ECHO}  - name: T
+    script: {{actions: {{onRun: {{command: echo, timeout: '{{{{Param.Z}}}}'}}}}}}
+"
+        ),
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("both fail");
+    assert_eq!(
+        err.to_string(),
+        expected(&[
+            (
+                "steps[0] -> stepEnvironments[0] -> enableIf",
+                "Division by zero\n  1 // Param.Z > 0\n  ~~^~~~~~~~~~",
+            ),
+            (
+                "steps[1] -> script -> actions -> onRun -> timeout",
+                "timeout must be > 0."
+            ),
+        ])
+    );
+}
+
+#[test]
+fn a_skipped_step_cannot_be_added_with_its_tasks_known() {
+    let job = Fixture::new(
+        &tpl(CF, "", &format!("  - name: S\n    enableIf: false\n{ECHO}")),
+        &[],
+    )
+    .job();
+    let err = StepInputs::new()
+        .add_producer(step(&job, "S"), ProducerState::TasksKnown)
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Validation error: the Tasks of Step 'S' are not known, so it cannot be added as a producer whose Tasks are known."
+    );
+}
+
+#[test]
+fn a_null_range_is_named() {
+    // P is skipped at creation, so its list output is null.
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    enableIf: false
+    outputVariables: [{{name: L, type: 'LIST[INT]'}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{Steps.P.Output.L}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("null range");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "Task parameter 'X' range must not resolve to null",
+        )])
+    );
+}
+
+#[test]
+fn a_host_requirement_error_at_binding_is_located() {
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    outputVariables: [{{name: G, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    hostRequirements:
+      amounts: [{{name: amount.worker.gpu, min: '{{{{10 // Steps.P.Output.G}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let f = Fixture::new(&template, &[]);
+    let mut job = f.job();
+    let err = f
+        .advance(
+            &mut job,
+            "C",
+            |j| {
+                let mut inputs = StepInputs::new();
+                succeeded(&mut inputs, j, "P", &[outputs(&[("G", ExprValue::Int(0))])]);
+                inputs
+            },
+            0,
+        )
+        .expect_err("division by zero");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Step 'C' failed in its host selection group:\n{}",
+            expected(&[(
+                "steps[1] -> hostRequirements",
+                "hostRequirements amount min: Division by zero\n  10 // Steps.P.Output.G\n  ~~~^~~~~~~~~~~~~~~~~~~",
+            )])
+        )
     );
 }
