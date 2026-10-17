@@ -155,7 +155,7 @@ fn evaluate(
     let value = output
         .value
         .resolve_with(symtab, &budgets.fs_options().with_target_type(&target))
-        .map_err(|e| fail(e.to_string()))?;
+        .map_err(|e| fail(evaluation_message(&e)))?;
     if value == ExprValue::Null {
         return Ok(None);
     }
@@ -188,6 +188,20 @@ fn evaluate(
         .check_constraints_as(&value, LABEL)
         .map_err(|m| located(index, with_expression(m)))?;
     Ok(Some(value))
+}
+
+/// An evaluation error's text, with its message line shortened and its
+/// control characters escaped. EXPR's message can hold a value (`fail(s)`
+/// is `s`; `int(s)` repeats `s`), which may be one a Task reported, so it
+/// is treated as Step output values are. The expression and caret lines
+/// EXPR renders after it come from the template and are kept as they are.
+fn evaluation_message(e: &openjd_expr::ExpressionError) -> String {
+    let message = e.message();
+    let text = e.to_string();
+    match text.strip_prefix(message.as_str()) {
+        Some(rest) => format!("{}{rest}", crate::outputs::shorten(&message)),
+        None => crate::outputs::shorten(&text),
+    }
 }
 
 /// `message` as a one-error `ModelValidation` at output `index`'s `value`.

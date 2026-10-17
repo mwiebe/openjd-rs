@@ -1053,6 +1053,43 @@ fn messages_escape_and_shorten_reported_values_and_the_expression() {
             "Job output 'Short': value length 68 exceeds maximum 3\n  {{Steps.P.Output.S}}\\njobOutputDefinitions[7] -> value:",
         )])
     );
+    // EXPR's own message can repeat the value (`int(s)`, `fail(s)`): its
+    // message line is escaped too, and the expression and caret kept.
+    let f = Fixture::new(
+        &template(
+            "  - {name: Parsed, type: INT, value: '{{int(Steps.P.Output.S)}}'}
+  - {name: Failed, type: INT, value: '{{fail(Steps.P.Output.S) if len(Steps.P.Output.S) > 0 else 1}}'}
+",
+            "steps:
+  - name: P
+    outputVariables: [{name: S, type: STRING}]
+    script: {actions: {onRun: {command: x}}}
+",
+        ),
+        &[],
+    );
+    let job = f.job();
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("S", ExprValue::String(reported.into()))])],
+    );
+    assert_eq!(
+        eval(&f, &job, 0, &inputs).unwrap_err().to_string(),
+        expected(&[(
+            "jobOutputDefinitions[0] -> value",
+            "Job output 'Parsed': Cannot convert '\\u{1b}[31m1\\nsteps[0] -> fake:\\n\\tinjected' to int\n  int(Steps.P.Output.S)\n  ^~~~~~~~~~~~~~~~~~~~~",
+        )])
+    );
+    assert_eq!(
+        eval(&f, &job, 1, &inputs).unwrap_err().to_string(),
+        expected(&[(
+            "jobOutputDefinitions[1] -> value",
+            "Job output 'Failed': \\u{1b}[31m1\\nsteps[0] -> fake:\\n\\tinjected\n  fail(Steps.P.Output.S) if len(Steps.P.Output.S) > 0 else 1\n  ^~~~~~~~~~~~~~~~~~~~~~",
+        )])
+    );
     // A long value is cut.
     let mut inputs = StepInputs::new();
     succeeded(
