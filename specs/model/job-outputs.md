@@ -85,15 +85,24 @@ A failure at any step is a `ModelError::ModelValidation` with one error at
 
 | Failure | Message after the prefix |
 |---|---|
-| The expression fails, including `fail(...)` and a whole-field value that does not coerce | EXPR's message (`too few`, `Cannot coerce string to int?`), then the expression and a caret on the lines below it |
+| The expression fails, including `fail(...)` and a whole-field value that does not coerce | EXPR's message (`too few`, `Cannot coerce string to int?`), then the expression and a caret on the lines below it, as EXPR renders them |
 | Text that does not convert | `value 'x4' does not convert to INT: Cannot convert 'x4' to int: invalid digit found in string` |
 | A constraint violation | the output variable check's message with `Job output` for `Output variable`, such as `value 4 exceeds maximum 3` |
 
 The conversion and constraint messages have no caret, so they end with a line holding the
 `value` (`\n  {{Param.N}}`), which names the expression as RFC 0010 §Job outputs item 3
-asks. That line and the coercion error, which repeats the value, are cut to 200
-characters with control characters escaped (`\n`, `\u{1b}`), as a Step output value's
-messages are, so a multi-line `value` or a value a Task reported stays on one line.
+asks.
+
+A message can repeat a value, which may be a job parameter's or one a Task reported:
+EXPR's message for `fail(s)` is `s`, and for `int(s)` it quotes `s`; the conversion
+message quotes the value and repeats it in the coercion error. Each such part (EXPR's
+message line, the quoted value, the coercion error, and the trailing `value` line) is
+treated as a Step output value's messages are (`outputs::quote` / `outputs::shorten`):
+cut to its first 200 characters, before escaping, with `...` marking a cut, and with each
+Unicode Cc control character escaped (`\n`, `\u{1b}`). So every part stays on its line and
+a reported value cannot drive the terminal, though an escaped part can be longer than 200
+characters. The expression and caret lines EXPR renders after its message come from the
+template and are kept as written.
 
 The size limit of RFC 0010 §Job outputs item 7 (at least 1 MiB of job output values per
 Job) is not enforced by the model: a scheduler applies its own.
