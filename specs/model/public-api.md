@@ -650,7 +650,9 @@ consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 not `Eq`, and so do the CONTROL_FLOW types that hold an
 `openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
 but not `Eq`): `OutputVariable`, `OutputConstraints`,
-`OutputAllowedValues`, `OutputBound`. The rest also implement `Eq`.
+`OutputAllowedValues`, `OutputBound`, as do `StepBinding`, `PendingBinding`,
+and `GroupState`, which can hold a `StepParameterSpace` and `HostRequirements`.
+The rest also implement `Eq`.
 
 ```rust
 pub struct job::Job {
@@ -896,7 +898,7 @@ pub struct job::BindingError {
 }
 impl job::BindingError {
     /// Every error is a ModelError::Compatibility: a caller error, which
-    /// does not fail the Step.
+    /// does not fail the Step. `false` when `errors` is empty.
     pub fn is_caller_error(&self) -> bool;
 }
 /// "Step '<step>' failed in its <group> group:" (for a caller error,
