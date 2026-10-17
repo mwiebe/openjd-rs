@@ -55,6 +55,7 @@ fn env_with_enter(name: &str, cmd: &str, args: Vec<&str>) -> Environment {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -65,6 +66,7 @@ fn env_with_vars(name: &str, vars: HashMap<String, FormatString>) -> Environment
         script: None,
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -624,6 +626,7 @@ async fn test_enter_environment_with_env_vars() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     assert!(!id.is_empty());
@@ -703,6 +706,7 @@ async fn test_enter_no_action() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     assert!(s.enter_environment(&env, None, None, None).await.is_ok());
 }
@@ -754,6 +758,7 @@ async fn test_enter_environment_with_resolved_variables() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     assert!(!id.is_empty());
@@ -815,6 +820,7 @@ async fn test_exit_environment_basic() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let out = s.exit_environment(&id, None, true, None).await.unwrap();
@@ -843,6 +849,7 @@ async fn test_exit_environment_with_env_vars() {
         }),
         variables: Some(vars.clone()),
         resolved_symtab: None,
+        enabled: true,
     };
     // Enter first to set vars
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
@@ -893,6 +900,7 @@ async fn test_exit_environment_fail_run() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     assert!(s.exit_environment(&id, None, true, None).await.is_err());
@@ -1021,6 +1029,7 @@ async fn test_def_via_stdout_overrides_direct() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&env, None, None, None).await.unwrap();
 
@@ -1269,6 +1278,7 @@ async fn test_def_via_redacted_env_with_variables() {
         }),
         variables: Some(vars),
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&env, None, None, None).await.unwrap();
 
@@ -1813,6 +1823,7 @@ async fn test_exit_environment_with_per_action_os_env_vars() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let extra = HashMap::from([("EXIT_VAR".to_string(), "from_exit".to_string())]);
@@ -2151,6 +2162,7 @@ async fn test_enter_environment_action_timeout_enforced() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let start = std::time::Instant::now();
     let result = s.enter_environment(&env, None, None, None).await;
@@ -2193,6 +2205,7 @@ async fn test_exit_environment_action_timeout_enforced() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let start = std::time::Instant::now();
@@ -2301,6 +2314,7 @@ async fn test_callback_enter_env_no_script_no_vars() {
         script: None,
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&env, None, None, None).await.unwrap();
     let log = log.lock().unwrap();
@@ -2332,6 +2346,7 @@ async fn test_callback_exit_env_with_script() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&env, None, Some("eid"), None)
         .await
@@ -2360,6 +2375,7 @@ async fn test_callback_exit_env_no_script() {
         script: None,
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&env, None, Some("eid"), None)
         .await
@@ -2566,6 +2582,7 @@ async fn test_exit_environment_failure_still_pops_for_lifo() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id2 = s.enter_environment(&env2, None, None, None).await.unwrap();
 
@@ -3271,6 +3288,7 @@ async fn test_redacted_env_sets_var_with_extension() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let out = s.exit_environment(&id, None, true, None).await.unwrap();
@@ -3311,6 +3329,7 @@ async fn test_redacted_env_does_not_set_var_without_extension() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let out = s.exit_environment(&id, None, true, None).await.unwrap();
@@ -3345,6 +3364,7 @@ async fn test_redactions_disabled_with_no_profile() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = s.enter_environment(&env, None, None, None).await.unwrap();
     let out = s.exit_environment(&id, None, true, None).await.unwrap();
@@ -4109,6 +4129,7 @@ async fn test_cancel_handle_reusable_across_actions() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id1 = s.enter_environment(&e1, None, None, None).await.unwrap();
     let id2 = s.enter_environment(&e2, None, None, None).await.unwrap();
@@ -4197,6 +4218,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     s.enter_environment(&wrap_env, None, None, None)
         .await
@@ -4225,6 +4247,7 @@ async fn test_wrap_seed_failure_reports_failed_action() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
 
     let result = s.enter_environment(&inner, None, None, None).await;

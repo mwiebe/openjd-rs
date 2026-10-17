@@ -111,6 +111,7 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
         .with_caller_limits(crate::common::caller_limits());
 
     let the_job = openjd_model::create_job(&job_template, &param_values, &ctx)?;
+    crate::common::require_bound_job(&the_job)?;
 
     if let Some(step_name) = &args.step {
         output_step_summary(&the_job, step_name, &args.output)

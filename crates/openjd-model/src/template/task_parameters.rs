@@ -5,6 +5,7 @@
 //! Task parameter definitions per spec §3.4.
 
 use super::constrained_strings::Identifier;
+use super::parameters::FlexInt;
 use crate::format_string::FormatString;
 use serde::Deserialize;
 
@@ -94,17 +95,57 @@ impl TaskParameterDefinition {
 
 /// Int range: either a list of values or a range expression string.
 #[derive(Debug, Clone)]
+#[allow(
+    missing_docs,
+    reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
+)]
 pub enum IntRange {
-    /// An `<IntRangeList>` (Template Schemas §3.4.1.1). Each element is an
-    /// `<integer>` or `<intstring>`, decoded to [`IntOrFormatString::Int`],
-    /// or a `<TaskParameterStringValue>` format string, kept as
-    /// [`IntOrFormatString::FormatString`] and resolved at job creation.
-    List(Vec<IntOrFormatString>),
-    /// A whole-field range string: an `<IntRangeExpr>` (Template Schemas
-    /// §3.4.1.1.1), possibly with format string interpolations, or with the
-    /// EXPR extension an expression that evaluates to a `range_expr` or a
-    /// `list[int]` (Expression Language §1.3.12).
+    /// An `<IntRangeList>`.
+    List(Vec<IntRangeItem>),
+    /// An `<IntRangeExpr>` format string.
     Expression(FormatString),
+}
+
+/// One item of an `<IntRangeList>` (Template Schemas §3.4.1.1).
+///
+/// An `<integer>` or `<intstring>` is [`Int`](Self::Int). A string that
+/// contains `{{` is a `<TaskParameterStringValue>`, kept as a
+/// [`FormatString`](Self::FormatString) and resolved at job creation (or at
+/// step input binding with `CONTROL_FLOW`). As a list item it resolves with
+/// target type `int? | list[int]` (Expression Language §1.3.2): `null` skips
+/// the item and a list is flattened inline. Any other string must parse as
+/// an integer, as an `<intstring>` does.
+#[derive(Debug, Clone)]
+pub enum IntRangeItem {
+    /// An `<integer>` or `<intstring>`.
+    Int(i64),
+    /// A `<TaskParameterStringValue>`: a string containing `{{`.
+    FormatString(FormatString),
+}
+
+impl IntRangeItem {
+    /// The value of an [`Int`](Self::Int) item, or `None` for a format string.
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(i) => Some(*i),
+            Self::FormatString(_) => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IntRangeItem {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let val = serde_json::Value::deserialize(deserializer)?;
+        if let serde_json::Value::String(s) = &val {
+            if s.contains("{{") {
+                return FormatString::new(s)
+                    .map(Self::FormatString)
+                    .map_err(serde::de::Error::custom);
+            }
+        }
+        let FlexInt(i) = serde_json::from_value(val).map_err(serde::de::Error::custom)?;
+        Ok(Self::Int(i))
+    }
 }
 
 impl<'de> Deserialize<'de> for IntRange {
@@ -112,7 +153,7 @@ impl<'de> Deserialize<'de> for IntRange {
         let val = serde_json::Value::deserialize(deserializer)?;
         match val {
             serde_json::Value::Array(seq) => {
-                let items: Result<Vec<IntOrFormatString>, _> = seq
+                let items: Result<Vec<IntRangeItem>, _> = seq
                     .into_iter()
                     .map(|v| serde_json::from_value(v).map_err(serde::de::Error::custom))
                     .collect();
@@ -284,17 +325,11 @@ pub struct ChunkIntTaskParameterDefinition {
 
 /// An integer value or a format string (e.g. `{{Param.ChunkSize}}`).
 ///
-/// Used for the elements of an [`IntRange::List`] and for the
-/// [`ChunksDefinition`] count fields.
-///
 /// Accepts:
-/// - YAML integer, or integer-valued float such as `4.0` → `IntOrFormatString::Int(n)`
-/// - String that parses as i64, surrounding whitespace allowed → `IntOrFormatString::Int(n)`
-/// - String containing `{{` that parses as a format string →
-///   `IntOrFormatString::FormatString(fs)`
-///
-/// Rejects any other string (including a malformed format string), a
-/// non-integral float, a boolean, null, an array, and an object.
+/// - YAML integer → `IntOrFormatString::Int(n)`
+/// - String that parses as i64 → `IntOrFormatString::Int(n)`
+/// - String containing `{{…}}` → `IntOrFormatString::FormatString(fs)`
+/// - Boolean/null → error
 #[derive(Debug, Clone)]
 #[allow(
     missing_docs,
