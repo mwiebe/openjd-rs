@@ -8,9 +8,11 @@ single step. The command instantiates the job (resolving parameters and creating
 object) to produce accurate task counts that reflect parameter space expansion.
 
 Because it calls `create_job`, a `CONTROL_FLOW` Job with a Step that is still pending
-inputs or is skipped, or with an Environment disabled by its `enableIf`, is refused the
-same way `openjd run` refuses it (see [run.md](run.md) § CONTROL_FLOW templates); reporting
-what is known of a pending Step is a later change.
+inputs or is skipped, with an Environment disabled by its `enableIf`, or with a job output
+that `create_job` could not evaluate, is refused the same way `openjd run` refuses it (see
+[run.md](run.md) § CONTROL_FLOW templates); reporting what is known of a pending Step and
+listing the job outputs are later changes. A job output that fails at creation fails
+`create_job`, so `summary` reports that error.
 
 ## Interface
 
