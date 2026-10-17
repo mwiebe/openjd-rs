@@ -16,13 +16,14 @@ use serde::ser::SerializeStruct;
 use serde::{Serialize, Serializer};
 
 use super::OutputVariable;
+use crate::types::ObjectType;
 
 /// One of the Job's outputs (RFC 0010 `<JobOutputDefinition>`), in the form
 /// `create_job` stores in [`Job::outputs`](super::Job::outputs).
 ///
 /// Serialized as one struct with the declaration's fields (`name`, `type`,
-/// `unit`, `constraints`) followed by `description`, `value`, and
-/// `evaluated`, each optional one skipped when empty. (Written by hand, not
+/// `unit`, `constraints`) followed by `objectType`, `description`, `value`,
+/// and `evaluated`, each optional one skipped when empty. (Written by hand, not
 /// with `#[serde(flatten)]`, which serializes as a map and so as a JS `Map`
 /// through `serde_wasm_bindgen`.)
 #[derive(Debug, Clone, PartialEq, Hash)]
@@ -31,6 +32,9 @@ pub struct JobOutput {
     /// in the form a Step's output variable declaration takes. Its `collect`
     /// is always the default, since a job output has none.
     pub declaration: OutputVariable,
+    /// The `objectType` of a `PATH` or `LIST[PATH]` output (`FILE` or
+    /// `DIRECTORY`), for tools and user interfaces. Not checked.
+    pub object_type: Option<ObjectType>,
     /// The `description`, for display.
     pub description: Option<String>,
     /// The `value` format string, as written.
@@ -46,7 +50,7 @@ pub struct JobOutput {
 impl Serialize for JobOutput {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let d = &self.declaration;
-        let mut s = serializer.serialize_struct("JobOutput", 7)?;
+        let mut s = serializer.serialize_struct("JobOutput", 8)?;
         s.serialize_field("name", &d.name)?;
         s.serialize_field("type", d.param_type.as_spec_str())?;
         match &d.unit {
@@ -57,6 +61,10 @@ impl Serialize for JobOutput {
             s.skip_field("constraints")?;
         } else {
             s.serialize_field("constraints", &d.constraints)?;
+        }
+        match &self.object_type {
+            Some(object_type) => s.serialize_field("objectType", object_type)?,
+            None => s.skip_field("objectType")?,
         }
         match &self.description {
             Some(description) => s.serialize_field("description", description)?,
