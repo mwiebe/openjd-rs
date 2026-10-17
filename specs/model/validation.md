@@ -300,7 +300,8 @@ creation.
 ### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0010)
 
 With `CONTROL_FLOW`, pass 8 implements items 3 to 7 of the RFC's §Validation, "At
-template validation". The shared code is `validate_v2023_09/steps_scope.rs`, which job
+template validation", and the scope and typing part of item 10 (see § Job output values
+below). The shared code is `validate_v2023_09/steps_scope.rs`, which job
 creation also uses (see `specs/model/job-creation.md`).
 
 **Seeding.** `add_steps_scope(symtab, jt, step_index, scope)` adds, for each Step `P` that
@@ -357,12 +358,12 @@ the first that applies reported:
 
 | Case | Message |
 |---|---|
-| A field that allows no `Steps.*` (job name, `jobEnvironments`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script may read them.` |
+| A field that allows no `Steps.*` (job name, `jobEnvironments`) | `'<sym>': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them.` |
 | Fewer than four parts (`Steps.P.Output`) | `'<sym>' is not a complete Steps.* reference; expected Steps.<StepName>.Output.<Name>, .RawOutput.<Name>, .TaskParam.<Name>, or .TaskRawParam.<Name>.` |
 | No such Step | `'<sym>': there is no Step named 'P'.` |
 | The Step's name is not an `<Identifier>` | `'<sym>': Step 'P' cannot be referenced through Steps.*, because its name is not an <Identifier>.` |
-| Self-reference | `'<sym>': a Step cannot read its own Steps.* symbols.` |
-| Not a direct dependency (a transitive one is not enough) | `'<sym>': Step 'P' is not a direct dependency of Step 'S'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.` |
+| Self-reference (a Step's field only) | `'<sym>': a Step cannot read its own Steps.* symbols.` |
+| Not a direct dependency (a transitive one is not enough; a Step's field only) | `'<sym>': Step 'P' is not a direct dependency of Step 'S'. Add 'dependsOn: P' to its dependencies to read Steps.P.*.` |
 | Unknown member | `'<sym>': 'X' is not a member of Steps.P; expected Output, RawOutput, TaskParam, TaskRawParam.` |
 | No such output | `'<sym>': Step 'P' has no output variable 'V'.` |
 | `TaskParam` of a Step without a `parameterSpace` | `'<sym>': Step 'P' has no parameterSpace, so it has no Task parameters.` |
@@ -401,6 +402,24 @@ literal, or a string that is fully static (`'x{{1}}'`), is converted here, and f
 `must resolve to a bool: Cannot convert 'maybe' to bool.`; one that depends on an
 unresolved symbol is converted when it is evaluated. Without `CONTROL_FLOW` pass 8 does not
 look at `enableIf`; pass 11 rejects the field.
+
+**Job output values.** Each `jobOutputDefinitions[k] -> value` is checked against a table
+of its own (`validate_job_output_values`): `Param.*` (minus `PATH` and `LIST[PATH]`
+types), `RawParam.*`, `Job.Name`, and, through `add_job_output_steps_scope`, the
+TEMPLATE-scope `Steps.*` symbols of every Step whose name is an `<Identifier>`, with no
+dependency required. So a `PATH` or `LIST[PATH]` `Output` or `TaskParam` is available only
+through `RawOutput` or `TaskRawParam`, and gets the path-type message above. The
+reference scan runs with the job output reader, which skips the self-reference and
+direct-dependency checks. `Step.Name`, `Task.*`, `Session.*`, and `let` names are not in
+the table, so EXPR reports them as undefined variables (a `PATH` `Param.*` with its
+`Did you mean: RawParam.X` hint). The target type is the declared type's expression type
+made optional (`INT` gives `int?`), because a `null` result means the output has no value:
+a static non-`null` value of another type fails EXPR's coercion (`Cannot coerce list[int]
+to int?`), and an unresolved `T?`, such as a conditional producer's output, is accepted.
+A value with text around an expression resolves to a string, which is converted to the
+declared type when it is evaluated; a literal value, or one that is fully static, is
+converted here, and fails with `must convert to int: Cannot convert 'abc' to int: invalid
+digit found in string.`. A `STRING` value needs no conversion.
 
 ### Let Binding Validation
 
@@ -632,18 +651,19 @@ separately-validated env templates are composed into a session at assembly time
 ## Pass 11: CONTROL_FLOW Gating and Structure
 
 Validates or rejects the fields `CONTROL_FLOW` (RFC 0010) adds. It implements items 1, 2,
-and the Environment Template part of item 6 of the RFC's §Validation, "At template
-validation". Items 3 to 7 (the `Steps.*` scope and `enableIf`) are in pass 8.
+the Environment Template part of item 6, and the structural part of item 10 of the RFC's
+§Validation, "At template validation". Items 3 to 7 (the `Steps.*` scope and `enableIf`)
+and the scope and typing of a job output's `value` (the rest of item 10) are in pass 8.
 
 **Without the extension**, each field is an error at its own path, with the message
 `<field> requires the CONTROL_FLOW extension.`:
 
+- `jobOutputDefinitions`
 - `steps[i] -> enableIf`
 - `steps[i] -> outputVariables`
 - `jobEnvironments[i] -> enableIf` and `steps[i] -> stepEnvironments[j] -> enableIf`
 
-`jobOutputDefinitions` is not part of the schema yet, so it fails deserialization as an
-unknown field with or without the extension. A `Steps.*` reference fails in pass 8 as an
+A `Steps.*` reference fails in pass 8 as an
 undefined variable, because without the extension nothing seeds the `Steps` root. Pass 8
 checks `enableIf` and the `Steps.*` scope only with the extension (see § The `Steps.*`
 Scope and `enableIf`).
@@ -667,6 +687,25 @@ Scope and `enableIf`).
 | `unit` of 1 to 32 characters, none in Unicode Cc | `outputVariables[k] -> unit` | `must not be empty.`, `exceeds 32 characters.`, `contains control characters.` |
 | No `LIST[LIST[INT]]` on a Step with a `parameterSpace` | `outputVariables[k] -> type` | `LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: ...` |
 | In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values (checked only with `TASK_CHUNKING`; without it pass 9 rejects the parameter itself) | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
+
+With the extension, `jobOutputDefinitions` must satisfy the same rules, through the same
+helpers, with these differences:
+
+| Rule | Path | Message |
+|------|------|---------|
+| 1 to 50 elements | `jobOutputDefinitions` | `if provided, must contain at least one element.`, `must not contain more than 50 elements.` |
+| Unique names among the job outputs (a job parameter of the same name is fine: separate namespaces) | `jobOutputDefinitions[k]` | `duplicate job output name: 'X'` |
+| No `collect`, `default`, `userInterface`, or (on `PATH` and `LIST[PATH]`) `dataFlow` | `jobOutputDefinitions[k] -> <property>` | `is not allowed in a job output definition.` |
+| Constraint properties valid for the type | `jobOutputDefinitions[k]` | relabeled `Job output 'X': ...` |
+| `unit` | `jobOutputDefinitions[k] -> unit` | as for an output variable |
+
+There is no `collect: APPEND` rule (there is no `collect`), and `LIST[LIST[INT]]` is
+allowed, because a job output has no `parameterSpace` to nest it in. The name length rule
+is the output variable's. The deserialization rules below apply too, with `job output`
+in the messages, `value` and `unit` as the extra fields an unknown-field message lists,
+and a missing or `null` `value` reported as `missing 'value' field in job output
+definition`. Each definition's errors are reported in the order of the table rows, and an
+output variable's `collect` error comes before its `unit` error.
 
 Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks the
 distinct-values rule on the integer items of a `range` written as a YAML list. A range
@@ -699,8 +738,9 @@ definition's, which would list `default` and `userInterface`:
 - an `enableIf` that is a number, list, or mapping, or a string that is not a well-formed
   format string.
 
-An explicit `null` for `enableIf`, `outputVariables`, or an output's `collect`, `unit`,
-`default`, `userInterface`, or `dataFlow` means the field is omitted, as for the
+An explicit `null` for `enableIf`, `outputVariables`, `jobOutputDefinitions`, or an
+output's `collect`, `unit`, `default`, `userInterface`, or `dataFlow` means the field is
+omitted, as for the
 template's other optional fields, so it is neither gated nor reported.
 
 **Environment Templates.** `CONTROL_FLOW` applies to Job Templates only. Listing it in an
@@ -721,8 +761,6 @@ passes. Fixing that belongs in `expr_parameters.rs`, for both.
 These RFC rules belong to later changes in the prototype plan
 (`docs/control-flow-prototype-plan.md`):
 
-- `jobOutputDefinitions` (item 10), including its `Steps.*` scope, in which any Step is
-  readable without a dependency.
 - The warning for a conditional Step's `null` in a discarding position (item 8).
   openjd-rs has no validation-warning channel; adding one is a public API decision (see
   ambiguity A1 in the plan).

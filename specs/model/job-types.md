@@ -38,11 +38,43 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,      // Insertion-ordered
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
+    pub outputs: Option<Vec<JobOutput>>,                 // CONTROL_FLOW job outputs
 }
 ```
 
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
 output.
+
+`outputs` holds the template's `jobOutputDefinitions`, in order, or `None` when it has
+none. It has `#[serde(default)]` and is skipped when `None`, so a Job without job outputs
+serializes as before. See [JobOutput](#joboutput-control_flow) below and
+[job-outputs.md](job-outputs.md).
+
+### JobOutput (CONTROL_FLOW)
+
+```rust
+pub struct JobOutput {
+    #[serde(flatten)]
+    pub declaration: OutputVariable,      // name, type, unit, constraints
+    pub description: Option<String>,
+    pub value: FormatString,              // as written
+    pub evaluated: Option<JobOutputValue>,
+}
+
+pub enum JobOutputValue { Value(ExprValue), Null }
+```
+
+`declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0010)),
+so its constraint checks are the ones a Step's outputs use; its `collect` is always
+`ONCE`. `evaluated` is `None` while the output is pending, `Value` with the value
+converted to the declared type, or `Null` when the value evaluated to `null` (no value,
+which is not an error). `create_job` fills it for the outputs whose inputs are concrete at
+creation; a caller fills the rest from `evaluate_job_output`, for example with
+`JobOutputValue::from`. Like `Job`, both types implement `Serialize` but not
+`Deserialize`. A pending output with a description serializes as
+`{"name": "N", "type": "INT", "description": "...", "value": "{{Steps.P.Output.N}}"}`, and
+an evaluated one adds `"evaluated": {"value": {"Int": 8}}` (the `ExprValue` serde form
+that `JobParameter.value` also uses) or `"evaluated": "null"`.
 
 ### JobParameter
 
