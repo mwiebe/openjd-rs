@@ -200,7 +200,9 @@ pub fn evaluate_let_bindings(
 
 pub fn convert_environment(env: &template::Environment) -> job::Environment;
 
-/// CONTROL_FLOW: advance pending Step `step_index` of `job` with `inputs`.
+/// CONTROL_FLOW: advance pending Step `step_index` of `job` with `inputs`
+/// (cumulative). A caller error is a BindingError holding a
+/// ModelError::Compatibility.
 pub fn advance_step_binding(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -630,8 +632,10 @@ Session- and task-scope strings (in `script.actions`, `variables`,
 embedded file contents, etc.) remain as [`FormatString`] for the session
 runtime to resolve when worker state is available.
 
-All types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
-with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
+The job types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
+(the step input binding helpers `StepInputs`, `ProducerState`, and
+`BindingError` are working values, not parts of a job, and their derives
+are listed with them) with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
 structural on the *created job*, not the source template: derived
 state such as `resolved_symtab` participates, and since its transport
 format preserves original float literals, jobs created from `1.0` vs
@@ -695,7 +699,7 @@ impl job::Step {
     pub fn binding_report(&self) -> Option<BindingReport>;
     /// CONTROL_FLOW: the producers whose values the Step still needs: those
     /// its script and Step Environments read, and those its waiting groups
-    /// wait on. Sorted.
+    /// wait on. Sorted; empty for a skipped Step.
     pub fn input_producers(&self) -> Vec<String>;
 }
 
@@ -723,7 +727,8 @@ pub struct job::Environment {
     pub variables: Option<HashMap<String, FormatString>>,
     /// Filtered symbol table with only the symbols this environment references.
     pub resolved_symtab: Option<SerializedSymbolTable>,
-    /// CONTROL_FLOW: `false` when its `enableIf` evaluated to `false`.
+    /// CONTROL_FLOW: `false` when its `enableIf` evaluated to `false`; the
+    /// caller leaves it out of the Session (openjd-sessions does not read it).
     /// Serialized only when `false`; defaults to `true`.
     pub enabled: bool,
 }

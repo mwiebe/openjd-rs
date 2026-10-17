@@ -61,9 +61,11 @@ pub struct BindingError {
     pub step: String,
     /// The group that failed.
     pub group: MaterializationGroup,
-    /// The group's errors. Each names the field and the expression where
-    /// the evaluation records them: a `ModelValidation` error has a path per
-    /// field, and an expression error quotes the expression with a caret.
+    /// The group's errors: a `ModelValidation` error with a path per field
+    /// (the message quotes the expression with a caret where the error comes
+    /// from evaluating one), or a [`ModelError::Compatibility`] for a
+    /// caller error, which does not fail the Step (see
+    /// [`advance_step_binding`](crate::create_job::advance_step_binding)).
     pub errors: Vec<ModelError>,
 }
 
@@ -469,8 +471,13 @@ impl Step {
     /// dispatched, sorted: those whose `Steps.*` symbols its script and Step
     /// Environments read (for
     /// [`attach_step_inputs`](crate::create_job::attach_step_inputs)), and,
-    /// while it is pending, those its waiting groups wait on.
+    /// while it is pending, those its waiting groups wait on. Empty for a
+    /// skipped Step, which dispatches nothing.
     pub fn input_producers(&self) -> Vec<String> {
+        if matches!(self.binding, StepBinding::Skipped) {
+            // A skipped Step dispatches nothing, so it needs nothing.
+            return Vec::new();
+        }
         let mut producers = BTreeSet::new();
         let symbols = crate::job::create_job::host_scope_symbols(self);
         for s in &symbols {

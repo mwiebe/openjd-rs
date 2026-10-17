@@ -250,8 +250,13 @@ fn a_dynamic_enable_if_keeps_every_group_waiting() {
     assert_eq!(err.group, MaterializationGroup::TaskEnumeration);
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its Task enumeration group:\n\
-         Expression error: bad range\n  range(Steps.P.Output.Count) if Param.Ok else fail(\"bad range\")\n                                               ^~~~~~~~~~~~~~~~~"
+        format!(
+            "Step 'C' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                "steps[2] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+                "bad range\n  range(Steps.P.Output.Count) if Param.Ok else fail(\"bad range\")\n                                               ^~~~~~~~~~~~~~~~~",
+            )])
+        )
     );
 }
 
@@ -341,8 +346,13 @@ fn a_failing_range_fails_the_step_while_the_remaining_group_waits() {
     assert_eq!(err.group, MaterializationGroup::TaskEnumeration);
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its Task enumeration group:\n\
-         Expression error: no frames\n  range(Steps.P.Output.Count) if Steps.P.Output.Count > 0 else fail(\"no frames\")\n                                                               ^~~~~~~~~~~~~~~~~"
+        format!(
+            "Step 'C' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                "steps[2] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+                "no frames\n  range(Steps.P.Output.Count) if Steps.P.Output.Count > 0 else fail(\"no frames\")\n                                                               ^~~~~~~~~~~~~~~~~",
+            )])
+        )
     );
 }
 
@@ -359,7 +369,10 @@ fn a_failing_range_that_reads_no_steps_aborts_create_job() {
         .expect_err("the range fails");
     assert_eq!(
         err.to_string(),
-        "Expression error: no\n  fail(\"no\") if Param.Ok else [1]\n  ^~~~~~~~~~"
+        expected(&[(
+            "steps[2] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "no\n  fail(\"no\") if Param.Ok else [1]\n  ^~~~~~~~~~",
+        )])
     );
 }
 
@@ -418,9 +431,13 @@ fn a_task_count_limit_fails_the_step_when_its_tasks_become_known() {
     assert_eq!(err.group, MaterializationGroup::TaskEnumeration);
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its Task enumeration group:\n\
-         Model validation error: 1 validation error for Template\n\
-         Template: Total task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the Steps whose Tasks are known before it have 2."
+        format!(
+            "Step 'C' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                "steps[2]",
+                "Total task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the Steps whose Tasks are known before it have 2.",
+            )])
+        )
     );
     // 2 + 8 is within the limit.
     let mut job = f.job();
@@ -444,9 +461,13 @@ fn a_per_step_task_count_limit_fails_the_step() {
         .expect_err("5 > 4");
     assert_eq!(
         err.to_string(),
-        "Step 'C' failed in its Task enumeration group:\n\
-         Model validation error: 1 validation error for Template\n\
-         Template: Step 'C' has 5 Tasks, which exceeds the caller limit of 4 Tasks per Step."
+        format!(
+            "Step 'C' failed in its Task enumeration group:\n{}",
+            expected(&[(
+                "steps[2]",
+                "Step 'C' has 5 Tasks, which exceeds the caller limit of 4 Tasks per Step.",
+            )])
+        )
     );
 }
 
@@ -606,4 +627,380 @@ fn a_skipped_producer_gives_its_consumers_null_and_an_empty_task_list() {
     assert_eq!(inputs.get("Steps.P.Output.Count"), Some(&ExprValue::Null));
     assert_eq!(inputs.get("Steps.P.TaskParam.F"), Some(&ExprValue::Null));
     assert!(inputs.is_concrete("Steps.P.RawOutput.N"));
+}
+
+// ══════════════════════════════════════════════════════════════
+// Known groups are kept across calls
+// ══════════════════════════════════════════════════════════════
+
+/// `P` (outputs `Go: BOOL`, `Gpu: INT`) and `Q` (output `Count: INT`), and
+/// a consumer `C` of both whose range reads `Q`, with `c_extra` fields.
+fn go_gpu_count(c_extra: &str) -> String {
+    format!(
+        "{}steps:
+  - name: P
+    outputVariables: [{{name: Go, type: BOOL}}, {{name: Gpu, type: INT}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: Q
+    outputVariables: [{{name: Count, type: INT}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: C
+    dependencies: [{{dependsOn: P}}, {{dependsOn: Q}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{range(Steps.Q.Output.Count)}}}}'}}]
+{c_extra}    script: {{actions: {{onRun: {{command: echo}}}}}}
+",
+        header("[EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]")
+    )
+}
+
+/// `P`'s outputs, and `Q`'s when `count` is given.
+fn p_and_q(job: &openjd_model::job::Job, go: bool, gpu: i64, count: Option<i64>) -> StepInputs {
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        job,
+        "P",
+        &[outputs(&[
+            ("Go", ExprValue::Bool(go)),
+            ("Gpu", ExprValue::Int(gpu)),
+        ])],
+    );
+    if let Some(n) = count {
+        succeeded(
+            &mut inputs,
+            job,
+            "Q",
+            &[outputs(&[("Count", ExprValue::Int(n))])],
+        );
+    }
+    inputs
+}
+
+#[test]
+fn a_known_enablement_is_kept() {
+    // enableIf is decided true with Go=true; a later call whose inputs say
+    // Go=false does not decide it again.
+    let f = Fixture::new(
+        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
+        &[],
+    );
+    let mut job = f.job();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
+        .unwrap();
+    assert!(matches!(c.binding, StepBinding::PendingInputs(_)));
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, false, 0, Some(2)), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    assert_eq!(c.tasks_known(), Some(2));
+}
+
+#[test]
+fn known_host_requirements_are_kept() {
+    let f = Fixture::new(
+        &go_gpu_count("    hostRequirements:\n      amounts: [{name: amount.worker.gpu, min: '{{Steps.P.Output.Gpu}}'}]\n"),
+        &[],
+    );
+    let mut job = f.job();
+    f.advance(&mut job, "C", |j| p_and_q(j, true, 2, None), 0)
+        .unwrap();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 5, Some(1)), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    assert_eq!(c.host_requirements, Some(gpu_hr(2.0)));
+}
+
+#[test]
+fn a_known_remaining_group_keeps_its_environments_enabled() {
+    let f = Fixture::new(
+        &go_gpu_count("    stepEnvironments: [{name: E, enableIf: '{{Steps.P.Output.Gpu > 0}}', variables: {V: v}}]\n"),
+        &[],
+    );
+    let mut job = f.job();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
+        .unwrap();
+    let StepBinding::PendingInputs(p) = &c.binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(p.remaining, GroupState::Known(()));
+    assert!(!c.step_environments.as_ref().unwrap()[0].enabled);
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 1, Some(1)), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    assert!(!c.step_environments.as_ref().unwrap()[0].enabled);
+}
+
+#[test]
+fn a_bound_step_has_every_let_in_its_resolved_table() {
+    // The remaining group is known at creation; the Step binds later, when
+    // its range's input arrives, and its script still gets `y` and
+    // `Step.Name`.
+    let template = go_gpu_count("    let: ['y = len(Job.Name) * 4']\n").replace(
+        "    let: ['y = len(Job.Name) * 4']\n    script: {actions: {onRun: {command: echo}}}\n",
+        "    let: ['y = len(Job.Name) * 4']\n    script: {actions: {onRun: {command: echo, args: ['{{y}}', '{{Step.Name}}']}}}\n",
+    );
+    let f = Fixture::new(&template, &[]);
+    let mut job = f.job();
+    let StepBinding::PendingInputs(p) = &step(&job, "C").binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(p.remaining, GroupState::Known(()));
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 0, Some(2)), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    let symtab = c
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(openjd_expr::path_mapping::PathFormat::Posix)
+        .unwrap();
+    assert_eq!(symtab.get_value("y"), Some(&ExprValue::Int(4)));
+    assert_eq!(
+        symtab.get_value("Step.Name"),
+        Some(&ExprValue::String("C".into()))
+    );
+}
+
+#[test]
+fn a_step_bound_by_advancing_is_then_returned_unchanged() {
+    let f = Fixture::new(&go_gpu_count(""), &[]);
+    let mut job = f.job();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 0, Some(2)), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    let again = f.advance(&mut job, "C", |_| StepInputs::new(), 0).unwrap();
+    assert_eq!(again, c);
+}
+
+#[test]
+fn a_step_skipped_by_advancing_is_then_returned_unchanged() {
+    let f = Fixture::new(
+        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
+        &[],
+    );
+    let mut job = f.job();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, false, 0, None), 0)
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Skipped);
+    assert_eq!(c.input_producers(), Vec::<String>::new());
+    let again = f.advance(&mut job, "C", |_| StepInputs::new(), 0).unwrap();
+    assert_eq!(again, c);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Caller errors
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn inputs_must_be_cumulative() {
+    // The remaining group used `p`, which reads P; a later call that gives
+    // only Q's values is refused as a caller error, not a failed Step.
+    let f = Fixture::new(&go_gpu_count("    let: ['p = Steps.P.Output.Gpu']\n"), &[]);
+    let mut job = f.job();
+    let c = f
+        .advance(&mut job, "C", |j| p_and_q(j, true, 1, None), 0)
+        .unwrap();
+    let StepBinding::PendingInputs(p) = &c.binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(p.remaining, GroupState::Known(()));
+    let err = f
+        .advance(
+            &mut job,
+            "C",
+            |j| {
+                let mut inputs = StepInputs::new();
+                succeeded(
+                    &mut inputs,
+                    j,
+                    "Q",
+                    &[outputs(&[("Count", ExprValue::Int(1))])],
+                );
+                inputs
+            },
+            0,
+        )
+        .expect_err("P's values are missing");
+    assert_eq!(err.group, MaterializationGroup::Remaining);
+    assert!(matches!(
+        err.errors[..],
+        [openjd_model::ModelError::Compatibility(_)]
+    ));
+    assert_eq!(
+        err.to_string(),
+        "Step 'C' failed in its remaining group:\n\
+         Compatibility error: the remaining group of Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do not hold; pass every producer's values given before, as well as new ones."
+    );
+}
+
+#[test]
+fn a_step_index_past_the_job_is_a_caller_error() {
+    let f = Fixture::new(&go_gpu_count(""), &[]);
+    let job = f.job();
+    let err = openjd_model::advance_step_binding(
+        &f.jt,
+        &f.params,
+        &f.ctx,
+        &job,
+        9,
+        &StepInputs::new(),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Step '#9' failed in its enablement group:\n\
+         Compatibility error: the Job has 3 Steps, so it has no Step 9."
+    );
+}
+
+#[test]
+fn a_template_that_is_not_the_jobs_is_a_caller_error() {
+    let f = Fixture::new(&go_gpu_count(""), &[]);
+    let job = f.job();
+    let other = Fixture::new(&go_gpu_count("").replace("- name: C\n", "- name: D\n"), &[]);
+    let err = openjd_model::advance_step_binding(
+        &other.jt,
+        &other.params,
+        &other.ctx,
+        &job,
+        2,
+        &StepInputs::new(),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Step 'C' failed in its enablement group:\n\
+         Compatibility error: Step 2 of the Job is 'C', but the template's is not; pass the template the Job was created from."
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// Reports
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn every_group_reports_that_it_waits_for_enablement() {
+    let f = Fixture::new(
+        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
+        &[],
+    );
+    let job = f.job();
+    let c = step(&job, "C");
+    assert_eq!(
+        c.binding_report(),
+        Some(BindingReport {
+            enablement: GroupReport::Waiting {
+                on: vec!["Steps.P.Output.Go".into()],
+                for_enablement: false,
+            },
+            tasks: GroupReport::Waiting {
+                on: vec!["Steps.Q.Output.Count".into()],
+                for_enablement: true,
+            },
+            host_requirements: GroupReport::Waiting {
+                on: vec![],
+                for_enablement: true,
+            },
+            remaining: GroupReport::Waiting {
+                on: vec![],
+                for_enablement: true,
+            },
+        })
+    );
+    assert_eq!(c.input_producers(), ["P", "Q"]);
+    // A Step that reads P only in its enableIf still needs P.
+    let f = Fixture::new(
+        &format!(
+            "{}steps:
+  - name: P
+    outputVariables: [{{name: Go, type: BOOL}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: C
+    dependencies: [{{dependsOn: P}}]
+    enableIf: '{{{{Steps.P.Output.Go}}}}'
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+",
+            header("[EXPR, CONTROL_FLOW]")
+        ),
+        &[],
+    );
+    assert_eq!(step(&f.job(), "C").input_producers(), ["P"]);
+}
+
+// ══════════════════════════════════════════════════════════════
+// The remaining group
+// ══════════════════════════════════════════════════════════════
+
+#[test]
+fn the_remaining_group_checks_a_concrete_steps_value() {
+    // A timeout and a format-string cancelation mode are TEMPLATE-scope
+    // fields, so each puts the remaining group behind P and is checked with
+    // P's value.
+    let template = format!(
+        "{}steps:
+  - name: P
+    outputVariables: [{{name: Secs, type: INT}}, {{name: Mode, type: STRING}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: T
+    dependencies: [{{dependsOn: P}}]
+    script: {{actions: {{onRun: {{command: echo, timeout: '{{{{Steps.P.Output.Secs}}}}'}}}}}}
+  - name: M
+    dependencies: [{{dependsOn: P}}]
+    script: {{actions: {{onRun: {{command: echo, cancelation: {{mode: '{{{{Steps.P.Output.Mode}}}}'}}}}}}}}
+",
+        header("[EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]")
+    );
+    let f = Fixture::new(&template, &[]);
+    let mut job = f.job();
+    for name in ["T", "M"] {
+        let StepBinding::PendingInputs(p) = &step(&job, name).binding else {
+            panic!("{name} is pending");
+        };
+        assert!(!p.remaining.is_known(), "{name}");
+    }
+    let p = |j: &openjd_model::job::Job| {
+        let mut inputs = StepInputs::new();
+        succeeded(
+            &mut inputs,
+            j,
+            "P",
+            &[outputs(&[
+                ("Secs", ExprValue::Int(0)),
+                ("Mode", ExprValue::String("BOGUS".into())),
+            ])],
+        );
+        inputs
+    };
+    let err = f.advance(&mut job, "T", p, 0).expect_err("timeout 0");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Step 'T' failed in its remaining group:\n{}",
+            expected(&[(
+                "steps[1] -> script -> actions -> onRun -> timeout",
+                "timeout must be > 0."
+            )])
+        )
+    );
+    let err = f.advance(&mut job, "M", p, 0).expect_err("mode BOGUS");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Step 'M' failed in its remaining group:\n{}",
+            expected(&[(
+                "steps[2] -> script -> actions -> onRun -> cancelation",
+                "mode must resolve to TERMINATE or NOTIFY_THEN_TERMINATE, got 'BOGUS'.",
+            )])
+        )
+    );
 }

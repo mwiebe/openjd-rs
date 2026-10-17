@@ -236,7 +236,12 @@ fields as:
 ],
 "binding": {"state": "PENDING_INPUTS", "enablement": {"known": null},
             "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
-            "hostRequirements": {"known": null}, "remaining": {"waiting": {"on": []}}},
+            "hostRequirements": {"known": null}, "remaining": {"known": null}}
+```
+
+and a bound Step whose script reads a path-typed output records it as:
+
+```json
 "pathInputs": [{"symbol": "Steps.P.RawOutput.Dirs", "type": "list[path]"}]
 ```
 
@@ -248,8 +253,9 @@ bound on an `INT` output, say), which then has no effect on the checks.
 names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
 
 `job::Environment` has `enabled: bool`: `false` when its `enableIf` evaluated to
-`false`, so a Session leaves it out of its Environment stack (it is not entered and its
-`variables` are not set). It is serialized only when `false` and defaults to `true`, so
+`false`. A disabled Environment must be left out of the Session's Environment stack (not
+entered, its `variables` not set); the caller that builds the stack does this, and
+`openjd-sessions` does not read the field. It is serialized only when `false` and defaults to `true`, so
 existing jobs read back unchanged. `create_job` decides a Job Environment's; the remaining
 group of step input binding decides a Step Environment's.
 

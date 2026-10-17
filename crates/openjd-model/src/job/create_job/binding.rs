@@ -241,9 +241,9 @@ fn host_requirement_format_strings(st: &StepTemplate) -> Vec<&openjd_expr::Forma
     fields
 }
 
-/// The symbols of an action's TEMPLATE-scope fields: `timeout` and the
-/// cancelation `notifyPeriodInSeconds`. (A format-string cancelation `mode`
-/// is resolved on the worker host.)
+/// The symbols of an action's TEMPLATE-scope fields (Template Schemas §5:
+/// plain `@fmtstring`, not `@fmtstring[host]`): `timeout`, and the
+/// cancelation's `notifyPeriodInSeconds` and format-string `mode`.
 fn template_scope_action_symbols(action: &template::Action, out: &mut Vec<String>) {
     if let Some(t) = &action.timeout {
         out.extend(t.accessed_symbols());
@@ -251,11 +251,16 @@ fn template_scope_action_symbols(action: &template::Action, out: &mut Vec<String
     match &action.cancelation {
         Some(template::CancelationMode::NotifyThenTerminate {
             notify_period_in_seconds: Some(n),
-        })
-        | Some(template::CancelationMode::DeferredMode {
-            notify_period_in_seconds: Some(n),
-            ..
         }) => out.extend(n.accessed_symbols()),
+        Some(template::CancelationMode::DeferredMode {
+            mode,
+            notify_period_in_seconds,
+        }) => {
+            out.extend(mode.accessed_symbols());
+            if let Some(n) = notify_period_in_seconds {
+                out.extend(n.accessed_symbols());
+            }
+        }
         _ => {}
     }
 }
@@ -295,6 +300,32 @@ pub(super) fn bind_step(
         Some(StepBinding::PendingInputs(p)) => Some(p),
         _ => None,
     };
+
+    // `inputs` must hold every value given in earlier calls: a known group
+    // is not evaluated again, but the `let` bindings are, and the Step's
+    // table is rebuilt from `inputs` alone.
+    if let Some(p) = prior_pending {
+        let known: [(MaterializationGroup, bool, &BTreeSet<String>); 4] = [
+            (Enablement, p.enablement.is_known(), &groups.enablement),
+            (TaskEnumeration, p.tasks.is_known(), &groups.tasks),
+            (HostSelection, p.host_requirements.is_known(), &groups.host),
+            (Remaining, p.remaining.is_known(), &groups.remaining),
+        ];
+        for (group, is_known, symbols) in known {
+            if let Some(sym) = is_known
+                .then(|| missing(symbols, inputs))
+                .and_then(|m| m.into_iter().next())
+            {
+                return Err(GroupFailure::abort(
+                    group,
+                    ModelError::Compatibility(format!(
+                        "the {group} group of Step '{}' was evaluated with '{sym}', which the given inputs do not hold; pass every producer's values given before, as well as new ones.",
+                        st.name
+                    )),
+                ));
+            }
+        }
+    }
 
     let mut step = instantiate::step_shell(st).map_err(|e| GroupFailure::abort(Enablement, e))?;
     if let (Some(prior), Some(p)) = (prior, prior_pending) {
@@ -364,7 +395,7 @@ pub(super) fn bind_step(
             if waiting.is_empty() {
                 lets.evaluate(&groups.tasks_lets, &mut step_symtab)
                     .map_err(|e| GroupFailure::collected(TaskEnumeration, e))?;
-                let space = enumerate_tasks(cx, st, &step_symtab, committed_task_count)
+                let space = enumerate_tasks(cx, st, step_index, &step_symtab, committed_task_count)
                     .map_err(|e| GroupFailure::abort(TaskEnumeration, e))?;
                 GroupState::Known(space)
             } else {
@@ -394,7 +425,15 @@ pub(super) fn bind_step(
                         )
                     })
                     .transpose()
-                    .map_err(|e| GroupFailure::abort(HostSelection, e))?;
+                    .map_err(|e| {
+                        // A resolution error names the field in its text;
+                        // give it the Step's path too.
+                        let e = match e {
+                            e @ ModelError::ModelValidation(_) => e,
+                            e => located(&path_field(&path, "hostRequirements"), &e),
+                        };
+                        GroupFailure::abort(HostSelection, e)
+                    })?;
                 GroupState::Known(hr)
             } else {
                 GroupState::Waiting { on: waiting }
@@ -486,17 +525,27 @@ pub(super) fn evaluate_enable_if(
 /// The Task enumeration group: materialize the parameter space, check its
 /// combination, its distinct `CHUNK[INT]` values in a Step with outputs, and
 /// the Task-count limits. `None` for a Step without a `parameterSpace`.
+///
+/// Every error is located (RFC 0010 §How a Step is bound item 3: the message
+/// names the field and the expression): a range or `chunks` error at
+/// `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
+/// `-> chunks`), a combination error at `steps[i] -> parameterSpace`, and a
+/// Task-count limit at `steps[i]`.
 fn enumerate_tasks(
     cx: &BindContext<'_>,
     st: &StepTemplate,
+    step_index: usize,
     step_symtab: &SymbolTable,
     committed_task_count: u64,
 ) -> Result<Option<job::StepParameterSpace>, ModelError> {
+    let step_path = step_path(step_index);
+    let ps_path = path_field(&step_path, "parameterSpace");
+    let tpd_path = path_field(&ps_path, "taskParameterDefinitions");
     let space = st
         .parameter_space
         .as_ref()
         .map(|ps| {
-            ranges::resolve_parameter_space(
+            ranges::resolve_parameter_space_by_field(
                 ps,
                 step_symtab,
                 cx.limits,
@@ -507,25 +556,57 @@ fn enumerate_tasks(
                 },
             )
         })
-        .transpose()?;
+        .transpose()
+        .map_err(|(k, e)| located(&path_field(&path_index(&tpd_path, k), e.field), &e.error))?;
     if let Some(space) = &space {
         // Association length mismatches and the like.
-        let _ = crate::step_param_space::StepParameterSpaceIterator::new(space)?;
+        crate::step_param_space::StepParameterSpaceIterator::new(space)
+            .map_err(|e| located(&ps_path, &e))?;
         if st.output_variables.is_some() {
-            check_chunk_values_distinct(space)?;
+            check_chunk_values_distinct(space)
+                .map_err(|(k, e)| located(&path_field(&path_index(&tpd_path, k), "range"), &e))?;
         }
     }
     let task_count = job::binding::task_count(space.as_ref())?;
-    check_task_count(cx.ctx, &st.name, task_count, committed_task_count)?;
+    check_task_count(cx.ctx, &st.name, task_count, committed_task_count)
+        .map_err(|e| located(&step_path, &e))?;
     Ok(space)
+}
+
+/// `error` as a one-error `ModelValidation` at `path`, its message without
+/// the `ModelError` variant's prefix.
+fn located(path: &[PathElement], error: &ModelError) -> ModelError {
+    let message = match error {
+        ModelError::DecodeValidation(m) => m.clone(),
+        ModelError::Expression(e) => e.to_string(),
+        e @ ModelError::FormatStringError { .. } => {
+            let text = e.to_string();
+            text.strip_prefix("Format string error: ")
+                .map(str::to_string)
+                .unwrap_or(text)
+        }
+        ModelError::ModelValidation(errors) => errors
+            .errors
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => other.to_string(),
+    };
+    let mut errors = ValidationErrors::default();
+    errors.add(path, message);
+    match errors.into_result("JobTemplate") {
+        Err(e) => e,
+        Ok(()) => unreachable!("one error was added"),
+    }
 }
 
 /// In a Step that declares `outputVariables`, a `CHUNK[INT]` range must
 /// have distinct values, so that a task selector names one Task (RFC 0010
 /// §Chunked Steps). A range expression's values are distinct by
-/// construction.
-fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), ModelError> {
-    for (name, param) in &space.task_parameter_definitions {
+/// construction. The error names the parameter's index.
+fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (usize, ModelError)> {
+    for (k, param) in space.task_parameter_definitions.values().enumerate() {
         let job::TaskParameter::ChunkInt {
             range: job::TaskParamRange::List(values),
             ..
@@ -547,10 +628,13 @@ fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), Mo
             } else {
                 ("values", "appear")
             };
-            return Err(ModelError::DecodeValidation(format!(
-                "Task parameter '{name}' range must have distinct values in a Step with outputVariables, so that each value names one Task; {noun} {} {verb} more than once",
-                values.join(", ")
-            )));
+            return Err((
+                k,
+                ModelError::DecodeValidation(format!(
+                    "must have distinct values in a Step with outputVariables, so that each value names one Task; {noun} {} {verb} more than once.",
+                    values.join(", ")
+                )),
+            ));
         }
     }
     Ok(())
@@ -736,8 +820,17 @@ pub(super) fn creation_inputs(
     step_index: usize,
     built: &[Option<job::Step>],
 ) -> Result<StepInputs, ModelError> {
+    // Only the producers the Step's groups read: building a producer's
+    // TaskParam lists walks its whole parameter space.
+    let read: BTreeSet<String> = StepGroups::of(&jt.steps[step_index])
+        .all()
+        .filter_map(|s| s.split('.').nth(1).map(str::to_string))
+        .collect();
     let mut inputs = StepInputs::new();
     for dep in jt.steps[step_index].dependencies.iter().flatten() {
+        if !read.contains(&dep.depends_on) {
+            continue;
+        }
         let Some(producer) = jt
             .steps
             .iter()
@@ -785,11 +878,20 @@ pub(super) fn creation_inputs(
 /// created from. `committed_task_count` is the number of Tasks of the other
 /// Steps whose Tasks are known, for `CallerLimits::max_task_count`.
 ///
-/// Step `let` bindings are evaluated on demand, only those the group being
-/// evaluated uses; they are evaluated again in later calls rather than
-/// cached, which gives the same values. A bound Step that reads `Steps.*` in
-/// its script or Step Environments needs [`attach_step_inputs`] before its
-/// Tasks run.
+/// `inputs` is cumulative: it must hold every producer's values given in
+/// earlier calls for this Step, as well as new ones. Step `let` bindings are
+/// evaluated on demand, only those the group being evaluated uses, and are
+/// evaluated again in later calls rather than cached, which gives the same
+/// values as long as the inputs do; a known group's input missing from
+/// `inputs` is refused rather than reported as the Step failing. A bound
+/// Step that reads `Steps.*` in its script or Step Environments needs
+/// [`attach_step_inputs`] before its Tasks run.
+///
+/// Caller errors, which say nothing about the Step, are a `BindingError`
+/// whose error is a [`ModelError::Compatibility`]: a `step_index` past the
+/// Job's Steps (with `step` `#<index>`), a template whose Step at that index
+/// has another name, and the missing input above. Every other
+/// `BindingError` fails the Step.
 pub fn advance_step_binding(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -802,11 +904,11 @@ pub fn advance_step_binding(
     let misuse = |step: &str, message: String| BindingError {
         step: step.to_string(),
         group: MaterializationGroup::Enablement,
-        errors: vec![ModelError::DecodeValidation(message)],
+        errors: vec![ModelError::Compatibility(message)],
     };
     let Some(step) = job.steps.get(step_index) else {
         return Err(misuse(
-            "",
+            &format!("#{step_index}"),
             format!(
                 "the Job has {} Steps, so it has no Step {step_index}.",
                 job.steps.len()
@@ -864,7 +966,9 @@ pub fn advance_step_binding(
 /// `string` (or a list of strings) and recorded in
 /// [`job::Step::path_inputs`], so that the session builds the `path` values
 /// and maps `Output` and `TaskParam` forward on the worker host. A skipped
-/// producer's `null`s are stored as they are.
+/// producer's `null`s are stored as they are. Every `Steps.*` value and
+/// `path_inputs` record comes from `inputs`: attaching again replaces those
+/// of an earlier call.
 ///
 /// Errors when the Step is not bound, or when a symbol it reads is not
 /// concrete in `inputs` (the error names it).
@@ -879,20 +983,28 @@ pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::
         .iter()
         .filter_map(|s| steps_key(s))
         .collect();
-    if symbols.is_empty() {
+    if symbols.is_empty() && step.path_inputs.is_empty() {
         return Ok(step.clone());
     }
-    let mut symtab = match &step.resolved_symtab {
-        Some(s) => s
+    // Start from the table without any `Steps.*` value: every one, and every
+    // `path_inputs` record, comes from this call's `inputs`, so attaching
+    // again with other inputs leaves nothing of the earlier ones behind.
+    let mut symtab = SymbolTable::new();
+    if let Some(s) = &step.resolved_symtab {
+        let full = s
             .to_symtab(PathFormat::Posix)
-            .map_err(ModelError::DecodeValidation)?,
-        None => SymbolTable::new(),
-    };
-    let mut path_inputs: std::collections::BTreeMap<String, job::PathInput> = step
-        .path_inputs
-        .iter()
-        .map(|p| (p.symbol.clone(), p.clone()))
-        .collect();
+            .map_err(ModelError::DecodeValidation)?;
+        for path in full.all_paths("") {
+            if path.starts_with("Steps.") {
+                continue;
+            }
+            if let Some(v) = full.get_value(&path) {
+                symtab.set(&path, v.clone())?;
+            }
+        }
+    }
+    let mut path_inputs: std::collections::BTreeMap<String, job::PathInput> =
+        std::collections::BTreeMap::new();
     for sym in &symbols {
         let (stored, value) = match inputs.get(sym) {
             Some(v) => (sym.clone(), v.clone()),

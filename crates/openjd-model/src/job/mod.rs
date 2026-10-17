@@ -10,8 +10,10 @@
 //!
 //! # Equality and hashing
 //!
-//! All types in this module implement `PartialEq` and `Hash` with the
-//! invariant `a == b ⇒ hash(a) == hash(b)`. Equality is structural on
+//! The job types in this module implement `PartialEq` and `Hash` with the
+//! invariant `a == b ⇒ hash(a) == hash(b)`. The step input binding helpers
+//! re-exported here ([`StepInputs`], [`ProducerState`], [`BindingError`])
+//! are working values, not parts of a job, and implement neither. Equality is structural on
 //! the *created job*, not the source template: derived state such as
 //! `resolved_symtab` participates, and since its transport format
 //! preserves original float literals, jobs created from `1.0` vs `1.00`
@@ -179,8 +181,10 @@ pub struct Environment {
     #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
     pub resolved_symtab: Option<SerializedSymbolTable>,
     /// `false` when the Environment's `enableIf` evaluated to `false`
-    /// (`CONTROL_FLOW`): it is left out of the Session's Environment stack,
-    /// not entered, and its `variables` are not set. `true` otherwise.
+    /// (`CONTROL_FLOW`), `true` otherwise. A disabled Environment must be
+    /// left out of the Session's Environment stack: not entered, and its
+    /// `variables` not set. The caller that builds the stack does this;
+    /// `openjd-sessions` does not read the field.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub enabled: bool,
 }

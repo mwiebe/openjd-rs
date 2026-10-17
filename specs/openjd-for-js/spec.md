@@ -110,7 +110,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 |-------|------|-------------|
 | `maxStepCount` | `number` | Max number of steps in a job template. |
 | `maxEnvCount` | `number` | Max number of environments (job + all step environments combined). |
-| `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve). |
+| `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve; with `CONTROL_FLOW`, across the Steps whose Tasks are known at job creation). The Rust per-Step limit `max_step_task_count` is not exposed. |
 | `maxStepScriptSize` | `number` | Max JSON-encoded size of a step script, in bytes. |
 | `maxEnvironmentSize` | `number` | Max JSON-encoded size of an environment, in bytes. |
 | `maxTemplateSize` | `number` | Max total template document size, in bytes. Checked before parsing begins. |
@@ -131,7 +131,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. |
+| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. With `CONTROL_FLOW`, a Step may come back pending inputs (its `binding` names what it waits for, and its parameter space, host requirements, and resolved symbol table are absent) or skipped; the bindings do not expose `advanceStepBinding` to finish one. |
 | `preprocessJobParameters` | `(template: JobTemplate, rawValues: Record<string, string>, pathOptions: PathParameterOptions) → Map<string, ExprValue>` | Coerce raw string parameter values to typed ExprValues per the parameter definitions. |
 | `mergeJobParameterDefinitions` | `(templates: (JobTemplate \| EnvironmentTemplate)[]) → JobParameterDefinition[]` | Merge parameter definitions from multiple templates per the spec's merging rules. |
 | `evaluateLetBindings` | `(bindings: string[], symbols: SymbolTable) → SymbolTable` | Evaluate `let` bindings and add results to the symbol table. |
