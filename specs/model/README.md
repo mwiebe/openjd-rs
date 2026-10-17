@@ -75,9 +75,11 @@ Currently implements `2023-09` with extensions:
 - `CONTROL_FLOW` (RFC 0010) — prototype, in progress. The `outputVariables` and
   `enableIf` schema, the extension gate, and the structural rules (validation pass 11);
   `job::Step` carries the output declarations. Validation pass 8 seeds and checks the
-  `Steps.*` scope and types `enableIf` as `bool`, and `create_job`'s own checks see the
-  same `Steps.*` symbols. The `outputs` module parses `openjd_output_var` directives and
-  collects a Task's values ([outputs.md](outputs.md)). `enableIf` evaluation, step input
-  binding, recognizing the directive in a Session, and `jobOutputDefinitions` are not
-  implemented yet (see
-  `docs/control-flow-prototype-plan.md`).
+  `Steps.*` scope and types `enableIf` as `bool`. The `outputs` module parses
+  `openjd_output_var` directives and collects a Task's values ([outputs.md](outputs.md)).
+  Step input binding is progressive: `create_job` decides each `enableIf` and evaluates
+  each materialization group whose inputs are concrete, and `advance_step_binding`,
+  `StepInputs`, and `attach_step_inputs` finish a pending Step as upstream values arrive
+  ([job-creation.md](job-creation.md) § Step input binding). Recognizing the directive in
+  a Session, simulating binding in `openjd run`, and `jobOutputDefinitions` are not
+  implemented yet (see `docs/control-flow-prototype-plan.md`).

@@ -133,6 +133,9 @@ fn visible_producers(jt: &JobTemplate, step_index: usize) -> Vec<&StepTemplate> 
 /// `Output` or `TaskParam` whose type is or contains `path` is left out:
 /// only its `Raw` form is available there.
 ///
+/// A key the table already holds is left as it is, so step input binding can
+/// seed placeholders around the `Steps.*` values that are concrete.
+///
 /// Never call this for the job name, `jobEnvironments`, or an Environment
 /// Template: `Steps.*` is not available there.
 ///
@@ -148,35 +151,32 @@ pub(crate) fn add_steps_scope(
     step_index: usize,
     scope: StepsFieldScope,
 ) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
+    // A symbol already in the table (a concrete value at step input binding)
+    // is kept.
+    let mut seed = |key: String, ty: ExprType| {
+        if symtab.contains(&key) {
+            Ok(())
+        } else {
+            symtab.set(&key, ExprValue::unresolved(ty))
+        }
+    };
     for producer in visible_producers(jt, step_index) {
         let p = &producer.name;
         for ov in producer.output_variables.iter().flatten() {
             if let Some((ty, is_path)) = output_symbol(producer, ov.name()) {
                 if !(is_path && scope == StepsFieldScope::Template) {
-                    symtab.set(
-                        &format!("Steps.{p}.Output.{}", ov.name()),
-                        ExprValue::unresolved(ty.clone()),
-                    )?;
+                    seed(format!("Steps.{p}.Output.{}", ov.name()), ty.clone())?;
                 }
-                symtab.set(
-                    &format!("Steps.{p}.RawOutput.{}", ov.name()),
-                    ExprValue::unresolved(ty),
-                )?;
+                seed(format!("Steps.{p}.RawOutput.{}", ov.name()), ty)?;
             }
         }
         if let Some(ps) = &producer.parameter_space {
             for tp in &ps.task_parameter_definitions {
                 if let Some((ty, is_path)) = task_param_symbol(producer, tp.name()) {
                     if !(is_path && scope == StepsFieldScope::Template) {
-                        symtab.set(
-                            &format!("Steps.{p}.TaskParam.{}", tp.name()),
-                            ExprValue::unresolved(ty.clone()),
-                        )?;
+                        seed(format!("Steps.{p}.TaskParam.{}", tp.name()), ty.clone())?;
                     }
-                    symtab.set(
-                        &format!("Steps.{p}.TaskRawParam.{}", tp.name()),
-                        ExprValue::unresolved(ty),
-                    )?;
+                    seed(format!("Steps.{p}.TaskRawParam.{}", tp.name()), ty)?;
                 }
             }
         }

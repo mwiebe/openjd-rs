@@ -6,6 +6,7 @@
 //!
 //! Mirrors Python `_create_job.py` and `_merge_job_parameter.py`.
 
+mod binding;
 mod instantiate;
 pub mod parameters;
 mod ranges;
@@ -20,6 +21,8 @@ use crate::template::validate_v2023_09::EffectiveLimits;
 use crate::template::JobTemplate;
 use crate::types::{JobParameterValues, ValidationContext};
 
+pub(crate) use binding::host_scope_symbols;
+pub use binding::{advance_step_binding, attach_step_inputs};
 // Re-exports — preserve the existing public API
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -88,7 +91,8 @@ impl EvalBudgets {
 /// on this queue").
 ///
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
-/// across all steps is checked after parameter spaces are resolved.
+/// across all steps is checked after parameter spaces are resolved. When
+/// `max_step_task_count` is set, each Step's task count is checked.
 ///
 /// The resolved-value re-checks on carried-forward fields (and the
 /// `let` bindings feeding them) are reported together: every such
@@ -98,12 +102,25 @@ impl EvalBudgets {
 /// requirements or parameter space) abort immediately and are reported
 /// alone.
 ///
-/// With `CONTROL_FLOW` (RFC 0010), each Step's `outputVariables` are copied
-/// onto [`job::Step::output_variables`] and every Step is
-/// [`StepBinding::Bound`](job::StepBinding::Bound). `enableIf` is not
-/// evaluated yet, so any `enableIf` other than the literal `true` on a Step,
-/// Job Environment, or Step Environment is refused: an error at the field's
-/// path, reported with the carried-forward checks.
+/// With `CONTROL_FLOW` (RFC 0010 §When groups are evaluated), each Step's
+/// `outputVariables` are copied onto [`job::Step::output_variables`], and
+/// each Step is bound as far as the values concrete at job creation allow:
+/// its `enableIf` is decided if its inputs are concrete (a `false` Step is
+/// [`StepBinding::Skipped`](job::StepBinding::Skipped)), and then every
+/// materialization group whose inputs are concrete is evaluated. A Step all
+/// of whose groups evaluate is [`StepBinding::Bound`](job::StepBinding::Bound);
+/// any other is [`StepBinding::PendingInputs`](job::StepBinding::PendingInputs),
+/// for [`advance_step_binding`] to finish. Steps are bound in dependency
+/// order, because a Step skipped here makes its `null` symbols concrete and
+/// a Step whose Tasks are known makes its `TaskParam` symbols concrete. A
+/// step `let` error and the remaining group's check errors are collected and
+/// reported with the others, in template order; a Step's or Job
+/// Environment's `enableIf` error, a range or host requirement error, a
+/// repeated `CHUNK[INT]` value in a Step with outputs, or a Task-count limit
+/// aborts at once. `max_task_count` counts the
+/// Steps whose Tasks are known at creation. Each Job Environment's
+/// `enableIf` is decided here and sets its
+/// [`enabled`](job::Environment::enabled); a disabled one is not checked.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -242,13 +259,32 @@ pub fn create_job(
     // uninstantiable (host requirements, parameter space) are not
     // checks: they abort immediately, reported alone.
     let mut check_errors = crate::error::ValidationErrors::default();
+    // Keyed on the template's own extensions, not the context's: a context
+    // may enable more extensions than the template lists, and a template
+    // that does not list CONTROL_FLOW keeps today's behavior (RFC 0010
+    // Technical Requirement 1), including its order of evaluation and its
+    // range rules.
+    let control_flow = template_profile.has_extension(crate::types::ModelExtension::ControlFlow);
+    // CONTROL_FLOW: a Job Environment's `enableIf` is decided here (it may
+    // not read `Steps.*`); a disabled one is not entered, so its fields are
+    // not checked.
+    let mut job_env_enabled = Vec::new();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
             let env_path = [
                 crate::error::PathElement::Field("jobEnvironments".to_string()),
                 crate::error::PathElement::Index(i),
             ];
-            reject_unevaluated_enable_if(env.enable_if.as_ref(), &env_path, &mut check_errors);
+            let enabled = binding::evaluate_enable_if(
+                env.enable_if.as_ref(),
+                &symtab,
+                budgets,
+                &crate::error::path_field(&env_path, "enableIf"),
+            )?;
+            job_env_enabled.push(enabled);
+            if !enabled {
+                continue;
+            }
             let env_symtab = instantiate::build_env_check_symtab(
                 env,
                 &symtab,
@@ -270,56 +306,68 @@ pub fn create_job(
         }
     }
 
-    let mut steps = Vec::with_capacity(job_template.steps.len());
-    for (step_index, st) in job_template.steps.iter().enumerate() {
-        steps.push(instantiate::instantiate_step(
+    let steps: Vec<job::Step> = if control_flow {
+        instantiate_steps_with_binding(
             job_template,
-            st,
             &symtab,
             has_expr,
             &limits,
             ctx,
-            step_index,
             budgets,
             &mut check_errors,
-        )?);
-    }
-    check_errors.into_result("JobTemplate")?;
-    // `instantiate_step` only declines to build a step after recording
-    // the failure in `check_errors`, so every step is present here.
-    let steps: Vec<job::Step> = steps.into_iter().collect::<Option<_>>().ok_or_else(|| {
-        ModelError::DecodeValidation(
-            "internal error: a step was skipped without a recorded error".to_string(),
-        )
-    })?;
-
-    // Caller-imposed total task count limit across all steps
-    if let Some(max_task_count) = ctx.caller_limits.max_task_count {
-        let mut total: u64 = 0;
-        for step in &steps {
-            let step_tasks = step
-                .parameter_space
-                .as_ref()
-                .map(|ps| {
-                    crate::job::step_param_space::StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1))
-                        .map(|iter| iter.len() as u64)
-                })
-                .transpose()?
-                .unwrap_or(1); // Steps without a parameter space have 1 task
-            total = total.saturating_add(step_tasks);
+        )?
+    } else {
+        let mut steps = Vec::with_capacity(job_template.steps.len());
+        for (step_index, st) in job_template.steps.iter().enumerate() {
+            steps.push(instantiate::instantiate_step(
+                st,
+                &symtab,
+                has_expr,
+                &limits,
+                ctx,
+                step_index,
+                budgets,
+                &mut check_errors,
+            )?);
         }
-        if total > max_task_count {
-            return Err(ModelError::ModelValidation(
-                crate::error::ValidationErrors::single(format!(
-                    "Total task count ({total}) exceeds caller limit of {max_task_count}."
-                )),
-            ));
+        check_errors.into_result("JobTemplate")?;
+        // `instantiate_step` only declines to build a step after recording
+        // the failure in `check_errors`, so every step is present here.
+        let steps: Vec<job::Step> = steps.into_iter().collect::<Option<_>>().ok_or_else(|| {
+            ModelError::DecodeValidation(
+                "internal error: a step was skipped without a recorded error".to_string(),
+            )
+        })?;
+        // Caller-imposed task count limits, per Step and across all steps.
+        let limits_set = ctx.caller_limits.max_step_task_count.is_some()
+            || ctx.caller_limits.max_task_count.is_some();
+        if limits_set {
+            let mut total: u64 = 0;
+            for step in &steps {
+                let step_tasks = job::binding::task_count(step.parameter_space.as_ref())?;
+                binding::check_step_task_count(ctx, &step.name, step_tasks)?;
+                total = total.saturating_add(step_tasks);
+            }
+            if let Some(max_task_count) = ctx.caller_limits.max_task_count {
+                if total > max_task_count {
+                    return Err(ModelError::ModelValidation(
+                        crate::error::ValidationErrors::single(format!(
+                            "Total task count ({total}) exceeds caller limit of {max_task_count}."
+                        )),
+                    ));
+                }
+            }
         }
-    }
+        steps
+    };
 
     let job_environments = job_template.job_environments.as_ref().map(|envs| {
         envs.iter()
-            .map(|e| instantiate::convert_environment_with_symtab(e, Some(&symtab)))
+            .enumerate()
+            .map(|(i, e)| job::Environment {
+                enabled: job_env_enabled.get(i).copied().unwrap_or(true),
+                ..instantiate::convert_environment_with_symtab(e, Some(&symtab))
+            })
             .collect()
     });
 
@@ -382,23 +430,67 @@ pub fn create_job(
     })
 }
 
-/// `CONTROL_FLOW` (RFC 0010): job creation does not evaluate `enableIf` yet,
-/// so it refuses any `enableIf` other than the literal `true` rather than
-/// creating a Job that runs a Step or enters an Environment the template
-/// disables. Static and dynamic `enableIf` arrive with step input binding.
+/// `create_job`'s Steps under `CONTROL_FLOW` (RFC 0010 §When groups are
+/// evaluated): every Step is bound as far as the values concrete at job
+/// creation allow, in dependency order so that a producer skipped or with
+/// known Tasks makes its symbols concrete for the Steps that read them.
 ///
-/// `owner_path` is the Step's or Environment's path; the refusal is reported
-/// at its `enableIf`, ahead of that owner's other carried-forward checks.
-pub(super) fn reject_unevaluated_enable_if(
-    enable_if: Option<&crate::template::BoolOrFormatString>,
-    owner_path: &[crate::error::PathElement],
+/// A group failure that is a step `let` error or a remaining-group check
+/// error is collected into `check_errors` with the other Steps' errors, in
+/// template order; any other group failure aborts at once. The Task-count
+/// limits are checked as each Step's Tasks become known.
+#[allow(clippy::too_many_arguments)]
+fn instantiate_steps_with_binding(
+    job_template: &JobTemplate,
+    symtab: &openjd_expr::symbol_table::SymbolTable,
+    has_expr: bool,
+    limits: &EffectiveLimits,
+    ctx: &ValidationContext,
+    budgets: EvalBudgets,
     check_errors: &mut crate::error::ValidationErrors,
-) {
-    use crate::template::BoolOrFormatString;
-    if !matches!(enable_if, None | Some(BoolOrFormatString::Bool(true))) {
-        check_errors.add(
-            &crate::error::path_field(owner_path, "enableIf"),
-            "is not evaluated by create_job yet; only `enableIf: true` can be instantiated.",
-        );
+) -> Result<Vec<job::Step>, ModelError> {
+    let n = job_template.steps.len();
+    // Validation rejects a cycle; template order is a safe fallback.
+    let order = crate::template::validate_v2023_09::step_dependency_order(&job_template.steps)
+        .unwrap_or_else(|| (0..n).collect());
+    let cx = binding::BindContext {
+        jt: job_template,
+        ctx,
+        symtab,
+        has_expr,
+        limits,
+        budgets,
+    };
+    let mut built: Vec<Option<job::Step>> = vec![None; n];
+    let mut step_errors: Vec<crate::error::ValidationErrors> =
+        (0..n).map(|_| Default::default()).collect();
+    let mut committed: u64 = 0;
+    for i in order {
+        let inputs = binding::creation_inputs(job_template, i, &built)?;
+        match binding::bind_step(&cx, i, None, &inputs, committed) {
+            Ok(step) => {
+                if let Some(tasks) = step.tasks_known() {
+                    committed = committed.saturating_add(tasks);
+                }
+                built[i] = Some(step);
+            }
+            Err(binding::GroupFailure {
+                failure: binding::Failure::Collected(errors),
+                ..
+            }) => step_errors[i] = errors,
+            Err(binding::GroupFailure {
+                failure: binding::Failure::Abort(e),
+                ..
+            }) => return Err(e),
+        }
     }
+    for errors in step_errors {
+        check_errors.errors.extend(errors.errors);
+    }
+    std::mem::take(check_errors).into_result("JobTemplate")?;
+    built.into_iter().collect::<Option<_>>().ok_or_else(|| {
+        ModelError::DecodeValidation(
+            "internal error: a step was skipped without a recorded error".to_string(),
+        )
+    })
 }

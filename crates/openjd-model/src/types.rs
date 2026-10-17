@@ -465,7 +465,20 @@ pub struct CallerLimits {
     pub max_env_count: Option<usize>,
     /// Maximum total task count across all steps in a job template.
     /// Checked after parameter space ranges are resolved in `create_job`.
+    ///
+    /// With `CONTROL_FLOW` (RFC 0010 §Limits item 4), it is checked as each
+    /// Step's Tasks become known: in `create_job` for the Steps whose Tasks
+    /// are known then, and in
+    /// [`advance_step_binding`](crate::create_job::advance_step_binding)
+    /// against the Tasks of the other Steps whose Tasks are known
+    /// (`committed_task_count`). The Step whose Tasks would take the total
+    /// over the limit fails.
     pub max_task_count: Option<u64>,
+    /// Maximum task count of one Step (RFC 0010 §Limits item 4), checked
+    /// when the Step's Tasks become known: at job creation, or with
+    /// `CONTROL_FLOW` at step input binding. `None` (default) imposes no
+    /// per-Step limit.
+    pub max_step_task_count: Option<u64>,
     /// Maximum JSON-encoded size of a step script, in bytes.
     pub max_step_script_size: Option<usize>,
     /// Maximum JSON-encoded size of an environment, in bytes.

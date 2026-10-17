@@ -333,7 +333,7 @@ Ranges accept either a list of values or a range expression string:
 
 ```rust
 pub enum IntRange {
-    List(Vec<FlexInt>),
+    List(Vec<IntRangeItem>),
     Expression(FormatString),
 }
 
@@ -355,6 +355,20 @@ float ranges:
 ```rust
 pub enum FloatRangeItem {
     Float(f64),
+    FormatString(FormatString),
+}
+```
+
+`IntRange::List` uses `IntRangeItem` the same way. Template Schemas §3.4.1.1 allows an
+`<IntRangeList>` item to be an `<integer>`, an `<intstring>`, or a
+`<TaskParameterStringValue>` that resolves to an integer. A number, or a string without
+`{{`, is read as `FlexInt` reads it and becomes `Int` (`'two'` is `Cannot parse 'two' as
+integer`); a string containing `{{` is a `FormatString`, resolved at job creation (with
+`EXPR` as a list item, so it may flatten a list):
+
+```rust
+pub enum IntRangeItem {
+    Int(i64),
     FormatString(FormatString),
 }
 ```
@@ -401,9 +415,9 @@ optional fields (`description: null`, `hostRequirements: null`), so it neither e
 nor disables anything and is not gated. Validation pass 8 checks a format string's
 symbols and its target type, `bool`; text that resolves to a string must be one of the
 spellings EXPR converts to a bool (see [validation.md](validation.md) § The `Steps.*`
-Scope and `enableIf`). `create_job` does
-not evaluate `enableIf` yet and refuses any value other than `true` (see
-[job-creation.md](job-creation.md)).
+Scope and `enableIf`). `create_job` decides an `enableIf` whose inputs are concrete
+at job creation, and `advance_step_binding` decides the rest (see
+[job-creation.md](job-creation.md) § Step input binding).
 
 ### OutputVariableDefinition
 

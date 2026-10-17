@@ -1071,6 +1071,9 @@ fn validate_embedded_files(
     }
 }
 
+// Kept as it was before `step_dependency_order` existed: its name-keyed
+// graph decides which errors a template with a repeated Step name gets, and
+// templates without CONTROL_FLOW must keep getting the same ones.
 fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationErrors) {
     let step_names: HashSet<String> = steps.iter().map(|s| s.name.clone()).collect();
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
@@ -1117,6 +1120,43 @@ fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationError
     if visited < step_names.len() {
         errors.add(&[], "step dependencies contain a cycle.");
     }
+}
+
+/// The template's Step indices in dependency order: every Step after the
+/// Steps it depends on, with ties broken by template index so the order is
+/// deterministic (Kahn's algorithm). `None` when the dependencies contain a
+/// cycle. A dependency on a name that is no Step is ignored (structure
+/// reports it); a dependency on a repeated name refers to its first Step.
+pub(crate) fn step_dependency_order(steps: &[StepTemplate]) -> Option<Vec<usize>> {
+    use std::collections::BTreeSet;
+    let mut index_of: HashMap<&str, usize> = HashMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        index_of.entry(step.name.as_str()).or_insert(i);
+    }
+    // dependents[d] lists the Steps that depend on Step d; in_degree[i]
+    // counts the dependencies of Step i not yet placed.
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); steps.len()];
+    let mut in_degree = vec![0usize; steps.len()];
+    for (i, step) in steps.iter().enumerate() {
+        for dep in step.dependencies.iter().flatten() {
+            if let Some(&d) = index_of.get(dep.depends_on.as_str()) {
+                dependents[d].push(i);
+                in_degree[i] += 1;
+            }
+        }
+    }
+    let mut ready: BTreeSet<usize> = (0..steps.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut order = Vec::with_capacity(steps.len());
+    while let Some(i) = ready.pop_first() {
+        order.push(i);
+        for &j in &dependents[i] {
+            in_degree[j] -= 1;
+            if in_degree[j] == 0 {
+                ready.insert(j);
+            }
+        }
+    }
+    (order.len() == steps.len()).then_some(order)
 }
 
 fn validate_task_param_range(

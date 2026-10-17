@@ -9,8 +9,15 @@
 //! Failure tests assert the full error output (count, path, and message), as
 //! `AGENTS.md` § Test Quality Standard requires.
 
+use openjd_expr::path_mapping::PathFormat;
+use openjd_expr::{ExprType, ExprValue};
+use openjd_model::job::{
+    GroupState, MaterializationGroup, PendingBinding, ProducerState, StepBinding, StepInputs,
+};
+use openjd_model::outputs::TaskOutputs;
 use openjd_model::{
-    create_job, decode_job_template, preprocess_job_parameters, CallerLimits, PathParameterOptions,
+    advance_step_binding, create_job, decode_job_template, preprocess_job_parameters, CallerLimits,
+    JobParameterValues, PathParameterOptions,
 };
 
 const SUPPORTED: &[&str] = &["EXPR", "CONTROL_FLOW", "TASK_CHUNKING", "FEATURE_BUNDLE_1"];
@@ -876,23 +883,22 @@ fn step_environment_enable_if_scope() {
 // create_job: its own checks see the same Steps.* symbols
 // ══════════════════════════════════════════════════════════════
 
-/// Decode and create a Job with the parameter defaults. `R`'s `enableIf` is
-/// made the literal `true`, which `create_job` instantiates (it refuses any
-/// other `enableIf` until step input binding exists); `R`'s outputs stay
-/// `T?`.
+/// Decode and create a Job with the parameter defaults.
 fn create(template: &str) -> Result<openjd_model::job::Job, openjd_model::ModelError> {
-    let template = template.replacen("enableIf: '{{Param.Run}}'", "enableIf: true", 1);
-    let jt = decode_ok(&template);
+    let jt = decode_ok(template);
+    create_job(&jt, &params(&jt), &jt.default_validation_context())
+}
+
+fn params(jt: &openjd_model::template::JobTemplate) -> JobParameterValues {
     let dir = std::env::temp_dir();
     let dir = dir.to_str().unwrap();
-    let params = preprocess_job_parameters(
-        &jt,
+    preprocess_job_parameters(
+        jt,
         &Default::default(),
         &[],
         &PathParameterOptions::new(dir, dir),
     )
-    .unwrap();
-    create_job(&jt, &params, &jt.default_validation_context())
+    .unwrap()
 }
 
 #[test]
@@ -922,10 +928,62 @@ fn create_job_accepts_steps_in_carried_forward_fields() {
     assert_eq!(job.steps[3].name, "C");
 }
 
+/// The pending binding of a Step whose `enableIf` is decided `true`, with
+/// each other group given as `None` (known, with no parameter space or host
+/// requirements) or the symbols it waits on.
+fn pending(
+    tasks: Option<&[&str]>,
+    host: Option<&[&str]>,
+    remaining: Option<&[&str]>,
+) -> StepBinding {
+    fn state<T: Default>(on: Option<&[&str]>, known: T) -> GroupState<T> {
+        match on {
+            None => GroupState::Known(known),
+            Some(on) => GroupState::Waiting {
+                on: on.iter().map(|s| s.to_string()).collect(),
+            },
+        }
+    }
+    StepBinding::PendingInputs(PendingBinding {
+        enablement: GroupState::Known(()),
+        tasks: state(tasks, None),
+        host_requirements: state(host, None),
+        remaining: state(remaining, ()),
+        producers: vec!["P".to_string()],
+    })
+}
+
+/// `P`'s outputs: `Count`, `F`, and `Fs`.
+fn p_succeeded(job: &openjd_model::job::Job, count: i64) -> StepInputs {
+    let outputs: TaskOutputs = [
+        ("Count".to_string(), ExprValue::Int(count)),
+        (
+            "F".to_string(),
+            ExprValue::new_path("/f", PathFormat::Posix),
+        ),
+        (
+            "Fs".to_string(),
+            ExprValue::make_list(vec![], ExprType::PATH).unwrap(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let mut inputs = StepInputs::new();
+    inputs
+        .add_producer(
+            &job.steps[0],
+            ProducerState::Succeeded {
+                task_outputs: &[outputs],
+            },
+        )
+        .unwrap();
+    inputs
+}
+
 #[test]
-fn create_job_still_reports_a_carried_forward_violation_next_to_steps() {
-    // With timeout 0 static, the job-creation re-check fails; the Steps.*
-    // symbol beside it must not mask the error.
+fn a_carried_forward_violation_next_to_steps_is_reported_when_its_group_evaluates() {
+    // The timeout reads Steps.* in a branch that is not taken, so the
+    // remaining group waits for P; once P succeeds, the re-check fails.
     let template = template(
         "    script:
       actions:
@@ -935,20 +993,41 @@ fn create_job_still_reports_a_carried_forward_violation_next_to_steps() {
           timeout: '{{0 if Param.Run else Steps.P.Output.Count}}'
 ",
     );
-    let err = create(&template).expect_err("timeout 0 is invalid");
+    let job = create(&template).expect("the remaining group waits for P");
+    assert_eq!(
+        job.steps[3].binding,
+        pending(None, None, Some(&["Steps.P.Output.Count"]))
+    );
+    let jt = decode_ok(&template);
+    let params = params(&jt);
+    let err = advance_step_binding(
+        &jt,
+        &params,
+        &jt.default_validation_context(),
+        &job,
+        3,
+        &p_succeeded(&job, 5),
+        0,
+    )
+    .expect_err("timeout 0 is invalid");
+    assert_eq!(err.group, MaterializationGroup::Remaining);
     assert_eq!(
         err.to_string(),
-        expected(&[(
-            "steps[3] -> script -> actions -> onRun -> timeout",
-            "timeout must be > 0.",
-        )])
+        format!(
+            "Step 'C' failed in its remaining group:\n{}",
+            expected(&[(
+                "steps[3] -> script -> actions -> onRun -> timeout",
+                "timeout must be > 0.",
+            )])
+        )
     );
 }
 
 #[test]
-fn create_job_refuses_materialization_fields_that_read_steps() {
-    let msg = "reads Steps.* symbols, which are bound at step input binding; create_job does not implement step input binding yet.";
-    let err = create(&template(
+fn materialization_fields_that_read_steps_leave_their_groups_waiting() {
+    // `m` reads `Steps.*` through `n`, so the host requirement that reads
+    // `m` waits for it too; the remaining group uses every `let`.
+    let job = create(&template(
         "    let:
       - a = Param.Run
       - n = Steps.P.Output.Count
@@ -956,37 +1035,31 @@ fn create_job_refuses_materialization_fields_that_read_steps() {
     hostRequirements:
       amounts:
         - {name: amount.worker.vcpu, min: '{{m}}'}
-        - {name: amount.worker.gpu, min: '{{Steps.P.Output.Count}}'}
     parameterSpace:
       taskParameterDefinitions:
         - {name: X, type: INT, range: [1, 2]}
-        - {name: W, type: INT, range: '1-{{Steps.P.Output.Count}}'}
         - {name: Z, type: STRING, range: ['{{Steps.P.RawOutput.F}}']}
     script: {actions: {onRun: {command: echo, args: ['{{m}}']}}}
 ",
     ))
-    .expect_err("create_job does not bind Step inputs");
+    .expect("C is pending inputs");
+    let c = &job.steps[3];
     assert_eq!(
-        err.to_string(),
-        expected(&[
-            ("steps[3] -> let[1]", msg),
-            ("steps[3] -> hostRequirements", msg),
-            (
-                "steps[3] -> parameterSpace -> taskParameterDefinitions[1]",
-                msg
-            ),
-            (
-                "steps[3] -> parameterSpace -> taskParameterDefinitions[2]",
-                msg
-            ),
-        ])
+        c.binding,
+        pending(
+            Some(&["Steps.P.RawOutput.F"]),
+            Some(&["Steps.P.Output.Count"]),
+            Some(&["Steps.P.Output.Count"]),
+        )
     );
+    assert_eq!(c.parameter_space, None);
+    assert_eq!(c.host_requirements, None);
+    assert_eq!(c.resolved_symtab, None);
+    assert_eq!(c.tasks_known(), None);
 }
 
 #[test]
-fn create_job_refusal_is_reported_with_other_steps_errors() {
-    // A second consumer with a carried-forward violation: both Steps' errors
-    // are reported together.
+fn a_pending_step_does_not_hide_another_steps_errors() {
     let t = template_with(
         EXTENSIONS,
         "",
@@ -997,19 +1070,13 @@ fn create_job_refusal_is_reported_with_other_steps_errors() {
     script: {actions: {onRun: {command: echo, args: ['{{Steps.P.Output.Count}}'], timeout: '{{0 if Param.Run else 1}}'}}}
 ",
     );
-    let err = create(&t).expect_err("both Steps fail");
+    let err = create(&t).expect_err("D's timeout is 0");
     assert_eq!(
         err.to_string(),
-        expected(&[
-            (
-                "steps[3] -> let[0]",
-                "reads Steps.* symbols, which are bound at step input binding; create_job does not implement step input binding yet.",
-            ),
-            (
-                "steps[4] -> script -> actions -> onRun -> timeout",
-                "timeout must be > 0.",
-            ),
-        ])
+        expected(&[(
+            "steps[4] -> script -> actions -> onRun -> timeout",
+            "timeout must be > 0.",
+        )])
     );
 }
 
@@ -1253,43 +1320,49 @@ steps:
 }
 
 #[test]
-fn create_job_refuses_each_materialization_field_family() {
+fn each_materialization_field_family_puts_its_group_behind_its_producer() {
     // One consumer per field family, each reading Steps.* in that field
-    // alone, so a field the refusal scan missed would fail resolution with
-    // a different message.
+    // alone, so a field the group analysis missed would be evaluated at job
+    // creation and fail with an undefined symbol.
     let families = [
-        ("hostRequirements: {amounts: [{name: '{{Steps.P.RawOutput.F.name}}', min: 1}]}", "hostRequirements"),
-        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, min: '{{Steps.P.Output.Count}}'}]}", "hostRequirements"),
-        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, max: '{{Steps.P.Output.Count}}'}]}", "hostRequirements"),
-        ("hostRequirements: {attributes: [{name: '{{Steps.P.RawOutput.F.name}}', anyOf: [linux]}]}", "hostRequirements"),
-        ("hostRequirements: {attributes: [{name: attr.worker.os.family, anyOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "hostRequirements"),
-        ("hostRequirements: {attributes: [{name: attr.worker.os.family, allOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "hostRequirements"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: INT, range: '1-{{Steps.P.Output.Count}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-{{Steps.P.Output.Count}}', chunks: {defaultTaskCount: 1, rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: 1, targetRuntimeSeconds: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: [1.5, '{{Steps.P.Output.Count}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: '{{[Steps.P.Output.Count]}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: ['{{Steps.P.Output.Count}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: '{{[string(Steps.P.Output.Count)]}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: ['{{Steps.P.RawOutput.F}}']}]}", "parameterSpace -> taskParameterDefinitions[0]"),
-        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: '{{Steps.P.RawOutput.Fs}}'}]}", "parameterSpace -> taskParameterDefinitions[0]"),
+        ("hostRequirements: {amounts: [{name: '{{Steps.P.RawOutput.F.name}}', min: 1}]}", "host", "Steps.P.RawOutput.F"),
+        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, min: '{{Steps.P.Output.Count}}'}]}", "host", "Steps.P.Output.Count"),
+        ("hostRequirements: {amounts: [{name: amount.worker.vcpu, max: '{{Steps.P.Output.Count}}'}]}", "host", "Steps.P.Output.Count"),
+        ("hostRequirements: {attributes: [{name: '{{Steps.P.RawOutput.F.name}}', anyOf: [linux]}]}", "host", "Steps.P.RawOutput.F"),
+        ("hostRequirements: {attributes: [{name: attr.worker.os.family, anyOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "host", "Steps.P.RawOutput.F"),
+        ("hostRequirements: {attributes: [{name: attr.worker.os.family, allOf: ['{{Steps.P.RawOutput.F.name}}']}]}", "host", "Steps.P.RawOutput.F"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: INT, range: '1-{{Steps.P.Output.Count}}'}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: INT, range: [1, '{{Steps.P.Output.Count}}']}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-{{Steps.P.Output.Count}}', chunks: {defaultTaskCount: 1, rangeConstraint: CONTIGUOUS}}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: [1, '{{Steps.P.Output.Count}}'], chunks: {defaultTaskCount: 1, rangeConstraint: NONCONTIGUOUS}}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: 'CHUNK[INT]', range: '1-5', chunks: {defaultTaskCount: 1, targetRuntimeSeconds: '{{Steps.P.Output.Count}}', rangeConstraint: CONTIGUOUS}}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: [1.5, '{{Steps.P.Output.Count}}']}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: FLOAT, range: '{{[Steps.P.Output.Count]}}'}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: ['{{Steps.P.Output.Count}}']}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: STRING, range: '{{[string(Steps.P.Output.Count)]}}'}]}", "tasks", "Steps.P.Output.Count"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: ['{{Steps.P.RawOutput.F}}']}]}", "tasks", "Steps.P.RawOutput.F"),
+        ("parameterSpace: {taskParameterDefinitions: [{name: X, type: PATH, range: '{{Steps.P.RawOutput.Fs}}'}]}", "tasks", "Steps.P.RawOutput.Fs"),
+        ("stepEnvironments: [{name: E, enableIf: '{{Steps.P.Output.Count > 0}}', variables: {V: v}}]", "remaining", "Steps.P.Output.Count"),
+        ("stepEnvironments: [{name: E, script: {actions: {onEnter: {command: echo, timeout: '{{Steps.P.Output.Count}}'}}}}]", "remaining", "Steps.P.Output.Count"),
+        ("stepEnvironments: [{name: E, script: {actions: {onExit: {command: echo, cancelation: {mode: NOTIFY_THEN_TERMINATE, notifyPeriodInSeconds: '{{Steps.P.Output.Count}}'}}}}}]", "remaining", "Steps.P.Output.Count"),
     ];
     let mut steps = String::from(ECHO);
-    for (k, (field, _)) in families.iter().enumerate() {
+    for (k, (field, _, _)) in families.iter().enumerate() {
         steps.push_str(&format!(
             "  - name: D{k}\n    dependencies: [{{dependsOn: P}}]\n    {field}\n{ECHO}"
         ));
     }
-    let err = create(&template(&steps)).expect_err("every D Step is refused");
-    let msg = "reads Steps.* symbols, which are bound at step input binding; create_job does not implement step input binding yet.";
-    let paths: Vec<String> = families
-        .iter()
-        .enumerate()
-        .map(|(k, (_, at))| format!("steps[{}] -> {at}", k + 4))
-        .collect();
-    let errors: Vec<(&str, &str)> = paths.iter().map(|p| (p.as_str(), msg)).collect();
-    assert_eq!(err.to_string(), expected(&errors));
+    let job = create(&template(&steps)).expect("every D Step is pending");
+    for (k, (field, group, sym)) in families.iter().enumerate() {
+        let on: &[&str] = &[sym];
+        let want = match *group {
+            "host" => pending(None, Some(on), None),
+            "tasks" => pending(Some(on), None, None),
+            _ => pending(None, None, Some(on)),
+        };
+        assert_eq!(job.steps[k + 4].binding, want, "{field}");
+    }
 }
 
 // ══════════════════════════════════════════════════════════════

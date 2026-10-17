@@ -70,7 +70,7 @@ and its 5 per-variant inner struct types
 `template::JobParameterDefinition` and its 12 per-variant inner
 struct types (`JobStringParameterDefinition`, …,
 `JobListListIntParameterDefinition`), `template::RangeConstraint`,
-`template::IntRange`, `template::FloatRange`, `template::StringRange`,
+`template::IntRange`, `template::IntRangeItem`, `template::FloatRange`, `template::StringRange`,
 `template::FloatRangeItem`, `template::IntOrFormatString`,
 `template::ChunksDefinition`, `template::FlexInt`, `template::FlexFloat`,
 the 11 `*UserInterface` struct types (`StringUserInterface`,
@@ -200,6 +200,28 @@ pub fn evaluate_let_bindings(
 
 pub fn convert_environment(env: &template::Environment) -> job::Environment;
 
+/// CONTROL_FLOW: advance pending Step `step_index` of `job` with `inputs`
+/// (each producer in the Step's input_producers() whose state is known, on
+/// every call). A caller error is a BindingError holding a
+/// ModelError::Compatibility.
+pub fn advance_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    step_index: usize,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, job::BindingError>;
+
+/// CONTROL_FLOW: merge the `Steps.*` values a bound Step's host-scope
+/// fields read into its `resolved_symtab`. A caller error (Step not bound, a
+/// symbol not concrete) is a ModelError::Compatibility.
+pub fn attach_step_inputs(
+    step: &job::Step,
+    inputs: &job::StepInputs,
+) -> Result<job::Step, ModelError>;
+
 pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
@@ -226,13 +248,22 @@ that does not support an extension rejects such templates at decode
 via `supported_extensions` instead. Every expression
 evaluation it performs runs under the caller's evaluation budgets
 (`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`). With `CONTROL_FLOW`, it copies each Step's
-`outputVariables` onto `job::Step::output_variables`, refuses any
-`enableIf` other than `true`, which it does not evaluate yet, and refuses a
-Step whose step `let`, `hostRequirements`, or `parameterSpace` reads
-`Steps.*`, which needs step input binding (see
-[job-creation.md](job-creation.md)). Its own checks of the carried-forward
-fields see the `Steps.*` symbols of each Step's direct dependencies,
-unresolved, as template validation does.
+`outputVariables` onto `job::Step::output_variables`, decides each Job
+Environment's `enableIf`, and binds each Step as far as the values concrete
+at job creation allow, in dependency order: a Step may come back `Bound`,
+`Skipped`, or `PendingInputs` (see [job-creation.md](job-creation.md)
+§ Step input binding). Its own checks of the carried-forward fields see the
+`Steps.*` symbols of each Step's direct dependencies, concrete or
+unresolved.
+
+[`advance_step_binding`] moves a pending Step on as upstream values arrive:
+it evaluates each group of the Step whose inputs are now concrete, `enableIf`
+first, and returns the Step with more known, `Bound`, or `Skipped`, or the
+first group that failed as a [`job::BindingError`]. [`attach_step_inputs`]
+merges the concrete `Steps.*` values a bound Step's script and Step
+Environments read into its `resolved_symtab`, recording the path-typed ones
+in `job::Step::path_inputs`. Both take a [`job::StepInputs`] assembled with
+`StepInputs::add_producer`.
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,
@@ -499,8 +530,20 @@ These appear as fields on the `TaskParameterDefinition::*` variants:
 
 ```rust
 pub enum IntRange {
-    List(Vec<FlexInt>),       // a concrete list of integers
+    List(Vec<IntRangeItem>),  // a list of integers and format strings
     Expression(FormatString), // a range expression string to evaluate
+}
+
+/// An `<IntRangeList>` item: an `<integer>` or `<intstring>`, or a string
+/// containing `{{` (a `<TaskParameterStringValue>`, resolved at job
+/// creation with target type `int? | list[int]` under EXPR).
+pub enum IntRangeItem {
+    Int(i64),
+    FormatString(FormatString),
+}
+
+impl IntRangeItem {
+    pub fn as_int(&self) -> Option<i64>;
 }
 
 pub enum StringRange {
@@ -591,8 +634,10 @@ Session- and task-scope strings (in `script.actions`, `variables`,
 embedded file contents, etc.) remain as [`FormatString`] for the session
 runtime to resolve when worker state is available.
 
-All types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
-with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
+The job types below implement `Debug`, `Clone`, `PartialEq`, and `Hash`
+(the step input binding helpers `StepInputs`, `ProducerState`, and
+`BindingError` are working values, not parts of a job, and their derives
+are listed with them) with the invariant `a == b ⇒ hash(a) == hash(b)`. Equality is
 structural on the *created job*, not the source template: derived
 state such as `resolved_symtab` participates, and since its transport
 format preserves original float literals, jobs created from `1.0` vs
@@ -605,7 +650,9 @@ consistent with `-0.0 == 0.0`. Types whose (transitive) fields include
 not `Eq`, and so do the CONTROL_FLOW types that hold an
 `openjd_expr::value::Float64` (which implements `PartialEq` and `Hash`
 but not `Eq`): `OutputVariable`, `OutputConstraints`,
-`OutputAllowedValues`, `OutputBound`. The rest also implement `Eq`.
+`OutputAllowedValues`, `OutputBound`, as do `StepBinding`, `PendingBinding`,
+and `GroupState`, which can hold a `StepParameterSpace` and `HostRequirements`.
+The rest also implement `Eq`.
 
 ```rust
 pub struct job::Job {
@@ -638,12 +685,27 @@ pub struct job::Step {
     pub resolved_symtab: Option<SerializedSymbolTable>,
     /// CONTROL_FLOW: the Step's output declarations, or `None`.
     pub output_variables: Option<Vec<OutputVariable>>,
-    /// CONTROL_FLOW: the binding state. `Bound` for every Step
-    /// `create_job` produces today.
+    /// CONTROL_FLOW: the binding state. A pending or skipped Step keeps
+    /// `parameter_space`, `host_requirements`, and `resolved_symtab` `None`.
     pub binding: StepBinding,
     /// CONTROL_FLOW: path-typed `Steps.*` values stored in
-    /// `resolved_symtab` in submission form. Empty today.
+    /// `resolved_symtab` in submission form, recorded by
+    /// `attach_step_inputs`.
     pub path_inputs: Vec<PathInput>,
+}
+
+impl job::Step {
+    /// CONTROL_FLOW: the Task count once Tasks are known (bound, or pending
+    /// with `tasks: Known`); `Some(0)` when skipped; `None` otherwise.
+    pub fn tasks_known(&self) -> Option<u64>;
+    /// CONTROL_FLOW: what is known of a pending Step, per group; `None`
+    /// for a bound or skipped Step.
+    pub fn binding_report(&self) -> Option<BindingReport>;
+    /// CONTROL_FLOW: the producers whose `Steps.*` symbols the Step reads:
+    /// in its script and Step Environments, and for a pending Step in any
+    /// group, known or not. What a caller passes on each binding call.
+    /// Sorted; empty for a skipped Step.
+    pub fn input_producers(&self) -> Vec<String>;
 }
 
 pub struct job::StepScript {
@@ -670,6 +732,10 @@ pub struct job::Environment {
     pub variables: Option<HashMap<String, FormatString>>,
     /// Filtered symbol table with only the symbols this environment references.
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    /// CONTROL_FLOW: `false` when its `enableIf` evaluated to `false`; the
+    /// caller leaves it out of the Session (openjd-sessions does not read it).
+    /// Serialized only when `false`; defaults to `true`.
+    pub enabled: bool,
 }
 
 pub struct job::EnvironmentScript {
@@ -772,19 +838,118 @@ pub enum job::OutputBound {
     Float(openjd_expr::value::Float64),
 }
 
-/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED;
-/// `waiting_on` is serialized as "waitingOn".
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED; a
+/// PENDING_INPUTS value holds the PendingBinding's fields beside "state".
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "SCREAMING_SNAKE_CASE", rename_all_fields = "camelCase")]
 pub enum job::StepBinding {
     #[default]
     Bound,
-    PendingInputs { waiting_on: Vec<String> },
+    PendingInputs(PendingBinding),
     Skipped,
 }
 
 impl job::StepBinding {
     pub fn is_bound(&self) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::PendingBinding {
+    pub enablement: GroupState<()>,
+    pub tasks: GroupState<Option<StepParameterSpace>>,
+    pub host_requirements: GroupState<Option<HostRequirements>>,
+    pub remaining: GroupState<()>,
+    /// The producers any group reads, sorted; skipped when empty.
+    pub producers: Vec<String>,
+}
+
+/// Externally tagged in camelCase: {"waiting": {"on": [...]}}, {"known": ...}.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum job::GroupState<T> {
+    /// `on`: the group's own `Steps.<Step>.<Member>.<Name>` inputs that are
+    /// not concrete, sorted (not counting the enablement group's).
+    Waiting { on: Vec<String> },
+    Known(T),
+}
+
+impl<T> job::GroupState<T> {
+    pub fn is_known(&self) -> bool;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive] // TASK_DEPENDENCIES would add a Task graph group
+pub enum job::MaterializationGroup {
+    Enablement,
+    TaskEnumeration,
+    HostSelection,
+    Remaining,
+}
+/// "enablement", "Task enumeration", "host selection", "remaining".
+impl Display for job::MaterializationGroup;
+
+/// A group that failed, which fails its Step at once.
+#[derive(Debug)]
+pub struct job::BindingError {
+    pub step: String,
+    pub group: MaterializationGroup,
+    pub errors: Vec<ModelError>,
+}
+impl job::BindingError {
+    /// Every error is a ModelError::Compatibility: a caller error, which
+    /// does not fail the Step. `false` when `errors` is empty.
+    pub fn is_caller_error(&self) -> bool;
+}
+/// "Step '<step>' failed in its <group> group:" (for a caller error,
+/// "Binding Step '<step>' was refused in its <group> group:") then each
+/// error on its own line.
+impl Display for job::BindingError;
+impl std::error::Error for job::BindingError;
+
+#[derive(Debug, Clone, Copy)]
+pub enum job::ProducerState<'a> {
+    /// Tasks known, not finished: TaskParam and TaskRawParam only.
+    TasksKnown,
+    /// Each Task's outputs, in iteration order (chunking disabled).
+    Succeeded { task_outputs: &'a [outputs::TaskOutputs] },
+    /// Every symbol of the producer is null.
+    Skipped,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct job::StepInputs { /* private */ }
+
+impl job::StepInputs {
+    pub fn new() -> Self;
+    /// Add or replace a producer's `Steps.*` values, typed by the RFC's
+    /// table. Path-typed values are held only in their Raw form. TasksKnown
+    /// on a skipped producer is Skipped. A caller error is a
+    /// ModelError::Compatibility.
+    pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
+        -> Result<(), ModelError>;
+    /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
+    /// symbol of a skipped producer; `None` when not concrete and for a
+    /// path-typed Output or TaskParam (derived on the worker host).
+    pub fn get(&self, symbol: &str) -> Option<&ExprValue>;
+    /// Concrete, including a path-typed Output or TaskParam whose Raw twin is.
+    pub fn is_concrete(&self, symbol: &str) -> bool;
+    /// The producers added, sorted.
+    pub fn producers(&self) -> impl Iterator<Item = &str>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::GroupReport {
+    Known,
+    Waiting { on: Vec<String>, for_enablement: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct job::BindingReport {
+    pub enablement: GroupReport,
+    pub tasks: GroupReport,
+    pub host_requirements: GroupReport,
+    pub remaining: GroupReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1014,7 +1179,10 @@ impl Default for ModelProfile { /* ... */ }
 pub struct CallerLimits {
     pub max_step_count: Option<usize>,
     pub max_env_count: Option<usize>,
+    /// With CONTROL_FLOW, checked as each Step's Tasks become known.
     pub max_task_count: Option<u64>,
+    /// The Task count of one Step, checked when its Tasks become known.
+    pub max_step_task_count: Option<u64>,
     pub max_step_script_size: Option<usize>,
     pub max_environment_size: Option<usize>,
     pub max_template_size: Option<usize>,
@@ -1235,7 +1403,10 @@ pub enum ModelError {
     /// full `ExpressionError` with its kind and source context.
     Expression(openjd_expr::ExpressionError),
 
-    /// Incompatible env-template parameter merges (§1.2.1).
+    /// Incompatible env-template parameter merges (§1.2.1); a create_job
+    /// context that does not cover the template; with CONTROL_FLOW, a caller
+    /// error in step input binding (advance_step_binding,
+    /// StepInputs::add_producer, attach_step_inputs).
     Compatibility(String),
 
     /// The `specificationVersion` field named a revision this library
@@ -1606,6 +1777,8 @@ Enums that are marked `#[non_exhaustive]` today:
 - `ModelError`
 - `outputs::OutputErrorKind`, so a later change can split a kind without
   breaking callers that match on it
+- `job::MaterializationGroup`, which `TASK_DEPENDENCIES` would extend with a
+  Task graph group
 
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem
@@ -1617,6 +1790,9 @@ The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 (the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
-(the RFC's two directive forms). A change to the RFC that adds
+(the RFC's two directive forms), `job::GroupState` and `job::GroupReport`
+(the two states of a group), `job::ProducerState` (the states a producer
+contributes inputs in), and `template::IntRangeItem` (the two forms of an
+`<IntRangeList>` item). A change to the RFC that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows.

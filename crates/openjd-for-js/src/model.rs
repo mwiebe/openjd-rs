@@ -234,6 +234,9 @@ impl JsCallerLimits {
             max_step_count: self.max_step_count,
             max_env_count: self.max_env_count,
             max_task_count: self.max_task_count,
+            // The per-Step limit belongs to CONTROL_FLOW step input binding,
+            // which the JS bindings do not expose yet.
+            max_step_task_count: None,
             max_step_script_size: self.max_step_script_size,
             max_environment_size: self.max_environment_size,
             max_template_size: self.max_template_size,

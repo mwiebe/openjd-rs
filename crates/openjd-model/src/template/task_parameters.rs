@@ -84,8 +84,52 @@ impl TaskParameterDefinition {
 /// Int range: either a list of values or a range expression string.
 #[derive(Debug, Clone)]
 pub enum IntRange {
-    List(Vec<FlexInt>),
+    /// An `<IntRangeList>`.
+    List(Vec<IntRangeItem>),
+    /// An `<IntRangeExpr>` format string.
     Expression(FormatString),
+}
+
+/// One item of an `<IntRangeList>` (Template Schemas §3.4.1.1).
+///
+/// An `<integer>` or `<intstring>` is [`Int`](Self::Int). A string that
+/// contains `{{` is a `<TaskParameterStringValue>`, kept as a
+/// [`FormatString`](Self::FormatString) and resolved at job creation (or at
+/// step input binding with `CONTROL_FLOW`). As a list item it resolves with
+/// target type `int? | list[int]` (Expression Language §1.3.2): `null` skips
+/// the item and a list is flattened inline. Any other string must parse as
+/// an integer, as an `<intstring>` does.
+#[derive(Debug, Clone)]
+pub enum IntRangeItem {
+    /// An `<integer>` or `<intstring>`.
+    Int(i64),
+    /// A `<TaskParameterStringValue>`: a string containing `{{`.
+    FormatString(FormatString),
+}
+
+impl IntRangeItem {
+    /// The value of an [`Int`](Self::Int) item, or `None` for a format string.
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Self::Int(i) => Some(*i),
+            Self::FormatString(_) => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for IntRangeItem {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let val = serde_json::Value::deserialize(deserializer)?;
+        if let serde_json::Value::String(s) = &val {
+            if s.contains("{{") {
+                return FormatString::new(s)
+                    .map(Self::FormatString)
+                    .map_err(serde::de::Error::custom);
+            }
+        }
+        let FlexInt(i) = serde_json::from_value(val).map_err(serde::de::Error::custom)?;
+        Ok(Self::Int(i))
+    }
 }
 
 impl<'de> Deserialize<'de> for IntRange {
@@ -93,7 +137,7 @@ impl<'de> Deserialize<'de> for IntRange {
         let val = serde_json::Value::deserialize(deserializer)?;
         match val {
             serde_json::Value::Array(seq) => {
-                let items: Result<Vec<FlexInt>, _> = seq
+                let items: Result<Vec<IntRangeItem>, _> = seq
                     .into_iter()
                     .map(|v| serde_json::from_value(v).map_err(serde::de::Error::custom))
                     .collect();

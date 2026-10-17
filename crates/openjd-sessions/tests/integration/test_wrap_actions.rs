@@ -57,6 +57,7 @@ fn plain_env(name: &str, on_enter: Option<Action>, on_exit: Option<Action>) -> E
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -91,6 +92,7 @@ fn wrap_env(
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -1394,6 +1396,7 @@ fn wrap_env_with_files(
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     }
 }
 
@@ -2118,6 +2121,7 @@ async fn wrap_env_file_same_name_inner_shadows_correctly() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     session
         .enter_environment(&inner, None, None, None)
@@ -2207,6 +2211,7 @@ async fn wrap_env_file_different_name_inner_cannot_reference_wrapper_file() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let result = session.enter_environment(&inner, None, None, None).await;
     assert!(
@@ -2513,6 +2518,7 @@ async fn wrap_env_file_does_not_leak_into_wrapped_inner_exit_scope() {
         }),
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let inner_id = session
         .enter_environment(&inner, None, None, None)
