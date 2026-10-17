@@ -505,8 +505,11 @@ creation), and a `StepInputs`:
      the Task-count limits (below). Every error is located, as RFC 0010 §How a
      Step is bound item 3 asks ("the failure message names the field and the
      expression"). A range string that fails to parse after its expressions
-     are evaluated names the resolved text (`Expected ':' or ',' in '1-0.5'`)
-     rather than the expression. The paths: a range or `chunks` error at
+     are evaluated names both, and each symbol it reads that is `null`:
+     `'1-{{Steps.P.Output.V}}' resolved to '1-' ('Steps.P.Output.V' is null),
+     which is not a range expression: Unexpected end of expression: '1-'`.
+     A FLOAT list item whose typed resolution and text parse both fail keeps
+     the typed resolution's message (its type and caret). The paths: a range or `chunks` error at
      `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
      `-> chunks`), with the expression and caret where evaluating one failed;
      a combination error at `steps[i] -> parameterSpace`; a Task-count limit
@@ -536,10 +539,11 @@ value, so this is observably the RFC's "evaluated once".
 **At job creation** (`instantiate_steps_with_binding`), Steps are bound in
 dependency order (`validate_v2023_09::step_dependency_order`: Kahn's algorithm
 with ties broken by template index), and stored in template order. Each Step's
-`StepInputs` come from the Steps already bound, for the producers its groups read: a
+`StepInputs` come from the Steps processed before it, for the producers its groups read: a
 skipped producer contributes `null`s, and a producer whose Tasks are known (bound, or
-pending with `tasks: Known`) its `TaskParam`s. A producer the Step's groups do not read is
-not added, because building its `TaskParam` lists walks its whole parameter space. `Output` is never concrete at creation
+pending with `tasks: Known`) its `TaskParam`s when the groups read its `TaskParam` or
+`TaskRawParam`. Nothing else is added, because building a producer's `TaskParam` lists
+walks its whole parameter space. `Output` is never concrete at creation
 except as a skipped producer's `null`. A group failure is reported by the
 error it holds:
 
@@ -549,9 +553,10 @@ error it holds:
   template order, as one `ModelValidation` error. So
   `violations_across_steps_and_environments_are_reported_together` keeps
   its errors.
-* An `enableIf` error, a range or host requirement error, a repeated
-  `CHUNK[INT]` value, and a Task-count limit abort `create_job` with that
-  error alone, as an invalid parameter does — also for a Step that would
+* A Step's or a Job Environment's `enableIf` error, a range or host
+  requirement error, a repeated `CHUNK[INT]` value, and a Task-count limit
+  abort `create_job` with that error alone (a Step Environment's `enableIf`
+  belongs to the remaining group, so its error is collected), as an invalid parameter does — also for a Step that would
   stay pending. Because Steps are bound in dependency order, the error
   reported is the first in that order.
 
@@ -570,7 +575,8 @@ limit of 4 Tasks per Step.`), and `max_task_count` against the Step's Tasks
 plus the committed count of the other Steps whose Tasks are known (`Total
 task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the
 Steps whose Tasks are known before it have 2.`). In `create_job` the
-committed count is the running total over the Steps already bound; for
+committed count is the running total over the Steps processed before it
+whose Tasks are known (bound, or pending with `tasks: Known`); for
 `advance_step_binding` the caller passes it. Without `CONTROL_FLOW`,
 `max_step_task_count` is checked for every Step after it is instantiated.
 

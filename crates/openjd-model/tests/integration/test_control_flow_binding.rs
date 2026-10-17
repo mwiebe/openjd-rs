@@ -1601,3 +1601,71 @@ fn attach_step_inputs_stores_path_values_as_strings() {
         ExprType::list(ExprType::list(ExprType::STRING))
     );
 }
+
+#[test]
+fn a_null_in_a_range_string_is_named() {
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    enableIf: false
+    outputVariables: [{{name: V, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '1-{{{{Steps.P.Output.V}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("null in the range");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "'1-{{Steps.P.Output.V}}' resolved to '1-' ('Steps.P.Output.V' is null), which is not a range expression: Unexpected end of expression: '1-'",
+        )])
+    );
+    // Without a null, the expression and its text are named.
+    let template = one_param(
+        CF,
+        "  - {name: F, type: FLOAT, default: 0.5}\n",
+        "{name: X, type: INT, range: '1-{{Param.F}}'}",
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("not a range");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "'1-{{Param.F}}' resolved to '1-0.5', which is not a range expression: Expected ':' or ',' in '1-0.5'",
+        )])
+    );
+}
+
+#[test]
+fn a_float_list_item_of_the_wrong_type_keeps_the_typed_message() {
+    let params = "  - {name: L, type: 'LIST[STRING]', default: [a]}\n";
+    let x = "{name: X, type: FLOAT, range: ['{{Param.L}}']}";
+    let err = Fixture::new(&one_param(CF, params, x), &[])
+        .create()
+        .expect_err("strings are not floats");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "Cannot coerce list[string] to float | list[float] | nulltype\n  Param.L\n  ~~~~~~^",
+        )])
+    );
+    // Without CONTROL_FLOW the earlier message is kept.
+    let err = Fixture::new(&one_param(EXPR_ONLY, params, x), &[])
+        .create()
+        .expect_err("strings are not floats");
+    assert_eq!(
+        err.to_string(),
+        "Expression error: Cannot parse '[\"a\"]' as float"
+    );
+}

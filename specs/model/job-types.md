@@ -259,7 +259,8 @@ names (`"Int"`, `"ListString"`), as `job::JobParameter` already serializes them.
 entered, its `variables` not set); the caller that builds the stack does this, and
 `openjd-sessions` does not read the field. It is serialized only when `false` and defaults to `true`, so
 existing jobs read back unchanged. `create_job` decides a Job Environment's; the remaining
-group of step input binding decides a Step Environment's.
+group of step input binding decides a Step Environment's, so on a pending Step whose
+remaining group is not known yet it is `true` whatever its `enableIf` will give.
 
 ### StepScript, StepActions, Action
 
