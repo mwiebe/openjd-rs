@@ -159,21 +159,25 @@ fn evaluate(
     if value == ExprValue::Null {
         return Ok(None);
     }
+    // These failures have no caret, so the message ends with the value
+    // format string as written, to name the expression (RFC 0010 §Job
+    // outputs item 3).
+    let with_expression = |message: String| format!("{message}\n  {}", output.value.raw());
     let value = if value.expr_type() == ty {
         value
     } else {
         value.clone().coerce(&ty, PathFormat::Posix).map_err(|e| {
-            fail(format!(
+            fail(with_expression(format!(
                 "value {} does not convert to {}: {e}",
                 crate::outputs::quote(&value.to_display_string()),
                 output.declaration.param_type.as_spec_str()
-            ))
+            )))
         })?
     };
     output
         .declaration
         .check_constraints_as(&value, LABEL)
-        .map_err(|m| located(index, m))?;
+        .map_err(|m| located(index, with_expression(m)))?;
     Ok(Some(value))
 }
 

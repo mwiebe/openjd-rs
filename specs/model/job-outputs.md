@@ -71,7 +71,9 @@ A job output is evaluated in three steps, at Job creation or through
    properties are not checked.
 2. **Convert.** A result whose type is not the declared type is converted with EXPR's
    implicit coercion (§1.2.3), as a Step's output values are
-   ([outputs.md](outputs.md)).
+   ([outputs.md](outputs.md)). A string converted to `path` keeps its text as written,
+   labelled with the POSIX path format (RFC 0010 §Job outputs item 6: it is whatever the
+   string holds).
 3. **Check.** The value is checked against the declared constraint properties with
    `job::OutputVariable::check_constraints`, the check a Step's outputs use. Only the
    declared properties apply.
@@ -84,6 +86,10 @@ A failure at any step is a `ModelError::ModelValidation` with one error at
 | The expression fails, including `fail(...)` and a whole-field value that does not coerce | EXPR's message (`too few`, `Cannot coerce string to int?`), then the expression and a caret on the lines below it |
 | Text that does not convert | `value 'x4' does not convert to INT: Cannot convert 'x4' to int: invalid digit found in string` |
 | A constraint violation | the output variable check's message with `Job output` for `Output variable`, such as `value 4 exceeds maximum 3` |
+
+The conversion and constraint messages have no caret, so they end with a line holding the
+`value` as written (`\n  {{Param.N}}`), which names the expression as RFC 0010 §Job
+outputs item 3 asks.
 
 The size limit of RFC 0010 §Job outputs item 7 (at least 1 MiB of job output values per
 Job) is not enforced by the model: a scheduler applies its own.
