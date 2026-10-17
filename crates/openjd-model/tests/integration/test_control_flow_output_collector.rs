@@ -1227,6 +1227,42 @@ fn coercion_detail_is_cut_and_escaped() {
 }
 
 #[test]
+fn long_float_spellings_are_cut_in_constraint_messages() {
+    let spelled = format!("5.{}", "1".repeat(5000));
+    let cut = &spelled[..200];
+    let mut c = collector(&["{name: F, type: FLOAT, maxValue: 1.0}"]);
+    let e = file(&mut c, "F", None, spelled.as_bytes()).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!("Output variable 'F': value {cut}... exceeds maximum 1.0")
+    );
+    let mut c = collector(&["{name: F, type: FLOAT, allowedValues: [1.0]}"]);
+    assert_eq!(
+        err(&mut c, &format!("F={spelled}"), OutputErrorKind::Constraint),
+        format!("Output variable 'F': value {cut}... is not in allowed values")
+    );
+    let mut c = collector(&["{name: L, type: 'LIST[FLOAT]', item: {minValue: 9.0}}"]);
+    assert_eq!(
+        err(
+            &mut c,
+            &format!("L=[{spelled}]"),
+            OutputErrorKind::Constraint
+        ),
+        format!("Output variable 'L': item[0] {cut}... is less than minimum 9.0")
+    );
+}
+
+#[test]
+fn an_untyped_list_is_quoted_re_serialized() {
+    // The JSON is quoted as serde_json writes it compactly, not as written.
+    let mut c = collector(&["{name: 'N', type: INT}"]);
+    assert_eq!(
+        err(&mut c, "N=[ 1.50 , \"a\" ]", OutputErrorKind::Conversion),
+        "Output variable 'N': value (list) '[1.5,\"a\"]' does not convert to int"
+    );
+}
+
+#[test]
 fn coercion_detail_is_cut() {
     let long = "y".repeat(300);
     let mut c = collector(&["{name: I, type: INT}"]);

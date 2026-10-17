@@ -51,7 +51,11 @@ Source: `crates/openjd-model/src/outputs/` (`mod.rs`, `directive.rs`, `convert.r
 * A value that begins with `@` is a file path: the rest of the line, with trailing spaces
   and tabs removed (leading ones are kept, since they follow the `@`). It must not be
   empty. Anything else is the JSON text with surrounding spaces and tabs removed; it must
-  not be empty, and it is not parsed here.
+  not be empty, and it is not parsed here. Only spaces and tabs are removed, as `<WS>`
+  says; other JSON whitespace around the value (a stray `\r` left by a `\r\r\n` line end)
+  stays in the text, and `serde_json` then accepts it as JSON-text whitespace (RFC 8259
+  §2). The RFC's `<JSON>` does not say whether that is allowed; the prototype allows it,
+  and the characters count toward the value's size.
 
 The result is `OutputDirective::Inline { name, task, json }` or
 `OutputDirective::File { name, task, path }`, borrowing from the payload. Grammar errors
@@ -256,7 +260,10 @@ show the name as written on the directive line, which the parser does not limit,
 collector messages the declared name, which only a hand-built declaration can make
 unusual. An array whose elements do not form a typed list (`[1, "a"]` against `INT`, an
 empty array, or arrays of empty arrays, which EXPR types with `nulltype`) is described as
-a `list` or an `empty list`, with the inline value's JSON text quoted and no EXPR detail.
+a `list` or an `empty list`, with no EXPR detail. For an inline value its JSON is quoted
+as `serde_json` writes it compactly, so spacing and number spellings may differ from the
+directive (`[ 1.50 , "a" ]` is quoted `'[1.5,"a"]'`). A float in a constraint message
+shows its spelling, cut to 200 characters like quoted text.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
 the converted invalid value follows the RFC instead. The runtime adds the file path and

@@ -386,6 +386,9 @@ impl OutputVariable {
         subject: Subject,
     ) -> Result<(), String> {
         let f = v.value();
+        // A float keeps its written spelling, which can be as long as the
+        // value's text, so the message shows it cut.
+        let v = crate::outputs::shorten(&v.to_display_string());
         if let Some(OutputBound::Float(min)) = &c.min_value {
             if f < min.value() {
                 return Err(self.msg(format_args!("{subject} {v} is less than minimum {min}")));
