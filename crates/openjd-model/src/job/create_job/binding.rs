@@ -835,11 +835,19 @@ pub(super) fn creation_inputs(
     step_index: usize,
     built: &[Option<job::Step>],
 ) -> Result<StepInputs, ModelError> {
-    // Only the producers the Step's groups read: building a producer's
-    // TaskParam lists walks its whole parameter space.
-    let read: BTreeSet<String> = StepGroups::of(&jt.steps[step_index])
-        .producers()
-        .into_iter()
+    // Only the producers the Step's groups read, and a producer's TaskParam
+    // lists only when they read its TaskParam or TaskRawParam: building
+    // them walks the producer's whole parameter space, and its Output is
+    // never concrete here except as a skipped producer's `null`.
+    let groups = StepGroups::of(&jt.steps[step_index]);
+    let read: BTreeSet<String> = groups.producers().into_iter().collect();
+    let reads_task_params: BTreeSet<String> = groups
+        .all()
+        .filter_map(|s| {
+            let mut parts = s.split('.').skip(1);
+            let p = parts.next()?;
+            matches!(parts.next()?, "TaskParam" | "TaskRawParam").then(|| p.to_string())
+        })
         .collect();
     let mut inputs = StepInputs::new();
     for dep in jt.steps[step_index].dependencies.iter().flatten() {
@@ -856,7 +864,7 @@ pub(super) fn creation_inputs(
         };
         match &producer.binding {
             StepBinding::Skipped => inputs.add_producer(producer, job::ProducerState::Skipped)?,
-            _ if producer.tasks_known().is_some() => {
+            _ if producer.tasks_known().is_some() && reads_task_params.contains(&producer.name) => {
                 inputs.add_producer(producer, job::ProducerState::TasksKnown)?
             }
             _ => {}

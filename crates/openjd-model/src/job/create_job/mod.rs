@@ -114,9 +114,10 @@ impl EvalBudgets {
 /// order, because a Step skipped here makes its `null` symbols concrete and
 /// a Step whose Tasks are known makes its `TaskParam` symbols concrete. A
 /// step `let` error and the remaining group's check errors are collected and
-/// reported with the others, in template order; an `enableIf`, range, or
-/// host requirement error, a repeated `CHUNK[INT]` value in a Step with
-/// outputs, or a Task-count limit aborts at once. `max_task_count` counts the
+/// reported with the others, in template order; a Step's or Job
+/// Environment's `enableIf` error, a range or host requirement error, a
+/// repeated `CHUNK[INT]` value in a Step with outputs, or a Task-count limit
+/// aborts at once. `max_task_count` counts the
 /// Steps whose Tasks are known at creation. Each Job Environment's
 /// `enableIf` is decided here and sets its
 /// [`enabled`](job::Environment::enabled); a disabled one is not checked.
