@@ -28,7 +28,7 @@ pub enum ModelError {
 | `ModelValidation` | Semantic validation failure: template parsed but violates spec rules. Contains structured `ValidationErrors` with per-field paths |
 | `FormatStringError` | Format string interpolation error, with optional source position for diagnostics. `source` holds the `ExpressionError` behind the failure, and `Error::source()` returns it, when `create_job` fails to resolve the job name, a host-requirement amount or attribute name, an amount bound, or an attribute value, and when the error converts from a `FormatStringValidationError` that carries one; otherwise it is `None`. `chunks` field resolution failures, and an amount bound whose multi-segment text is not a valid or finite number, are reported as `Expression` with a message-only error instead |
 | `Expression` | Expression evaluation error (from `openjd-expr`) |
-| `Compatibility` | Parameter merge conflicts between templates; a `create_job` context that does not cover the template; with `CONTROL_FLOW`, a caller error in step input binding (`advance_step_binding`, `StepInputs::add_producer`, `attach_step_inputs`), which says nothing about the Step |
+| `Compatibility` | Parameter merge conflicts between templates; a `create_job` context that does not cover the template; with `CONTROL_FLOW`, a caller error in step input binding (`advance_step_binding`, `StepInputs::add_producer`, `attach_step_inputs`), which says nothing about the Step, or in job output evaluation (`evaluate_job_output`), which says nothing about the Job |
 | `UnsupportedSchema` | Unknown `specificationVersion` value |
 
 Marked `#[non_exhaustive]` to allow adding variants without breaking downstream code.
