@@ -138,6 +138,7 @@ pub struct PendingBinding {
     pub tasks: GroupState<Option<StepParameterSpace>>,    // Known(None): no parameterSpace, one Task
     pub host_requirements: GroupState<Option<HostRequirements>>,
     pub remaining: GroupState<()>,                        // Step Environments and script
+    pub producers: Vec<String>,   // producers any group reads, sorted; skipped when empty
 }
 
 pub enum GroupState<T> {
@@ -236,7 +237,8 @@ fields as:
 ],
 "binding": {"state": "PENDING_INPUTS", "enablement": {"known": null},
             "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
-            "hostRequirements": {"known": null}, "remaining": {"known": null}}
+            "hostRequirements": {"known": null}, "remaining": {"known": null},
+            "producers": ["P"]}
 ```
 
 and a bound Step whose script reads a path-typed output records it as:

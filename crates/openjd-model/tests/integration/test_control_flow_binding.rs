@@ -781,6 +781,7 @@ fn add_producer_refuses_a_state_that_does_not_match() {
         tasks: GroupState::Waiting { on: vec![] },
         host_requirements: GroupState::Known(None),
         remaining: GroupState::Known(()),
+        producers: vec![],
     });
     assert_eq!(
         err(inputs.add_producer(&pending, ProducerState::TasksKnown)),

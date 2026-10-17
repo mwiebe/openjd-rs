@@ -160,6 +160,15 @@ impl StepGroups {
         groups
     }
 
+    /// The producers whose symbols a group of the Step reads, sorted.
+    fn producers(&self) -> Vec<String> {
+        let set: BTreeSet<String> = self
+            .all()
+            .filter_map(|s| s.split('.').nth(1).map(str::to_string))
+            .collect();
+        set.into_iter().collect()
+    }
+
     /// Every `Steps.*` symbol a group of the Step reads.
     fn all(&self) -> impl Iterator<Item = &String> {
         self.enablement
@@ -319,7 +328,7 @@ pub(super) fn bind_step(
                 return Err(GroupFailure::abort(
                     group,
                     ModelError::Compatibility(format!(
-                        "the {group} group of Step '{}' was evaluated with '{sym}', which the given inputs do not hold; pass every producer's values given before, as well as new ones.",
+                        "the {group} group of Step '{}' was evaluated with '{sym}', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped.",
                         st.name
                     )),
                 ));
@@ -369,6 +378,7 @@ pub(super) fn bind_step(
                 remaining: GroupState::Waiting {
                     on: missing(&groups.remaining, inputs),
                 },
+                producers: groups.producers(),
             });
             return Ok(step);
         }
@@ -480,6 +490,7 @@ pub(super) fn bind_step(
                 tasks,
                 host_requirements,
                 remaining,
+                producers: groups.producers(),
             });
             Ok(step)
         }
@@ -823,8 +834,8 @@ pub(super) fn creation_inputs(
     // Only the producers the Step's groups read: building a producer's
     // TaskParam lists walks its whole parameter space.
     let read: BTreeSet<String> = StepGroups::of(&jt.steps[step_index])
-        .all()
-        .filter_map(|s| s.split('.').nth(1).map(str::to_string))
+        .producers()
+        .into_iter()
         .collect();
     let mut inputs = StepInputs::new();
     for dep in jt.steps[step_index].dependencies.iter().flatten() {
@@ -878,12 +889,16 @@ pub(super) fn creation_inputs(
 /// created from. `committed_task_count` is the number of Tasks of the other
 /// Steps whose Tasks are known, for `CallerLimits::max_task_count`.
 ///
-/// `inputs` is cumulative: it must hold every producer's values given in
-/// earlier calls for this Step, as well as new ones. Step `let` bindings are
-/// evaluated on demand, only those the group being evaluated uses, and are
-/// evaluated again in later calls rather than cached, which gives the same
-/// values as long as the inputs do; a known group's input missing from
-/// `inputs` is refused rather than reported as the Step failing. A bound
+/// `inputs` must hold, on every call, each producer in the Step's
+/// [`input_producers()`](job::Step::input_producers) whose state is known:
+/// whose Tasks are known ([`ProducerState::TasksKnown`](job::ProducerState::TasksKnown)),
+/// or that has succeeded or been skipped. That includes producers whose
+/// values `create_job` used, and those of groups already known, because Step
+/// `let` bindings are evaluated on demand, only those the group being
+/// evaluated uses, and are evaluated again in later calls rather than
+/// cached; this gives the same values as long as the inputs do. A known
+/// group's input missing from `inputs` is refused rather than reported as
+/// the Step failing. A bound
 /// Step that reads `Steps.*` in its script or Step Environments needs
 /// [`attach_step_inputs`] before its Tasks run.
 ///

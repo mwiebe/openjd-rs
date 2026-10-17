@@ -464,6 +464,11 @@ fn element_type(ty: JobParameterType) -> Option<JobParameterType> {
 /// evaluated as soon as its own inputs are concrete. While some group has not
 /// evaluated, the Step is [`PendingInputs`](Self::PendingInputs) and its
 /// [`PendingBinding`] records what is known so far.
+// The pending state is much larger than the others. Each `job::Step` holds
+// one `StepBinding`, beside fields of the same size (its parameter space and
+// host requirements), so boxing it would add an indirection to the public
+// type, which callers match and build, without saving much.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(
     tag = "state",
@@ -515,6 +520,13 @@ pub struct PendingBinding {
     /// Environment's [`enabled`](super::Environment::enabled) is decided;
     /// its other values are needed only to run the Step's Tasks.
     pub remaining: GroupState<()>,
+    /// The producers whose `Steps.*` symbols any of the Step's groups read,
+    /// sorted, whether or not that group is known yet: every later binding
+    /// call needs their values again (see
+    /// [`Step::input_producers`](super::Step::input_producers)). Serialized
+    /// only when not empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producers: Vec<String>,
 }
 
 /// One materialization group of a [`PendingBinding`].

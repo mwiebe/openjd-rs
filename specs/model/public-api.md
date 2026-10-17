@@ -201,7 +201,8 @@ pub fn evaluate_let_bindings(
 pub fn convert_environment(env: &template::Environment) -> job::Environment;
 
 /// CONTROL_FLOW: advance pending Step `step_index` of `job` with `inputs`
-/// (cumulative). A caller error is a BindingError holding a
+/// (each producer in the Step's input_producers() whose state is known, on
+/// every call). A caller error is a BindingError holding a
 /// ModelError::Compatibility.
 pub fn advance_step_binding(
     job_template: &JobTemplate,
@@ -698,9 +699,10 @@ impl job::Step {
     /// CONTROL_FLOW: what is known of a pending Step, per group; `None`
     /// for a bound or skipped Step.
     pub fn binding_report(&self) -> Option<BindingReport>;
-    /// CONTROL_FLOW: the producers whose values the Step still needs: those
-    /// its script and Step Environments read, and those its waiting groups
-    /// wait on. Sorted; empty for a skipped Step.
+    /// CONTROL_FLOW: the producers whose `Steps.*` symbols the Step reads:
+    /// in its script and Step Environments, and for a pending Step in any
+    /// group, known or not. What a caller passes on each binding call.
+    /// Sorted; empty for a skipped Step.
     pub fn input_producers(&self) -> Vec<String>;
 }
 
@@ -856,6 +858,8 @@ pub struct job::PendingBinding {
     pub tasks: GroupState<Option<StepParameterSpace>>,
     pub host_requirements: GroupState<Option<HostRequirements>>,
     pub remaining: GroupState<()>,
+    /// The producers any group reads, sorted; skipped when empty.
+    pub producers: Vec<String>,
 }
 
 /// Externally tagged in camelCase: {"waiting": {"on": [...]}}, {"known": ...}.
