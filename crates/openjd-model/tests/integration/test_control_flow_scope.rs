@@ -949,6 +949,7 @@ fn pending(
         tasks: state(tasks, None),
         host_requirements: state(host, None),
         remaining: state(remaining, ()),
+        producers: vec!["P".to_string()],
     })
 }
 

@@ -107,6 +107,7 @@ fn tasks_become_known_before_host_requirements() {
             tasks: waiting(&["Steps.P.Output.Count"]),
             host_requirements: waiting(&["Steps.Q.Output.Gpu"]),
             remaining: GroupState::Known(()),
+            producers: vec!["P".into(), "Q".into()],
         })
     );
     assert_eq!(step(&job, "C").tasks_known(), None);
@@ -135,7 +136,8 @@ fn tasks_become_known_before_host_requirements() {
             remaining: GroupReport::Known,
         })
     );
-    assert_eq!(c.input_producers(), ["Q"]);
+    // P's values are needed again on every later call.
+    assert_eq!(c.input_producers(), ["P", "Q"]);
 
     // After Q too: bound, with both moved into the Step's fields.
     let c = f.advance(&mut job, "C", |j| both(j, 3, 1), 0).unwrap();
@@ -159,6 +161,7 @@ fn host_requirements_become_known_before_tasks() {
             tasks: waiting(&["Steps.P.Output.Count"]),
             host_requirements: GroupState::Known(Some(gpu_hr(2.0))),
             remaining: GroupState::Known(()),
+            producers: vec!["P".into(), "Q".into()],
         })
     );
     assert_eq!(
@@ -228,6 +231,7 @@ fn a_dynamic_enable_if_keeps_every_group_waiting() {
                 tasks: waiting(tasks_on),
                 host_requirements: waiting(host_on),
                 remaining: waiting(&[]),
+                producers: vec!["P".into(), "Q".into()],
             })
         );
     };
@@ -837,7 +841,7 @@ fn inputs_must_be_cumulative() {
     assert_eq!(
         err.to_string(),
         "Binding Step 'C' was refused in its remaining group:\n\
-         Compatibility error: the remaining group of Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do not hold; pass every producer's values given before, as well as new ones."
+         Compatibility error: the remaining group of Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped."
     );
 }
 
@@ -1010,7 +1014,7 @@ fn every_known_groups_inputs_must_be_given_again() {
     let refused = |group: &str, sym: &str| {
         format!(
             "Binding Step 'C' was refused in its {group} group:\n\
-             Compatibility error: the {group} group of Step 'C' was evaluated with '{sym}', which the given inputs do not hold; pass every producer's values given before, as well as new ones."
+             Compatibility error: the {group} group of Step 'C' was evaluated with '{sym}', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped."
         )
     };
     // Task enumeration known from P, then only Q.
@@ -1137,4 +1141,76 @@ fn a_host_requirement_check_error_keeps_its_own_path() {
             )])
         )
     );
+}
+
+#[test]
+fn a_caller_that_passes_every_input_producer_is_never_refused() {
+    // The scheduler loop the docs describe: on each call, pass every
+    // producer in input_producers() whose state is known. M's Tasks are
+    // known at creation; C's range reads them, and its host requirements
+    // read Q.
+    let template = format!(
+        "{}steps:
+  - name: M
+    parameterSpace:
+      taskParameterDefinitions: [{{name: F, type: INT, range: '1-3'}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: Q
+    outputVariables: [{{name: Gpu, type: INT}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+  - name: C
+    dependencies: [{{dependsOn: M}}, {{dependsOn: Q}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{Steps.M.TaskParam.F}}}}'}}]
+    hostRequirements:
+      amounts: [{{name: amount.worker.gpu, min: '{{{{Steps.Q.Output.Gpu}}}}'}}]
+    script: {{actions: {{onRun: {{command: echo}}}}}}
+",
+        header("[EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]")
+    );
+    let f = Fixture::new(&template, &[]);
+    let mut job = f.job();
+    let c = step(&job, "C");
+    assert_eq!(c.tasks_known(), Some(3));
+    assert_eq!(c.input_producers(), ["M", "Q"]);
+    let c = f
+        .advance(
+            &mut job,
+            "C",
+            |j| {
+                let mut inputs = StepInputs::new();
+                tasks_known(&mut inputs, j, "M");
+                succeeded(
+                    &mut inputs,
+                    j,
+                    "Q",
+                    &[outputs(&[("Gpu", ExprValue::Int(1))])],
+                );
+                inputs
+            },
+            0,
+        )
+        .unwrap();
+    assert_eq!(c.binding, StepBinding::Bound);
+    // Q alone is refused: M's TaskParam is an input of the known Task
+    // enumeration group.
+    let mut job = f.job();
+    let err = f.advance(&mut job, "C", gpu_is_q, 0).unwrap_err();
+    assert!(err.is_caller_error());
+    assert_eq!(
+        err.to_string(),
+        "Binding Step 'C' was refused in its Task enumeration group:\n\
+         Compatibility error: the Task enumeration group of Step 'C' was evaluated with 'Steps.M.TaskParam.F', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped."
+    );
+}
+
+fn gpu_is_q(job: &openjd_model::job::Job) -> StepInputs {
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        job,
+        "Q",
+        &[outputs(&[("Gpu", ExprValue::Int(1))])],
+    );
+    inputs
 }
