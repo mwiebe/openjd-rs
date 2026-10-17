@@ -65,7 +65,7 @@ impl fmt::Display for EndOfLine {
 }
 
 /// §2.2 PATH parameter objectType.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[allow(
     missing_docs,

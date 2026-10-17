@@ -97,6 +97,9 @@ Core template library. Depends on openjd-expr. Provides:
   as upstream values arrive (assembled with `StepInputs::add_producer`) and fails the Step at
   the first error; `attach_step_inputs` supplies a bound Step's host-scope `Steps.*` values
   before its Tasks run
+- `CONTROL_FLOW` job outputs: `create_job` evaluates each `jobOutputDefinitions` entry whose
+  `Steps.*` inputs are concrete at creation (failing Job creation on an error), and a caller
+  evaluates the rest with `evaluate_job_output` as the Steps they read finish
 
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:

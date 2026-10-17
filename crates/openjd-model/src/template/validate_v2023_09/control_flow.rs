@@ -4,14 +4,16 @@
 
 //! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0010).
 //!
-//! Three fields are gated by the `CONTROL_FLOW` extension:
+//! Four fields are gated by the `CONTROL_FLOW` extension:
+//! - `jobOutputDefinitions` on the Job Template
 //! - `enableIf` on `<StepTemplate>`
 //! - `outputVariables` on `<StepTemplate>`
 //! - `enableIf` on `<Environment>` (Job and Step Environments)
 //!
 //! Without the extension, each of them is an error at its own path. With it,
 //! this pass enforces the RFC's static rules (§Validation, "At template
-//! validation", items 1, 2, and 6's Environment Template part):
+//! validation", items 1, 2, 6's Environment Template part, and the structural
+//! part of 10):
 //!
 //! - **EXPR prerequisite.** A template that lists `CONTROL_FLOW` must also
 //!   list `EXPR`.
@@ -22,10 +24,15 @@
 //!   characters; no `LIST[LIST[INT]]` on a Step with a `parameterSpace`; and,
 //!   in a Step with a `CHUNK[INT]` Task parameter whose `range` is a literal
 //!   list, distinct values in that list.
+//! - **`jobOutputDefinitions` structure.** 1 to 50 elements with unique
+//!   names; no `collect`, `default`, `userInterface`, or `dataFlow`;
+//!   constraint properties valid for the type; a `unit` as for an output
+//!   variable. `LIST[LIST[INT]]` is allowed.
 //! - **Environment Templates.** `CONTROL_FLOW` applies to Job Templates only:
 //!   an Environment Template may neither list it nor use `enableIf`.
 //!
-//! The `Steps.*` scope rules and the typing of `enableIf` belong to pass 8.
+//! The `Steps.*` scope rules, the typing of `enableIf`, and the scope and
+//! typing of a job output's `value` belong to pass 8.
 
 use std::collections::{BTreeSet, HashSet};
 
@@ -33,8 +40,8 @@ use super::helpers::check_expr_prerequisite;
 use super::EffectiveLimits;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::{
-    Environment, EnvironmentTemplate, IntRange, JobTemplate, OutputVariableDefinition,
-    StepTemplate, TaskParameterDefinition,
+    Environment, EnvironmentTemplate, IntRange, JobOutputDefinition, JobParameterDefinition,
+    JobTemplate, OutputVariableDefinition, StepTemplate, TaskParameterDefinition,
 };
 use crate::types::{JobParameterType, ModelExtension, OutputCollectMode, ValidationContext};
 
@@ -42,6 +49,8 @@ use crate::types::{JobParameterType, ModelExtension, OutputCollectMode, Validati
 const MAX_OUTPUT_VARIABLES: usize = 32;
 /// RFC 0010 `<OutputVariableDefinition>` item 5: a `unit` of 1 to 32 characters.
 const MAX_UNIT_LEN: usize = 32;
+/// RFC 0010 `jobOutputDefinitions` constraint 2: at most 50 elements.
+const MAX_JOB_OUTPUTS: usize = 50;
 
 /// Validate RFC 0010 constraints for a job template.
 ///
@@ -57,6 +66,18 @@ pub fn validate_control_flow_job_template(
     let active = ctx.profile.has_extension(ModelExtension::ControlFlow);
     let chunking = ctx.profile.has_extension(ModelExtension::TaskChunking);
     check_expr_prerequisite(ctx, ModelExtension::ControlFlow, "RFC 0010", errors);
+
+    if let Some(outputs) = &jt.job_output_definitions {
+        let path = path_field(&[], "jobOutputDefinitions");
+        if active {
+            check_job_output_definitions(outputs, &path, limits, errors);
+        } else {
+            errors.add(
+                &path,
+                "jobOutputDefinitions requires the CONTROL_FLOW extension.",
+            );
+        }
+    }
 
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&[], "jobEnvironments");
@@ -155,45 +176,21 @@ fn check_output_variables(
     limits: &EffectiveLimits,
     errors: &mut ValidationErrors,
 ) {
-    if outputs.is_empty() {
-        errors.add(ov_path, "if provided, must contain at least one element.");
-    }
-    if outputs.len() > MAX_OUTPUT_VARIABLES {
-        errors.add(
-            ov_path,
-            format!("must not contain more than {MAX_OUTPUT_VARIABLES} elements."),
-        );
-    }
-
+    check_list_length(outputs.len(), MAX_OUTPUT_VARIABLES, ov_path, errors);
     let mut names = HashSet::new();
     for (k, ov) in outputs.iter().enumerate() {
         let path = path_index(ov_path, k);
-        let name = ov.name();
-        if name.chars().count() > limits.max_identifier_len {
-            errors.add(
-                &path,
-                format!("name exceeds {} characters.", limits.max_identifier_len),
-            );
-        }
-        if !names.insert(name) {
-            errors.add(&path, format!("duplicate output variable name: '{name}'"));
-        }
-        for key in ov.unavailable_properties() {
-            errors.add(
-                &path_field(&path, key),
-                "is not allowed in an output variable definition.",
-            );
-        }
-        // Constraint properties must be valid for the type, by the same
-        // rules as the job parameter definition of that type. Those
-        // messages name a "Parameter"; relabel them for an output.
-        if let Err(msgs) = ov.definition().validate_definition(limits) {
-            let param_prefix = format!("Parameter '{name}': ");
-            for m in msgs {
-                let detail = m.strip_prefix(&param_prefix).unwrap_or(&m);
-                errors.add(&path, format!("Output variable '{name}': {detail}"));
-            }
-        }
+        check_definition(
+            &Declared {
+                kind: Kind::OutputVariable,
+                definition: ov.definition(),
+                unavailable: ov.unavailable_properties(),
+            },
+            &path,
+            &mut names,
+            limits,
+            errors,
+        );
         let ty = ov.job_param_type();
         if ov.collect() == OutputCollectMode::Append && !is_list_type(ty) {
             errors.add(
@@ -201,25 +198,150 @@ fn check_output_variables(
                 format!("APPEND requires a LIST[...] type; '{ty}' is not a list type."),
             );
         }
-        if let Some(unit) = ov.unit() {
-            let unit_path = path_field(&path, "unit");
-            let len = unit.chars().count();
-            if len == 0 {
-                errors.add(&unit_path, "must not be empty.");
-            }
-            if len > MAX_UNIT_LEN {
-                errors.add(&unit_path, format!("exceeds {MAX_UNIT_LEN} characters."));
-            }
-            if unit.chars().any(char::is_control) {
-                errors.add(&unit_path, "contains control characters.");
-            }
-        }
+        check_unit(ov.unit(), &path, errors);
         if ty == JobParameterType::ListListInt && step.parameter_space.is_some() {
             errors.add(
                 &path_field(&path, "type"),
                 "LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: each output of a multi-Task Step is collected into a list, and EXPR allows two levels of list nesting.",
             );
         }
+    }
+}
+
+/// The structural rules on `jobOutputDefinitions` (RFC 0010 §Validation item
+/// 10, except the `value` scope and typing, which pass 8 checks). A job
+/// output may be `LIST[LIST[INT]]`: there is no `parameterSpace` to nest it
+/// in.
+fn check_job_output_definitions(
+    outputs: &[JobOutputDefinition],
+    list_path: &[PathElement],
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    check_list_length(outputs.len(), MAX_JOB_OUTPUTS, list_path, errors);
+    // Job output names and job parameter names are separate namespaces.
+    let mut names = HashSet::new();
+    for (k, def) in outputs.iter().enumerate() {
+        let path = path_index(list_path, k);
+        check_definition(
+            &Declared {
+                kind: Kind::JobOutput,
+                definition: def.definition(),
+                unavailable: def.unavailable_properties(),
+            },
+            &path,
+            &mut names,
+            limits,
+            errors,
+        );
+        check_unit(def.unit(), &path, errors);
+    }
+}
+
+/// Which definition [`check_definition`] is checking, for its messages.
+#[derive(Clone, Copy)]
+enum Kind {
+    OutputVariable,
+    JobOutput,
+}
+
+impl Kind {
+    /// The lowercase noun: `output variable` or `job output`.
+    fn noun(self) -> &'static str {
+        match self {
+            Self::OutputVariable => "output variable",
+            Self::JobOutput => "job output",
+        }
+    }
+
+    /// The capitalized noun, at the start of a message.
+    fn label(self) -> &'static str {
+        match self {
+            Self::OutputVariable => "Output variable",
+            Self::JobOutput => "Job output",
+        }
+    }
+
+    /// `an output variable definition` or `a job output definition`.
+    fn definition_phrase(self) -> &'static str {
+        match self {
+            Self::OutputVariable => "an output variable definition",
+            Self::JobOutput => "a job output definition",
+        }
+    }
+}
+
+/// What an output variable and a job output definition have in common.
+struct Declared<'a> {
+    kind: Kind,
+    definition: &'a JobParameterDefinition,
+    unavailable: &'a [&'static str],
+}
+
+/// 1 to `max` elements.
+fn check_list_length(len: usize, max: usize, path: &[PathElement], errors: &mut ValidationErrors) {
+    if len == 0 {
+        errors.add(path, "if provided, must contain at least one element.");
+    }
+    if len > max {
+        errors.add(path, format!("must not contain more than {max} elements."));
+    }
+}
+
+/// The rules an output variable and a job output definition share, at
+/// `path`: the name's length and uniqueness among `names`, the properties
+/// the definition may not have, and constraint properties valid for the
+/// type. The `unit` is [`check_unit`].
+fn check_definition<'a>(
+    d: &Declared<'a>,
+    path: &[PathElement],
+    names: &mut HashSet<&'a str>,
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    let name = d.definition.name();
+    if name.chars().count() > limits.max_identifier_len {
+        errors.add(
+            path,
+            format!("name exceeds {} characters.", limits.max_identifier_len),
+        );
+    }
+    if !names.insert(name) {
+        errors.add(path, format!("duplicate {} name: '{name}'", d.kind.noun()));
+    }
+    for key in d.unavailable {
+        errors.add(
+            &path_field(path, key),
+            format!("is not allowed in {}.", d.kind.definition_phrase()),
+        );
+    }
+    // Constraint properties must be valid for the type, by the same rules
+    // as the job parameter definition of that type. Those messages name a
+    // "Parameter"; relabel them.
+    if let Err(msgs) = d.definition.validate_definition(limits) {
+        let param_prefix = format!("Parameter '{name}': ");
+        for m in msgs {
+            let detail = m.strip_prefix(&param_prefix).unwrap_or(&m);
+            errors.add(path, format!("{} '{name}': {detail}", d.kind.label()));
+        }
+    }
+}
+
+/// A `unit` of 1 to 32 characters with no Unicode Cc characters.
+fn check_unit(unit: Option<&str>, path: &[PathElement], errors: &mut ValidationErrors) {
+    let Some(unit) = unit else {
+        return;
+    };
+    let unit_path = path_field(path, "unit");
+    let len = unit.chars().count();
+    if len == 0 {
+        errors.add(&unit_path, "must not be empty.");
+    }
+    if len > MAX_UNIT_LEN {
+        errors.add(&unit_path, format!("exceeds {MAX_UNIT_LEN} characters."));
+    }
+    if unit.chars().any(char::is_control) {
+        errors.add(&unit_path, "contains control characters.");
     }
 }
 
