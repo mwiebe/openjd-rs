@@ -458,27 +458,32 @@ fn element_type(ty: JobParameterType) -> Option<JobParameterType> {
 /// The binding state of a [`job::Step`](super::Step) (RFC 0010 §Step input
 /// binding).
 ///
-/// `create_job` produces only [`Bound`](Self::Bound) today. The other two
-/// states belong to step input binding, which a later change adds; they are
-/// part of the type now so that the serialized form of a job is stable.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Step input binding is progressive: a Step's materialization expressions
+/// fall into groups (enablement, Task enumeration, host selection, and the
+/// remaining group), `enableIf` is decided first, and each other group is
+/// evaluated as soon as its own inputs are concrete. While some group has not
+/// evaluated, the Step is [`PendingInputs`](Self::PendingInputs) and its
+/// [`PendingBinding`] records what is known so far.
+// The pending state is much larger than the others. Each `job::Step` holds
+// one `StepBinding`, beside fields of the same size (its parameter space and
+// host requirements), so boxing it would add an indirection to the public
+// type, which callers match and build, without saving much.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone, Default, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(
     tag = "state",
     rename_all = "SCREAMING_SNAKE_CASE",
     rename_all_fields = "camelCase"
 )]
 pub enum StepBinding {
-    /// The Step's Tasks are enumerable.
+    /// Every group has evaluated: the Step is `READY`, and its Tasks may be
+    /// dispatched once its dependencies are satisfied.
     #[default]
     Bound,
-    /// The Step's materialization expressions read `Steps.*` symbols that are
-    /// not concrete yet (`PENDING_INPUTS`).
-    PendingInputs {
-        /// The `Steps.*` symbols the Step waits on. Binding writes them
-        /// sorted; deserialization keeps the order it is given.
-        waiting_on: Vec<String>,
-    },
-    /// The Step's `enableIf` evaluated to `false` (`SKIPPED`).
+    /// Not bound yet (`PENDING_INPUTS`). What is known so far, per group.
+    PendingInputs(PendingBinding),
+    /// The Step's `enableIf` evaluated to `false` (`SKIPPED`): its parameter
+    /// space is empty, so it has zero Tasks.
     Skipped,
 }
 
@@ -489,12 +494,72 @@ impl StepBinding {
     }
 }
 
+/// What is known of a [`StepBinding::PendingInputs`] Step, per
+/// materialization group (RFC 0010 §Materialization groups).
+///
+/// A pending Step keeps [`job::Step::parameter_space`](super::Step::parameter_space)
+/// and [`host_requirements`](super::Step::host_requirements) as `None`, so a
+/// reader of those fields never sees a partial Step. The materialized
+/// parameter space and the evaluated host requirements wait here, and move
+/// into the Step's own fields when it is bound.
+///
+/// There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingBinding {
+    /// `Known(())` once `enableIf` is `true` (or absent).
+    pub enablement: GroupState<()>,
+    /// The materialized parameter space once Tasks are known; `Known(None)`
+    /// for a Step without a `parameterSpace`, which has one Task.
+    pub tasks: GroupState<Option<super::StepParameterSpace>>,
+    /// The evaluated host requirements once known; `Known(None)` for a Step
+    /// without `hostRequirements`.
+    pub host_requirements: GroupState<Option<super::HostRequirements>>,
+    /// The Step Environments' `enableIf` and TEMPLATE-scope fields, and the
+    /// script's TEMPLATE-scope fields. When it is known, each Step
+    /// Environment's [`enabled`](super::Environment::enabled) is decided;
+    /// its other values are needed only to run the Step's Tasks.
+    pub remaining: GroupState<()>,
+    /// The producers whose `Steps.*` symbols any of the Step's groups read,
+    /// sorted, whether or not that group is known yet: every later binding
+    /// call needs their values again (see
+    /// [`Step::input_producers`](super::Step::input_producers)). Serialized
+    /// only when not empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub producers: Vec<String>,
+}
+
+/// One materialization group of a [`PendingBinding`].
+#[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum GroupState<T> {
+    /// Not evaluated.
+    Waiting {
+        /// The group's own inputs that are not concrete yet: `Steps.*`
+        /// symbols in the form `Steps.<Step>.<Member>.<Name>`, sorted. It
+        /// does not count the enablement group's inputs, which the RFC also
+        /// counts as inputs of every other group, so it is empty for a group
+        /// that waits only for `enableIf`. Every binding call recomputes it,
+        /// also while enablement is still waiting.
+        on: Vec<String>,
+    },
+    /// Evaluated successfully, with its result.
+    Known(T),
+}
+
+impl<T> GroupState<T> {
+    /// `true` for [`Known`](Self::Known).
+    pub fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+}
+
 /// A path-typed `Steps.*` value a Step reads in a host-scope field, stored in
 /// its submission (`Raw`) form as a `string` (or list of strings) in the
 /// Step's `resolved_symtab`, so the session can build the `path` values and
 /// map them forward on the worker host.
 ///
-/// Recorded by step input binding; `create_job` leaves the list empty today.
+/// Recorded by [`attach_step_inputs`](crate::create_job::attach_step_inputs).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathInput {

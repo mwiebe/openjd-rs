@@ -602,7 +602,7 @@ fn task_parameter_definition_int_variant_field_access() {
             assert_eq!(p.name.as_str(), "Frame");
             match &p.range {
                 IntRange::List(items) => {
-                    let nums: Vec<i64> = items.iter().map(|f| f.0).collect();
+                    let nums: Vec<i64> = items.iter().map(|f| f.as_int().unwrap()).collect();
                     assert_eq!(nums, vec![1, 2, 3]);
                 }
                 IntRange::Expression(_) => panic!("expected List, got Expression"),

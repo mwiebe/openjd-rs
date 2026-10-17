@@ -82,9 +82,28 @@ template order where dependency constraints allow.
 ### Cycle Detection at Two Levels
 
 Cycles are detected in two places:
-1. During template validation (Pass 3, `structure.rs`) using iterative DFS with tri-state
-   marking
-2. During `topo_sorted()` using the same DFS back-edge detection algorithm
+1. During template validation (Pass 3, `structure.rs`, `detect_dependency_cycles`) with
+   Kahn's algorithm over Step names
+2. During `topo_sorted()` using DFS back-edge detection
+
+`create_job` binds `CONTROL_FLOW` Steps in the order `step_dependency_order`
+(`structure.rs`) gives: a separate Kahn's-algorithm pass over Step indices, every Step
+after its dependencies, ties broken by template index. It is kept apart from the cycle
+check, whose name-keyed graph decides which errors a template with a repeated Step name
+gets. When several orders are valid, `topo_sorted()` follows its DFS and
+`step_dependency_order` the template index, so the error `create_job` reports first under
+`CONTROL_FLOW` is the first in the latter.
 
 The validation check catches cycles in templates before job creation. The `topo_sorted()`
 check catches cycles in programmatically-constructed jobs that bypass template validation.
+
+### Skipped and zero-Task dependencies (CONTROL_FLOW)
+
+The step graph is fixed: `enableIf` and computed ranges never add or remove edges, so
+`StepDependencyGraph` is the same for every Job of a template. A `Skipped` Step
+(`job::StepBinding::Skipped`) and a bound Step with an empty parameter space both have
+zero Tasks, and both satisfy the `dependsOn` of the Steps that depend on them once their
+own dependencies are satisfied (RFC 0010 §Conditional execution, §Empty parameter
+spaces). A skipped producer's `Steps.*` symbols are `null`; a zero-Task producer's
+`Output` and `TaskParam` lists are `[]`. Scheduling by these rules is the caller's; the
+graph only orders the Steps.

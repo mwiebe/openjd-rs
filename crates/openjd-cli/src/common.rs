@@ -59,6 +59,52 @@ pub fn caller_limits() -> openjd_model::CallerLimits {
     }
 }
 
+/// Refuse a Job that `openjd run` and `openjd summary` cannot handle yet:
+/// one with a `CONTROL_FLOW` Step that `create_job` left pending inputs or
+/// skipped, or an Environment whose `enableIf` is `false`. Running such a Job
+/// as if every Step were bound would run Tasks that do not exist or enter
+/// Environments the template disables; simulating step input binding is a
+/// later change (`docs/control-flow-prototype-plan.md` C1, C2).
+pub fn require_bound_job(job: &openjd_model::job::Job) -> Result<(), String> {
+    use openjd_model::job::StepBinding;
+    let mut problems = Vec::new();
+    for env in job.job_environments.iter().flatten() {
+        if !env.enabled {
+            problems.push(format!(
+                "Job Environment '{}' is disabled by its enableIf",
+                env.name
+            ));
+        }
+    }
+    for step in &job.steps {
+        match &step.binding {
+            StepBinding::Bound => {}
+            StepBinding::PendingInputs(_) => problems.push(format!(
+                "Step '{}' is pending inputs from the Steps it depends on",
+                step.name
+            )),
+            StepBinding::Skipped => {
+                problems.push(format!("Step '{}' is skipped by its enableIf", step.name))
+            }
+        }
+        for env in step.step_environments.iter().flatten() {
+            if !env.enabled {
+                problems.push(format!(
+                    "Step Environment '{}' of Step '{}' is disabled by its enableIf",
+                    env.name, step.name
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "CONTROL_FLOW step input binding and enableIf are not supported by this command yet:\n  {}",
+        problems.join("\n  ")
+    ))
+}
+
 /// Infer the template document format from its filename extension.
 pub fn document_type(path: &Path) -> DocumentType {
     if path.extension().and_then(|extension| extension.to_str()) == Some("json") {

@@ -100,6 +100,16 @@ Lockstep iteration: all children advance together. All children must have the sa
 (validated during construction — produces a `ModelError::DecodeValidation` if lengths
 differ). Element at index `i` is the union of child[j].get(i) for all children j.
 
+### Empty ranges
+
+A resolved range may be empty: an expression range that evaluates to `[]` (accepted with
+`EXPR` alone), and with `CONTROL_FLOW` also a list literal whose items all skip or
+flatten to nothing (see [job-creation.md](job-creation.md)). An empty `RangeListNode`
+has length 0, so a product that includes it is empty and the Step has zero Tasks, while
+an association of an empty range with a non-empty one fails with `Associative
+combination: all members must have the same number of values, got 0 and 2`. This is
+distinct from a Step without a `parameterSpace` (`ZeroDimSpaceNode`), which has one Task.
+
 ## Combination Expression Parsing
 
 The `combination` field in `StepParameterSpaceDefinition` controls how task parameters

@@ -3339,6 +3339,7 @@ mod wrap_actions_tests {
             }),
             variables: None,
             resolved_symtab: None,
+            enabled: true,
         }
     }
 
@@ -3394,6 +3395,7 @@ mod wrap_actions_tests {
             script: None,
             variables: None,
             resolved_symtab: None,
+            enabled: true,
         };
         assert!(!env_has_any_wrap_hook(&env));
     }

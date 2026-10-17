@@ -374,6 +374,10 @@ name (`Steps.P.RawOutput.F.name`); the path-type message names only the four-par
 symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
 ordinary `Undefined variable`.
 
+A format-string item of an `INT` or `CHUNK[INT]` range list (a string containing `{{`,
+`template::IntRangeItem::FormatString`) is checked at `range[k]` like an `INT` range
+expression: its symbols and expression, with no target type.
+
 Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
 `FLOAT` Task parameter, nor a format-string item of a `FLOAT` range list: they are
 checked only when job creation resolves them, a gap that predates `CONTROL_FLOW` (a
@@ -664,11 +668,13 @@ Scope and `enableIf`).
 | No `LIST[LIST[INT]]` on a Step with a `parameterSpace` | `outputVariables[k] -> type` | `LIST[LIST[INT]] is not allowed in a Step with a parameterSpace: ...` |
 | In a Step with outputs, a literal-list `CHUNK[INT]` `range` has distinct values (checked only with `TASK_CHUNKING`; without it pass 9 rejects the parameter itself) | `parameterSpace -> taskParameterDefinitions[k] -> range` | `must have distinct values in a Step with outputVariables, so that each value names one Task; value 2 appears more than once.` |
 
-Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. The distinct-values rule
-applies only to a `range` written as a YAML list: a range string such as `"1-10"` cannot
-repeat a value, because its sub-ranges may not overlap, and a computed range is checked
-when it is materialized (RFC 0010 §Chunked Steps item 1), which job creation does not do
-yet.
+Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks the
+distinct-values rule on the integer items of a `range` written as a YAML list. A range
+string such as `"1-10"` cannot repeat a value, because its sub-ranges may not overlap. A
+computed range, and a YAML list with format-string items, is checked when it is
+materialized (RFC 0010 §Chunked Steps item 1), in the Task enumeration group at job
+creation or at step input binding (see [job-creation.md](job-creation.md) § Step input
+binding).
 
 Constraint validity reuses `JobParameterDefinition::validate_definition` on the wrapped
 definition, so the rules are exactly those of the job parameter of the same type (for
