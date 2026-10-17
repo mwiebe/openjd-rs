@@ -498,12 +498,15 @@ impl Step {
         })
     }
 
-    /// The producers whose values the Step still needs before its Tasks are
-    /// dispatched, sorted: those whose `Steps.*` symbols its script and Step
-    /// Environments read (for
-    /// [`attach_step_inputs`](crate::create_job::attach_step_inputs)), and,
-    /// while it is pending, those its waiting groups wait on. Empty for a
-    /// skipped Step, which dispatches nothing.
+    /// The producers whose `Steps.*` symbols the Step reads, sorted: in its
+    /// script and Step Environments (for
+    /// [`attach_step_inputs`](crate::create_job::attach_step_inputs)) and,
+    /// while it is pending, in any of its groups, known or not. A caller
+    /// passes each of them whose state is known (Tasks known, succeeded, or
+    /// skipped) to every
+    /// [`advance_step_binding`](crate::create_job::advance_step_binding) call
+    /// and to `attach_step_inputs`. Empty for a skipped Step, which
+    /// dispatches nothing.
     pub fn input_producers(&self) -> Vec<String> {
         if matches!(self.binding, StepBinding::Skipped) {
             // A skipped Step dispatches nothing, so it needs nothing.
@@ -517,6 +520,10 @@ impl Step {
             }
         }
         if let StepBinding::PendingInputs(pending) = &self.binding {
+            producers.extend(pending.producers.iter().cloned());
+            // The groups' waiting sets name producers too; they are in
+            // `producers` for a Step this crate bound, and are added for one
+            // deserialized without it.
             let groups: [Option<&Vec<String>>; 4] = [
                 waiting_on(&pending.enablement),
                 waiting_on(&pending.tasks),

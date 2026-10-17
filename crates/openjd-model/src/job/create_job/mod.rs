@@ -91,8 +91,8 @@ impl EvalBudgets {
 /// on this queue").
 ///
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
-/// across all steps is checked after parameter spaces are resolved, and
-/// `max_step_task_count` is checked for each Step.
+/// across all steps is checked after parameter spaces are resolved. When
+/// `max_step_task_count` is set, each Step's task count is checked.
 ///
 /// The resolved-value re-checks on carried-forward fields (and the
 /// `let` bindings feeding them) are reported together: every such

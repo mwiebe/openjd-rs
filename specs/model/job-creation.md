@@ -251,8 +251,10 @@ budgets template validation and the session runtime apply.
    `job::Step::output_variables` as `job::OutputVariable` values, decide each
    Job Environment's `enableIf` (setting `job::Environment::enabled`; a disabled
    one's fields are not checked), and bind each Step as far as the values
-   concrete at job creation allow, in dependency order, instead of steps 2 and
-   5–8 of the list above. See [Step input binding](#step-input-binding-control_flow)
+   concrete at job creation allow, in dependency order. This replaces the
+   per-Step parts of steps 2 and 5–8 above (host requirements, ranges, step
+   `let`, each Step's checks, and its symbol table); the job name and the Job
+   Environments are resolved and checked as before. See [Step input binding](#step-input-binding-control_flow)
    below.
 
 #### Resolved-value checks on carried-forward fields
@@ -588,10 +590,12 @@ The public wrapper over the core for a pending Step of an existing Job. It
 rebuilds the job table from the parameter values and `job.name`, and the
 limits and budgets from `ctx`. It returns a new Step for the caller to swap
 in: more known, `Bound`, or `Skipped`; a `Bound` or `Skipped` Step, or a
-call with no new inputs, comes back unchanged. `inputs` is cumulative: it
-must hold every value given in earlier calls for the Step as well as new
-ones, because the Step's table and its `let` bindings are rebuilt from it.
-A known group whose input is missing from `inputs` is a caller error. On the first failing group it
+call with no new inputs, comes back unchanged. On every call, `inputs` must
+hold each producer in the Step's `input_producers()` whose state is known
+(Tasks known, succeeded, or skipped), including producers whose values
+`create_job` used and those of groups already known, because the Step's table
+and its `let` bindings are rebuilt from `inputs`. A known group whose input
+is missing from `inputs` is a caller error. On the first failing group it
 returns `BindingError { step, group, errors }`: the Step is `FAILED` at once.
 `errors` holds the group's `ModelError`, a `ModelValidation` error with a
 path per field (see each group above); where evaluating an expression
@@ -604,7 +608,7 @@ are a Step index past the Job's (with `step` `#<index>`), a template whose
 Step there has another name (both in the enablement group), and a known
 group's input missing from `inputs` (in that group: `the remaining group of
 Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do
-not hold; pass every producer's values given before, as well as new ones.`).
+not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped.`).
 
 #### StepInputs and add_producer
 
@@ -671,8 +675,11 @@ for a skipped Step). `job::Step::binding_report()` is, for a pending Step,
 each group's `GroupReport`: `Known`, or `Waiting { on, for_enablement }`
 with its missing `Steps.*` symbols and whether it also waits for the
 undecided `enableIf`. `job::Step::input_producers()` lists the producers
-whose values the Step still needs: those its host-scope fields read, and
-those its waiting groups wait on; none for a skipped Step.
+whose `Steps.*` symbols the Step reads: those its host-scope fields read (for
+`attach_step_inputs`) and, for a pending Step, those any of its groups read,
+known or not (`PendingBinding::producers`, which `create_job` and
+`advance_step_binding` record). It is what a caller passes on each call; none
+for a skipped Step.
 
 ### convert_environment
 

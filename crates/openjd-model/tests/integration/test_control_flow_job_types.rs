@@ -545,6 +545,7 @@ fn control_flow_fields_round_trip() {
         },
         host_requirements: GroupState::Known(None),
         remaining: GroupState::Waiting { on: vec![] },
+        producers: vec!["P".into()],
     });
     step.path_inputs = vec![PathInput {
         symbol: "Steps.P.RawOutput.Dirs".into(),
@@ -569,7 +570,8 @@ fn control_flow_fields_round_trip() {
             "enablement": {"known": null},
             "tasks": {"waiting": {"on": ["Steps.P.Output.N"]}},
             "hostRequirements": {"known": null},
-            "remaining": {"waiting": {"on": []}}
+            "remaining": {"waiting": {"on": []}},
+            "producers": ["P"]
         })
     );
     assert_eq!(
