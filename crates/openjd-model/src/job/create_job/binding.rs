@@ -970,11 +970,12 @@ pub fn advance_step_binding(
 /// `path_inputs` record comes from `inputs`: attaching again replaces those
 /// of an earlier call.
 ///
-/// Errors when the Step is not bound, or when a symbol it reads is not
-/// concrete in `inputs` (the error names it).
+/// Errors, each a [`ModelError::Compatibility`] (a caller error), when the
+/// Step is not bound, or when a symbol it reads is not concrete in `inputs`
+/// (the error names it).
 pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::Step, ModelError> {
     if !step.binding.is_bound() {
-        return Err(ModelError::DecodeValidation(format!(
+        return Err(ModelError::Compatibility(format!(
             "Step '{}' is not bound, so its Steps.* inputs cannot be attached.",
             step.name
         )));
@@ -1039,7 +1040,7 @@ pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::
 }
 
 fn not_concrete(step: &job::Step, sym: &str) -> ModelError {
-    ModelError::DecodeValidation(format!(
+    ModelError::Compatibility(format!(
         "Step '{}' reads '{sym}', which is not concrete in the given inputs.",
         step.name
     ))
