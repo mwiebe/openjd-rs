@@ -1718,3 +1718,148 @@ fn every_null_in_a_range_string_is_named_in_order() {
         )])
     );
 }
+
+#[test]
+fn a_group_evaluates_only_the_lets_it_uses() {
+    // `b` reads P, which is not concrete at creation; the Task enumeration
+    // group uses only `a`, so it evaluates without `b`.
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    outputVariables: [{{name: Num, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    let: ['a = 3', 'b = Steps.P.Output.Num + 1']
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{range(a)}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let c = step(&job, "C");
+    assert_eq!(c.tasks_known(), Some(3));
+    let StepBinding::PendingInputs(p) = &c.binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(
+        p.remaining,
+        GroupState::Waiting {
+            on: vec!["Steps.P.Output.Num".into()]
+        }
+    );
+}
+
+#[test]
+fn a_property_read_of_a_let_name_follows_the_let() {
+    // `o.name` is reported as the symbol `o.name`; its root `o` is the
+    // `let`, whose input is P's output.
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    outputVariables: [{{name: Dir, type: PATH}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    let: ['o = path(Steps.P.RawOutput.Dir)']
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: STRING, range: ['{{{{o.name}}}}']}}]
+{ECHO}"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let StepBinding::PendingInputs(p) = &step(&job, "C").binding else {
+        panic!("C is pending");
+    };
+    assert_eq!(
+        p.tasks,
+        GroupState::Waiting {
+            on: vec!["Steps.P.RawOutput.Dir".into()]
+        }
+    );
+}
+
+#[test]
+fn an_enabled_environment_reads_back_enabled() {
+    // `enabled` is skipped when true, and defaults to true.
+    let template = tpl(
+        CF,
+        "",
+        &format!("  - name: S\n    stepEnvironments: [{{name: E, variables: {{V: v}}}}]\n{ECHO}"),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    let env = &step(&job, "S").step_environments.as_ref().unwrap()[0];
+    let json = serde_json::to_value(env).unwrap();
+    assert_eq!(json.get("enabled"), None);
+    let back: openjd_model::job::Environment = serde_json::from_value(json).unwrap();
+    assert!(back.enabled);
+    let mut disabled = env.clone();
+    disabled.enabled = false;
+    let back: openjd_model::job::Environment =
+        serde_json::from_value(serde_json::to_value(&disabled).unwrap()).unwrap();
+    assert!(!back.enabled);
+}
+
+#[test]
+fn the_1024_cap_on_resolved_float_and_string_ranges() {
+    // Lifted with CONTROL_FLOW, kept without it.
+    for x in [
+        "{name: X, type: FLOAT, range: '{{[i * 1.0 for i in range(2000)]}}'}",
+        "{name: X, type: STRING, range: '{{[string(i) for i in range(2000)]}}'}",
+        "{name: X, type: PATH, range: '{{[string(i) for i in range(2000)]}}'}",
+    ] {
+        let job = Fixture::new(&one_param(CF, "", x), &[]).job();
+        assert_eq!(step(&job, "S").tasks_known(), Some(2000), "{x}");
+        let err = Fixture::new(&one_param(EXPR_ONLY, "", x), &[])
+            .create()
+            .expect_err(x);
+        assert_eq!(
+            err.to_string(),
+            "Validation error: Task parameter 'X' range exceeds 1024 elements (2000 elements)",
+            "{x}"
+        );
+    }
+}
+
+#[test]
+fn an_enable_if_with_text_resolving_to_a_bool_spelling_is_decided() {
+    for (s, want) in [("se", StepBinding::Skipped), ("ue", StepBinding::Bound)] {
+        let prefix = if s == "se" { "fal" } else { "tr" };
+        let template = tpl(
+            CF,
+            "  - {name: S, type: STRING}\n",
+            &format!("  - name: S\n    enableIf: '{prefix}{{{{Param.S}}}}'\n{ECHO}"),
+        );
+        let job = Fixture::new(&template, &[("S", s)]).job();
+        assert_eq!(step(&job, "S").binding, want, "{prefix}{s}");
+    }
+}
+
+#[test]
+fn a_cycle_through_a_repeated_step_name_is_still_reported() {
+    // The cycle check keys Steps by name, as before step_dependency_order
+    // existed, so a template with a repeated name keeps its errors.
+    let template = "specificationVersion: jobtemplate-2023-09
+name: J
+steps:
+  - name: A
+    dependencies: [{dependsOn: B}]
+    script: {actions: {onRun: {command: echo}}}
+  - name: B
+    script: {actions: {onRun: {command: echo}}}
+  - name: B
+    dependencies: [{dependsOn: A}]
+    script: {actions: {onRun: {command: echo}}}
+";
+    let value: serde_json::Value = serde_saphyr::from_str(template).unwrap();
+    let err = openjd_model::decode_job_template(value, Some(SUPPORTED), &CallerLimits::default())
+        .expect_err("invalid");
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 2 validation errors for JobTemplate\n\
+         steps[2] -> name:\n\tduplicate step name: 'B'\n\
+         JobTemplate: step dependencies contain a cycle."
+    );
+}

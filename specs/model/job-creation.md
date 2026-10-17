@@ -405,7 +405,11 @@ its `stepEnvironments` in order (`let`, `variables`, every action's
 `data`). **Non-check failures are reported alone.** The job name and
 parameter constraints are checked before any check failure is
 collected, and the caller task-count / size caps after the collection
-is converted, so neither interacts with it. Resolving a step's host
+is converted, so neither interacts with it. (This paragraph describes a
+template without `CONTROL_FLOW`. With it, the task-count caps are checked
+in each Step's Task enumeration group and abort alone, discarding check
+failures collected from Steps bound earlier; see
+[Step input binding](#step-input-binding-control_flow).) Resolving a step's host
 requirements or parameter space for real (a value that cannot coerce,
 a duplicate resolved capability name, an association length mismatch,
 …) aborts immediately, discarding any check failures collected from
@@ -563,7 +567,12 @@ error it holds:
 Whether this path is taken, and whether the `CONTROL_FLOW` range rules apply, is decided
 by the template's own `extensions`, not by the context, which may enable more: a template
 that does not list `CONTROL_FLOW` behaves exactly as before (RFC 0010 Technical
-Requirement 1). Without `CONTROL_FLOW`, `instantiate_step` keeps today's behavior: Steps in
+Requirement 1). A template that lists `CONTROL_FLOW` but uses none of its features takes
+this path too, so its *errors* can differ from the same template without the extension:
+a Step stops at its first failing group, so after a step `let` error its script and Step
+Environment checks are not reported, and the abort reported is the first in dependency
+order. The Job fails either way. This is a prototype choice; RFC TR1 does not say whether
+error reporting counts as behavior (compare plan ambiguity A3). Without `CONTROL_FLOW`, `instantiate_step` keeps today's behavior: Steps in
 template order; a failed step `let` still lets that Step's carried-forward
 checks run; host requirements resolve before the parameter space; and the
 job-total Task-count limit is checked once, after every Step.
