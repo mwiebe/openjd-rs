@@ -1313,12 +1313,6 @@ fn validate_step_script_format_strings(
     }
 }
 
-/// Report the unavailable `Steps.*` references of a format string that
-/// pass 8 does not otherwise evaluate: a whole-field expression `range` of a
-/// `STRING`, `PATH`, or `FLOAT` Task parameter, and a format-string item of
-/// a `FLOAT` range list. Those fields are checked only when job creation
-/// resolves them, a gap that predates `CONTROL_FLOW`; the RFC's `Steps.*`
-/// scope rules are still enforced on them here.
 /// Validate the format-string items of an `INT` or `CHUNK[INT]`
 /// `<IntRangeList>`, each at `range[k]`. Integer items need no check.
 fn validate_int_range_items(
@@ -1335,6 +1329,12 @@ fn validate_int_range_items(
     }
 }
 
+/// Report the unavailable `Steps.*` references of a format string that
+/// pass 8 does not otherwise evaluate: a whole-field expression `range` of a
+/// `STRING`, `PATH`, or `FLOAT` Task parameter, and a format-string item of
+/// a `FLOAT` range list. Those fields are checked only when job creation
+/// resolves them, a gap that predates `CONTROL_FLOW`; the RFC's `Steps.*`
+/// scope rules are still enforced on them here.
 fn check_steps_refs_only(
     fs: &FormatString,
     ev: &FsEval<'_>,

@@ -511,8 +511,9 @@ pub struct PendingBinding {
     /// without `hostRequirements`.
     pub host_requirements: GroupState<Option<super::HostRequirements>>,
     /// The Step Environments' `enableIf` and TEMPLATE-scope fields, and the
-    /// script's TEMPLATE-scope fields. Nothing new is visible when it is
-    /// known; its values are needed only to run the Step's Tasks.
+    /// script's TEMPLATE-scope fields. When it is known, each Step
+    /// Environment's [`enabled`](super::Environment::enabled) is decided;
+    /// its other values are needed only to run the Step's Tasks.
     pub remaining: GroupState<()>,
 }
 

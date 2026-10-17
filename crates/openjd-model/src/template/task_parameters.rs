@@ -115,7 +115,9 @@ pub enum IntRange {
 /// an integer, as an `<intstring>` does.
 #[derive(Debug, Clone)]
 pub enum IntRangeItem {
+    /// An `<integer>` or `<intstring>`.
     Int(i64),
+    /// A `<TaskParameterStringValue>`: a string containing `{{`.
     FormatString(FormatString),
 }
 

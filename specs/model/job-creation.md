@@ -459,7 +459,7 @@ when more than one can be:
 | Enablement | the Step's `enableIf` | `true` (or absent): go on; `false`: `StepBinding::Skipped` |
 | Task enumeration | each Task parameter's `range` (whole field or list items) and `chunks` fields | the materialized `StepParameterSpace`: the Step's Tasks are known |
 | Host selection | every `hostRequirements` format string | the evaluated `HostRequirements` |
-| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds`), and the script's | each Step Environment's `enabled`, and the carried-forward checks of the script and of every enabled Step Environment |
+| Remaining | each Step Environment's `enableIf` and TEMPLATE-scope fields (action `timeout`, cancelation `notifyPeriodInSeconds` and format-string `mode`), and the script's | each Step Environment's `enabled`, and the carried-forward checks of the script and of every enabled Step Environment |
 
 There is no Task graph group: `TASK_DEPENDENCIES` is not implemented.
 
@@ -496,9 +496,21 @@ creation), and a `StepInputs`:
      equal lengths, so an empty range associated with a non-empty one is an
      error and associated empty ranges give an empty space), checks that a
      `CHUNK[INT]` range in a Step that declares `outputVariables` has distinct
-     values (`Task parameter 'F' range must have distinct values in a Step with
-     outputVariables, so that each value names one Task; value 1 appears more
-     than once`), and checks the Task-count limits (below).
+     values (`must have distinct values in a Step with outputVariables, so that
+     each value names one Task; value 1 appears more than once.`), and checks
+     the Task-count limits (below). Every error is located, as RFC 0010 §How a
+     Step is bound item 3 asks ("the failure message names the field and the
+     expression"): a range or `chunks` error at
+     `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
+     `-> chunks`), with the expression and caret where evaluating one failed;
+     a combination error at `steps[i] -> parameterSpace`; a Task-count limit
+     at `steps[i]`. A whole-field range expression that resolves to `null` (a
+     conditional producer's `T?` output, say) is `Task parameter 'X' range
+     must not resolve to null`; without `CONTROL_FLOW` the earlier messages
+     are kept.
+   * Host selection resolves `hostRequirements`; a resolution error is
+     reported at `steps[i] -> hostRequirements`, with its own text naming the
+     field (`hostRequirements amount min: ...`).
    * The remaining group evaluates every `let` binding, then the script's
      carried-forward checks, then each Step Environment: its `enableIf` (an
      error is reported at `steps[i] -> stepEnvironments[j] -> enableIf`), and
@@ -518,9 +530,10 @@ value, so this is observably the RFC's "evaluated once".
 **At job creation** (`instantiate_steps_with_binding`), Steps are bound in
 dependency order (`validate_v2023_09::step_dependency_order`: Kahn's algorithm
 with ties broken by template index), and stored in template order. Each Step's
-`StepInputs` come from the Steps already bound: a skipped producer contributes
-`null`s, and a producer whose Tasks are known (bound, or pending with
-`tasks: Known`) its `TaskParam`s. `Output` is never concrete at creation
+`StepInputs` come from the Steps already bound, for the producers its groups read: a
+skipped producer contributes `null`s, and a producer whose Tasks are known (bound, or
+pending with `tasks: Known`) its `TaskParam`s. A producer the Step's groups do not read is
+not added, because building its `TaskParam` lists walks its whole parameter space. `Output` is never concrete at creation
 except as a skipped producer's `null`. A group failure is reported by the
 error it holds:
 
@@ -573,15 +586,22 @@ The public wrapper over the core for a pending Step of an existing Job. It
 rebuilds the job table from the parameter values and `job.name`, and the
 limits and budgets from `ctx`. It returns a new Step for the caller to swap
 in: more known, `Bound`, or `Skipped`; a `Bound` or `Skipped` Step, or a
-call with no new inputs, comes back unchanged. On the first failing group it
+call with no new inputs, comes back unchanged. `inputs` is cumulative: it
+must hold every value given in earlier calls for the Step as well as new
+ones, because the Step's table and its `let` bindings are rebuilt from it.
+A known group whose input is missing from `inputs` is a caller error. On the first failing group it
 returns `BindingError { step, group, errors }`: the Step is `FAILED` at once.
 `errors` holds the group's `ModelError`: a `ModelValidation` error with a
 path per field for a `let`, `enableIf`, or remaining-group error, or the
 resolution error a range or host requirement gives (which quotes the
 expression with a caret). Its `Display` is `Step '<name>' failed in its
-<group> group:` followed by each error. A Step index past the Job's, or a
-template whose Step there has another name, is reported as a `BindingError`
-in the enablement group.
+<group> group:` followed by each error. A caller error says nothing about the
+Step and does not fail it: its error is a `ModelError::Compatibility`. These
+are a Step index past the Job's (with `step` `#<index>`), a template whose
+Step there has another name (both in the enablement group), and a known
+group's input missing from `inputs` (in that group: `the remaining group of
+Step 'C' was evaluated with 'Steps.P.Output.Gpu', which the given inputs do
+not hold; pass every producer's values given before, as well as new ones.`).
 
 #### StepInputs and add_producer
 
@@ -632,9 +652,11 @@ for `PATH` `Param.*`. Every path-typed `Raw` value it stores is stored as a
 `job::Step::path_inputs` with its type (`path`, `list[path]`, or
 `list[list[path]]`), which the session uses to build the `path` values and
 map `Output` and `TaskParam` forward. A skipped producer's `null`s are
-stored as they are and are not recorded. It errors on a Step that is not
-bound and on a symbol that is not concrete in `inputs`, naming it. Calling it
-again with the same inputs gives the same Step.
+stored as they are and are not recorded. Every `Steps.*` value in
+`resolved_symtab` and every `path_inputs` record comes from this call's
+`inputs`, so attaching again replaces an earlier call's (calling it again with
+the same inputs gives the same Step). It errors on a Step that is not bound and
+on a symbol that is not concrete in `inputs`, naming it.
 
 #### Reporting
 
@@ -644,7 +666,7 @@ each group's `GroupReport`: `Known`, or `Waiting { on, for_enablement }`
 with its missing `Steps.*` symbols and whether it also waits for the
 undecided `enableIf`. `job::Step::input_producers()` lists the producers
 whose values the Step still needs: those its host-scope fields read, and
-those its waiting groups wait on.
+those its waiting groups wait on; none for a skipped Step.
 
 ### convert_environment
 
