@@ -1020,11 +1020,10 @@ Job outputs (`job::Job::outputs`). Like `job::Job`, they implement `Serialize` b
 not `Deserialize`, because `openjd_expr::ExprValue` does not.
 
 ```rust
-#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct job::JobOutput {
-    /// Name, type, unit, and declared constraints; flattened when
-    /// serialized. Its `collect` is always ONCE.
+    /// Name, type, unit, and declared constraints; serialized inline with
+    /// the other fields. Its `collect` is always ONCE.
     pub declaration: OutputVariable,
     pub description: Option<String>,          // skipped when None
     pub value: FormatString,
@@ -1032,13 +1031,17 @@ pub struct job::JobOutput {
     pub evaluated: Option<JobOutputValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum job::JobOutputValue {
+    /// Serialized as {"state": "VALUE", "value": <ExprValue>}.
     Value(ExprValue),
-    /// The value evaluated to `null`: the output has no value.
+    /// The value evaluated to `null`: the output has no value. Serialized
+    /// as {"state": "NULL"}.
     Null,
 }
+
+impl Serialize for job::JobOutput;      // one plain struct (see job-types.md)
+impl Serialize for job::JobOutputValue;
 
 impl job::JobOutputValue {
     pub fn value(&self) -> Option<&ExprValue>;

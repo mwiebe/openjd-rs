@@ -381,10 +381,17 @@ describe("createJob", () => {
         jobOutputDefinitions: [
           { name: "Answer", type: "INT", value: "{{40 + 2}}", unit: "items" },
           { name: "Later", type: "INT", value: "{{Steps.P.Output.N}}" },
+          { name: "NoValue", type: "INT", value: "{{Steps.Off.Output.N}}" },
         ],
         steps: [
           {
             name: "P",
+            outputVariables: [{ name: "N", type: "INT" }],
+            script: { actions: { onRun: { command: "echo" } } },
+          },
+          {
+            name: "Off",
+            enableIf: false,
             outputVariables: [{ name: "N", type: "INT" }],
             script: { actions: { onRun: { command: "echo" } } },
           },
@@ -394,14 +401,16 @@ describe("createJob", () => {
     const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
     const job = mod.createJob(template, {}, opts);
     const outputs = job.toJSON().outputs;
-    expect(outputs).toHaveLength(2);
+    expect(outputs).toHaveLength(3);
     expect(outputs[0].name).toBe("Answer");
     expect(outputs[0].type).toBe("INT");
     expect(outputs[0].unit).toBe("items");
     expect(outputs[0].value).toBe("{{40 + 2}}");
-    expect(outputs[0].evaluated).toEqual({ value: { Int: 42 } });
+    expect(outputs[0].evaluated).toEqual({ state: "VALUE", value: { Int: 42 } });
     expect(outputs[1].name).toBe("Later");
     expect(outputs[1].evaluated).toBeUndefined();
+    // A skipped Step's output is null: evaluated, with no value.
+    expect(outputs[2].evaluated).toEqual({ state: "NULL" });
     job.free();
     opts.free();
     template.free();

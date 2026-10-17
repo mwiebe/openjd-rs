@@ -230,6 +230,63 @@ fn a_value_is_required() {
 }
 
 #[test]
+fn a_malformed_value_names_the_field() {
+    assert_decode_err(
+        &template("  - {name: X, type: INT, value: [1]}\n", STEP_S),
+        "value: invalid type: sequence, expected a string or number",
+    );
+    assert_decode_err(
+        &template("  - {name: X, type: INT, value: '{{ 1 +'}\n", STEP_S),
+        "value: Failed to parse interpolation expression at [0, 6]. Reason: Braces mismatch.\n  {{ 1 +\n  ^~",
+    );
+}
+
+#[test]
+fn a_definition_must_be_a_mapping() {
+    assert_decode_err(
+        &template("  - 5\n", STEP_S),
+        "expected a job output definition mapping, got a number",
+    );
+}
+
+#[test]
+fn without_the_extension_only_the_gate_is_reported() {
+    // Pass 8 does not check a value pass 11 already rejects.
+    assert_errs(
+        &template_with(
+            "[EXPR]",
+            "  - {name: A, type: INT, value: '{{Param.Nope}}'}\n",
+            STEP_S,
+        ),
+        &[(
+            "jobOutputDefinitions",
+            "jobOutputDefinitions requires the CONTROL_FLOW extension.",
+        )],
+    );
+}
+
+#[test]
+fn job_name_needs_expr() {
+    assert_errs(
+        &template_with(
+            "[CONTROL_FLOW]",
+            "  - {name: A, type: STRING, value: '{{Job.Name}}'}\n",
+            STEP_S,
+        ),
+        &[
+            (
+                VALUE,
+                "Failed to parse interpolation expression at [0, 12]. Undefined variable: 'Job.Name'.\n  Job.Name\n  ~~~~^~~~",
+            ),
+            (
+                "extensions",
+                "CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC 0010).",
+            ),
+        ],
+    );
+}
+
+#[test]
 fn the_type_must_be_an_output_variable_type() {
     assert_decode_err(
         &template("  - {name: X, type: DICT, value: a}\n", STEP_S),
@@ -497,6 +554,23 @@ fn a_static_string_value_must_convert_to_the_declared_type() {
             "must convert to int: Cannot convert 'abc' to int: invalid digit found in string.",
         )],
     );
+    // Text around an expression that is not static: its type must be one
+    // a string converts to.
+    for ty in ["LIST[INT]", "LIST[STRING]", "LIST[LIST[INT]]"] {
+        let lower = ty.to_lowercase();
+        assert_errs(
+            &scoped(ty, "1-{{Steps.P.Output.Count}}"),
+            &[(
+                VALUE,
+                &format!(
+                    "resolves to text, which must convert to {lower}: Cannot coerce string to {lower}."
+                ),
+            )],
+        );
+    }
+    for ty in ["INT", "FLOAT", "BOOL", "PATH", "RANGE_EXPR", "STRING"] {
+        assert_ok(&scoped(ty, "1{{Steps.P.Output.Count}}"));
+    }
     assert_errs(
         &scoped("INT", "a{{1}}"),
         &[(
@@ -672,6 +746,7 @@ fn job_output_inputs_names_each_steps_symbol_once_without_properties() {
         &template(
             "  - {name: A, type: STRING, value: '{{Steps.P.RawOutput.F.name}} {{Steps.P.RawOutput.F.stem}} {{Steps.Q.Output.Count}}'}
   - {name: B, type: INT, value: '{{Param.Num}}'}
+  - {name: C, type: INT, value: '{{Steps.Q.Output.Count}}'}
 ",
             "parameterDefinitions: [{name: Num, type: INT, default: 1}]
 steps:
@@ -691,7 +766,9 @@ steps:
         vec!["Steps.P.RawOutput.F", "Steps.Q.Output.Count"]
     );
     assert_eq!(job_output_inputs(&job, 1), Vec::<String>::new());
-    assert_eq!(job_output_inputs(&job, 2), Vec::<String>::new());
+    assert_eq!(job_output_inputs(&job, 2), vec!["Steps.Q.Output.Count"]);
+    // Past the Job's outputs: empty, not the last output's.
+    assert_eq!(job_output_inputs(&job, 3), Vec::<String>::new());
 }
 
 // ── evaluate_job_output ────────────────────────────────────────────
@@ -784,6 +861,68 @@ fn an_output_reading_a_step_is_evaluated_once_the_step_succeeds() {
     assert_eq!(
         eval(&f, &job, 3, &inputs).unwrap(),
         Some(ExprValue::String("frames [1, 2, 3]".into()))
+    );
+}
+
+#[test]
+fn job_name_is_available_when_evaluated_later() {
+    let f = later(
+        "  - {name: Label, type: STRING, value: '{{Job.Name}} {{min(Steps.P.Output.Count)}}'}\n",
+    );
+    let job = f.job();
+    let mut inputs = StepInputs::new();
+    succeeded(&mut inputs, &job, "P", &p_outputs([5, 2, 9]));
+    assert_eq!(
+        eval(&f, &job, 0, &inputs).unwrap(),
+        Some(ExprValue::String("J 2".into()))
+    );
+}
+
+#[test]
+fn evaluation_runs_under_the_caller_budgets() {
+    // At creation: an output that reads only a job parameter.
+    let template = template(
+        "  - {name: Big, type: INT, value: '{{sum([sum(range(x)) for x in range(Param.Num)])}}'}\n",
+        "parameterDefinitions: [{name: Num, type: INT, default: 400}]\nsteps:\n  - name: P\n    outputVariables: [{name: Count, type: INT}]\n    script: {actions: {onRun: {command: x}}}\n",
+    );
+    let limits = CallerLimits {
+        max_eval_operations: Some(2000),
+        ..Default::default()
+    };
+    let f = Fixture::with_limits(&template, &[], limits.clone());
+    let err = f.create().expect_err("over the operation budget");
+    let text = err.to_string();
+    assert!(
+        text.starts_with(&expected(&[(
+            "jobOutputDefinitions[0] -> value",
+            "Job output 'Big': Expression operation count (2001) exceeded limit (2000)"
+        )])),
+        "{text}"
+    );
+    // Later: an output that reads a Step.
+    let f = Fixture::with_limits(
+        &template.replace(
+            "range(Param.Num)",
+            "range(Param.Num + Steps.P.Output.Count)",
+        ),
+        &[],
+        limits,
+    );
+    let job = f.job();
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("Count", ExprValue::Int(1))])],
+    );
+    let text = eval(&f, &job, 0, &inputs).unwrap_err().to_string();
+    assert!(
+        text.starts_with(&expected(&[(
+            "jobOutputDefinitions[0] -> value",
+            "Job output 'Big': Expression operation count (2001) exceeded limit (2000)"
+        )])),
+        "{text}"
     );
 }
 
@@ -897,18 +1036,45 @@ fn caller_errors_are_compatibility_errors() {
     );
     assert_eq!(
         eval(&f, &job, 1, &inputs).unwrap_err().to_string(),
-        "Compatibility error: the Job has 1 job outputs, so it has no job output 1."
+        "Compatibility error: the Job has 1 job output, so it has no job output 1."
     );
     let other = later("  - {name: Other, type: INT, value: '{{1}}'}\n");
     assert_eq!(
         evaluate_job_output(&other.jt, &f.params, &f.ctx, &job, 0, &inputs)
             .unwrap_err()
             .to_string(),
-        "Compatibility error: job output 0 of the Job is 'Best', but the template's is not; pass the template the Job was created from."
+        "Compatibility error: job output 0 of the Job is 'Best', but the template's is 'Other'; pass the template the Job was created from."
     );
 }
 
 // ── The job-side form ──────────────────────────────────────────────
+
+#[test]
+fn job_output_value_accessor() {
+    assert_eq!(
+        JobOutputValue::Value(ExprValue::Int(1)).value(),
+        Some(&ExprValue::Int(1))
+    );
+    assert_eq!(JobOutputValue::Null.value(), None);
+    assert_eq!(
+        JobOutputValue::from(Some(ExprValue::Int(1))),
+        JobOutputValue::Value(ExprValue::Int(1))
+    );
+}
+
+#[test]
+fn job_outputs_take_part_in_equality_and_hash() {
+    use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+    let hash =
+        |job: &openjd_model::job::Job| BuildHasherDefault::<DefaultHasher>::default().hash_one(job);
+    let f = creation("  - {name: Doubled, type: INT, value: '{{Param.Num * 2}}'}\n");
+    let job = f.job();
+    let mut other = job.clone();
+    other.outputs.as_mut().unwrap()[0].evaluated = None;
+    assert_ne!(job, other);
+    assert_ne!(hash(&job), hash(&other));
+    assert_eq!(hash(&job), hash(&job.clone()));
+}
 
 #[test]
 fn job_outputs_serialize_with_their_declaration_and_value() {
@@ -931,7 +1097,7 @@ fn job_outputs_serialize_with_their_declaration_and_value() {
                 "description": "Twice",
                 "value": "{{Param.Num * 2}}",
                 // ExprValue's serde form, as for a job parameter's value.
-                "evaluated": {"value": {"Int": 8}},
+                "evaluated": {"state": "VALUE", "value": {"Int": 8}},
             },
             {
                 "name": "Later",
@@ -942,7 +1108,8 @@ fn job_outputs_serialize_with_their_declaration_and_value() {
                 "name": "Skipped",
                 "type": "INT",
                 "value": "{{Steps.Skip.Output.Count}}",
-                "evaluated": "null",
+                // A pending output has no `evaluated`.
+                "evaluated": {"state": "NULL"},
             },
         ])
     );

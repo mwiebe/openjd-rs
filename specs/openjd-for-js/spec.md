@@ -199,6 +199,7 @@ Returned by `createJob`. All format strings are resolved.
 | `steps` | `Step[]` |
 | `jobEnvironments` | `Environment[]` |
 | `parameters` | `Map<string, ExprValue>` |
+| `outputs` | `object[] \| undefined` — `CONTROL_FLOW` job outputs, in `toJSON()` (`name`, `type`, `unit`, `constraints`, `description`, `value`, and `evaluated`: absent while pending, `{state: "VALUE", value: ...}`, or `{state: "NULL"}` for no value) |
 
 #### `Step`
 
