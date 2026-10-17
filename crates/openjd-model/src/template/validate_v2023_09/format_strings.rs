@@ -24,7 +24,10 @@ use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
 use super::helpers;
-use super::steps_scope::{add_steps_scope, steps_ref_errors, StepsFieldScope, StepsRefContext};
+use super::steps_scope::{
+    add_job_output_steps_scope, add_steps_scope, steps_ref_errors, StepsFieldScope, StepsReader,
+    StepsRefContext,
+};
 
 /// Maximum length of a `let` binding's `<UserIdentifier>` (§3.6.1).
 ///
@@ -408,6 +411,10 @@ enum ResolvedConstraint<'a> {
     /// resulting entry, with the same certainly-a-string gating as
     /// [`Self::TextListItem`].
     ArgListItem { max_len: usize },
+    /// RFC 0010 `<JobOutputDefinition>` `value`: target type `ty` made
+    /// optional, since a `null` result means the output has no value. A
+    /// fully static multi-segment string must convert to `ty`.
+    JobOutputValue { ty: &'a ExprType },
     /// RFC 0010 `enableIf`, on a Step or an Environment: target type
     /// `bool`, not `bool?`, so a `null` result is an error rather than an
     /// omitted field. A whole-field expression's static non-bool value,
@@ -454,6 +461,9 @@ impl ResolvedConstraint<'_> {
             }
             Self::ResolvedString { .. } | Self::ArgListItem { .. } => None,
             Self::Bool => Some(ExprType::BOOL),
+            Self::JobOutputValue { ty } => {
+                Some(ExprType::union(vec![(*ty).clone(), ExprType::NULLTYPE]))
+            }
         }
     }
 }
@@ -795,6 +805,16 @@ fn check_resolved_constraint(
         ResolvedConstraint::Bool => {
             if let Some(ExprValue::String(text)) = &sr.resolved_value {
                 check_string_is_bool(text, path, errors);
+            }
+        }
+        // As for `enableIf`: a whole-field expression was already resolved
+        // with the target type; a multi-segment string resolves to text,
+        // which is then converted.
+        ResolvedConstraint::JobOutputValue { ty } => {
+            if let Some(ExprValue::String(text)) = &sr.resolved_value {
+                if **ty != ExprType::STRING {
+                    check_string_converts(text, ty, path, errors);
+                }
             }
         }
         ResolvedConstraint::CancelationMode => {
@@ -1391,6 +1411,70 @@ fn check_string_is_bool(text: &str, path: &[PathElement], errors: &mut Validatio
     }
 }
 
+/// EXPR's implicit `string` → `ty` coercion (§1.2.3) applied to the text a
+/// job output `value` resolves to, reporting a failure at `path`.
+fn check_string_converts(
+    text: &str,
+    ty: &ExprType,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if let Err(message) = ExprValue::String(text.to_string()).coerce(ty, PathFormat::Posix) {
+        errors.add(path, format!("must convert to {ty}: {message}."));
+    }
+}
+
+/// Validate each `<JobOutputDefinition>` `value` (RFC 0010 §Validation item
+/// 10) against the job output scope: `Param.*` (minus `PATH` types),
+/// `RawParam.*`, `Job.Name`, and the TEMPLATE-scope `Steps.*` symbols of
+/// every Step with an `<Identifier>` name, with no dependency required. No
+/// `Step.Name`, `Task.*`, `Session.*`, or `let` names. The target type is
+/// the declared type's expression type, made optional; a literal value is
+/// converted to it here, as a static multi-segment string is.
+fn validate_job_output_values(
+    jt: &JobTemplate,
+    expr_active: bool,
+    template_ev: &FsEval<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let outputs = jt.job_output_definitions_list();
+    if outputs.is_empty() {
+        return;
+    }
+    let mut symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
+    if expr_active {
+        symtab
+            .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
+            .expect("symtab");
+    }
+    add_job_output_steps_scope(&mut symtab, jt).expect("symtab");
+    let ev = template_ev.with_steps(Some(StepsRefContext {
+        jt,
+        reader: StepsReader::JobOutput,
+        scope: StepsFieldScope::Template,
+    }));
+    let list_path = path_field(&[], "jobOutputDefinitions");
+    for (i, def) in outputs.iter().enumerate() {
+        let path = path_field(&path_index(&list_path, i), "value");
+        let ty = def.job_param_type().expr_type();
+        let value = def.value();
+        if value.is_literal() {
+            if ty != ExprType::STRING {
+                check_string_converts(value.raw(), &ty, &path, errors);
+            }
+            continue;
+        }
+        validate_fs_with(
+            value,
+            &symtab,
+            &ev,
+            &path,
+            Some(&ResolvedConstraint::JobOutputValue { ty: &ty }),
+            errors,
+        );
+    }
+}
+
 /// Validate an action's template-scope numeric/enum fields: `timeout`
 /// against [`TIMEOUT_CONSTRAINT`], and the cancelation's deferred `mode`
 /// ([`ResolvedConstraint::CancelationMode`]) and `notifyPeriodInSeconds`
@@ -1753,13 +1837,13 @@ pub fn validate_format_strings(
     let cf_active = ctx.profile.has_extension(ModelExtension::ControlFlow);
     let no_steps = cf_active.then_some(StepsRefContext {
         jt,
-        step_index: None,
+        reader: StepsReader::None,
         scope: StepsFieldScope::Template,
     });
     let step_refs = |i: usize, scope: StepsFieldScope| {
         cf_active.then_some(StepsRefContext {
             jt,
-            step_index: Some(i),
+            reader: StepsReader::Step(i),
             scope,
         })
     };
@@ -1827,6 +1911,12 @@ pub fn validate_format_strings(
         }),
         errors,
     );
+
+    // ── Job outputs (CONTROL_FLOW): their own scope ──
+    // Pass 11 rejects `jobOutputDefinitions` without the extension.
+    if cf_active {
+        validate_job_output_values(jt, expr_active, &template_ev, errors);
+    }
 
     // ── Host requirements: template scope + step let bindings ──
     for (i, step) in jt.steps.iter().enumerate() {

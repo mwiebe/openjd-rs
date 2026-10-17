@@ -61,10 +61,13 @@ pub fn caller_limits() -> openjd_model::CallerLimits {
 
 /// Refuse a Job that `openjd run` and `openjd summary` cannot handle yet:
 /// one with a `CONTROL_FLOW` Step that `create_job` left pending inputs or
-/// skipped, or an Environment whose `enableIf` is `false`. Running such a Job
-/// as if every Step were bound would run Tasks that do not exist or enter
-/// Environments the template disables; simulating step input binding is a
-/// later change (`docs/control-flow-prototype-plan.md` C1, C2).
+/// skipped, an Environment whose `enableIf` is `false`, or a job output that
+/// `create_job` could not evaluate. Running such a Job as if every Step were
+/// bound would run Tasks that do not exist or enter Environments the
+/// template disables, and running it without evaluating its job outputs
+/// would report success for a Job whose outputs could fail it; simulating
+/// step input binding and evaluating job outputs as Steps finish is a later
+/// change (`docs/control-flow-prototype-plan.md` C1, C2).
 pub fn require_bound_job(job: &openjd_model::job::Job) -> Result<(), String> {
     use openjd_model::job::StepBinding;
     let mut problems = Vec::new();
@@ -96,11 +99,19 @@ pub fn require_bound_job(job: &openjd_model::job::Job) -> Result<(), String> {
             }
         }
     }
+    for output in job.outputs.iter().flatten() {
+        if output.evaluated.is_none() {
+            problems.push(format!(
+                "Job output '{}' is pending inputs from the Steps it reads",
+                output.declaration.name
+            ));
+        }
+    }
     if problems.is_empty() {
         return Ok(());
     }
     Err(format!(
-        "CONTROL_FLOW step input binding and enableIf are not supported by this command yet:\n  {}",
+        "CONTROL_FLOW step input binding, enableIf, and job outputs are not supported by this command yet:\n  {}",
         problems.join("\n  ")
     ))
 }
