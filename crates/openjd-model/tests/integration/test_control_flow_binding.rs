@@ -1669,3 +1669,52 @@ fn a_float_list_item_of_the_wrong_type_keeps_the_typed_message() {
         "Expression error: Cannot parse '[\"a\"]' as float"
     );
 }
+
+#[test]
+fn a_consumer_of_task_raw_params_binds_at_creation() {
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    parameterSpace:
+      taskParameterDefinitions: [{{name: F, type: INT, range: '4-6'}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{Steps.P.TaskRawParam.F}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let job = Fixture::new(&template, &[]).job();
+    assert_eq!(step(&job, "C").binding, StepBinding::Bound);
+    assert_eq!(step(&job, "C").tasks_known(), Some(3));
+}
+
+#[test]
+fn every_null_in_a_range_string_is_named_in_order() {
+    let template = tpl(
+        CF,
+        "",
+        &format!(
+            "  - name: P
+    enableIf: false
+    outputVariables: [{{name: A, type: INT}}, {{name: B, type: INT}}]
+{ECHO}  - name: C
+    dependencies: [{{dependsOn: P}}]
+    parameterSpace:
+      taskParameterDefinitions: [{{name: X, type: INT, range: '{{{{Steps.P.Output.B}}}}-{{{{Steps.P.Output.A}}}}'}}]
+{ECHO}"
+        ),
+    );
+    let err = Fixture::new(&template, &[])
+        .create()
+        .expect_err("two nulls");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range",
+            "'{{Steps.P.Output.B}}-{{Steps.P.Output.A}}' resolved to '-' ('Steps.P.Output.A', 'Steps.P.Output.B' are null), which is not a range expression: Expected integer in '-'",
+        )])
+    );
+}
