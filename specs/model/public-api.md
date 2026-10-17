@@ -39,6 +39,7 @@ openjd_model              — crate root re-exports, the main public surface
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
+├── outputs               — CONTROL_FLOW output directive parser + collector
 ├── symbol_table          — re-exported from openjd_expr
 ├── template              — unresolved/parsed template types (public module)
 │   └── parse             — decode_*_template + DocumentType + DecodedTemplate
@@ -854,6 +855,95 @@ pub struct job::StepDependency {
 }
 ```
 
+## Output Values (`outputs::*`, CONTROL_FLOW)
+
+The `openjd_output_var` directive parser and the collector that turns one
+Action's directives into each Task's output values (RFC 0010 §Output
+emission). No I/O. See [outputs.md](outputs.md).
+
+```rust
+/// RFC 0010 §Limits item 2: the least `max_bytes` a runtime may pass.
+pub const outputs::MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
+
+/// The text after `openjd_output_var:`, parsed. Borrows from the payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum outputs::OutputDirective<'a> {
+    /// `json` is unparsed, without surrounding spaces and tabs.
+    Inline { name: &'a str, task: Option<i64>, json: &'a str },
+    /// `path` is the text after `@` without trailing spaces and tabs; never empty.
+    File { name: &'a str, task: Option<i64>, path: &'a str },
+}
+
+impl<'a> outputs::OutputDirective<'a> {
+    pub fn name(&self) -> &'a str;
+    pub fn task(&self) -> Option<i64>;
+}
+
+/// Grammar only (line terminator already removed). A task selector
+/// outside the i64 range is a `Grammar` error.
+pub fn outputs::parse_output_directive(payload: &str)
+    -> Result<outputs::OutputDirective<'_>, outputs::OutputError>;
+
+/// One Task's values, by output name, in declaration order.
+pub type outputs::TaskOutputs = IndexMap<String, ExprValue>;
+
+#[derive(Debug, Clone)]
+pub struct outputs::OutputCollector { /* private */ }
+
+impl outputs::OutputCollector {
+    /// `chunk`: the chunk's CHUNK[INT] values in iteration order, or
+    /// `None` for an unchunked Step. A repeated value is a `Selector` error;
+    /// `collect: APPEND` on a non-list type is a `Declaration` error.
+    /// `path_rules`: the Session's full rules in its order, unfiltered.
+    pub fn new(
+        declared: &[job::OutputVariable],
+        max_bytes: usize,
+        path_rules: &[openjd_expr::path_mapping::PathMappingRule],
+        worker_format: openjd_expr::path_mapping::PathFormat,
+        chunk: Option<Vec<i64>>,
+    ) -> Result<Self, outputs::OutputError>;
+    /// Declared name; selector present iff chunked and in the chunk; a
+    /// ONCE output not yet reported for that Task.
+    pub fn check_name(&self, name: &str, task: Option<i64>) -> Result<(), outputs::OutputError>;
+    /// `max_bytes` less the Task's held size, not counting a LAST value
+    /// this one would replace.
+    pub fn remaining_bytes_for(&self, name: &str, task: Option<i64>) -> usize;
+    /// Repeats `check_name`; converts `json` (inline text, or a file's
+    /// whole content when `from_file`), reverse-maps PATH values, checks
+    /// constraints, applies the collect mode, counts the size. Returns the
+    /// value (ONCE/LAST) or the new element (APPEND). State is unchanged
+    /// on `Err`.
+    pub fn accept(&mut self, name: &str, task: Option<i64>, json: &[u8], from_file: bool)
+        -> Result<ExprValue, outputs::OutputError>;
+    /// At exit: ONCE/LAST values present and APPEND minLength met for
+    /// every Task. Keyed by CHUNK[INT] value in chunk order (`None` when
+    /// unchunked).
+    pub fn finish(self)
+        -> Result<IndexMap<Option<i64>, outputs::TaskOutputs>, outputs::OutputError>;
+}
+
+/// `Display` is the message. It may quote an inline value's text and the
+/// converted value that is invalid, but never an `@` file's text as such.
+/// Quoted text and an appended EXPR coercion message are cut to 200
+/// characters with control characters escaped. See outputs.md § Errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct outputs::OutputError { /* private */ }
+
+impl outputs::OutputError {
+    pub fn kind(&self) -> outputs::OutputErrorKind;
+    pub fn message(&self) -> &str;
+}
+impl std::fmt::Display for outputs::OutputError;
+impl std::error::Error for outputs::OutputError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum outputs::OutputErrorKind {
+    Grammar, Undeclared, Selector, Repeated, Json, FileContent,
+    Conversion, Path, Constraint, Size, Missing, Declaration,
+}
+```
+
 ## Shared Types
 
 Everything in this section is re-exported at the crate root from the
@@ -1514,6 +1604,8 @@ Enums that are marked `#[non_exhaustive]` today:
 - `TaskParameterType`
 - `FileType`
 - `ModelError`
+- `outputs::OutputErrorKind`, so a later change can split a kind without
+  breaking callers that match on it
 
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem
@@ -1523,7 +1615,8 @@ to change.
 The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 `OutputCollectMode` (the RFC's three modes), `template::BoolOrFormatString`
 (the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
-binding states), and `job::OutputAllowedValues` / `job::OutputBound` (the
-value kinds the constraint properties take). A change to the RFC that adds
+binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
+value kinds the constraint properties take), and `outputs::OutputDirective`
+(the RFC's two directive forms). A change to the RFC that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows.

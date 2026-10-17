@@ -349,7 +349,8 @@ impl OutputVariable {
             (JobParameterType::RangeExpr, ExprValue::String(s)) => {
                 s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
                     self.msg(format_args!(
-                        "{subject} '{s}' is not a valid range expression"
+                        "{subject} {} is not a valid range expression",
+                        crate::outputs::quote(s)
                     ))
                 })?;
                 self.check_lengths(c, s.chars().count(), subject)
@@ -385,6 +386,9 @@ impl OutputVariable {
         subject: Subject,
     ) -> Result<(), String> {
         let f = v.value();
+        // A float keeps its written spelling, which can be as long as the
+        // value's text, so the message shows it cut.
+        let v = crate::outputs::shorten(&v.to_display_string());
         if let Some(OutputBound::Float(min)) = &c.min_value {
             if f < min.value() {
                 return Err(self.msg(format_args!("{subject} {v} is less than minimum {min}")));
@@ -407,7 +411,10 @@ impl OutputVariable {
         self.check_lengths(c, s.chars().count(), subject)?;
         if let Some(OutputAllowedValues::String(allowed)) = &c.allowed_values {
             if !allowed.iter().any(|a| a == s) {
-                return Err(self.msg(format_args!("{subject} '{s}' is not in allowed values")));
+                return Err(self.msg(format_args!(
+                    "{subject} {} is not in allowed values",
+                    crate::outputs::quote(s)
+                )));
             }
         }
         Ok(())

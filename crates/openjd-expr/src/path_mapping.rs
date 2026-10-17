@@ -219,8 +219,8 @@ pub fn apply_rules_with_format(
     path.to_string()
 }
 
-/// Why [`unapply_rules`] could not map a path back to the submission path
-/// context.
+/// Why [`unapply_rules`] or [`unapply_rules_with_source_format`] could not
+/// map a path back to the submission path context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum UnmapError {
     /// The path is neither a URI nor absolute under the worker's path format.
@@ -277,34 +277,55 @@ pub fn unapply_rules(
     path: &str,
     worker_format: PathFormat,
 ) -> Result<String, UnmapError> {
+    unapply_rules_with_source_format(rules, path, worker_format).map(|(stored, _)| stored)
+}
+
+/// [`unapply_rules`], also returning the path format of the stored form.
+///
+/// The format is [`PathFormat::Uri`] for a URI returned unchanged,
+/// `worker_format` for an absolute path returned unchanged because there are
+/// no rules, and otherwise the `source_path_format` of the rule whose
+/// candidate was returned. A caller that stores the result as an
+/// `ExprValue::Path` uses it as the value's format, so the value carries the
+/// format of the submission path context it is in.
+pub fn unapply_rules_with_source_format(
+    rules: &[PathMappingRule],
+    path: &str,
+    worker_format: PathFormat,
+) -> Result<(String, PathFormat), UnmapError> {
     if is_uri(path) {
-        return Ok(path.to_string());
+        return Ok((path.to_string(), PathFormat::Uri));
     }
     let windows = worker_format == PathFormat::Windows;
     if !is_absolute_on_worker(path, windows) {
         return Err(UnmapError::Relative);
     }
     if rules.is_empty() {
-        return Ok(path.to_string());
+        return Ok((path.to_string(), worker_format));
     }
 
     let reported = NormalPath::new(path, windows);
-    // (destination component count, candidate), in the caller's rule order.
-    let mut candidates: Vec<(usize, String)> = rules
+    // (destination component count, candidate, its rule's source format),
+    // in the caller's rule order.
+    let mut candidates: Vec<(usize, String, PathFormat)> = rules
         .iter()
         .filter_map(|rule| {
             let dest = NormalPath::new(&rule.destination_path, windows);
             let remaining = reported.strip_prefix(&dest, windows)?;
-            Some((dest.parts.len(), build_candidate(rule, remaining)))
+            Some((
+                dest.parts.len(),
+                build_candidate(rule, remaining),
+                rule.source_path_format,
+            ))
         })
         .collect();
     // A stable sort, so equal lengths keep the caller's order.
-    candidates.sort_by_key(|(len, _)| std::cmp::Reverse(*len));
+    candidates.sort_by_key(|(len, _, _)| std::cmp::Reverse(*len));
 
     candidates
         .into_iter()
-        .map(|(_, candidate)| candidate)
-        .find(|candidate| {
+        .map(|(_, candidate, format)| (candidate, format))
+        .find(|(candidate, _)| {
             let forward = apply_rules_with_format(rules, candidate, worker_format);
             NormalPath::new(&forward, windows).equals(&reported, windows)
         })

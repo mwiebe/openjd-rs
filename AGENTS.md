@@ -72,7 +72,7 @@ Expression language implementation. The most mature crate.
 - **Evaluator** (`src/eval/evaluator.rs`) — Walks the ruff AST with memory-bounded and operation-bounded execution. Implements arithmetic, comparison, logical ops, conditionals, function calls, method calls, list comprehensions, slicing, string operations, path operations, regex, and repr functions.
 - **Format strings** (`src/format_string.rs`) — Parses `{{Param.Name}}` and `{{Expr.Name}}` syntax in template strings.
 - **Range expressions** (`src/range_expr.rs`) — Parses range expressions like `1-10`, `1-100:10`, `1,5,10-20`.
-- **Path mapping** (`src/path_mapping.rs`) — Applies source→destination path mapping rules, and maps worker paths back to the submission path context (`unapply_rules`).
+- **Path mapping** (`src/path_mapping.rs`) — Applies source→destination path mapping rules, and maps worker paths back to the submission path context (`unapply_rules`, `unapply_rules_with_source_format`).
 - **Symbol table** (`src/symbol_table.rs`) — Hierarchical key-value store supporting dotted paths (`Param.Frame`).
 
 Spec entry point: `specs/expr/README.md`
@@ -86,6 +86,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
 - **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs.
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
+- **Outputs** (`src/outputs/`) — CONTROL_FLOW `openjd_output_var` directive parser and output collector (no I/O).
 
 Spec entry point: `specs/model/README.md`
 

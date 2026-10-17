@@ -171,6 +171,8 @@ elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a sec
 `item` applies to each element as it arrives, `maxLength` to the growing list, and
 `minLength` only when the Action exits. The checks follow the job-parameter rules
 (`allowedValues`, `minValue`/`maxValue`, character lengths) but report an output's name.
+A string a message quotes is cut to 200 characters with its control characters escaped
+(see [outputs.md](outputs.md) § Errors).
 A `PATH` value may be an `ExprValue::Path` or an `ExprValue::String`, and a `LIST[PATH]`
 value a `ListPath` or a `ListString`, because a `PATH` output is stored in the submission
 path context and checked in that form. Conversely a `STRING` value may be a `Path` and a
@@ -179,8 +181,8 @@ values; the path's text is checked. A `RANGE_EXPR` value may be an
 `ExprValue::RangeExpr`, whose length is that of its canonical spelling, or an
 `ExprValue::String` holding a valid range expression, whose length is that of the
 string as written (as for a `RANGE_EXPR` job parameter value). The two can differ
-(`1,2,3` is the range `1-3`); which spelling a reported directive value is measured in is
-decided with output collection, which builds the stored value. An empty list built
+(`1,2,3` is the range `1-3`); the output collector checks a reported value in its
+written spelling and stores the `RangeExpr` ([outputs.md](outputs.md) § Constraints). An empty list built
 without a type hint (`list[nulltype]`) satisfies every list type; a typed empty list must
 have the declared type. `check_element` on a scalar type reports `INT is not a list type,
 so it has no elements`, and so does `check_length` (a scalar's `minLength`/`maxLength`
