@@ -54,11 +54,13 @@ src/
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.
-    ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PathInput
+    ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PendingBinding, GroupState, PathInput
+    ├── binding.rs            # CONTROL_FLOW StepInputs, ProducerState, BindingError, BindingReport, Step::tasks_known
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job() entry point
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table
     │   ├── instantiate.rs    # Template → job type conversion
+    │   ├── binding.rs        # CONTROL_FLOW progressive step input binding: group inputs, the core, advance_step_binding, attach_step_inputs
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph
@@ -71,6 +73,7 @@ The crate re-exports a curated public API from `lib.rs`:
 **Functions:**
 - `decode_job_template`, `decode_environment_template`, `decode_template` — Template parsing
 - `create_job` — Full job instantiation pipeline
+- `advance_step_binding`, `attach_step_inputs` — `CONTROL_FLOW` step input binding after job creation
 - `preprocess_job_parameters` — Parameter validation and coercion
 - `merge_job_parameter_definitions` — Cross-template parameter merging
 - `build_symbol_table` — Symbol table construction from parameter values

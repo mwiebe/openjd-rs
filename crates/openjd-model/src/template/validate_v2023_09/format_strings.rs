@@ -1319,6 +1319,22 @@ fn validate_step_script_format_strings(
 /// a `FLOAT` range list. Those fields are checked only when job creation
 /// resolves them, a gap that predates `CONTROL_FLOW`; the RFC's `Steps.*`
 /// scope rules are still enforced on them here.
+/// Validate the format-string items of an `INT` or `CHUNK[INT]`
+/// `<IntRangeList>`, each at `range[k]`. Integer items need no check.
+fn validate_int_range_items(
+    items: &[crate::template::IntRangeItem],
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    range_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    for (k, item) in items.iter().enumerate() {
+        if let crate::template::IntRangeItem::FormatString(fs) = item {
+            validate_fs(fs, symtab, ev, &path_index(range_path, k), errors);
+        }
+    }
+}
+
 fn check_steps_refs_only(
     fs: &FormatString,
     ev: &FsEval<'_>,
@@ -2144,17 +2160,24 @@ pub fn validate_format_strings(
                     forbid_empty: true,
                 };
                 match tp {
-                    TaskParameterDefinition::INT(t) => {
-                        if let crate::template::IntRange::Expression(expr) = &t.range {
-                            validate_fs(
-                                expr,
+                    TaskParameterDefinition::INT(t) => match &t.range {
+                        crate::template::IntRange::Expression(expr) => validate_fs(
+                            expr,
+                            &range_symtab,
+                            &step_template_ev,
+                            &path_field(&p_path, "range"),
+                            errors,
+                        ),
+                        crate::template::IntRange::List(items) => {
+                            validate_int_range_items(
+                                items,
                                 &range_symtab,
                                 &step_template_ev,
                                 &path_field(&p_path, "range"),
                                 errors,
                             );
                         }
-                    }
+                    },
                     TaskParameterDefinition::STRING(t) => match &t.range {
                         crate::template::StringRange::List(items) => {
                             for (k, item) in items.iter().enumerate() {
@@ -2220,14 +2243,21 @@ pub fn validate_format_strings(
                         ),
                     },
                     TaskParameterDefinition::CHUNK_INT(t) => {
-                        if let crate::template::IntRange::Expression(expr) = &t.range {
-                            validate_fs(
+                        match &t.range {
+                            crate::template::IntRange::Expression(expr) => validate_fs(
                                 expr,
                                 &range_symtab,
                                 &step_template_ev,
                                 &path_field(&p_path, "range"),
                                 errors,
-                            );
+                            ),
+                            crate::template::IntRange::List(items) => validate_int_range_items(
+                                items,
+                                &range_symtab,
+                                &step_template_ev,
+                                &path_field(&p_path, "range"),
+                                errors,
+                            ),
                         }
                         // TASK_CHUNKING chunks fields are `<intstring>`
                         // format strings resolved at job creation; their
@@ -2989,10 +3019,37 @@ pub(crate) fn check_carried_forward_let_bindings(
     host_context: openjd_expr::HostContext,
     errors: &mut ValidationErrors,
 ) {
+    check_carried_forward_let_bindings_where(
+        bindings,
+        let_path,
+        symtab,
+        ctx,
+        host_context,
+        errors,
+        |_| true,
+    );
+}
+
+/// [`check_carried_forward_let_bindings`] for only the bindings whose index
+/// `include` accepts, in declaration order, each still reported at its own
+/// `let[j]`. Step input binding uses it to evaluate the bindings one
+/// materialization group uses.
+pub(crate) fn check_carried_forward_let_bindings_where(
+    bindings: &[String],
+    let_path: &[PathElement],
+    symtab: &mut SymbolTable,
+    ctx: &ValidationContext,
+    host_context: openjd_expr::HostContext,
+    errors: &mut ValidationErrors,
+    include: impl Fn(usize) -> bool,
+) {
     let profile = ctx.profile.to_expr_profile(host_context);
     let lib = FunctionLibrary::for_profile(&profile);
     let ev = FsEval::new(&lib, &ctx.caller_limits);
     for (j, binding) in bindings.iter().enumerate() {
+        if !include(j) {
+            continue;
+        }
         let Some(eq_pos) = binding.find('=') else {
             continue;
         };

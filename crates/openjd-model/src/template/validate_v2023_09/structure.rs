@@ -1072,51 +1072,46 @@ fn validate_embedded_files(
 }
 
 fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationErrors) {
-    let step_names: HashSet<String> = steps.iter().map(|s| s.name.clone()).collect();
-    let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for step in steps {
-        let name = step.name.clone();
-        let deps: Vec<String> = step
-            .dependencies
-            .as_ref()
-            .map(|d| d.iter().map(|dep| dep.depends_on.clone()).collect())
-            .unwrap_or_default();
-        adj.insert(name, deps);
-    }
-    // Kahn's algorithm
-    let mut in_degree: HashMap<String, usize> = HashMap::new();
-    for name in &step_names {
-        in_degree.insert(name.clone(), 0);
-    }
-    for deps in adj.values() {
-        for dep in deps {
-            if let Some(d) = in_degree.get_mut(dep) {
-                *d += 1;
-            }
-        }
-    }
-    let mut queue: Vec<String> = in_degree
-        .iter()
-        .filter(|(_, &d)| d == 0)
-        .map(|(n, _)| n.clone())
-        .collect();
-    let mut visited = 0;
-    while let Some(node) = queue.pop() {
-        visited += 1;
-        if let Some(deps) = adj.get(&node) {
-            for dep in deps {
-                if let Some(d) = in_degree.get_mut(dep) {
-                    *d -= 1;
-                    if *d == 0 {
-                        queue.push(dep.clone());
-                    }
-                }
-            }
-        }
-    }
-    if visited < step_names.len() {
+    if step_dependency_order(steps).is_none() {
         errors.add(&[], "step dependencies contain a cycle.");
     }
+}
+
+/// The template's Step indices in dependency order: every Step after the
+/// Steps it depends on, with ties broken by template index so the order is
+/// deterministic (Kahn's algorithm). `None` when the dependencies contain a
+/// cycle. A dependency on a name that is no Step is ignored (structure
+/// reports it); a dependency on a repeated name refers to its first Step.
+pub(crate) fn step_dependency_order(steps: &[StepTemplate]) -> Option<Vec<usize>> {
+    use std::collections::BTreeSet;
+    let mut index_of: HashMap<&str, usize> = HashMap::new();
+    for (i, step) in steps.iter().enumerate() {
+        index_of.entry(step.name.as_str()).or_insert(i);
+    }
+    // dependents[d] lists the Steps that depend on Step d; in_degree[i]
+    // counts the dependencies of Step i not yet placed.
+    let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); steps.len()];
+    let mut in_degree = vec![0usize; steps.len()];
+    for (i, step) in steps.iter().enumerate() {
+        for dep in step.dependencies.iter().flatten() {
+            if let Some(&d) = index_of.get(dep.depends_on.as_str()) {
+                dependents[d].push(i);
+                in_degree[i] += 1;
+            }
+        }
+    }
+    let mut ready: BTreeSet<usize> = (0..steps.len()).filter(|&i| in_degree[i] == 0).collect();
+    let mut order = Vec::with_capacity(steps.len());
+    while let Some(i) = ready.pop_first() {
+        order.push(i);
+        for &j in &dependents[i] {
+            in_degree[j] -= 1;
+            if in_degree[j] == 0 {
+                ready.insert(j);
+            }
+        }
+    }
+    (order.len() == steps.len()).then_some(order)
 }
 
 fn validate_task_param_range(

@@ -131,6 +131,7 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         .with_caller_limits(crate::common::caller_limits());
     let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
         .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    crate::common::require_bound_job(&job)?;
 
     Ok(PreparedRun {
         job,
