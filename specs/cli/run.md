@@ -156,7 +156,8 @@ pending inputs or is skipped, or any Job or Step Environment is disabled by its 
 resolved on the worker host (its action `command` and `args`, embedded files, script
 `let`, and Step Environment `variables`) is bound at creation and runs, but its Task fails
 when it starts, because nothing supplies the value. A read in a TEMPLATE-scope field (a
-Step Environment's `enableIf`, an action's `timeout` or `cancelation`) leaves the Step
+Step Environment's `enableIf`, an action's `timeout` or `cancelation`) of a symbol that is
+not concrete at job creation (any `Output`, unless its producer is skipped) leaves the Step
 pending, so `run` refuses it. Steps run in topological order as before, and
 `openjd_output_var:` lines are ordinary output — declared outputs are not collected and a
 missing value does not fail a Task. Simulating step input binding, output collection, and

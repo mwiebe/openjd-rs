@@ -181,7 +181,9 @@ pub struct Environment {
     #[serde(rename = "resolvedSymTab", skip_serializing_if = "Option::is_none")]
     pub resolved_symtab: Option<SerializedSymbolTable>,
     /// `false` when the Environment's `enableIf` evaluated to `false`
-    /// (`CONTROL_FLOW`), `true` otherwise. A disabled Environment must be
+    /// (`CONTROL_FLOW`), `true` otherwise. For a Step Environment of a
+    /// pending Step it is decided with the Step's remaining group, and is
+    /// `true` until then. A disabled Environment must be
     /// left out of the Session's Environment stack: not entered, and its
     /// `variables` not set. The caller that builds the stack does this;
     /// `openjd-sessions` does not read the field.

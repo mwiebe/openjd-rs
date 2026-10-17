@@ -1778,11 +1778,6 @@ Enums that are marked `#[non_exhaustive]` today:
 - `job::MaterializationGroup`, which `TASK_DEPENDENCIES` would extend with a
   Task graph group
 
-The other `CONTROL_FLOW` enums — `job::StepBinding`, `job::GroupState`,
-`job::GroupReport`, `job::ProducerState`, and `template::IntRangeItem` — are
-closed: they name the RFC's fixed Step states, the two states of a group,
-and the forms the schema allows.
-
 `EndOfLine`, `ObjectType`, and `DataFlow` are intentionally closed:
 they represent decidable logical concepts (newline mode, filesystem
 entity kind, data direction) whose sets of variants are not expected
@@ -1793,6 +1788,9 @@ The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 (the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
-(the RFC's two directive forms). A change to the RFC that adds
+(the RFC's two directive forms), `job::GroupState` and `job::GroupReport`
+(the two states of a group), `job::ProducerState` (the states a producer
+contributes inputs in), and `template::IntRangeItem` (the two forms of an
+`<IntRangeList>` item). A change to the RFC that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows.

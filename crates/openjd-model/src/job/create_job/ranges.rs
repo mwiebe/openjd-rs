@@ -480,12 +480,54 @@ fn resolve_int_range(
             let resolved = expr
                 .resolve_string_with(symtab, &budgets.fs_options())
                 .map_err(ModelError::Expression)?;
-            let range_expr: RangeExpr = resolved
-                .parse()
-                .map_err(|e: openjd_expr::ExpressionError| ModelError::Expression(e))?;
+            let range_expr: RangeExpr =
+                resolved
+                    .parse()
+                    .map_err(|e: openjd_expr::ExpressionError| {
+                        if rules.control_flow {
+                            range_string_error(expr, &resolved, symtab, &e)
+                        } else {
+                            ModelError::Expression(e)
+                        }
+                    })?;
             Ok(job::TaskParamRange::RangeExpr(range_expr))
         }
     }
+}
+
+/// A range string that does not parse once its expressions are evaluated,
+/// under `CONTROL_FLOW`: the message names the expression as written and the
+/// text it resolved to (RFC 0010 §How a Step is bound item 3), and each
+/// symbol it reads whose value is `null`, such as a skipped producer's output
+/// in `"1-{{Steps.P.Output.N}}"`.
+fn range_string_error(
+    expr: &openjd_expr::FormatString,
+    resolved: &str,
+    symtab: &SymbolTable,
+    e: &openjd_expr::ExpressionError,
+) -> ModelError {
+    let mut nulls: Vec<String> = expr
+        .accessed_symbols()
+        .into_iter()
+        .filter(|s| matches!(symtab.get_value(s), Some(ExprValue::Null)))
+        .collect();
+    nulls.sort();
+    nulls.dedup();
+    let hint = match nulls.as_slice() {
+        [] => String::new(),
+        [one] => format!(" ('{one}' is null)"),
+        many => format!(
+            " ({} are null)",
+            many.iter()
+                .map(|s| format!("'{s}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    ModelError::DecodeValidation(format!(
+        "'{}' resolved to '{resolved}'{hint}, which is not a range expression: {e}",
+        expr.raw()
+    ))
 }
 
 /// Resolve one format-string item of an `<IntRangeList>` into `out`.
@@ -591,6 +633,7 @@ fn resolve_float_list_item(
     param_name: &str,
     limits: &EffectiveLimits,
     budgets: super::EvalBudgets,
+    rules: RangeRules,
     out: &mut Vec<Float64>,
 ) -> Result<(), ModelError> {
     let target = openjd_expr::ExprType::union(vec![
@@ -598,7 +641,12 @@ fn resolve_float_list_item(
         openjd_expr::ExprType::FLOAT,
         openjd_expr::ExprType::list(openjd_expr::ExprType::FLOAT),
     ]);
-    match fs.resolve_with(symtab, &budgets.fs_options().with_target_type(&target)) {
+    let typed = fs.resolve_with(symtab, &budgets.fs_options().with_target_type(&target));
+    let typed_error = typed
+        .as_ref()
+        .err()
+        .map(|e| ModelError::Expression(e.clone()));
+    match typed {
         Ok(ExprValue::Null) => return Ok(()),
         Ok(val) if val.is_list() => {
             for e in val.list_elements().unwrap_or_default() {
@@ -622,11 +670,17 @@ fn resolve_float_list_item(
         .resolve_string_with(symtab, &budgets.fs_options())
         .map_err(ModelError::Expression)?;
     let trimmed = resolved.trim();
+    // With CONTROL_FLOW, when the typed resolution failed too, its message
+    // (the type and a caret) says more than "cannot parse"; without it the
+    // earlier message is kept.
+    let typed_error = typed_error.filter(|_| rules.control_flow);
     let value = trimmed.parse::<f64>().map_err(|_| {
-        ModelError::Expression(ExpressionError::new(format!(
-            "Cannot parse '{}' as float",
-            resolved
-        )))
+        typed_error.unwrap_or_else(|| {
+            ModelError::Expression(ExpressionError::new(format!(
+                "Cannot parse '{}' as float",
+                resolved
+            )))
+        })
     })?;
     if !value.is_finite() {
         return Err(ModelError::Expression(ExpressionError::new(format!(
@@ -669,9 +723,9 @@ fn resolve_float_range(
                     // `2.50` and `2.5` are the same literal after parsing, so a
                     // `<float>` makes no request about how it renders.
                     template::FloatRangeItem::Float(f) => out.push(float64(*f, param_name)?),
-                    template::FloatRangeItem::FormatString(fs) => {
-                        resolve_float_list_item(fs, symtab, param_name, limits, budgets, &mut out)?
-                    }
+                    template::FloatRangeItem::FormatString(fs) => resolve_float_list_item(
+                        fs, symtab, param_name, limits, budgets, rules, &mut out,
+                    )?,
                 }
             }
             rules.check_list_literal_not_emptied(out.len(), param_name)?;
