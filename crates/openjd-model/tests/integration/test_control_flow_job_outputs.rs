@@ -1009,6 +1009,63 @@ fn a_later_failure_conversion_or_constraint_violation_fails_the_job() {
 }
 
 #[test]
+fn messages_escape_and_shorten_reported_values_and_the_expression() {
+    // A value a Task reported, with a terminal escape and line breaks, and a
+    // multi-line value format string: each message stays on its own lines.
+    let f = Fixture::new(
+        &template(
+            "  - {name: Count, type: INT, value: '{{Steps.P.Output.S}} frames'}
+  - name: Short
+    type: STRING
+    maxLength: 3
+    value: |-
+      {{Steps.P.Output.S}}
+      jobOutputDefinitions[7] -> value:
+",
+            "steps:
+  - name: P
+    outputVariables: [{name: S, type: STRING}]
+    script: {actions: {onRun: {command: x}}}
+",
+        ),
+        &[],
+    );
+    let job = f.job();
+    let mut inputs = StepInputs::new();
+    let reported = "\u{1b}[31m1\nsteps[0] -> fake:\n\tinjected";
+    succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("S", ExprValue::String(reported.into()))])],
+    );
+    assert_eq!(
+        eval(&f, &job, 0, &inputs).unwrap_err().to_string(),
+        expected(&[(
+            "jobOutputDefinitions[0] -> value",
+            "Job output 'Count': value '\\u{1b}[31m1\\nsteps[0] -> fake:\\n\\tinjected frames' does not convert to INT: Cannot convert '\\u{1b}[31m1\\nsteps[0] -> fake:\\n\\tinjected frames' to int: invalid digit found in string\n  {{Steps.P.Output.S}} frames",
+        )])
+    );
+    assert_eq!(
+        eval(&f, &job, 1, &inputs).unwrap_err().to_string(),
+        expected(&[(
+            "jobOutputDefinitions[1] -> value",
+            "Job output 'Short': value length 68 exceeds maximum 3\n  {{Steps.P.Output.S}}\\njobOutputDefinitions[7] -> value:",
+        )])
+    );
+    // A long value is cut.
+    let mut inputs = StepInputs::new();
+    succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("S", ExprValue::String("a".repeat(1000)))])],
+    );
+    let text = eval(&f, &job, 0, &inputs).unwrap_err().to_string();
+    assert!(text.len() < 600, "{} characters: {text}", text.len());
+}
+
+#[test]
 fn a_dynamically_skipped_step_gives_null_and_its_constraints_are_not_checked() {
     let f = later("  - {name: V, type: INT, value: '{{Steps.G.Output.V}}', minValue: 100}\n");
     let mut job = f.job();
