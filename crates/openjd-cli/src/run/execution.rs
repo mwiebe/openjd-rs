@@ -472,6 +472,9 @@ async fn run_workload(
             Begin::NotRun => {}
             Begin::Run(step) => {
                 let ran_all = execute_step(ctx, args, &step, step_idx, selection, sim).await?;
+                if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
+                    sim.set_reason(step_idx, "the run was interrupted");
+                }
                 sim.finish_step(step_idx, ctx.session_failed, ran_all)?;
             }
         }
@@ -479,7 +482,7 @@ async fn run_workload(
             ctx.session_failed = true;
         }
     }
-    sim.block_unreachable();
+    sim.block_unreachable(ctx.interrupted.load(Ordering::SeqCst));
     Ok(())
 }
 

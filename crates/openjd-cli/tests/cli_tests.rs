@@ -5495,3 +5495,625 @@ steps:
         assert!(!stdout.contains("Session start"), "stdout: {stdout}");
     }
 }
+
+mod control_flow_round5 {
+    //! Tests for behaviors that round 5's mutation audit found unprotected.
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    fn lines(stdout: &str) -> Vec<&str> {
+        stdout
+            .lines()
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .collect()
+    }
+
+    fn at(stdout: &str, line: &str) -> usize {
+        lines(stdout)
+            .iter()
+            .position(|l| *l == line)
+            .unwrap_or_else(|| panic!("no line {line:?} in:\n{stdout}"))
+    }
+
+    fn json(stdout: &str) -> serde_json::Value {
+        let start = stdout.find("{\n").expect("JSON result");
+        serde_json::from_str(&stdout[start..]).unwrap()
+    }
+
+    const TWO: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Two
+jobOutputDefinitions:
+- {name: Sum, type: INT, value: "{{Steps.A.Output.X + Steps.B.Output.Y}}"}
+- {name: Fl, type: FLOAT, value: "{{1.5}}"}
+steps:
+- name: A
+  outputVariables: [{name: X, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: X=1')"]}}}
+- name: B
+  dependencies: [{dependsOn: A}]
+  outputVariables: [{name: Y, type: INT}, {name: R, type: RANGE_EXPR}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Y=2'); print('openjd_output_var: R=\"1-3\"')"]}}}
+"#;
+
+    const HOST: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: Host
+steps:
+- name: P
+  outputVariables: [{name: Os, type: STRING}, {name: Num, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Os=\"linux\"'); print('openjd_output_var: Num=2')"]}}}
+- name: K
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+- name: S
+  enableIf: false
+  outputVariables: [{name: W, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}, {dependsOn: K}, {dependsOn: S}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  hostRequirements:
+    attributes:
+    - {name: attr.worker.os.family, anyOf: ["{{Steps.P.Output.Os}}"]}
+  let: [w = Steps.S.Output.W or Steps.P.Output.Num]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{w}}, {{Steps.K.TaskParam.I}})"]}}}
+- name: D
+  dependencies: [{dependsOn: P}]
+  enableIf: "{{Steps.P.Output.Num > 1}}"
+  script: {actions: {onRun: {command: x}}}
+jobOutputDefinitions:
+- {name: J, type: INT, value: "{{(Steps.S.Output.W or 0) + len(Steps.K.TaskParam.I) + Steps.P.Output.Num}}"}
+- {name: Nul, type: INT, value: "{{Steps.S.Output.W}}"}
+"#;
+
+    const CHAIN: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Chain
+jobOutputDefinitions:
+- {name: Names, type: "LIST[STRING]", value: "{{[string(p) for p in Steps.C.TaskRawParam.Q]}}"}
+steps:
+- name: P
+  outputVariables: [{name: Num, type: INT}, {name: L, type: "LIST[PATH]"}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Num=2'); print('openjd_output_var: L=[\"s3://b/x\", \"s3://b/y\"]')"]}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  enableIf: "{{len(Steps.P.RawOutput.L) == 2}}"
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{range(Steps.P.Output.Num)}}"}
+    - {name: Q, type: PATH, range: "{{Steps.P.RawOutput.L}}"}
+    combination: (F, Q)
+  script: {actions: {onRun: {command: python, args: [-c, "print('C_RAN')"]}}}
+- name: D
+  dependencies: [{dependsOn: C}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: G, type: INT, range: "{{Steps.C.TaskParam.F}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print('D_RAN')"]}}}
+"#;
+
+    const SI: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: SI
+steps:
+- name: A
+  outputVariables: [{name: Num, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: Q
+  dependencies: [{dependsOn: A}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: "{{range(Steps.A.Output.Num)}}"}
+  outputVariables: [{name: V, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: S
+  enableIf: false
+  outputVariables: [{name: W, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: P
+  outputVariables: [{name: L, type: "LIST[INT]", collect: APPEND}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: Q}, {dependsOn: S}, {dependsOn: P}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.Q.Output.V}}, {{Steps.S.Output.W}}, {{Steps.P.Output.L}}, {{Steps.Q.TaskParam.I}})"]}}}
+"#;
+
+    const NE: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: NE
+jobOutputDefinitions:
+- {name: Bad, type: INT, value: "{{10 // (Steps.A.Output.X[0] - 1)}}"}
+- {name: Two, type: INT, value: "{{Steps.B.Output.Y + Steps.B.Output.Z}}"}
+steps:
+- name: A
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables: [{name: X, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: X=1')"]}}}
+- name: B
+  dependencies: [{dependsOn: A}]
+  outputVariables: [{name: Y, type: INT}, {name: Z, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Y=1'); print('openjd_output_var: Z=1')"]}}}
+"#;
+
+    const WRAP: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, WRAP_ACTIONS]
+name: Wrap
+jobEnvironments:
+- name: W1
+  enableIf: false
+  script:
+    actions:
+      onWrapEnvEnter: {command: python, args: [-c, "print('W1 Enter')"]}
+      onWrapTaskRun: {command: python, args: [-c, "print('W1 Task')"]}
+      onWrapEnvExit: {command: python, args: [-c, "print('W1 Exit')"]}
+steps:
+- name: S
+  script: {actions: {onRun: {command: python, args: [-c, "print('S_RAN')"]}}}
+"#;
+
+    /// A job output reading two Steps waits for both; floats and range
+    /// expressions print and serialize as reported.
+    #[test]
+    fn job_output_over_two_steps_and_value_formats() {
+        let job = write(TWO);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let sum = at(&stdout, "Job output Sum = 3");
+        assert!(sum > at(&stdout, "Output R = \"1-3\""));
+        at(&stdout, "Job output Fl = 1.5");
+        let result = json(&stdout);
+        assert_eq!(
+            result["job_outputs"],
+            serde_json::json!({"Sum": 3, "Fl": 1.5})
+        );
+        assert_eq!(
+            result["steps"][1]["outputs"],
+            serde_json::json!([{"Y": 2, "R": "1-3"}])
+        );
+    }
+
+    /// summary: what a pending Step waits on leaves out what is concrete at
+    /// creation (a skipped Step's nulls, Tasks already known), merges the
+    /// other groups' inputs sorted and without repeats, and shows a null
+    /// job output; `--step` shows the same lines.
+    #[test]
+    fn summary_waits_and_nulls() {
+        let job = write(HOST);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        for want in [
+            "Total tasks: 5 + (determined at run time)\n",
+            "3. 'S' (SKIPPED, 0 total Tasks)\n",
+            "4. 'C' (2 total Tasks; pending inputs)\n  Enabled: yes\n  \
+             Tasks: 2 (known; Step pending inputs for Steps.P.Output.Num, Steps.P.Output.Os)\n  \
+             Host requirements: determined at run time from Steps.P.Output.Os\n",
+            "5. 'D' (pending inputs; Tasks determined at run time)\n  \
+             Enabled: determined at run time from Steps.P.Output.Num\n  \
+             Tasks: determined at run time (waiting for enableIf)\n  \
+             Host requirements: determined at run time (waiting for enableIf)\n",
+            "  - J (INT): pending; waits for Steps.P.Output.Num\n  - Nul (INT): null (no value)\n",
+        ] {
+            assert!(stdout.contains(want), "missing {want:?} in:\n{stdout}");
+        }
+        let (_, stdout, _) = run_cli(&["summary", job.path().to_str().unwrap(), "--step", "C"]);
+        assert!(
+            stdout.contains(
+                "Total tasks: 2\nEnabled: yes\n\
+                 Tasks: 2 (known; Step pending inputs for Steps.P.Output.Num, Steps.P.Output.Os)\n\
+                 Host requirements: determined at run time from Steps.P.Output.Os\n"
+            ),
+            "{stdout}"
+        );
+        let (_, stdout, _) = run_cli(&["summary", job.path().to_str().unwrap(), "--step", "S"]);
+        assert!(stdout.contains("Total tasks: 0 (SKIPPED)\n"), "{stdout}");
+        let (_, stdout, _) = run_cli(&["summary", job.path().to_str().unwrap(), "--step", "D"]);
+        assert!(
+            stdout.contains("Total tasks: determined at run time\n"),
+            "{stdout}"
+        );
+        let (_, stdout, _) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["steps"][4]["binding"]["tasks"],
+            serde_json::json!({"known": false, "waits_on": [], "waits_for_enable_if": true})
+        );
+        assert_eq!(
+            result["job_outputs"],
+            serde_json::json!([
+                {"name": "J", "type": "INT", "state": "PENDING", "waits_on": ["Steps.P.Output.Num"]},
+                {"name": "Nul", "type": "INT", "state": "NULL"},
+            ])
+        );
+    }
+
+    /// A pending Step whose host requirements read a producer, run alone,
+    /// names that input.
+    #[test]
+    fn step_alone_names_host_requirement_inputs() {
+        let job = write(HOST);
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'C' reads Steps.* values of Steps this run does not run: \
+                 Steps.P.Output.Num, Steps.P.Output.Os.\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+            ),
+            "stderr: {stderr}"
+        );
+    }
+
+    /// A summary of a template without CONTROL_FLOW has no state fields.
+    #[test]
+    fn summary_json_without_control_flow_has_no_state() {
+        let template = templates_dir().join("job_with_test_steps.yaml");
+        let (code, stdout, stderr) =
+            run_cli(&["summary", template.to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(!stdout.contains("\"state\""), "{stdout}");
+        let (_, stdout, _) = run_cli(&[
+            "summary",
+            template.to_str().unwrap(),
+            "--step",
+            "BareStep",
+            "--output",
+            "json",
+        ]);
+        assert!(!stdout.contains("\"state\""), "{stdout}");
+    }
+
+    /// A Step whose Tasks become known makes its consumers' TaskParam (and
+    /// TaskRawParam) inputs concrete at once: D binds and the job output is
+    /// evaluated before C runs; a LIST[PATH] URI output feeds enableIf.
+    #[test]
+    fn tasks_known_releases_task_param_readers_at_once() {
+        let job = write(CHAIN);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let c_runs = at(&stdout, "Running step 'C'");
+        assert!(at(&stdout, "Step 'C': enabled (enableIf is true)") < c_runs);
+        assert!(at(&stdout, "Step 'D': Tasks known (2 tasks)") < c_runs);
+        assert!(at(&stdout, "Step 'D' is ready") < c_runs);
+        assert!(at(&stdout, "Job output Names = [\"s3://b/x\", \"s3://b/y\"]") < c_runs);
+    }
+
+    /// --step-inputs refusals, each with its full message.
+    #[test]
+    fn step_inputs_refusals() {
+        let job = write(SI);
+        for (inputs, want) in [
+            (
+                r#"{"Steps.Q.Output.V": [1]}"#,
+                "--step-inputs: Step 'Q' is pending inputs itself, which --step-inputs cannot simulate; use --run-dependencies.\n",
+            ),
+            (
+                r#"{"Steps.S.Output.W": 1}"#,
+                "--step-inputs: Step 'S' is skipped by its enableIf, so its Steps.* values are null; remove 'Steps.S.Output.W'.\n",
+            ),
+            (
+                r#"{"Steps.Q.TaskParam.I": [1]}"#,
+                "--step-inputs: the Tasks of Step 'Q' are determined at run time, which --step-inputs cannot simulate; use --run-dependencies.\n",
+            ),
+            (
+                r#"{"Steps.P.Output.L": 5}"#,
+                "--step-inputs: Step 'P': Steps.P.Output.L: an APPEND output must be given as a list\n",
+            ),
+            (
+                r#" {"Steps.P.Output.L": [5]}"#,
+                "Step 'C' reads Steps.* values of Steps this run does not run: \
+                 Steps.Q.Output.V, Steps.Q.TaskParam.I.\nRun Step 'C' with --run-dependencies.\n",
+            ),
+        ] {
+            let (code, _stdout, stderr) = run_cli(&[
+                "run",
+                job.path().to_str().unwrap(),
+                "--step",
+                "C",
+                "--step-inputs",
+                inputs,
+            ]);
+            assert_ne!(code, 0);
+            assert!(stderr.ends_with(want), "{inputs}: stderr: {stderr}");
+        }
+    }
+
+    /// A group failure in the run's first settle (from --step-inputs values)
+    /// fails the run.
+    #[test]
+    fn group_failure_from_step_inputs_fails_the_run() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: First
+steps:
+- name: P
+  outputVariables: [{name: Num, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{range(Steps.P.Output.Num) if Steps.P.Output.Num > 0 else fail('none')}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.Num": 0}"#,
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains("Session ended with errors"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stderr.contains("ERROR: Step 'C' failed in its Task enumeration group:"),
+            "{stderr}"
+        );
+    }
+
+    /// Why each job output was not evaluated, in the log and the result.
+    #[test]
+    fn job_outputs_not_evaluated_say_why() {
+        let job = write(NE);
+        let path = job.path().to_str().unwrap();
+        for (args, want) in [
+            (
+                vec!["--maximum-tasks", "1"],
+                vec![
+                    "Job output Bad was not evaluated: it waits on Step 'A', which did not run all of its Tasks",
+                    "  Two = 2",
+                    "  Bad: not evaluated (waits on Step 'A', which did not run all of its Tasks)",
+                ],
+            ),
+            (
+                vec!["--step", "A"],
+                vec![
+                    "Job output Bad has no value: its evaluation failed",
+                    "Job output Two was not evaluated: it waits on Step 'B', which this run does not run",
+                    "  Bad: has no value (its evaluation failed)",
+                    "  Two: not evaluated (waits on Step 'B', which this run does not run)",
+                ],
+            ),
+            (
+                vec![],
+                vec![
+                    "Job output Two was not evaluated: it waits on Step 'B', which the run stopped before",
+                    "Job outputs:",
+                    "  Bad: has no value (its evaluation failed)",
+                ],
+            ),
+        ] {
+            let mut all = vec!["run", path];
+            all.extend(args);
+            let (_code, stdout, _stderr) = run_cli(&all);
+            for line in want {
+                at(&stdout, line);
+            }
+        }
+    }
+
+    /// A disabled Job Environment's wrap hooks do not count toward the
+    /// single-wrap-layer rule.
+    #[test]
+    fn disabled_wrap_environment_does_not_count() {
+        let job = write(WRAP);
+        let env = templates_dir().join("wrap_env_second.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--environment",
+            env.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        at(
+            &stdout,
+            "Job Environment 'W1' is disabled by its enableIf; not entering it",
+        );
+        assert!(stdout.contains("WrapB Task"), "stdout: {stdout}");
+    }
+
+    /// --tasks for a Step skipped at Job creation is refused in preflight.
+    #[test]
+    fn tasks_for_a_statically_skipped_step_are_refused() {
+        let job = write(HOST);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "S",
+            "--tasks",
+            r#"[{"I": 1}]"#,
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with("Step 'S' is skipped by its enableIf; --tasks cannot be used.\n"),
+            "stderr: {stderr}"
+        );
+        assert!(!stdout.contains("Session start"), "stdout: {stdout}");
+    }
+
+    /// `--maximum-tasks` equal to the Task count runs every Task; a smaller
+    /// one lists the outputs that arrived.
+    #[test]
+    fn maximum_tasks_at_and_below_the_task_count() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Max
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+- name: Q
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables: [{name: V, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: V={{Task.Param.I}}')"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--maximum-tasks",
+            "2",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(json(&stdout)["steps"][0].get("incomplete"), None);
+        let (_, stdout, _) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--maximum-tasks",
+            "1",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(
+            json(&stdout)["steps"][1],
+            serde_json::json!({"name": "Q", "state": "SUCCEEDED", "task_count": 2,
+                               "incomplete": true, "outputs": [{"V": 1}]})
+        );
+    }
+
+    /// A pending consumer of a producer that did not run all of its Tasks
+    /// is blocked, not an internal error.
+    #[test]
+    fn pending_consumer_of_an_incomplete_producer_is_blocked() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Pend
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables: [{name: V, type: INT}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: V={{Task.Param.I}}')"]}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: J, type: INT, range: "{{Steps.P.Output.V}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+- name: D
+  dependencies: [{dependsOn: C}]
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+"#,
+        );
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--maximum-tasks", "1"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let c = at(
+            &stdout,
+            "Step 'C' is blocked: inputs from Step 'P' are incomplete because not all of its Tasks ran",
+        );
+        assert!(
+            at(
+                &stdout,
+                "Step 'D' is blocked: its dependency 'C' is blocked"
+            ) > c
+        );
+    }
+}
+
+mod control_flow_round5_more {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    /// `--tasks` over every Task of a two-parameter space places each
+    /// output by its parameter values, in any given order.
+    #[test]
+    fn tasks_over_two_parameters_place_outputs() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: TwoParams
+jobOutputDefinitions:
+- {name: All, type: "LIST[STRING]", value: "{{Steps.P.Output.V}}"}
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: A, type: INT, range: [1, 2]}
+    - {name: B, type: STRING, range: [x, y]}
+  outputVariables: [{name: V, type: STRING}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: V=\"{{Task.Param.A}}{{Task.Param.B}}\"')"]}}}
+"#,
+        );
+        for _ in 0..3 {
+            let (code, stdout, stderr) = run_cli(&[
+                "run",
+                job.path().to_str().unwrap(),
+                "--tasks",
+                r#"[{"B": "y", "A": "2"}, {"A": "1", "B": "x"}, {"B": "y", "A": "1"}, {"A": "2", "B": "x"}]"#,
+            ]);
+            assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+            assert!(
+                stdout.contains("\tJob output All = [\"1x\", \"1y\", \"2x\", \"2y\"]\n"),
+                "stdout: {stdout}"
+            );
+        }
+    }
+
+    /// A disabled Environment is marked in summary JSON.
+    #[test]
+    fn summary_json_marks_disabled_environments() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Envs
+jobEnvironments:
+- {name: JE, enableIf: false, variables: {A: a}}
+- {name: JF, variables: {A: a}}
+steps:
+- name: S
+  script: {actions: {onRun: {command: x}}}
+"#,
+        );
+        let (code, stdout, stderr) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["root_environments"],
+            serde_json::json!([
+                {"name": "JE", "parent": "root", "enabled": false},
+                {"name": "JF", "parent": "root"},
+            ])
+        );
+    }
+}
