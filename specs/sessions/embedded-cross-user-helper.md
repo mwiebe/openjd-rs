@@ -581,7 +581,9 @@ read its Run command reaches the idle helper first, which drops it (see the
 runner notes above). So `run_via_helper`, right after it sends Run, checks the
 action's cancel-request channel and, if a cancel was requested, writes it
 again (`write_cancel`, which maps the action's cancel method and the
-request's time limit as the same-user runner does, in whole seconds). The
+request's time limit as the same-user runner does, in whole seconds, so a
+non-zero period under a second is sent as one second, as the session's own
+cancel path also does). The
 session records the request in that channel before it writes the first
 cancel to the pipe, so the check can't miss a cancel the helper has
 already dropped. A cancel that arrived just after Run is then delivered

@@ -380,23 +380,20 @@ fn quote(text: &str) -> String {
 }
 
 /// The collector's message for a directive on `line`, with the line quoted
-/// after it when the message may not quote the value itself (an undeclared
-/// name, a second `ONCE` value, a task selector problem, the size limit, or
-/// a constraint, such as an `APPEND` list's `maxLength`), because RFC
-/// 0010 §Processing a directive requires the failure to name the offending
-/// text. (For an `@` file's content, see `finish_file_sized`, which always
-/// adds the line.)
+/// after it unless the message always quotes the offending text itself (a
+/// grammar, JSON, or path error), because RFC 0010 §Processing a directive
+/// requires the failure to name it. Other kinds may not: an undeclared name,
+/// a second `ONCE` value, a task selector problem, the size limit, a
+/// constraint such as an `APPEND` list's `maxLength`, or a conversion of a
+/// `null` or an object. (For an `@` file's content, see `finish_file_sized`,
+/// which always adds the line.)
 fn with_text(e: &openjd_model::outputs::OutputError, line: &str) -> String {
     use openjd_model::outputs::OutputErrorKind;
     match e.kind() {
-        OutputErrorKind::Undeclared
-        | OutputErrorKind::Repeated
-        | OutputErrorKind::Selector
-        | OutputErrorKind::Size
-        | OutputErrorKind::Constraint => {
-            format!("{}, in {}", e.message(), quote(line))
+        OutputErrorKind::Grammar | OutputErrorKind::Json | OutputErrorKind::Path => {
+            e.message().to_string()
         }
-        _ => e.message().to_string(),
+        _ => format!("{}, in {}", e.message(), quote(line)),
     }
 }
 

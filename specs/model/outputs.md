@@ -249,7 +249,10 @@ names the problem and, where it has one, the position in the value (`item[1][0]`
 
 Messages quote an inline value's text and the converted value or element that is
 invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. The
-RFC asks for "the offending text". They never quote an `@` file's text as such: a JSON
+RFC asks for "the offending text". Some do not (a `null` or an object, an undeclared
+name, a second `ONCE` value, a selector, size, or `maxLength` problem); the sessions
+runtime appends the directive's line to those (see
+`specs/sessions/action-filter.md`). They never quote an `@` file's text as such: a JSON
 error for a file gives only `serde_json`'s line and column, and a conversion error only
 the element's type. Quoted text is cut to 200 characters with `...`, and control
 characters in it are escaped (`\n`, `\u{1b}`, `\0`), so a message stays on one line and
