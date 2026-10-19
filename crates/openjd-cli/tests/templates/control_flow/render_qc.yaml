@@ -1,0 +1,109 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# "Render, quality check, and optional steps", verbatim.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Render {{path(RawParam.SceneFile).stem}}"
+parameterDefinitions:
+  - name: SceneFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+  - name: Frames
+    type: RANGE_EXPR
+    default: "1-240"
+  - name: OutputPattern
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+    default: "out/beauty_####.exr"
+  - name: NoiseThreshold
+    type: FLOAT
+    default: 0.02
+  - name: EncodeVideo
+    type: BOOL
+    default: true
+  - name: OutputVideo
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+    default: "out/beauty.mp4"
+steps:
+  - name: Render
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "{{Param.Frames}}"
+    bash:
+      script: |
+        render --scene {{repr_sh(Param.SceneFile)}} --frame {{Task.Param.Frame}} \
+               --out {{repr_sh(Param.OutputPattern.with_number(Task.Param.Frame))}}
+
+  - name: QualityCheck
+    dependencies:
+      - dependsOn: Render
+    outputVariables:
+      - name: BadFrames
+        type: LIST[INT]
+      - name: MeanNoise
+        type: FLOAT
+        minValue: 0
+    python:
+      script: |
+        import json
+        from qc import check_frames
+        report = check_frames({{repr_py(Param.OutputPattern)}}, {{repr_py(list(Param.Frames))}})
+        print("openjd_output_var: BadFrames=" + json.dumps(report.bad_frames))
+        print(f"openjd_output_var: MeanNoise={report.mean_noise}")
+
+  - name: Rerender
+    dependencies:
+      - dependsOn: QualityCheck
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "{{Steps.QualityCheck.Output.BadFrames}}"   # usually empty: zero tasks
+    bash:
+      script: |
+        render --scene {{repr_sh(Param.SceneFile)}} --frame {{Task.Param.Frame}} --safe-mode \
+               --out {{repr_sh(Param.OutputPattern.with_number(Task.Param.Frame))}}
+
+  - name: Denoise
+    dependencies:
+      - dependsOn: QualityCheck
+      - dependsOn: Rerender
+    enableIf: "{{Steps.QualityCheck.Output.MeanNoise > Param.NoiseThreshold}}"   # decided at binding
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "{{Param.Frames}}"
+    bash:
+      script: |
+        denoise --in-place {{repr_sh(Param.OutputPattern.with_number(Task.Param.Frame))}}
+
+  - name: EncodeVideo
+    dependencies:
+      - dependsOn: Rerender
+      - dependsOn: Denoise          # satisfied whether Denoise ran or was skipped
+    enableIf: "{{Param.EncodeVideo}}"   # decided at job creation
+    outputVariables:
+      - name: VideoBytes
+        type: INT
+    bash:
+      script: |
+        set -euo pipefail
+        ffmpeg -nostdin -start_number {{min(Param.Frames)}} -i {{repr_sh(Param.OutputPattern)}} \
+               {{repr_sh(Param.OutputVideo)}}
+        echo "openjd_output_var: VideoBytes=$(stat -c %s {{repr_sh(Param.OutputVideo)}})"
+
+  - name: Publish
+    dependencies:
+      - dependsOn: EncodeVideo
+    let:
+      - video_bytes = Steps.EncodeVideo.Output.VideoBytes    # int?, because EncodeVideo has enableIf
+      - summary = 'video of ' + string(video_bytes) + ' bytes' if video_bytes != null else 'frames only'
+    bash:
+      script: |
+        publish --pattern {{repr_sh(Param.OutputPattern)}} --note {{repr_sh(summary)}}

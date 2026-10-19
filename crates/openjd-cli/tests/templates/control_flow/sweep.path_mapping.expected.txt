@@ -1,0 +1,121 @@
+$ openjd run {T}/sweep.yaml -p EpisodeCount=2 -p BenchmarkDir={T}/fixtures/benchmark -p DatasetBucket=datasets -p DatasetPrefix=hot3d/ -p OutputDir=/submit/results --path-mapping-rules '{"version": "pathmapping-1.0", "path_mapping_rules": [{"source_path_format": "POSIX", "source_path": "/submit", "destination_path": "{W}/mapped"}]}'
+$ s3 fixtures/s3_videos
+exit code: 0
+--- stdout
+Session start
+Running job 'Hand-tracking sweep and full run'
+Step 'RunWinner' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.Discover.Output.Videos
+  Host requirements: known
+Running step 'Sweep'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Episode(INT) = 0
+DetConf(FLOAT) = 0.5
+Overlap(FLOAT) = 0.5
+Window(INT) = 8
+Output:
+handtrack stub: benchmark episode 0 window 8
+openjd_output_var: mpjpe_mm=64.0
+openjd_output_var: fps=32.0
+Process exited with code: 0
+Output mpjpe_mm = 64.0
+Output fps = 32.0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Episode(INT) = 1
+DetConf(FLOAT) = 0.5
+Overlap(FLOAT) = 0.5
+Window(INT) = 8
+Output:
+handtrack stub: benchmark episode 1 window 8
+openjd_output_var: mpjpe_mm=64.5
+openjd_output_var: fps=32.0
+Process exited with code: 0
+Output mpjpe_mm = 64.5
+Output fps = 32.0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Episode(INT) = 0
+DetConf(FLOAT) = 0.5
+Overlap(FLOAT) = 0.5
+Window(INT) = 16
+Output:
+handtrack stub: benchmark episode 0 window 16
+openjd_output_var: mpjpe_mm=48.0
+openjd_output_var: fps=24.0
+Process exited with code: 0
+Output mpjpe_mm = 48.0
+Output fps = 24.0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Episode(INT) = 1
+DetConf(FLOAT) = 0.5
+Overlap(FLOAT) = 0.5
+Window(INT) = 16
+Output:
+handtrack stub: benchmark episode 1 window 16
+openjd_output_var: mpjpe_mm=48.5
+openjd_output_var: fps=24.0
+Process exited with code: 0
+Output mpjpe_mm = 48.5
+Output fps = 24.0
+Job output BestSingleTaskErrorMm = 48.0 mm
+Running step 'Discover'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Videos=@videos.json
+Process exited with code: 0
+Output Videos = ["hot3d/clip1.mp4", "hot3d/clip2.mp4"]
+Step 'RunWinner': Tasks known (2 tasks)
+Step 'RunWinner' is ready
+Job output VideoCount = 2
+Running step 'RunWinner'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Video(STRING) = hot3d/clip1.mp4
+Output:
+handtrack stub: tracked s3://datasets/hot3d/clip1.mp4 with window 16, overlap 0.5, det_conf 0.5
+openjd_output_var: ResultDir="{W}/mapped/results/clip1"
+Process exited with code: 0
+Output ResultDir = "/submit/results/clip1"
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Video(STRING) = hot3d/clip2.mp4
+Output:
+handtrack stub: tracked s3://datasets/hot3d/clip2.mp4 with window 16, overlap 0.5, det_conf 0.5
+openjd_output_var: ResultDir="{W}/mapped/results/clip2"
+Process exited with code: 0
+Output ResultDir = "/submit/results/clip2"
+Job output ResultDirs = ["/submit/results/clip1", "/submit/results/clip2"]
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Hand-tracking sweep and full run
+Duration: {DURATION}
+Chunks run: 7
+Job outputs:
+  VideoCount = 2
+  BestSingleTaskErrorMm = 48.0 mm
+  ResultDirs = ["/submit/results/clip1", "/submit/results/clip2"]
+--- stderr
