@@ -173,7 +173,7 @@ concrete `Steps.*` value so far of the Steps that something reads: a skipped Ste
 Step that succeeded with all of its Tasks (`common::creation_inputs` seeds it from
 `create_job`'s result).
 
-**Before the first Step,** `run` prints the job outputs `create_job` evaluated
+**Before the first Step,** `run` prints, for the Steps this run runs, the job outputs `create_job` evaluated
 (`Job output Label = "x"`), each Step it skipped (`Step 'S' skipped (enableIf is
 false)`), and, for each pending Step, what is known of it (`common::binding_lines`; see
 [summary.md](summary.md)).
@@ -193,14 +193,17 @@ producer that only its script reads has run. Then every job output not yet evalu
 whose inputs (`job_output_inputs`) are all concrete is evaluated with
 `evaluate_job_output` and printed once (`Job output Total = 30 px`, or `= null (no
 value)`). An output evaluated from a Step's `TaskParam` stays committed if that Step later
-fails. A job output that fails prints its error and fails the run, as a failed Task does.
+fails. A job output that fails prints its error and fails the run, as a failed Task does;
+the other job outputs whose inputs are concrete are still evaluated.
 A caller error from the model (`is_caller_error`, `ModelError::Compatibility`) is a bug in
 the simulator and is reported as an internal error.
 
 **Each Step,** in the run's order:
 
 1. A `Failed` Step does not run. A Step whose dependency in this run failed or is blocked
-   becomes `Blocked` and prints `Step 'X' is blocked: its dependency 'P' failed`. This
+   becomes `Blocked` and prints `Step 'X' is blocked: its dependency 'P' failed` (or
+   `is blocked`). Since a failed Task stops the run, this is reached for a Step after a
+   failed Step only at the end of the run (below). This
    includes a skipped Step, which satisfies `dependsOn` only once its own dependencies
    are satisfied (RFC 0010 §Step states).
 2. A `Pending` Step is advanced. Its dependencies have finished, so it binds, is skipped,
@@ -213,10 +216,13 @@ the simulator and is reported as an internal error.
    successful Action's `ActionResult.outputs` is recorded per Task, in the Step's
    per-Task iteration order, through the model's `ChunkTaskIndex` (a chunk's outputs are
    keyed by `CHUNK[INT]` value). Each value is printed with its unit after its Action
-   (`Output N = 3 frames`, or `Output Done[2] = 20` in a chunked Step). A Step with zero
-   Tasks prints `Step 'X' has 0 tasks` and succeeds.
-5. The Step is recorded `Failed` if the run failed while it ran, and `Succeeded`
-   otherwise; then the simulator settles.
+   (`Output N = 3 frames`, or `Output Done[2] = 20` in a chunked Step). Outputs are kept
+   sparsely, and only for a Step that declares output variables; an unchunked space run in
+   order is placed by position without building an index, so a large parameter space
+   costs nothing for the Tasks that do not run. A Step with zero Tasks prints `Step 'X'
+   has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
+5. The Step is recorded `Failed` (reason `a Task failed`, unless a group failed) if the
+   run failed while it ran, and `Succeeded` otherwise; then the simulator settles.
 
 Job Environments with `enabled == false` are not entered either (`Job Environment 'E' is
 disabled by its enableIf; not entering it`).
@@ -240,13 +246,23 @@ fails naming them: `Step 'C' reads Steps.* values of Steps this run does not run
 Steps.P.Output.V.` followed by `Give them with --step-inputs, or run Step 'C' with
 --run-dependencies.` A producer's `TaskParam` comes from its parameter space, so a
 `Steps.P.TaskParam.N` key is refused. So is a producer that is skipped (its values are
-`null`), and one that is not bound at Job creation, whose Tasks or outputs the run cannot
-simulate without its own inputs. `--step-inputs` without a Step run alone is an error.
+`null`), and one that is not bound at Job creation. This narrows the plan's C1 option,
+which also lists `Steps.P.TaskParam.N` keys: a producer not bound at Job creation has a
+binding that only its own inputs can advance, so supplying its `TaskParam` lists would
+mean supplying a parameter space the model never materialized, and its outputs could not
+be checked against it; such a Step is run with `--run-dependencies` instead. The
+supplied values are a producer's state like any other, so job outputs that read only
+supplied and concrete values are evaluated and printed. `--step-inputs` without a Step run
+alone is an error (see [parameter-parsing.md](parameter-parsing.md) for its formats).
 
-**The end of the run** prints each job output not evaluated and why each Step it waits
-on has not given its values: `Job output Sum was not evaluated: it waits on Step 'C'
-failed` (or `is blocked`, `was not run`, `did not run all of its Tasks`, `did not run`).
-With `--step` alone, those are the outputs that read Steps not run. The run succeeds only
+**The end of the run** first marks `Blocked` every Step of the run that a failed or
+blocked dependency keeps from ever running, since the run stops at the first failure before
+reaching them (RFC 0010 §Job outputs item 4: such an output is unavailable, naming the
+Step). It then prints each job output not evaluated and why each Step it waits on has not
+given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
+(or `which is blocked`, `which this run does not run`, `which did not run all of its
+Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
+failed`. With `--step` alone, the Steps not run are the ones this run does not run. The run succeeds only
 after every job output whose inputs became concrete has been evaluated. The CLI imposes no
 size limit on job outputs, which the RFC's 1 MiB minimum allows.
 
@@ -479,7 +495,9 @@ output matches the Python CLI's):
   `task_count` `null` while its Tasks are unknown; `incomplete: true` for a Step that did
   not run all of its Tasks; `reason` for a failed or blocked Step; and, for a Step that
   declares output variables and started, `outputs`, a list with one map from output name
-  to value per Task in iteration order (`null` for a Task that did not succeed).
+  to value per Task in iteration order, up to the last Task whose outputs arrived (`null`
+  for a Task before it that did not succeed), so a Step whose Tasks all succeeded has one
+  per Task and a zero-Task Step has `[]`.
 * `job_outputs`: a map from each evaluated job output's name to its value (`null` for no
   value).
 * `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end.

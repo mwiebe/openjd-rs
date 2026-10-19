@@ -1214,3 +1214,75 @@ fn gpu_is_q(job: &openjd_model::job::Job) -> StepInputs {
     );
     inputs
 }
+
+/// A reported `PATH` output carries its stored form's format (a URI's own, or
+/// a reverse-mapping rule's source format). A group and a job output read it
+/// in the model's evaluation format, keeping its text, so neither fails with
+/// "Path format mismatch".
+#[test]
+fn path_outputs_in_another_format_are_readable_by_groups_and_job_outputs() {
+    let f = Fixture::new(
+        &format!(
+            "{}jobOutputDefinitions:
+- {{name: J, type: PATH, value: '{{{{Steps.P.RawOutput.U}}}}'}}
+- {{name: W, type: STRING, value: '{{{{Steps.P.RawOutput.W[0]}}}}'}}
+steps:
+- name: P
+  outputVariables: [{{name: U, type: PATH}}, {{name: W, type: 'LIST[PATH]'}}]
+  script: {{actions: {{onRun: {{command: echo}}}}}}
+- name: C
+  dependencies: [{{dependsOn: P}}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {{name: X, type: STRING, range: '{{{{[string(Steps.P.RawOutput.U), string(Steps.P.RawOutput.W[0])]}}}}'}}
+  script: {{actions: {{onRun: {{command: echo}}}}}}
+",
+            header("[EXPR, CONTROL_FLOW]")
+        ),
+        &[],
+    );
+    let mut job = f.job();
+    let uri = ExprValue::new_path("s3://b/k", openjd_expr::PathFormat::Uri);
+    let windows = ExprValue::make_list(
+        vec![ExprValue::new_path(
+            r"C:\out\a",
+            openjd_expr::PathFormat::Windows,
+        )],
+        openjd_expr::ExprType::PATH,
+    )
+    .unwrap();
+    let produced = [outputs(&[("U", uri), ("W", windows)])];
+    let c = f
+        .advance(
+            &mut job,
+            "C",
+            |job| {
+                let mut inputs = StepInputs::new();
+                succeeded(&mut inputs, job, "P", &produced);
+                inputs
+            },
+            0,
+        )
+        .unwrap();
+    assert!(c.binding.is_bound());
+    let openjd_model::job::TaskParameter::String { range } = &c
+        .parameter_space
+        .as_ref()
+        .unwrap()
+        .task_parameter_definitions["X"]
+    else {
+        panic!("X is a STRING parameter")
+    };
+    assert_eq!(range, &["s3://b/k".to_string(), r"C:\out\a".to_string()]);
+
+    let mut inputs = StepInputs::new();
+    succeeded(&mut inputs, &job, "P", &produced);
+    let value = |i| {
+        openjd_model::evaluate_job_output(&f.jt, &f.params, &f.ctx, &job, i, &inputs)
+            .unwrap()
+            .unwrap()
+            .to_display_string()
+    };
+    assert_eq!(value(0), "s3://b/k");
+    assert_eq!(value(1), r"C:\out\a");
+}

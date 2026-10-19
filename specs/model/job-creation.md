@@ -655,8 +655,12 @@ producer. `add_producer(producer, state)` fills them, typed as the RFC's §The
 * `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
 
 A type that is or contains `path` gets a value only in its `Raw` form (the
-submission-context form, as a `path` value; a `PATH` Task parameter's
-values are `path` values in the Posix format); its `Output` or `TaskParam`
+submission-context form, as a `path` value in the Posix format the model
+evaluates in, with its text unchanged: a reported `PATH` output carries the
+format of its stored form, such as a URI's or a reverse rule's source format,
+and the EXPR evaluator refuses a `path` value in another format than its own,
+so a group or job output could not read it otherwise; a `PATH` Task
+parameter's values are `path` values in the Posix format); its `Output` or `TaskParam`
 is concrete (`is_concrete`) but has no value (`get` returns `None`), because
 it is derived on the worker host. `add_producer` replaces a producer added
 before. `TasksKnown` on a skipped producer is the same as `Skipped`, since its
