@@ -216,10 +216,15 @@ the simulator and is reported as an internal error.
    with `its dependency 'S' is skipped but never satisfies dependsOn`. Since a failed Task
    stops the run, this is reached for a Step after a failed Step only at the end of the
    run (below).
-2. A `Pending` Step is advanced. Its dependencies have finished, so it binds, is skipped,
-   or fails. A Step still pending then is an internal error, unless it reads the outputs
-   of a Step that did not run all of its Tasks (below).
-3. A `Skipped` Step prints `Step 'X' is skipped; it runs no Tasks` and runs nothing.
+2. A Step is not advanced here: its dependencies have finished, and settling advanced it
+   after the last of them changed state, so it is bound, skipped, or failed by now. A Step
+   still pending is an internal error, unless it reads the outputs of a Step that did not
+   run all of its Tasks (below).
+3. A `Skipped` Step prints `Step 'X' is skipped; it runs no Tasks` and runs nothing. If the
+   run gives it Tasks with `--tasks` or `--task-param` (it was skipped at run time; one
+   skipped at Job creation is refused in preflight), the run fails with `ERROR: Step 'S'
+   is skipped by its enableIf; the Tasks given with --tasks or --task-param cannot be
+   run.`
 4. A bound Step that reads `Steps.*` gets `attach_step_inputs`. Only its Step
    Environments with `enabled` are entered; each other prints `Step Environment 'E' is
    disabled by its enableIf; not entering it`. Its Tasks run as before, and each
@@ -230,7 +235,9 @@ the simulator and is reported as an internal error.
    sparsely, and only for a Step that declares output variables; an unchunked space run in
    order is placed by position, and a chunked one through the lazy `ChunkTaskIndex`.
    Tasks given with `--tasks` or `--task-param` are kept in the order they ran and placed
-   through a `ChunkTaskIndex` only once they are as many as the Step's Tasks. Either way a
+   through a `ChunkTaskIndex` only once they are as many as the Step's Tasks. Without
+   output variables, given Tasks complete the Step when they name every Task, counting
+   each `CHUNK[INT]` value of a given chunk as one Task. Either way a
    large parameter space costs nothing for the Tasks that do not run. A `FLOAT` value is
    matched by number, so a range written `1.50` matches a given `1.5`. A Step with zero Tasks prints `Step 'X'
    has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
@@ -262,7 +269,8 @@ with --step-inputs, or run Step 'C' with --run-dependencies.`, or by only `Run S
 with --run-dependencies.` when none of the missing values is an output of a producer bound
 at Job creation, which is all `--step-inputs` can give. A key naming a Step whose outputs C
 does not read is refused (`--step-inputs: Step 'C' does not read the outputs of Step
-'R'.`), as is a Step the Job does not have. A producer's `TaskParam` comes from its parameter space, so a
+'R'.`), as is a Step the Job does not have. A `Steps.P.Output.V` key also gives
+`Steps.P.RawOutput.V`, so a missing `RawOutput` is given with the `Output` key. A producer's `TaskParam` comes from its parameter space, so a
 `Steps.P.TaskParam.N` key is refused. So is a producer that is skipped (its values are
 `null`), and one that is not bound at Job creation. This narrows the plan's C1 option,
 which also lists `Steps.P.TaskParam.N` keys: a producer not bound at Job creation has a
@@ -311,9 +319,10 @@ Within a selected step, tasks execute in one of three modes:
 ### No Parameter Space
 
 If the step has no `parameterSpace`, a single task runs with no task parameters.
-Supplying `--task-param` or `--tasks` for such a step is rejected during preflight, or,
-for a `CONTROL_FLOW` Step pending inputs at Job creation, when it is bound. They are
-rejected during preflight for a skipped Step.
+Supplying `--task-param` or `--tasks` for such a step is rejected during preflight,
+including for a `CONTROL_FLOW` Step pending inputs at Job creation: whether a Step has a
+`parameterSpace` comes from the template, not from the materialized space. They are also
+rejected during preflight for a Step skipped at Job creation.
 
 ### Explicit Task Parameters
 
@@ -519,7 +528,10 @@ output matches the Python CLI's):
   for a Task before it that did not succeed), so a Step whose Tasks all succeeded has one
   per Task and a zero-Task Step has `[]`. For Tasks given with `--tasks` or `--task-param`
   that do not cover the Step, `outputs` lists them in the order they ran, and
-  `outputs_in_run_order: true` says so.
+  `outputs_in_run_order: true` says so; the same holds for such a Step that failed, which
+  keeps the outputs of the given Tasks that succeeded. A producer whose outputs
+  `--step-inputs` gave has `inputs_supplied: true` and stays `READY`, since it did not
+  run.
 * `job_outputs`: a map from each evaluated job output's name to its value (`null` for no
   value).
 * `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end, or

@@ -5282,3 +5282,216 @@ steps:
         );
     }
 }
+
+mod control_flow_run_round4 {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    fn json(stdout: &str) -> serde_json::Value {
+        let start = stdout.find("{\n").expect("JSON result");
+        serde_json::from_str(&stdout[start..]).unwrap()
+    }
+
+    /// A Step run with `--tasks` that fails keeps the outputs of the given
+    /// Tasks that succeeded, in run order.
+    #[test]
+    fn failed_explicit_tasks_keep_their_outputs() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Fails
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: A, type: INT, range: "1-3"}
+  outputVariables: [{name: D, type: INT}]
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "import sys; print('openjd_output_var: D={{Task.Param.A}}'); sys.exit(1 if {{Task.Param.A}} == 3 else 0)"]}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--tasks",
+            r#"[{"A": 2}, {"A": 1}, {"A": 3}]"#,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            json(&stdout)["steps"][0],
+            serde_json::json!({"name": "P", "state": "FAILED", "task_count": 3,
+                               "reason": "a Task failed", "outputs_in_run_order": true,
+                               "outputs": [{"D": 2}, {"D": 1}]})
+        );
+    }
+
+    /// The hint offers --step-inputs for a missing RawOutput, which a
+    /// Steps.P.Output key gives; and a producer's supplied outputs are
+    /// marked in JSON.
+    #[test]
+    fn raw_output_is_suppliable_and_supplied_inputs_are_marked() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Raw
+steps:
+- name: Q
+  outputVariables: [{name: Mx, type: STRING}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: Q}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('GOT {{Steps.Q.RawOutput.Mx}}')"]}}}
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'C' reads Steps.* values of Steps this run does not run: \
+                 Steps.Q.RawOutput.Mx.\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+            ),
+            "stderr: {stderr}"
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.Q.Output.Mx": "x"}"#,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("GOT x"), "stdout: {stdout}");
+        assert_eq!(
+            json(&stdout)["steps"][0],
+            serde_json::json!({"name": "Q", "state": "READY", "task_count": 1,
+                               "inputs_supplied": true})
+        );
+    }
+
+    /// `--tasks` naming every chunk of a chunked Step without outputs
+    /// completes it.
+    #[test]
+    fn explicit_chunks_covering_the_step_complete_it() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, TASK_CHUNKING]
+name: Chunks
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: X
+      type: CHUNK[INT]
+      range: "1-4"
+      chunks: {defaultTaskCount: 2, rangeConstraint: CONTIGUOUS}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+"#,
+        );
+        for (tasks, incomplete) in [
+            (r#"[{"X": "3-4"}, {"X": "1-2"}]"#, None),
+            (r#"[{"X": "1-2"}]"#, Some(true)),
+        ] {
+            let (code, stdout, stderr) = run_cli(&[
+                "run",
+                job.path().to_str().unwrap(),
+                "--tasks",
+                tasks,
+                "--output",
+                "json",
+            ]);
+            assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+            assert_eq!(
+                json(&stdout)["steps"][0]
+                    .get("incomplete")
+                    .and_then(|v| v.as_bool()),
+                incomplete,
+                "{tasks}"
+            );
+        }
+    }
+
+    const DYNAMIC_SKIP: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Skip
+steps:
+- name: R
+  outputVariables: [{name: Go, type: BOOL}]
+  script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Go=false')"]}}}
+- name: S
+  dependencies: [{dependsOn: R}]
+  enableIf: "{{Steps.R.Output.Go}}"
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1]}
+  script: {actions: {onRun: {command: python, args: [-c, "print('S_' + 'RAN')"]}}}
+- name: T
+  dependencies: [{dependsOn: R}]
+  stepEnvironments:
+  - {name: E, enableIf: "{{Steps.R.Output.Go}}", variables: {V: v}}
+  script: {actions: {onRun: {command: python, args: [-c, "print('T_' + 'RAN')"]}}}
+"#;
+
+    /// Tasks given for a Step that is skipped at run time are refused, as for
+    /// a Step skipped at Job creation.
+    #[test]
+    fn explicit_tasks_for_a_dynamically_skipped_step_are_refused() {
+        let job = write(DYNAMIC_SKIP);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "S",
+            "--run-dependencies",
+            "--tasks",
+            r#"[{"I": 1}]"#,
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.contains(
+                "ERROR: Step 'S' is skipped by its enableIf; the Tasks given with --tasks or \
+                 --task-param cannot be run.\n"
+            ),
+            "stderr: {stderr}"
+        );
+        assert!(!stdout.contains("S_RAN"), "stdout: {stdout}");
+    }
+
+    /// `--task-param` for a pending Step without a parameterSpace is refused
+    /// before the Session starts.
+    #[test]
+    fn task_param_for_a_pending_step_without_parameter_space_is_refused_early() {
+        let job = write(DYNAMIC_SKIP);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "T",
+            "--run-dependencies",
+            "-t",
+            "X=1",
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'T' does not define a parameterSpace; --task-param cannot be used.\n"
+            ),
+            "stderr: {stderr}"
+        );
+        assert!(!stdout.contains("Session start"), "stdout: {stdout}");
+    }
+}

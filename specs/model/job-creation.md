@@ -711,7 +711,11 @@ whose `Steps.*` symbols the Step reads: those its host-scope fields read (for
 `attach_step_inputs`) and, for a pending Step, those any of its groups read,
 known or not (`PendingBinding::producers`, which `create_job` and
 `advance_step_binding` record). It is what a caller passes on each call; none
-for a skipped Step.
+for a skipped Step. `job::Step::input_symbols()` lists the
+`Steps.<Step>.<Member>.<Name>` symbols themselves: those its host-scope fields
+read (what `attach_step_inputs` needs concrete) and, for a pending Step, those
+its groups still wait on (a known group's inputs are not listed); none for a
+skipped Step.
 
 ### convert_environment
 

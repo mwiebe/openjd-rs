@@ -148,7 +148,7 @@ The hint on `--help` tells users how to see the full option list:
 
 ```
 Standard Options:
-  -p, --parameter <KEY=VALUE> Job parameters (Key=Value, file://path, or inline JSON)
+  -p, --job-param <KEY=VALUE>  Job parameters (Key=Value, file://path, or inline JSON)
   --environment <PATH>       Environment template files
   --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step reads
   --verbose                  Enable verbose logging
