@@ -1,6 +1,7 @@
 # CONTROL_FLOW golden tests
 
-Golden-file tests of `openjd` on the sample templates of RFC 0010 (CONTROL_FLOW), run by
+Golden-file tests of `openjd` on the sample templates of RFC 0010 (CONTROL_FLOW) and on the
+plan's progressive binding templates, run by
 `tests/control_flow_golden/mod.rs` as part of `cli_tests`. Each case runs one `openjd`
 command and compares its normalized output with `<case>.expected.txt` in this directory.
 
@@ -44,13 +45,15 @@ written. The harness puts `stubs/bin` first on `PATH` and `stubs/python` on `PYT
   and `qc`.
 
 Each stub's docstring says what it does. The stubs whose output the samples don't capture
-print a `<name> stub:` line; `ffprobe`, `date`, `pipeline`, `scenetools` and the read calls
-of `boto3` print nothing of their own. `stylize` writes its output even when its input
-frame is missing, and says `(no input frame)`, so `StylizeFrame` can run alone with
-`--step-inputs`, which extracts no frames. Inputs
-come from `fixtures/`: a text "video" (`three_frames.video`), scene files for the render
-and scene-graph samples, and S3 buckets. A case that uses S3 copies its `fixtures/<dir>` to
-the scratch directory, where the `boto3` stub reads and writes it.
+print a `<name> stub:` line. `ffprobe`, `date`, `pipeline` and `scenetools` print nothing
+of their own, and neither do `boto3`'s `list_objects_v2` and `head_object`; its
+`download_file`, `upload_file` and `put_object` print a marker. `stylize` writes its output
+even when its input frame is missing, and says `(no input frame)`, because `StylizeFrame`
+run alone with `--step` has no extracted frames.
+
+Inputs come from `fixtures/`: a text "video" (`three_frames.video`), scene files for the
+render and scene-graph samples, and S3 buckets. A case that uses S3 copies its
+`fixtures/<dir>` to the scratch directory, where the `boto3` stub reads and writes it.
 
 ## Cases and normalization
 
@@ -61,8 +64,9 @@ and the S3 fixture, then the exit code, stdout and stderr. In the output, the lo
 timestamps are removed, both directories are written `{T}` and `{W}`, and the session
 duration is `{DURATION}`.
 
-The harness removes `BASH_ENV`, `ENV`, `CDPATH` and the stubs' own `OPENJD_GOLDEN_*`
-variables from the environment it inherits, because they change what the samples print.
+The harness removes `BASH_ENV`, `ENV`, `CDPATH`, `SHELLOPTS`, `BASHOPTS`, every `PYTHON*`
+variable and the stubs' own `OPENJD_GOLDEN_*` variables from the environment it inherits,
+because they change what the samples print, and then sets the `PYTHON*` variables it needs.
 
 To add a case, add an entry to the `golden!` list in `tests/control_flow_golden/mod.rs` and
 run with `OPENJD_UPDATE_GOLDEN=1`. A test fails if an expected file here has no case.
