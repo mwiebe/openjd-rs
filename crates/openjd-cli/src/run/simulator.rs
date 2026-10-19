@@ -435,9 +435,13 @@ impl Simulator {
         // --step-inputs can supply the outputs only of a producer bound at
         // Job creation.
         let suppliable = missing.iter().any(|s| {
+            let member = s.split('.').nth(2);
             crate::common::step_of_symbol(s)
                 .and_then(|p| self.step_index(p))
-                .is_some_and(|j| self.job.steps[j].binding.is_bound() && s.contains(".Output."))
+                .is_some_and(|j| {
+                    self.job.steps[j].binding.is_bound()
+                        && matches!(member, Some("Output" | "RawOutput"))
+                })
         });
         let hint = if suppliable {
             format!(
@@ -784,18 +788,22 @@ impl Simulator {
             self.block(idx, reason);
             return Ok(Begin::NotRun);
         }
-        // Advanced only if a producer changed since it last was: otherwise
-        // nothing new can bind it, and it stays pending (below).
-        if self.records[idx].state == SimStepState::Pending && self.is_fresh(idx) {
-            if let Advanced::Failed = self.advance(idx)? {
-                return Ok(Begin::Failed);
-            }
-        }
+        // A pending Step is not advanced here: settle advanced it after the
+        // last change of any of its producers, so nothing new can bind it,
+        // and it stays pending (below).
         let name = self.job.steps[idx].name.clone();
         let incomplete = |p: String| {
             format!("inputs from Step '{p}' are incomplete because not all of its Tasks ran")
         };
         match self.records[idx].state {
+            SimStepState::Skipped if explicit_tasks => {
+                // As for a Step skipped at Job creation (preflight).
+                eprintln!(
+                    "ERROR: Step '{name}' is skipped by its enableIf; the Tasks given with \
+                     --tasks or --task-param cannot be run."
+                );
+                Ok(Begin::Failed)
+            }
             SimStepState::Skipped => {
                 say(&format!("Step '{name}' is skipped; it runs no Tasks"));
                 Ok(Begin::NotRun)
@@ -931,6 +939,14 @@ impl Simulator {
             record
                 .reason
                 .get_or_insert_with(|| "a Task failed".to_string());
+            // Keep the outputs of the given Tasks that succeeded, in run
+            // order: a failed Step cannot have run all of its Tasks.
+            if let Some(Placement::Explicit(ran)) = &mut record.placement {
+                record.unplaced = std::mem::take(ran)
+                    .into_iter()
+                    .map(|(_, _, outputs)| outputs)
+                    .collect();
+            }
             return Ok(());
         }
         record.state = SimStepState::Succeeded;
@@ -1060,6 +1076,9 @@ impl Simulator {
                 }
                 if let Some(reason) = &record.reason {
                     m.insert("reason".into(), reason.clone().into());
+                }
+                if record.supplied {
+                    m.insert("inputs_supplied".into(), true.into());
                 }
                 if step.output_variables.is_some() && record.placement.is_some() {
                     // One entry per Task up to the last whose outputs

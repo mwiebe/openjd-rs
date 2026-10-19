@@ -17,7 +17,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     let _ = crate::TIMESTAMP_FORMAT.set(args.timestamp_format.clone());
 
     let prepared = prepare_run(&args)?;
-    let selection = prepare_selection(&args, &prepared.job)?;
+    let selection = prepare_selection(&args, &prepared.job, &prepared.job_template)?;
     let mut sim = prepare_simulator(&args, &prepared, &selection)?;
     validate_wrap_environment_stacks(
         &prepared.job,
@@ -145,7 +145,11 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     })
 }
 
-fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError> {
+fn prepare_selection(
+    args: &RunArgs,
+    job: &Job,
+    job_template: &openjd_model::template::JobTemplate,
+) -> Result<RunSelection, RunError> {
     let selected_step_idx = if let Some(step_name) = &args.step {
         Some(
             job.steps
@@ -196,9 +200,15 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
             )
             .into());
         }
-        // A pending Step's parameter space is known only once it is bound,
-        // so `execute_step_tasks` checks it then.
-        if selected.binding.is_bound() && selected.parameter_space.is_none() {
+        // Whether the Step has a parameterSpace is fixed by the template,
+        // even for a Step pending inputs, whose space is not materialized.
+        let has_space = job_template
+            .steps
+            .get(selected_idx)
+            .map_or(selected.parameter_space.is_some(), |t| {
+                t.parameter_space.is_some()
+            });
+        if !has_space {
             return Err(no_parameter_space(&selected.name, option).into());
         }
     }
@@ -576,8 +586,7 @@ async fn execute_step_tasks(
 
 /// Run the Tasks given with `--tasks` or `--task-param`, returning whether
 /// they ran every Task of the Step: as many distinct Tasks as it has, all
-/// run. A chunked Step's given values can name several Tasks each, so for
-/// one this is `false`.
+/// run, counting each `CHUNK[INT]` value of a chunk as one Task.
 async fn execute_explicit_tasks(
     ctx: &mut RunContext,
     step: &Step,
@@ -595,7 +604,7 @@ async fn execute_explicit_tasks(
         typed_sets.push(values);
     }
 
-    let chunked = iter.chunks_parameter_name().is_some();
+    let chunk_param = iter.chunks_parameter_name().map(str::to_string);
     let mut distinct = std::collections::HashSet::new();
     let mut ran = 0;
     for (params, values) in task_param_sets.iter().zip(&typed_sets) {
@@ -605,6 +614,7 @@ async fn execute_explicit_tasks(
         // A FLOAT is compared by number, not spelling.
         let mut key: Vec<String> = values
             .iter()
+            .filter(|(name, _)| Some(name.as_str()) != chunk_param.as_deref())
             .map(|(name, v)| match &v.value {
                 openjd_expr::ExprValue::Float(f) => {
                     format!("{name}={:#x}", (f.value() + 0.0).to_bits())
@@ -613,7 +623,22 @@ async fn execute_explicit_tasks(
             })
             .collect();
         key.sort_unstable();
-        distinct.insert(key);
+        // A chunk names one Task per CHUNK[INT] value.
+        match chunk_param.as_deref().and_then(|c| values.get(c)) {
+            Some(chunk) => {
+                let chunk_values: Vec<i64> = match &chunk.value {
+                    openjd_expr::ExprValue::RangeExpr(r) => r.iter().collect(),
+                    openjd_expr::ExprValue::Int(i) => vec![*i],
+                    _ => Vec::new(),
+                };
+                for value in chunk_values {
+                    distinct.insert((key.clone(), Some(value)));
+                }
+            }
+            None => {
+                distinct.insert((key, None));
+            }
+        }
         ran += 1;
         ctx.print_banner("Running Task");
         println!("{}\tParameter values:", ctx.timestamp());
@@ -626,7 +651,7 @@ async fn execute_explicit_tasks(
         }
     }
     let all_given = ran == typed_sets.len();
-    Ok(!chunked && all_given && Some(distinct.len() as u64) == step.tasks_known())
+    Ok(all_given && Some(distinct.len() as u64) == step.tasks_known())
 }
 
 async fn execute_parameter_space_tasks(
