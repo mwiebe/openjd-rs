@@ -353,18 +353,18 @@ fn collect_tree(root_pid: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::framer::{strip_cr, MAX_LINE_BYTES};
+    use crate::framer::MAX_LINE_BYTES;
 
     /// Mirror the runner's per-line transform: frame `chunks` through a fresh
-    /// `LineFramer` and strip each emitted line's `\r` as `emit_line` does,
-    /// flushing the trailing partial at EOF.
+    /// `LineFramer` (which strips each line's terminating `\r`), flushing the
+    /// trailing partial at EOF.
     fn payloads(chunks: &[&[u8]]) -> Vec<String> {
         let mut framer = LineFramer::new();
         let mut out = Vec::new();
         for chunk in chunks {
-            framer.push(chunk, &mut |line| out.push(strip_cr(line).text));
+            framer.push(chunk, &mut |line| out.push(line.text));
         }
-        framer.finish(&mut |line| out.push(strip_cr(line).text));
+        framer.finish(&mut |line| out.push(line.text));
         out
     }
 
@@ -376,7 +376,7 @@ mod tests {
     fn frame_reader(input: &[u8]) -> Vec<String> {
         let (tx, rx) = mpsc::sync_channel::<FramedLine>(OUT_QUEUE_LINES);
         frame_child_output(input, tx);
-        rx.into_iter().map(|l| strip_cr(l).text).collect()
+        rx.into_iter().map(|l| l.text).collect()
     }
 
     /// Guards CRLF stripping: the framer keeps the `\r` (only `\n` ends a

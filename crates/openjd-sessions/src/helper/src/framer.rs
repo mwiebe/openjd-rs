@@ -8,7 +8,8 @@
 //!
 //! Turns arbitrary byte chunks (from `fill_buf`) into bounded logical lines so
 //! a newline-less workload cannot grow the line buffer without limit. Splits on
-//! `\n` only (a lone `\r` stays in the line); each line yields one
+//! `\n` only and strips one `\r` before it, as the parent's direct path does (a
+//! lone `\r` elsewhere stays in the line); each line yields one
 //! [`FramedLine`], so the caller emits exactly one response per line. A line
 //! carries flags that say whether it was cut to fit a limit or had to be
 //! decoded lossily, because an `openjd_output_var` directive on such a line
@@ -99,31 +100,47 @@ pub struct FramedLine {
     pub lossy: bool,
 }
 
-/// Decode a raw line and re-cap it at `MAX_LINE_BYTES`.
+/// Finish one raw line (without its `\n`) and decode it, as the parent's
+/// direct path does: strip one trailing `\r`, then cap at `MAX_LINE_BYTES`.
 ///
-/// Decoding can expand up to 4x (each bad byte becomes `\xNN`), so a raw line
-/// at the cap can decode to 4x; this second truncation re-bounds the result.
-/// `discarded` says the framer already dropped the rest of an over-cap line.
-fn decode_and_truncate(bytes: &[u8], discarded: bool) -> FramedLine {
-    let decoded = decode_backslashreplace(bytes);
+/// `buf` holds at most `MAX_LINE_BYTES + 1` bytes, so a CRLF line whose text
+/// is exactly at the cap is not cut. `discarded` says the framer already
+/// dropped the rest of an over-cap line; its `\r`, if any, was dropped with
+/// it. Only the terminator's `\r` is stripped: the `openjd_output_var`
+/// grammar decides which other whitespace around a value is allowed, so every
+/// reader path must hand it the same text (RFC 0010 §The `openjd_output_var`
+/// directive).
+///
+/// A cut can split a multi-byte character; the bytes of that character before
+/// the cut are dropped, so a valid UTF-8 line is cut on a character boundary
+/// and is not reported lossy, as on the direct path, which decodes the whole
+/// line and then cuts. Decoding can expand up to 4x (each bad byte becomes
+/// `\xNN`), so the decoded text is cut to the cap again.
+fn finish_line(mut bytes: Vec<u8>, discarded: bool) -> FramedLine {
+    if !discarded && bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    let mut truncated = discarded;
+    if bytes.len() > MAX_LINE_BYTES {
+        bytes.truncate(MAX_LINE_BYTES);
+        truncated = true;
+    }
+    if truncated {
+        if let Err(e) = std::str::from_utf8(&bytes) {
+            // `error_len() == None`: the bytes end in an incomplete sequence.
+            if e.error_len().is_none() {
+                bytes.truncate(e.valid_up_to());
+            }
+        }
+    }
+    let decoded = decode_backslashreplace(&bytes);
     let lossy = matches!(decoded, Cow::Owned(_));
     let text = truncate_char_boundary(&decoded, MAX_LINE_BYTES);
     FramedLine {
-        truncated: discarded || text.len() < decoded.len(),
+        truncated: truncated || text.len() < decoded.len(),
         text: text.to_string(),
         lossy,
     }
-}
-
-/// Strip the trailing `\r` of a CRLF line end (the framer keeps it; only `\n`
-/// ends a line). Nothing else is stripped: the `openjd_output_var` grammar
-/// decides which whitespace around a value is allowed, so every reader path
-/// must hand it the same text (RFC 0010 §The `openjd_output_var` directive).
-pub fn strip_cr(mut line: FramedLine) -> FramedLine {
-    if line.text.ends_with('\r') {
-        line.text.pop();
-    }
-    line
 }
 
 /// serde_json's escaped byte length for one `char` (an equivalence test pins
@@ -184,7 +201,8 @@ pub fn fit_payload(s: &str, envelope: usize) -> &str {
 /// flushes a trailing partial line at EOF.
 #[derive(Default)]
 pub struct LineFramer {
-    /// Raw bytes of the current line, capped at `MAX_LINE_BYTES`.
+    /// Raw bytes of the current line, capped at `MAX_LINE_BYTES + 1` (room for
+    /// a CRLF's `\r` after a line at the cap).
     buf: Vec<u8>,
     /// Set once an over-cap line filled `buf`: the rest up to the next `\n` is
     /// discarded and the `Out` still emits at the line end, not at the cap.
@@ -210,7 +228,7 @@ impl LineFramer {
                     // over-cap line the same timing as an ordinary one.
                     self.accumulate(&data[..nl]);
                     let line = std::mem::take(&mut self.buf);
-                    emit(decode_and_truncate(&line, self.discarding));
+                    emit(finish_line(line, self.discarding));
                     // Newline ends the line; reset (buf already emptied above).
                     self.discarding = false;
                     data = &data[nl + 1..];
@@ -229,20 +247,21 @@ impl LineFramer {
     pub fn finish<F: FnMut(FramedLine)>(&mut self, emit: &mut F) {
         if self.discarding || !self.buf.is_empty() {
             let line = std::mem::take(&mut self.buf);
-            emit(decode_and_truncate(&line, self.discarding));
+            emit(finish_line(line, self.discarding));
         }
         // buf is already empty here.
         self.discarding = false;
     }
 
-    /// Append a newline-free segment to `buf`. On exceeding `MAX_LINE_BYTES`,
-    /// keep the truncated prefix and start discarding the rest; the `Out` emits
-    /// later at the line end. While discarding, further bytes are dropped.
+    /// Append a newline-free segment to `buf`. On exceeding
+    /// `MAX_LINE_BYTES + 1`, keep the prefix and start discarding the rest; the
+    /// line emits later at the line end. While discarding, further bytes are
+    /// dropped.
     fn accumulate(&mut self, data: &[u8]) {
         if self.discarding {
             return;
         }
-        let room = MAX_LINE_BYTES - self.buf.len();
+        let room = MAX_LINE_BYTES + 1 - self.buf.len();
         if data.len() <= room {
             self.buf.extend_from_slice(data);
         } else {
@@ -389,9 +408,29 @@ mod tests {
     }
 
     #[test]
-    fn crlf_kept_for_runner_trim() {
-        // Framer keeps trailing \r (runner trims); only \n ends the line.
-        assert_eq!(frame_chunks(&[b"a\r\n"]), vec!["a\r".to_string()]);
+    fn crlf_line_end_is_stripped_once() {
+        // One `\r` before the `\n` is the line terminator; a second stays.
+        assert_eq!(frame_chunks(&[b"a\r\n"]), vec!["a".to_string()]);
+        assert_eq!(frame_chunks(&[b"a\r\r\n"]), vec!["a\r".to_string()]);
+        // Split across pushes.
+        assert_eq!(frame_chunks(&[b"x\r", b"\n"]), vec!["x".to_string()]);
+        assert_eq!(frame_chunks(&[b"\r\n"]), vec![String::new()]);
+        // At EOF too, as the direct path's read_until does.
+        let mut framer = LineFramer::new();
+        let mut out = Vec::new();
+        framer.push(b"e\r", &mut |l| out.push(l.text));
+        framer.finish(&mut |l| out.push(l.text));
+        assert_eq!(out, vec!["e".to_string()]);
+    }
+
+    #[test]
+    fn other_trailing_whitespace_is_kept() {
+        // The directive grammar decides what is allowed (the Unix runner used
+        // to trim all trailing whitespace).
+        assert_eq!(
+            frame_chunks(&[b"a \t\x0c\n"]),
+            vec!["a \t\u{0c}".to_string()]
+        );
     }
 
     #[test]
@@ -519,18 +558,37 @@ mod tests {
 
     #[test]
     fn line_at_cap_is_not_truncated() {
-        // Exactly MAX_LINE_BYTES fits: it is not cut, so it is not flagged.
-        let mut data = vec![b'a'; MAX_LINE_BYTES];
+        // Exactly MAX_LINE_BYTES fits: it is not cut, so it is not flagged,
+        // with a LF or a CRLF line end.
+        for end in [&b"\n"[..], b"\r\n"] {
+            let mut data = vec![b'a'; MAX_LINE_BYTES];
+            data.extend_from_slice(end);
+            let lines = frame_lines(&[&data]);
+            assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
+            assert!(!lines[0].truncated, "{end:?}");
+        }
+        // One byte more is cut and flagged, with either line end.
+        for end in [&b"\n"[..], b"\r\n", b"\r\r\n"] {
+            let mut data = vec![b'a'; MAX_LINE_BYTES + 1];
+            data.extend_from_slice(end);
+            let lines = frame_lines(&[&data]);
+            assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
+            assert!(lines[0].truncated, "{end:?}");
+        }
+    }
+
+    #[test]
+    fn cut_inside_a_multibyte_character_is_not_lossy() {
+        // "€" is 3 bytes; put one across the cap so the cut splits it. The
+        // direct path decodes the whole line, then cuts on a character
+        // boundary, so the helper must give the same text and no lossy flag.
+        let mut data = vec![b'a'; MAX_LINE_BYTES - 1];
+        data.extend_from_slice("€€".as_bytes());
         data.push(b'\n');
         let lines = frame_lines(&[&data]);
-        assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
-        assert!(!lines[0].truncated);
-        // One byte more is cut and flagged.
-        let mut data = vec![b'a'; MAX_LINE_BYTES + 1];
-        data.push(b'\n');
-        let lines = frame_lines(&[&data]);
-        assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
+        assert_eq!(lines[0].text, "a".repeat(MAX_LINE_BYTES - 1));
         assert!(lines[0].truncated);
+        assert!(!lines[0].lossy);
     }
 
     #[test]
@@ -543,21 +601,6 @@ mod tests {
         assert!(lines[0].text.len() <= MAX_LINE_BYTES);
         assert!(lines[0].truncated, "cut after decoding");
         assert!(lines[0].lossy);
-    }
-
-    #[test]
-    fn strip_cr_strips_only_the_carriage_return() {
-        let line = |t: &str| FramedLine {
-            text: t.into(),
-            ..Default::default()
-        };
-        assert_eq!(strip_cr(line("a \t\r")).text, "a \t");
-        // A form feed, a space, or a tab at the end is kept: the directive
-        // grammar decides what is allowed (the Unix runner used to trim all
-        // trailing whitespace).
-        assert_eq!(strip_cr(line("a\u{0c}")).text, "a\u{0c}");
-        assert_eq!(strip_cr(line("a ")).text, "a ");
-        assert_eq!(strip_cr(line("a\r\r")).text, "a\r");
     }
 
     #[test]

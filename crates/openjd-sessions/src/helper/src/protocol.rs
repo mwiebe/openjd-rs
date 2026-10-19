@@ -97,16 +97,24 @@ pub enum Response {
         #[serde(skip_serializing_if = "is_false")]
         lossy: bool,
     },
+    /// A directive line of an Action that may report output values, too long
+    /// to fit one `Out` response once escaped (a line of at most 64 KiB can
+    /// escape to six times that). Followed by `Data` frames that carry its
+    /// text, so the parent gets the whole line rather than a cut one.
+    OutLong {
+        #[serde(rename = "outLong")]
+        out_long: OutLongHeader,
+    },
     /// The header of an `@` directive the helper resolved, sent in place of
-    /// its `Out` line and followed by `OutputFileData` frames.
+    /// its `Out` line and followed by `Data` frames.
     OutputFile {
         #[serde(rename = "outputFile")]
         output_file: OutputFileHeader,
     },
-    /// The next part of the data an `OutputFile` header announced.
-    OutputFileData {
-        #[serde(rename = "outputFileData")]
-        output_file_data: String,
+    /// The next part of the data an `OutLong` or `OutputFile` header
+    /// announced.
+    Data {
+        data: String,
     },
     Exited {
         exited: i32,
@@ -120,9 +128,20 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// The header of a long directive line: `len` bytes of text follow in `Data`
+/// frames. The flags mean what they mean on `Out`.
+#[derive(Debug, Serialize)]
+pub struct OutLongHeader {
+    pub len: usize,
+    #[serde(skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    pub lossy: bool,
+}
+
 /// The header of a resolved `@` directive.
 ///
-/// The `OutputFileData` frames that follow carry, as one string split into
+/// The `Data` frames that follow carry, as one string split into
 /// frames that each fit the response line limit, the directive's line
 /// (`lineLen` bytes) and then the first `validUtf8` bytes of the file. The
 /// line can be up to 64 KiB, which would not fit in one frame once escaped,
@@ -289,12 +308,18 @@ mod tests {
             serde_json::to_string(&header).unwrap(),
             r#"{"outputFile":{"lineLen":22,"name":[19,20],"task":3,"path":[22,22],"size":2,"validUtf8":2}}"#
         );
-        let data = Response::OutputFileData {
-            output_file_data: "ab".into(),
+        let data = Response::Data { data: "ab".into() };
+        assert_eq!(serde_json::to_string(&data).unwrap(), r#"{"data":"ab"}"#);
+        let long = Response::OutLong {
+            out_long: OutLongHeader {
+                len: 70000,
+                truncated: false,
+                lossy: false,
+            },
         };
         assert_eq!(
-            serde_json::to_string(&data).unwrap(),
-            r#"{"outputFileData":"ab"}"#
+            serde_json::to_string(&long).unwrap(),
+            r#"{"outLong":{"len":70000}}"#
         );
     }
 
