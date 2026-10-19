@@ -4255,6 +4255,11 @@ steps:
   script:
     actions:
       onRun: {command: python, args: [-c, "print('D_' + 'RAN')"]}
+- name: E
+  dependencies: [{dependsOn: P}]
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print('E_GOT', {{repr_py(Steps.P.TaskParam.I)}})"]}
 "#,
         );
         let (code, stdout, stderr) =
@@ -4266,6 +4271,8 @@ steps:
         );
         assert!(!stdout.contains("C_GOT"), "stdout: {stdout}");
         assert!(stdout.contains("D_RAN"), "stdout: {stdout}");
+        // E reads only P's TaskParam, which is concrete without P's outputs.
+        assert!(stdout.contains("E_GOT [1, 2]"), "stdout: {stdout}");
     }
 
     const CONSUMER: &str = r#"specificationVersion: jobtemplate-2023-09
@@ -4687,10 +4694,14 @@ steps:
         let (code, stdout, stderr) =
             run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
         assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
-        let s = at(&stdout, "Step 'S' is blocked: its dependency 'P' failed");
+        // S stays SKIPPED, which is terminal, but never satisfies dependsOn.
+        let s = at(
+            &stdout,
+            "Step 'S' is skipped and never satisfies dependsOn: its dependency 'P' failed",
+        );
         let d = at(
             &stdout,
-            "Step 'D' is blocked: its dependency 'S' is blocked",
+            "Step 'D' is blocked: its dependency 'S' is skipped but never satisfies dependsOn",
         );
         assert!(s < d);
         assert!(
@@ -4704,10 +4715,10 @@ steps:
             result["steps"],
             serde_json::json!([
                 {"name": "P", "state": "FAILED", "task_count": 1, "reason": "a Task failed"},
-                {"name": "S", "state": "BLOCKED", "task_count": 0,
+                {"name": "S", "state": "SKIPPED", "task_count": 0,
                  "reason": "its dependency 'P' failed"},
                 {"name": "D", "state": "BLOCKED", "task_count": 1,
-                 "reason": "its dependency 'S' is blocked"},
+                 "reason": "its dependency 'S' is skipped but never satisfies dependsOn"},
             ])
         );
     }
@@ -4838,6 +4849,188 @@ steps:
             ]);
             assert_ne!(code, 0);
             assert!(stderr.ends_with(want), "{arg}: stderr: {stderr}");
+        }
+    }
+}
+
+mod control_flow_run_round2 {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    fn at(stdout: &str, line: &str) -> usize {
+        stdout
+            .lines()
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no line {line:?} in:\n{stdout}"))
+    }
+
+    fn json(stdout: &str) -> serde_json::Value {
+        let start = stdout.find("{\n").expect("JSON result");
+        serde_json::from_str(&stdout[start..]).unwrap()
+    }
+
+    /// A group that fails in the same settle that makes a job output's
+    /// inputs concrete still lets the job output be evaluated and committed.
+    #[test]
+    fn job_output_is_evaluated_when_a_group_fails_in_the_same_settle() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Same
+jobOutputDefinitions:
+- {name: N, type: INT, value: "{{Steps.P.Output.N}}"}
+steps:
+- name: P
+  outputVariables: [{name: N, type: INT}]
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print('openjd_output_var: N=-1')"]}
+- name: C
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{fail('neg') if Steps.P.Output.N < 0 else range(1)}}"}
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print(1)"]}
+"#,
+        );
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        at(&stdout, "Job output N = -1");
+        let result = json(&stdout);
+        assert_eq!(result["job_outputs"], serde_json::json!({"N": -1}));
+        assert_eq!(result["job_outputs_not_evaluated"], serde_json::json!([]));
+    }
+
+    /// `summary` lists the Task parameters of a pending Step from the
+    /// template, and indents job output descriptions under their item.
+    #[test]
+    fn summary_lists_task_parameters_of_pending_steps() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Params
+jobOutputDefinitions:
+- {name: Count, type: INT, description: How many, value: "{{Steps.P.Output.X}}"}
+steps:
+- name: P
+  outputVariables: [{name: X, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: D
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: B, type: STRING, range: [a]}
+    - {name: A, type: INT, range: "{{range(Steps.P.Output.X)}}"}
+  script: {actions: {onRun: {command: x}}}
+"#,
+        );
+        let (code, stdout, stderr) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--step", "D"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains("Total task parameters: 2\n"),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("Parameters:\n- A (INT)\n- B (STRING)\n"),
+            "stdout: {stdout}"
+        );
+        let (_, stdout, _) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert!(
+            stdout.contains("  - Count (INT): pending; waits for Steps.P.Output.X\n    How many\n"),
+            "stdout: {stdout}"
+        );
+        let (_, stdout, _) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["steps"][1]["parameter_definitions"],
+            serde_json::json!([{"name": "A", "type": "INT"}, {"name": "B", "type": "STRING"}])
+        );
+    }
+
+    /// A bound Step run alone that reads an output in its script names the
+    /// missing symbol, as a pending one does.
+    #[test]
+    fn step_alone_bound_consumer_names_missing_symbols() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Bound
+steps:
+- name: P
+  outputVariables: [{name: D, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print({{Steps.P.Output.D}})"]}
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'C' reads Steps.* values of Steps this run does not run: Steps.P.Output.D.\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+            ),
+            "stderr: {stderr}"
+        );
+    }
+
+    /// `--tasks` that lists every Task of a Step without output variables
+    /// completes it; one that leaves a Task out does not.
+    #[test]
+    fn tasks_listing_every_task_completes_the_step() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Two
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print({{Task.Param.I}})"]}
+"#,
+        );
+        for (tasks, incomplete) in [
+            (r#"[{"I": "2"}, {"I": "1"}]"#, None),
+            (r#"[{"I": "1"}, {"I": "1"}]"#, Some(true)),
+        ] {
+            let (code, stdout, stderr) = run_cli(&[
+                "run",
+                job.path().to_str().unwrap(),
+                "--step",
+                "P",
+                "--tasks",
+                tasks,
+                "--output",
+                "json",
+            ]);
+            assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+            assert_eq!(
+                json(&stdout)["steps"][0]
+                    .get("incomplete")
+                    .and_then(|v| v.as_bool()),
+                incomplete,
+                "{tasks}"
+            );
         }
     }
 }

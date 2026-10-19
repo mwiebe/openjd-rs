@@ -560,8 +560,7 @@ async fn execute_step_tasks(
             &iter,
             sim,
         )
-        .await
-        .map(|()| false);
+        .await;
     }
     // `iter.len()` is not the Task count of an adaptively chunked space.
     if step.tasks_known() == Some(0) {
@@ -575,6 +574,10 @@ async fn execute_step_tasks(
     execute_parameter_space_tasks(ctx, args.maximum_tasks, step, step_idx, &mut iter, sim).await
 }
 
+/// Run the Tasks given with `--tasks` or `--task-param`, returning whether
+/// they ran every Task of the Step: as many distinct Tasks as it has, all
+/// run. A chunked Step's given values can name several Tasks each, so for
+/// one this is `false`.
 async fn execute_explicit_tasks(
     ctx: &mut RunContext,
     step: &Step,
@@ -583,7 +586,7 @@ async fn execute_explicit_tasks(
     task_param_sets: &[HashMap<String, String>],
     iter: &openjd_model::StepParameterSpaceIterator,
     sim: &mut Simulator,
-) -> Result<(), RunError> {
+) -> Result<bool, RunError> {
     let mut typed_sets = Vec::with_capacity(task_param_sets.len());
     for (index, params) in task_param_sets.iter().enumerate() {
         let values = coerce_task_params(params, parameter_space)?;
@@ -592,10 +595,20 @@ async fn execute_explicit_tasks(
         typed_sets.push(values);
     }
 
+    let chunked = iter.chunks_parameter_name().is_some();
+    let mut distinct = std::collections::HashSet::new();
+    let mut ran = 0;
     for (params, values) in task_param_sets.iter().zip(&typed_sets) {
         if ctx.is_stopping() {
             break;
         }
+        let mut key: Vec<String> = values
+            .iter()
+            .map(|(name, v)| format!("{name}={}", v.value.to_display_string()))
+            .collect();
+        key.sort_unstable();
+        distinct.insert(key);
+        ran += 1;
         ctx.print_banner("Running Task");
         println!("{}\tParameter values:", ctx.timestamp());
         for (name, value) in params {
@@ -606,7 +619,8 @@ async fn execute_explicit_tasks(
             sim.record_action(step_idx, Some(values), run.outputs);
         }
     }
-    Ok(())
+    let all_given = ran == typed_sets.len();
+    Ok(!chunked && all_given && Some(distinct.len() as u64) == step.tasks_known())
 }
 
 async fn execute_parameter_space_tasks(

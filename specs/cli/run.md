@@ -167,11 +167,15 @@ so the simulator only records what ran, and the run's output is unchanged.
 
 **State.** The simulator keeps its own copy of the `job::Job`, a `StepRecord` per Step
 (`SimStepState`: `Pending`, `Bound`, `Skipped`, `Succeeded`, `Failed`, `Blocked`; each
-Task's outputs; why it failed or is blocked), and one `StepInputs` holding every
-concrete `Steps.*` value so far of the Steps that something reads: a skipped Step's
-`null`s, the `TaskParam` lists of a Step whose Tasks are known, and the outputs of a
-Step that succeeded with all of its Tasks (`common::creation_inputs` seeds it from
-`create_job`'s result).
+Task's outputs; why it failed or is blocked), and one `StepInputs` holding the
+concrete `Steps.*` values so far of the Steps that something reads: a skipped Step's
+`null`s, the outputs (and `TaskParam` lists) of a Step that succeeded with all of its
+Tasks, and the `TaskParam` lists of a Step whose Tasks are known. Those last lists are
+built only when something that reads the Step is advanced, attached, or evaluated, so a
+large parameter space is not enumerated for nothing; until then the simulator counts them
+as concrete. A pending Step is advanced again only once one of its producers has changed
+state since its last advance (create_job already evaluated everything evaluable with the
+values concrete at creation), so a settle costs nothing for Steps nothing new can bind.
 
 **Before the first Step,** `run` prints, for the Steps this run runs, the job outputs `create_job` evaluated
 (`Job output Label = "x"`), each Step it skipped (`Step 'S' skipped (enableIf is
@@ -187,7 +191,8 @@ Tasks known (3 tasks)`, `Step 'C': host requirements known` (for a Step that has
 requirements), `Step 'C' is ready`, or `Step 'C' skipped (enableIf is false)`. A group
 that fails prints the `BindingError` (`ERROR: Step 'C' failed in its Task enumeration
 group:` and the located message), marks the Step `Failed`, and stops the run before any
-more Tasks start, as a failed Task does. This is the RFC's early failure: a Step whose
+more Tasks start, as a failed Task does; the job outputs whose inputs are concrete by then
+are still evaluated first. This is the RFC's early failure: a Step whose
 parameter space fails fails as soon as the producer it reads finishes, before a later
 producer that only its script reads has run. Then every job output not yet evaluated
 whose inputs (`job_output_inputs`) are all concrete is evaluated with
@@ -202,10 +207,13 @@ the simulator and is reported as an internal error.
 
 1. A `Failed` Step does not run. A Step whose dependency in this run failed or is blocked
    becomes `Blocked` and prints `Step 'X' is blocked: its dependency 'P' failed` (or
-   `is blocked`). Since a failed Task stops the run, this is reached for a Step after a
-   failed Step only at the end of the run (below). This
-   includes a skipped Step, which satisfies `dependsOn` only once its own dependencies
-   are satisfied (RFC 0010 §Step states).
+   `is blocked`). A skipped Step behind a failure stays `SKIPPED`, which is terminal
+   (RFC 0010 §Step states), but never satisfies `dependsOn` (§Conditional execution,
+   Failure is not skipping): it prints `Step 'S' is skipped and never satisfies dependsOn:
+   its dependency 'P' failed`, keeps that as its reason, and its dependents are blocked
+   with `its dependency 'S' is skipped but never satisfies dependsOn`. Since a failed Task
+   stops the run, this is reached for a Step after a failed Step only at the end of the
+   run (below).
 2. A `Pending` Step is advanced. Its dependencies have finished, so it binds, is skipped,
    or fails. A Step still pending then is an internal error, unless it reads the outputs
    of a Step that did not run all of its Tasks (below).
@@ -218,8 +226,9 @@ the simulator and is reported as an internal error.
    keyed by `CHUNK[INT]` value). Each value is printed with its unit after its Action
    (`Output N = 3 frames`, or `Output Done[2] = 20` in a chunked Step). Outputs are kept
    sparsely, and only for a Step that declares output variables; an unchunked space run in
-   order is placed by position without building an index, so a large parameter space
-   costs nothing for the Tasks that do not run. A Step with zero Tasks prints `Step 'X'
+   order is placed by position, and a chunked one or Tasks given with `--tasks` or
+   `--task-param` through the lazy `ChunkTaskIndex`, so a large parameter space costs
+   nothing for the Tasks that do not run. A Step with zero Tasks prints `Step 'X'
    has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
 5. The Step is recorded `Failed` (reason `a Task failed`, unless a group failed) if the
    run failed while it ran, and `Succeeded` otherwise; then the simulator settles.
@@ -241,8 +250,9 @@ of them runs as before.
 one value per Task. Each value is checked against the output's declared type and
 constraints with the collector that checks reported values (`OutputCollector`), and every
 declared `ONCE` or `LAST` output of the producer must be given. Before the Session starts,
-the simulator checks that every `Steps.*` value X reads is then concrete, and otherwise
-fails naming them: `Step 'C' reads Steps.* values of Steps this run does not run:
+the simulator checks that every `Steps.*` value X reads is then concrete (its groups'
+inputs if it is pending, and the symbols its script and Step Environments read,
+`job::Step::input_symbols`), and otherwise fails naming them: `Step 'C' reads Steps.* values of Steps this run does not run:
 Steps.P.Output.V.` followed by `Give them with --step-inputs, or run Step 'C' with
 --run-dependencies.` A producer's `TaskParam` comes from its parameter space, so a
 `Steps.P.TaskParam.N` key is refused. So is a producer that is skipped (its values are
@@ -255,8 +265,8 @@ supplied values are a producer's state like any other, so job outputs that read 
 supplied and concrete values are evaluated and printed. `--step-inputs` without a Step run
 alone is an error (see [parameter-parsing.md](parameter-parsing.md) for its formats).
 
-**The end of the run** first marks `Blocked` every Step of the run that a failed or
-blocked dependency keeps from ever running, since the run stops at the first failure before
+**The end of the run** first marks every Step of the run that a failed or blocked
+dependency keeps from ever running, as in item 1, since the run stops at the first failure before
 reaching them (RFC 0010 §Job outputs item 4: such an output is unavailable, naming the
 Step). It then prints each job output not evaluated and why each Step it waits on has not
 given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
@@ -472,7 +482,7 @@ Chunks run: 100
 
 For a `CONTROL_FLOW` Job with job outputs, a `Job outputs:` list follows, one line per
 evaluated output (`Total = 30 px`) and per output not evaluated (`Sum: not evaluated
-(waits on Step 'C' failed)`).
+(waits on Step 'C', which failed)`, or `Count: has no value (its evaluation failed)`).
 
 ### JSON
 

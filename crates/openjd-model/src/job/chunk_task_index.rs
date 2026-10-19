@@ -38,15 +38,33 @@ type Key = (Vec<String>, Option<i64>);
 ///
 /// An unchunked space works the same way, with each Task keyed by all of its
 /// parameter values and `None`.
-#[derive(Debug, Clone)]
+///
+/// The index is built lazily: [`take`](Self::take) walks the per-Task
+/// iteration only as far as the Task it is asked for, so Actions that run in
+/// iteration order cost O(1) amortized each, and a run that stops early
+/// never walks the rest of a large space.
 pub struct ChunkTaskIndex {
     chunk_param: Option<String>,
     unused: HashMap<Key, VecDeque<usize>>,
+    /// The per-Task iterator, walked as far as `walked`.
+    tasks: StepParameterSpaceIterator,
+    walked: usize,
     task_count: usize,
 }
 
+impl std::fmt::Debug for ChunkTaskIndex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChunkTaskIndex")
+            .field("chunk_param", &self.chunk_param)
+            .field("walked", &self.walked)
+            .field("task_count", &self.task_count)
+            .finish_non_exhaustive()
+    }
+}
+
 impl ChunkTaskIndex {
-    /// Index the Tasks of `space`, iterated with chunking disabled.
+    /// Index the Tasks of `space`, iterated with chunking disabled. Nothing
+    /// is walked yet.
     ///
     /// Errors when the space cannot be iterated (see
     /// [`StepParameterSpaceIterator::new_with_chunk_override`]).
@@ -56,22 +74,13 @@ impl ChunkTaskIndex {
             .iter()
             .find(|(_, p)| matches!(p, TaskParameter::ChunkInt { .. }))
             .map(|(name, _)| name.clone());
-        let mut unused: HashMap<Key, VecDeque<usize>> = HashMap::new();
-        let mut task_count = 0;
-        for (index, set) in
-            StepParameterSpaceIterator::new_with_chunk_override(space, Some(1))?.enumerate()
-        {
-            let value = match &chunk_param {
-                Some(name) => set.get(name).and_then(|v| single_int(&v.value)),
-                None => None,
-            };
-            let key = (other_values(&set, chunk_param.as_deref()), value);
-            unused.entry(key).or_default().push_back(index);
-            task_count = index + 1;
-        }
+        let tasks = StepParameterSpaceIterator::new_with_chunk_override(space, Some(1))?;
+        let task_count = tasks.len();
         Ok(Self {
             chunk_param,
-            unused,
+            unused: HashMap::new(),
+            tasks,
+            walked: 0,
             task_count,
         })
     }
@@ -97,7 +106,24 @@ impl ChunkTaskIndex {
             return None;
         }
         let key = (other_values(action, self.chunk_param.as_deref()), value);
-        self.unused.get_mut(&key)?.pop_front()
+        if let Some(index) = self.unused.get_mut(&key).and_then(VecDeque::pop_front) {
+            return Some(index);
+        }
+        // Walk on until a Task with this key turns up, queueing the others.
+        for set in self.tasks.by_ref() {
+            let index = self.walked;
+            self.walked += 1;
+            let task_value = match &self.chunk_param {
+                Some(name) => set.get(name).and_then(|v| single_int(&v.value)),
+                None => None,
+            };
+            let task_key = (other_values(&set, self.chunk_param.as_deref()), task_value);
+            if task_key == key {
+                return Some(index);
+            }
+            self.unused.entry(task_key).or_default().push_back(index);
+        }
+        None
     }
 }
 
@@ -251,6 +277,25 @@ mod tests {
         assert_eq!(index.take(&action, None), None);
         assert_eq!(index.take(&action, Some(1)), Some(0));
         assert_eq!(index.take(&action, Some(1)), None);
+    }
+
+    #[test]
+    fn in_order_takes_walk_only_as_far_as_needed() {
+        let space = space((0..1000).collect(), None);
+        let mut index = ChunkTaskIndex::new(&space).unwrap();
+        assert_eq!(index.task_count(), 1000);
+        assert_eq!(index.walked, 0);
+        let action = StepParameterSpaceIterator::new(&space)
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(index.take(&action, Some(0)), Some(0));
+        assert_eq!(index.take(&action, Some(1)), Some(1));
+        assert_eq!(index.walked, 2);
+        // A value not in the space walks to the end and finds nothing.
+        assert_eq!(index.take(&action, Some(5000)), None);
+        assert_eq!(index.walked, 1000);
+        assert_eq!(index.take(&action, Some(7)), Some(7));
     }
 
     #[test]

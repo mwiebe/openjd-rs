@@ -82,24 +82,20 @@ pub fn step_of_symbol(symbol: &str) -> Option<&str> {
     symbol.strip_prefix("Steps.")?.split('.').next()
 }
 
-/// The `Steps.*` values concrete once `create_job` returns: a skipped
-/// Step's `null`s, and the `TaskParam` lists of each Step whose Tasks are
-/// known. Only the Steps that something reads are added, so that a large
-/// parameter space nobody reads is not enumerated.
-pub fn creation_inputs(
-    job: &openjd_model::job::Job,
-) -> Result<openjd_model::job::StepInputs, openjd_model::ModelError> {
-    use openjd_model::job::{ProducerState, StepBinding, StepInputs};
-    let read = read_producers(job);
-    let mut inputs = StepInputs::new();
-    for step in job.steps.iter().filter(|s| read.contains(&s.name)) {
-        if matches!(step.binding, StepBinding::Skipped) {
-            inputs.add_producer(step, ProducerState::Skipped)?;
-        } else if step.tasks_known().is_some() {
-            inputs.add_producer(step, ProducerState::TasksKnown)?;
-        }
-    }
-    Ok(inputs)
+/// Whether `Steps.*` symbol `symbol` (`Steps.<Step>.<Member>.<Name>`) is
+/// concrete once `create_job` returns: every symbol of a skipped Step, and
+/// the `TaskParam` and `TaskRawParam` symbols of a Step whose Tasks are
+/// known. Decided from the Steps' bindings, without building any value.
+pub fn concrete_at_creation(job: &openjd_model::job::Job, symbol: &str) -> bool {
+    let mut parts = symbol.strip_prefix("Steps.").unwrap_or("").splitn(3, '.');
+    let (Some(p), Some(member)) = (parts.next(), parts.next()) else {
+        return false;
+    };
+    let Some(step) = job.steps.iter().find(|s| s.name == p) else {
+        return false;
+    };
+    matches!(step.binding, openjd_model::job::StepBinding::Skipped)
+        || (matches!(member, "TaskParam" | "TaskRawParam") && step.tasks_known().is_some())
 }
 
 /// What is known of a pending Step, one line per group, as RFC 0010

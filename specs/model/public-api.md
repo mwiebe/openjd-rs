@@ -762,6 +762,11 @@ impl job::Step {
     /// group, known or not. What a caller passes on each binding call.
     /// Sorted; empty for a skipped Step.
     pub fn input_producers(&self) -> Vec<String>;
+    /// CONTROL_FLOW: the `Steps.<Step>.<Member>.<Name>` symbols the Step
+    /// reads in its script and Step Environments (which attach_step_inputs
+    /// needs concrete) and, while pending, those its groups wait on.
+    /// Sorted; empty for a skipped Step.
+    pub fn input_symbols(&self) -> Vec<String>;
 }
 
 pub struct job::StepScript {
@@ -979,8 +984,8 @@ pub struct job::StepInputs { /* private */ }
 impl job::StepInputs {
     pub fn new() -> Self;
     /// Add or replace a producer's `Steps.*` values, typed by the RFC's
-    /// table. Path-typed values are held only in their Raw form, in the
-    /// Posix format the model evaluates in (text unchanged). TasksKnown
+    /// table. Path-typed values are held only in their Raw form, a URI in
+    /// the Posix format the model evaluates in (text unchanged). TasksKnown
     /// on a skipped producer is Skipped. A caller error is a
     /// ModelError::Compatibility.
     pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
@@ -1751,7 +1756,10 @@ dynamically.
 
 ### `ChunkTaskIndex` (CONTROL_FLOW)
 
-Re-exported at the crate root and from `job`. Maps each Task an Action ran to its index in
+Re-exported at the crate root and from `job`. Built lazily: `take` walks the per-Task
+iteration only as far as the Task it is asked for, so in-order Actions cost O(1) amortized
+each and a run that stops early never walks the rest of a large space. Maps each Task an
+Action ran to its index in
 the Step's per-Task iteration order (`new_with_chunk_override(space, Some(1))`), the
 order of a producer's `Steps.*` lists and of `ProducerState::Succeeded`. A chunked Step's
 session reports outputs keyed by `CHUNK[INT]` value, not position (a chunk's values are
@@ -1761,7 +1769,8 @@ sorted, a list range iterates in written order), so a caller uses this to place 
 pub struct ChunkTaskIndex { /* private fields */ }
 
 impl ChunkTaskIndex {
-    /// Index the Tasks of `space`, iterated with chunking disabled.
+    /// Index the Tasks of `space`, iterated with chunking disabled. Walks
+    /// nothing yet.
     pub fn new(space: &job::StepParameterSpace) -> Result<Self, ModelError>;
     /// The number of Tasks, with chunking disabled.
     pub fn task_count(&self) -> usize;

@@ -655,11 +655,14 @@ producer. `add_producer(producer, state)` fills them, typed as the RFC's §The
 * `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
 
 A type that is or contains `path` gets a value only in its `Raw` form (the
-submission-context form, as a `path` value in the Posix format the model
-evaluates in, with its text unchanged: a reported `PATH` output carries the
-format of its stored form, such as a URI's or a reverse rule's source format,
-and the EXPR evaluator refuses a `path` value in another format than its own,
-so a group or job output could not read it otherwise; a `PATH` Task
+submission-context form, as a `path` value; a URI in the Posix format the
+model evaluates in, with its text unchanged, since a reported URI output
+carries `PathFormat::Uri` and the EXPR evaluator refuses a `path` value in
+another format than its own (EXPR recognizes a URI by its text, so nothing
+else changes). A Windows-format stored path (a reverse rule's source format)
+keeps its format, so reading it in a group or job output is refused with
+"Path format mismatch" rather than giving wrong results from path operations
+such as `.name`; a `PATH` Task
 parameter's values are `path` values in the Posix format); its `Output` or `TaskParam`
 is concrete (`is_concrete`) but has no value (`get` returns `None`), because
 it is derived on the worker host. `add_producer` replaces a producer added
