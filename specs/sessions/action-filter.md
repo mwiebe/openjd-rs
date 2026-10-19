@@ -247,10 +247,11 @@ not processed: the action is already being canceled.
 
 Messages for invalid directives come from the collector, or for a Forbidden, cut,
 non-UTF-8, or helper-disagreement line from `output_vars.rs`, so they name the output (when
-there is one), the problem, and the offending text. A collector message that may not
-quote the value (an undeclared name, a second value under `ONCE`, a task selector
-problem, the size limit, or a constraint, such as an `APPEND` list's `maxLength`) gets
-`, in '<line>'` appended, as `output_vars.rs`'s own messages have; so does every
+there is one), the problem, and the offending text. Every collector message except a grammar,
+JSON, or path error (which always quote the text) gets `, in '<line>'` appended, since the
+others may not quote it (an undeclared name, a second value under `ONCE`, a task selector
+problem, the size limit, a constraint such as an `APPEND` list's `maxLength`, or a
+`null` or an object), as `output_vars.rs`'s own messages have; so does every
 collector message about an `@` file's content, which names neither the file nor the
 line. Text quoted by `output_vars.rs` itself,
 including a read error the cross-user helper reports, is cut to 200 characters with

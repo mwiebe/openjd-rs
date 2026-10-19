@@ -271,7 +271,7 @@ async fn exit_zero_after_an_invalid_directive_fails() {
         &f,
         &r,
         "Output variable 'N': value (float) '1.5' does not convert to int: Cannot coerce float \
-         to int: 1.5 is not a whole number",
+         to int: 1.5 is not a whole number, in 'openjd_output_var: N=1.5'",
     );
 }
 
@@ -293,7 +293,14 @@ async fn collector_failures_fail_the_task_with_their_message() {
         (
             N_INT,
             "echo 'openjd_output_var: N=null'",
-            "Output variable 'N': value is null; output values cannot be or contain null",
+            "Output variable 'N': value is null; output values cannot be or contain null, in \
+             'openjd_output_var: N=null'",
+        ),
+        (
+            N_INT,
+            r#"echo 'openjd_output_var: N={"a": 1}'"#,
+            "Output variable 'N': value is a JSON object; output values cannot be or contain \
+             objects, in 'openjd_output_var: N={\"a\": 1}'",
         ),
         (
             N_INT,
@@ -392,7 +399,7 @@ async fn invalid_directive_cancels_the_action_at_once() {
         &f,
         &r,
         "Output variable 'N': value (string) 'x' does not convert to int: Cannot convert 'x' to \
-         int: invalid digit found in string",
+         int: invalid digit found in string, in 'openjd_output_var: N=\"x\"'",
     );
 }
 
@@ -465,7 +472,13 @@ async fn step_without_output_variables_fails_on_a_directive() {
 #[tokio::test]
 async fn job_template_on_enter_fails_and_environment_template_is_ordinary() {
     let mut f = fixture();
-    let e = env("E", Some(sh_action("echo 'openjd_output_var: N=1'")), None);
+    // The sleep makes the cancel, not the exit, end the action, so the exit
+    // code is reliably absent.
+    let e = env(
+        "E",
+        Some(sh_action("echo 'openjd_output_var: N=1'; sleep 5")),
+        None,
+    );
     let err = f
         .session
         .enter_environment(&e, None, None, None, &EnvironmentOptions::default())
@@ -473,7 +486,7 @@ async fn job_template_on_enter_fails_and_environment_template_is_ordinary() {
         .unwrap_err();
     assert_eq!(
         err.to_string(),
-        "Environment 'E' onEnter failed: exit code: 0"
+        "Environment 'E' onEnter failed: exit code: N/A"
     );
     assert_eq!(f.fail_message(), FORBIDDEN);
 

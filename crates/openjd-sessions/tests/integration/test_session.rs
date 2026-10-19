@@ -3381,6 +3381,17 @@ mod cancel_escalation {
         assert_eq!(msgs[0]["notifyPeriodInSeconds"].as_u64().unwrap(), 1);
     }
 
+    /// The wire counts whole seconds: a non-zero limit under a second is
+    /// sent as one second, not as zero.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handle_cancel_sub_second_time_limit_is_one_second() {
+        let script = step_with_ntt_cancel("sh", vec!["-c", "sleep 30"], 30);
+        let msgs = run_and_handle_cancel(&script, Some(Duration::from_millis(500))).await;
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["cancel"].as_str().unwrap(), "NOTIFY_THEN_TERMINATE");
+        assert_eq!(msgs[0]["notifyPeriodInSeconds"].as_u64().unwrap(), 1);
+    }
+
     /// With no time_limit, the declared terminate_delay applies on its own
     /// (not the legacy 5s default) — matching the same-user path's
     /// `None => terminate_delay` arm.

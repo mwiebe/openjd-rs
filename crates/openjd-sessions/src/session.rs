@@ -481,9 +481,12 @@ fn send_helper_cancel_command(
     let cmd = if is_terminate {
         format!(r#"{{{token_field}"cancel":"TERMINATE"}}"#)
     } else {
+        // Whole seconds on the wire; a non-zero period under a second is
+        // one second, as in `cross_user_helper::write_cancel`.
         let notify_period = effective_limit
             .unwrap_or(Duration::from_secs(DEFAULT_CANCEL_NOTIFY_PERIOD_SECS))
-            .as_secs();
+            .as_secs()
+            .max(1);
         format!(
             r#"{{{token_field}"cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
         )
