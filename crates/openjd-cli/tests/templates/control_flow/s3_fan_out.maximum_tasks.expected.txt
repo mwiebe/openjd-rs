@@ -1,0 +1,50 @@
+$ openjd run {T}/s3_fan_out.yaml --maximum-tasks 1 -p Bucket=media -p Prefix=shots/ -p OutputPrefix=transcoded
+$ s3 fixtures/s3_two_keys
+exit code: 0
+--- stdout
+Session start
+Running job 'Transcode s3://media/shots/'
+Step 'Transcode' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.Discover.Output.Keys
+  Host requirements: known
+Step 'Manifest' is pending inputs:
+  Enabled: yes
+  Tasks: 1 (known; Step pending inputs for Steps.Transcode.Output.OutputBytes, Steps.Transcode.TaskParam.Key)
+  Host requirements: known
+Running step 'Discover'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Keys=@keys.json
+Process exited with code: 0
+Output Keys = ["shots/a.mov", "shots/b.mov"]
+Step 'Transcode': Tasks known (2 tasks)
+Step 'Transcode' is ready
+Running step 'Transcode'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Key(STRING) = shots/a.mov
+Output:
+boto3 stub: downloaded s3://media/shots/a.mov
+ffmpeg stub: in.mov -> out.mp4 (1 frame)
+boto3 stub: uploaded s3://media/transcoded/a.mp4
+openjd_output_var: OutputBytes=27
+Process exited with code: 0
+Output OutputBytes = 27
+Step 'Manifest' is blocked: inputs from Step 'Transcode' are incomplete because not all of its Tasks ran
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Transcode s3://media/shots/
+Duration: {DURATION}
+Chunks run: 2
+--- stderr

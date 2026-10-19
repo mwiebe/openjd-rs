@@ -1,0 +1,46 @@
+# progressive.yaml with an enableIf on C that reads Steps.Q.Output.Enable,
+# which Q reports as false. Nothing of C is evaluated before its enableIf is
+# decided, so with N <= 0 the failing range is never evaluated: C is skipped.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: Progressive binding with enableIf
+parameterDefinitions:
+- name: N
+  type: INT
+  default: 2
+steps:
+- name: P
+  outputVariables:
+  - {name: N, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: [-c, "print('openjd_output_var: N={{Param.N}}')"]
+- name: Q
+  dependencies: [{dependsOn: P}]
+  outputVariables:
+  - {name: Cpus, type: INT}
+  - {name: Enable, type: BOOL}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: [-c, "print('openjd_output_var: Cpus=1'); print('openjd_output_var: Enable=false')"]
+- name: C
+  dependencies: [{dependsOn: P}, {dependsOn: Q}]
+  enableIf: "{{Steps.Q.Output.Enable}}"
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: I
+      type: INT
+      range: "{{range(Steps.P.Output.N) if Steps.P.Output.N > 0 else fail('P reported no items')}}"
+  hostRequirements:
+    amounts:
+    - name: amount.worker.vcpu
+      min: "{{Steps.Q.Output.Cpus}}"
+  script:
+    actions:
+      onRun:
+        command: python
+        args: [-c, "print('C task {{Task.Param.I}}')"]

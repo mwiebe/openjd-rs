@@ -1,0 +1,65 @@
+$ openjd run {T}/scene_graph_no_subspace.yaml -p Scene={T}/fixtures/scene_graph.json -p BakeDir={W}/bakes
+exit code: 0
+--- stdout
+Session start
+Running job 'Bake lighting for scene_graph'
+Step 'BakeNode' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.AnalyzeSceneGraph.Output.Children, Steps.AnalyzeSceneGraph.Output.NodeNames
+  Host requirements: known
+Running step 'AnalyzeSceneGraph'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Children=@Children.json
+openjd_output_var: NodeNames=@NodeNames.json
+Process exited with code: 0
+Output Children = [[], [], [0, 1]]
+Output NodeNames = ["floor", "lamp", "room"]
+Step 'BakeNode': Tasks known (3 tasks)
+Step 'BakeNode' is ready
+Running step 'BakeNode'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Node(INT) = 0
+Output:
+bake-node stub: floor from [] -> floor.bake
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Node(INT) = 1
+Output:
+bake-node stub: lamp from [] -> lamp.bake
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Node(INT) = 2
+Output:
+bake-node stub: room from ['floor.bake', 'lamp.bake'] -> room.bake
+Process exited with code: 0
+Running step 'AssembleLightmaps'
+==============================================
+--------- Running Task
+==============================================
+Output:
+assemble-lightmaps stub: ['floor.bake', 'lamp.bake', 'room.bake']
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Bake lighting for scene_graph
+Duration: {DURATION}
+Chunks run: 5
+--- stderr
