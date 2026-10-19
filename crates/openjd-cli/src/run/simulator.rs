@@ -63,8 +63,15 @@ enum Placement {
     /// next Task. No index is built, so a large space costs nothing until its
     /// Tasks run.
     Sequential(usize),
-    /// A chunked space, or Tasks given with `--tasks` or `--task-param`.
+    /// A chunked space run in iteration order of its chunks.
     Indexed(Box<ChunkTaskIndex>),
+    /// Tasks given with `--tasks` or `--task-param`, in any order: each
+    /// Action's Task parameter values, `CHUNK[INT]` value, and outputs, in
+    /// the order they ran. They are placed at their per-Task indices only
+    /// when they are as many as the Step's Tasks (see
+    /// [`Simulator::finish_step`]), so a run of a few Tasks of a large space
+    /// never walks it.
+    Explicit(Vec<(TaskParameterSet, Option<i64>, TaskOutputs)>),
 }
 
 /// What the simulator knows of one Step.
@@ -80,6 +87,9 @@ pub(super) struct StepRecord {
     placement: Option<Placement>,
     /// Whether every one of its Tasks ran and succeeded.
     all_tasks_ran: bool,
+    /// The outputs of Tasks given with `--tasks` or `--task-param` that do
+    /// not cover the Step, in the order they ran (not placed).
+    pub(super) unplaced: Vec<TaskOutputs>,
     /// Why the Step failed or is blocked.
     pub(super) reason: Option<String>,
     /// Whether `--step-inputs` gave its outputs.
@@ -138,6 +148,8 @@ pub(super) struct Simulator {
     failed_outputs: BTreeSet<usize>,
     /// Whether the Job Template lists `CONTROL_FLOW`.
     control_flow: bool,
+    /// Each Step's index, by name.
+    index_of: std::collections::HashMap<String, usize>,
 }
 
 /// Print one line of the run's log.
@@ -210,6 +222,7 @@ impl Simulator {
                 task_outputs: BTreeMap::new(),
                 placement: None,
                 all_tasks_ran: false,
+                unplaced: Vec::new(),
                 reason: None,
                 supplied: false,
             })
@@ -227,11 +240,18 @@ impl Simulator {
             }
         }
         let step_count = job.steps.len();
+        let index_of = job
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), i))
+            .collect();
         let control_flow = jt
             .profile()
             .has_extension(openjd_model::types::ModelExtension::ControlFlow);
         Ok(Self {
             control_flow,
+            index_of,
             jt,
             params,
             vctx,
@@ -288,7 +308,14 @@ impl Simulator {
         values: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<(), RunError> {
         let target_name = self.job.steps[target].name.clone();
-        let producers = self.job.steps[target].input_producers();
+        // The producers whose outputs the target reads (its groups' inputs
+        // while pending, and its script and Step Environments).
+        let producers: BTreeSet<String> = self.job.steps[target]
+            .input_symbols()
+            .iter()
+            .filter(|s| s.contains(".Output.") || s.contains(".RawOutput."))
+            .filter_map(|s| crate::common::step_of_symbol(s).map(str::to_string))
+            .collect();
         let mut by_producer: std::collections::BTreeMap<String, Vec<(String, &serde_json::Value)>> =
             Default::default();
         for (key, value) in values.into_iter().flatten() {
@@ -305,15 +332,9 @@ impl Simulator {
                 )
                 .into());
             }
-            if !producers.iter().any(|q| q == p) {
-                return Err(format!(
-                    "--step-inputs: Step '{target_name}' does not read the Steps.* values of a Step '{p}'."
-                )
-                .into());
-            }
-            let pi = self
-                .step_index(p)
-                .ok_or_else(|| internal(format!("no Step '{p}'")))?;
+            let Some(pi) = self.step_index(p) else {
+                return Err(format!("--step-inputs: the Job has no Step '{p}'.").into());
+            };
             let producer = &self.job.steps[pi];
             if matches!(producer.binding, StepBinding::Skipped) {
                 return Err(format!(
@@ -331,6 +352,12 @@ impl Simulator {
                         "--step-inputs: the Tasks of Step '{p}' are determined at run time, which --step-inputs cannot simulate; use --run-dependencies."
                     )
                 }
+                .into());
+            }
+            if !producers.iter().any(|q| q == p) {
+                return Err(format!(
+                    "--step-inputs: Step '{target_name}' does not read the outputs of Step '{p}'."
+                )
                 .into());
             }
             if !producer.binding.is_bound() {
@@ -377,9 +404,6 @@ impl Simulator {
 
         // Every Steps.* value the target reads must now be concrete. Both
         // calls are pure, so the run repeats them when it starts the Step.
-        let missing_hint = format!(
-            "Give them with --step-inputs, or run Step '{target_name}' with --run-dependencies."
-        );
         let step = &self.job.steps[target];
         let step = match step.binding {
             StepBinding::PendingInputs(_) => match openjd_model::advance_step_binding(
@@ -392,52 +416,41 @@ impl Simulator {
                 self.committed_task_count(target),
             ) {
                 Ok(step) => step,
-                Err(e) if e.is_caller_error() => {
-                    return Err(format!(
-                        "Step '{target_name}' cannot run alone: {e}\n{missing_hint}"
-                    )
-                    .into())
-                }
+                Err(e) if e.is_caller_error() => return Err(internal(e)),
                 // A group that fails fails the Step when the run starts it.
                 Err(_) => return Ok(()),
             },
             _ => step.clone(),
         };
-        if let Some(report) = step.binding_report() {
-            let mut waiting: Vec<String> = Vec::new();
-            for group in [
-                &report.enablement,
-                &report.tasks,
-                &report.host_requirements,
-                &report.remaining,
-            ] {
-                if let GroupReport::Waiting { on, .. } = group {
-                    waiting.extend(on.iter().cloned());
-                }
-            }
-            waiting.sort();
-            waiting.dedup();
-            return Err(format!(
-                "Step '{target_name}' reads Steps.* values of Steps this run does not run: {}.\n{missing_hint}",
-                waiting.join(", ")
+        // Its groups' inputs while it is pending, and what its script and
+        // Step Environments read.
+        let missing: Vec<String> = step
+            .input_symbols()
+            .into_iter()
+            .filter(|s| !self.is_concrete(s))
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        // --step-inputs can supply the outputs only of a producer bound at
+        // Job creation.
+        let suppliable = missing.iter().any(|s| {
+            crate::common::step_of_symbol(s)
+                .and_then(|p| self.step_index(p))
+                .is_some_and(|j| self.job.steps[j].binding.is_bound() && s.contains(".Output."))
+        });
+        let hint = if suppliable {
+            format!(
+                "Give them with --step-inputs, or run Step '{target_name}' with --run-dependencies."
             )
-            .into());
-        }
-        if step.binding.is_bound() {
-            let missing: Vec<String> = step
-                .input_symbols()
-                .into_iter()
-                .filter(|s| !self.is_concrete(s))
-                .collect();
-            if !missing.is_empty() {
-                return Err(format!(
-                    "Step '{target_name}' reads Steps.* values of Steps this run does not run: {}.\n{missing_hint}",
-                    missing.join(", ")
-                )
-                .into());
-            }
-        }
-        Ok(())
+        } else {
+            format!("Run Step '{target_name}' with --run-dependencies.")
+        };
+        Err(format!(
+            "Step '{target_name}' reads Steps.* values of Steps this run does not run: {}.\n{hint}",
+            missing.join(", ")
+        )
+        .into())
     }
 
     /// Whether the Job Template lists `CONTROL_FLOW`.
@@ -446,7 +459,7 @@ impl Simulator {
     }
 
     fn step_index(&self, name: &str) -> Option<usize> {
-        self.job.steps.iter().position(|s| s.name == name)
+        self.index_of.get(name).copied()
     }
 
     /// Record that Step `idx`'s state changed in a way that can make its
@@ -589,27 +602,21 @@ impl Simulator {
     /// output whose inputs are concrete. Returns `true` when a Step's group
     /// or a job output failed, which stops the run.
     pub(super) fn settle(&mut self) -> Result<bool, RunError> {
+        // A Step whose group fails fails at once, but the other pending
+        // Steps are still advanced and job outputs evaluated, as a scheduler
+        // evaluates each as soon as its inputs are concrete; only Tasks stop.
+        let mut failed = false;
         loop {
             let mut opened = false;
             for idx in self.order.clone() {
-                if !self.in_run[idx] || self.records[idx].state != SimStepState::Pending {
-                    continue;
-                }
-                let since = self.advanced[idx];
-                let fresh = self.job.steps[idx]
-                    .input_producers()
-                    .iter()
-                    .any(|p| self.step_index(p).is_some_and(|j| self.changed[j] > since));
-                if !fresh {
+                if !self.in_run[idx]
+                    || self.records[idx].state != SimStepState::Pending
+                    || !self.is_fresh(idx)
+                {
                     continue;
                 }
                 match self.advance(idx)? {
-                    Advanced::Failed => {
-                        // The run stops, but job outputs whose inputs are
-                        // concrete are still evaluated and committed.
-                        self.evaluate_job_outputs()?;
-                        return Ok(true);
-                    }
+                    Advanced::Failed => failed = true,
                     Advanced::Opened => opened = true,
                     Advanced::Quiet => {}
                 }
@@ -618,7 +625,18 @@ impl Simulator {
                 break;
             }
         }
-        self.evaluate_job_outputs()
+        let output_failed = self.evaluate_job_outputs()?;
+        Ok(failed || output_failed)
+    }
+
+    /// Whether one of pending Step `idx`'s producers changed state since it
+    /// was last advanced, so advancing it could make more of it known.
+    fn is_fresh(&self, idx: usize) -> bool {
+        let since = self.advanced[idx];
+        self.job.steps[idx]
+            .input_producers()
+            .iter()
+            .any(|p| self.step_index(p).is_some_and(|j| self.changed[j] > since))
     }
 
     /// Evaluate each job output not yet evaluated whose inputs are all
@@ -766,7 +784,9 @@ impl Simulator {
             self.block(idx, reason);
             return Ok(Begin::NotRun);
         }
-        if self.records[idx].state == SimStepState::Pending {
+        // Advanced only if a producer changed since it last was: otherwise
+        // nothing new can bind it, and it stays pending (below).
+        if self.records[idx].state == SimStepState::Pending && self.is_fresh(idx) {
             if let Advanced::Failed = self.advance(idx)? {
                 return Ok(Begin::Failed);
             }
@@ -791,7 +811,15 @@ impl Simulator {
                 )))
             }
             SimStepState::Bound => {
-                self.ensure_for_step(idx)?;
+                // attach_step_inputs needs the TaskParam lists only of the
+                // producers whose TaskParam the Step reads.
+                let task_param_producers: BTreeSet<String> = self.job.steps[idx]
+                    .input_symbols()
+                    .iter()
+                    .filter(|s| s.contains(".TaskParam.") || s.contains(".TaskRawParam."))
+                    .filter_map(|s| crate::common::step_of_symbol(s).map(str::to_string))
+                    .collect();
+                self.ensure_task_params(task_param_producers.iter().map(String::as_str))?;
                 let step = &self.job.steps[idx];
                 let step = if step.input_producers().is_empty() {
                     step.clone()
@@ -815,13 +843,15 @@ impl Simulator {
                 });
                 let placement = match &step.parameter_space {
                     _ if step.output_variables.is_none() => None,
-                    Some(space) if chunked || explicit_tasks => {
+                    Some(_) if explicit_tasks => Some(Placement::Explicit(Vec::new())),
+                    Some(space) if chunked => {
                         Some(Placement::Indexed(Box::new(ChunkTaskIndex::new(space)?)))
                     }
                     _ => Some(Placement::Sequential(0)),
                 };
                 let record = &mut self.records[idx];
                 record.task_outputs.clear();
+                record.unplaced.clear();
                 record.all_tasks_ran = false;
                 record.placement = placement;
                 Ok(Begin::Run(Box::new(step)))
@@ -871,6 +901,10 @@ impl Simulator {
                     Some(*next - 1)
                 }
                 (Some(Placement::Indexed(index)), Some(action)) => index.take(action, value),
+                (Some(Placement::Explicit(ran)), Some(action)) => {
+                    ran.push((action.clone(), value, task_outputs));
+                    continue;
+                }
                 _ => None,
             };
             if let Some(slot) = slot {
@@ -900,6 +934,24 @@ impl Simulator {
             return Ok(());
         }
         record.state = SimStepState::Succeeded;
+        // Tasks given explicitly are placed only when they are as many as the
+        // Step's Tasks, which bounds the walk by the Tasks that ran; a Task
+        // given twice takes no second index, so the Step stays incomplete.
+        if let Some(Placement::Explicit(ran)) = &mut record.placement {
+            let ran = std::mem::take(ran);
+            if ran.len() == task_count {
+                if let Some(space) = self.job.steps[idx].parameter_space.as_ref() {
+                    let mut index = ChunkTaskIndex::new(space)?;
+                    for (action, value, outputs) in ran {
+                        if let Some(slot) = index.take(&action, value) {
+                            record.task_outputs.insert(slot, outputs);
+                        }
+                    }
+                }
+            } else {
+                record.unplaced = ran.into_iter().map(|(_, _, outputs)| outputs).collect();
+            }
+        }
         // With output variables, count the Tasks whose outputs arrived, so a
         // Task given twice with `--tasks` does not stand in for another.
         record.all_tasks_ran = if declares_outputs {
@@ -1023,21 +1075,29 @@ impl Simulator {
                             .next_back()
                             .map_or(0, |last| last + 1)
                     };
-                    m.insert(
-                        "outputs".into(),
+                    let to_json = |t: &TaskOutputs| {
+                        serde_json::Value::Object(
+                            t.iter()
+                                .map(|(k, v)| (k.clone(), crate::common::expr_value_to_json(v)))
+                                .collect(),
+                        )
+                    };
+                    let outputs: Vec<serde_json::Value> = if record.unplaced.is_empty() {
                         (0..len)
-                            .map(|i| match record.task_outputs.get(&i) {
-                                Some(t) => serde_json::Value::Object(
-                                    t.iter()
-                                        .map(|(k, v)| {
-                                            (k.clone(), crate::common::expr_value_to_json(v))
-                                        })
-                                        .collect(),
-                                ),
-                                None => serde_json::Value::Null,
+                            .map(|i| {
+                                record
+                                    .task_outputs
+                                    .get(&i)
+                                    .map_or(serde_json::Value::Null, to_json)
                             })
-                            .collect(),
-                    );
+                            .collect()
+                    } else {
+                        // Tasks given with --tasks or --task-param that do
+                        // not cover the Step: in the order they ran.
+                        m.insert("outputs_in_run_order".into(), true.into());
+                        record.unplaced.iter().map(to_json).collect()
+                    };
+                    m.insert("outputs".into(), outputs.into());
                 }
                 serde_json::Value::Object(m)
             })
@@ -1401,7 +1461,7 @@ steps:
         for (json, want) in [
             (
                 r#"{"Steps.Q.Output.N": 1}"#,
-                "--step-inputs: Step 'C' does not read the Steps.* values of a Step 'Q'.",
+                "--step-inputs: the Job has no Step 'Q'.",
             ),
             (
                 r#"{"Steps.P.Output.M": 1}"#,

@@ -660,9 +660,11 @@ model evaluates in, with its text unchanged, since a reported URI output
 carries `PathFormat::Uri` and the EXPR evaluator refuses a `path` value in
 another format than its own (EXPR recognizes a URI by its text, so nothing
 else changes). A Windows-format stored path (a reverse rule's source format)
-keeps its format, so reading it in a group or job output is refused with
-"Path format mismatch" rather than giving wrong results from path operations
-such as `.name`; a `PATH` Task
+keeps its format, so reading it in a group or job output is refused rather
+than giving wrong results from path operations such as `.name`: reading the
+value, or an element of a list, gives "Path format mismatch", and reading an
+attribute of the symbol directly (`Steps.P.RawOutput.M.name`) gives
+"Undefined variable"; a `PATH` Task
 parameter's values are `path` values in the Posix format); its `Output` or `TaskParam`
 is concrete (`is_concrete`) but has no value (`get` returns `None`), because
 it is derived on the worker host. `add_producer` replaces a producer added
