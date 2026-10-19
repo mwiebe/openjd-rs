@@ -129,21 +129,26 @@ impl ChunkTaskIndex {
 
 /// The values of every Task parameter of `set` but `skip`, sorted by name
 /// (so a set built in another order matches), each with its type, so that
-/// equal keys mean equal parameters.
+/// equal keys mean equal parameters. A `FLOAT` value is compared by number,
+/// not by spelling: a range keeps its written spelling (`1.50`), while a
+/// value coerced from the command line has its own.
 fn other_values(set: &TaskParameterSet, skip: Option<&str>) -> Vec<String> {
     let mut values: Vec<String> = set
         .iter()
         .filter(|(name, _)| Some(name.as_str()) != skip)
-        .map(|(name, v)| {
-            format!(
-                "{name}:{}:{}",
-                v.param_type.as_spec_str(),
-                v.value.to_display_string()
-            )
-        })
+        .map(|(name, v)| task_key(name, v))
         .collect();
     values.sort_unstable();
     values
+}
+
+/// One Task parameter's part of a Task's key (see [`ChunkTaskIndex`]).
+pub(crate) fn task_key(name: &str, v: &crate::types::TaskParameterValue) -> String {
+    let value = match &v.value {
+        ExprValue::Float(f) => format!("{:#x}", (f.value() + 0.0).to_bits()),
+        other => other.to_display_string(),
+    };
+    format!("{name}:{}:{value}", v.param_type.as_spec_str())
 }
 
 /// The one value of a single-value `CHUNK[INT]` range (or an `int`).
@@ -296,6 +301,38 @@ mod tests {
         assert_eq!(index.take(&action, Some(5000)), None);
         assert_eq!(index.walked, 1000);
         assert_eq!(index.take(&action, Some(7)), Some(7));
+    }
+
+    #[test]
+    fn float_values_match_by_number_not_spelling() {
+        let mut defs = IndexMap::new();
+        defs.insert(
+            "X".to_string(),
+            TaskParameter::Float {
+                range: vec![
+                    openjd_expr::value::Float64::with_str(1.5, "1.50".into()).unwrap(),
+                    openjd_expr::value::Float64::with_str(2.0, "2".into()).unwrap(),
+                ],
+            },
+        );
+        let space = StepParameterSpace {
+            task_parameter_definitions: defs,
+            combination: None,
+        };
+        let mut index = ChunkTaskIndex::new(&space).unwrap();
+        let given = |x: f64| {
+            let mut set = TaskParameterSet::new();
+            set.insert(
+                "X".to_string(),
+                crate::types::TaskParameterValue {
+                    param_type: crate::types::TaskParameterType::Float,
+                    value: ExprValue::Float(openjd_expr::value::Float64::new(x).unwrap()),
+                },
+            );
+            set
+        };
+        assert_eq!(index.take(&given(2.0), None), Some(1));
+        assert_eq!(index.take(&given(1.5), None), Some(0));
     }
 
     #[test]
