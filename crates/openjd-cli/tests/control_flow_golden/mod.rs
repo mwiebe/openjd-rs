@@ -102,6 +102,17 @@ fn check(case: Case) {
         std::iter::once(dir.join("stubs/bin")).chain(std::env::split_paths(&base_path)),
     )
     .unwrap();
+    // Variables from the developer's shell that change what the samples'
+    // bash scripts or the stubs print.
+    for var in [
+        "BASH_ENV",
+        "ENV",
+        "CDPATH",
+        "OPENJD_GOLDEN_S3",
+        "OPENJD_GOLDEN_DUPLICATE_MPJPE",
+    ] {
+        cmd.env_remove(var);
+    }
     cmd.current_dir(&scratch_path)
         .env("PATH", path)
         .env("PYTHONPATH", dir.join("stubs/python"))
@@ -313,6 +324,13 @@ golden! {
     scene_graph_check: Case {
         name: "scene_graph.check",
         args: &["check", "{T}/scene_graph.yaml"],
+        env: NO_ENV, s3: None,
+    };
+    // Without dependsOnSubspace, the TASK_DEPENDENCIES extension itself is
+    // rejected as unsupported.
+    scene_graph_extension_check: Case {
+        name: "scene_graph_extension.check",
+        args: &["check", "{T}/scene_graph_extension.yaml"],
         env: NO_ENV, s3: None,
     };
     // Without dependsOnSubspace, BakeNode's Tasks come from the computed node count.
