@@ -290,9 +290,10 @@ before any later line) falls out of the stream.
   response line once escaped (the line alone can be 64 KiB, which would not fit in the
   header). `name` and `path` are byte ranges in the line; `size` is the bytes read;
   `error`, when set, is the read failure as a phrase, and the data then holds only the
-  line. A file that is not valid UTF-8 travels as its valid prefix; the parent appends
-  invalid bytes up to `size`, so the collector reports where the content stops being
-  UTF-8 and the size check sees the real size.
+  line. A file that is not valid UTF-8 travels as its valid prefix; the parent appends one
+  stand-in invalid byte, so the collector reports where the content stops being UTF-8,
+  and checks the size limit against `size`. It never allocates `size` bytes, so a forged
+  header can't make it.
 - The helper does not know the declared outputs or the values so far, so it reads before
   the parent's checks. The parent applies `check_name` first, then the read result, then
   the remaining-size check, so the outcome matches the RFC's order even though the helper

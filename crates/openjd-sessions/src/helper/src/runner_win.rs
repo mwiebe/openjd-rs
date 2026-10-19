@@ -28,19 +28,20 @@ use std::sync::mpsc;
 /// poll drains per tick in normal operation.
 const OUT_QUEUE_LINES: usize = 256;
 
-/// Run a command, receiving cancel signals from the provided channel.
+/// Run a command, polling `next_cancel` for cancel signals.
 ///
 /// Architecture:
 /// - Background threads read child stdout + stderr, send lines via channel
 /// - Main thread drains output lines
-/// - Cancel signals arrive via `cancel_rx` from the stdin reader in main.rs
+/// - Cancel signals arrive via `next_cancel`, from the stdin reader in
+///   main.rs, holding only the cancels sent for this run
 ///
 /// If `job` is `Some`, the spawned workload is explicitly assigned to it.
 /// In practice the workload would already inherit the helper's job, but
 /// the explicit assignment makes the invariant testable.
 pub fn run_command(
     cmd: &RunCommand,
-    cancel_rx: &mpsc::Receiver<CancelMethod>,
+    mut next_cancel: impl FnMut() -> Option<CancelMethod>,
     job: Option<&JobObject>,
 ) -> Result<i32, String> {
     use std::os::windows::io::AsRawHandle;
@@ -106,7 +107,7 @@ pub fn run_command(
     let mut escalation_deadline: Option<std::time::Instant> = None;
     loop {
         // Check for cancel (non-blocking)
-        if let Ok(method) = cancel_rx.try_recv() {
+        if let Some(method) = next_cancel() {
             escalation_deadline = handle_cancel(child_pid, &method);
         }
 
