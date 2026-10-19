@@ -2,14 +2,17 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # Copyright by contributors to this project.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
-"""Deterministic stylize stub: writes `--out` from `--in`, with a marker."""
+"""Deterministic stylize stub: writes `--out` from `--in`, with a marker.
+
+Unlike a real stylizer, a missing `--in` frame is not an error: the stub
+notes `(no input frame)` and still writes `--out`. A Step run alone with
+`--step` extracts no frames, and the golden test of that run relies on this.
+"""
 import os
 import sys
 
 args = dict(zip(sys.argv[1::2], sys.argv[2::2]))
 src, dst = args["--in"], args["--out"]
-# A Step run alone with --step has no extracted frames, so a missing input is
-# reported rather than treated as an error.
 note = "" if os.path.exists(src) else " (no input frame)"
 os.makedirs(os.path.dirname(dst), exist_ok=True)
 with open(dst, "w", encoding="utf-8") as f:
