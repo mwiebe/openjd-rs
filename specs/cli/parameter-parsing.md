@@ -188,7 +188,8 @@ The decoded value must be a map from `Steps.<Step>.Output.<Name>` to a value. Er
 - decodes to something other than a map: `--step-inputs argument must be a map from
   Steps.<Step>.Output.<Name> to a value when decoded.`
 - a missing or unreadable file: `Provided step inputs file '<path>' does not exist.` or
-  `Cannot read step inputs file '<path>': <error>`.
+  `Cannot read step inputs file '<path>': <error>`;
+- a file that does not parse: `Cannot parse step inputs file '<path>': <error>`.
 
 ## Extension Parsing
 

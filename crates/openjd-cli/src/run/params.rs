@@ -182,11 +182,14 @@ pub fn parse_step_inputs(
             },
             || format!("Cannot read step inputs file '{}'", path.display()),
         )?;
-        if crate::common::document_type(path) == openjd_model::template::parse::DocumentType::Json {
-            serde_json::from_str(&content)?
+        let parsed = if crate::common::document_type(path)
+            == openjd_model::template::parse::DocumentType::Json
+        {
+            serde_json::from_str(&content).map_err(|e| e.to_string())
         } else {
-            serde_saphyr::from_str(&content)?
-        }
+            serde_saphyr::from_str(&content).map_err(|e| e.to_string())
+        };
+        parsed.map_err(|e| format!("Cannot parse step inputs file '{}': {e}", path.display()))?
     } else {
         serde_json::from_str(arg).map_err(|_| {
             "--step-inputs argument must be a JSON encoded map or a string with the file:// prefix."

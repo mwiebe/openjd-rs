@@ -46,7 +46,13 @@ impl crate::common::CliResult for RunResult {
                 "job_outputs_not_evaluated".into(),
                 cf.not_evaluated
                     .iter()
-                    .map(|(name, waits)| serde_json::json!({"name": name, "waits_on": waits}))
+                    .map(|(name, waits)| {
+                        if waits.is_empty() {
+                            serde_json::json!({"name": name, "failed": true})
+                        } else {
+                            serde_json::json!({"name": name, "waits_on": waits})
+                        }
+                    })
                     .collect::<Vec<_>>()
                     .into(),
             );

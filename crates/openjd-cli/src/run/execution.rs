@@ -602,9 +602,15 @@ async fn execute_explicit_tasks(
         if ctx.is_stopping() {
             break;
         }
+        // A FLOAT is compared by number, not spelling.
         let mut key: Vec<String> = values
             .iter()
-            .map(|(name, v)| format!("{name}={}", v.value.to_display_string()))
+            .map(|(name, v)| match &v.value {
+                openjd_expr::ExprValue::Float(f) => {
+                    format!("{name}={:#x}", (f.value() + 0.0).to_bits())
+                }
+                other => format!("{name}={}", other.to_display_string()),
+            })
             .collect();
         key.sort_unstable();
         distinct.insert(key);

@@ -5034,3 +5034,251 @@ steps:
         }
     }
 }
+
+mod control_flow_run_round3 {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    fn at(stdout: &str, line: &str) -> usize {
+        stdout
+            .lines()
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .position(|l| l == line)
+            .unwrap_or_else(|| panic!("no line {line:?} in:\n{stdout}"))
+    }
+
+    fn json(stdout: &str) -> serde_json::Value {
+        let start = stdout.find("{\n").expect("JSON result");
+        serde_json::from_str(&stdout[start..]).unwrap()
+    }
+
+    const SIBLING_A: &str = r#"- name: A
+  dependencies: [{dependsOn: Q}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{range(Steps.Q.Output.Num) if Steps.Q.Output.Num > 0 else fail('none')}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+"#;
+    const SIBLING_B: &str = r#"- name: B
+  dependencies: [{dependsOn: Q}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{[Steps.Q.Output.Num + 5]}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print(1)"]}}}
+"#;
+
+    /// A group failure does not keep a sibling's Tasks from becoming known,
+    /// whichever Step is declared first, so a job output over them is
+    /// evaluated either way.
+    #[test]
+    fn a_group_failure_does_not_depend_on_step_order() {
+        for siblings in [[SIBLING_A, SIBLING_B], [SIBLING_B, SIBLING_A]] {
+            let job = write(&format!(
+                r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Order
+jobOutputDefinitions:
+- {{name: BF, type: "LIST[INT]", value: "{{{{Steps.B.TaskParam.F}}}}"}}
+steps:
+- name: Q
+  outputVariables: [{{name: Num, type: INT}}]
+  script: {{actions: {{onRun: {{command: python, args: [-c, "print('openjd_output_var: Num=0')"]}}}}}}
+{}{}"#,
+                siblings[0], siblings[1]
+            ));
+            let (code, stdout, stderr) =
+                run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+            assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+            at(&stdout, "Step 'B': Tasks known (1 task)");
+            at(&stdout, "Job output BF = [5]");
+            assert_eq!(json(&stdout)["job_outputs"], serde_json::json!({"BF": [5]}));
+        }
+    }
+
+    const FLOATS: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Floats
+jobOutputDefinitions:
+- {name: S, type: INT, value: "{{sum(Steps.C.Output.D)}}"}
+steps:
+- name: C
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: A, type: FLOAT, range: ["1.50", "2"]}
+  outputVariables: [{name: D, type: INT}]
+  script:
+    actions:
+      onRun: {command: python, args: [-c, "print('openjd_output_var: D=1')"]}
+"#;
+
+    /// `--tasks` over every Task of a FLOAT range written as `1.50` and `2`
+    /// places each output, matching values by number.
+    #[test]
+    fn tasks_over_float_ranges_place_outputs() {
+        let job = write(FLOATS);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--tasks",
+            r#"[{"A": 2}, {"A": 1.5}]"#,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let result = json(&stdout);
+        assert_eq!(
+            result["steps"][0],
+            serde_json::json!({"name": "C", "state": "SUCCEEDED", "task_count": 2,
+                               "outputs": [{"D": 1}, {"D": 1}]})
+        );
+        assert_eq!(result["job_outputs"], serde_json::json!({"S": 2}));
+    }
+
+    /// Tasks given with `--tasks` that do not cover the Step keep their
+    /// outputs in the order they ran.
+    #[test]
+    fn tasks_not_covering_the_step_keep_run_order() {
+        let job = write(FLOATS);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--tasks",
+            r#"[{"A": 2}]"#,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            json(&stdout)["steps"][0],
+            serde_json::json!({"name": "C", "state": "SUCCEEDED", "task_count": 2,
+                               "incomplete": true, "outputs_in_run_order": true,
+                               "outputs": [{"D": 1}]})
+        );
+    }
+
+    /// A pending Step run alone lists every missing value at once, and when
+    /// none can be given with --step-inputs the hint says so.
+    #[test]
+    fn step_alone_lists_all_missing_values() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Missing
+steps:
+- name: P
+  outputVariables: [{name: Num, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: Q
+  outputVariables: [{name: Mx, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: R
+  dependencies: [{dependsOn: P}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: "{{range(Steps.P.Output.Num)}}"}
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}, {dependsOn: Q}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: F, type: INT, range: "{{range(Steps.P.Output.Num)}}"}
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.Q.Output.Mx}})"]}}}
+- name: D
+  dependencies: [{dependsOn: R}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.R.TaskParam.I}})"]}}}
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'C' reads Steps.* values of Steps this run does not run: \
+                 Steps.P.Output.Num, Steps.Q.Output.Mx.\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+            ),
+            "stderr: {stderr}"
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "D"]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(
+                "Step 'D' reads Steps.* values of Steps this run does not run: \
+                 Steps.R.TaskParam.I.\n\
+                 Run Step 'D' with --run-dependencies.\n"
+            ),
+            "stderr: {stderr}"
+        );
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.R.Output.X": 1}"#,
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with("--step-inputs: Step 'C' does not read the outputs of Step 'R'.\n"),
+            "stderr: {stderr}"
+        );
+    }
+
+    /// A job output whose evaluation failed is marked in JSON, and a
+    /// --step-inputs file that does not parse is named.
+    #[test]
+    fn failed_job_output_json_and_step_inputs_file_errors() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Fail
+jobOutputDefinitions:
+- {name: Best, type: INT, value: "{{min(Steps.P.Output.V)}}"}
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: "{{[x for x in [1] if x > 5]}}"}
+  outputVariables: [{name: V, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.P.Output.V}})"]}}}
+"#,
+        );
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            json(&stdout)["job_outputs_not_evaluated"],
+            serde_json::json!([{"name": "Best", "failed": true}])
+        );
+        let mut bad = NamedTempFile::with_suffix(".json").unwrap();
+        bad.write_all(b"{1: 2}").unwrap();
+        let arg = format!("file://{}", bad.path().display());
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            &arg,
+        ]);
+        assert_ne!(code, 0);
+        assert!(
+            stderr.ends_with(&format!(
+                "Cannot parse step inputs file '{}': key must be a string at line 1 column 2\n",
+                bad.path().display()
+            )),
+            "stderr: {stderr}"
+        );
+    }
+}

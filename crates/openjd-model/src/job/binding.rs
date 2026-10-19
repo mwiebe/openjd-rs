@@ -347,8 +347,9 @@ fn insert(
 /// EXPR recognizes a URI by its text, so its format changes nothing else.
 /// A path in a Windows format (a reverse-mapping rule's source format) is
 /// left as it is: relabelling it Posix would make path operations such as
-/// `.name` give wrong results, so it is refused instead, as a Windows
-/// `RawParam` is. Anything else, such as a skipped producer's `null`, is
+/// `.name` give wrong results, so reading it is refused instead ("Path
+/// format mismatch", or "Undefined variable" for an attribute of the symbol
+/// read directly). Anything else, such as a skipped producer's `null`, is
 /// returned as it is.
 fn in_eval_format(value: ExprValue) -> ExprValue {
     match &value {

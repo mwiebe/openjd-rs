@@ -191,8 +191,10 @@ Tasks known (3 tasks)`, `Step 'C': host requirements known` (for a Step that has
 requirements), `Step 'C' is ready`, or `Step 'C' skipped (enableIf is false)`. A group
 that fails prints the `BindingError` (`ERROR: Step 'C' failed in its Task enumeration
 group:` and the located message), marks the Step `Failed`, and stops the run before any
-more Tasks start, as a failed Task does; the job outputs whose inputs are concrete by then
-are still evaluated first. This is the RFC's early failure: a Step whose
+more Tasks start, as a failed Task does. The pass still advances the other pending Steps
+and then evaluates the job outputs whose inputs are concrete, as a scheduler evaluates
+each as soon as its inputs are, so what is known does not depend on the order Steps are
+declared in. This is the RFC's early failure: a Step whose
 parameter space fails fails as soon as the producer it reads finishes, before a later
 producer that only its script reads has run. Then every job output not yet evaluated
 whose inputs (`job_output_inputs`) are all concrete is evaluated with
@@ -226,9 +228,11 @@ the simulator and is reported as an internal error.
    keyed by `CHUNK[INT]` value). Each value is printed with its unit after its Action
    (`Output N = 3 frames`, or `Output Done[2] = 20` in a chunked Step). Outputs are kept
    sparsely, and only for a Step that declares output variables; an unchunked space run in
-   order is placed by position, and a chunked one or Tasks given with `--tasks` or
-   `--task-param` through the lazy `ChunkTaskIndex`, so a large parameter space costs
-   nothing for the Tasks that do not run. A Step with zero Tasks prints `Step 'X'
+   order is placed by position, and a chunked one through the lazy `ChunkTaskIndex`.
+   Tasks given with `--tasks` or `--task-param` are kept in the order they ran and placed
+   through a `ChunkTaskIndex` only once they are as many as the Step's Tasks. Either way a
+   large parameter space costs nothing for the Tasks that do not run. A `FLOAT` value is
+   matched by number, so a range written `1.50` matches a given `1.5`. A Step with zero Tasks prints `Step 'X'
    has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
 5. The Step is recorded `Failed` (reason `a Task failed`, unless a group failed) if the
    run failed while it ran, and `Succeeded` otherwise; then the simulator settles.
@@ -252,9 +256,13 @@ constraints with the collector that checks reported values (`OutputCollector`), 
 declared `ONCE` or `LAST` output of the producer must be given. Before the Session starts,
 the simulator checks that every `Steps.*` value X reads is then concrete (its groups'
 inputs if it is pending, and the symbols its script and Step Environments read,
-`job::Step::input_symbols`), and otherwise fails naming them: `Step 'C' reads Steps.* values of Steps this run does not run:
-Steps.P.Output.V.` followed by `Give them with --step-inputs, or run Step 'C' with
---run-dependencies.` A producer's `TaskParam` comes from its parameter space, so a
+`job::Step::input_symbols`), and otherwise fails naming all of them: `Step 'C' reads
+Steps.* values of Steps this run does not run: Steps.P.Output.V.` followed by `Give them
+with --step-inputs, or run Step 'C' with --run-dependencies.`, or by only `Run Step 'C'
+with --run-dependencies.` when none of the missing values is an output of a producer bound
+at Job creation, which is all `--step-inputs` can give. A key naming a Step whose outputs C
+does not read is refused (`--step-inputs: Step 'C' does not read the outputs of Step
+'R'.`), as is a Step the Job does not have. A producer's `TaskParam` comes from its parameter space, so a
 `Steps.P.TaskParam.N` key is refused. So is a producer that is skipped (its values are
 `null`), and one that is not bound at Job creation. This narrows the plan's C1 option,
 which also lists `Steps.P.TaskParam.N` keys: a producer not bound at Job creation has a
@@ -501,16 +509,21 @@ For a template that lists `CONTROL_FLOW`, three more fields follow (other templa
 output matches the Python CLI's):
 
 * `steps`: one entry per Step, `{name, state, task_count}` with the RFC's state name
-  (`PENDING_INPUTS`, `READY`, `SKIPPED`, `SUCCEEDED`, `FAILED`, `BLOCKED`) and
+  (`PENDING_INPUTS`, `READY`, `SKIPPED`, `SUCCEEDED`, `FAILED`), or `BLOCKED`, the
+  simulator's own name for a Step that can never run because a dependency failed (the RFC
+  has no state for it: "blocked; never runs, as today"), and
   `task_count` `null` while its Tasks are unknown; `incomplete: true` for a Step that did
   not run all of its Tasks; `reason` for a failed or blocked Step; and, for a Step that
   declares output variables and started, `outputs`, a list with one map from output name
   to value per Task in iteration order, up to the last Task whose outputs arrived (`null`
   for a Task before it that did not succeed), so a Step whose Tasks all succeeded has one
-  per Task and a zero-Task Step has `[]`.
+  per Task and a zero-Task Step has `[]`. For Tasks given with `--tasks` or `--task-param`
+  that do not cover the Step, `outputs` lists them in the order they ran, and
+  `outputs_in_run_order: true` says so.
 * `job_outputs`: a map from each evaluated job output's name to its value (`null` for no
   value).
-* `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end.
+* `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end, or
+  `{name, failed: true}` for a job output whose evaluation failed.
 
 ### YAML
 
@@ -526,11 +539,12 @@ chunks_run: 100
 ## Error Handling and Exit Codes
 
 - Exit code 0: All actions completed successfully
-- Exit code 1: Any action failed, setup failed, or interruption was observed
+- Exit code 1: Any action failed, setup failed, interruption was observed, or (for
+  `CONTROL_FLOW`) a Step's materialization group or a job output failed
 
-On action failure, the session continues to exit environments (cleanup) but skips
-remaining tasks. The `session_failed` flag tracks whether any action returned a
-non-`Success` state.
+On failure, the session continues to exit environments (cleanup) but skips remaining
+tasks. The `session_failed` flag tracks whether any action returned a non-`Success`
+state, or a group or job output failed.
 
 An interruption signal cancels the active session action. On Unix the handled
 signals are SIGINT and SIGTERM; on Windows they are Ctrl+C and Ctrl+Break
