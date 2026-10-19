@@ -49,7 +49,7 @@ openjd-rs/
 │           ├── main.rs
 │           ├── check.rs
 │           ├── summary.rs
-│           ├── run.rs
+│           ├── run/             # run command, incl. the CONTROL_FLOW scheduler simulator
 │           └── help.rs
 └── specs/                      # Design specs
     ├── architecture.md
@@ -115,6 +115,10 @@ Runtime library. Depends on openjd-model and openjd-expr. Provides:
 ### openjd-cli
 Binary crate. Depends on all three libraries.
 Commands: `check` (validate templates), `summary` (job/step summary), `run` (execute jobs locally).
+For a `CONTROL_FLOW` Job, `run` simulates a scheduler: it advances pending Steps with
+`advance_step_binding` as their producers finish, attaches `Steps.*` inputs, records each
+Task's outputs, and evaluates job outputs as their inputs become concrete; `summary` reports
+what is known of each pending Step and job output (see `cli/run.md`, `cli/summary.md`).
 
 ## Key Design Decisions
 

@@ -31,7 +31,8 @@ validation, and job creation for OpenJD templates. Part of the
   Task's output values, progressive step input binding:
   `advance_step_binding`, `StepInputs`, and `attach_step_inputs`, and job
   outputs: `jobOutputDefinitions`, `job_output_inputs`, and
-  `evaluate_job_output`).
+  `evaluate_job_output`, and `ChunkTaskIndex`, which places a chunked Step's
+  per-Task outputs in iteration order).
 
 The crate passes 100% of the upstream [OpenJD conformance test suite] —
 over 700 template validation and environment-template tests on Linux,
