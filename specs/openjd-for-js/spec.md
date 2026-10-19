@@ -119,6 +119,10 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 | `maxEvalMemoryBytes` | `number` | Evaluation memory budget per format-string expression, in bytes. Omit for the spec-recommended 100 MB default. |
 | `maxEvalOperations` | `number` | Evaluation operation budget per format-string expression. Omit for the spec-recommended 10 M default. |
 
+The Rust field `max_task_output_bytes` (the per-Task `CONTROL_FLOW` output size limit a
+runtime applies) is not exposed: the bindings parse and create Jobs but run no Tasks, so it
+is always `None`.
+
 `CallerLimits` is exposed as a plain object rather than an exported class: callers construct object literals and reuse them across calls with no `.free()` ceremony. Resolves review finding F4.
 
 `supportedExtensions` accepts the uppercase extension names listed by `getSupportedExtensions()`. The host can pass a subset to disable specific extensions (e.g., omit `"EXPR"` from a browser template-viewer that has no reason to evaluate expressions on untrusted input). Unknown names produce a clear error from the underlying validator. Resolves review finding F8.

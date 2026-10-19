@@ -612,11 +612,14 @@ pub enum ActionMessage {
     /// output collector accepted. `task` is the CHUNK[INT] value in a
     /// chunked Step; under APPEND `value` is the new element.
     OutputVar { task: Option<i64>, name: String, value: ExprValue },
-    /// Internal signal (emitted when a malformed env-directive or an
-    /// invalid `openjd_output_var` directive is found): cancel this
-    /// action and mark it failed with `fail_message`. The first one's
-    /// message is final for the action.
+    /// Internal signal (emitted when a malformed env-directive is found):
+    /// cancel this action and mark it failed with `fail_message`.
     CancelMarkFailed { fail_message: String },
+    /// Internal signal (CONTROL_FLOW): an invalid `openjd_output_var`
+    /// directive. Applied as `CancelMarkFailed`, and the message is final
+    /// for the action: a later `Fail` or `CancelMarkFailed` does not
+    /// replace it.
+    InvalidOutputVar { fail_message: String },
 }
 
 /// Each Task's output values, keyed by its CHUNK[INT] value in a
@@ -1141,14 +1144,28 @@ pub enum SessionError {
 ## Re-exports
 
 ```rust
+pub use openjd_expr::path_mapping;           // the module
 pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
+pub use action_status::ActionStatus;
+pub use error::SessionError;
+pub use limits::SessionLimits;
+pub use logging::LogContent;
+pub use openjd_expr::path_mapping::{PathFormat, PathMappingRule};
+pub use runner::{CancelMethod, ScriptRunnerState};
 pub use session::{
     EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
     RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
 };
-pub use openjd_expr::path_mapping;           // the module
-pub use openjd_expr::path_mapping::PathFormat;
-pub use openjd_expr::path_mapping::PathMappingRule;
+#[cfg(windows)]
+pub use session_user::BadCredentialsError;
+#[cfg(unix)]
+pub use session_user::PosixSessionUser;
+pub use session_user::SessionUser;
+#[cfg(windows)]
+pub use session_user::WindowsSessionUser;
+pub use subprocess::SubprocessResult;
+pub use tempdir::StickyBitPolicy;
+pub use tempdir::TempDir;
 ```
 
 `PathFormat` and `PathMappingRule` are the types used on

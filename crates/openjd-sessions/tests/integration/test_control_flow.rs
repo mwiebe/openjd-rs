@@ -834,31 +834,41 @@ async fn chunk_selector_rules_and_missing_task() {
 
 #[tokio::test]
 async fn unparsable_chunk_fails_the_action() {
-    let mut f = fixture();
-    let d = decls(N_INT);
-    let err = f
-        .session
-        .run_task(
-            "S",
-            &step("true"),
-            Some(&chunk(ExprValue::String("1-x".into()))),
-            None,
-            None,
-            &RunTaskOptions {
-                output_variables: Some(&d),
-                path_inputs: &[],
-            },
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(
-        err.to_string(),
-        "CHUNK[INT] parameter 'F' value '1-x' is not a range expression"
-    );
-    assert_eq!(
-        f.session.action_status().unwrap().state,
-        ActionState::Failed
-    );
+    for (text, message) in [
+        (
+            "1-x",
+            "CHUNK[INT] parameter 'F' value '1-x' is not a range expression: Expected integer \
+             in '1-x'",
+        ),
+        (
+            "1,1",
+            "CHUNK[INT] parameter 'F' value '1,1' is not a range expression: Range expression \
+             has overlapping ranges: 1 and 1",
+        ),
+    ] {
+        let mut f = fixture();
+        let d = decls(N_INT);
+        let err = f
+            .session
+            .run_task(
+                "S",
+                &step("true"),
+                Some(&chunk(ExprValue::String(text.into()))),
+                None,
+                None,
+                &RunTaskOptions {
+                    output_variables: Some(&d),
+                    path_inputs: &[],
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), message);
+        assert_eq!(
+            f.session.action_status().unwrap().state,
+            ActionState::Failed
+        );
+    }
 }
 
 // ── PATH values ─────────────────────────────────────────────────────
@@ -1310,6 +1320,9 @@ async fn path_inputs_keep_each_stored_format() {
         .unwrap();
     st.set("Steps.P.RawOutput.X", ExprValue::String("/src/a".into()))
         .unwrap();
+    // A colon second is a drive only after a letter.
+    st.set("Steps.P.RawOutput.C", ExprValue::String("/:x".into()))
+        .unwrap();
     let inner = |v: &[&str]| {
         ExprValue::make_list(
             v.iter().map(|s| ExprValue::String(s.to_string())).collect(),
@@ -1335,6 +1348,7 @@ async fn path_inputs_keep_each_stored_format() {
         input("Steps.P.RawOutput.W", ExprType::PATH),
         input("Steps.P.RawOutput.I", ExprType::PATH),
         input("Steps.P.RawOutput.X", ExprType::PATH),
+        input("Steps.P.RawOutput.C", ExprType::PATH),
         input(
             "Steps.P.TaskRawParam.G",
             ExprType::list(ExprType::list(ExprType::PATH)),
@@ -1350,6 +1364,7 @@ async fn path_inputs_keep_each_stored_format() {
     assert_eq!(format_of(&get("Steps.P.RawOutput.W")), PathFormat::Windows);
     assert_eq!(format_of(&get("Steps.P.RawOutput.I")), PathFormat::Uri);
     assert_eq!(format_of(&get("Steps.P.RawOutput.X")), PathFormat::Posix);
+    assert_eq!(format_of(&get("Steps.P.RawOutput.C")), PathFormat::Posix);
     assert_eq!(format_of(&get("Steps.P.Output.X")), PathFormat::host());
     assert_eq!(
         get("Steps.P.TaskParam.G").to_display_string(),
@@ -1511,4 +1526,213 @@ async fn directive_lines_up_to_64_kib_are_accepted() {
     let outputs = r.outputs.unwrap();
     assert_eq!(outputs[&None]["A"], ExprValue::String("a".repeat(65_513)));
     assert_eq!(outputs[&None]["B"], ExprValue::String("\\".repeat(32_756)));
+}
+
+// ── Audit round 2 ───────────────────────────────────────────────────
+
+/// Run `script` as the onRun of a Step declaring `N`, with a 5 second
+/// notify period so a TERM trap can print before the action ends.
+async fn run_notify(f: &mut Fixture, script: &str) -> ActionResult {
+    let d = decls(N_INT);
+    let mut script = step(script);
+    script.actions.on_run.cancelation =
+        Some(openjd_model::job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(fs("5")),
+        });
+    f.session
+        .run_task(
+            "S",
+            &script,
+            None,
+            None,
+            None,
+            &RunTaskOptions {
+                output_variables: Some(&d),
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn malformed_env_after_an_invalid_directive_keeps_its_message() {
+    let mut f = fixture();
+    let r = run_notify(
+        &mut f,
+        "echo 'openjd_output_var: N=x'
+         echo 'openjd_env: noequals'
+         sleep 20 & wait",
+    )
+    .await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N': 'x' is not one valid JSON value: expected value at line 1 column 1",
+    );
+}
+
+#[tokio::test]
+async fn openjd_fail_after_a_malformed_env_replaces_its_message() {
+    // Only the openjd_output_var failure is final; a malformed openjd_env
+    // keeps the last-write-wins behavior of the Python reference.
+    let mut f = fixture();
+    let r = run_notify(
+        &mut f,
+        "trap 'echo \"openjd_fail: trapped\"; exit 0' TERM
+         echo 'openjd_env: noequals'
+         sleep 20 & wait",
+    )
+    .await;
+    assert_failed(&f, &r, "trapped");
+}
+
+#[tokio::test]
+async fn a_final_fail_message_does_not_carry_into_the_next_action() {
+    let mut f = fixture();
+    let mut e = env("E", None, None);
+    e.script.as_mut().unwrap().actions.on_exit =
+        Some(sh_action("echo 'openjd_fail: exit failed'; exit 1"));
+    let id = f
+        .session
+        .enter_environment(&e, None, None, None, &EnvironmentOptions::default())
+        .await
+        .unwrap();
+    let d = decls(N_INT);
+    let r = f.run("echo 'openjd_output_var: N=x'", Some(&d)).await;
+    assert_eq!(r.state, ActionState::Failed);
+    let r = f
+        .session
+        .exit_environment(&id, None, true, None, &EnvironmentOptions::default())
+        .await;
+    assert!(r.is_err());
+    assert_eq!(f.fail_message(), "exit failed");
+}
+
+#[tokio::test]
+async fn declared_outputs_do_not_change_a_failure_timeout_or_cancel() {
+    // The missing-output check runs only after a successful exit.
+    let mut f = fixture();
+    let d = decls(N_INT);
+    let r = f.run("echo 'openjd_fail: mine'; exit 2", Some(&d)).await;
+    assert_failed(&f, &r, "mine");
+
+    let mut f = fixture();
+    let mut script = step("sleep 10");
+    script.actions.on_run.timeout = Some(fs("1"));
+    let r = f
+        .session
+        .run_task(
+            "S",
+            &script,
+            None,
+            None,
+            None,
+            &RunTaskOptions {
+                output_variables: Some(&d),
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Timeout);
+    assert_eq!(f.fail_message(), "");
+
+    let mut f = fixture();
+    let handle = f.session.cancel_handle();
+    let canceler = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        handle.cancel(Some(Duration::ZERO), false)
+    });
+    let r = f.run("sleep 30", Some(&d)).await;
+    assert!(canceler.await.unwrap());
+    assert_eq!(r.state, ActionState::Canceled);
+    assert_eq!(f.fail_message(), "");
+}
+
+#[tokio::test]
+async fn missing_output_message_is_in_the_action_output() {
+    testing_logger::setup();
+    let mut f = fixture();
+    let d = decls(N_INT);
+    let r = f.run("true", Some(&d)).await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N': no value was reported (collect mode ONCE)",
+    );
+    testing_logger::validate(|captured| {
+        let line = "ERROR: Output variable 'N': no value was reported (collect mode ONCE)";
+        assert!(
+            logged(captured).iter().any(|l| l == line),
+            "{:?}",
+            logged(captured)
+        );
+    });
+}
+
+#[tokio::test]
+async fn job_environment_without_control_flow_prints_ordinary_output() {
+    let mut f = fixture_with(false, true, None, Default::default());
+    let e = env("E", Some(sh_action("echo 'openjd_output_var: N=1'")), None);
+    let (_, out) = f
+        .session
+        .enter_environment_with_output(&e, None, None, None, &EnvironmentOptions::default())
+        .await
+        .unwrap();
+    assert!(out.contains("openjd_output_var: N=1"));
+}
+
+#[tokio::test]
+async fn path_inputs_accept_an_empty_list_stored_as_either_element_type() {
+    // An empty list carries no element to tell its type by, so a stored
+    // `list[list[string]] []` is a `list[path]` and a `list[string] []` a
+    // `list[list[path]]`.
+    let f = fixture();
+    let mut st = SymbolTable::new();
+    st.set(
+        "Steps.P.TaskRawParam.A",
+        ExprValue::make_list(vec![], ExprType::list(ExprType::STRING)).unwrap(),
+    )
+    .unwrap();
+    st.set(
+        "Steps.P.TaskRawParam.B",
+        ExprValue::make_list(vec![], ExprType::STRING).unwrap(),
+    )
+    .unwrap();
+    let inputs = vec![
+        PathInput {
+            symbol: "Steps.P.TaskRawParam.A".into(),
+            ty: ExprType::list(ExprType::PATH),
+        },
+        PathInput {
+            symbol: "Steps.P.TaskRawParam.B".into(),
+            ty: ExprType::list(ExprType::list(ExprType::PATH)),
+        },
+    ];
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let st = f
+        .session
+        .build_symbol_table(None, Some(&base), &inputs)
+        .unwrap();
+    let get = |k: &str| st.get_value(k).cloned().unwrap();
+    assert_eq!(
+        get("Steps.P.TaskParam.A").expr_type(),
+        ExprType::list(ExprType::PATH)
+    );
+    assert_eq!(
+        get("Steps.P.TaskParam.B").expr_type(),
+        ExprType::list(ExprType::list(ExprType::PATH))
+    );
+}
+
+#[test]
+fn control_flow_types_are_reexported_at_the_crate_root() {
+    let _: Option<openjd_sessions::ActionOutputs> = None;
+    let _: Option<openjd_sessions::OutputCallbackType> = None;
+    let _ = openjd_sessions::EnvironmentOptions {
+        origin: openjd_sessions::EnvironmentOrigin::JobTemplate,
+        path_inputs: &[],
+    };
+    let _ = openjd_sessions::RunTaskOptions::default();
 }

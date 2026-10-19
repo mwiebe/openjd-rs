@@ -224,6 +224,18 @@ mod tests {
             out[0],
             format!(r#"{{"outLong":{{"len":{},"lossy":true}}}}"#, l.text.len())
         );
+        // A cut line that escaping makes too long for one response keeps its
+        // truncated flag, so the parent rejects it.
+        let mut l = line(&format!("openjd_output_var: S={}", "\\".repeat(65_515)));
+        l.truncated = true;
+        let out = emitted(l.clone(), Some(&FILES), &cwd);
+        assert_eq!(
+            out[0],
+            format!(
+                r#"{{"outLong":{{"len":{},"truncated":true}}}}"#,
+                l.text.len()
+            )
+        );
     }
 
     #[test]

@@ -1012,11 +1012,12 @@ impl PendingFrames {
                     None => {
                         let mut content = rest.into_bytes();
                         if valid_utf8 < size {
-                            // Stand-in bytes for what was not valid UTF-8, so
-                            // the collector reports where the content stops
-                            // being UTF-8 and the size check sees the size
-                            // the helper read.
-                            content.resize(size, 0xFF);
+                            // One stand-in byte for what was not valid UTF-8,
+                            // so the collector reports where the content
+                            // stops being UTF-8. The size check uses `size`,
+                            // which a forged header may set without sending
+                            // the data, so nothing of that size is allocated.
+                            content.push(0xFF);
                         }
                         Ok(content)
                     }
@@ -1025,6 +1026,7 @@ impl PendingFrames {
                     line,
                     parts,
                     content,
+                    size,
                 }
             }
         })
@@ -1043,6 +1045,8 @@ enum CompleteFrames {
         line: String,
         parts: HelperFileParts,
         content: Result<Vec<u8>, String>,
+        /// How many bytes the helper read.
+        size: usize,
     },
 }
 
@@ -1065,11 +1069,10 @@ impl CompleteFrames {
                 line,
                 parts,
                 content,
-            } => Some(
-                filter
-                    .output_vars_mut()
-                    .finish_helper_file(line, parts, content.clone()),
-            ),
+                size,
+            } => filter
+                .output_vars_mut()
+                .finish_helper_file(line, parts, content.clone(), *size),
         }
     }
 }
@@ -1129,8 +1132,9 @@ mod frames_tests {
             ),
         ] {
             let e = PendingFrames::file(&bad, 100).expect_err(why);
-            assert!(
-                message(e).starts_with("Cross-user helper error: Malformed outputFile header: "),
+            assert_eq!(
+                message(e),
+                format!("Cross-user helper error: Malformed outputFile header: {bad}"),
                 "{why}"
             );
         }
@@ -1148,7 +1152,10 @@ mod frames_tests {
             json!({"len": 3, "lossy": "yes"}),
         ] {
             let e = PendingFrames::long_line(&bad).unwrap_err();
-            assert!(message(e).starts_with("Cross-user helper error: Malformed outLong header: "));
+            assert_eq!(
+                message(e),
+                format!("Cross-user helper error: Malformed outLong header: {bad}")
+            );
         }
     }
 
@@ -1183,18 +1190,22 @@ mod frames_tests {
     }
 
     #[test]
-    fn invalid_utf8_content_keeps_the_reported_size() {
+    fn invalid_utf8_content_keeps_the_reported_size_without_allocating_it() {
         let line = "openjd_output_var: N=@f";
         let mut p = PendingFrames::file(&header(23, 50, 2), 100).unwrap();
         assert!(p.push(&format!("{line}ab")).unwrap());
         match p.complete().unwrap() {
             CompleteFrames::File {
-                line: l, content, ..
+                line: l,
+                content,
+                size,
+                ..
             } => {
                 assert_eq!(l, line);
-                let content = content.unwrap();
-                assert_eq!(content.len(), 50);
-                assert_eq!(&content[..3], b"ab\xff");
+                // The valid prefix and one stand-in byte; the size the
+                // helper read travels separately.
+                assert_eq!(content.unwrap(), b"ab\xff");
+                assert_eq!(size, 50);
             }
             other => panic!("{other:?}"),
         }
@@ -1231,7 +1242,11 @@ mod frames_tests {
         let mut f = filter();
         assert!(matches!(
             p.complete().unwrap().outcome(&mut f),
-            Some(LineOutcome::Invalid(m)) if m.starts_with("Invalid openjd_output_var directive: the line is longer")
+            Some(LineOutcome::Invalid(m)) if m == format!(
+                "Invalid openjd_output_var directive: the line is longer than the 65536 byte \
+                 line limit, so it was cut; write a large value to a file and report it with \
+                 @<file>, in '{text}'"
+            )
         ));
     }
 

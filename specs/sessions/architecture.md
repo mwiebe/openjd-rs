@@ -69,10 +69,11 @@ Re-exported from `lib.rs`:
 
 ```rust
 // Core session
-pub use session::{Session, SessionState, SessionConfig, EnvironmentIdentifier};
-// (session::{EnvironmentOrigin, EnvironmentOptions, RunTaskOptions, OutputCallbackType}
-// and action::ActionOutputs are reached through their modules)
-pub use action::{ActionState, ActionResult, ActionMessage};
+pub use session::{
+    EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
+    RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
+};
+pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
 

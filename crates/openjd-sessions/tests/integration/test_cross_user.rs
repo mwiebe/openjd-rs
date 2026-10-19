@@ -1010,11 +1010,10 @@ async fn test_cross_user_output_var_form_feed() {
     )
     .await;
     assert_eq!(r.state, ActionState::Failed);
-    assert!(
-        fail_message(&session)
-            .starts_with("Output variable 'N': '1\\u{c}' is not one valid JSON value"),
-        "{}",
-        fail_message(&session)
+    assert_eq!(
+        fail_message(&session),
+        "Output variable 'N': '1\\u{c}' is not one valid JSON value: trailing characters at \
+         line 1 column 2"
     );
     session.cleanup();
 }
@@ -1139,6 +1138,61 @@ async fn test_cross_user_output_var_long_lines() {
     assert_eq!(
         single(&r, "B"),
         Some(openjd_expr::ExprValue::String("\\".repeat(32_756)))
+    );
+    session.cleanup();
+}
+
+/// A directive line over the 64 KiB cap that JSON escaping makes too long
+/// for one response travels as `outLong` with its `truncated` flag, and
+/// fails as on the direct path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_long_cut_line() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        r#"printf 'openjd_output_var: S='; head -c 65520 /dev/zero | tr '\0' '\\'; printf '\n'"#,
+        r#"[{"name": "S", "type": "STRING"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        format!(
+            "Invalid openjd_output_var directive: the line is longer than the 65536 byte line \
+             limit, so it was cut; write a large value to a file and report it with @<file>, in \
+             'openjd_output_var: S={}...'",
+            "\\".repeat(179)
+        )
+    );
+    session.cleanup();
+}
+
+/// After an invalid directive, a later `@` line is ordinary output, as on
+/// the direct path, though the helper still resolves it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_at_line_after_an_invalid_directive() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        "printf 1 > f; echo 'openjd_output_var: N=x'; echo 'openjd_output_var: N=@f'; sleep 5",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        "Output variable 'N': 'x' is not one valid JSON value: expected value at line 1 column 1"
+    );
+    assert!(
+        r.stdout.lines().any(|l| l == "openjd_output_var: N=@f"),
+        "{}",
+        r.stdout
     );
     session.cleanup();
 }

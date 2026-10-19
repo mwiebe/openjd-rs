@@ -3834,6 +3834,21 @@ steps:
         args: ['-c', 'print("openjd_output_var: N=1")']
 "#;
 
+    /// A declared output with no value fails the Task, and the reason is in
+    /// the output, not only in the session's status.
+    #[test]
+    fn missing_output_fails_and_is_reported() {
+        let job = write(&JOB.replace("print(\"openjd_output_var: N=1\")", "print(\"hi\")"));
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "\tERROR: Output variable 'N': no value was reported (collect mode ONCE)\n"
+            ),
+            "stdout: {stdout}"
+        );
+    }
+
     /// An Environment Template has not opted in to CONTROL_FLOW, so a
     /// directive in its action is ordinary output, on enter and on exit.
     #[test]

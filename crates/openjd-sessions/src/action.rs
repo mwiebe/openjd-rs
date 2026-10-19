@@ -64,9 +64,14 @@ pub enum ActionMessage {
         value: openjd_expr::ExprValue,
     },
     /// Request to cancel the action and mark it as failed (from a malformed
-    /// env command or an invalid `openjd_output_var` directive), with the
-    /// message to fail it with.
+    /// env command), with the message to fail it with.
     CancelMarkFailed { fail_message: String },
+    /// An invalid `openjd_output_var` directive (RFC 0010): cancel the action
+    /// and mark it as failed with `fail_message`, which names the output,
+    /// the problem, and the text. Unlike `CancelMarkFailed`, the message is
+    /// final for the action: a later `Fail` (such as an `openjd_fail` a
+    /// cancel handler prints) or `CancelMarkFailed` does not replace it.
+    InvalidOutputVar { fail_message: String },
 }
 
 impl std::fmt::Display for ActionMessage {
@@ -88,6 +93,9 @@ impl std::fmt::Display for ActionMessage {
             } => write!(f, "OutputVar({name})"),
             Self::CancelMarkFailed { fail_message } => {
                 write!(f, "CancelMarkFailed({fail_message})")
+            }
+            Self::InvalidOutputVar { fail_message } => {
+                write!(f, "InvalidOutputVar({fail_message})")
             }
         }
     }
@@ -156,6 +164,13 @@ mod tests {
             }
             .to_string(),
             "CancelMarkFailed(bad)"
+        );
+        assert_eq!(
+            ActionMessage::InvalidOutputVar {
+                fail_message: "bad".into()
+            }
+            .to_string(),
+            "InvalidOutputVar(bad)"
         );
         assert_eq!(
             ActionMessage::OutputVar {

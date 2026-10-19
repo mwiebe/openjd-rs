@@ -261,10 +261,12 @@ struct ActionStatusFields {
     progress: Option<f64>,
     status_message: Option<String>,
     fail_message: Option<String>,
-    /// Set when a `CancelMarkFailed` gave the reason the action is failing:
-    /// a later `openjd_fail` (often printed from a cancel handler) or another
-    /// cancel request must not replace it, because RFC 0010 requires the
-    /// failure of an invalid `openjd_output_var` directive to name it.
+    /// Set when an invalid `openjd_output_var` directive gave the reason the
+    /// action is failing: a later `openjd_fail` (often printed from a cancel
+    /// handler) or `CancelMarkFailed` must not replace it, because RFC 0010
+    /// requires the failure to name the output, the problem, and the text.
+    /// Other messages keep the last-write-wins behavior of the Python
+    /// reference.
     fail_message_final: bool,
     exit_code: Option<i32>,
     started_at: Option<std::time::SystemTime>,
@@ -2489,6 +2491,12 @@ impl Session {
             ActionMessage::CancelMarkFailed { fail_message } => {
                 if !self.action.fail_message_final {
                     self.action.fail_message = Some(fail_message);
+                }
+                let _ = self.cancel_action(None, true);
+            }
+            ActionMessage::InvalidOutputVar { fail_message } => {
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(fail_message);
                     self.action.fail_message_final = true;
                 }
                 let _ = self.cancel_action(None, true);
@@ -3122,9 +3130,6 @@ impl Session {
     }
 }
 
-/// Returns true iff the environment defines any of the three wrap hooks
-/// from RFC 0008. The model-level validator enforces that this is either
-/// zero or one environment per session; this check gates runtime dispatch.
 /// The `CHUNK[INT]` values of the chunk `task_parameter_values` runs, or
 /// `None` when the Step has no `CHUNK[INT]` parameter. The value is a
 /// `RangeExpr` or a string that parses as one, such as `"10-12"`.
@@ -3143,9 +3148,9 @@ fn chunk_values(
         openjd_expr::ExprValue::String(text) => text
             .parse::<openjd_expr::range_expr::RangeExpr>()
             .map(|r| Some(r.to_vec()))
-            .map_err(|_| {
+            .map_err(|e| {
                 SessionError::Runtime(format!(
-                    "CHUNK[INT] parameter '{name}' value '{text}' is not a range expression"
+                    "CHUNK[INT] parameter '{name}' value '{text}' is not a range expression: {e}"
                 ))
             }),
         other => Err(SessionError::Runtime(format!(
@@ -3245,6 +3250,9 @@ fn map_stored_paths(
     }
 }
 
+/// Returns true iff the environment defines any of the three wrap hooks
+/// from RFC 0008. The model-level validator enforces that this is either
+/// zero or one environment per session; this check gates runtime dispatch.
 fn env_has_any_wrap_hook(env: &Environment) -> bool {
     env.script
         .as_ref()

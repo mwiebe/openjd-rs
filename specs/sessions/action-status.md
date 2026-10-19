@@ -59,14 +59,16 @@ is non-terminal.
    the callback after each message:
    - `Progress(v)` → `progress = Some(v)`
    - `Status(s)` → `status_message = Some(s)`
-   - `Fail(s)` → `fail_message = Some(s)`, unless a `CancelMarkFailed` already
+   - `Fail(s)` → `fail_message = Some(s)`, unless an `InvalidOutputVar` already
      gave the reason
-   - `CancelMarkFailed { fail_message }` → `fail_message = Some(fail_message)`,
-     triggers cancellation. The first one's message is final for the action: a
-     later `Fail` (such as an `openjd_fail` printed by a cancel handler) or
-     `CancelMarkFailed` does not replace it, because RFC 0010 requires the
-     failure of an invalid `openjd_output_var` directive to name the output,
-     the problem, and the text.
+   - `CancelMarkFailed { fail_message }` → `fail_message = Some(fail_message)`
+     (same exception), triggers cancellation
+   - `InvalidOutputVar { fail_message }` → as `CancelMarkFailed`, and the message
+     is final for the action: a later `Fail` (such as an `openjd_fail` printed
+     by a cancel handler) or `CancelMarkFailed` does not replace it, because
+     RFC 0010 requires the failure of an invalid `openjd_output_var` directive
+     to name the output, the problem, and the text. The flag resets with each
+     action.
    - `OutputVar { .. }` changes no field and does not fire this callback; it
      goes to `SessionConfig::output_callback` instead (see
      [action-messages.md](action-messages.md))

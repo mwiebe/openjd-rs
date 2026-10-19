@@ -1265,7 +1265,7 @@ pub(crate) fn process_line(
         Some(LineOutcome::Invalid(message)) => {
             *saw_fail = true;
             let display = filter.apply_redaction(&format!("{line} -- ERROR: {message}"));
-            let _ = message_tx.send(ActionMessage::CancelMarkFailed {
+            let _ = message_tx.send(ActionMessage::InvalidOutputVar {
                 fail_message: message,
             });
             // Whatever `openjd_session_runtime_loglevel` set: an invalid

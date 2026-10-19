@@ -529,6 +529,7 @@ Handles each `ActionMessage` variant:
 | `RedactedEnv { name, value }` | Same as SetEnv + adds value to redaction set |
 | `OutputVar { task, name, value }` | Calls `SessionConfig::output_callback`; no `ActionStatus` field changes, so the status callback is not invoked |
 | `CancelMarkFailed` | Sets `action_fail_message`, triggers cancelation with `mark_action_failed = true` |
+| `InvalidOutputVar` | As `CancelMarkFailed`; the message is then final for the action (a later `Fail` or `CancelMarkFailed` does not replace it) |
 
 After each message other than `OutputVar`, the user callback is invoked with the updated
 `ActionStatus`.
@@ -743,25 +744,27 @@ path format, and the chunk. The Step is chunked when an entry of `task_parameter
 has `TaskParameterType::ChunkInt`: its value is an `ExprValue::RangeExpr` (as `openjd run`
 passes) or a string that parses as one (such as `"10-12"`), whose values are the chunk;
 anything else fails the action with `SessionError::Runtime` ("CHUNK[INT] parameter
-'<name>' value '<value>' is not a range expression"). A collector that refuses its inputs
-(a chunk that repeats a value, or `APPEND` on a scalar type) fails the action the same
-way.
+'<name>' value '<value>' is not a range expression: <reason>", with the range parser's
+reason, such as overlapping ranges).
 
 The collector lives in the action's `ActionFilter` (through the runner) and is fed
 synchronously by the line reader, so an `@` file is read before any later line, and each
 accepted value is sent as `ActionMessage::OutputVar` and forwarded to
 `SessionConfig::output_callback` as it arrives. The first invalid directive sends
-`CancelMarkFailed` with the collector's message, which the Session applies as
+`InvalidOutputVar` with the collector's message, which the Session applies as
 `cancel_action(None, true)`: the action's own cancelation runs at once, and the action is
 reported Failed with that message as `fail_message`. That message is final: a later
-`openjd_fail` (such as one a cancel handler prints) does not replace it. The reader also marks the action
+`openjd_fail` (such as one a cancel handler prints) or malformed `openjd_env` does not
+replace it. The reader also marks the action
 failed itself, so an action that exits 0 before the cancel reaches it still fails. Later
 directive lines are not processed.
 
 When the action exits successfully, the runner calls `finish`, before the session
 computes the action's final state. An error (a `ONCE` or `LAST` output with no value, or
 an `APPEND` list below `minLength`, for any Task of the chunk) fails the action: the
-runner sends `ActionMessage::Fail` with the message and reports `Failed`, so the status
+runner logs `ERROR: <message>` as command output (so it appears with the action's
+output, as in `openjd run`), sends `ActionMessage::Fail` with the message, and reports
+`Failed`, so the status
 callback reports `Failed` (never `Success` first) and the session moves to
 `ReadyEnding`. Otherwise `ActionResult::outputs`
 holds each Task's values keyed by `CHUNK[INT]` value (`None` for an unchunked Step), in

@@ -379,8 +379,8 @@ mod tests {
         rx.into_iter().map(|l| l.text).collect()
     }
 
-    /// Guards CRLF stripping: the framer keeps the `\r` (only `\n` ends a
-    /// line), so the runner must drop the single trailing `\r` of each line.
+    /// Guards CRLF stripping: the framer drops the single `\r` before each
+    /// `\n`, so no payload ends in one.
     #[test]
     fn crlf_stripped_from_payload() {
         assert_eq!(
@@ -407,8 +407,8 @@ mod tests {
         assert_eq!(payloads(&[b"x\r", b"\n"]), vec!["x".to_string()]);
     }
 
-    /// Guards an empty line via `\r\n`: the framer emits `"\r"`, the runner
-    /// strips it to an empty payload.
+    /// Guards an empty line via `\r\n`: the framer strips the `\r`, giving an
+    /// empty payload.
     #[test]
     fn empty_crlf_line_yields_empty_payload() {
         assert_eq!(payloads(&[b"\r\n"]), vec![String::new()]);

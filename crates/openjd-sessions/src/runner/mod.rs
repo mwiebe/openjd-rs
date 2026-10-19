@@ -225,11 +225,15 @@ impl ScriptRunnerBase {
             match self.output_vars.finish() {
                 Some(Ok(outputs)) => self.outputs = Some(outputs),
                 Some(Err(message)) => {
+                    // In the action's output, where the ` -- ERROR:` lines of
+                    // invalid directives also are, so a user reading the
+                    // output (such as `openjd run`'s) sees why it failed.
                     crate::session_log!(
-                        info,
+                        error,
                         &self.session_id,
-                        crate::logging::LogContent::EXCEPTION_INFO,
-                        "Action failed: {}",
+                        crate::logging::LogContent::COMMAND_OUTPUT
+                            | crate::logging::LogContent::EXCEPTION_INFO,
+                        "ERROR: {}",
                         message
                     );
                     let _ = finish_tx.send(ActionMessage::Fail(message));

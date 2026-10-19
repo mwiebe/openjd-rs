@@ -225,6 +225,20 @@ impl OutputVars {
         request: &FileRequest,
         content: Result<Vec<u8>, String>,
     ) -> LineOutcome {
+        let size = content.as_ref().map_or(0, Vec::len);
+        self.finish_file_sized(request, content, size)
+    }
+
+    /// [`finish_file`](Self::finish_file) with the number of bytes read given
+    /// separately, for the helper path, where `content` holds only the valid
+    /// UTF-8 prefix the helper sent, and a stand-in byte after it when the
+    /// file is not valid UTF-8.
+    fn finish_file_sized(
+        &mut self,
+        request: &FileRequest,
+        content: Result<Vec<u8>, String>,
+        size: usize,
+    ) -> LineOutcome {
         let label = label(&request.name, request.task);
         let outcome = match content {
             Err(phrase) => {
@@ -237,7 +251,7 @@ impl OutputVars {
                     &phrase[1..phrase.len() - 1]
                 ))
             }
-            Ok(content) if content.len() > request.max_bytes => LineOutcome::Invalid(format!(
+            Ok(_) if size > request.max_bytes => LineOutcome::Invalid(format!(
                 "Output variable '{label}': the @ file {} is larger than the {} bytes the \
                  Task's output values have left (the limit is {} bytes per Task)",
                 quote(&request.path),
@@ -260,22 +274,32 @@ impl OutputVars {
     }
 
     /// Finish an `@` directive the cross-user helper resolved: `line` is the
-    /// directive's line, `parts` what the helper found in it, and `content`
-    /// what it read. The line is re-parsed here, and a disagreement with the
-    /// helper makes the directive invalid; the parent never reads the file.
+    /// directive's line, `parts` what the helper found in it, `content` what
+    /// it sent (the valid UTF-8 prefix of the file, then a stand-in byte when
+    /// the file is not valid UTF-8), and `size` how many bytes it read. The
+    /// line is re-parsed here, and a disagreement with the helper makes the
+    /// directive invalid; the parent never reads the file.
+    ///
+    /// `None` when an earlier directive was already invalid: the helper does
+    /// not know the Action is failing and resolves later `@` lines anyway,
+    /// but they are ordinary output, as on the direct path.
     pub fn finish_helper_file(
         &mut self,
         line: &str,
         parts: &HelperFileParts,
         content: Result<Vec<u8>, String>,
-    ) -> LineOutcome {
-        match self.begin(line, false, false) {
+        size: usize,
+    ) -> Option<LineOutcome> {
+        if self.invalid {
+            return None;
+        }
+        Some(match self.begin(line, false, false) {
             Begin::ReadFile(request) => {
                 let agrees = line.get(parts.name.clone()) == Some(request.name.as_str())
                     && parts.task == request.task
                     && line.get(parts.path.clone()) == Some(request.path.as_str());
                 if agrees {
-                    self.finish_file(&request, content)
+                    self.finish_file_sized(&request, content, size)
                 } else {
                     self.record(LineOutcome::Invalid(format!(
                         "Invalid openjd_output_var directive: the cross-user helper read the \
@@ -290,7 +314,7 @@ impl OutputVars {
                  for a line that is not one, in {}",
                 quote(line)
             ))),
-        }
+        })
     }
 
     /// An `@` directive reached the parent as an ordinary line on the
@@ -507,20 +531,38 @@ mod tests {
         };
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         assert!(matches!(
-            v.finish_helper_file(line, &parts, Ok(b"5".to_vec())),
-            LineOutcome::Accepted {
+            v.finish_helper_file(line, &parts, Ok(b"5".to_vec()), 1),
+            Some(LineOutcome::Accepted {
                 value: ExprValue::Int(5),
                 ..
-            }
+            })
         ));
+        // The size the helper read decides, not the bytes it sent.
+        let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
+        assert!(matches!(
+            v.finish_helper_file(line, &parts, Ok(b"5\xff".to_vec()), 101),
+            Some(LineOutcome::Invalid(m)) if m == "Output variable 'N': the @ file 'f' is \
+                larger than the 100 bytes the Task's output values have left (the limit is \
+                100 bytes per Task)"
+        ));
+        // After an invalid directive, a resolved @ line is ordinary output,
+        // as on the direct path.
+        let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
+        assert!(matches!(
+            v.begin("openjd_output_var: N=x", false, false),
+            Begin::Done(LineOutcome::Invalid(_))
+        ));
+        assert!(v
+            .finish_helper_file(line, &parts, Ok(b"5".to_vec()), 1)
+            .is_none());
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         let wrong = HelperFileParts {
             path: 21..23,
             ..parts.clone()
         };
         assert!(matches!(
-            v.finish_helper_file(line, &wrong, Ok(b"5".to_vec())),
-            LineOutcome::Invalid(m) if m == "Invalid openjd_output_var directive: the cross-user \
+            v.finish_helper_file(line, &wrong, Ok(b"5".to_vec()), 1),
+            Some(LineOutcome::Invalid(m)) if m == "Invalid openjd_output_var directive: the cross-user \
                 helper read the directive differently from the parser, in \
                 'openjd_output_var: N=@f'"
         ));
@@ -529,8 +571,8 @@ mod tests {
                                'openjd_output_var: N=@f'";
         let differs = |parts: &HelperFileParts| {
             let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
-            match v.finish_helper_file(line, parts, Ok(b"5".to_vec())) {
-                LineOutcome::Invalid(m) => m == DIFFERS,
+            match v.finish_helper_file(line, parts, Ok(b"5".to_vec()), 1) {
+                Some(LineOutcome::Invalid(m)) => m == DIFFERS,
                 _ => false,
             }
         };
@@ -544,15 +586,15 @@ mod tests {
         }));
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         assert!(matches!(
-            v.finish_helper_file("plain", &parts, Ok(b"5".to_vec())),
-            LineOutcome::Invalid(m) if m == "Invalid openjd_output_var directive: the \
+            v.finish_helper_file("plain", &parts, Ok(b"5".to_vec()), 1),
+            Some(LineOutcome::Invalid(m)) if m == "Invalid openjd_output_var directive: the \
                 cross-user helper reported an @ file for a line that is not one, in 'plain'"
         ));
         // A read error from the helper is cut and escaped like quoted text.
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         assert!(matches!(
-            v.finish_helper_file(line, &parts, Err("can't be read:\nforged".into())),
-            LineOutcome::Invalid(m) if m == r"Output variable 'N': the @ file 'f' can't be read:\nforged"
+            v.finish_helper_file(line, &parts, Err("can't be read:\nforged".into()), 0),
+            Some(LineOutcome::Invalid(m)) if m == r"Output variable 'N': the @ file 'f' can't be read:\nforged"
         ));
     }
 
