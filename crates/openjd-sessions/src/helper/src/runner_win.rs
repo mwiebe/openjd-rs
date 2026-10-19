@@ -16,7 +16,8 @@
 
 use super::job_object::JobObject;
 use super::protocol::{send, CancelMethod, Response, RunCommand};
-use crate::framer::{fit_out_payload, LineFramer};
+use crate::emit::emit_line;
+use crate::framer::{FramedLine, LineFramer};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -27,19 +28,20 @@ use std::sync::mpsc;
 /// poll drains per tick in normal operation.
 const OUT_QUEUE_LINES: usize = 256;
 
-/// Run a command, receiving cancel signals from the provided channel.
+/// Run a command, polling `next_cancel` for cancel signals.
 ///
 /// Architecture:
 /// - Background threads read child stdout + stderr, send lines via channel
 /// - Main thread drains output lines
-/// - Cancel signals arrive via `cancel_rx` from the stdin reader in main.rs
+/// - Cancel signals arrive via `next_cancel`, from the stdin reader in
+///   main.rs, holding only the cancels sent for this run
 ///
 /// If `job` is `Some`, the spawned workload is explicitly assigned to it.
 /// In practice the workload would already inherit the helper's job, but
 /// the explicit assignment makes the invariant testable.
 pub fn run_command(
     cmd: &RunCommand,
-    cancel_rx: &mpsc::Receiver<CancelMethod>,
+    mut next_cancel: impl FnMut() -> Option<CancelMethod>,
     job: Option<&JobObject>,
 ) -> Result<i32, String> {
     use std::os::windows::io::AsRawHandle;
@@ -87,7 +89,11 @@ pub fn run_command(
     // gets for free (frame + emit in one loop): when the parent drains our
     // stdout slowly, the queue fills, the reader threads park in `send`, and
     // the child blocks on its full pipe instead of growing host memory.
-    let (out_tx, out_rx) = mpsc::sync_channel::<String>(OUT_QUEUE_LINES);
+    let (out_tx, out_rx) = mpsc::sync_channel::<FramedLine>(OUT_QUEUE_LINES);
+    // Lines are sent, and `@` output directives resolved, on this thread, in
+    // the order the reader threads queued them.
+    let cwd = std::path::Path::new(&cmd.cwd);
+    let emit = |line: FramedLine| emit_line(line, cmd.output_files.as_ref(), cwd, &mut |r| send(r));
 
     let tx1 = out_tx.clone();
     let stdout_thread = std::thread::spawn(move || frame_child_output(child_stdout, tx1));
@@ -101,7 +107,7 @@ pub fn run_command(
     let mut escalation_deadline: Option<std::time::Instant> = None;
     loop {
         // Check for cancel (non-blocking)
-        if let Ok(method) = cancel_rx.try_recv() {
+        if let Some(method) = next_cancel() {
             escalation_deadline = handle_cancel(child_pid, &method);
         }
 
@@ -115,9 +121,7 @@ pub fn run_command(
 
         // Read output with a short timeout so we can check cancel periodically
         match out_rx.recv_timeout(std::time::Duration::from_millis(50)) {
-            Ok(line) => {
-                send(&Response::Out { out: line });
-            }
+            Ok(line) => emit(line),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // Check if child has exited
                 if let Ok(Some(_)) = child.try_wait() {
@@ -140,7 +144,7 @@ pub fn run_command(
     // joins below immediate. Its wait is bounded by the readers reaching EOF,
     // the same bound the joins already had.
     while let Ok(line) = out_rx.recv() {
-        send(&Response::Out { out: line });
+        emit(line);
     }
 
     // Wait for child to exit
@@ -160,7 +164,7 @@ pub fn run_command(
 /// is bounded by the sync channel: `send` parks this thread when the queue is
 /// full, so a slow consumer backpressures into the child's pipe instead of
 /// growing the queue. Blocking 8 KiB reads on this dedicated thread are fine.
-fn frame_child_output<R: Read>(mut reader: R, tx: mpsc::SyncSender<String>) {
+fn frame_child_output<R: Read>(mut reader: R, tx: mpsc::SyncSender<FramedLine>) {
     let mut framer = LineFramer::new();
     let mut buf = [0u8; 8 * 1024];
     loop {
@@ -172,7 +176,7 @@ fn frame_child_output<R: Read>(mut reader: R, tx: mpsc::SyncSender<String>) {
             Err(_) => break, // read error ends the thread, as lines() did
         };
         let mut lines = Vec::new();
-        framer.push(&buf[..n], &mut |line| lines.push(to_payload(&line)));
+        framer.push(&buf[..n], &mut |line| lines.push(line));
         for line in lines {
             if tx.send(line).is_err() {
                 return; // receiver dropped; stop without flushing
@@ -180,21 +184,12 @@ fn frame_child_output<R: Read>(mut reader: R, tx: mpsc::SyncSender<String>) {
         }
     }
     let mut lines = Vec::new();
-    framer.finish(&mut |line| lines.push(to_payload(&line)));
+    framer.finish(&mut |line| lines.push(line));
     for line in lines {
         if tx.send(line).is_err() {
             return;
         }
     }
-}
-
-/// Turn one framed line into an `Out` payload. Strips only the CRLF's trailing
-/// `\r` (the framer keeps it; only `\n` ends a line), not all trailing
-/// whitespace like the Unix runner's `trim_end`, then caps the result at the
-/// 128 KiB response limit via [`fit_out_payload`], matching Unix's bound.
-fn to_payload(line: &str) -> String {
-    let stripped = line.strip_suffix('\r').unwrap_or(line);
-    fit_out_payload(stripped).to_string()
 }
 
 /// Handle a cancel request. Returns an escalation deadline for soft signals
@@ -362,15 +357,15 @@ mod tests {
     use crate::framer::MAX_LINE_BYTES;
 
     /// Mirror the runner's per-line transform: frame `chunks` through a fresh
-    /// `LineFramer` and apply `to_payload` to every emitted line, flushing the
+    /// `LineFramer` (which strips each line's terminating `\r`), flushing the
     /// trailing partial at EOF.
     fn payloads(chunks: &[&[u8]]) -> Vec<String> {
         let mut framer = LineFramer::new();
         let mut out = Vec::new();
         for chunk in chunks {
-            framer.push(chunk, &mut |line| out.push(to_payload(&line)));
+            framer.push(chunk, &mut |line| out.push(line.text));
         }
-        framer.finish(&mut |line| out.push(to_payload(&line)));
+        framer.finish(&mut |line| out.push(line.text));
         out
     }
 
@@ -380,13 +375,13 @@ mod tests {
     /// the framing both channels receive. Runs single-threaded, so the
     /// capacity must exceed the lines any one test emits (all emit < 10).
     fn frame_reader(input: &[u8]) -> Vec<String> {
-        let (tx, rx) = mpsc::sync_channel::<String>(OUT_QUEUE_LINES);
+        let (tx, rx) = mpsc::sync_channel::<FramedLine>(OUT_QUEUE_LINES);
         frame_child_output(input, tx);
-        rx.into_iter().collect()
+        rx.into_iter().map(|l| l.text).collect()
     }
 
-    /// Guards CRLF stripping: the framer keeps the `\r` (only `\n` ends a
-    /// line), so the runner must drop the single trailing `\r` of each line.
+    /// Guards CRLF stripping: the framer drops the single `\r` before each
+    /// `\n`, so no payload ends in one.
     #[test]
     fn crlf_stripped_from_payload() {
         assert_eq!(
@@ -413,8 +408,8 @@ mod tests {
         assert_eq!(payloads(&[b"x\r", b"\n"]), vec!["x".to_string()]);
     }
 
-    /// Guards an empty line via `\r\n`: the framer emits `"\r"`, the runner
-    /// strips it to an empty payload.
+    /// Guards an empty line via `\r\n`: the framer strips the `\r`, giving an
+    /// empty payload.
     #[test]
     fn empty_crlf_line_yields_empty_payload() {
         assert_eq!(payloads(&[b"\r\n"]), vec![String::new()]);

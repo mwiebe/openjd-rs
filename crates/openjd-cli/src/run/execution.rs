@@ -288,6 +288,12 @@ fn create_session(
         sticky_bit_policy: Default::default(),
         debug_collect_stdout: false,
         echo_openjd_directives: true,
+        // `revision_profile` is the Job Template's own profile, so this is
+        // whether the template lists CONTROL_FLOW.
+        control_flow: prepared
+            .revision_profile
+            .has_extension(openjd_model::types::ModelExtension::ControlFlow),
+        output_callback: None,
         // Run-time mirror of the CLI's caller-limits policy: derived from
         // the same `common::caller_limits()` value the decode/creation
         // stages use, so the two cannot drift.
@@ -355,15 +361,28 @@ async fn run_workload(
             &template.environment,
             Some(env_template_symtab),
         );
-        ctx.enter_environment(&env, &template.environment.name, None)
-            .await;
+        ctx.enter_environment(
+            &env,
+            &template.environment.name,
+            None,
+            openjd_sessions::session::EnvironmentOrigin::EnvironmentTemplate,
+            &[],
+        )
+        .await;
     }
     if let Some(job_envs) = &job.job_environments {
         for env in job_envs {
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, None).await;
+            ctx.enter_environment(
+                env,
+                &env.name,
+                None,
+                openjd_sessions::session::EnvironmentOrigin::JobTemplate,
+                &[],
+            )
+            .await;
         }
     }
 
@@ -390,8 +409,14 @@ async fn execute_step(
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone())
-                .await;
+            ctx.enter_environment(
+                env,
+                &env.name,
+                step.resolved_symtab.clone(),
+                openjd_sessions::session::EnvironmentOrigin::JobTemplate,
+                &step.path_inputs,
+            )
+            .await;
         }
     }
 

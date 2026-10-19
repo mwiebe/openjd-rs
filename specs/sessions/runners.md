@@ -251,7 +251,7 @@ the 600-second maximum), and `resolve_effective_cancelation` resolves a deferred
 ## Runner Builder Methods
 
 Both `EnvironmentScriptRunner` and `StepScriptRunner` wrap a shared `ScriptRunnerBase`
-and expose identical builder methods:
+and expose these builder methods:
 
 | Method | Effect |
 |--------|--------|
@@ -262,6 +262,14 @@ and expose identical builder methods:
 | `with_cancel_request_rx(Receiver<Option<Duration>>)` | Set the cancel request channel for time-limited cancellation |
 | `with_helper(CrossUserHelper)` | Transfer the cross-user helper process to this runner |
 | `take_helper() -> Option<CrossUserHelper>` | Take the helper back after the action completes |
+| `with_output_vars(OutputVars)` (crate-internal) | How the action treats `openjd_output_var` lines, with its collector for an Allowed action (`CONTROL_FLOW`; see [session.md](session.md#output-variables-control_flow)) |
+
+`StepScriptRunner` also has `take_outputs() -> Option<ActionOutputs>` (crate-internal): the
+Task's output values, set when the action exited successfully and every Task's values were
+complete. `ScriptRunnerBase::run_action` moves the `OutputVars` into the action's
+`ActionFilter` while it runs and back out afterwards; at a successful exit it calls the
+collector's `finish`, and an error sends `ActionMessage::Fail` with its message and makes
+the result `Failed`, before the session computes the action's final state.
 
 The `with_helper` / `take_helper` pair transfers ownership of the persistent cross-user
 helper process between the session and the runner for each action, avoiding the need to

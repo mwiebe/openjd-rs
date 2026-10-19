@@ -16,6 +16,7 @@ pub(crate) mod helper_binary;
 pub mod let_bindings;
 pub mod limits;
 pub mod logging;
+pub(crate) mod output_vars;
 pub mod runner;
 pub mod session;
 pub mod session_user;
@@ -42,10 +43,19 @@ pub mod win32_permissions;
 #[path = "helper/src/framer.rs"]
 mod helper_framer;
 
+// Recognizing `@` output directives and reading their files is shared with
+// the cross-user helper, which does it as the job user; a same-user Session
+// does it here. Same `#[path]` technique as the framer above.
+// The `@` recognizer is the helper's; this crate only tests it, against the
+// model's parser.
+#[path = "helper/src/output_file.rs"]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod output_file;
+
 // Re-export path mapping from openjd-expr (mirrors Python where sessions re-exports from expr)
 pub use openjd_expr::path_mapping;
 
-pub use action::{ActionMessage, ActionResult, ActionState};
+pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
 pub use limits::SessionLimits;
@@ -53,7 +63,8 @@ pub use logging::LogContent;
 pub use openjd_expr::path_mapping::{PathFormat, PathMappingRule};
 pub use runner::{CancelMethod, ScriptRunnerState};
 pub use session::{
-    EnvironmentIdentifier, Session, SessionCancelHandle, SessionConfig, SessionState,
+    EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
+    RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
 };
 #[cfg(windows)]
 pub use session_user::BadCredentialsError;

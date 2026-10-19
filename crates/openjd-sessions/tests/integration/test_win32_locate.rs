@@ -42,6 +42,8 @@ fn make_session(root: PathBuf) -> Session {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     Session::with_config(config).unwrap()
