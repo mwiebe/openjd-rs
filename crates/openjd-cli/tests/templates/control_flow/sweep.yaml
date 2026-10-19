@@ -1,0 +1,122 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples, "Parameter sweep,
+# then run the winner", with the Window, Overlap and DetConf ranges cut from
+# 3x3x3 to 2x1x1 for a short run. Run it with EpisodeCount=2.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: Hand-tracking sweep and full run
+parameterDefinitions:
+  - name: BenchmarkDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: IN
+  - name: EpisodeCount
+    type: INT
+    default: 10
+    minValue: 1
+  - name: MinFps
+    type: FLOAT
+    default: 20
+  - name: DatasetBucket
+    type: STRING
+  - name: DatasetPrefix
+    type: STRING
+  - name: OutputDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+jobOutputDefinitions:
+  - name: VideoCount
+    type: INT
+    value: "{{len(Steps.Discover.Output.Videos)}}"            # available when Discover succeeds
+  - name: BestSingleTaskErrorMm
+    type: FLOAT
+    unit: mm
+    value: "{{min(Steps.Sweep.Output.mpjpe_mm)}}"             # available when the whole sweep succeeds
+  - name: ResultDirs
+    type: LIST[PATH]
+    objectType: DIRECTORY
+    value: "{{Steps.RunWinner.RawOutput.ResultDir}}"          # submission-context paths, one per video
+steps:
+  - name: Sweep
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Window
+          type: INT
+          range: [8, 16]
+        - name: Overlap
+          type: FLOAT
+          range: [0.5]
+        - name: DetConf
+          type: FLOAT
+          range: [0.5]
+        - name: Episode
+          type: INT
+          range: "0-{{Param.EpisodeCount - 1}}"
+      combination: "Window * Overlap * DetConf * Episode"   # Episode varies fastest
+    outputVariables:
+      - name: mpjpe_mm
+        type: FLOAT
+        minValue: 0
+      - name: fps
+        type: FLOAT
+        minValue: 0
+    python:
+      script: |
+        from handtrack import benchmark
+        score = benchmark({{repr_py(Param.BenchmarkDir)}}, episode={{Task.Param.Episode}},
+                          window={{Task.Param.Window}}, overlap={{Task.Param.Overlap}},
+                          det_conf={{Task.Param.DetConf}})
+        print(f"openjd_output_var: mpjpe_mm={score.mpjpe_mm}")
+        print(f"openjd_output_var: fps={score.fps}")
+
+  - name: Discover
+    outputVariables:
+      - name: Videos
+        type: LIST[STRING]
+        minLength: 1
+        maxLength: 2000
+    python:
+      script: |
+        import boto3, json
+        pages = boto3.client("s3").get_paginator("list_objects_v2").paginate(
+            Bucket={{repr_py(Param.DatasetBucket)}}, Prefix={{repr_py(Param.DatasetPrefix)}})
+        keys = [o["Key"] for p in pages for o in p.get("Contents", []) if o["Key"].endswith(".mp4")]
+        with open("videos.json", "w", encoding="utf-8") as f:
+            json.dump(keys, f)
+        print("openjd_output_var: Videos=@videos.json", flush=True)
+
+  - name: RunWinner
+    dependencies:
+      - dependsOn: Sweep
+      - dependsOn: Discover
+    let:
+      - n = Param.EpisodeCount
+      - err = Steps.Sweep.Output.mpjpe_mm
+      - rate = Steps.Sweep.Output.fps
+      - configs = range(len(err) // n)
+      - mean_err = [sum(err[c * n:(c + 1) * n]) / n for c in configs]
+      - mean_fps = [sum(rate[c * n:(c + 1) * n]) / n for c in configs]
+      - fast = [c for c in configs if mean_fps[c] >= Param.MinFps]
+      - ok = fast if len(fast) > 0 else fail("No configuration reached MinFps")
+      - best_err = min([mean_err[c] for c in ok])
+      - first_task = [c for c in ok if mean_err[c] == best_err][0] * n
+      - window = Steps.Sweep.TaskParam.Window[first_task]
+      - overlap = Steps.Sweep.TaskParam.Overlap[first_task]
+      - det_conf = Steps.Sweep.TaskParam.DetConf[first_task]
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Video
+          type: STRING
+          range: "{{Steps.Discover.Output.Videos}}"
+    outputVariables:
+      - name: ResultDir
+        type: PATH
+        objectType: DIRECTORY
+    python:
+      script: |
+        import json
+        from handtrack import track_s3_video
+        result_dir = track_s3_video({{repr_py(Param.DatasetBucket)}}, {{repr_py(Task.Param.Video)}},
+                                    window={{window}}, overlap={{overlap}}, det_conf={{det_conf}},
+                                    out_dir={{repr_py(Param.OutputDir)}})
+        print("openjd_output_var: ResultDir=" + json.dumps(str(result_dir)))

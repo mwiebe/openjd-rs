@@ -1,0 +1,5 @@
+[
+  {"name": "floor", "children": []},
+  {"name": "lamp", "children": []},
+  {"name": "room", "children": [0, 1]}
+]

@@ -1,0 +1,41 @@
+$ openjd run {T}/progressive_enable_if.yaml -p N=0
+exit code: 0
+--- stdout
+Session start
+Running job 'Progressive binding with enableIf'
+Step 'C' is pending inputs:
+  Enabled: determined at run time from Steps.Q.Output.Enable
+  Tasks: determined at run time from Steps.P.Output.N and enableIf
+  Host requirements: determined at run time from Steps.Q.Output.Cpus and enableIf
+Running step 'P'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: N=0
+Process exited with code: 0
+Output N = 0
+Running step 'Q'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Cpus=1
+openjd_output_var: Enable=false
+Process exited with code: 0
+Output Cpus = 1
+Output Enable = false
+Step 'C' skipped (enableIf is false)
+Step 'C' is skipped; it runs no Tasks
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Progressive binding with enableIf
+Duration: {DURATION}
+Chunks run: 2
+--- stderr

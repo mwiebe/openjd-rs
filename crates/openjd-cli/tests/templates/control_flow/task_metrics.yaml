@@ -1,0 +1,57 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples, "Task metrics from
+# a parameter sweep", with the parameter space cut from 10x3x3x3 to 2x1x1x1 for
+# a short run.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: hand-tracking-sweep-01
+steps:
+  - name: ExtractHandActions
+    parameterSpace:
+      taskParameterDefinitions:
+        - {name: Video,   type: STRING, range: [P0001_a68, P0002_273c]}
+        - {name: Window,  type: INT,    range: [120]}
+        - {name: Overlap, type: INT,    range: [20]}
+        - {name: DetConf, type: FLOAT,  range: [0.5]}
+    outputVariables:
+      - name: mpjpe_mm
+        type: FLOAT
+        unit: mm
+        description: Mean per-joint position error over one-second action chunks.
+        minValue: 0
+      - name: coverage_pct
+        type: FLOAT
+        unit: "%"
+        description: Share of visible-hand frames with a direct prediction.
+        minValue: 0
+        maxValue: 100
+      - name: fps
+        type: FLOAT
+        unit: frames/s
+        description: End-to-end throughput.
+      - name: frames_done
+        type: INT
+        collect: LAST           # a running count, updated as the Task works
+        unit: frames
+      - name: chunk_error_mm
+        type: LIST[FLOAT]
+        collect: APPEND         # one directive per one-second segment
+        unit: mm
+        description: Error of each one-second segment, in order.
+        maxLength: 20000        # keeps the list well under the guaranteed 1 MiB per Task
+    python:
+      script: |
+        from pipeline import extract_hand_actions, score_against_hot3d
+
+        def on_progress(frames):
+            print(f"openjd_output_var: frames_done={frames}", flush=True)
+
+        on_progress(0)           # LAST needs at least one directive
+        trajectory = extract_hand_actions({{repr_py(Task.Param.Video)}}, window={{Task.Param.Window}},
+                                          overlap={{Task.Param.Overlap}}, det_conf={{Task.Param.DetConf}},
+                                          on_progress=on_progress)
+        score = score_against_hot3d(trajectory)
+        for err in score.chunk_errors_mm:
+            print(f"openjd_output_var: chunk_error_mm={err}")
+        print(f"openjd_output_var: mpjpe_mm={score.mpjpe_mm}")
+        print(f"openjd_output_var: coverage_pct={min(score.coverage * 100, 100.0)}")
+        print(f"openjd_output_var: fps={score.fps}")

@@ -1,0 +1,69 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# "S3 prefix fan-out with a manifest", verbatim.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Transcode s3://{{Param.Bucket}}/{{Param.Prefix}}"
+parameterDefinitions:
+  - name: Bucket
+    type: STRING
+  - name: Prefix
+    type: STRING
+  - name: OutputPrefix
+    type: STRING
+steps:
+  - name: Discover
+    outputVariables:
+      - name: Keys
+        type: LIST[STRING]
+        maxLength: 5000        # Discover fails if the prefix holds more .mov objects
+    python:
+      script: |
+        import boto3, json
+        keys = []
+        pages = boto3.client("s3").get_paginator("list_objects_v2").paginate(
+            Bucket={{repr_py(Param.Bucket)}}, Prefix={{repr_py(Param.Prefix)}})
+        for page in pages:
+            keys += [o["Key"] for o in page.get("Contents", []) if o["Key"].endswith(".mov")]
+        # 5000 keys can exceed one stdout line, so write the value to a file and name it.
+        with open("keys.json", "w", encoding="utf-8") as f:
+            json.dump(keys, f)
+        print("openjd_output_var: Keys=@keys.json", flush=True)
+
+  - name: Transcode
+    dependencies:
+      - dependsOn: Discover
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Key
+          type: STRING
+          range: "{{Steps.Discover.Output.Keys}}"    # zero tasks if nothing matched
+    outputVariables:
+      - name: OutputBytes
+        type: INT
+        minValue: 0
+    python:
+      let:
+        - out_key = Param.OutputPrefix + '/' + path(Task.Param.Key).stem + '.mp4'
+      script: |
+        import boto3, subprocess
+        s3 = boto3.client("s3")
+        s3.download_file({{repr_py(Param.Bucket)}}, {{repr_py(Task.Param.Key)}}, "in.mov")
+        subprocess.run(["ffmpeg", "-nostdin", "-i", "in.mov", "out.mp4"], check=True)
+        s3.upload_file("out.mp4", {{repr_py(Param.Bucket)}}, {{repr_py(out_key)}})
+        size = s3.head_object(Bucket={{repr_py(Param.Bucket)}}, Key={{repr_py(out_key)}})["ContentLength"]
+        print(f"openjd_output_var: OutputBytes={size}")
+
+  - name: Manifest
+    dependencies:
+      - dependsOn: Transcode
+    let:
+      - keys = Steps.Transcode.TaskParam.Key
+      - sizes = Steps.Transcode.Output.OutputBytes
+    python:
+      script: |
+        import boto3, json
+        manifest = {"inputs": {{repr_py(keys)}}, "outputBytes": {{repr_py(sizes)}},
+                    "totalBytes": {{sum(sizes)}}}
+        boto3.client("s3").put_object(Bucket={{repr_py(Param.Bucket)}},
+                                      Key={{repr_py(Param.OutputPrefix + '/manifest.json')}},
+                                      Body=json.dumps(manifest))

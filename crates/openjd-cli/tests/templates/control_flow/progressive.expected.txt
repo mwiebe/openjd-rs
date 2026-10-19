@@ -1,0 +1,57 @@
+$ openjd run {T}/progressive.yaml
+exit code: 0
+--- stdout
+Session start
+Running job 'Progressive binding'
+Step 'C' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.P.Output.N
+  Host requirements: determined at run time from Steps.Q.Output.Cpus
+Running step 'P'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: N=2
+Process exited with code: 0
+Output N = 2
+Step 'C': Tasks known (2 tasks)
+Running step 'Q'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Cpus=1
+Process exited with code: 0
+Output Cpus = 1
+Step 'C': host requirements known
+Step 'C' is ready
+Running step 'C'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+I(INT) = 0
+Output:
+C task 0
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+I(INT) = 1
+Output:
+C task 1
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Progressive binding
+Duration: {DURATION}
+Chunks run: 4
+--- stderr

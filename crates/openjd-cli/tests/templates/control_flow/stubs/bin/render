@@ -1,0 +1,31 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic render stub for the render/QC and chunked render samples.
+
+Accepts `--scene S --frame F [--safe-mode] [--out O]`. With `--out`, writes
+the frame file with a `noise: X` line, where X comes from the scene file, a
+JSON object with a `noise` map from frame number to noise and a
+`default_noise`. `--safe-mode` renders with noise 0.
+"""
+import json
+import os
+import sys
+
+argv = sys.argv[1:]
+safe = "--safe-mode" in argv
+if safe:
+    argv.remove("--safe-mode")
+args = dict(zip(argv[::2], argv[1::2]))
+frame = args["--frame"]
+line = f"render stub: frame {frame}"
+if "--out" in args:
+    with open(args["--scene"], encoding="utf-8") as f:
+        scene = json.load(f)
+    noise = 0.0 if safe else scene["noise"].get(frame, scene["default_noise"])
+    os.makedirs(os.path.dirname(args["--out"]), exist_ok=True)
+    with open(args["--out"], "w", encoding="utf-8") as f:
+        f.write(f"noise: {noise}\n")
+    line += f" -> {os.path.basename(args['--out'])} (noise {noise}{', safe mode' if safe else ''})"
+print(line)
