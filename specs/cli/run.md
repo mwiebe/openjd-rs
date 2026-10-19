@@ -13,7 +13,7 @@ chunking, embedded file materialization, let binding evaluation, and structured 
 openjd run <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [-t <KEY=VALUE>]...
     [--tasks <JSON|file://path>] [--maximum-tasks <N>]
     [--environment <PATH>]... [--path-mapping-rules <JSON|file://path>]
-    [--run-dependencies] [--no-run-dependencies]
+    [--run-dependencies] [--no-run-dependencies] [--step-inputs <JSON|file://path>]
     [--extensions <EXT>] [--preserve] [--verbose]
     [--timestamp-format <FMT>] [--output <FMT>]
 ```
@@ -32,6 +32,7 @@ openjd run <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [-t <KEY=VALUE>]...
 | `--path-mapping-rules` | `Option<String>` | No | — | Path mapping rules (JSON or file://) |
 | `--run-dependencies` | `bool` | No | `false` | Run transitive dependency steps first |
 | `--no-run-dependencies` | `bool` | No | — | Explicit opt-out (default behavior) |
+| `--step-inputs` | `Option<String>` | No | — | `CONTROL_FLOW`: the `Steps.*` output values a Step run alone reads (JSON or file://) |
 | `--extensions` | `Option<String>` | No | all | Comma-separated extension names |
 | `--preserve` | `bool` | No | `false` | Keep session working directory after completion |
 | `--verbose` | `bool` | No | `false` | Enable DEBUG-level logging |
@@ -65,6 +66,8 @@ pub struct RunArgs {
     pub environments: Vec<PathBuf>,
     #[arg(long = "path-mapping-rules")]
     pub path_mapping_rules: Option<String>,
+    #[arg(long = "step-inputs")]
+    pub step_inputs: Option<String>,
     #[arg(long = "run-dependencies")]
     pub run_dependencies: bool,
     #[arg(long = "no-run-dependencies")]
@@ -109,27 +112,37 @@ execute(args).await
   │   ├── Resolve step selection (explicit / auto-select / all)
   │   ├── Parse explicit task params and require a parameter space
   │   ├── Determine step execution order
+  │   ├── Create the scheduler simulator; for a Step run alone, give it the
+  │   │   --step-inputs values and check that every Steps.* value it reads is concrete
   │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack
+  │       (disabled Environments do not count)
   │
   ├── 3. SESSION CREATION
   │   ├── Create SessionConfig from parameters, path rules, and model profile
   │   └── Session::with_config()
   │
   ├── 4. ENVIRONMENT ENTRY
+  │   ├── Print what job creation decided (CONTROL_FLOW), and settle
   │   ├── Enter environment template environments (--environment files)
-  │   └── Enter job environments (from template's jobEnvironments)
+  │   └── Enter enabled job environments (from template's jobEnvironments)
   │
   ├── 5. STEP EXECUTION
   │   └── For each step:
-  │       ├── Enter step environments
-  │       ├── Execute tasks (explicit, lazy iteration, or no-param single task)
-  │       └── Exit step environments (reverse order)
+  │       ├── Begin it: block it, skip it, or attach its Steps.* inputs
+  │       │   (settling, below, is where a pending Step advances)
+  │       ├── Enter enabled step environments
+  │       ├── Execute tasks (explicit, lazy iteration, or no-param single task),
+  │       │   recording each Task's output values
+  │       ├── Exit step environments (reverse order)
+  │       └── Record it succeeded or failed, then settle: advance pending Steps
+  │           and evaluate job outputs
   │
   ├── 6. ENVIRONMENT EXIT
   │   └── Exit every entered environment (LIFO), including any whose
   │       enter action failed (cleanup guarantee)
   │
   └── 7. RESULTS
+      ├── List the job outputs not evaluated (CONTROL_FLOW)
       ├── Treat any observed interruption as a failed run
       ├── Capture run duration (before filesystem cleanup)
       ├── Print session summary (format depends on --output)
@@ -145,30 +158,146 @@ the outer execution phase always unwinds the remaining environments. Thus a
 Selection and RFC 0008 preflight happen before session creation. Invalid runs
 therefore do not create a working directory or print session-start banners.
 
-### CONTROL_FLOW templates (in progress)
+### CONTROL_FLOW: the scheduler simulator
 
-`CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension, so `run`
-accepts templates that declare `outputVariables`, `enableIf`, or `jobOutputDefinitions`.
-The run implements it in part. `create_job` binds what it can at
-job creation and evaluates every job output whose inputs are concrete then (one that fails
-fails `create_job`, so `run` reports it and runs nothing), and `run` refuses, in the SETUP
-phase before a session exists, a Job in which any Step is still pending inputs or is
-skipped, any Job or Step Environment is disabled by its `enableIf`, or any job output was
-not evaluated at creation (`common::require_bound_job`, which lists each one). Without the
-last refusal a run would report success for a Job whose job outputs, evaluated after its
-Steps, could fail it. The job outputs evaluated at creation are not printed. A Step that reads `Steps.*` only in fields
-resolved on the worker host (its action `command` and `args`, embedded files, script
-`let`, and Step Environment `variables`) is bound at creation and runs, but its Task fails
-when it starts, because nothing supplies the value. A read in a TEMPLATE-scope field (a
-Step Environment's `enableIf`, an action's `timeout` or `cancelation`) of a symbol that is
-not concrete at job creation (any `Output`, unless its producer is skipped) leaves the Step
-pending, so `run` refuses it. Steps run in topological order as before. When the
-template lists `CONTROL_FLOW`, `run` sets `SessionConfig::control_flow` and passes each
-Step's `outputVariables` to `run_task`, so `openjd_output_var:` lines are collected and
-checked: an invalid directive, or a declared `ONCE` or `LAST` output with no value, fails
-the Task, and the message appears in the Task's output. The collected values are not yet
-reported or bound into later Steps; simulating step input binding and job outputs at run
-time are later changes in `docs/control-flow-prototype-plan.md`.
+`CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension. For a Job
+whose template lists it, `run` acts as a scheduler would, in a small in-memory simulator
+(`run/simulator.rs`, plan C1). A Job without it has only bound Steps and no job outputs,
+so the simulator only records what ran, and the run's output is unchanged.
+
+**State.** The simulator keeps its own copy of the `job::Job`, a `StepRecord` per Step
+(`SimStepState`: `Pending`, `Bound`, `Skipped`, `Succeeded`, `Failed`, `Blocked`; each
+Task's outputs; why it failed or is blocked), and one `StepInputs` holding the
+concrete `Steps.*` values so far of the Steps that something reads: a skipped Step's
+`null`s, the outputs (and `TaskParam` lists) of a Step that succeeded with all of its
+Tasks, and the `TaskParam` lists of a Step whose Tasks are known. Those last lists are
+built only when something that reads the Step is advanced, attached, or evaluated, so a
+large parameter space is not enumerated for nothing; until then the simulator counts them
+as concrete. A pending Step is advanced again only once one of its producers has changed
+state since its last advance (create_job already evaluated everything evaluable with the
+values concrete at creation), so a settle costs nothing for Steps nothing new can bind.
+
+**Before the first Step,** `run` prints, for the Steps this run runs, the job outputs `create_job` evaluated
+(`Job output Label = "x"`), each Step it skipped (`Step 'S' skipped (enableIf is
+false)`), and, for each pending Step, what is known of it (`common::binding_lines`; see
+[summary.md](summary.md)).
+
+**Settling.** After each Step succeeds or is skipped (and once before the first Step), the
+simulator advances every pending Step of the run with `advance_step_binding`, in
+dependency order, repeating until a pass makes no Step's Tasks known and skips none,
+since a Step whose Tasks become known makes its consumers' `TaskParam` inputs concrete.
+Each fact a call adds is printed: `Step 'C': enabled (enableIf is true)`, `Step 'C':
+Tasks known (3 tasks)`, `Step 'C': host requirements known` (for a Step that has host
+requirements), `Step 'C' is ready`, or `Step 'C' skipped (enableIf is false)`. A group
+that fails prints the `BindingError` (`ERROR: Step 'C' failed in its Task enumeration
+group:` and the located message), marks the Step `Failed`, and stops the run before any
+more Tasks start, as a failed Task does. The pass still advances the other pending Steps
+and then evaluates the job outputs whose inputs are concrete, as a scheduler evaluates
+each as soon as its inputs are, so what is known does not depend on the order Steps are
+declared in. This is the RFC's early failure: a Step whose
+parameter space fails fails as soon as the producer it reads finishes, before a later
+producer that only its script reads has run. Then every job output not yet evaluated
+whose inputs (`job_output_inputs`) are all concrete is evaluated with
+`evaluate_job_output` and printed once (`Job output Total = 30 px`, or `= null (no
+value)`). An output evaluated from a Step's `TaskParam` stays committed if that Step later
+fails. A job output that fails prints its error and fails the run, as a failed Task does;
+the other job outputs whose inputs are concrete are still evaluated.
+A caller error from the model (`is_caller_error`, `ModelError::Compatibility`) is a bug in
+the simulator and is reported as an internal error.
+
+**Each Step,** in the run's order:
+
+1. A `Failed` Step does not run. A Step whose dependency in this run failed or is blocked
+   becomes `Blocked` and prints `Step 'X' is blocked: its dependency 'P' failed` (or
+   `is blocked`). A skipped Step behind a failure stays `SKIPPED`, which is terminal
+   (RFC 0010 §Step states), but never satisfies `dependsOn` (§Conditional execution,
+   Failure is not skipping): it prints `Step 'S' is skipped and never satisfies dependsOn:
+   its dependency 'P' failed`, keeps that as its reason, and its dependents are blocked
+   with `its dependency 'S' is skipped but never satisfies dependsOn`. Since a failed Task
+   stops the run, this is reached for a Step after a failed Step only at the end of the
+   run (below).
+2. A Step is not advanced here: its dependencies have finished, and settling advanced it
+   after the last of them changed state, so it is bound, skipped, or failed by now. A Step
+   still pending is an internal error, unless it reads the outputs of a Step that did not
+   run all of its Tasks (below).
+3. A `Skipped` Step prints `Step 'X' is skipped; it runs no Tasks` and runs nothing. If the
+   run gives it Tasks with `--tasks` or `--task-param` (it was skipped at run time; one
+   skipped at Job creation is refused in preflight), the run fails with `ERROR: Step 'S'
+   is skipped by its enableIf; the Tasks given with --tasks or --task-param cannot be
+   run.`
+4. A bound Step that reads `Steps.*` gets `attach_step_inputs`. Only its Step
+   Environments with `enabled` are entered; each other prints `Step Environment 'E' is
+   disabled by its enableIf; not entering it`. Its Tasks run as before, and each
+   successful Action's `ActionResult.outputs` is recorded per Task, in the Step's
+   per-Task iteration order, through the model's `ChunkTaskIndex` (a chunk's outputs are
+   keyed by `CHUNK[INT]` value). Each value is printed with its unit after its Action
+   (`Output N = 3 frames`, or `Output Done[2] = 20` in a chunked Step). Outputs are kept
+   sparsely, and only for a Step that declares output variables; an unchunked space run in
+   order is placed by position, and a chunked one through the lazy `ChunkTaskIndex`.
+   Tasks given with `--tasks` or `--task-param` are kept in the order they ran and placed
+   through a `ChunkTaskIndex` only once they are as many as the Step's Tasks. Without
+   output variables, given Tasks complete the Step when they name every Task, counting
+   each `CHUNK[INT]` value of a given chunk as one Task. Either way a
+   large parameter space costs nothing for the Tasks that do not run. A `FLOAT` value is
+   matched by number, so a range written `1.50` matches a given `1.5`. A Step with zero Tasks prints `Step 'X'
+   has 0 tasks` (only for a `CONTROL_FLOW` template) and succeeds.
+5. The Step is recorded `Failed` (reason `a Task failed`, unless a group failed) if the
+   run failed while it ran, and `Succeeded` otherwise; then the simulator settles.
+
+Job Environments with `enabled == false` are not entered either (`Job Environment 'E' is
+disabled by its enableIf; not entering it`).
+
+**Incomplete producers.** `--maximum-tasks`, `--tasks`, and `--task-param` can leave a
+Step with Tasks that did not run. It is recorded `Succeeded` but its outputs are not given
+to anything (RFC 0010 §Reductions item 3). A Step that reads them becomes `Blocked` with
+`inputs from Step 'P' are incomplete because not all of its Tasks ran`, and a job output
+that reads them is not evaluated. This does not fail the run. A dependent that reads none
+of them runs as before.
+
+**A Step run alone.** `--step X` without `--run-dependencies` runs no other Step, so the
+`Steps.*` values X reads from its producers must come from `--step-inputs`
+(`file://inputs.yaml`, YAML unless the file ends in `.json`, or inline JSON): a map from
+`Steps.P.Output.V` to a value, which for a producer with a `parameterSpace` is a list with
+one value per Task. Each value is checked against the output's declared type and
+constraints with the collector that checks reported values (`OutputCollector`), and every
+declared `ONCE` or `LAST` output of the producer must be given. Before the Session starts,
+the simulator checks that every `Steps.*` value X reads is then concrete (its groups'
+inputs if it is pending, and the symbols its script and Step Environments read,
+`job::Step::input_symbols`), and otherwise fails naming all of them: `Step 'C' reads
+Steps.* values of Steps this run does not run: Steps.P.Output.V.` followed by `Give them
+with --step-inputs, or run Step 'C' with --run-dependencies.`, or by only `Run Step 'C'
+with --run-dependencies.` when none of the missing values is an output of a producer bound
+at Job creation, which is all `--step-inputs` can give. A key naming a Step whose outputs C
+does not read is refused (`--step-inputs: Step 'C' does not read the outputs of Step
+'R'.`), as is a Step the Job does not have. A `Steps.P.Output.V` key also gives
+`Steps.P.RawOutput.V`, so a missing `RawOutput` is given with the `Output` key. A producer's `TaskParam` comes from its parameter space, so a
+`Steps.P.TaskParam.N` key is refused. So is a producer that is skipped (its values are
+`null`), and one that is not bound at Job creation. This narrows the plan's C1 option,
+which also lists `Steps.P.TaskParam.N` keys: a producer not bound at Job creation has a
+binding that only its own inputs can advance, so supplying its `TaskParam` lists would
+mean supplying a parameter space the model never materialized, and its outputs could not
+be checked against it; such a Step is run with `--run-dependencies` instead. The
+supplied values are a producer's state like any other, so job outputs that read only
+supplied and concrete values are evaluated and printed. `--step-inputs` without a Step run
+alone is an error (see [parameter-parsing.md](parameter-parsing.md) for its formats).
+
+**The end of the run** first marks every Step of the run that a failed or blocked
+dependency keeps from ever running, as in item 1 (not after an interruption, which stops
+the run without making any Step unable to run; a Step interrupted while its Tasks ran is
+`FAILED` with reason `the run was interrupted`), since the run stops at the first failure before
+reaching them (RFC 0010 §Job outputs item 4: such an output is unavailable, naming the
+Step). It then prints each job output not evaluated and why each Step it waits on has not
+given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
+(or `which is blocked`, `which this run does not run`, `which did not run all of its
+Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
+failed`. With `--step` alone, the Steps not run are the ones this run does not run. The run succeeds only
+after every job output whose inputs became concrete has been evaluated. The CLI imposes no
+size limit on job outputs, which the RFC's 1 MiB minimum allows.
+
+When the template lists `CONTROL_FLOW`, `run` also sets `SessionConfig::control_flow` and
+passes each Step's `outputVariables` to `run_task`, so `openjd_output_var:` lines are
+collected and checked: an invalid directive, or a declared `ONCE` or `LAST` output with no
+value, fails the Task, and the message appears in the Task's output.
 
 ## Step Selection Logic
 
@@ -192,7 +321,10 @@ Within a selected step, tasks execute in one of three modes:
 ### No Parameter Space
 
 If the step has no `parameterSpace`, a single task runs with no task parameters.
-Supplying `--task-param` or `--tasks` for such a step is rejected during preflight.
+Supplying `--task-param` or `--tasks` for such a step is rejected during preflight,
+including for a `CONTROL_FLOW` Step pending inputs at Job creation: whether a Step has a
+`parameterSpace` comes from the template, not from the materialized space. They are also
+rejected during preflight for a Step skipped at Job creation.
 
 ### Explicit Task Parameters
 
@@ -272,6 +404,9 @@ the environment template's own parameters.
 Step environments receive the step's symbol table (`step_symtab`) for format string
 resolution. Job and template environments receive `None` for the step symbol table.
 
+An Environment whose `enableIf` is `false` (`job::Environment::enabled`) is not entered,
+and so is not exited.
+
 Each environment is entered and exited with an `EnvironmentOptions` whose `origin` is
 `EnvironmentTemplate` for an `--environment` file and `JobTemplate` for a job or step
 environment, so that under `CONTROL_FLOW` an `openjd_output_var` directive in a job
@@ -334,7 +469,7 @@ The `SessionConfig` struct is populated with:
 | `user` | `None` (run as current user) |
 | `profile` | `ModelProfile` built from the job template's declared extensions |
 | `control_flow` | Whether that profile, the Job Template's own, lists `CONTROL_FLOW` |
-| `output_callback` | `None` (the CLI does not yet report output values; plan PR 6) |
+| `output_callback` | `None` (the CLI prints each Action's values from `ActionResult.outputs` once it exits) |
 | `limits` | `SessionLimits` with `max_resolved_arg_len = common::DEFAULT_MAX_ARG_LEN` (the CLI's uniform 32K-character default — see [check.md § Caller-Limits Policy](check.md#caller-limits-policy)); everything else `None` |
 
 The same OS-max cap applies at every enforcing stage the CLI drives:
@@ -361,8 +496,12 @@ Working directory preserved at: /tmp/openjd-cli-12345
 Job: MyJob
 Step: Render
 Duration: 42.123 seconds
-Tasks run: 100
+Chunks run: 100
 ```
+
+For a `CONTROL_FLOW` Job with job outputs, a `Job outputs:` list follows, one line per
+evaluated output (`Total = 30 px`) and per output not evaluated (`Sum: not evaluated
+(waits on Step 'C', which failed)`, or `Count: has no value (its evaluation failed)`).
 
 ### JSON
 
@@ -373,9 +512,32 @@ Tasks run: 100
   "job_name": "MyJob",
   "step_name": "Render",
   "duration": 42.123,
-  "tasks_run": 100
+  "chunks_run": 100
 }
 ```
+
+For a template that lists `CONTROL_FLOW`, three more fields follow (other templates'
+output matches the Python CLI's):
+
+* `steps`: one entry per Step, `{name, state, task_count}` with the RFC's state name
+  (`PENDING_INPUTS`, `READY`, `SKIPPED`, `SUCCEEDED`, `FAILED`), or `BLOCKED`, the
+  simulator's own name for a Step that can never run because a dependency failed (the RFC
+  has no state for it: "blocked; never runs, as today"), and
+  `task_count` `null` while its Tasks are unknown; `incomplete: true` for a Step that did
+  not run all of its Tasks; `reason` for a failed or blocked Step; and, for a Step that
+  declares output variables and started, `outputs`, a list with one map from output name
+  to value per Task in iteration order, up to the last Task whose outputs arrived (`null`
+  for a Task before it that did not succeed), so a Step whose Tasks all succeeded has one
+  per Task and a zero-Task Step has `[]`. For Tasks given with `--tasks` or `--task-param`
+  that do not cover the Step, `outputs` lists them in the order they ran, and
+  `outputs_in_run_order: true` says so; the same holds for such a Step that failed, which
+  keeps the outputs of the given Tasks that succeeded. A producer whose outputs
+  `--step-inputs` gave has `inputs_supplied: true` and stays `READY`, since it did not
+  run.
+* `job_outputs`: a map from each evaluated job output's name to its value (`null` for no
+  value).
+* `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end, or
+  `{name, failed: true}` for a job output whose evaluation failed.
 
 ### YAML
 
@@ -385,17 +547,18 @@ message: Session ended successfully
 job_name: MyJob
 step_name: Render
 duration: 42.123
-tasks_run: 100
+chunks_run: 100
 ```
 
 ## Error Handling and Exit Codes
 
 - Exit code 0: All actions completed successfully
-- Exit code 1: Any action failed, setup failed, or interruption was observed
+- Exit code 1: Any action failed, setup failed, interruption was observed, or (for
+  `CONTROL_FLOW`) a Step's materialization group or a job output failed
 
-On action failure, the session continues to exit environments (cleanup) but skips
-remaining tasks. The `session_failed` flag tracks whether any action returned a
-non-`Success` state.
+On failure, the session continues to exit environments (cleanup) but skips remaining
+tasks. The `session_failed` flag tracks whether any action returned a non-`Success`
+state, or a group or job output failed.
 
 An interruption signal cancels the active session action. On Unix the handled
 signals are SIGINT and SIGTERM; on Windows they are Ctrl+C and Ctrl+Break

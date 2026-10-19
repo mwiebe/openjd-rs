@@ -35,6 +35,7 @@ pub use job::create_job::{
     job_output_inputs, merge_job_parameter_definitions, preprocess_job_parameters,
     MergedParameterDefinition, PathParameterOptions,
 };
+pub use job::ChunkTaskIndex;
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;
 pub use template::parse::{

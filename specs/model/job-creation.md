@@ -655,8 +655,17 @@ producer. `add_producer(producer, state)` fills them, typed as the RFC's §The
 * `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
 
 A type that is or contains `path` gets a value only in its `Raw` form (the
-submission-context form, as a `path` value; a `PATH` Task parameter's
-values are `path` values in the Posix format); its `Output` or `TaskParam`
+submission-context form, as a `path` value; a URI in the Posix format the
+model evaluates in, with its text unchanged, since a reported URI output
+carries `PathFormat::Uri` and the EXPR evaluator refuses a `path` value in
+another format than its own (EXPR recognizes a URI by its text, so nothing
+else changes). A Windows-format stored path (a reverse rule's source format)
+keeps its format, so reading it in a group or job output is refused rather
+than giving wrong results from path operations such as `.name`: reading the
+value, or an element of a list, gives "Path format mismatch", and reading an
+attribute of the symbol directly (`Steps.P.RawOutput.M.name`) gives
+"Undefined variable"; a `PATH` Task
+parameter's values are `path` values in the Posix format); its `Output` or `TaskParam`
 is concrete (`is_concrete`) but has no value (`get` returns `None`), because
 it is derived on the worker host. `add_producer` replaces a producer added
 before. `TasksKnown` on a skipped producer is the same as `Skipped`, since its
@@ -702,7 +711,11 @@ whose `Steps.*` symbols the Step reads: those its host-scope fields read (for
 `attach_step_inputs`) and, for a pending Step, those any of its groups read,
 known or not (`PendingBinding::producers`, which `create_job` and
 `advance_step_binding` record). It is what a caller passes on each call; none
-for a skipped Step.
+for a skipped Step. `job::Step::input_symbols()` lists the
+`Steps.<Step>.<Member>.<Name>` symbols themselves: those its host-scope fields
+read (what `attach_step_inputs` needs concrete) and, for a pending Step, those
+its groups still wait on (a known group's inputs are not listed); none for a
+skipped Step.
 
 ### convert_environment
 

@@ -2653,7 +2653,7 @@ impl Session {
     /// string, or a list of them, in the submission path context. The table
     /// gets its `RawOutput.<V>` or `TaskRawParam.<N>` symbol as `path` values
     /// in that stored form, each with the stored value's own path format
-    /// (Windows for a drive path or one starting with `\\`, URI for a URI,
+    /// (Windows for a drive path or one starting with `\\`, the host's for a URI,
     /// POSIX otherwise), and its `Output.<V>` or `TaskParam.<N>` twin as
     /// `path` values mapped forward with the Session's rules, element by
     /// element. A `null` (from a skipped producer) is left as it is.
@@ -3183,14 +3183,16 @@ fn forward_twin(symbol: &str) -> Option<String> {
     Some(format!("Steps.{step}.{twin}.{name}"))
 }
 
-/// The path format of a path stored in the submission path context: URI
-/// for a URI, Windows for a drive path (`C:`) or one starting with `\\`,
-/// POSIX otherwise.
+/// The path format of a path stored in the submission path context:
+/// Windows for a drive path (`C:`) or one starting with `\\`, POSIX
+/// otherwise, and the host's for a URI. EXPR recognizes a URI by its value
+/// whatever its format, and its evaluator reads only `path` values in the
+/// host's format, so a URI given `PathFormat::Uri` could not be read.
 fn stored_path_format(path: &str) -> openjd_expr::path_mapping::PathFormat {
     use openjd_expr::path_mapping::PathFormat;
     let b = path.as_bytes();
     if openjd_expr::path_mapping::is_uri(path) {
-        PathFormat::Uri
+        PathFormat::host()
     } else if (b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':')
         || path.starts_with("\\\\")
     {

@@ -173,10 +173,12 @@ model does not revisit it. Re-evaluating after a re-run (RFC 0010 §Job outputs 
 is calling `evaluate_job_output` again with the new inputs; keeping the earlier value
 and marking it stale when that fails is the caller's job.
 
-## The CLI, for now
+## The CLI
 
-`openjd run` and `openjd summary` report an output that fails at creation, as any
-`create_job` error, and refuse a Job with an output that is still pending
-(`common::require_bound_job`), because they do not evaluate job outputs as Steps finish
-yet ([cli/run.md](../cli/run.md) § CONTROL_FLOW templates). Running such a Job without
-evaluating them would report success for a Job whose outputs could fail it.
+`openjd run` reports an output that fails at creation, as any `create_job` error. It
+prints each output `create_job` evaluated, and evaluates every other one as soon as its
+inputs are concrete in its scheduler simulator: after a Step's Tasks become known, or it
+succeeds or is skipped. One that fails fails the run, and the end of the run lists the
+outputs never evaluated with the Step each waits on ([cli/run.md](../cli/run.md) §
+CONTROL_FLOW). `openjd summary` lists every output with its value or what it waits on
+([cli/summary.md](../cli/summary.md) § CONTROL_FLOW).

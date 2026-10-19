@@ -382,8 +382,10 @@ same reason `RawParam.*` is: `to_symtab(PathFormat::host())` rewrites `/` to `\`
 POSIX rule. For each entry, after the `Param.*` loop:
 
 - the `Raw` symbol is set to `path` values in the stored form, each with the stored
-  value's own format (URI for a URI, Windows for a drive path or one starting with `\\`,
-  POSIX otherwise), not the host's; `ExprValue::new_path` normalizes separators within
+  value's own format (Windows for a drive path or one starting with `\\`, POSIX
+  otherwise), not the host's, except that a URI gets the host's: EXPR recognizes a URI by
+  its value whatever its format, and the evaluator reads only `path` values in the host's
+  format; `ExprValue::new_path` normalizes separators within
   that format, so `C:/x` reads back as `C:\x`;
 - its twin (`Steps.P.Output.V`, `Steps.P.TaskParam.N`) is set to the forward-mapped
   `path` values in the host format, element by element, with the Session's rules;

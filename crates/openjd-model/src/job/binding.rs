@@ -179,7 +179,9 @@ impl StepInputs {
     ///   since its `TaskParam` is concrete as `null`.
     ///
     /// For a type that is or contains `path`, only the `Raw` form gets a
-    /// value; the other is concrete but derived on the worker host.
+    /// value, with a URI in the Posix format the model evaluates in (its
+    /// text unchanged), since the evaluator refuses `PathFormat::Uri`; the
+    /// other form is concrete but derived on the worker host.
     ///
     /// Errors, each a [`ModelError::Compatibility`] (a caller error), when
     /// the state does not match the producer's binding (`Succeeded` needs a
@@ -322,6 +324,11 @@ fn insert(
     value: ExprValue,
     is_path: bool,
 ) {
+    let value = if is_path {
+        in_eval_format(value)
+    } else {
+        value
+    };
     if is_path {
         entry.derived.insert(format!("{member}.{name}"));
     } else {
@@ -330,6 +337,38 @@ fn insert(
             .insert(format!("{member}.{name}"), value.clone());
     }
     entry.values.insert(format!("{raw_member}.{name}"), value);
+}
+
+/// `value`, a `path` value or a (nested) list of them, with every URI path
+/// in the Posix format the model evaluates in (see `create_job`), its text
+/// unchanged. A reported URI output carries `PathFormat::Uri`, and the EXPR
+/// evaluator refuses a `path` value in another format than its own, so a
+/// group or job output reading it would fail with "Path format mismatch".
+/// EXPR recognizes a URI by its text, so its format changes nothing else.
+/// A path in a Windows format (a reverse-mapping rule's source format) is
+/// left as it is: relabelling it Posix would make path operations such as
+/// `.name` give wrong results, so reading it is refused instead ("Path
+/// format mismatch", or "Undefined variable" for an attribute of the symbol
+/// read directly). Anything else, such as a skipped producer's `null`, is
+/// returned as it is.
+fn in_eval_format(value: ExprValue) -> ExprValue {
+    match &value {
+        ExprValue::Path {
+            value: text,
+            format: PathFormat::Uri,
+            ..
+        } => ExprValue::new_path(text.clone(), PathFormat::Posix),
+        v if v.is_list() => {
+            let ty = v.expr_type();
+            let Some(elements) = v.list_elements() else {
+                return value;
+            };
+            let element_ty = ty.list_element_type().cloned().unwrap_or(ExprType::PATH);
+            let elements: Vec<ExprValue> = elements.into_iter().map(in_eval_format).collect();
+            ExprValue::make_list(elements, element_ty).unwrap_or(value)
+        }
+        _ => value,
+    }
 }
 
 /// Convert `value` to `ty` with EXPR's implicit coercion, unless it already
@@ -498,6 +537,31 @@ impl Step {
             host_requirements: report(waiting(&pending.host_requirements), enablement_waits),
             remaining: report(waiting(&pending.remaining), enablement_waits),
         })
+    }
+
+    /// The `Steps.<Step>.<Member>.<Name>` symbols the Step reads, sorted:
+    /// in its script and Step Environments (which
+    /// [`attach_step_inputs`](crate::create_job::attach_step_inputs) needs
+    /// concrete) and, while it is pending, those its groups wait on. Empty
+    /// for a skipped Step.
+    pub fn input_symbols(&self) -> Vec<String> {
+        if matches!(self.binding, StepBinding::Skipped) {
+            return Vec::new();
+        }
+        let mut symbols: BTreeSet<String> = crate::job::create_job::host_scope_symbols(self)
+            .iter()
+            .filter_map(|s| steps_key(s))
+            .collect();
+        if let StepBinding::PendingInputs(pending) = &self.binding {
+            let groups: [Option<&Vec<String>>; 4] = [
+                waiting_on(&pending.enablement),
+                waiting_on(&pending.tasks),
+                waiting_on(&pending.host_requirements),
+                waiting_on(&pending.remaining),
+            ];
+            symbols.extend(groups.into_iter().flatten().flatten().cloned());
+        }
+        symbols.into_iter().collect()
     }
 
     /// The producers whose `Steps.*` symbols the Step reads, sorted: in its

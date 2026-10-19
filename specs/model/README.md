@@ -84,6 +84,8 @@ Currently implements `2023-09` with extensions:
   ([job-creation.md](job-creation.md) § Step input binding). `jobOutputDefinitions` are
   validated, `create_job` evaluates those whose inputs are concrete, and
   `evaluate_job_output` evaluates the rest ([job-outputs.md](job-outputs.md)).
-  Recognizing the directive in a Session and simulating binding and job output
-  evaluation in `openjd run` are not implemented yet (see
-  `docs/control-flow-prototype-plan.md`).
+  `ChunkTaskIndex` places the outputs of a chunked Step's Tasks in per-Task
+  iteration order ([public-api.md](public-api.md) § `ChunkTaskIndex`). Sessions
+  recognize the directive ([../sessions/README.md](../sessions/README.md)), and
+  `openjd run` simulates binding and job output evaluation
+  ([../cli/run.md](../cli/run.md) § CONTROL_FLOW).

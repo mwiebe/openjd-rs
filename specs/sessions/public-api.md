@@ -295,7 +295,9 @@ impl Session {
     /// in the submission path context. Each `Steps.P.RawOutput.V` /
     /// `Steps.P.TaskRawParam.N` becomes `path` values in that stored
     /// form (each with its own format: Windows for a drive path or one
-    /// starting with `\\`, URI for a URI, POSIX otherwise), and its
+    /// starting with `\\`, POSIX otherwise, and the host's for a URI,
+    /// which EXPR recognizes by its value and the evaluator reads only in
+    /// the host's format), and its
     /// `Output.V` / `TaskParam.N` twin becomes the forward-mapped `path`
     /// values, element by element. A `null` stays `null`. A symbol of
     /// another form, one missing from `base`, a stored value whose shape

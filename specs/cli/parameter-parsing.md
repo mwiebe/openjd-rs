@@ -172,6 +172,25 @@ Path mapping rules are JSON-only (no YAML support) because the `pathmapping-1.0`
 is defined as a JSON format in the OpenJD specification. The Python CLI also only accepts
 JSON for path mapping rules.
 
+## Step Inputs (`--step-inputs`, CONTROL_FLOW)
+
+`parse_step_inputs()` reads the `Steps.*` output values that a Step run alone reads (see
+[run.md](run.md) § CONTROL_FLOW for how they are checked and used). It accepts:
+
+- `file://path`: JSON when the file name ends in `.json`, YAML otherwise, read with the
+  same `MAX_FILE_INPUT_SIZE` cap as the other `file://` inputs;
+- inline JSON otherwise.
+
+The decoded value must be a map from `Steps.<Step>.Output.<Name>` to a value. Errors:
+
+- not valid inline JSON: `--step-inputs argument must be a JSON encoded map or a string
+  with the file:// prefix.`
+- decodes to something other than a map: `--step-inputs argument must be a map from
+  Steps.<Step>.Output.<Name> to a value when decoded.`
+- a missing or unreadable file: `Provided step inputs file '<path>' does not exist.` or
+  `Cannot read step inputs file '<path>': <error>`;
+- a file that does not parse: `Cannot parse step inputs file '<path>': <error>`.
+
 ## Extension Parsing
 
 The commands that accept `--extensions` share `common::parse_extensions()`, which

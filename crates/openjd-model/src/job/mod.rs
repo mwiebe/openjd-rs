@@ -25,6 +25,7 @@
 //! `Eq`.
 
 mod binding;
+mod chunk_task_index;
 pub mod create_job;
 mod job_output;
 mod output_variable;
@@ -34,6 +35,7 @@ pub mod step_param_space;
 pub use binding::{
     BindingError, BindingReport, GroupReport, MaterializationGroup, ProducerState, StepInputs,
 };
+pub use chunk_task_index::ChunkTaskIndex;
 pub use job_output::{JobOutput, JobOutputValue};
 pub use output_variable::{
     GroupState, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput,
