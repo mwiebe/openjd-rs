@@ -128,8 +128,8 @@ execute(args).await
   │
   ├── 5. STEP EXECUTION
   │   └── For each step:
-  │       ├── Begin it: block it, advance it if pending, skip it, or attach
-  │       │   its Steps.* inputs
+  │       ├── Begin it: block it, skip it, or attach its Steps.* inputs
+  │       │   (settling, below, is where a pending Step advances)
   │       ├── Enter enabled step environments
   │       ├── Execute tasks (explicit, lazy iteration, or no-param single task),
   │       │   recording each Task's output values
@@ -282,7 +282,9 @@ supplied and concrete values are evaluated and printed. `--step-inputs` without 
 alone is an error (see [parameter-parsing.md](parameter-parsing.md) for its formats).
 
 **The end of the run** first marks every Step of the run that a failed or blocked
-dependency keeps from ever running, as in item 1, since the run stops at the first failure before
+dependency keeps from ever running, as in item 1 (not after an interruption, which stops
+the run without making any Step unable to run; a Step interrupted while its Tasks ran is
+`FAILED` with reason `the run was interrupted`), since the run stops at the first failure before
 reaching them (RFC 0010 §Job outputs item 4: such an output is unavailable, naming the
 Step). It then prints each job output not evaluated and why each Step it waits on has not
 given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`

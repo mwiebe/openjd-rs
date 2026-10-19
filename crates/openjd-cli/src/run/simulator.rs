@@ -109,7 +109,8 @@ pub(super) enum Begin {
     Run(Box<Step>),
     /// It is skipped, failed, or blocked, so nothing runs.
     NotRun,
-    /// A group failed when it was advanced; the run stops.
+    /// The run must stop: Tasks were given with `--tasks` or `--task-param`
+    /// for a Step skipped at run time.
     Failed,
 }
 
@@ -403,7 +404,7 @@ impl Simulator {
         self.ensure_for_step(target)?;
 
         // Every Steps.* value the target reads must now be concrete. Both
-        // calls are pure, so the run repeats them when it starts the Step.
+        // calls are pure; the run's first settle advances the Step for real.
         let step = &self.job.steps[target];
         let step = match step.binding {
             StepBinding::PendingInputs(_) => match openjd_model::advance_step_binding(
@@ -417,7 +418,7 @@ impl Simulator {
             ) {
                 Ok(step) => step,
                 Err(e) if e.is_caller_error() => return Err(internal(e)),
-                // A group that fails fails the Step when the run starts it.
+                // A group that fails fails the Step in the run's first settle.
                 Err(_) => return Ok(()),
             },
             _ => step.clone(),
@@ -734,7 +735,12 @@ impl Simulator {
     /// state and the job outputs waiting on it say so (RFC 0010 §Job outputs
     /// item 4). A Step the run did not reach for another reason (an
     /// interruption, a failed job output) keeps its state.
-    pub(super) fn block_unreachable(&mut self) {
+    pub(super) fn block_unreachable(&mut self, interrupted: bool) {
+        // After an interruption the run did not reach Steps because it
+        // stopped, not because they can never run.
+        if interrupted {
+            return;
+        }
         for idx in self.order.clone() {
             let record = &self.records[idx];
             let done = match record.state {
@@ -769,9 +775,10 @@ impl Simulator {
     }
 
     /// Start Step `idx` of the run (plan C1 items 1 to 4): block it behind a
-    /// failed or blocked dependency, advance it if it is still pending (its
-    /// dependencies have finished, so it binds, is skipped, or fails), and
-    /// for a bound Step attach its `Steps.*` inputs.
+    /// failed or blocked dependency, block a Step still pending because a
+    /// producer did not run all of its Tasks (settle is the one place a
+    /// pending Step advances, after each producer change), and for a bound
+    /// Step attach its `Steps.*` inputs.
     ///
     /// `explicit_tasks` is whether the run gives this Step's Tasks with
     /// `--tasks` or `--task-param`, so its Actions do not follow iteration
@@ -919,6 +926,11 @@ impl Simulator {
                 record.task_outputs.insert(slot, task_outputs);
             }
         }
+    }
+
+    /// Set why Step `idx` failed, before [`finish_step`](Self::finish_step).
+    pub(super) fn set_reason(&mut self, idx: usize, reason: &str) {
+        self.records[idx].reason = Some(reason.to_string());
     }
 
     /// Record that Step `idx` finished: failed, or succeeded. `ran_all` is
@@ -1236,7 +1248,7 @@ fn supplied_task_outputs(
                 (true, Some(list)) => list.iter().collect(),
                 (true, None) => {
                     return Err(format!(
-                        "{}: an APPEND output is given as a list",
+                        "{}: an APPEND output must be given as a list",
                         where_(name)
                     ))
                 }
