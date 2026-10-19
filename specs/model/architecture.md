@@ -57,6 +57,7 @@ src/
     ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PendingBinding, GroupState, PathInput
     ├── binding.rs            # CONTROL_FLOW StepInputs, ProducerState, BindingError, BindingReport, Step::tasks_known
     ├── job_output.rs         # CONTROL_FLOW JobOutput, JobOutputValue
+    ├── chunk_task_index.rs   # CONTROL_FLOW ChunkTaskIndex: per-Task indices of an Action's Tasks
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job() entry point
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table

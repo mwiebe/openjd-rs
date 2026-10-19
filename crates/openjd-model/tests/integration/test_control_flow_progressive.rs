@@ -1214,3 +1214,163 @@ fn gpu_is_q(job: &openjd_model::job::Job) -> StepInputs {
     );
     inputs
 }
+
+/// A reported URI `PATH` output carries `PathFormat::Uri`. A group and a job
+/// output read it in the model's evaluation format, keeping its text, so
+/// neither fails with "Path format mismatch". A Windows-format stored path
+/// (a reverse rule's source format) is not relabelled, since that would make
+/// path operations wrong, and reading it in the model is refused.
+#[test]
+fn uri_path_outputs_are_readable_by_groups_and_job_outputs() {
+    let f = Fixture::new(
+        &format!(
+            "{}jobOutputDefinitions:
+- {{name: J, type: PATH, value: '{{{{Steps.P.RawOutput.U}}}}'}}
+- {{name: W, type: STRING, value: '{{{{Steps.P.RawOutput.W[0].name}}}}'}}
+- {{name: Wd, type: STRING, value: '{{{{Steps.P.RawOutput.Wd.name}}}}'}}
+steps:
+- name: P
+  outputVariables: [{{name: U, type: PATH}}, {{name: W, type: 'LIST[PATH]'}}, {{name: Wd, type: PATH}}]
+  script: {{actions: {{onRun: {{command: echo}}}}}}
+- name: C
+  dependencies: [{{dependsOn: P}}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {{name: X, type: STRING, range: '{{{{[string(Steps.P.RawOutput.U), Steps.P.RawOutput.U.name]}}}}'}}
+  script: {{actions: {{onRun: {{command: echo}}}}}}
+",
+            header("[EXPR, CONTROL_FLOW]")
+        ),
+        &[],
+    );
+    let mut job = f.job();
+    let uri = ExprValue::new_path("s3://b/k.exr", openjd_expr::PathFormat::Uri);
+    let windows = ExprValue::make_list(
+        vec![ExprValue::new_path(
+            r"C:\out\a.exr",
+            openjd_expr::PathFormat::Windows,
+        )],
+        openjd_expr::ExprType::PATH,
+    )
+    .unwrap();
+    let windows_scalar = ExprValue::new_path(r"C:\\out\\b.exr", openjd_expr::PathFormat::Windows);
+    let produced = [outputs(&[
+        ("U", uri),
+        ("W", windows),
+        ("Wd", windows_scalar),
+    ])];
+    let c = f
+        .advance(
+            &mut job,
+            "C",
+            |job| {
+                let mut inputs = StepInputs::new();
+                succeeded(&mut inputs, job, "P", &produced);
+                inputs
+            },
+            0,
+        )
+        .unwrap();
+    assert!(c.binding.is_bound());
+    let openjd_model::job::TaskParameter::String { range } = &c
+        .parameter_space
+        .as_ref()
+        .unwrap()
+        .task_parameter_definitions["X"]
+    else {
+        panic!("X is a STRING parameter")
+    };
+    assert_eq!(range, &["s3://b/k.exr".to_string(), "k.exr".to_string()]);
+
+    let mut inputs = StepInputs::new();
+    succeeded(&mut inputs, &job, "P", &produced);
+    let evaluate =
+        |i| openjd_model::evaluate_job_output(&f.jt, &f.params, &f.ctx, &job, i, &inputs);
+    assert_eq!(
+        evaluate(0).unwrap().unwrap().to_display_string(),
+        "s3://b/k.exr"
+    );
+    assert_eq!(
+        evaluate(1).unwrap_err().to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobOutputDefinitions[1] -> value:\n\
+         \tJob output 'W': Path format mismatch for 'Steps.P.RawOutput.W': value has Windows \
+         but evaluator uses Posix\n  \
+         Steps.P.RawOutput.W[0].name\n  \
+         ~~~~~~~~~~~~~~~~~~^"
+    );
+    // An attribute of the symbol read directly is refused too, as an
+    // undefined variable.
+    assert_eq!(
+        evaluate(2).unwrap_err().to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobOutputDefinitions[2] -> value:\n\
+         \tJob output 'Wd': Undefined variable: 'Steps.P.RawOutput.Wd.name'.\n  \
+         Steps.P.RawOutput.Wd.name\n  \
+         ~~~~~~~~~~~~~~~~~~~~~^~~~"
+    );
+}
+
+/// `Step::input_symbols` lists what a bound Step's script and Step
+/// Environments read and, while it is pending, what its groups wait on;
+/// nothing for a skipped Step.
+#[test]
+fn input_symbols_cover_scripts_and_waiting_groups() {
+    let f = Fixture::new(
+        &format!(
+            "{}steps:
+- name: P
+  outputVariables: [{{name: Num, type: INT}}, {{name: Mx, type: INT}}]
+  script: {{actions: {{onRun: {{command: echo}}}}}}
+- name: C
+  dependencies: [{{dependsOn: P}}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {{name: F, type: INT, range: '{{{{range(Steps.P.Output.Num)}}}}'}}
+  stepEnvironments:
+  - {{name: E, variables: {{V: '{{{{Steps.P.Output.Mx}}}}'}}}}
+  script: {{actions: {{onRun: {{command: 'echo {{{{Steps.P.RawOutput.Mx}}}}'}}}}}}
+- name: S
+  enableIf: '{{{{1 > 2}}}}'
+  dependencies: [{{dependsOn: P}}]
+  script: {{actions: {{onRun: {{command: 'echo {{{{Steps.P.Output.Mx}}}}'}}}}}}
+",
+            header("[EXPR, CONTROL_FLOW]")
+        ),
+        &[],
+    );
+    let mut job = f.job();
+    assert_eq!(
+        step(&job, "C").input_symbols(),
+        [
+            "Steps.P.Output.Mx",
+            "Steps.P.Output.Num",
+            "Steps.P.RawOutput.Mx"
+        ]
+    );
+    assert!(step(&job, "S").input_symbols().is_empty());
+    f.advance(
+        &mut job,
+        "C",
+        |job| {
+            let mut inputs = StepInputs::new();
+            succeeded(
+                &mut inputs,
+                job,
+                "P",
+                &[outputs(&[
+                    ("Num", ExprValue::Int(2)),
+                    ("Mx", ExprValue::Int(3)),
+                ])],
+            );
+            inputs
+        },
+        0,
+    )
+    .unwrap();
+    // Bound: only what the script and Step Environments read.
+    assert_eq!(
+        step(&job, "C").input_symbols(),
+        ["Steps.P.Output.Mx", "Steps.P.RawOutput.Mx"]
+    );
+}
