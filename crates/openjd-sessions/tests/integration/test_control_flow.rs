@@ -1713,7 +1713,9 @@ async fn missing_output_message_is_in_the_action_output() {
     testing_logger::validate(|captured| {
         let line = "ERROR: Output variable 'N': no value was reported (collect mode ONCE)";
         assert!(
-            logged(captured).iter().any(|l| l == line),
+            captured
+                .iter()
+                .any(|l| l.body == line && l.level == log::Level::Error),
             "{:?}",
             logged(captured)
         );

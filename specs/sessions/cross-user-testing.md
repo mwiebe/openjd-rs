@@ -130,6 +130,8 @@ These use shell scripts in `tests/support/`:
 | `test_cross_user_session_cleanup` | Cleanup deletes files owned by target user with 700/600 permissions |
 | `test_cross_user_session_run_subprocess` | `Session::run_subprocess` runs as configured target user |
 | `test_cross_user_early_cancel_cancels_the_run` | A cancel that lands before the helper reads the Run command (and is dropped by the idle helper) is sent again, so the run is canceled |
+| `test_cross_user_early_urgent_cancel_terminates` | An early cancel with a zero time limit is resent as TERMINATE, so a notify action's trap does not run |
+| `test_cross_user_timeout_notifies_a_notify_action` | A timeout cancels a notify action with its notify signal, so its trap runs |
 
 The cleanup test creates files via `sudo -u targetuser` with restrictive permissions
 (owner-only), then verifies `session.cleanup()` successfully removes them. This exercises
