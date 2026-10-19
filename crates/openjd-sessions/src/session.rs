@@ -431,6 +431,14 @@ impl SessionCancelHandle {
             shared.mark_failed = true;
         }
 
+        // Record the request before writing to the helper pipe:
+        // `run_via_helper` reads it to resend a cancel the idle helper
+        // dropped and to report the run Canceled, so it must already be set
+        // when the helper acts on the pipe command.
+        if let Some(tx) = &shared.request_tx {
+            let _ = tx.send(time_limit);
+        }
+
         // Cross-user sessions: also deliver the cancel command to the helper
         // process over the dup'd pipe, mirroring Session::cancel_action.
         if let Some(ref writer) = self.cancel_writer {
@@ -440,10 +448,6 @@ impl SessionCancelHandle {
                 time_limit,
                 shared.terminate_delay,
             );
-        }
-
-        if let Some(tx) = &shared.request_tx {
-            let _ = tx.send(time_limit);
         }
         token.cancel();
         true
@@ -1061,6 +1065,16 @@ impl Session {
         // via `set_cancel_writer_for_test`), the test is responsible for
         // asserting whatever framing it expects; we still write a valid
         // tokenized command if we have a token.
+        //
+        // The request is recorded first, as in `SessionCancelHandle::cancel`:
+        // `run_via_helper` must see it once the helper acts on the command.
+        let (token, request_tx) = {
+            let shared = self.cancel.lock();
+            (shared.token.clone(), shared.request_tx.clone())
+        };
+        if let Some(tx) = request_tx {
+            let _ = tx.send(time_limit);
+        }
         if let Some(ref writer) = self.cross_user.cancel_writer {
             send_helper_cancel_command(
                 writer,
@@ -1068,14 +1082,6 @@ impl Session {
                 time_limit,
                 self.cancel.lock().terminate_delay,
             );
-        }
-
-        let (token, request_tx) = {
-            let shared = self.cancel.lock();
-            (shared.token.clone(), shared.request_tx.clone())
-        };
-        if let Some(tx) = request_tx {
-            let _ = tx.send(time_limit);
         }
         if let Some(token) = token {
             token.cancel();

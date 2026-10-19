@@ -380,15 +380,20 @@ fn quote(text: &str) -> String {
 }
 
 /// The collector's message for a directive on `line`, with the line quoted
-/// after it when the message does not quote the value itself (a second
-/// `ONCE` value, a task selector problem, or the size limit), because RFC
+/// after it when the message may not quote the value itself (an undeclared
+/// name, a second `ONCE` value, a task selector problem, the size limit, or
+/// a constraint, such as an `APPEND` list's `maxLength`), because RFC
 /// 0010 §Processing a directive requires the failure to name the offending
 /// text. (For an `@` file's content, see `finish_file_sized`, which always
 /// adds the line.)
 fn with_text(e: &openjd_model::outputs::OutputError, line: &str) -> String {
     use openjd_model::outputs::OutputErrorKind;
     match e.kind() {
-        OutputErrorKind::Repeated | OutputErrorKind::Selector | OutputErrorKind::Size => {
+        OutputErrorKind::Undeclared
+        | OutputErrorKind::Repeated
+        | OutputErrorKind::Selector
+        | OutputErrorKind::Size
+        | OutputErrorKind::Constraint => {
             format!("{}, in {}", e.message(), quote(line))
         }
         _ => e.message().to_string(),
@@ -543,7 +548,8 @@ mod tests {
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         assert_eq!(
             invalid(v.begin("openjd_output_var: M=@missing", false, false)),
-            "Output variable 'M': the Step does not declare it (declared: 'N')"
+            "Output variable 'M': the Step does not declare it (declared: 'N'), in \
+             'openjd_output_var: M=@missing'"
         );
     }
 

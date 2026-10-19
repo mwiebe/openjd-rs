@@ -771,7 +771,8 @@ pub(crate) async fn run_via_helper(
 /// Write a cancel for the current run to the helper's cancel pipe, as the
 /// same-user runner cancels: TERMINATE for a TERMINATE action or a zero
 /// `time_limit`, otherwise NOTIFY_THEN_TERMINATE with the declared period,
-/// capped by `time_limit`.
+/// capped by `time_limit`. The protocol counts whole seconds, so a period
+/// under a second (but not zero) is sent as one second.
 fn write_cancel(
     writer: &std::fs::File,
     token: &str,
@@ -783,9 +784,12 @@ fn write_cancel(
         SessionError::HelperCommunication(format!("Failed to clone cancel_writer: {e}"))
     })?;
     let notify_period = match cancel_method {
-        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => time_limit
-            .map_or(*terminate_delay, |l| l.min(*terminate_delay))
-            .as_secs(),
+        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => {
+            match time_limit.map_or(*terminate_delay, |l| l.min(*terminate_delay)) {
+                d if d.is_zero() => 0,
+                d => d.as_secs().max(1),
+            }
+        }
         crate::runner::CancelMethod::Terminate => 0,
     };
     // The token alphabet excludes `"` and `\`, so no escaping is needed to
@@ -1349,5 +1353,51 @@ mod token_tests {
             Some("good"),
             "augment_with_token must not let the caller override the token",
         );
+    }
+}
+
+#[cfg(test)]
+mod write_cancel_tests {
+    use super::write_cancel;
+    use crate::runner::CancelMethod;
+    use std::time::Duration;
+
+    fn written(method: CancelMethod, time_limit: Option<Duration>) -> String {
+        let file = tempfile::tempfile().unwrap();
+        write_cancel(&file, "T", &method, time_limit).unwrap();
+        use std::io::{Read, Seek};
+        let mut file = file;
+        file.rewind().unwrap();
+        let mut s = String::new();
+        file.read_to_string(&mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn maps_the_method_and_time_limit_as_the_same_user_runner() {
+        let ntt = |s| CancelMethod::NotifyThenTerminate {
+            terminate_delay: Duration::from_secs(s),
+        };
+        let term = "{\"token\":\"T\",\"cancel\":\"TERMINATE\"}\n";
+        let notify = |p: u64| {
+            format!(
+                "{{\"token\":\"T\",\"cancel\":\"NOTIFY_THEN_TERMINATE\",\"notifyPeriodInSeconds\":{p}}}\n"
+            )
+        };
+        assert_eq!(written(CancelMethod::Terminate, None), term);
+        assert_eq!(
+            written(CancelMethod::Terminate, Some(Duration::from_secs(9))),
+            term
+        );
+        assert_eq!(written(ntt(5), None), notify(5));
+        assert_eq!(written(ntt(5), Some(Duration::from_secs(2))), notify(2));
+        assert_eq!(written(ntt(5), Some(Duration::from_secs(60))), notify(5));
+        assert_eq!(written(ntt(5), Some(Duration::ZERO)), term);
+        // Whole seconds on the wire: a sub-second period is one second.
+        assert_eq!(
+            written(ntt(120), Some(Duration::from_millis(500))),
+            notify(1)
+        );
+        assert_eq!(written(ntt(0), None), term);
     }
 }

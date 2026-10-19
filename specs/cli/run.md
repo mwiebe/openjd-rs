@@ -276,7 +276,10 @@ Each environment is entered and exited with an `EnvironmentOptions` whose `origi
 `EnvironmentTemplate` for an `--environment` file and `JobTemplate` for a job or step
 environment, so that under `CONTROL_FLOW` an `openjd_output_var` directive in a job
 template environment's action fails it, while one in an environment template's action is
-ordinary output. The origin used on entry is recorded and passed again on exit.
+ordinary output. The origin used on entry is recorded and passed again on exit. A step
+environment's `EnvironmentOptions` also carries the Step's `path_inputs`, on entry and on
+exit, so path-typed `Steps.*` symbols it reads are mapped as they are for the Step's
+Tasks.
 
 **Single-wrap-layer preflight (RFC 0008).** Before entering any environment,
 the CLI validates every session stack this run will build — external
