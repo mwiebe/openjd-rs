@@ -181,9 +181,10 @@ If the path doesn't exist the harness falls back to the `PATH` probe.
 ### `OPENJD_UPDATE_GOLDEN`
 
 The `openjd-cli` golden tests (`control_flow_golden` in `cli_tests`) run the
-RFC 0010 sample templates and compare the output with the `*.expected.txt`
-files beside them in `crates/openjd-cli/tests/templates/control_flow/`. When
-a change alters that output on purpose, rewrite the files and review their diff:
+RFC 0010 sample templates and the CONTROL_FLOW plan's progressive binding
+templates, and compare the output with the `*.expected.txt` files beside them
+in `crates/openjd-cli/tests/templates/control_flow/`. When a change alters that
+output on purpose, rewrite the files and review their diff:
 
 ```bash
 OPENJD_UPDATE_GOLDEN=1 cargo test -p openjd-cli --test cli_tests control_flow_golden

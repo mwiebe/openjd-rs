@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! Golden-file tests of `openjd` on the RFC 0010 (CONTROL_FLOW) sample
-//! templates.
+//! templates and the plan's progressive binding templates.
 //!
 //! Each case runs `openjd` on a template in `tests/templates/control_flow/`,
 //! normalizes the output, and compares it with `<case>.expected.txt` beside
@@ -103,15 +103,16 @@ fn check(case: Case) {
     )
     .unwrap();
     // Variables from the developer's shell that change what the samples'
-    // bash scripts or the stubs print.
-    for var in [
-        "BASH_ENV",
-        "ENV",
-        "CDPATH",
-        "OPENJD_GOLDEN_S3",
-        "OPENJD_GOLDEN_DUPLICATE_MPJPE",
-    ] {
+    // bash scripts, their Python, or the stubs print. The PYTHON* variables
+    // the harness needs are set below.
+    for var in ["BASH_ENV", "ENV", "CDPATH", "SHELLOPTS", "BASHOPTS"] {
         cmd.env_remove(var);
+    }
+    for (var, _) in std::env::vars_os() {
+        let name = var.to_string_lossy();
+        if name.starts_with("PYTHON") || name.starts_with("OPENJD_GOLDEN_") {
+            cmd.env_remove(&var);
+        }
     }
     cmd.current_dir(&scratch_path)
         .env("PATH", path)
