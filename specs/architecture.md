@@ -105,6 +105,11 @@ Core template library. Depends on openjd-expr. Provides:
 Runtime library. Depends on openjd-model and openjd-expr. Provides:
 - Session lifecycle management
 - Action execution (subprocess management)
+- `CONTROL_FLOW` output values: recognizing `openjd_output_var` directives in an action's
+  output, reading `@` files (as the job user, through the cross-user helper, when the
+  Session runs as another user), collecting each Task's values with the model's
+  `OutputCollector`, and returning them in `ActionResult::outputs`; and forward-mapping a
+  consumer's path-typed `Steps.*` inputs
 - Re-exports path mapping from openjd-expr
 
 ### openjd-cli

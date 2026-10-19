@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::action::{ActionMessage, ActionState};
 use crate::error::SessionError;
 use crate::logging::LogContent;
+use crate::output_vars::{Begin, HelperFileParts, LineOutcome};
 
 /// Maximum bytes for a single JSON response line from the helper's stdout.
 /// Matches the helper binary's own `MAX_LINE_LENGTH` (128 KB).
@@ -334,11 +335,12 @@ impl CrossUserHelper {
     pub fn send_command(&mut self, cmd: &serde_json::Value) -> Result<(), SessionError> {
         use std::io::Write;
         let payload = augment_with_token(cmd, &self.auth_token)?;
-        serde_json::to_writer(&mut self.stdin, &payload).map_err(|e| {
+        // One write per line, so a cancel another thread writes to the same
+        // pipe (through the cancel writer) can't land inside it, for a line
+        // up to PIPE_BUF bytes.
+        let line = command_line(&payload)?;
+        self.stdin.write_all(&line).map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
-        })?;
-        self.stdin.write_all(b"\n").map_err(|e| {
-            SessionError::HelperCommunication(format!("Failed to write newline to helper: {e}"))
         })?;
         self.stdin.flush().map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to flush helper stdin: {e}"))
@@ -475,11 +477,12 @@ impl CrossUserHelperWin {
     pub fn send_command(&mut self, cmd: &serde_json::Value) -> Result<(), SessionError> {
         use std::io::Write;
         let payload = augment_with_token(cmd, &self.auth_token)?;
-        serde_json::to_writer(&mut self.stdin, &payload).map_err(|e| {
+        // One write per line, so a cancel another thread writes to the same
+        // pipe (through the cancel writer) can't land inside it, for a line
+        // up to PIPE_BUF bytes.
+        let line = command_line(&payload)?;
+        self.stdin.write_all(&line).map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
-        })?;
-        self.stdin.write_all(b"\n").map_err(|e| {
-            SessionError::HelperCommunication(format!("Failed to write newline to helper: {e}"))
         })?;
         self.stdin.flush().map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to flush helper stdin: {e}"))
@@ -580,14 +583,37 @@ pub(crate) async fn run_via_helper(
         })
         .collect();
 
-    let cmd = serde_json::json!({
+    let mut cmd = serde_json::json!({
         "command": args[0],
         "args": &args[1..],
         "env": env,
         "cwd": config.working_dir,
     });
+    // An Action that may report output values has the helper read each `@`
+    // file as the job user (RFC 0010 §File values item 3). For any other
+    // Action the helper leaves `openjd_output_var:` lines alone, so they reach
+    // the filter here unchanged: ordinary output, or invalid when Forbidden.
+    if let Some(max_bytes) = filter.output_vars_mut().max_bytes() {
+        cmd["outputFiles"] = serde_json::json!({ "maxBytes": max_bytes });
+    }
 
     helper.send_command(&cmd)?;
+
+    // A cancel requested after the session armed this action but before the
+    // helper read the Run command was written ahead of it, and the helper,
+    // then idle, dropped it (a cancel is for the current run only). Send it
+    // again now that the run exists.
+    if let (Some(writer), Some(rx)) = (cancel_writer, config.cancel_request_rx.as_ref()) {
+        if rx.has_changed().unwrap_or(false) {
+            let time_limit = *rx.borrow();
+            write_cancel(
+                writer,
+                helper.auth_token(),
+                &config.cancel_method,
+                time_limit,
+            )?;
+        }
+    }
 
     // Log the actual command (not the helper protocol)
     session_log!(
@@ -614,6 +640,8 @@ pub(crate) async fn run_via_helper(
 
     let mut stdout_collected = String::new();
     let mut saw_fail = false;
+    // A long line or resolved `@` directive whose data frames are arriving.
+    let mut pending_slot: Option<PendingFrames> = None;
 
     loop {
         tokio::select! {
@@ -637,22 +665,52 @@ pub(crate) async fn run_via_helper(
                     continue;
                 }
 
+                if let Some(pending) = pending_slot.as_mut() {
+                    // Between an `outLong` or `outputFile` header and its last
+                    // data frame, only data frames may arrive.
+                    let Some(data) = resp.get("data").and_then(|v| v.as_str()) else {
+                        return Err(SessionError::HelperCommunication(format!(
+                            "Expected a data frame from the helper, got: {resp}"
+                        )));
+                    };
+                    if !pending.push(data)? {
+                        continue;
+                    }
+                    let complete = pending_take(&mut pending_slot)?;
+                    let outcome = complete.outcome(filter);
+                    log_line(complete.line(), outcome, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
+                    continue;
+                }
+
+                if let Some(header) = resp.get("outputFile") {
+                    let Some(max_bytes) = filter.output_vars_mut().max_bytes() else {
+                        return Err(SessionError::HelperCommunication(
+                            "The helper sent an outputFile frame for an Action that can't \
+                             report output values"
+                                .into(),
+                        ));
+                    };
+                    start_frames(PendingFrames::file(header, max_bytes)?, &mut pending_slot, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail)?;
+                    continue;
+                }
+
+                if let Some(header) = resp.get("outLong") {
+                    if filter.output_vars_mut().max_bytes().is_none() {
+                        return Err(SessionError::HelperCommunication(
+                            "The helper sent an outLong frame for an Action that can't \
+                             report output values"
+                                .into(),
+                        ));
+                    }
+                    start_frames(PendingFrames::long_line(header)?, &mut pending_slot, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail)?;
+                    continue;
+                }
+
                 if let Some(line) = resp.get("out").and_then(|v| v.as_str()) {
                     let line = crate::subprocess::truncate_line(line);
-                    let (display, pass_through) = crate::subprocess::process_line(
-                        line,
-                        filter,
-                        session_id,
-                        &message_tx,
-                        &mut saw_fail,
-                    );
-                    if pass_through && filter.min_log_level() <= 20 {
-                        session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
-                    }
-                    if config.debug_collect_stdout {
-                        stdout_collected.push_str(&display);
-                        stdout_collected.push('\n');
-                    }
+                    let flag = |key: &str| resp.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+                    let output = out_line_outcome(filter, line, flag("truncated"), flag("lossy"));
+                    log_line(line, output, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
                     continue;
                 }
 
@@ -705,32 +763,556 @@ pub(crate) async fn run_via_helper(
                 timed_out = true;
                 // Send cancel to helper via the cancel_writer
                 if let Some(writer) = cancel_writer {
-                    use std::io::Write;
-                    let mut w = writer.try_clone().map_err(|e| {
-                        SessionError::HelperCommunication(format!("Failed to clone cancel_writer: {e}"))
-                    })?;
-                    let token = helper.auth_token();
-                    let cancel_method = &config.cancel_method;
-                    let notify_period = match cancel_method {
-                        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => {
-                            terminate_delay.as_secs()
-                        }
-                        crate::runner::CancelMethod::Terminate => 0,
-                    };
-                    // The token alphabet excludes `"` and `\`, so no
-                    // escaping is needed to embed it in a JSON literal.
-                    if notify_period == 0 {
-                        let _ = writeln!(w, r#"{{"token":"{token}","cancel":"TERMINATE"}}"#);
-                    } else {
-                        let _ = writeln!(
-                            w,
-                            r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
-                        );
-                    }
-                    let _ = w.flush();
+                    write_cancel(writer, helper.auth_token(), &config.cancel_method, None)?;
                 }
             }
         }
+    }
+}
+
+/// Write a cancel for the current run to the helper's cancel pipe, as the
+/// same-user runner cancels: TERMINATE for a TERMINATE action or a zero
+/// `time_limit`, otherwise NOTIFY_THEN_TERMINATE with the declared period,
+/// capped by `time_limit`. The protocol counts whole seconds, so a period
+/// under a second (but not zero) is sent as one second.
+fn write_cancel(
+    writer: &std::fs::File,
+    token: &str,
+    cancel_method: &crate::runner::CancelMethod,
+    time_limit: Option<std::time::Duration>,
+) -> Result<(), SessionError> {
+    use std::io::Write;
+    let mut w = writer.try_clone().map_err(|e| {
+        SessionError::HelperCommunication(format!("Failed to clone cancel_writer: {e}"))
+    })?;
+    let notify_period = match cancel_method {
+        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => {
+            match time_limit.map_or(*terminate_delay, |l| l.min(*terminate_delay)) {
+                d if d.is_zero() => 0,
+                d => d.as_secs().max(1),
+            }
+        }
+        crate::runner::CancelMethod::Terminate => 0,
+    };
+    // The token alphabet excludes `"` and `\`, so no escaping is needed to
+    // embed it in a JSON literal. The line is written in one call, so it
+    // can't interleave with a cancel another thread writes at the same time.
+    let line = if notify_period == 0 {
+        format!(r#"{{"token":"{token}","cancel":"TERMINATE"}}"#)
+    } else {
+        format!(
+            r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
+        )
+    };
+    let _ = w.write_all(format!("{line}\n").as_bytes());
+    let _ = w.flush();
+    Ok(())
+}
+
+/// A helper command as one JSON line, newline included.
+fn command_line(payload: &serde_json::Value) -> Result<Vec<u8>, SessionError> {
+    let mut line = serde_json::to_vec(payload).map_err(|e| {
+        SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
+    })?;
+    line.push(b'\n');
+    Ok(line)
+}
+
+/// Process and log one line of the helper's output, as the direct path does.
+#[allow(clippy::too_many_arguments)]
+fn log_line(
+    line: &str,
+    output: Option<LineOutcome>,
+    filter: &mut crate::action_filter::ActionFilter,
+    session_id: &str,
+    message_tx: &tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    collect: bool,
+    stdout_collected: &mut String,
+    saw_fail: &mut bool,
+) {
+    let (display, log) =
+        crate::subprocess::process_line(line, output, filter, session_id, message_tx, saw_fail);
+    if log {
+        session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
+    }
+    if collect {
+        stdout_collected.push_str(&display);
+        stdout_collected.push('\n');
+    }
+}
+
+/// What `Begin` on an ordinary `out` line of the helper path comes to.
+///
+/// The helper resolves every `@` directive the parser reads as one (a parity
+/// test pins its recognizer to the parser), so an `@` directive that arrives
+/// as an `out` line in an Action that may report outputs means the two
+/// disagree; it is invalid rather than read here, because the parent never
+/// reads the file.
+fn out_line_outcome(
+    filter: &mut crate::action_filter::ActionFilter,
+    line: &str,
+    truncated: bool,
+    lossy: bool,
+) -> Option<LineOutcome> {
+    match filter.output_vars_mut().begin(line, truncated, lossy) {
+        Begin::NotDirective => None,
+        Begin::Done(outcome) => Some(outcome),
+        Begin::ReadFile(request) => {
+            Some(filter.output_vars_mut().unresolved_on_helper_path(&request))
+        }
+    }
+}
+
+/// Hold `frames` until its data arrives, or process it at once when there is
+/// none to wait for.
+#[allow(clippy::too_many_arguments)]
+fn start_frames(
+    frames: PendingFrames,
+    slot: &mut Option<PendingFrames>,
+    filter: &mut crate::action_filter::ActionFilter,
+    session_id: &str,
+    message_tx: &tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    collect: bool,
+    stdout_collected: &mut String,
+    saw_fail: &mut bool,
+) -> Result<(), SessionError> {
+    if frames.is_complete() {
+        let complete = frames.complete()?;
+        let outcome = complete.outcome(filter);
+        log_line(
+            complete.line(),
+            outcome,
+            filter,
+            session_id,
+            message_tx,
+            collect,
+            stdout_collected,
+            saw_fail,
+        );
+    } else {
+        *slot = Some(frames);
+    }
+    Ok(())
+}
+
+/// Take the completed frames out of `slot`.
+fn pending_take(slot: &mut Option<PendingFrames>) -> Result<CompleteFrames, SessionError> {
+    slot.take().expect("caller checked the slot").complete()
+}
+
+/// What a header announced: a long directive line, or a resolved `@`
+/// directive.
+#[derive(Debug)]
+enum FramesKind {
+    /// `outLong`: the data is the line; the flags mean what they mean on
+    /// `out`.
+    Line { truncated: bool, lossy: bool },
+    /// `outputFile`: the data is the line, then the valid UTF-8 prefix of the
+    /// file's content.
+    File {
+        parts: HelperFileParts,
+        error: Option<String>,
+        size: usize,
+        valid_utf8: usize,
+    },
+}
+
+/// A header and the `data` frames received for it so far.
+#[derive(Debug)]
+struct PendingFrames {
+    line_len: usize,
+    expected: usize,
+    data: String,
+    kind: FramesKind,
+}
+
+fn bad_header(kind: &str, header: &serde_json::Value) -> SessionError {
+    SessionError::HelperCommunication(format!("Malformed {kind} header: {header}"))
+}
+
+fn header_usize(header: &serde_json::Value, key: &str) -> Option<usize> {
+    header
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| usize::try_from(v).ok())
+}
+
+impl PendingFrames {
+    /// Check an `outLong` header.
+    fn long_line(header: &serde_json::Value) -> Result<Self, SessionError> {
+        let bad = || bad_header("outLong", header);
+        let len = header_usize(header, "len").ok_or_else(bad)?;
+        let flag = |key: &str| match header.get(key) {
+            None => Ok(false),
+            Some(v) => v.as_bool().ok_or_else(bad),
+        };
+        let kind = FramesKind::Line {
+            truncated: flag("truncated")?,
+            lossy: flag("lossy")?,
+        };
+        if len > crate::subprocess::LOG_LINE_MAX_LENGTH {
+            return Err(bad());
+        }
+        Ok(Self {
+            line_len: len,
+            expected: len,
+            data: String::new(),
+            kind,
+        })
+    }
+
+    /// Check an `outputFile` header against what the helper was asked to do.
+    /// Anything inconsistent is a protocol error, not a directive error: the
+    /// helper is trusted only to report what it read, its output stream can
+    /// carry what processes of the job user write to it, and its numbers
+    /// bound how much the parent buffers.
+    fn file(header: &serde_json::Value, max_bytes: usize) -> Result<Self, SessionError> {
+        let bad = || bad_header("outputFile", header);
+        let range_of = |key: &str| -> Option<std::ops::Range<usize>> {
+            let a = header.get(key)?.as_array()?;
+            match a.as_slice() {
+                [s, e] => {
+                    Some(usize::try_from(s.as_u64()?).ok()?..usize::try_from(e.as_u64()?).ok()?)
+                }
+                _ => None,
+            }
+        };
+        let line_len = header_usize(header, "lineLen").ok_or_else(bad)?;
+        let size = header_usize(header, "size").ok_or_else(bad)?;
+        let valid_utf8 = header_usize(header, "validUtf8").ok_or_else(bad)?;
+        let task = match header.get("task") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(v.as_i64().ok_or_else(bad)?),
+        };
+        let error = match header.get("error") {
+            None => None,
+            Some(v) => Some(v.as_str().ok_or_else(bad)?.to_string()),
+        };
+        let parts = HelperFileParts {
+            name: range_of("name").ok_or_else(bad)?,
+            task,
+            path: range_of("path").ok_or_else(bad)?,
+        };
+        if line_len > crate::subprocess::LOG_LINE_MAX_LENGTH
+            || size > max_bytes.saturating_add(1)
+            || valid_utf8 > size
+            || (error.is_some() && size != 0)
+        {
+            return Err(bad());
+        }
+        Ok(Self {
+            line_len,
+            expected: line_len + valid_utf8,
+            data: String::new(),
+            kind: FramesKind::File {
+                parts,
+                error,
+                size,
+                valid_utf8,
+            },
+        })
+    }
+
+    fn is_complete(&self) -> bool {
+        self.data.len() == self.expected
+    }
+
+    /// Add a data frame; `true` once the data is complete.
+    fn push(&mut self, data: &str) -> Result<bool, SessionError> {
+        if self.data.len() + data.len() > self.expected {
+            return Err(SessionError::HelperCommunication(
+                "The helper sent more data than its header announced".into(),
+            ));
+        }
+        self.data.push_str(data);
+        Ok(self.is_complete())
+    }
+
+    /// The complete data split into the line and what follows it. The split
+    /// must fall on a character boundary: a header whose `lineLen` cuts a
+    /// character is a protocol error.
+    fn complete(self) -> Result<CompleteFrames, SessionError> {
+        if !self.data.is_char_boundary(self.line_len) {
+            return Err(SessionError::HelperCommunication(
+                "The helper's header puts the end of the line inside a character".into(),
+            ));
+        }
+        let mut line = self.data;
+        let rest = line.split_off(self.line_len);
+        Ok(match self.kind {
+            FramesKind::Line { truncated, lossy } => CompleteFrames::Line {
+                line,
+                truncated,
+                lossy,
+            },
+            FramesKind::File {
+                parts,
+                error,
+                size,
+                valid_utf8,
+            } => {
+                let content = match error {
+                    Some(error) => Err(error),
+                    None => {
+                        let mut content = rest.into_bytes();
+                        if valid_utf8 < size {
+                            // One stand-in byte for what was not valid UTF-8,
+                            // so the collector reports where the content
+                            // stops being UTF-8. The size check uses `size`,
+                            // which a forged header may set without sending
+                            // the data, so nothing of that size is allocated.
+                            content.push(0xFF);
+                        }
+                        Ok(content)
+                    }
+                };
+                CompleteFrames::File {
+                    line,
+                    parts,
+                    content,
+                    size,
+                }
+            }
+        })
+    }
+}
+
+/// Frames whose data has all arrived.
+#[derive(Debug)]
+enum CompleteFrames {
+    Line {
+        line: String,
+        truncated: bool,
+        lossy: bool,
+    },
+    File {
+        line: String,
+        parts: HelperFileParts,
+        content: Result<Vec<u8>, String>,
+        /// How many bytes the helper read.
+        size: usize,
+    },
+}
+
+impl CompleteFrames {
+    fn line(&self) -> &str {
+        match self {
+            Self::Line { line, .. } | Self::File { line, .. } => line,
+        }
+    }
+
+    /// Process the line as the Action's `openjd_output_var` state says.
+    fn outcome(&self, filter: &mut crate::action_filter::ActionFilter) -> Option<LineOutcome> {
+        match self {
+            Self::Line {
+                line,
+                truncated,
+                lossy,
+            } => out_line_outcome(filter, line, *truncated, *lossy),
+            Self::File {
+                line,
+                parts,
+                content,
+                size,
+            } => filter
+                .output_vars_mut()
+                .finish_helper_file(line, parts, content.clone(), *size),
+        }
+    }
+}
+
+#[cfg(test)]
+mod frames_tests {
+    use super::*;
+    use crate::output_vars::OutputVars;
+    use openjd_expr::{ExprValue, PathFormat};
+    use openjd_model::outputs::OutputCollector;
+    use serde_json::json;
+
+    fn filter() -> crate::action_filter::ActionFilter {
+        let declared: Vec<openjd_model::job::OutputVariable> =
+            serde_json::from_str(r#"[{"name": "N", "type": "STRING"}]"#).unwrap();
+        let collector =
+            OutputCollector::new(&declared, 100, &[], PathFormat::host(), None).unwrap();
+        let mut f = crate::action_filter::ActionFilter::new("s", true, false);
+        f.set_output_vars(OutputVars::allowed(collector, std::env::temp_dir(), 100));
+        f
+    }
+
+    fn header(line_len: usize, size: usize, valid: usize) -> serde_json::Value {
+        json!({"lineLen": line_len, "name": [19, 20], "task": null,
+               "path": [22, 23], "size": size, "validUtf8": valid})
+    }
+
+    fn message(e: SessionError) -> String {
+        e.to_string()
+    }
+
+    #[test]
+    fn file_header_is_validated() {
+        let ok = header(23, 2, 2);
+        assert!(PendingFrames::file(&ok, 100).is_ok());
+        for (bad, why) in [
+            (header(65_537, 0, 0), "line over the line limit"),
+            (header(23, 102, 102), "size over max_bytes + 1"),
+            (header(23, 2, 3), "validUtf8 over size"),
+            (
+                json!({"lineLen": 23, "name": [19, 20], "path": [22, 23], "size": 1,
+                       "validUtf8": 1, "error": "does not exist"}),
+                "an error with data",
+            ),
+            (
+                json!({"lineLen": 23, "size": 0, "validUtf8": 0}),
+                "no ranges",
+            ),
+            (
+                json!({"lineLen": 23, "name": [19], "path": [22, 23], "size": 0, "validUtf8": 0}),
+                "a short range",
+            ),
+            (
+                json!({"lineLen": 23, "name": [19, 20], "path": [22, 23], "task": "x",
+                       "size": 0, "validUtf8": 0}),
+                "a task that is not an integer",
+            ),
+        ] {
+            let e = PendingFrames::file(&bad, 100).expect_err(why);
+            assert_eq!(
+                message(e),
+                format!("Cross-user helper error: Malformed outputFile header: {bad}"),
+                "{why}"
+            );
+        }
+        // Exactly max_bytes + 1 is allowed: that is how the helper reports a
+        // file that is too large.
+        assert!(PendingFrames::file(&header(23, 101, 101), 100).is_ok());
+    }
+
+    #[test]
+    fn long_line_header_is_validated() {
+        assert!(PendingFrames::long_line(&json!({"len": 65_536})).is_ok());
+        for bad in [
+            json!({"len": 65_537}),
+            json!({}),
+            json!({"len": 3, "lossy": "yes"}),
+        ] {
+            let e = PendingFrames::long_line(&bad).unwrap_err();
+            assert_eq!(
+                message(e),
+                format!("Cross-user helper error: Malformed outLong header: {bad}")
+            );
+        }
+    }
+
+    #[test]
+    fn data_must_match_the_header() {
+        let mut p = PendingFrames::file(&header(23, 2, 2), 100).unwrap();
+        assert!(!p.push("openjd_output_var: N=@f").unwrap());
+        assert!(p.push("\"x").is_ok());
+        assert_eq!(
+            message(p.push("\"y").unwrap_err()),
+            "Cross-user helper error: The helper sent more data than its header announced"
+        );
+        // One byte over is refused too.
+        let mut p = PendingFrames::file(&header(23, 2, 2), 100).unwrap();
+        assert!(!p.push("openjd_output_var: N=@f").unwrap());
+        assert_eq!(
+            message(p.push("abc").unwrap_err()),
+            "Cross-user helper error: The helper sent more data than its header announced"
+        );
+    }
+
+    #[test]
+    fn line_end_inside_a_character_is_refused() {
+        // "é" is two bytes. A file header whose lineLen is 1 and whose
+        // content is 1 byte announces 2 bytes of data, and the line ends
+        // inside the character.
+        let mut p = PendingFrames::file(
+            &json!({"lineLen": 1, "name": [0, 1], "task": null, "path": [0, 1],
+                    "size": 1, "validUtf8": 1}),
+            100,
+        )
+        .unwrap();
+        assert!(p.push("é").unwrap());
+        assert_eq!(
+            message(p.complete().unwrap_err()),
+            "Cross-user helper error: The helper's header puts the end of the line inside a \
+             character"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_content_keeps_the_reported_size_without_allocating_it() {
+        let line = "openjd_output_var: N=@f";
+        let mut p = PendingFrames::file(&header(23, 50, 2), 100).unwrap();
+        assert!(p.push(&format!("{line}ab")).unwrap());
+        match p.complete().unwrap() {
+            CompleteFrames::File {
+                line: l,
+                content,
+                size,
+                ..
+            } => {
+                assert_eq!(l, line);
+                // The valid prefix and one stand-in byte; the size the
+                // helper read travels separately.
+                assert_eq!(content.unwrap(), b"ab\xff");
+                assert_eq!(size, 50);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_file_frames_feed_the_collector() {
+        let line = "openjd_output_var: N=@f";
+        let mut p = PendingFrames::file(&header(23, 3, 3), 100).unwrap();
+        assert!(p.push(&format!("{line}\"x\"")).unwrap());
+        let mut f = filter();
+        match p.complete().unwrap().outcome(&mut f) {
+            Some(LineOutcome::Accepted { name, value, .. }) => {
+                assert_eq!((name.as_str(), value), ("N", ExprValue::String("x".into())));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_lines_are_processed_as_out_lines() {
+        let text = format!("openjd_output_var: N=\"{}\"", "\\\\".repeat(10));
+        let mut p = PendingFrames::long_line(&json!({"len": text.len()})).unwrap();
+        assert!(p.push(&text).unwrap());
+        let mut f = filter();
+        assert!(matches!(
+            p.complete().unwrap().outcome(&mut f),
+            Some(LineOutcome::Accepted { .. })
+        ));
+        // With a flag, it is rejected like an out line with it.
+        let mut p =
+            PendingFrames::long_line(&json!({"len": text.len(), "truncated": true})).unwrap();
+        assert!(p.push(&text).unwrap());
+        let mut f = filter();
+        assert!(matches!(
+            p.complete().unwrap().outcome(&mut f),
+            Some(LineOutcome::Invalid(m)) if m == format!(
+                "Invalid openjd_output_var directive: the line is longer than the 65536 byte \
+                 line limit, so it was cut; write a large value to a file and report it with \
+                 @<file>, in '{text}'"
+            )
+        ));
+    }
+
+    #[test]
+    fn unresolved_at_directive_on_the_helper_path_is_invalid() {
+        let mut f = filter();
+        assert!(matches!(
+            out_line_outcome(&mut f, "openjd_output_var: N=@f", false, false),
+            Some(LineOutcome::Invalid(m)) if m == "Output variable 'N': the cross-user helper did not read the @ file 'f'"
+        ));
+        // It counts as the Action's invalid directive: later lines are not
+        // directives.
+        assert!(f.output_vars_mut().is_invalid());
+        let mut f = filter();
+        assert!(out_line_outcome(&mut f, "hello", false, false).is_none());
     }
 }
 
@@ -793,5 +1375,51 @@ mod token_tests {
             Some("good"),
             "augment_with_token must not let the caller override the token",
         );
+    }
+}
+
+#[cfg(test)]
+mod write_cancel_tests {
+    use super::write_cancel;
+    use crate::runner::CancelMethod;
+    use std::time::Duration;
+
+    fn written(method: CancelMethod, time_limit: Option<Duration>) -> String {
+        let file = tempfile::tempfile().unwrap();
+        write_cancel(&file, "T", &method, time_limit).unwrap();
+        use std::io::{Read, Seek};
+        let mut file = file;
+        file.rewind().unwrap();
+        let mut s = String::new();
+        file.read_to_string(&mut s).unwrap();
+        s
+    }
+
+    #[test]
+    fn maps_the_method_and_time_limit_as_the_same_user_runner() {
+        let ntt = |s| CancelMethod::NotifyThenTerminate {
+            terminate_delay: Duration::from_secs(s),
+        };
+        let term = "{\"token\":\"T\",\"cancel\":\"TERMINATE\"}\n";
+        let notify = |p: u64| {
+            format!(
+                "{{\"token\":\"T\",\"cancel\":\"NOTIFY_THEN_TERMINATE\",\"notifyPeriodInSeconds\":{p}}}\n"
+            )
+        };
+        assert_eq!(written(CancelMethod::Terminate, None), term);
+        assert_eq!(
+            written(CancelMethod::Terminate, Some(Duration::from_secs(9))),
+            term
+        );
+        assert_eq!(written(ntt(5), None), notify(5));
+        assert_eq!(written(ntt(5), Some(Duration::from_secs(2))), notify(2));
+        assert_eq!(written(ntt(5), Some(Duration::from_secs(60))), notify(5));
+        assert_eq!(written(ntt(5), Some(Duration::ZERO)), term);
+        // Whole seconds on the wire: a sub-second period is one second.
+        assert_eq!(
+            written(ntt(120), Some(Duration::from_millis(500))),
+            notify(1)
+        );
+        assert_eq!(written(ntt(0), None), term);
     }
 }

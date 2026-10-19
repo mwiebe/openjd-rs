@@ -59,12 +59,25 @@ is non-terminal.
    the callback after each message:
    - `Progress(v)` → `progress = Some(v)`
    - `Status(s)` → `status_message = Some(s)`
-   - `Fail(s)` → `fail_message = Some(s)`
-   - `CancelMarkFailed { fail_message }` → `fail_message = Some(fail_message)`,
-     triggers cancellation
+   - `Fail(s)` → `fail_message = Some(s)`, unless an `InvalidOutputVar` already
+     gave the reason
+   - `CancelMarkFailed { fail_message }` → `fail_message = Some(fail_message)`
+     (same exception), triggers cancellation
+   - `InvalidOutputVar { fail_message }` → as `CancelMarkFailed`, and the message
+     is final for the action: a later `Fail` (such as an `openjd_fail` printed
+     by a cancel handler) or `CancelMarkFailed` does not replace it, because
+     RFC 0010 requires the failure of an invalid `openjd_output_var` directive
+     to name the output, the problem, and the text. The flag resets with each
+     action.
+   - `OutputVar { .. }` changes no field and does not fire this callback; it
+     goes to `SessionConfig::output_callback` instead (see
+     [action-messages.md](action-messages.md))
 
 3. **Action ends**: Session sets `state` to the terminal state, `exit_code` from
-   the subprocess, `ended_at = now()`. Callback fires.
+   the subprocess, `ended_at = now()`. Callback fires. For a Task whose Step
+   declares output variables (`CONTROL_FLOW`), the runner checks the outputs are
+   complete before this; a missing output sends `Fail` with its message and the
+   terminal state is `Failed`, so the callback never reports `Success` first.
 
 ## Reset between actions
 

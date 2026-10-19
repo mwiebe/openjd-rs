@@ -522,6 +522,14 @@ pub struct CallerLimits {
     /// ([`openjd_expr::DEFAULT_OPERATION_LIMIT`], 10 million). Applied at
     /// the same stages as [`max_eval_memory_bytes`](Self::max_eval_memory_bytes).
     pub max_eval_operations: Option<usize>,
+    /// Maximum bytes of output values each Task holds (RFC 0010 §Limits
+    /// item 2, `CONTROL_FLOW`). Enforced only at run time, by the session
+    /// runtime when the caller mirrors it into `SessionLimits`. `None`
+    /// (default) uses the RFC's minimum,
+    /// [`MIN_OUTPUT_BYTES_LIMIT`](crate::outputs::MIN_OUTPUT_BYTES_LIMIT)
+    /// (1 MiB); the runtime raises a smaller value to it, because it must
+    /// accept at least that much.
+    pub max_task_output_bytes: Option<usize>,
 }
 
 /// Model-side profile: the specification revision plus the set of

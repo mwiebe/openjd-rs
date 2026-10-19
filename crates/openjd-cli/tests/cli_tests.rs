@@ -3803,3 +3803,106 @@ steps:
         );
     }
 }
+
+// ============================================================
+// CONTROL_FLOW: openjd_output_var treatments in `openjd run`
+// ============================================================
+
+mod control_flow_output_vars {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    const JOB: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: CF
+steps:
+- name: P
+  outputVariables:
+  - name: N
+    type: INT
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', 'print("openjd_output_var: N=1")']
+"#;
+
+    /// A declared output with no value fails the Task, and the reason is in
+    /// the output, not only in the session's status.
+    #[test]
+    fn missing_output_fails_and_is_reported() {
+        let job = write(&JOB.replace("print(\"openjd_output_var: N=1\")", "print(\"hi\")"));
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "\tERROR: Output variable 'N': no value was reported (collect mode ONCE)\n"
+            ),
+            "stdout: {stdout}"
+        );
+    }
+
+    /// An Environment Template has not opted in to CONTROL_FLOW, so a
+    /// directive in its action is ordinary output, on enter and on exit.
+    #[test]
+    fn environment_template_directive_is_ordinary_output() {
+        let job = write(JOB);
+        let env = write(
+            r#"specificationVersion: environment-2023-09
+environment:
+  name: EnvT
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ['-c', 'print("openjd_output_var: N=1")']
+      onExit:
+        command: python
+        args: ['-c', 'print("openjd_output_var: N=2")']
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--environment",
+            env.path().to_str().unwrap(),
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!stdout.contains("-- ERROR:"), "stdout: {stdout}");
+    }
+
+    /// A Job Environment is defined by the Job Template, so a directive in
+    /// its action fails it.
+    #[test]
+    fn job_environment_directive_fails() {
+        let job = write(&JOB.replace(
+            "steps:\n",
+            r#"jobEnvironments:
+- name: JobEnv
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ['-c', 'print("openjd_output_var: N=1")']
+steps:
+"#,
+        ));
+        let (code, stdout, _stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_ne!(code, 0, "stdout: {stdout}");
+        assert!(
+            stdout.contains(
+                "openjd_output_var: N=1 -- ERROR: Invalid openjd_output_var directive: this \
+                 Action can't report output values; only the onRun action of a Step that \
+                 declares outputVariables can, in 'openjd_output_var: N=1'"
+            ),
+            "stdout: {stdout}"
+        );
+    }
+}

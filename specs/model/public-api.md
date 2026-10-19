@@ -1307,6 +1307,11 @@ pub struct CallerLimits {
     /// spec-recommended default (`openjd_expr::DEFAULT_OPERATION_LIMIT`,
     /// 10 million).
     pub max_eval_operations: Option<usize>,
+    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0010
+    /// §Limits item 2). Enforced only at run time, when mirrored into
+    /// `SessionLimits`. `None` = `outputs::MIN_OUTPUT_BYTES_LIMIT`
+    /// (1 MiB); the runtime raises a smaller value to it.
+    pub max_task_output_bytes: Option<usize>,
 }
 
 /// The thing every validation and instantiation function takes — a

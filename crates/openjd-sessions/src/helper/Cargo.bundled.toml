@@ -11,7 +11,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["signal", "process", "poll"] }
+nix = { version = "0.31", features = ["signal", "process", "poll", "fs"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -21,6 +21,7 @@ windows = { version = "0.62", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
 ] }
 
 [profile.release]

@@ -43,6 +43,23 @@ pub struct SessionLimits {
     /// `None` uses the spec-recommended default
     /// ([`openjd_expr::DEFAULT_OPERATION_LIMIT`], 10 million).
     pub max_eval_operations: Option<usize>,
+    /// Maximum bytes of output values each Task holds (RFC 0010 §Limits
+    /// item 2, `CONTROL_FLOW`). `None` uses the RFC's minimum,
+    /// [`openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT`] (1 MiB); a smaller
+    /// value is raised to it, because a runtime must accept at least that
+    /// much. See [`task_output_bytes`](Self::task_output_bytes).
+    pub max_task_output_bytes: Option<usize>,
+}
+
+impl SessionLimits {
+    /// The per-Task output size limit the Session enforces:
+    /// [`max_task_output_bytes`](Self::max_task_output_bytes), and never
+    /// less than [`openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT`].
+    pub fn task_output_bytes(&self) -> usize {
+        self.max_task_output_bytes
+            .unwrap_or(openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT)
+            .max(openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT)
+    }
 }
 
 /// Mirror the run-time-relevant fields of a submitting service's
@@ -57,6 +74,7 @@ impl From<&openjd_model::CallerLimits> for SessionLimits {
             max_resolved_data_len: limits.max_resolved_data_len,
             max_eval_memory_bytes: limits.max_eval_memory_bytes,
             max_eval_operations: limits.max_eval_operations,
+            max_task_output_bytes: limits.max_task_output_bytes,
         }
     }
 }
@@ -80,4 +98,24 @@ pub(crate) fn fs_options<'a>(
         opts = opts.with_operation_limit(o);
     }
     opts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT;
+
+    #[test]
+    fn task_output_bytes_defaults_to_and_never_goes_below_the_minimum() {
+        let limits = |m| SessionLimits {
+            max_task_output_bytes: m,
+            ..Default::default()
+        };
+        assert_eq!(limits(None).task_output_bytes(), MIN_OUTPUT_BYTES_LIMIT);
+        assert_eq!(limits(Some(10)).task_output_bytes(), MIN_OUTPUT_BYTES_LIMIT);
+        assert_eq!(
+            limits(Some(MIN_OUTPUT_BYTES_LIMIT + 1)).task_output_bytes(),
+            MIN_OUTPUT_BYTES_LIMIT + 1
+        );
+    }
 }

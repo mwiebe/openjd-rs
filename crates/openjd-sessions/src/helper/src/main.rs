@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 // Cross-platform: both runners frame child output through it.
+mod emit;
 mod framer;
 #[cfg(windows)]
 mod job_object;
+mod output_file;
 mod protocol;
 #[cfg(unix)]
 mod runner;
@@ -176,7 +178,11 @@ fn run_windows(expected_token: &str) {
     }
 
     let (main_tx, main_rx) = mpsc::channel::<MainCmd>();
-    let (cancel_tx, cancel_rx) = mpsc::channel::<protocol::CancelMethod>();
+    // Each cancel is tagged with the number of Run commands read before it,
+    // so a run takes only the cancels sent for it: the parent can send one
+    // after the previous run exited (an invalid `openjd_output_var` line in a
+    // script that then exits at once), and it must not cancel the next run.
+    let (cancel_tx, cancel_rx) = mpsc::channel::<(u64, protocol::CancelMethod)>();
 
     // The reader thread owns its own copy of the expected token so the
     // stdin parsing path stays fully self-contained.
@@ -187,6 +193,7 @@ fn run_windows(expected_token: &str) {
         let stdin = std::io::stdin();
         let mut reader = std::io::BufReader::new(stdin.lock());
         let mut line = String::new();
+        let mut runs: u64 = 0;
 
         loop {
             line.clear();
@@ -218,6 +225,7 @@ fn run_windows(expected_token: &str) {
             }
             match cmd {
                 Command::Run { run, .. } => {
+                    runs += 1;
                     if main_tx.send(MainCmd::Run(run)).is_err() {
                         break;
                     }
@@ -227,20 +235,55 @@ fn run_windows(expected_token: &str) {
                     break;
                 }
                 Command::Cancel { method, .. } => {
-                    let _ = cancel_tx.send(method);
+                    let _ = cancel_tx.send((runs, method));
                 }
             }
         }
     });
 
     // Main loop: wait for Run or Shutdown commands
+    let mut run_id: u64 = 0;
     for cmd in main_rx {
         match cmd {
-            MainCmd::Run(run) => match runner_win::run_command(&run, &cancel_rx, job.as_ref()) {
-                Ok(code) => send(&Response::Exited { exited: code }),
-                Err(e) => send(&Response::Error { error: e }),
-            },
+            MainCmd::Run(run) => {
+                run_id += 1;
+                let next_cancel = || next_cancel(&cancel_rx, run_id);
+                match runner_win::run_command(&run, next_cancel, job.as_ref()) {
+                    Ok(code) => send(&Response::Exited { exited: code }),
+                    Err(e) => send(&Response::Error { error: e }),
+                }
+            }
             MainCmd::Shutdown => break,
         }
+    }
+}
+
+/// The next cancel for run `run` (counted from 1) in `rx`, dropping cancels
+/// sent before it began. Cancels for a later run can't be queued yet: runs
+/// are sequential, so the reader tags none with a later number before this
+/// run exits.
+#[cfg(any(windows, test))]
+fn next_cancel<T>(rx: &std::sync::mpsc::Receiver<(u64, T)>, run: u64) -> Option<T> {
+    while let Ok((id, method)) = rx.try_recv() {
+        if id == run {
+            return Some(method);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_cancel;
+
+    #[test]
+    fn a_cancel_sent_before_a_run_does_not_cancel_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // A cancel the parent sent after run 1 exited, then run 2's own.
+        tx.send((1, "stale")).unwrap();
+        assert_eq!(next_cancel(&rx, 2), None);
+        tx.send((2, "mine")).unwrap();
+        assert_eq!(next_cancel(&rx, 2), Some("mine"));
+        assert_eq!(next_cancel(&rx, 2), None);
     }
 }

@@ -19,6 +19,7 @@ use crate::action::ActionState;
 use crate::action_filter::{ActionFilter, ActionMessageKind, ActionMessageValue};
 use crate::error::SessionError;
 use crate::logging::LogContent;
+use crate::output_vars::{Begin, LineOutcome};
 use crate::runner::CancelMethod;
 use crate::session_log;
 use crate::session_user::SessionUser;
@@ -1124,11 +1125,28 @@ pub async fn run_subprocess(
                             if line_buf.last() == Some(&b'\r') {
                                 line_buf.pop();
                             }
-                            let line = decode_backslashreplace(&line_buf);
-                            let line = truncate_line(&line).to_string();
+                            let decoded = decode_backslashreplace(&line_buf);
+                            let lossy = matches!(decoded, Cow::Owned(_));
+                            let line = truncate_line(&decoded).to_string();
+                            let truncated = line.len() < decoded.len();
+                            drop(decoded);
                             line_buf.clear();
-                            let (display, pass_through) = process_line(&line, filter, session_id, &message_tx, &mut saw_fail);
-                            if pass_through && filter.min_log_level() <= 20 {
+                            // `openjd_output_var` first: an `@` file is read
+                            // (off the async workers, bounded by the size
+                            // limit) before the next line is read.
+                            let output = match filter.output_vars_mut().begin(&line, truncated, lossy) {
+                                Begin::NotDirective => None,
+                                Begin::Done(outcome) => Some(outcome),
+                                Begin::ReadFile(request) => {
+                                    let req = request.clone();
+                                    let content = tokio::task::spawn_blocking(move || req.read())
+                                        .await
+                                        .unwrap_or_else(|e| Err(format!("can't be read: {e}")));
+                                    Some(filter.output_vars_mut().finish_file(&request, content))
+                                }
+                            };
+                            let (display, log) = process_line(&line, output, filter, session_id, &message_tx, &mut saw_fail);
+                            if log {
                                 session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
                             }
                             if config.debug_collect_stdout {
@@ -1216,7 +1234,54 @@ pub async fn run_subprocess(
     })
 }
 
+/// Turn one line of Action output into messages, and return the line to log
+/// and whether to log it now, at the filter's current log level.
+///
+/// `output` is what [`OutputVars`](crate::output_vars::OutputVars) made of the
+/// line when it is an `openjd_output_var` directive the Action recognizes;
+/// such a line does not go through the filter's other directives. A valid one
+/// is logged as the other directives are (hidden when `echo_openjd_directives`
+/// is off); an invalid one is always logged, with ` -- ERROR: <message>`, and
+/// cancels and fails the Action with that message (RFC 0010 §Processing a
+/// directive). `saw_fail` is set too, so the Action fails even if it exits
+/// before the cancel reaches it.
 pub(crate) fn process_line(
+    line: &str,
+    output: Option<LineOutcome>,
+    filter: &mut ActionFilter,
+    session_id: &str,
+    message_tx: &mpsc::UnboundedSender<ActionMessage>,
+    saw_fail: &mut bool,
+) -> (String, bool) {
+    match output {
+        None => {}
+        Some(LineOutcome::Accepted { task, name, value }) => {
+            let _ = message_tx.send(ActionMessage::OutputVar { task, name, value });
+            return (
+                filter.apply_redaction(line),
+                filter.echo_openjd_directives() && filter.min_log_level() <= 20,
+            );
+        }
+        Some(LineOutcome::Invalid(message)) => {
+            *saw_fail = true;
+            let display = filter.apply_redaction(&format!("{line} -- ERROR: {message}"));
+            let _ = message_tx.send(ActionMessage::InvalidOutputVar {
+                fail_message: message,
+            });
+            // Whatever `openjd_session_runtime_loglevel` set: an invalid
+            // directive always stays in the log (RFC 0010).
+            return (display, true);
+        }
+    }
+    let (display, pass_through) =
+        process_filtered_line(line, filter, session_id, message_tx, saw_fail);
+    (display, pass_through && filter.min_log_level() <= 20)
+}
+
+/// [`process_line`] for a line that is not an `openjd_output_var` directive
+/// of the Action: the filter's directives. The `bool` is the filter's
+/// pass-through decision, before the log level is applied.
+fn process_filtered_line(
     line: &str,
     filter: &mut ActionFilter,
     session_id: &str,
@@ -1587,7 +1652,7 @@ mod tests {
         let mut filter = ActionFilter::new("test", true, false);
         let mut saw_fail = false;
         let (display, pass_through) =
-            process_line("hello world", &mut filter, "test", &tx, &mut saw_fail);
+            process_line("hello world", None, &mut filter, "test", &tx, &mut saw_fail);
         assert!(pass_through);
         assert_eq!(display, "hello world");
         assert!(!saw_fail);
@@ -1600,6 +1665,7 @@ mod tests {
         let mut saw_fail = false;
         let (_display, _pass_through) = process_line(
             "openjd_progress: 0.5",
+            None,
             &mut filter,
             "test",
             &tx,
@@ -1619,6 +1685,7 @@ mod tests {
         let mut saw_fail = false;
         process_line(
             "openjd_status: rendering frame 42",
+            None,
             &mut filter,
             "test",
             &tx,
@@ -1638,6 +1705,7 @@ mod tests {
         let mut saw_fail = false;
         process_line(
             "openjd_fail: out of memory",
+            None,
             &mut filter,
             "test",
             &tx,
@@ -1657,6 +1725,7 @@ mod tests {
         let mut saw_fail = false;
         process_line(
             "openjd_env: MY_VAR=my_value",
+            None,
             &mut filter,
             "test",
             &tx,
@@ -1678,6 +1747,7 @@ mod tests {
         let mut saw_fail = false;
         process_line(
             "openjd_unset_env: MY_VAR",
+            None,
             &mut filter,
             "test",
             &tx,
@@ -1696,6 +1766,7 @@ mod tests {
         let mut saw_fail = false;
         process_line(
             "openjd_redacted_env: SECRET=hunter2",
+            None,
             &mut filter,
             "test",
             &tx,

@@ -125,14 +125,23 @@ loop {
                 Ok(0) => break, // EOF
                 Ok(_) => {
                     if line_buf.last() == Some(&b'\n') { line_buf.pop(); }
-                    let line = decode_backslashreplace(&line_buf);
-                    let line = truncate_line(&line).to_string();
+                    if line_buf.last() == Some(&b'\r') { line_buf.pop(); }
+                    let decoded = decode_backslashreplace(&line_buf);
+                    let lossy = matches!(decoded, Cow::Owned(_));
+                    let line = truncate_line(&decoded).to_string();
+                    let truncated = line.len() < decoded.len();
                     line_buf.clear();
-                    let (callbacks, pass_through, modified) = filter.filter_message(&line, session_id);
-                    for cb in callbacks {
-                        let msg = map_callback_to_message(cb);
-                        let _ = message_tx.send(msg);
-                    }
+                    // openjd_output_var first; an @ file is read before the next line.
+                    let output = match filter.output_vars_mut().begin(&line, truncated, lossy) {
+                        Begin::NotDirective => None,
+                        Begin::Done(outcome) => Some(outcome),
+                        Begin::ReadFile(req) => {
+                            let content = spawn_blocking(move || req.read()).await;
+                            Some(filter.output_vars_mut().finish_file(&req, content))
+                        }
+                    };
+                    let (modified, pass_through) =
+                        process_line(&line, output, filter, session_id, &message_tx, &mut saw_fail);
                     if pass_through {
                         session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", modified);
                     }
@@ -160,6 +169,14 @@ random branch selection.
 
 Lines longer than 64KB are truncated. This prevents a misbehaving subprocess from
 consuming unbounded memory. The Python library has the same limit.
+
+Truncation is no longer silent: the reader knows a line was cut (`truncate_line`
+returned less than the decoded line), and passes that, with whether decoding was lossy
+(`decode_backslashreplace` returned an owned, escaped string), to the output-variable
+recognizer. A truncated or lossy line that starts with `openjd_output_var:` is an
+invalid directive (RFC 0010 §Limits item 1, §Processing a directive item 9). Only the
+line terminator (`\n`, then one `\r`) is stripped, as on both helper runners, so the
+directive grammar sees the same text on every path.
 
 ### Decoding Undecodable Output Bytes
 
@@ -310,6 +327,7 @@ before logging, preventing secrets from appearing in log output.
 ```rust
 pub(crate) fn process_line(
     line: &str,
+    output: Option<LineOutcome>,
     filter: &mut ActionFilter,
     session_id: &str,
     message_tx: &UnboundedSender<ActionMessage>,
@@ -322,8 +340,47 @@ to `ActionMessage` variants, and sends them through the mpsc channel. Returns th
 (possibly redacted) display string and whether the line should be passed through to
 logging. Sets `saw_fail` when an `openjd_fail` directive is encountered.
 
+The returned `bool` is whether to log the line now, with the filter's current log level
+applied (callers no longer check `min_log_level` themselves).
+
+`output` is the outcome of an `openjd_output_var` line the action's `OutputVars` claimed
+(see [action-filter.md](action-filter.md#openjd_output_var)). Such a line bypasses
+`filter_message`: an accepted value sends `ActionMessage::OutputVar` and is logged
+according to `echo_openjd_directives` and the log level; an invalid one sets `saw_fail`,
+sends `InvalidOutputVar` with its message, and is always logged with
+` -- ERROR: <message>`, whatever the log level.
+
 This function is shared between `run_subprocess` (async path) and `run_via_helper`
 (cross-user synchronous path).
+
+## Output variable files
+
+On the direct (same-user) path an `@<FilePath>` value is read by
+`helper/src/output_file.rs::read_output_file`, which `openjd-sessions` compiles through
+`#[path]` so both paths share one implementation:
+
+1. A relative path is joined to the Session working directory; an absolute one is used
+   as written.
+2. On Linux the file is opened with `openat2(RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS)`
+   from an `O_PATH` handle to the canonical working directory, which follows links but
+   refuses any that leave it. When that cannot decide (`EXDEV`, which an absolute link
+   inside the directory also gives, or `ENOSYS`/`EPERM`/`EINVAL`/`E2BIG` where `openat2`
+   is unavailable), and on other platforms, the path is opened and the opened handle's
+   final path (`/proc/self/fd/<n>`, macOS `F_GETPATH`, Windows
+   `GetFinalPathNameByHandleW`) must be inside the canonical working directory. A path
+   whose final location is outside is "is not inside the Session working directory".
+3. Every open is non-blocking (`O_NONBLOCK | O_NOCTTY` on Unix), because opening a FIFO
+   for reading otherwise blocks until a writer appears, which would stall the reader.
+4. `fstat` on the handle must show a regular file ("is not a regular file"), so a FIFO,
+   a directory, or a device is refused without being read.
+5. At most `max_bytes + 1` bytes are read, where `max_bytes` is what the collector's
+   `remaining_bytes_for` allows, so a file over the limit is detected without reading it
+   in full.
+
+Failures are phrases that complete "Output variable 'N': the @ file '<path>' …" ("does
+not exist", "can't be opened: <os error>"). The read is blocking I/O, so the async
+reader runs it with `spawn_blocking` and awaits it before reading the next line, which
+keeps the RFC's ordering. The runtime never modifies or deletes the file.
 
 ## Windows Signal Delivery
 

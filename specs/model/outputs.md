@@ -10,7 +10,7 @@ submission path context, checks constraints, applies the collect mode, and count
 size. It does no I/O, so a session runtime, the CLI, `openjd-for-js`, and a scheduler
 that re-validates values can all share it.
 
-The caller (the session runtime, in a later change) owns everything that touches the
+The caller (`openjd-sessions`, see `specs/sessions/session.md` § Output variables) owns everything that touches the
 outside world:
 
 * recognizing a line that begins with `openjd_output_var:` in an Action's stdout or
@@ -249,7 +249,10 @@ names the problem and, where it has one, the position in the value (`item[1][0]`
 
 Messages quote an inline value's text and the converted value or element that is
 invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. The
-RFC asks for "the offending text". They never quote an `@` file's text as such: a JSON
+RFC asks for "the offending text". Some do not (a `null` or an object, an undeclared
+name, a second `ONCE` value, a selector, size, or `maxLength` problem); the sessions
+runtime appends the directive's line to those (see
+`specs/sessions/action-filter.md`). They never quote an `@` file's text as such: a JSON
 error for a file gives only `serde_json`'s line and column, and a conversion error only
 the element's type. Quoted text is cut to 200 characters with `...`, and control
 characters in it are escaped (`\n`, `\u{1b}`, `\0`), so a message stays on one line and

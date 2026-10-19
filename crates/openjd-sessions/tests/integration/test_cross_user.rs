@@ -65,6 +65,34 @@ fn make_session(user: Arc<PosixSessionUser>) -> Session {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
+        sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+    };
+    Session::with_config(config).unwrap()
+}
+
+/// A cross-user Session whose Job lists `CONTROL_FLOW`.
+fn make_cf_session(user: Arc<PosixSessionUser>) -> Session {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    std::mem::forget(tmp);
+    let config = SessionConfig {
+        limits: Default::default(),
+        session_id: "cross-user-cf-test".into(),
+        job_parameter_values: HashMap::new(),
+        path_mapping_rules: None,
+        retain_working_dir: false,
+        callback: None,
+        os_env_vars: None,
+        session_root_directory: Some(root),
+        user: Some(user),
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        control_flow: true,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     Session::with_config(config).unwrap()
@@ -791,5 +819,492 @@ async fn test_cross_user_eof_partial_line_preserved() {
         "EOF partial line dropped: {}",
         r.stdout
     );
+    session.cleanup();
+}
+
+// === CONTROL_FLOW: openjd_output_var through the helper ===
+//
+// The helper resolves `@` directives as the job user (RFC 0010 §File values
+// item 3) and frames lines with truncation and lossy-decode flags. These run
+// the same directives as the same-user tests in `test_control_flow.rs`.
+
+fn sh_step(script: &str) -> openjd_model::job::StepScript {
+    let fs = |s: &str| openjd_expr::format_string::FormatString::new(s).unwrap();
+    openjd_model::job::StepScript {
+        let_bindings: None,
+        actions: openjd_model::job::StepActions {
+            on_run: openjd_model::job::Action {
+                command: fs("sh"),
+                args: Some(vec![fs("-c"), fs(script)]),
+                timeout: None,
+                cancelation: None,
+            },
+        },
+        embedded_files: None,
+    }
+}
+
+async fn run_cf(
+    session: &mut Session,
+    script: &str,
+    declared: &str,
+    task: Option<&openjd_model::types::TaskParameterSet>,
+) -> openjd_sessions::action::ActionResult {
+    let declared: Vec<openjd_model::job::OutputVariable> = serde_json::from_str(declared).unwrap();
+    session
+        .run_task(
+            "S",
+            &sh_step(script),
+            task,
+            None,
+            None,
+            &openjd_sessions::session::RunTaskOptions {
+                output_variables: Some(&declared),
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap()
+}
+
+fn fail_message(session: &Session) -> String {
+    session
+        .action_status()
+        .and_then(|s| s.fail_message)
+        .unwrap_or_default()
+}
+
+fn single(r: &openjd_sessions::action::ActionResult, name: &str) -> Option<openjd_expr::ExprValue> {
+    r.outputs.as_ref()?.get(&None)?.get(name).cloned()
+}
+
+/// An `@` file larger than the helper's 128 KiB response line, and under
+/// the 1 MiB limit, arrives intact; the directive forms with whitespace give
+/// the same values as on the direct path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_at_files() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        "printf '\"%0600000d\"' 0 > big.json
+         echo 'openjd_output_var: Big=@big.json'
+         printf 1 > a; printf 2 > b; printf 3 > c; printf 4 > d
+         echo 'openjd_output_var: A= @a'
+         printf 'openjd_output_var:\tB=@b  \t\n'
+         echo 'openjd_output_var:C=@c'
+         echo 'openjd_output_var: D=1'",
+        r#"[{"name": "Big", "type": "STRING"}, {"name": "A", "type": "INT"},
+            {"name": "B", "type": "INT"}, {"name": "C", "type": "INT"},
+            {"name": "D", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Success, "{}", fail_message(&session));
+    assert_eq!(
+        single(&r, "Big"),
+        Some(openjd_expr::ExprValue::String("0".repeat(600_000)))
+    );
+    for (n, v) in [("A", 1), ("B", 2), ("C", 3), ("D", 1)] {
+        assert_eq!(single(&r, n), Some(openjd_expr::ExprValue::Int(v)), "{n}");
+    }
+    session.cleanup();
+}
+
+/// A chunked Step's selector reaches the parent through the helper.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_chunk_selector() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let mut task = openjd_model::types::TaskParameterSet::new();
+    task.insert(
+        "F".into(),
+        openjd_model::types::TaskParameterValue {
+            param_type: openjd_model::types::TaskParameterType::ChunkInt,
+            value: openjd_expr::ExprValue::String("3".into()),
+        },
+    );
+    let r = run_cf(
+        &mut session,
+        "printf 7 > f; echo 'openjd_output_var: N[3]=@f'",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        Some(&task),
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Success, "{}", fail_message(&session));
+    assert_eq!(
+        r.outputs.unwrap()[&Some(3)]["N"],
+        openjd_expr::ExprValue::Int(7)
+    );
+    session.cleanup();
+}
+
+/// Each failure through the helper fails the Task with the same message as
+/// on the direct path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_failures() {
+    let user = require_target_user();
+    for (script, message) in [
+        (
+            "echo 'openjd_output_var: M=@missing'",
+            "Output variable 'M': the Step does not declare it (declared: 'N'), in \
+             'openjd_output_var: M=@missing'"
+                .to_string(),
+        ),
+        (
+            "echo 'openjd_output_var: N=@missing'",
+            "Output variable 'N': the @ file 'missing' does not exist".to_string(),
+        ),
+        (
+            "truncate -s 2M big; echo 'openjd_output_var: N=@big'",
+            "Output variable 'N': the @ file 'big' is larger than the 1048576 bytes the Task's \
+             output values have left (the limit is 1048576 bytes per Task)"
+                .to_string(),
+        ),
+        (
+            "mkfifo p; echo 'openjd_output_var: N=@p'",
+            "Output variable 'N': the @ file 'p' is not a regular file".to_string(),
+        ),
+        (
+            "printf '1\\377' > z; echo 'openjd_output_var: N=@z'",
+            "Output variable 'N': the @ file's content is not valid UTF-8 (at byte 1), in \
+             'openjd_output_var: N=@z'"
+                .to_string(),
+        ),
+        (
+            "printf 'openjd_output_var: N=1\\377\\n'",
+            r"Invalid openjd_output_var directive: the line is not valid UTF-8, in 'openjd_output_var: N=1\xff'"
+                .to_string(),
+        ),
+        (
+            "printf 'openjd_output_var: N=@f%070000d\\n' 0",
+            format!(
+                "Invalid openjd_output_var directive: the line is longer than the 65536 byte \
+                 line limit, so it was cut; write a large value to a file and report it with \
+                 @<file>, in '{}...'",
+                &format!("openjd_output_var: N=@f{}", "0".repeat(70_000))[..200]
+            ),
+        ),
+    ] {
+        let mut session = make_cf_session(user.clone());
+        let r = run_cf(&mut session, script, r#"[{"name": "N", "type": "INT"}]"#, None).await;
+        assert_eq!(r.state, ActionState::Failed, "{script}");
+        assert!(r.outputs.is_none());
+        assert_eq!(fail_message(&session), message, "{script}");
+        session.cleanup();
+    }
+}
+
+/// A form feed after the value is not directive whitespace on either path:
+/// the Unix helper strips only the line terminator.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_form_feed() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        "printf 'openjd_output_var: N=1\\f\\n'",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        "Output variable 'N': '1\\u{c}' is not one valid JSON value: trailing characters at \
+         line 1 column 2"
+    );
+    session.cleanup();
+}
+
+/// A file the job user can't read, hard-linked into the working directory
+/// by another user, fails the Task: the file is read as the job user, never
+/// by the Session's own user (RFC 0010 §File values item 3).
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_unreadable_hard_link() {
+    use std::os::unix::fs::PermissionsExt;
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let secret_dir = tempfile::TempDir::new().unwrap();
+    let secret = secret_dir.path().join("secret");
+    std::fs::write(&secret, "42").unwrap();
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::hard_link(&secret, session.working_directory().join("link")).unwrap();
+    let r = run_cf(
+        &mut session,
+        "echo 'openjd_output_var: N=@link'",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        "Output variable 'N': the @ file 'link' can't be opened: Permission denied (os error 13)"
+    );
+    session.cleanup();
+}
+
+/// Environment actions: a Job Template Environment's directive cancels and
+/// fails the action; an Environment Template's is ordinary output, and the
+/// helper is not asked to read its file.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_environment_actions() {
+    use openjd_sessions::session::{EnvironmentOptions, EnvironmentOrigin};
+    let user = require_target_user();
+    let fs = |s: &str| openjd_expr::format_string::FormatString::new(s).unwrap();
+    let env = openjd_model::job::Environment {
+        name: "E".into(),
+        description: None,
+        script: Some(openjd_model::job::EnvironmentScript {
+            let_bindings: None,
+            actions: openjd_model::job::EnvironmentActions {
+                on_enter: Some(openjd_model::job::Action {
+                    command: fs("sh"),
+                    args: Some(vec![
+                        fs("-c"),
+                        fs("printf 1 > f; echo 'openjd_output_var: N=@f'"),
+                    ]),
+                    timeout: None,
+                    cancelation: None,
+                }),
+                on_wrap_env_enter: None,
+                on_wrap_task_run: None,
+                on_wrap_env_exit: None,
+                on_exit: None,
+            },
+            embedded_files: None,
+        }),
+        variables: None,
+        resolved_symtab: None,
+        enabled: true,
+    };
+    let mut session = make_cf_session(user.clone());
+    let err = session
+        .enter_environment(&env, None, None, None, &EnvironmentOptions::default())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("onEnter"), "{err}");
+    assert_eq!(
+        fail_message(&session),
+        "Invalid openjd_output_var directive: this Action can't report output values; only \
+         the onRun action of a Step that declares outputVariables can, in \
+         'openjd_output_var: N=@f'"
+    );
+    session.cleanup();
+
+    let mut session = make_cf_session(user);
+    let (_, out) = session
+        .enter_environment_with_output(
+            &env,
+            None,
+            None,
+            None,
+            &EnvironmentOptions {
+                origin: EnvironmentOrigin::EnvironmentTemplate,
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(out.contains("openjd_output_var: N=@f"), "{out}");
+    session.cleanup();
+}
+
+/// Directive lines of up to 64 KiB are accepted through the helper as on
+/// the direct path (RFC 0010 §Limits item 1): with a CRLF line end at the
+/// cap, and when JSON escaping makes the line too long for one response.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_long_lines() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        r#"printf 'openjd_output_var: A="%s"\r\n' "$(head -c 65513 /dev/zero | tr '\0' a)"
+           printf 'openjd_output_var: B="'; head -c 65512 /dev/zero | tr '\0' '\\'; printf '"\n'"#,
+        r#"[{"name": "A", "type": "STRING"}, {"name": "B", "type": "STRING"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Success, "{}", fail_message(&session));
+    assert_eq!(
+        single(&r, "A"),
+        Some(openjd_expr::ExprValue::String("a".repeat(65_513)))
+    );
+    assert_eq!(
+        single(&r, "B"),
+        Some(openjd_expr::ExprValue::String("\\".repeat(32_756)))
+    );
+    session.cleanup();
+}
+
+/// A directive line over the 64 KiB cap that JSON escaping makes too long
+/// for one response travels as `outLong` with its `truncated` flag, and
+/// fails as on the direct path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_long_cut_line() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        r#"printf 'openjd_output_var: S='; head -c 65520 /dev/zero | tr '\0' '\\'; printf '\n'"#,
+        r#"[{"name": "S", "type": "STRING"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        format!(
+            "Invalid openjd_output_var directive: the line is longer than the 65536 byte line \
+             limit, so it was cut; write a large value to a file and report it with @<file>, in \
+             'openjd_output_var: S={}...'",
+            "\\".repeat(179)
+        )
+    );
+    session.cleanup();
+}
+
+/// After an invalid directive, a later `@` line is ordinary output, as on
+/// the direct path, though the helper still resolves it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_at_line_after_an_invalid_directive() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        // One printf, so the cancel the first line causes can't stop the
+        // second from being printed.
+        "printf 1 > f; printf 'openjd_output_var: N=x\nopenjd_output_var: N=@f\n'; sleep 5",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert_eq!(
+        fail_message(&session),
+        "Output variable 'N': 'x' is not one valid JSON value: expected value at line 1 column 1"
+    );
+    assert!(
+        r.stdout.lines().any(|l| l == "openjd_output_var: N=@f"),
+        "{}",
+        r.stdout
+    );
+    session.cleanup();
+}
+
+/// A cancel that lands as soon as the action is armed, usually before the
+/// helper has read the Run command (which the idle helper would drop), still
+/// cancels the run instead of letting it finish.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_early_cancel_cancels_the_run() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let handle = session.cancel_handle();
+    let canceller = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if handle.cancel(None, false) {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    });
+    let started = std::time::Instant::now();
+    let r = run_cf(
+        &mut session,
+        "sleep 30",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(canceller.join().unwrap());
+    assert_eq!(r.state, ActionState::Canceled);
+    // At most the 5 second notify period of a helper-pipe cancel.
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    session.cleanup();
+}
+
+/// Run `script` as a cross-user Task whose action cancels with
+/// NOTIFY_THEN_TERMINATE and a 20 second notify period, with `timeout`.
+async fn run_notify_step(
+    session: &mut Session,
+    script: &str,
+    timeout: Option<&str>,
+) -> openjd_sessions::action::ActionResult {
+    let fs = |s: &str| openjd_expr::format_string::FormatString::new(s).unwrap();
+    let mut step = sh_step(script);
+    step.actions.on_run.cancelation =
+        Some(openjd_model::job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(fs("20")),
+        });
+    step.actions.on_run.timeout = timeout.map(fs);
+    session
+        .run_task("S", &step, None, None, None, &Default::default())
+        .await
+        .unwrap()
+}
+
+/// An early cancel with a zero time limit is resent as TERMINATE, so a
+/// notify action's trap does not run and the action ends at once.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_early_urgent_cancel_terminates() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let handle = session.cancel_handle();
+    let canceller = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if handle.cancel(Some(Duration::ZERO), false) {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    });
+    let started = std::time::Instant::now();
+    let r = run_notify_step(
+        &mut session,
+        "trap 'echo got-term; sleep 30' TERM; sleep 30",
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(canceller.join().unwrap());
+    assert_eq!(r.state, ActionState::Canceled);
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    assert!(!r.stdout.contains("got-term"), "{}", r.stdout);
+    session.cleanup();
+}
+
+/// A timeout cancels a notify action with its notify signal, so its trap
+/// runs. (The direct path kills a timed-out action at once; that difference
+/// predates this test, which guards the helper-path cancel method.)
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_timeout_notifies_a_notify_action() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_notify_step(
+        &mut session,
+        "trap 'echo got-term; exit 0' TERM; sleep 30 & wait",
+        Some("1"),
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Timeout);
+    assert!(r.stdout.contains("got-term"), "{}", r.stdout);
     session.cleanup();
 }

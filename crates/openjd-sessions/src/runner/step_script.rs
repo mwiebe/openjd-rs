@@ -107,6 +107,18 @@ impl StepScriptRunner {
         self.base.helper.take()
     }
 
+    /// How the action treats `openjd_output_var` lines (RFC 0010).
+    pub(crate) fn with_output_vars(mut self, output_vars: crate::output_vars::OutputVars) -> Self {
+        self.base.output_vars = output_vars;
+        self
+    }
+
+    /// The output values the action reported, when it exited successfully
+    /// with every Task's values complete.
+    pub(crate) fn take_outputs(&mut self) -> Option<crate::action::ActionOutputs> {
+        self.base.outputs.take()
+    }
+
     pub(crate) fn with_cancel_writer(mut self, writer: std::fs::File) -> Self {
         self.base.cancel_writer = Some(writer);
         self

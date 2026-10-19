@@ -200,6 +200,8 @@ helper (it spawned it).
 ```json
 {"token": "<TOKEN>", "command": "bash", "args": ["-c", "echo hello"], "env": {"PATH": "/usr/bin"}, "cwd": "/sessions/abc"}
 
+{"token": "<TOKEN>", "command": "bash", "args": ["-c", "..."], "env": {}, "cwd": "/sessions/abc", "outputFiles": {"maxBytes": 1048576}}
+
 {"token": "<TOKEN>", "cancel": "NOTIFY_THEN_TERMINATE", "notifyPeriodInSeconds": 5}
 
 {"token": "<TOKEN>", "cancel": "TERMINATE"}
@@ -218,6 +220,18 @@ placeholder for some other encoding.
 
 {"out": "hello"}
 
+{"out": "openjd_output_var: S=\"aaaa…", "truncated": true}
+
+{"out": "openjd_output_var: S=\"\\xff\"", "lossy": true}
+
+{"outputFile": {"lineLen": 31, "name": [19, 23], "task": null, "path": [25, 31], "size": 5, "validUtf8": 5}}
+
+{"data": "openjd_output_var: Keys=@k.json"}
+
+{"data": "[\"a\"]"}
+
+{"outLong": {"len": 65533}}
+
 {"exited": 0}
 
 {"error": "No such file or directory"}
@@ -227,6 +241,87 @@ placeholder for some other encoding.
 
 Only one command runs at a time. The protocol is implicitly sequential:
 send a command, read responses until `exited` or `error`, then send the next.
+
+`out` carries `truncated: true` when the line was cut to fit a limit (the raw line over
+64 KiB, the decoded line over 64 KiB, or the serialized response over the 128 KiB line
+the parent accepts) and `lossy: true` when the line was not valid UTF-8 and was decoded
+with `\xNN` escapes. The framer strips one `\r` before the `\n` before it applies the
+64 KiB cap, as the direct path does, so a CRLF line of exactly 64 KiB is not cut; and when
+a cap cuts a valid UTF-8 line inside a character, the partial character is dropped rather
+than escaped, so the line is not flagged `lossy`.
+
+For an Action that may report output values (`outputFiles` set), a line that starts with
+`openjd_output_var:` and does not fit one `out` response once escaped (a line of at most
+64 KiB can escape to six times that) is sent whole instead of cut: an `outLong` header
+with its byte length and flags, then `data` frames that carry the text. The parent
+processes it as an `out` line, so a valid directive of up to 64 KiB is accepted as on the
+direct path (RFC 0010 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
+`{"out": "..."}` as before. The parent rejects an `openjd_output_var` directive on a
+flagged line.
+
+### Output variable files
+
+RFC 0010 §File values item 3 requires an `@<FilePath>` value to be read with no more
+access than the action's user. The parent must not read the file itself, even with an
+ownership or link-count check, so the helper, which runs as the job user, resolves `@`
+directives as it reads the action's output, and the RFC's ordering (the file is read
+before any later line) falls out of the stream.
+
+- The parent sets `outputFiles` only for an action that may report output values; its
+  `maxBytes` is the per-Task output limit. Without it the helper sends every line as
+  `out`, so an Environment Template action's directive stays ordinary output and a
+  Forbidden action's directive reaches the parent unchanged and fails there.
+- The helper cannot use the model's parser (its dependencies are `serde`, `serde_json`,
+  `nix`, and `windows`), so `helper/src/output_file.rs::recognize_file_directive` is a
+  minimal recognizer for the `@` form only: `openjd_output_var:`, optional spaces or tabs,
+  an identifier, an optional `[<Int>]` selector, `=`, optional spaces or tabs, `@`, and a
+  non-empty path with trailing spaces and tabs removed. It must accept exactly the lines
+  `openjd_model::outputs::parse_output_directive` parses as `File`, with the same name,
+  selector, and path; `output_vars::tests::helper_recognizer_agrees_with_the_model_parser`
+  checks this over more than 100,000 generated lines. Any other line, including a
+  malformed directive, goes to the parent as `out` for the model parser to report. A
+  flagged line is never resolved.
+- For a recognized line the helper reads the file with `read_output_file` (the same
+  rules as the direct path, see [subprocess.md](subprocess.md#output-variable-files))
+  under `RunCommand.cwd`, the Session working directory, up to `maxBytes + 1` bytes, and
+  sends an `outputFile` header in place of the `out` line, then `data` frames.
+  The data is one string: the directive's line (`lineLen` bytes) followed by the first
+  `validUtf8` bytes of the file. It is split into frames that each fit the 128 KiB
+  response line once escaped (the line alone can be 64 KiB, which would not fit in the
+  header). `name` and `path` are byte ranges in the line; `size` is the bytes read;
+  `error`, when set, is the read failure as a phrase, and the data then holds only the
+  line. A file that is not valid UTF-8 travels as its valid prefix; the parent appends one
+  stand-in invalid byte, so the collector reports where the content stops being UTF-8,
+  and checks the size limit against `size`. It never allocates `size` bytes, so a forged
+  header can't make it.
+- The helper does not know the declared outputs or the values so far, so it reads before
+  the parent's checks. The parent applies `check_name` first, then the read result, then
+  the remaining-size check, so the outcome matches the RFC's order even though the helper
+  may read a file whose directive is then rejected, and reads up to the whole per-Task
+  limit rather than what remains.
+- The parent re-parses the line with the model parser, and a disagreement with the
+  helper's name, selector, or path is invalid. An `@` directive that arrives as a plain
+  `out` line in an Allowed action (the helper did not recognize it) is invalid too. The
+  parent never reads the file. A header that is inconsistent (a line over 64 KiB, `size`
+  over `maxBytes + 1`, `validUtf8` over `size`, an error with data, a `lineLen` that ends
+  inside a character) or data frames that run past what the header announced are a
+  `SessionError::HelperCommunication`, not a directive error. The helper's stdout carries
+  whatever processes of the job user write to it, so the parent never indexes the data
+  with a number from a header without checking it. An error phrase from the helper is cut
+  and escaped like quoted text before it goes into a message.
+- A helper command to read a file on request, answered while a `Run` is in progress, was
+  considered. Its reply would arrive on the stream the parent's `select!` loop reads,
+  interleaved with later `out` lines, which the parent would have to hold back to keep
+  the ordering.
+
+### Line ends
+
+The framer strips only the line terminator (`\n` and one `\r` before it), and both runners
+hand each framed line to `emit::emit_line` unchanged. The Unix runner used to send
+`line.trim_end()`, which strips all
+trailing Unicode whitespace, while the Windows runner and the direct path strip only the
+terminator; a directive followed by a form feed was then valid on one path and invalid on
+the others. The directive grammar decides what whitespace is allowed.
 
 ## Helper Implementation
 
@@ -323,8 +418,9 @@ fn run_command(
         // cancel a running action.
         if stdin ready { read line, parse Command::Cancel(sig), verify token, killpg, child_killed = true }
 
-        // Child output → send {"out": line}
-        if child ready { read line, send }
+        // Child output → frame into bounded lines, then emit_line: {"out": line}
+        // with its flags, or outputFile frames for an @ directive
+        if child ready { fill_buf, frame, emit }
 
         // Child exited (POLLHUP or try_wait after kill)
         // Kill process group to clean up descendants (e.g. grandchild shells)
@@ -344,8 +440,16 @@ Key details:
 - Every cancel line read inside the runner is passed through the same
   constant-time token check the main loop uses. The Windows runner
   (`runner_win.rs`) receives already-validated `CancelMethod` values
-  over its `mpsc::Receiver`, so token validation for it stays in
+  through a `next_cancel` closure, so token validation for it stays in
   `main.rs` where stdin is actually read.
+- A cancel is for the current run only. Between runs, the Unix main loop
+  drops one; the Windows stdin reader thread tags each cancel with the
+  number of Run commands it has read, and `next_cancel(rx, run)` (in
+  `main.rs`) gives a run only the cancels tagged with its number. Without
+  the tag, a cancel the parent sent after a run exited (an invalid
+  `openjd_output_var` line in a script that exits at once makes the
+  session cancel an action that already ended) would wait in the channel
+  and cancel the next run, such as the Environment's `onExit`.
 
 ### Windows runner: Job Object kill-on-close
 
@@ -461,16 +565,44 @@ let raw_fd = child_stdin.as_raw_fd();
 let dup_fd = nix::unistd::dup(raw_fd)?;
 let cancel_writer = File::from_raw_fd(dup_fd);
 
-// In Session::cancel_action (token is the helper's 22-char auth_token):
-if let Some(ref mut writer) = self.cancel_writer {
-    writeln!(
-        writer,
-        r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":5}}"#,
-        token = self.helper_auth_token,
-    )?;
-    writer.flush()?;
-}
+// In Session::cancel_action and SessionCancelHandle::cancel, through
+// send_helper_cancel_command (token is the helper's 22-char auth_token):
+let line = format!(r#"{{"token":"{token}","cancel":"TERMINATE"}}"#); // or NOTIFY_THEN_TERMINATE
+let _ = writer.write_all(format!("{line}\n").as_bytes()); // one write per line
+let _ = writer.flush();
 ```
+
+`send_helper_cancel_command` sends TERMINATE for a zero time limit, and
+otherwise NOTIFY_THEN_TERMINATE with the smaller of the time limit and the
+action's declared notify period, or 5 seconds when neither is given. The
+protocol counts whole seconds, so a non-zero period under a second is sent
+as one second.
+
+Every line written to the helper's stdin, by `send_command` (both platforms)
+or by a cancel writer, is written in one call. On POSIX a pipe write of up to
+`PIPE_BUF` bytes is atomic, so two cancels written at once can't interleave
+into a line the helper can't parse. A Run command longer than `PIPE_BUF`
+could still interleave with a concurrent cancel; Run commands in practice are
+far shorter (the cross-user suite's largest is about 600 bytes), and the
+helper answers a garbled line with a parse error rather than hanging.
+
+A cancel requested after the session armed an action but before the helper
+read its Run command reaches the idle helper first, which drops it (see the
+runner notes above). So `run_via_helper`, right after it sends Run, checks the
+action's cancel-request channel and, if a cancel was requested, writes it
+again with `write_cancel`. That function maps the action's cancel method and
+the request's time limit as the same-user runner does: TERMINATE for a
+TERMINATE action or a zero limit, otherwise NOTIFY_THEN_TERMINATE with the
+declared period capped by the limit, in whole seconds as above.
+
+For that check to work, the session records the request on the channel
+before it writes the first cancel to the pipe; then the check can't miss a
+cancel the helper has already dropped. Any cancel recorded before the check
+is therefore written twice. The two lines can differ: for an action with no
+declared cancelation (a TERMINATE action), `send_helper_cancel_command` sends
+NOTIFY_THEN_TERMINATE with the 5 second default, and `write_cancel` sends
+TERMINATE. A second NOTIFY_THEN_TERMINATE repeats the notify signal and
+restarts the grace period a moment later.
 
 The session stores the token string alongside the `cancel_writer` so the
 cancel path doesn't depend on the helper struct (which may be moved into
@@ -602,19 +734,20 @@ The existing per-action sudo path remains as fallback for non-helper sessions.
 
 ## Testing
 
-All 13 cross-user tests in `tests/test_cross_user.rs` pass in the Docker
+The cross-user tests in `tests/integration/test_cross_user.rs` pass in the Docker
 localuser container, validating the helper end-to-end:
 
 ```bash
 cd ~/openjd-rs
 docker build -t openjd-cross-user -f testing_containers/localuser_sudo_environment/Dockerfile .
 docker run --rm openjd-cross-user
-# test result: ok. 12 passed; 0 failed
 ```
 
 Tests cover: basic execution, stdout streaming, notify-then-terminate cancel,
 immediate terminate cancel, process tree kill, uid/gid verification,
-env vars, env isolation, cleanup, permissions, and disjoint user rejection.
+env vars, env isolation, cleanup, permissions, disjoint user rejection,
+`CONTROL_FLOW` `@` file reads, `outLong` and truncation flags, and early
+cancels (see [cross-user-testing.md](cross-user-testing.md)).
 
 Additional token-focused tests added in `helper/tests/test_helper_protocol.rs`:
 
@@ -672,8 +805,15 @@ openjd-sessions/
         main.rs         ← argv parse (--auth-token), shared stdin reader,
                           command dispatch with token verification
         protocol.rs     ← Command/Response serde types, token field
+        framer.rs       ← bounded line framer (FramedLine with truncated
+                          and lossy flags); also #[path]-included by
+                          openjd-sessions for tests
+        emit.rs         ← one line to an out response, or outLong or outputFile frames
+        output_file.rs  ← @ directive recognizer and file reader; also
+                          #[path]-included by openjd-sessions
         runner.rs       ← poll(2) loop, child management, cancel with
                           per-command token check
+        runner_win.rs   ← Windows runner
 ```
 
 ### build.rs
@@ -685,7 +825,9 @@ On non-unix targets, writes an empty placeholder so `include_bytes!` doesn't fai
 ### Binary size
 
 425KB with `opt-level = "s"`, LTO, strip, `panic = "abort"`.
-Dependencies: serde, serde_json, nix. The token comparison is hand-rolled
+Dependencies: serde, serde_json, nix (features `signal`, `process`, `poll`, `fs`), and on
+Windows `windows` (including `Win32_Storage_FileSystem` for
+`GetFinalPathNameByHandleW`). The token comparison is hand-rolled
 (no `subtle` or similar crate) to keep the dependency set unchanged.
 
 ### Session-side dependencies
