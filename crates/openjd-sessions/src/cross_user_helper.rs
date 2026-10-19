@@ -1200,6 +1200,13 @@ mod frames_tests {
             message(p.push("\"y").unwrap_err()),
             "Cross-user helper error: The helper sent more data than its header announced"
         );
+        // One byte over is refused too.
+        let mut p = PendingFrames::file(&header(23, 2, 2), 100).unwrap();
+        assert!(!p.push("openjd_output_var: N=@f").unwrap());
+        assert_eq!(
+            message(p.push("abc").unwrap_err()),
+            "Cross-user helper error: The helper sent more data than its header announced"
+        );
     }
 
     #[test]
@@ -1289,6 +1296,9 @@ mod frames_tests {
             out_line_outcome(&mut f, "openjd_output_var: N=@f", false, false),
             Some(LineOutcome::Invalid(m)) if m == "Output variable 'N': the cross-user helper did not read the @ file 'f'"
         ));
+        // It counts as the Action's invalid directive: later lines are not
+        // directives.
+        assert!(f.output_vars_mut().is_invalid());
         let mut f = filter();
         assert!(out_line_outcome(&mut f, "hello", false, false).is_none());
     }

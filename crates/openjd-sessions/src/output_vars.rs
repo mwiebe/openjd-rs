@@ -442,6 +442,9 @@ mod tests {
 
     #[test]
     fn forbidden_fails_any_directive_line() {
+        // The helper is not asked to read @ files for a Forbidden Action.
+        assert_eq!(OutputVars::forbidden().max_bytes(), None);
+        assert_eq!(OutputVars::ignored().max_bytes(), None);
         let mut v = OutputVars::forbidden();
         assert_eq!(
             invalid(v.begin("openjd_output_var:", false, false)),

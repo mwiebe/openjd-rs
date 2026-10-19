@@ -1234,3 +1234,74 @@ async fn test_cross_user_early_cancel_cancels_the_run() {
     assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
     session.cleanup();
 }
+
+/// Run `script` as a cross-user Task whose action cancels with
+/// NOTIFY_THEN_TERMINATE and a 20 second notify period, with `timeout`.
+async fn run_notify_step(
+    session: &mut Session,
+    script: &str,
+    timeout: Option<&str>,
+) -> openjd_sessions::action::ActionResult {
+    let fs = |s: &str| openjd_expr::format_string::FormatString::new(s).unwrap();
+    let mut step = sh_step(script);
+    step.actions.on_run.cancelation =
+        Some(openjd_model::job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(fs("20")),
+        });
+    step.actions.on_run.timeout = timeout.map(fs);
+    session
+        .run_task("S", &step, None, None, None, &Default::default())
+        .await
+        .unwrap()
+}
+
+/// An early cancel with a zero time limit is resent as TERMINATE, so a
+/// notify action's trap does not run and the action ends at once.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_early_urgent_cancel_terminates() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let handle = session.cancel_handle();
+    let canceller = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if handle.cancel(Some(Duration::ZERO), false) {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    });
+    let started = std::time::Instant::now();
+    let r = run_notify_step(
+        &mut session,
+        "trap 'echo got-term; sleep 30' TERM; sleep 30",
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(canceller.join().unwrap());
+    assert_eq!(r.state, ActionState::Canceled);
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    assert!(!r.stdout.contains("got-term"), "{}", r.stdout);
+    session.cleanup();
+}
+
+/// A timeout cancels a notify action with its notify signal, so its trap
+/// runs, as on the direct path.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_timeout_notifies_a_notify_action() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_notify_step(
+        &mut session,
+        "trap 'echo got-term; exit 0' TERM; sleep 30 & wait",
+        Some("1"),
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Timeout);
+    assert!(r.stdout.contains("got-term"), "{}", r.stdout);
+    session.cleanup();
+}
