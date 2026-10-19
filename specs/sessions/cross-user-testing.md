@@ -123,12 +123,15 @@ These use shell scripts in `tests/support/`:
 | `test_cross_user_runner_env_vars` | Explicit env vars are propagated to cross-user subprocess |
 | `test_cross_user_no_env_inheritance` | Host process env vars do NOT leak into cross-user subprocess |
 
-### Session Tests (2)
+### Session Tests
 
 | Test | Validates |
 |---|---|
 | `test_cross_user_session_cleanup` | Cleanup deletes files owned by target user with 700/600 permissions |
 | `test_cross_user_session_run_subprocess` | `Session::run_subprocess` runs as configured target user |
+| `test_cross_user_early_cancel_cancels_the_run` | A cancel that lands before the helper reads the Run command (and is dropped by the idle helper) is sent again, so the run is canceled |
+| `test_cross_user_early_urgent_cancel_terminates` | An early cancel with a zero time limit is resent as TERMINATE, so a notify action's trap does not run |
+| `test_cross_user_timeout_notifies_a_notify_action` | A timeout cancels a notify action with its notify signal, so its trap runs |
 
 The cleanup test creates files via `sudo -u targetuser` with restrictive permissions
 (owner-only), then verifies `session.cleanup()` successfully removes them. This exercises
@@ -142,6 +145,25 @@ process user.
 | `test_cross_user_tempdir_permissions` | Group ownership matches target user's group, mode is 0o770 |
 | `test_cross_user_tempdir_cleanup` | Cleanup works when target user has created files inside |
 | `test_cross_user_tempdir_disjoint_fails` | TempDir with disjoint user (no shared group) fails or has wrong group |
+
+### CONTROL_FLOW output variable tests (9)
+
+The helper reads `@` files as the job user and frames lines with truncation and
+lossy-decode flags (see [embedded-cross-user-helper.md](embedded-cross-user-helper.md#output-variable-files)).
+These run the same directives as the same-user tests in
+`tests/integration/test_control_flow.rs`.
+
+| Test | Verifies |
+|------|----------|
+| `test_cross_user_output_var_at_files` | A 600 KB `@` file (over the 128 KiB response line) arrives intact; whitespace forms of the directive give the same values as the direct path |
+| `test_cross_user_output_var_chunk_selector` | `N[3]=@f` in a chunked Step |
+| `test_cross_user_output_var_failures` | Undeclared name with a missing file, missing file, FIFO, non-UTF-8 content, non-UTF-8 line, an over-64 KiB line, and an `@` file over the size limit each fail with the direct path's message |
+| `test_cross_user_output_var_form_feed` | A trailing form feed is not stripped by the Unix helper |
+| `test_cross_user_output_var_unreadable_hard_link` | A hard link to a file the job user can't read fails the Task |
+| `test_cross_user_output_var_environment_actions` | A Job Template `onEnter` directive fails; an Environment Template one is ordinary output |
+| `test_cross_user_output_var_long_lines` | Directive lines at the 64 KiB cap with a CRLF end, and lines that JSON escaping makes too long for one response (`outLong`), are accepted |
+| `test_cross_user_output_var_long_cut_line` | An over-cap line sent as `outLong` keeps its `truncated` flag and fails with the direct path's message |
+| `test_cross_user_output_var_at_line_after_an_invalid_directive` | An `@` line after an invalid directive is ordinary output, as on the direct path |
 
 ## Entry Script
 

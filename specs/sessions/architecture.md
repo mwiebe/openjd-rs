@@ -22,6 +22,7 @@ openjd-sessions
 ├── shlex           # Shell-safe argument quoting for cross-user scripts
 ├── log             # Logging facade with kv feature for structured metadata
 ├── bitflags        # LogContent flag type
+├── indexmap        # IndexMap in ActionOutputs (public API)
 └── uuid            # Session ID generation in tests
 ```
 
@@ -34,6 +35,7 @@ src/
 ├── action.rs               # ActionState, ActionMessage, ActionResult types
 ├── action_status.rs        # ActionStatus struct (progress, status, fail, exit_code)
 ├── action_filter.rs        # Directive parsing from stdout lines, redaction
+├── output_vars.rs          # openjd_output_var treatments and collection (CONTROL_FLOW)
 ├── subprocess.rs           # Async subprocess execution via tokio::process
 ├── runner/
 │   ├── mod.rs              # CancelMethod, ScriptRunnerState, resolve_action_args()
@@ -54,8 +56,12 @@ helper/                     # Standalone helper binary crate
 └── src/
     ├── main.rs             # Shared stdin reader, command dispatch loop
     ├── protocol.rs         # Command/Response JSON serde types
+    ├── framer.rs           # Bounded line framer with truncated/lossy flags
+    ├── emit.rs             # One line to an out response, or outLong or outputFile frames
+    ├── output_file.rs      # @ directive recognizer and file reader (also used
+    │                       # by openjd-sessions through #[path])
     ├── runner.rs           # poll(2) loop, child management, cancel handling
-    └── runner_win.rs       # Windows runner (placeholder)
+    └── runner_win.rs       # Windows runner
 ```
 
 ## Public API Surface
@@ -64,8 +70,11 @@ Re-exported from `lib.rs`:
 
 ```rust
 // Core session
-pub use session::{Session, SessionState, SessionConfig, EnvironmentIdentifier};
-pub use action::{ActionState, ActionResult, ActionMessage};
+pub use session::{
+    EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
+    RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
+};
+pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
 

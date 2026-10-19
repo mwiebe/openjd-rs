@@ -2277,6 +2277,7 @@ dependencies = [
  "bitflags 2.13.2",
  "futures-util",
  "getrandom 0.4.3",
+ "indexmap",
  "log",
  "nix",
  "openjd-expr",
