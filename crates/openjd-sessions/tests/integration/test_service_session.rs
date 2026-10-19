@@ -1027,9 +1027,15 @@ async fn caller_cancel_racing_a_reported_failure_is_not_an_instance_failure() {
     let exit = ss.wait_exit().await.unwrap();
     assert!(exit.canceled, "{exit:?}");
     assert_eq!(exit.exit_code, Some(3), "{exit:?}");
-    assert_eq!(
-        exit.reported_failure.as_deref(),
-        Some("shutting down badly")
+    // The caller's cancel came first: the line is a message in passing, not
+    // a reported failure (the health watch is not turned to `Failed`), but
+    // the text is still carried as the fail message.
+    assert_eq!(exit.reported_failure, None, "{exit:?}");
+    assert_eq!(exit.fail_message.as_deref(), Some("shutting down badly"));
+    assert!(
+        !matches!(ss.health(), Some(ServiceHealth::Failed { .. })),
+        "{:?}",
+        ss.health()
     );
     ss.end().await.unwrap();
 }

@@ -2056,9 +2056,9 @@ impl HealthTracker<'_> {
     /// after `onRun` exited, which cannot make the instance READY or count
     /// as a heartbeat. Returns what the driver must act on: a heartbeat (an
     /// honored `openjd_service_ready` line, the `STDOUT` probe, so the driver
-    /// re-arms its timer) or a reported failure (an `openjd_fail` line while
-    /// `onRun` runs — RFC 0009 `<ServiceActions>`: an instance failure in
-    /// itself, on which the driver cancels `onRun`).
+    /// re-arms its timer) or a reported failure (an `openjd_fail` line — RFC
+    /// 0009 `<ServiceActions>`: an instance failure in itself, on which the
+    /// driver cancels `onRun` if it still runs).
     fn apply(&mut self, msg: ActionMessage, running: bool) -> Applied {
         let mut applied = Applied::Nothing;
         match msg {
@@ -2066,9 +2066,10 @@ impl HealthTracker<'_> {
             ActionMessage::Status(s) => self.lock_status().status_message = Some(s),
             ActionMessage::Fail(s) => {
                 self.lock_status().fail_message = Some(s.clone());
-                if running {
-                    applied = Applied::ReportedFailure(s);
-                }
+                // Reported whether or not onRun is still running: a line
+                // drained after the exit is the same verdict, with nothing
+                // left to cancel (the driver decides what to do with it).
+                applied = Applied::ReportedFailure(s);
             }
             ActionMessage::ServiceReady(message) => {
                 if !self.stdout_check {
@@ -2306,7 +2307,15 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                             // An UNHEALTHY verdict already canceled onRun:
                             // the line is a message in passing, not a second
                             // failure.
-                            if reported_failure.is_none() && unhealthy.is_none() {
+                            // Likewise after the caller's own cancel (the
+                            // exit is not a failure) or a readiness timeout
+                            // (already decided, and onRun already canceled):
+                            // the message is kept as `fail_message` only.
+                            if reported_failure.is_none()
+                                && unhealthy.is_none()
+                                && !cancel_requested.load(Ordering::SeqCst)
+                                && !matches!(*tracker.health_tx.borrow(), ServiceHealth::TimedOut)
+                            {
                                 reported_failure = Some(message.clone());
                                 check_stop.cancel();
                                 drop(probe.take());
@@ -2431,7 +2440,21 @@ async fn drive_run(inputs: RunDriverInputs) -> RunDriverOutput {
                 drop(next_probe.take());
                 drop(heartbeat.take());
                 while let Ok(msg) = message_rx.try_recv() {
-                    let _ = tracker.apply(msg, false);
+                    // `echo openjd_fail: …; exit 1` usually lands here: the
+                    // line is the same verdict as one read while onRun ran —
+                    // an instance failure with the message as its reason —
+                    // with nothing left to cancel. Published so the health
+                    // watch reads `Failed`, not `ExitedBeforeReady`.
+                    if let Applied::ReportedFailure(message) = tracker.apply(msg, false) {
+                        if reported_failure.is_none()
+                            && unhealthy.is_none()
+                            && !cancel_requested.load(Ordering::SeqCst)
+                            && !matches!(*tracker.health_tx.borrow(), ServiceHealth::TimedOut)
+                        {
+                            reported_failure = Some(message.clone());
+                            tracker.set_reported_failure(message);
+                        }
+                    }
                 }
                 break;
             }

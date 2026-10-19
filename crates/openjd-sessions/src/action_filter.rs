@@ -259,10 +259,12 @@ impl ActionFilter {
                 ActionMessageKind::ServiceReady => {
                     // RFC 0009: the message is informational; whether it is
                     // honored (the STDOUT health check of a Service's onRun) is the
-                    // consumer's decision, like `Status`.
+                    // consumer's decision, like `Status` — and, like `Status`, it
+                    // travels into the health state and the `is READY: …` log
+                    // line, so it is redacted here.
                     callbacks.push(FilterCallback {
                         kind: ActionMessageKind::ServiceReady,
-                        value: ActionMessageValue::String(payload.to_string()),
+                        value: ActionMessageValue::String(self.apply_redaction(payload)),
                         cancel: false,
                     });
                 }

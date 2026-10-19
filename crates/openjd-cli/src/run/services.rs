@@ -1940,11 +1940,10 @@ async fn launch_until_ready(
                 .unwrap_or_else(|_| driver_lost_exit());
             if exit.canceled {
                 Ok(false)
-            } else if let Some(message) = exit.reported_failure {
-                // The exit landed before the health watch's `Failed` was
-                // observed: still a reported failure.
-                Err(FailureKind::Reported(message))
             } else {
+                // A reported failure never reaches this arm: `Failed` is
+                // published before the exit and is terminal, so `wait_ready`
+                // returned it above.
                 Err(FailureKind::ExitedBeforeReady(Box::new(exit)))
             }
         }
