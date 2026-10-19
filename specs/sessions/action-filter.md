@@ -280,5 +280,5 @@ are logged with redaction applied.
 The real loop is `subprocess::process_line(line, output, filter, …)`, shared by the direct
 and helper paths. `output` is what `OutputVars` made of an `openjd_output_var` line, if it
 claimed it: an accepted value becomes `ActionMessage::OutputVar`; an invalid directive sets
-the reader's `saw_fail` and sends `ActionMessage::CancelMarkFailed` carrying the
+the reader's `saw_fail` and sends `ActionMessage::InvalidOutputVar` carrying the
 collector's message (not a fixed one), so the `fail_message` names the problem.

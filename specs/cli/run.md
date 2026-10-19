@@ -149,7 +149,7 @@ therefore do not create a working directory or print session-start banners.
 
 `CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension, so `run`
 accepts templates that declare `outputVariables`, `enableIf`, or `jobOutputDefinitions`.
-The run itself does not implement the extension yet. `create_job` binds what it can at
+The run implements it in part. `create_job` binds what it can at
 job creation and evaluates every job output whose inputs are concrete then (one that fails
 fails `create_job`, so `run` reports it and runs nothing), and `run` refuses, in the SETUP
 phase before a session exists, a Job in which any Step is still pending inputs or is
@@ -162,10 +162,13 @@ resolved on the worker host (its action `command` and `args`, embedded files, sc
 when it starts, because nothing supplies the value. A read in a TEMPLATE-scope field (a
 Step Environment's `enableIf`, an action's `timeout` or `cancelation`) of a symbol that is
 not concrete at job creation (any `Output`, unless its producer is skipped) leaves the Step
-pending, so `run` refuses it. Steps run in topological order as before, and
-`openjd_output_var:` lines are ordinary output — declared outputs are not collected and a
-missing value does not fail a Task. Simulating step input binding, output collection, and
-job outputs are later changes in `docs/control-flow-prototype-plan.md`.
+pending, so `run` refuses it. Steps run in topological order as before. When the
+template lists `CONTROL_FLOW`, `run` sets `SessionConfig::control_flow` and passes each
+Step's `outputVariables` to `run_task`, so `openjd_output_var:` lines are collected and
+checked: an invalid directive, or a declared `ONCE` or `LAST` output with no value, fails
+the Task, and the message appears in the Task's output. The collected values are not yet
+reported or bound into later Steps; simulating step input binding and job outputs at run
+time are later changes in `docs/control-flow-prototype-plan.md`.
 
 ## Step Selection Logic
 

@@ -226,7 +226,9 @@ placeholder for some other encoding.
 
 {"outputFile": {"lineLen": 31, "name": [19, 23], "task": null, "path": [25, 31], "size": 5, "validUtf8": 5}}
 
-{"data": "openjd_output_var: Keys=@k.json[\"a\"]"}
+{"data": "openjd_output_var: Keys=@k.json"}
+
+{"data": "[\"a\"]"}
 
 {"outLong": {"len": 65533}}
 
@@ -695,7 +697,7 @@ The existing per-action sudo path remains as fallback for non-helper sessions.
 
 ## Testing
 
-All 13 cross-user tests in `tests/test_cross_user.rs` pass in the Docker
+The cross-user tests in `tests/integration/test_cross_user.rs` pass in the Docker
 localuser container, validating the helper end-to-end:
 
 ```bash

@@ -347,7 +347,7 @@ applied (callers no longer check `min_log_level` themselves).
 (see [action-filter.md](action-filter.md#openjd_output_var)). Such a line bypasses
 `filter_message`: an accepted value sends `ActionMessage::OutputVar` and is logged
 according to `echo_openjd_directives` and the log level; an invalid one sets `saw_fail`,
-sends `CancelMarkFailed` with its message, and is always logged with
+sends `InvalidOutputVar` with its message, and is always logged with
 ` -- ERROR: <message>`, whatever the log level.
 
 This function is shared between `run_subprocess` (async path) and `run_via_helper`

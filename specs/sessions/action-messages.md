@@ -21,6 +21,8 @@ pub enum ActionMessage {
     /// CONTROL_FLOW: a value the action's output collector accepted.
     OutputVar { task: Option<i64>, name: String, value: ExprValue },
     CancelMarkFailed { fail_message: String },
+    /// CONTROL_FLOW: an invalid `openjd_output_var` directive.
+    InvalidOutputVar { fail_message: String },
 }
 ```
 
@@ -42,14 +44,17 @@ it as failed. The `fail_message` field provides context about what was malformed
 the session stores as `action_fail_message` and reports via the callback. Without this
 field, the consumer would only know the action was canceled but not why.
 
-The env-directive path sends a fixed "Action canceled due to malformed command". An invalid
-`openjd_output_var` directive sends its own message instead (from the output collector, or
-for a Forbidden, cut, non-UTF-8, or helper-disagreement line from the recognizer in
-`output_vars.rs`), because RFC
-0010 requires the failure to name the output, the problem, and the offending text, and
-applying `CancelMarkFailed` overwrites any earlier `fail_message`. It is also final: the
-session keeps the first `CancelMarkFailed` message, and a later `Fail` (such as an
-`openjd_fail` a cancel handler prints) or `CancelMarkFailed` does not replace it.
+The env-directive path sends a fixed "Action canceled due to malformed command". Applying
+`CancelMarkFailed` overwrites any earlier `fail_message`, and a later `Fail` overwrites it
+in turn (last write wins, as in the Python reference).
+
+An invalid `openjd_output_var` directive sends `InvalidOutputVar` instead, with its own
+message (from the output collector, or for a Forbidden, cut, non-UTF-8, or
+helper-disagreement line from the recognizer in `output_vars.rs`), because RFC 0010
+requires the failure to name the output, the problem, and the offending text. The session
+applies it as `CancelMarkFailed`, and its message is also final: a later `Fail` (such as an
+`openjd_fail` a cancel handler prints) or `CancelMarkFailed` does not replace it. Only this
+variant is final, so Jobs without `CONTROL_FLOW` keep the last-write-wins behavior.
 
 ### Why OutputVar is a message and not an ActionStatus field
 

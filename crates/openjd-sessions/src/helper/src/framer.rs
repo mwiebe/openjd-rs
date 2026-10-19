@@ -96,7 +96,12 @@ pub struct FramedLine {
     /// the caller) its response would have exceeded
     /// [`MAX_RESPONSE_LINE_LENGTH`].
     pub truncated: bool,
-    /// The raw line was not valid UTF-8, so `text` holds `\xNN` escapes.
+    /// The kept part of the raw line was not valid UTF-8, so `text` holds
+    /// `\xNN` escapes. For a `truncated` line this can differ from the
+    /// parent's direct path, which decodes the whole line before it cuts:
+    /// invalid bytes past the cut flag the line there but not here, and the
+    /// last few characters of the text can differ. A truncated directive is
+    /// invalid either way, so only the logged text differs.
     pub lossy: bool,
 }
 
@@ -114,7 +119,9 @@ pub struct FramedLine {
 /// A cut can split a multi-byte character; the bytes of that character before
 /// the cut are dropped, so a valid UTF-8 line is cut on a character boundary
 /// and is not reported lossy, as on the direct path, which decodes the whole
-/// line and then cuts. Decoding can expand up to 4x (each bad byte becomes
+/// line and then cuts (for a line with invalid bytes, see
+/// [`FramedLine::lossy`]). An incomplete sequence at the end of a line that
+/// was not cut is escaped as any invalid bytes are. Decoding can expand up to 4x (each bad byte becomes
 /// `\xNN`), so the decoded text is cut to the cap again.
 fn finish_line(mut bytes: Vec<u8>, discarded: bool) -> FramedLine {
     if !discarded && bytes.last() == Some(&b'\r') {
@@ -589,6 +596,32 @@ mod tests {
         assert_eq!(lines[0].text, "a".repeat(MAX_LINE_BYTES - 1));
         assert!(lines[0].truncated);
         assert!(!lines[0].lossy);
+    }
+
+    #[test]
+    fn incomplete_sequence_at_the_end_of_an_uncut_line_is_escaped() {
+        // Not cut, so the partial "€" is invalid UTF-8, as on the direct path.
+        assert_eq!(
+            frame_lines(&[b"a\xE2\x82\n"]),
+            vec![FramedLine {
+                text: r"a\xe2\x82".into(),
+                truncated: false,
+                lossy: true
+            }]
+        );
+    }
+
+    #[test]
+    fn cut_line_keeps_an_earlier_invalid_byte() {
+        // Only an incomplete sequence at the cut is dropped; an invalid byte
+        // earlier in the line is escaped, and the text is cut to the cap.
+        let mut data = vec![0x97u8];
+        data.extend(vec![b'a'; MAX_LINE_BYTES]);
+        data.push(b'\n');
+        let lines = frame_lines(&[&data]);
+        assert!(lines[0].text.starts_with(r"\x97aaa"));
+        assert_eq!(lines[0].text.len(), MAX_LINE_BYTES);
+        assert!(lines[0].truncated && lines[0].lossy);
     }
 
     #[test]

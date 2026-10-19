@@ -143,7 +143,7 @@ process user.
 | `test_cross_user_tempdir_cleanup` | Cleanup works when target user has created files inside |
 | `test_cross_user_tempdir_disjoint_fails` | TempDir with disjoint user (no shared group) fails or has wrong group |
 
-### CONTROL_FLOW output variable tests (6)
+### CONTROL_FLOW output variable tests (9)
 
 The helper reads `@` files as the job user and frames lines with truncation and
 lossy-decode flags (see [embedded-cross-user-helper.md](embedded-cross-user-helper.md#output-variable-files)).
@@ -154,10 +154,13 @@ These run the same directives as the same-user tests in
 |------|----------|
 | `test_cross_user_output_var_at_files` | A 600 KB `@` file (over the 128 KiB response line) arrives intact; whitespace forms of the directive give the same values as the direct path |
 | `test_cross_user_output_var_chunk_selector` | `N[3]=@f` in a chunked Step |
-| `test_cross_user_output_var_failures` | Undeclared name with a missing file, missing file, FIFO, non-UTF-8 content, non-UTF-8 line, and an over-64 KiB line each fail with the direct path's message |
+| `test_cross_user_output_var_failures` | Undeclared name with a missing file, missing file, FIFO, non-UTF-8 content, non-UTF-8 line, an over-64 KiB line, and an `@` file over the size limit each fail with the direct path's message |
 | `test_cross_user_output_var_form_feed` | A trailing form feed is not stripped by the Unix helper |
 | `test_cross_user_output_var_unreadable_hard_link` | A hard link to a file the job user can't read fails the Task |
 | `test_cross_user_output_var_environment_actions` | A Job Template `onEnter` directive fails; an Environment Template one is ordinary output |
+| `test_cross_user_output_var_long_lines` | Directive lines at the 64 KiB cap with a CRLF end, and lines that JSON escaping makes too long for one response (`outLong`), are accepted |
+| `test_cross_user_output_var_long_cut_line` | An over-cap line sent as `outLong` keeps its `truncated` flag and fails with the direct path's message |
+| `test_cross_user_output_var_at_line_after_an_invalid_directive` | An `@` line after an invalid directive is ordinary output, as on the direct path |
 
 ## Entry Script
 
