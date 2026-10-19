@@ -200,6 +200,8 @@ helper (it spawned it).
 ```json
 {"token": "<TOKEN>", "command": "bash", "args": ["-c", "echo hello"], "env": {"PATH": "/usr/bin"}, "cwd": "/sessions/abc"}
 
+{"token": "<TOKEN>", "command": "bash", "args": ["-c", "..."], "env": {}, "cwd": "/sessions/abc", "outputFiles": {"maxBytes": 1048576}}
+
 {"token": "<TOKEN>", "cancel": "NOTIFY_THEN_TERMINATE", "notifyPeriodInSeconds": 5}
 
 {"token": "<TOKEN>", "cancel": "TERMINATE"}
@@ -218,6 +220,14 @@ placeholder for some other encoding.
 
 {"out": "hello"}
 
+{"out": "openjd_output_var: S=\"aaaa…", "truncated": true}
+
+{"out": "openjd_output_var: S=\"\\xff\"", "lossy": true}
+
+{"outputFile": {"lineLen": 31, "name": [19, 23], "task": null, "path": [25, 31], "size": 5, "validUtf8": 5}}
+
+{"outputFileData": "openjd_output_var: Keys=@k.json[\"a\"]"}
+
 {"exited": 0}
 
 {"error": "No such file or directory"}
@@ -227,6 +237,72 @@ placeholder for some other encoding.
 
 Only one command runs at a time. The protocol is implicitly sequential:
 send a command, read responses until `exited` or `error`, then send the next.
+
+`out` carries `truncated: true` when the line was cut to fit a limit (the raw line over
+64 KiB, the decoded line over 64 KiB, or the serialized response over the 128 KiB line
+the parent accepts) and `lossy: true` when the line was not valid UTF-8 and was decoded
+with `\xNN` escapes. Each flag is serialized only when set, so an ordinary line is
+`{"out": "..."}` as before. The parent rejects an `openjd_output_var` directive on a
+flagged line.
+
+### Output variable files
+
+RFC 0010 §File values item 3 requires an `@<FilePath>` value to be read with no more
+access than the action's user. The parent must not read the file itself, even with an
+ownership or link-count check, so the helper, which runs as the job user, resolves `@`
+directives as it reads the action's output, and the RFC's ordering (the file is read
+before any later line) falls out of the stream.
+
+- The parent sets `outputFiles` only for an action that may report output values; its
+  `maxBytes` is the per-Task output limit. Without it the helper sends every line as
+  `out`, so an Environment Template action's directive stays ordinary output and a
+  Forbidden action's directive reaches the parent unchanged and fails there.
+- The helper cannot use the model's parser (its dependencies are `serde`, `serde_json`,
+  `nix`, and `windows`), so `helper/src/output_file.rs::recognize_file_directive` is a
+  minimal recognizer for the `@` form only: `openjd_output_var:`, optional spaces or tabs,
+  an identifier, an optional `[<Int>]` selector, `=`, optional spaces or tabs, `@`, and a
+  non-empty path with trailing spaces and tabs removed. It must accept exactly the lines
+  `openjd_model::outputs::parse_output_directive` parses as `File`, with the same name,
+  selector, and path; `output_vars::tests::helper_recognizer_agrees_with_the_model_parser`
+  checks this over more than 100,000 generated lines. Any other line, including a
+  malformed directive, goes to the parent as `out` for the model parser to report. A
+  flagged line is never resolved.
+- For a recognized line the helper reads the file with `read_output_file` (the same
+  rules as the direct path, see [subprocess.md](subprocess.md#output-variable-files))
+  under `RunCommand.cwd`, the Session working directory, up to `maxBytes + 1` bytes, and
+  sends an `outputFile` header in place of the `out` line, then `outputFileData` frames.
+  The data is one string: the directive's line (`lineLen` bytes) followed by the first
+  `validUtf8` bytes of the file. It is split into frames that each fit the 128 KiB
+  response line once escaped (the line alone can be 64 KiB, which would not fit in the
+  header). `name` and `path` are byte ranges in the line; `size` is the bytes read;
+  `error`, when set, is the read failure as a phrase, and the data then holds only the
+  line. A file that is not valid UTF-8 travels as its valid prefix; the parent appends
+  invalid bytes up to `size`, so the collector reports where the content stops being
+  UTF-8 and the size check sees the real size.
+- The helper does not know the declared outputs or the values so far, so it reads before
+  the parent's checks. The parent applies `check_name` first, then the read result, then
+  the remaining-size check, so the outcome matches the RFC's order even though the helper
+  may read a file whose directive is then rejected, and reads up to the whole per-Task
+  limit rather than what remains.
+- The parent re-parses the line with the model parser, and a disagreement with the
+  helper's name, selector, or path is invalid. An `@` directive that arrives as a plain
+  `out` line in an Allowed action (the helper did not recognize it) is invalid too. The
+  parent never reads the file. A header that is inconsistent (a line over 64 KiB, `size`
+  over `maxBytes + 1`, `validUtf8` over `size`, an error with data) or data frames that
+  run past what the header announced are a `SessionError::HelperCommunication`, not a
+  directive error.
+- A helper command to read a file on request, answered while a `Run` is in progress, was
+  considered. Its reply would arrive on the stream the parent's `select!` loop reads,
+  interleaved with later `out` lines, which the parent would have to hold back to keep
+  the ordering.
+
+### Line ends
+
+Both runners hand each framed line to `emit::emit_line`, which strips only the line
+terminator's `\r`. The Unix runner used to send `line.trim_end()`, which strips all
+trailing Unicode whitespace, while the Windows runner and the direct path strip only the
+terminator; a directive followed by a form feed was then valid on one path and invalid on
+the others. The directive grammar decides what whitespace is allowed.
 
 ## Helper Implementation
 
@@ -323,8 +399,9 @@ fn run_command(
         // cancel a running action.
         if stdin ready { read line, parse Command::Cancel(sig), verify token, killpg, child_killed = true }
 
-        // Child output → send {"out": line}
-        if child ready { read line, send }
+        // Child output → frame into bounded lines, then emit_line: {"out": line}
+        // with its flags, or outputFile frames for an @ directive
+        if child ready { fill_buf, frame, emit }
 
         // Child exited (POLLHUP or try_wait after kill)
         // Kill process group to clean up descendants (e.g. grandchild shells)
@@ -672,8 +749,15 @@ openjd-sessions/
         main.rs         ← argv parse (--auth-token), shared stdin reader,
                           command dispatch with token verification
         protocol.rs     ← Command/Response serde types, token field
+        framer.rs       ← bounded line framer (FramedLine with truncated
+                          and lossy flags); also #[path]-included by
+                          openjd-sessions for tests
+        emit.rs         ← one line to an out response or outputFile frames
+        output_file.rs  ← @ directive recognizer and file reader; also
+                          #[path]-included by openjd-sessions
         runner.rs       ← poll(2) loop, child management, cancel with
                           per-command token check
+        runner_win.rs   ← Windows runner
 ```
 
 ### build.rs
@@ -685,7 +769,9 @@ On non-unix targets, writes an empty placeholder so `include_bytes!` doesn't fai
 ### Binary size
 
 425KB with `opt-level = "s"`, LTO, strip, `panic = "abort"`.
-Dependencies: serde, serde_json, nix. The token comparison is hand-rolled
+Dependencies: serde, serde_json, nix (features `signal`, `process`, `poll`, `fs`), and on
+Windows `windows` (including `Win32_Storage_FileSystem` for
+`GetFinalPathNameByHandleW`). The token comparison is hand-rolled
 (no `subtle` or similar crate) to keep the dependency set unchanged.
 
 ### Session-side dependencies

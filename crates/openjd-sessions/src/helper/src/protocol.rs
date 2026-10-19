@@ -22,6 +22,22 @@ pub struct RunCommand {
     #[serde(default)]
     pub env: HashMap<String, String>,
     pub cwd: String,
+    /// Set when the Action may report `openjd_output_var` values (RFC 0010):
+    /// the helper then reads the file of each `@` directive as the job user
+    /// and sends it as `Response::OutputFile` frames in place of the line.
+    /// Absent, every line is sent as `Response::Out`.
+    #[serde(default, rename = "outputFiles")]
+    pub output_files: Option<OutputFiles>,
+}
+
+/// How the helper resolves `@` directives for one Action.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct OutputFiles {
+    /// The most bytes of a file the parent can accept: its per-Task output
+    /// limit. The helper reads at most one byte more, so the parent can tell
+    /// a file that exceeds it.
+    #[serde(rename = "maxBytes")]
+    pub max_bytes: usize,
 }
 
 /// Cancel method, matching the OpenJD spec's `cancelationMethod` semantics:
@@ -67,10 +83,72 @@ impl Command {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum Response {
-    Pid { pid: u32 },
-    Out { out: String },
-    Exited { exited: i32 },
-    Error { error: String },
+    Pid {
+        pid: u32,
+    },
+    /// One line of child output. The flags are serialized only when set, so
+    /// an ordinary line is `{"out":"..."}`.
+    Out {
+        out: String,
+        /// The line was cut to fit a limit; the rest was discarded.
+        #[serde(skip_serializing_if = "is_false")]
+        truncated: bool,
+        /// The line was not valid UTF-8 and was decoded with `\xNN` escapes.
+        #[serde(skip_serializing_if = "is_false")]
+        lossy: bool,
+    },
+    /// The header of an `@` directive the helper resolved, sent in place of
+    /// its `Out` line and followed by `OutputFileData` frames.
+    OutputFile {
+        #[serde(rename = "outputFile")]
+        output_file: OutputFileHeader,
+    },
+    /// The next part of the data an `OutputFile` header announced.
+    OutputFileData {
+        #[serde(rename = "outputFileData")]
+        output_file_data: String,
+    },
+    Exited {
+        exited: i32,
+    },
+    Error {
+        error: String,
+    },
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The header of a resolved `@` directive.
+///
+/// The `OutputFileData` frames that follow carry, as one string split into
+/// frames that each fit the response line limit, the directive's line
+/// (`lineLen` bytes) and then the first `validUtf8` bytes of the file. The
+/// line can be up to 64 KiB, which would not fit in one frame once escaped,
+/// so it travels in the data rather than in the header.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputFileHeader {
+    /// The byte length of the line at the start of the data.
+    pub line_len: usize,
+    /// The byte range of the output's name in the line.
+    pub name: [usize; 2],
+    /// The task selector's value, if the directive has one.
+    pub task: Option<i64>,
+    /// The byte range of the file path in the line.
+    pub path: [usize; 2],
+    /// Why the file could not be read: a phrase that completes "the @ file
+    /// '<path>' ...". When set, the data holds only the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// How many bytes were read: the file's length, or `maxBytes + 1` for a
+    /// longer file.
+    pub size: usize,
+    /// How many of those bytes, from the start, are valid UTF-8, and so are
+    /// in the data. When less than `size`, the byte after them is not valid
+    /// UTF-8.
+    pub valid_utf8: usize,
 }
 
 impl<'de> Deserialize<'de> for Command {
@@ -168,8 +246,77 @@ mod tests {
         // The framer's size guard assumes Response::Out serializes as exactly
         // {"out":"..."} (10-byte envelope); a tag or extra field would break
         // its budget math silently, so pin the shape here.
-        let json = serde_json::to_string(&Response::Out { out: "x".into() }).unwrap();
+        let json = serde_json::to_string(&Response::Out {
+            out: "x".into(),
+            truncated: false,
+            lossy: false,
+        })
+        .unwrap();
         assert_eq!(json, r#"{"out":"x"}"#);
+    }
+
+    #[test]
+    fn out_response_flags_serialize_when_set() {
+        // The framer's OUT_ENVELOPE budget assumes this exact shape.
+        let json = serde_json::to_string(&Response::Out {
+            out: "x".into(),
+            truncated: true,
+            lossy: true,
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"out":"x","truncated":true,"lossy":true}"#);
+        assert_eq!(
+            json.len() - "x".len() + "\n".len(),
+            crate::framer::OUT_ENVELOPE,
+            "OUT_ENVELOPE is this envelope (minus the 1-byte payload) plus the newline"
+        );
+    }
+
+    #[test]
+    fn output_file_frames_serialize() {
+        let header = Response::OutputFile {
+            output_file: OutputFileHeader {
+                line_len: 22,
+                name: [19, 20],
+                task: Some(3),
+                path: [22, 22],
+                error: None,
+                size: 2,
+                valid_utf8: 2,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&header).unwrap(),
+            r#"{"outputFile":{"lineLen":22,"name":[19,20],"task":3,"path":[22,22],"size":2,"validUtf8":2}}"#
+        );
+        let data = Response::OutputFileData {
+            output_file_data: "ab".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&data).unwrap(),
+            r#"{"outputFileData":"ab"}"#
+        );
+    }
+
+    #[test]
+    fn parses_run_command_output_files() {
+        let cmd: Command = serde_json::from_str(
+            r#"{"token":"t","command":"echo","args":[],"cwd":"/tmp","outputFiles":{"maxBytes":1048576}}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::Run { run, .. } => {
+                assert_eq!(run.output_files.unwrap().max_bytes, 1_048_576)
+            }
+            _ => panic!("expected Run"),
+        }
+        let cmd: Command =
+            serde_json::from_str(r#"{"token":"t","command":"echo","args":[],"cwd":"/tmp"}"#)
+                .unwrap();
+        match cmd {
+            Command::Run { run, .. } => assert!(run.output_files.is_none()),
+            _ => panic!("expected Run"),
+        }
     }
 
     #[test]

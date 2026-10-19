@@ -256,6 +256,8 @@ async fn run_scenario(scenario_path: &Path) {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut session = Session::with_config(config).unwrap();
@@ -273,7 +275,13 @@ async fn run_scenario(scenario_path: &Path) {
     if let Some(ref envs) = job.job_environments {
         for env in envs {
             match session
-                .enter_environment_with_output(env, env.resolved_symtab.as_ref(), None, None)
+                .enter_environment_with_output(
+                    env,
+                    env.resolved_symtab.as_ref(),
+                    None,
+                    None,
+                    &Default::default(),
+                )
                 .await
             {
                 Ok((id, stdout)) => {
@@ -296,7 +304,13 @@ async fn run_scenario(scenario_path: &Path) {
         if let Some(ref envs) = step.step_environments {
             for env in envs {
                 match session
-                    .enter_environment_with_output(env, step.resolved_symtab.as_ref(), None, None)
+                    .enter_environment_with_output(
+                        env,
+                        step.resolved_symtab.as_ref(),
+                        None,
+                        None,
+                        &Default::default(),
+                    )
                     .await
                 {
                     Ok((id, stdout)) => {
@@ -326,6 +340,7 @@ async fn run_scenario(scenario_path: &Path) {
                         Some(&task_params),
                         step.resolved_symtab.as_ref(),
                         None,
+                        &Default::default(),
                     )
                     .await;
                 match result {
@@ -349,6 +364,7 @@ async fn run_scenario(scenario_path: &Path) {
                     None,
                     step.resolved_symtab.as_ref(),
                     None,
+                    &Default::default(),
                 )
                 .await;
             match result {
@@ -366,7 +382,13 @@ async fn run_scenario(scenario_path: &Path) {
     for id in step_env_ids.iter().rev() {
         if session.state() == SessionState::Ready || session.state() == SessionState::ReadyEnding {
             let _ = session
-                .exit_environment(id, step.resolved_symtab.as_ref(), true, None)
+                .exit_environment(
+                    id,
+                    step.resolved_symtab.as_ref(),
+                    true,
+                    None,
+                    &Default::default(),
+                )
                 .await
                 .map(|out| {
                     for line in out.lines() {
@@ -380,7 +402,7 @@ async fn run_scenario(scenario_path: &Path) {
     for (id, resolved) in job_env_entries.iter().rev() {
         if session.state() == SessionState::Ready || session.state() == SessionState::ReadyEnding {
             let _ = session
-                .exit_environment(id, resolved.as_ref(), true, None)
+                .exit_environment(id, resolved.as_ref(), true, None, &Default::default())
                 .await
                 .map(|out| {
                     for line in out.lines() {

@@ -10,7 +10,7 @@ submission path context, checks constraints, applies the collect mode, and count
 size. It does no I/O, so a session runtime, the CLI, `openjd-for-js`, and a scheduler
 that re-validates values can all share it.
 
-The caller (the session runtime, in a later change) owns everything that touches the
+The caller (`openjd-sessions`, see `specs/sessions/session.md` § Output variables) owns everything that touches the
 outside world:
 
 * recognizing a line that begins with `openjd_output_var:` in an Action's stdout or

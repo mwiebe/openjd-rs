@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 // Cross-platform: both runners frame child output through it.
+mod emit;
 mod framer;
 #[cfg(windows)]
 mod job_object;
+mod output_file;
 mod protocol;
 #[cfg(unix)]
 mod runner;

@@ -18,6 +18,8 @@ pub enum ActionMessage {
     SetEnv { name: String, value: String },
     UnsetEnv { name: String },
     RedactedEnv { name: String, value: String },
+    /// CONTROL_FLOW: a value the action's output collector accepted.
+    OutputVar { task: Option<i64>, name: String, value: ExprValue },
     CancelMarkFailed { fail_message: String },
 }
 ```
@@ -39,6 +41,22 @@ missing space after colon), it emits `CancelMarkFailed` to cancel the action and
 it as failed. The `fail_message` field provides context about what was malformed, which
 the session stores as `action_fail_message` and reports via the callback. Without this
 field, the consumer would only know the action was canceled but not why.
+
+The env-directive path sends a fixed "Action canceled due to malformed command". An invalid
+`openjd_output_var` directive sends the output collector's message instead, because RFC
+0010 requires the failure to name the output, the problem, and the offending text, and
+applying `CancelMarkFailed` overwrites any earlier `fail_message`.
+
+### Why OutputVar is a message and not an ActionStatus field
+
+RFC 0010 §Committing values lets a runtime forward each value as soon as it is accepted.
+`OutputVar` carries one accepted value (under `collect: APPEND`, the new element) with the
+Task's `CHUNK[INT]` value in a chunked Step. The Session passes it to
+`SessionConfig::output_callback` and changes no `ActionStatus` field, so the status
+callback does not fire for it. Putting the values on `ActionStatus` would re-clone a
+growing `APPEND` list on every status callback, because `action_status()` builds a new
+struct each time. The values are not committed: the authoritative set is
+`ActionResult::outputs` when the action succeeds.
 
 ## Channel Architecture
 
