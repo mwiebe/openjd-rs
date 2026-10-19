@@ -4,6 +4,7 @@
 
 //! Execution phases for the `openjd run` command.
 
+use super::simulator::{Begin, Simulator};
 use super::*;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
@@ -17,6 +18,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
 
     let prepared = prepare_run(&args)?;
     let selection = prepare_selection(&args, &prepared.job)?;
+    let mut sim = prepare_simulator(&args, &prepared, &selection)?;
     validate_wrap_environment_stacks(
         &prepared.job,
         &prepared.env_templates,
@@ -43,7 +45,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     let execution_result = run_workload(
         &mut ctx,
         &args,
-        &prepared.job,
+        &mut sim,
         &prepared.env_templates,
         &env_template_symtab,
         &selection,
@@ -60,7 +62,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         return Err(e);
     }
 
-    report_result(&mut ctx, &args, &prepared.job, &working_dir);
+    report_result(&mut ctx, &args, &prepared, &sim, &working_dir);
     if ctx.session_failed {
         std::process::exit(1);
     }
@@ -131,9 +133,10 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         .with_caller_limits(crate::common::caller_limits());
     let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
         .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
-    crate::common::require_bound_job(&job)?;
 
     Ok(PreparedRun {
+        job_template,
+        validation_ctx: revision_ctx,
         job,
         env_templates,
         param_values,
@@ -180,17 +183,23 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
         let selected_idx = selected_step_idx.ok_or(
             "Providing task parameters requires a specified step or a job with a single step.",
         )?;
-        if job.steps[selected_idx].parameter_space.is_none() {
-            let option = if args.task_params.is_empty() {
-                "--tasks"
-            } else {
-                "--task-param"
-            };
+        let selected = &job.steps[selected_idx];
+        let option = if args.task_params.is_empty() {
+            "--tasks"
+        } else {
+            "--task-param"
+        };
+        if matches!(selected.binding, openjd_model::job::StepBinding::Skipped) {
             return Err(format!(
-                "Step '{}' does not define a parameterSpace; {option} cannot be used.",
-                job.steps[selected_idx].name
+                "Step '{}' is skipped by its enableIf; {option} cannot be used.",
+                selected.name
             )
             .into());
+        }
+        // A pending Step's parameter space is known only once it is bound,
+        // so `execute_step_tasks` checks it then.
+        if selected.binding.is_bound() && selected.parameter_space.is_none() {
+            return Err(no_parameter_space(&selected.name, option).into());
         }
     }
     let steps_to_run = if let Some(selected_idx) = selected_step_idx {
@@ -210,15 +219,54 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
     })
 }
 
+fn no_parameter_space(step: &str, option: &str) -> String {
+    format!("Step '{step}' does not define a parameterSpace; {option} cannot be used.")
+}
+
+/// The scheduler simulator for the run, with the `--step-inputs` values given
+/// to a Step run alone, and every `Steps.*` value it reads checked to be
+/// concrete before the Session starts.
+fn prepare_simulator(
+    args: &RunArgs,
+    prepared: &PreparedRun,
+    selection: &RunSelection,
+) -> Result<Simulator, RunError> {
+    let alone = selection
+        .selected_step_idx
+        .filter(|_| !args.run_dependencies);
+    let step_inputs = match (&args.step_inputs, alone) {
+        (None, _) => None,
+        (Some(arg), Some(_)) => Some(parse_step_inputs(arg)?),
+        (Some(_), None) => return Err(
+            "--step-inputs requires --step (or a Job with one Step) without --run-dependencies."
+                .into(),
+        ),
+    };
+    let mut sim = Simulator::new(
+        prepared.job_template.clone(),
+        prepared.param_values.clone(),
+        prepared.validation_ctx.clone(),
+        prepared.job.clone(),
+        &selection.steps_to_run,
+    )?;
+    if let Some(target) = alone {
+        sim.give_step_inputs(target, step_inputs.as_ref())?;
+    }
+    Ok(sim)
+}
+
 fn validate_wrap_environment_stacks(
     job: &Job,
     env_templates: &[EnvironmentTemplate],
     steps_to_run: &[usize],
 ) -> Result<(), RunError> {
+    // A disabled Environment is not entered, so its hooks do not count.
     let has_wrap_hook = |env: &Environment| {
-        env.script
-            .as_ref()
-            .is_some_and(|script| script.actions.has_any_wrap_hook())
+        env.enabled
+            && env
+                .script
+                .as_ref()
+                .is_some_and(|script| script.actions.has_any_wrap_hook())
     };
     let mut base_wrap_envs: Vec<&str> = env_templates
         .iter()
@@ -348,11 +396,17 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
 async fn run_workload(
     ctx: &mut RunContext,
     args: &RunArgs,
-    job: &Job,
+    sim: &mut Simulator,
     env_templates: &[EnvironmentTemplate],
     env_template_symtab: &openjd_expr::SymbolTable,
     selection: &RunSelection,
 ) -> Result<(), RunError> {
+    sim.report_initial();
+    // `--step-inputs` values can bind the Step run alone, and a job output
+    // can read them.
+    if sim.settle()? {
+        ctx.session_failed = true;
+    }
     for template in env_templates {
         if ctx.is_stopping() {
             break;
@@ -370,10 +424,18 @@ async fn run_workload(
         )
         .await;
     }
-    if let Some(job_envs) = &job.job_environments {
+    if let Some(job_envs) = &sim.job.job_environments {
         for env in job_envs {
             if ctx.is_stopping() {
                 break;
+            }
+            if !env.enabled {
+                println!(
+                    "{}\tJob Environment '{}' is disabled by its enableIf; not entering it",
+                    ctx.timestamp(),
+                    env.name
+                );
+                continue;
             }
             ctx.enter_environment(
                 env,
@@ -390,7 +452,20 @@ async fn run_workload(
         if ctx.is_stopping() {
             break;
         }
-        execute_step(ctx, args, &job.steps[step_idx], step_idx, selection).await?;
+        match sim.begin_step(step_idx)? {
+            Begin::Failed => {
+                ctx.session_failed = true;
+                break;
+            }
+            Begin::NotRun => {}
+            Begin::Run(step) => {
+                execute_step(ctx, args, &step, step_idx, selection, sim).await?;
+                sim.finish_step(step_idx, ctx.session_failed)?;
+            }
+        }
+        if !ctx.is_stopping() && sim.settle()? {
+            ctx.session_failed = true;
+        }
     }
     Ok(())
 }
@@ -401,6 +476,7 @@ async fn execute_step(
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
+    sim: &mut Simulator,
 ) -> Result<(), RunError> {
     println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
     let environment_baseline = ctx.entered_envs.len();
@@ -408,6 +484,14 @@ async fn execute_step(
         for env in step_envs {
             if ctx.is_stopping() {
                 break;
+            }
+            if !env.enabled {
+                println!(
+                    "{}\tStep Environment '{}' is disabled by its enableIf; not entering it",
+                    ctx.timestamp(),
+                    env.name
+                );
+                continue;
             }
             ctx.enter_environment(
                 env,
@@ -423,7 +507,7 @@ async fn execute_step(
     let result = if ctx.session_failed {
         Ok(())
     } else {
-        execute_step_tasks(ctx, args, step, step_idx, selection).await
+        execute_step_tasks(ctx, args, step, step_idx, selection, sim).await
     };
     // This unwind happens before propagating task setup/runtime errors.
     ctx.exit_environments_down_to(environment_baseline).await;
@@ -436,29 +520,58 @@ async fn execute_step_tasks(
     step: &Step,
     step_idx: usize,
     selection: &RunSelection,
+    sim: &mut Simulator,
 ) -> Result<(), RunError> {
+    let explicit = selection
+        .explicit_task_params
+        .as_deref()
+        .filter(|_| selection.selected_step_idx == Some(step_idx));
     let Some(parameter_space) = &step.parameter_space else {
+        if explicit.is_some() {
+            let option = if args.task_params.is_empty() {
+                "--tasks"
+            } else {
+                "--task-param"
+            };
+            return Err(no_parameter_space(&step.name, option).into());
+        }
         ctx.print_banner("Running Task");
-        ctx.run_task(step, None).await?;
+        let run = ctx.run_task(step, None).await?;
+        if run.succeeded {
+            sim.record_action(step_idx, None, run.outputs);
+        }
         return Ok(());
     };
 
     let mut iter = openjd_model::StepParameterSpaceIterator::new(parameter_space)?;
-    if selection.selected_step_idx == Some(step_idx) {
-        if let Some(task_param_sets) = selection.explicit_task_params.as_deref() {
-            return execute_explicit_tasks(ctx, step, parameter_space, task_param_sets, &iter)
-                .await;
-        }
+    if let Some(task_param_sets) = explicit {
+        return execute_explicit_tasks(
+            ctx,
+            step,
+            step_idx,
+            parameter_space,
+            task_param_sets,
+            &iter,
+            sim,
+        )
+        .await;
     }
-    execute_parameter_space_tasks(ctx, args.maximum_tasks, step, &mut iter).await
+    // `iter.len()` is not the Task count of an adaptively chunked space.
+    if step.tasks_known() == Some(0) {
+        println!("{}\tStep '{}' has 0 tasks", ctx.timestamp(), step.name);
+        return Ok(());
+    }
+    execute_parameter_space_tasks(ctx, args.maximum_tasks, step, step_idx, &mut iter, sim).await
 }
 
 async fn execute_explicit_tasks(
     ctx: &mut RunContext,
     step: &Step,
+    step_idx: usize,
     parameter_space: &openjd_model::job::StepParameterSpace,
     task_param_sets: &[HashMap<String, String>],
     iter: &openjd_model::StepParameterSpaceIterator,
+    sim: &mut Simulator,
 ) -> Result<(), RunError> {
     let mut typed_sets = Vec::with_capacity(task_param_sets.len());
     for (index, params) in task_param_sets.iter().enumerate() {
@@ -477,7 +590,10 @@ async fn execute_explicit_tasks(
         for (name, value) in params {
             println!("{}\t{name} = {value}", ctx.timestamp());
         }
-        ctx.run_task(step, Some(values)).await?;
+        let run = ctx.run_task(step, Some(values)).await?;
+        if run.succeeded {
+            sim.record_action(step_idx, Some(values), run.outputs);
+        }
     }
     Ok(())
 }
@@ -486,7 +602,9 @@ async fn execute_parameter_space_tasks(
     ctx: &mut RunContext,
     maximum_tasks: i64,
     step: &Step,
+    step_idx: usize,
     iter: &mut openjd_model::StepParameterSpaceIterator,
+    sim: &mut Simulator,
 ) -> Result<(), RunError> {
     let is_adaptive = iter.chunks_adaptive();
     let chunks_param_name = iter.chunks_parameter_name().map(String::from);
@@ -518,7 +636,11 @@ async fn execute_parameter_space_tasks(
             .iter()
             .map(|(name, value)| (name.clone(), value.clone()))
             .collect();
-        let task_duration = ctx.run_task(step, Some(&task_values)).await?;
+        let run = ctx.run_task(step, Some(&task_values)).await?;
+        if run.succeeded {
+            sim.record_action(step_idx, Some(&task_values), run.outputs);
+        }
+        let task_duration = run.duration;
         remaining_tasks -= 1;
 
         if is_adaptive && !ctx.is_stopping() {
@@ -612,7 +734,15 @@ fn adjust_adaptive_chunk_size(
     }
 }
 
-fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &std::path::Path) {
+fn report_result(
+    ctx: &mut RunContext,
+    args: &RunArgs,
+    prepared: &PreparedRun,
+    sim: &Simulator,
+    working_dir: &std::path::Path,
+) {
+    let job = &prepared.job;
+    sim.report_not_evaluated();
     println!("{}\t", ctx.timestamp());
     if ctx.session_failed {
         println!("{}\tSession ended with errors.", ctx.timestamp());
@@ -649,6 +779,15 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &
         step_name: args.step.clone(),
         duration,
         chunks_run: ctx.tasks_run,
+        control_flow: prepared
+            .revision_profile
+            .has_extension(openjd_model::types::ModelExtension::ControlFlow)
+            .then(|| result::ControlFlowResult {
+                steps: sim.steps_json(),
+                job_outputs: sim.job_outputs_json(),
+                job_output_lines: sim.job_output_lines(),
+                not_evaluated: sim.not_evaluated(),
+            }),
     };
     crate::common::print_cli_result(&result, &args.output);
 }
