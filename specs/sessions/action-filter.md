@@ -253,7 +253,9 @@ others may not quote it (an undeclared name, a second value under `ONCE`, a task
 problem, the size limit, a constraint such as an `APPEND` list's `maxLength`, or a
 `null` or an object), as `output_vars.rs`'s own messages have; so does every
 collector message about an `@` file's content, which names neither the file nor the
-line. Text quoted by `output_vars.rs` itself,
+line. A failure to read the `@` file (missing, not a regular file, outside the working
+directory, over the size limit, can't be opened) quotes the path as written, which is the
+offending text, and does not add the line. Text quoted by `output_vars.rs` itself,
 including a read error the cross-user helper reports, is cut to 200 characters with
 control characters escaped, as the model's messages are.
 
