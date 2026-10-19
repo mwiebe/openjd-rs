@@ -1,0 +1,30 @@
+$ openjd summary {T}/progressive.yaml
+exit code: 0
+--- stdout
+
+--- Summary for 'Progressive binding' ---
+
+Parameters:
+  - N (INT): 2
+
+Total steps: 3
+Total tasks: 2 + (determined at run time)
+Total environments: 0
+
+--- Steps in 'Progressive binding' ---
+
+1. 'P' (1 total Tasks)
+
+2. 'Q' (1 total Tasks)
+  1 dependencies
+
+3. 'C' (pending inputs; Tasks determined at run time)
+  Enabled: yes
+  Tasks: determined at run time from Steps.P.Output.N
+  Host requirements: determined at run time from Steps.Q.Output.Cpus
+  Task parameters:
+    - I (INT)
+  2 dependencies
+
+
+--- stderr

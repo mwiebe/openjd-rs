@@ -1,0 +1,66 @@
+$ openjd run {T}/video_frame_count.yaml -p InputVideo={T}/fixtures/three_frames.video -p WorkDir={W}/work -p OutputVideo={W}/out.mp4
+exit code: 0
+--- stdout
+Session start
+Running job 'Stylize three_frames.video'
+Step 'StylizeFrame' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.VideoToFrames.Output.FrameCount
+  Host requirements: known
+Running step 'VideoToFrames'
+==============================================
+--------- Running Task
+==============================================
+Output:
+ffmpeg stub: three_frames.video -> in_%06d.png (3 frames)
+openjd_output_var: FrameCount=3
+openjd_output_var: FrameRate="24000/1001"
+Process exited with code: 0
+Output FrameCount = 3
+Output FrameRate = "24000/1001"
+Step 'StylizeFrame': Tasks known (3 tasks)
+Step 'StylizeFrame' is ready
+Running step 'StylizeFrame'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 1
+Output:
+stylize stub: in_000001.png -> out_000001.png
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+stylize stub: in_000002.png -> out_000002.png
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 3
+Output:
+stylize stub: in_000003.png -> out_000003.png
+Process exited with code: 0
+Running step 'FramesToVideo'
+==============================================
+--------- Running Task
+==============================================
+Output:
+ffmpeg stub: out_%06d.png -> out.mp4 (3 frames at 24000/1001 fps)
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Stylize three_frames.video
+Duration: {DURATION}
+Chunks run: 5
+--- stderr

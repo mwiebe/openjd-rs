@@ -1,0 +1,34 @@
+# Not an RFC sample: a pending Step whose Task count is known at Job creation
+# (plan, Test strategy; RFC A11). C's range reads only a job parameter, and its
+# step let, read only by its script, reads Steps.Q.Output.Label, so only C's
+# remaining group waits for Q.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Progressive binding with a step let
+parameterDefinitions:
+- name: Count
+  type: INT
+  default: 3
+steps:
+- name: Q
+  outputVariables:
+  - {name: Label, type: STRING}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: [-c, "print('openjd_output_var: Label=\"shot\"')"]
+- name: C
+  dependencies: [{dependsOn: Q}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: I
+      type: INT
+      range: "{{range(Param.Count)}}"
+  let:
+  - label = Steps.Q.Output.Label
+  script:
+    actions:
+      onRun:
+        command: python
+        args: [-c, "print('C task {{label}} {{Task.Param.I}}')"]

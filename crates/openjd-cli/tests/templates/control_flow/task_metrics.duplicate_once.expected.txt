@@ -1,0 +1,36 @@
+$ openjd run {T}/task_metrics.yaml
+$ env OPENJD_GOLDEN_DUPLICATE_MPJPE=1
+exit code: 1
+--- stdout
+Session start
+Running job 'hand-tracking-sweep-01'
+Running step 'ExtractHandActions'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+DetConf(FLOAT) = 0.5
+Overlap(INT) = 20
+Window(INT) = 120
+Video(STRING) = P0001_a68
+Output:
+openjd_output_var: frames_done=0
+openjd_output_var: frames_done=800
+openjd_output_var: mpjpe_mm=1.0
+openjd_output_var: chunk_error_mm=43.5
+openjd_output_var: chunk_error_mm=39.75
+openjd_output_var: chunk_error_mm=41.5
+openjd_output_var: mpjpe_mm=41.583333333333336 -- ERROR: Output variable 'mpjpe_mm': a second value was reported, but its collect mode is ONCE, in 'openjd_output_var: mpjpe_mm=41.583333333333336'
+Process exited with code: -1
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: hand-tracking-sweep-01
+Duration: {DURATION}
+Chunks run: 1
+--- stderr

@@ -1,0 +1,52 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic ffmpeg stub for the CONTROL_FLOW golden tests.
+
+Accepts the command lines the RFC samples use: `-i INPUT` and a final
+OUTPUT argument, either of which may be a frame pattern such as
+`in_%06d.png` or `beauty_####.exr`. A plain input file is a text "video" whose lines are
+`key: value`; its `frames` entry says how many frames to extract (default 1), and a
+plain output file is the frame count followed by the input file's text. Frames
+and outputs are small text files, so the result is the same on every run.
+"""
+import glob
+import os
+import re
+import sys
+
+PATTERN = re.compile(r"%0(\d+)d|(#+)")
+
+
+def frames_of(pattern):
+    return sorted(glob.glob(PATTERN.sub("*", pattern)))
+
+
+def numbered(pattern, n):
+    return PATTERN.sub(lambda m: f"{n:0{int(m.group(1)) if m.group(1) else len(m.group(2))}d}", pattern)
+
+
+def main(argv):
+    src = argv[argv.index("-i") + 1]
+    dst = argv[-1]
+    content = ""
+    if PATTERN.search(src):
+        count = len(frames_of(src))
+    else:
+        with open(src, encoding="utf-8") as f:
+            content = f.read()
+        info = dict(line.split(": ", 1) for line in content.splitlines() if ": " in line)
+        count = int(info.get("frames", "1"))
+    if PATTERN.search(dst):
+        for n in range(1, count + 1):
+            with open(numbered(dst, n), "w", encoding="utf-8") as f:
+                f.write(f"frame {n}\n")
+    else:
+        with open(dst, "w", encoding="utf-8") as f:
+            f.write(f"video of {count} frames\n{content}")
+    rate = f" at {argv[argv.index('-framerate') + 1]} fps" if "-framerate" in argv else ""
+    print(f"ffmpeg stub: {os.path.basename(src)} -> {os.path.basename(dst)} ({count} frame{'' if count == 1 else 's'}{rate})")
+
+
+main(sys.argv[1:])

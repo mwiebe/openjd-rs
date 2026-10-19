@@ -1,0 +1,35 @@
+$ openjd run {T}/progressive.yaml -p N=0
+exit code: 1
+--- stdout
+Session start
+Running job 'Progressive binding'
+Step 'C' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.P.Output.N
+  Host requirements: determined at run time from Steps.Q.Output.Cpus
+Running step 'P'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: N=0
+Process exited with code: 0
+Output N = 0
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: Progressive binding
+Duration: {DURATION}
+Chunks run: 1
+--- stderr
+ERROR: Step 'C' failed in its Task enumeration group:
+Model validation error: 1 validation error for JobTemplate
+steps[2] -> parameterSpace -> taskParameterDefinitions[0] -> range:
+	P reported no items
+  range(Steps.P.Output.N) if Steps.P.Output.N > 0 else fail('P reported no items')
+                                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~

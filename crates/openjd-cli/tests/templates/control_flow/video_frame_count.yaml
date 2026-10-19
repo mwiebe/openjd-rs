@@ -1,0 +1,60 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# "Video frame count", verbatim.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Stylize {{path(RawParam.InputVideo).name}}"
+parameterDefinitions:
+  - name: InputVideo
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+  - name: WorkDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+  - name: OutputVideo
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+steps:
+  - name: VideoToFrames
+    outputVariables:
+      - name: FrameCount
+        type: INT
+        minValue: 1
+        maxValue: 200000
+      - name: FrameRate
+        type: STRING
+    bash:
+      script: |
+        set -euo pipefail
+        frames={{repr_sh(Param.WorkDir / 'frames')}}
+        mkdir -p "$frames"
+        ffmpeg -nostdin -i {{repr_sh(Param.InputVideo)}} "$frames/in_%06d.png"
+        count=$(find "$frames" -name 'in_*.png' | wc -l)
+        rate=$(ffprobe -v error -select_streams v:0 -show_entries stream=r_frame_rate \
+                 -of default=noprint_wrappers=1:nokey=1 {{repr_sh(Param.InputVideo)}})
+        echo "openjd_output_var: FrameCount=$count"
+        echo "openjd_output_var: FrameRate=\"$rate\""
+
+  - name: StylizeFrame
+    dependencies:
+      - dependsOn: VideoToFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-{{Steps.VideoToFrames.Output.FrameCount}}"
+    bash:
+      script: |
+        stylize --in {{repr_sh((Param.WorkDir / 'frames' / 'in_%06d.png').with_number(Task.Param.Frame))}} \
+                --out {{repr_sh((Param.WorkDir / 'frames' / 'out_%06d.png').with_number(Task.Param.Frame))}}
+
+  - name: FramesToVideo
+    dependencies:
+      - dependsOn: VideoToFrames
+      - dependsOn: StylizeFrame
+    bash:
+      script: |
+        ffmpeg -nostdin -framerate {{repr_sh(Steps.VideoToFrames.Output.FrameRate)}} \
+               -i {{repr_sh(Param.WorkDir / 'frames' / 'out_%06d.png')}} {{repr_sh(Param.OutputVideo)}}
