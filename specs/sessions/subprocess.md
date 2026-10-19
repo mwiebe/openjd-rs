@@ -340,12 +340,15 @@ to `ActionMessage` variants, and sends them through the mpsc channel. Returns th
 (possibly redacted) display string and whether the line should be passed through to
 logging. Sets `saw_fail` when an `openjd_fail` directive is encountered.
 
+The returned `bool` is whether to log the line now, with the filter's current log level
+applied (callers no longer check `min_log_level` themselves).
+
 `output` is the outcome of an `openjd_output_var` line the action's `OutputVars` claimed
 (see [action-filter.md](action-filter.md#openjd_output_var)). Such a line bypasses
 `filter_message`: an accepted value sends `ActionMessage::OutputVar` and is logged
-according to `echo_openjd_directives`; an invalid one sets `saw_fail`, sends
-`CancelMarkFailed` with the collector's message, and is always logged with
-` -- ERROR: <message>`.
+according to `echo_openjd_directives` and the log level; an invalid one sets `saw_fail`,
+sends `CancelMarkFailed` with its message, and is always logged with
+` -- ERROR: <message>`, whatever the log level.
 
 This function is shared between `run_subprocess` (async path) and `run_via_helper`
 (cross-user synchronous path).

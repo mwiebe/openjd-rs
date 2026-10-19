@@ -43,9 +43,13 @@ the session stores as `action_fail_message` and reports via the callback. Withou
 field, the consumer would only know the action was canceled but not why.
 
 The env-directive path sends a fixed "Action canceled due to malformed command". An invalid
-`openjd_output_var` directive sends the output collector's message instead, because RFC
+`openjd_output_var` directive sends its own message instead (from the output collector, or
+for a Forbidden, cut, non-UTF-8, or helper-disagreement line from the recognizer in
+`output_vars.rs`), because RFC
 0010 requires the failure to name the output, the problem, and the offending text, and
-applying `CancelMarkFailed` overwrites any earlier `fail_message`.
+applying `CancelMarkFailed` overwrites any earlier `fail_message`. It is also final: the
+session keeps the first `CancelMarkFailed` message, and a later `Fail` (such as an
+`openjd_fail` a cancel handler prints) or `CancelMarkFailed` does not replace it.
 
 ### Why OutputVar is a message and not an ActionStatus field
 

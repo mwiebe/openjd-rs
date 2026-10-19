@@ -55,7 +55,7 @@ pub(crate) mod output_file;
 // Re-export path mapping from openjd-expr (mirrors Python where sessions re-exports from expr)
 pub use openjd_expr::path_mapping;
 
-pub use action::{ActionMessage, ActionResult, ActionState};
+pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
 pub use action_status::ActionStatus;
 pub use error::SessionError;
 pub use limits::SessionLimits;
@@ -63,7 +63,8 @@ pub use logging::LogContent;
 pub use openjd_expr::path_mapping::{PathFormat, PathMappingRule};
 pub use runner::{CancelMethod, ScriptRunnerState};
 pub use session::{
-    EnvironmentIdentifier, Session, SessionCancelHandle, SessionConfig, SessionState,
+    EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
+    RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
 };
 #[cfg(windows)]
 pub use session_user::BadCredentialsError;
