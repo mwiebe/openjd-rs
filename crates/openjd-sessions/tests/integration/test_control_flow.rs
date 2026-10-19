@@ -281,7 +281,8 @@ async fn collector_failures_fail_the_task_with_their_message() {
         (
             N_INT,
             "echo 'openjd_output_var: M=1'",
-            "Output variable 'M': the Step does not declare it (declared: 'N')",
+            "Output variable 'M': the Step does not declare it (declared: 'N'), in \
+             'openjd_output_var: M=1'",
         ),
         (
             N_INT,
@@ -313,7 +314,13 @@ async fn collector_failures_fail_the_task_with_their_message() {
         (
             r#"[{"name": "N", "type": "INT", "constraints": {"maxValue": {"int": 5}}}]"#,
             "echo 'openjd_output_var: N=6'",
-            "Output variable 'N': value 6 exceeds maximum 5",
+            "Output variable 'N': value 6 exceeds maximum 5, in 'openjd_output_var: N=6'",
+        ),
+        (
+            r#"[{"name": "L", "type": "LIST[INT]", "collect": "APPEND",
+                 "constraints": {"maxLength": 1}}]"#,
+            "echo 'openjd_output_var: L=1'; echo 'openjd_output_var: L=2'",
+            "Output variable 'L': list length 2 exceeds maximum 1, in 'openjd_output_var: L=2'",
         ),
     ] {
         let mut f = fixture();
