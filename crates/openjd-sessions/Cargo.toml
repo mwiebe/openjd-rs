@@ -27,6 +27,7 @@ test-utils = []
 [dependencies]
 openjd-expr = { path = "../openjd-expr", version = "0.11.0" }
 openjd-model = { path = "../openjd-model", version = "0.12.0" }
+indexmap = "2"
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -56,6 +57,7 @@ windows = { version = "0.62", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -67,7 +69,7 @@ windows = { version = "0.62", features = [
 [build-dependencies]
 # Helper needs nix with "poll" (parent [dependencies] has signal/process/user/fs but not poll)
 [target.'cfg(unix)'.build-dependencies]
-nix = { version = "0.31", features = ["signal", "process", "poll"] }
+nix = { version = "0.31", features = ["signal", "process", "poll", "fs"] }
 
 [target.'cfg(windows)'.build-dependencies]
 windows = { version = "0.62", features = [
@@ -77,6 +79,7 @@ windows = { version = "0.62", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Storage_FileSystem",
 ] }
 
 [dev-dependencies]

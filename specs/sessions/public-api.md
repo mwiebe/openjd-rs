@@ -17,9 +17,10 @@ A typical caller (e.g. the Deadline Cloud worker agent) flow is:
 1. Build a [`SessionConfig`] with the job parameters, path-mapping rules, and
    (optionally) a cross-user [`SessionUser`].
 2. `Session::with_config(config)?` to create the session.
-3. For each job/step environment, `session.enter_environment(env, resolved_symtab, …).await?`.
-4. For each task, `session.run_task(script, task_params, resolved_symtab, …).await?`.
-5. For each environment in reverse LIFO order, `session.exit_environment(id, …).await?`.
+3. For each job/step environment, `session.enter_environment(env, resolved_symtab, …, &EnvironmentOptions { origin, path_inputs }).await?`.
+4. For each task, `session.run_task(step_name, script, task_params, resolved_symtab, …, &RunTaskOptions { output_variables, path_inputs }).await?`.
+   With `CONTROL_FLOW`, `ActionResult::outputs` holds the Task's output values.
+5. For each environment in reverse LIFO order, `session.exit_environment(id, …, &EnvironmentOptions { … }).await?`.
 6. `session.cleanup()` when done.
 
 Real-time progress, status, and env-var updates surface through the
@@ -33,7 +34,7 @@ transition.
 
 ```
 openjd_sessions                 — crate root (most public items re-exported here)
-├── action                      — ActionState, ActionMessage, ActionResult
+├── action                      — ActionState, ActionMessage, ActionResult, ActionOutputs
 ├── action_status               — ActionStatus
 ├── embedded_files              — EmbeddedFiles, EndOfLine re-export
 ├── error                       — SessionError
@@ -44,7 +45,9 @@ openjd_sessions                 — crate root (most public items re-exported he
 ├── runner                      — CancelMethod, ScriptRunnerState, runner modules
 │   ├── env_script              — EnvironmentScriptRunner
 │   └── step_script             — StepScriptRunner
-├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier
+├── session                     — Session, SessionConfig, SessionState, EnvironmentIdentifier,
+│                                 EnvironmentOrigin, EnvironmentOptions, RunTaskOptions,
+│                                 SessionCallbackType, OutputCallbackType
 ├── session_user                — SessionUser trait, PosixSessionUser, WindowsSessionUser
 ├── tempdir                     — TempDir, StickyBitPolicy, openjd_temp_dir
 ├── win32 (Windows only)        — Windows helpers (mostly crate-internal; get_process_user is public)
@@ -53,9 +56,9 @@ openjd_sessions                 — crate root (most public items re-exported he
 ```
 
 SubprocessResult is re-exported at the crate root. The `subprocess`,
-`action_filter`, `cross_user_helper`, `helper_binary`, `win32_locate`,
-and (outside `test-utils`) `win32_permissions` modules are
-crate-internal.
+`action_filter`, `output_vars`, `output_file`, `cross_user_helper`,
+`helper_binary`, `win32_locate`, and (outside `test-utils`)
+`win32_permissions` modules are crate-internal.
 
 The `subprocess` module is crate-internal. Its result type
 ([`SubprocessResult`]) is re-exported at the crate root so it can
@@ -123,12 +126,19 @@ impl Session {
     ///
     /// `os_env_vars` supplements the session-level env var map for
     /// this action only.
+    ///
+    /// `options` says which template defines the environment (which
+    /// decides how its actions treat `openjd_output_var` lines under
+    /// `CONTROL_FLOW`) and, for a Step Environment, its Step's
+    /// path-typed `Steps.*` inputs. `&Default::default()` is a Job
+    /// Template environment with none.
     pub async fn enter_environment(
         &mut self,
         env: &Environment,
         resolved_symtab: Option<&SerializedSymbolTable>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<String, SessionError>;
 
     /// Same, but also returns the stdout captured from the onEnter
@@ -140,6 +150,7 @@ impl Session {
         resolved_symtab: Option<&SerializedSymbolTable>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<(String, String), SessionError>;
 
     /// Exit an environment. Must be called in LIFO order — the
@@ -150,26 +161,49 @@ impl Session {
     /// state for subsequent `run_task` / `enter_environment` calls.
     /// `false` transitions the session to ReadyEnding after this
     /// exit completes, blocking further work.
+    ///
+    /// `options` as for `enter_environment`; pass the same origin the
+    /// environment was entered with.
     pub async fn exit_environment(
         &mut self,
         identifier: &EnvironmentIdentifier,
         resolved_symtab: Option<&SerializedSymbolTable>,
         keep_session_running: bool,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &EnvironmentOptions<'_>,
     ) -> Result<String, SessionError>;
 
     /// Run a step's `onRun` action.
     ///
+    /// `step_name` is surfaced as `WrappedStep.Name` to a wrapping
+    /// environment's `onWrapTaskRun` hook (RFC 0008).
     /// `task_parameter_values` supplies `Task.Param.*` / `Task.RawParam.*`
     /// for this task's symbol table. `resolved_symtab` is the step-scope
     /// symbol table from `Step::resolved_symtab` (the session layers
     /// Task.* and Session.* over this base).
+    ///
+    /// `options` carries the Step's output variables and path-typed
+    /// `Steps.*` inputs (RFC 0010). With `SessionConfig::control_flow`
+    /// and `output_variables: Some(..)`, the Task's `openjd_output_var`
+    /// directives are collected as they are printed, each accepted
+    /// value is passed to `SessionConfig::output_callback`, an invalid
+    /// directive cancels and fails the action at once, and on success
+    /// the values are checked for completeness and returned in
+    /// `ActionResult::outputs`. With `CONTROL_FLOW` and `None`, a
+    /// directive is invalid. A `CHUNK[INT]` entry of
+    /// `task_parameter_values` (a `RangeExpr`, or a string that parses as
+    /// one) makes the action a chunk whose Tasks are its values; one
+    /// that doesn't parse fails the action with `SessionError::Runtime`
+    /// ("CHUNK[INT] parameter '<name>' value '<value>' is not a range
+    /// expression").
     pub async fn run_task(
         &mut self,
+        step_name: &str,
         script: &StepScript,
         task_parameter_values: Option<&TaskParameterSet>,
         resolved_symtab: Option<&SerializedSymbolTable>,
         os_env_vars: Option<&HashMap<String, String>>,
+        options: &RunTaskOptions<'_>,
     ) -> Result<ActionResult, SessionError>;
 
     /// Run an ad-hoc subprocess within the session's environment.
@@ -254,10 +288,22 @@ impl Session {
     /// Task.Param.*, Task.RawParam.*, Session.WorkingDirectory, and
     /// (if base is provided) everything already in the resolved
     /// step-scope symbol table.
+    ///
+    /// `path_inputs` (`job::Step::path_inputs`, RFC 0010) lists the
+    /// path-typed `Steps.*` values in `base`, stored there as strings
+    /// in the submission path context. Each `Steps.P.RawOutput.V` /
+    /// `Steps.P.TaskRawParam.N` becomes `path` values in that stored
+    /// form (each with its own format: Windows for a drive path or one
+    /// starting with `\\`, URI for a URI, POSIX otherwise), and its
+    /// `Output.V` / `TaskParam.N` twin becomes the forward-mapped `path`
+    /// values, element by element. A `null` stays `null`. A symbol of
+    /// another form, or one missing from `base`, is a
+    /// `SessionError::Runtime`.
     pub fn build_symbol_table(
         &self,
         task_parameter_values: Option<&TaskParameterSet>,
         base: Option<&SerializedSymbolTable>,
+        path_inputs: &[openjd_model::job::PathInput],
     ) -> Result<SymbolTable, SessionError>;
 }
 ```
@@ -378,6 +424,19 @@ pub struct SessionConfig {
     /// `openjd_model::CallerLimits` fields a submitting service would
     /// set. Default: no limits beyond the spec.
     pub limits: SessionLimits,
+
+    /// Whether the Job's Job Template lists `CONTROL_FLOW` (RFC 0010).
+    /// Only then are `openjd_output_var` lines directives: the `onRun`
+    /// of a Step with output variables reports values, and a directive
+    /// in any other Job Template action is invalid. When `false` every
+    /// such line is ordinary output. Set it from the Job Template's own
+    /// extensions, not from `profile`, which selects functions and may
+    /// be wider.
+    pub control_flow: bool,
+
+    /// Called once for each output value a running Task reports. See
+    /// `OutputCallbackType`.
+    pub output_callback: Option<OutputCallbackType>,
 }
 ```
 
@@ -403,10 +462,20 @@ pub struct SessionLimits {
     /// Operation budget per expression evaluation. `None` =
     /// `openjd_expr::DEFAULT_OPERATION_LIMIT` (10 million).
     pub max_eval_operations: Option<usize>,
+    /// Bytes of output values each Task holds (RFC 0010 §Limits item 2,
+    /// `CONTROL_FLOW`). `None` = `openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT`
+    /// (1 MiB); a smaller value is raised to it.
+    pub max_task_output_bytes: Option<usize>,
+}
+
+impl SessionLimits {
+    /// The per-Task output size limit the session enforces:
+    /// `max_task_output_bytes`, never less than 1 MiB.
+    pub fn task_output_bytes(&self) -> usize;
 }
 
 /// Mirror the run-time-relevant fields of a submitting service's
-/// `openjd_model::CallerLimits` (the four fields above); fields with
+/// `openjd_model::CallerLimits` (the five fields above); fields with
 /// no run-time counterpart are ignored. Lets one policy value drive
 /// both the model-side stages and the session runtime without drift.
 impl From<&openjd_model::CallerLimits> for SessionLimits;
@@ -426,9 +495,58 @@ pub type SessionCallbackType =
 ```
 
 Called with `(session_id, action_status)` on every state transition
-and every parsed directive. Must be cheap and non-blocking — it runs
+and every parsed directive other than `openjd_output_var`, which
+changes no status field. Must be cheap and non-blocking — it runs
 on the session's action-driving task. The Deadline Cloud worker agent
 uses it to forward updates to the control plane.
+
+#### `OutputCallbackType`
+
+```rust
+pub type OutputCallbackType =
+    Box<dyn Fn(&str, Option<i64>, &str, &ExprValue) + Send + Sync>;
+```
+
+Called with `(session_id, task, name, value)` once for each output
+value a running Task reports (RFC 0010 §Committing values). `task` is
+the Task's `CHUNK[INT]` value in a chunked Step and `None` otherwise;
+under `collect: APPEND`, `value` is the new element; a `PATH` value is
+in the submission path context. The values are not committed: if the
+action then fails, the caller discards them. Values are passed here
+rather than on `ActionStatus` so that a growing `APPEND` list is not
+cloned on every status callback.
+
+#### `EnvironmentOrigin`, `EnvironmentOptions`, `RunTaskOptions`
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnvironmentOrigin {
+    /// A Job or Step Environment of the Job Template (default). Under
+    /// CONTROL_FLOW a directive in one of its actions is invalid.
+    #[default]
+    JobTemplate,
+    /// An Environment Template; a directive is ordinary output.
+    EnvironmentTemplate,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvironmentOptions<'a> {
+    /// Under WRAP_ACTIONS a wrap hook that runs in place of the
+    /// environment's action is treated as that action, so this is the
+    /// origin of the wrapped environment.
+    pub origin: EnvironmentOrigin,
+    /// A Step Environment's `job::Step::path_inputs`.
+    pub path_inputs: &'a [openjd_model::job::PathInput],
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunTaskOptions<'a> {
+    /// The Step's `job::Step::output_variables`.
+    pub output_variables: Option<&'a [openjd_model::job::OutputVariable]>,
+    /// The Step's `job::Step::path_inputs`.
+    pub path_inputs: &'a [openjd_model::job::PathInput],
+}
+```
 
 ### `SessionState`
 
@@ -489,11 +607,20 @@ pub enum ActionMessage {
     /// `openjd_redacted_env: <var>=<value>` — value added to the
     /// redaction set, env var set. REDACTED_ENV_VARS extension.
     RedactedEnv { name: String, value: String },
-    /// Internal signal (emitted from ActionFilter when a malformed
-    /// env-directive is detected): cancel this action and mark it
-    /// failed.
+    /// `openjd_output_var: <name>=<value>` (CONTROL_FLOW): a value the
+    /// output collector accepted. `task` is the CHUNK[INT] value in a
+    /// chunked Step; under APPEND `value` is the new element.
+    OutputVar { task: Option<i64>, name: String, value: ExprValue },
+    /// Internal signal (emitted when a malformed env-directive or an
+    /// invalid `openjd_output_var` directive is found): cancel this
+    /// action and mark it failed with `fail_message`.
     CancelMarkFailed { fail_message: String },
 }
+
+/// Each Task's output values, keyed by its CHUNK[INT] value in a
+/// chunked Step (in the chunk's order) and by `None` otherwise.
+pub type ActionOutputs =
+    IndexMap<Option<i64>, openjd_model::outputs::TaskOutputs>;
 
 /// Result of a completed action. `stdout` is non-empty only when
 /// `SessionConfig.debug_collect_stdout` is true; otherwise output is
@@ -503,6 +630,12 @@ pub struct ActionResult {
     pub state: ActionState,
     pub exit_code: Option<i32>,
     pub stdout: String,
+    /// The Task's output values: `Some` only when the Session's Job
+    /// lists CONTROL_FLOW, the Step declares output variables, and the
+    /// action succeeded with every Task's values complete. Keyed by
+    /// value, not position, because a chunk's values are sorted while
+    /// the Step's Tasks iterate in a list range's written order.
+    pub outputs: Option<ActionOutputs>,
 }
 
 #[derive(Debug, Clone)]

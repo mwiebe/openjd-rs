@@ -3,7 +3,8 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 use super::protocol::{constant_time_eq, send, Command as HelperCommand, Response, RunCommand};
-use crate::framer::{fit_out_payload, LineFramer};
+use crate::emit::emit_line;
+use crate::framer::{FramedLine, LineFramer};
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
@@ -55,14 +56,13 @@ pub fn run_command(
     // Bounded framer replaces read_line: non-UTF-8 no longer aborts the run,
     // per-line memory is bounded, and cancel is not starved by a blocking read.
     let mut framer = LineFramer::new();
-    // Single emit path for all read sites: trim_end keeps existing behavior;
-    // fit_out_payload holds Response::Out within the 128 KiB response limit.
-    let mut emit_out = |line: String| {
-        let trimmed = line.trim_end();
-        send(&Response::Out {
-            out: fit_out_payload(trimmed).to_string(),
-        });
-    };
+    // Single emit path for all read sites, shared with the Windows runner:
+    // strips only the line terminator's `\r` (the directive grammar decides
+    // which other trailing whitespace is allowed), keeps Response::Out within
+    // the 128 KiB response limit, and resolves `@` output directives.
+    let cwd = std::path::Path::new(&cmd.cwd);
+    let mut emit_out =
+        |line: FramedLine| emit_line(line, cmd.output_files.as_ref(), cwd, &mut |r| send(r));
 
     loop {
         let timeout = if child_killed {
@@ -218,7 +218,7 @@ pub fn run_command(
 fn drain_child_output(
     reader: &mut impl BufRead,
     framer: &mut LineFramer,
-    emit: &mut impl FnMut(String),
+    emit: &mut impl FnMut(FramedLine),
 ) {
     loop {
         let data = match reader.fill_buf() {
@@ -266,8 +266,8 @@ mod tests {
         let mut reader = BufReader::new(InterruptThenData { step: 0 });
         let mut framer = LineFramer::new();
         let mut lines: Vec<String> = Vec::new();
-        drain_child_output(&mut reader, &mut framer, &mut |line| lines.push(line));
-        framer.finish(&mut |line| lines.push(line));
+        drain_child_output(&mut reader, &mut framer, &mut |line| lines.push(line.text));
+        framer.finish(&mut |line| lines.push(line.text));
         assert_eq!(lines, vec!["hello".to_string()]);
     }
 }

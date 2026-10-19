@@ -70,7 +70,9 @@ async fn test_env_enter_basic() {
         Some(make_action("sh", vec!["-c", "echo Hello"])),
         None,
     );
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
     assert!(!result.unwrap().is_empty());
 }
@@ -85,10 +87,12 @@ async fn test_env_exit_basic() {
         Some(make_action("sh", vec!["-c", "echo Goodbye"])),
     );
     let id = session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
-    let result = session.exit_environment(&id, None, true, None).await;
+    let result = session
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await;
     assert!(result.is_ok());
     assert!(result.unwrap().contains("Goodbye"));
 }
@@ -104,7 +108,9 @@ async fn test_env_enter_no_action() {
         None,
         Some(make_action("sh", vec!["-c", "echo x"])),
     );
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
 }
 
@@ -118,10 +124,12 @@ async fn test_env_exit_no_action() {
         None,
     );
     let id = session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
-    let result = session.exit_environment(&id, None, true, None).await;
+    let result = session
+        .exit_environment(&id, None, true, None, &Default::default())
+        .await;
     assert!(result.is_ok());
 }
 
@@ -140,12 +148,12 @@ async fn test_env_no_script() {
         enabled: true,
     };
     assert!(session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .is_ok());
     let id = session.environments_entered().last().unwrap().clone();
     assert!(session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .is_ok());
 }
@@ -186,7 +194,9 @@ async fn test_env_with_embedded_files() {
         resolved_symtab: None,
         enabled: true,
     };
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
 }
 
@@ -216,7 +226,9 @@ async fn test_env_with_variables() {
         resolved_symtab: None,
         enabled: true,
     };
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
 }
 
@@ -237,18 +249,18 @@ async fn test_env_exit_removes_variables() {
         enabled: true,
     };
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
     let id = session.environments_entered().last().unwrap().clone();
     session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .unwrap();
 
     let script = make_step_script("sh", vec!["-c", "echo MY_VAR=${MY_VAR:-unset}"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("MY_VAR=unset"));
@@ -262,7 +274,7 @@ async fn test_step_run_basic() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let script = make_step_script("sh", vec!["-c", "echo Hello from step"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await;
     assert!(result.is_ok());
     let r = result.unwrap();
@@ -278,7 +290,7 @@ async fn test_step_run_failing() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let script = make_step_script("sh", vec!["-c", "exit 1"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await;
     assert!(result.is_ok());
     let r = result.unwrap();
@@ -299,7 +311,7 @@ async fn test_env_enter_fail() {
         None,
     );
     assert!(session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .is_err());
 }
@@ -316,11 +328,11 @@ async fn test_env_exit_fail() {
         Some(make_action("sh", vec!["-c", "exit 1"])),
     );
     let id = session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .is_err());
 }
@@ -340,13 +352,13 @@ async fn test_env_sets_env_vars_via_stdout() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let script = make_step_script("sh", vec!["-c", "echo DYNAMIC_VAR=$DYNAMIC_VAR"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("DYNAMIC_VAR=dynamic_value"));
@@ -368,7 +380,7 @@ async fn test_env_unsets_env_vars_via_stdout() {
         None,
     );
     session
-        .enter_environment(&env1, None, None, None)
+        .enter_environment(&env1, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -381,13 +393,13 @@ async fn test_env_unsets_env_vars_via_stdout() {
         None,
     );
     session
-        .enter_environment(&env2, None, None, None)
+        .enter_environment(&env2, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let script = make_step_script("sh", vec!["-c", "echo TO_UNSET=${TO_UNSET:-unset}"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("TO_UNSET=unset"));
@@ -403,7 +415,7 @@ async fn test_session_state_ready_after_success() {
 
     let script = make_step_script("echo", vec!["ok"]);
     session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(session.state(), SessionState::Ready);
@@ -415,7 +427,7 @@ async fn test_session_state_ended_after_failure() {
     let mut session = Session::new_for_test(tmp.path().to_path_buf());
     let script = make_step_script("sh", vec!["-c", "exit 1"]);
     session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(session.state(), SessionState::ReadyEnding);
@@ -443,13 +455,13 @@ async fn test_redacted_env_via_stdout() {
         None,
     );
     session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
     let script = make_step_script("sh", vec!["-c", "echo SECRET=$SECRET"]);
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("SECRET=********"));
@@ -487,6 +499,8 @@ async fn test_env_with_resolved_variables() {
         cancel_token: None,
         debug_collect_stdout: true,
         echo_openjd_directives: true,
+        control_flow: false,
+        output_callback: None,
         sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
     };
     let mut session = Session::with_config(session_config).unwrap();
@@ -510,7 +524,9 @@ async fn test_env_with_resolved_variables() {
         resolved_symtab: None,
         enabled: true,
     };
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
 }
 
@@ -551,7 +567,7 @@ async fn test_env_let_bindings_respect_lowered_memory_budget() {
         enabled: true,
     };
     let err = session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap_err();
     let msg = err.to_string();
@@ -597,7 +613,9 @@ async fn test_env_with_let_bindings_and_embedded_files() {
         resolved_symtab: None,
         enabled: true,
     };
-    let result = session.enter_environment(&env, None, None, None).await;
+    let result = session
+        .enter_environment(&env, None, None, None, &Default::default())
+        .await;
     assert!(result.is_ok());
     // The configPath should resolve to the file path
     let config_path = files_dir.join("config.txt");
@@ -636,7 +654,7 @@ async fn test_step_with_let_bindings_and_embedded_files() {
         }]),
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await;
     assert!(result.is_ok());
     let data_path = files_dir.join("data.txt");

@@ -244,6 +244,9 @@ impl JsCallerLimits {
             max_resolved_data_len: self.max_resolved_data_len,
             max_eval_memory_bytes: self.max_eval_memory_bytes,
             max_eval_operations: self.max_eval_operations,
+            // Output values are a run-time limit; the JS bindings do no
+            // execution.
+            max_task_output_bytes: None,
         }
     }
 

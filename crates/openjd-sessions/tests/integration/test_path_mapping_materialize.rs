@@ -37,7 +37,7 @@ async fn test_path_mapping_file_created_with_rules() {
         embedded_files: None,
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_str(result.stdout.trim()).unwrap();
@@ -66,7 +66,7 @@ async fn test_path_mapping_file_created_empty_when_no_rules() {
         embedded_files: None,
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_str(result.stdout.trim()).unwrap();
@@ -96,7 +96,7 @@ async fn test_has_path_mapping_rules_true() {
         embedded_files: None,
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("true"));
@@ -119,7 +119,7 @@ async fn test_has_path_mapping_rules_false() {
         embedded_files: None,
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     assert!(result.stdout.contains("false"));
@@ -154,7 +154,7 @@ async fn test_path_mapping_multiple_rules() {
         embedded_files: None,
     };
     let result = session
-        .run_task("test_step", &script, None, None, None)
+        .run_task("test_step", &script, None, None, None, &Default::default())
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_str(result.stdout.trim()).unwrap();

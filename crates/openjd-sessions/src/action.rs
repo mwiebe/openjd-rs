@@ -49,7 +49,19 @@ pub enum ActionMessage {
     UnsetEnv { name: String },
     /// `openjd_redacted_env: <var>=<value>`
     RedactedEnv { name: String, value: String },
-    /// Request to cancel the action and mark it as failed (from malformed env commands)
+    /// `openjd_output_var: <name>=<value>` (RFC 0010, `CONTROL_FLOW`): a value
+    /// the output collector accepted. `task` is the Task's `CHUNK[INT]` value
+    /// in a chunked Step, `None` otherwise. Under `collect: APPEND`, `value`
+    /// is the new element. The value is not committed until the Action
+    /// succeeds.
+    OutputVar {
+        task: Option<i64>,
+        name: String,
+        value: openjd_expr::ExprValue,
+    },
+    /// Request to cancel the action and mark it as failed (from a malformed
+    /// env command or an invalid `openjd_output_var` directive), with the
+    /// message to fail it with.
     CancelMarkFailed { fail_message: String },
 }
 
@@ -62,6 +74,14 @@ impl std::fmt::Display for ActionMessage {
             Self::SetEnv { name, .. } => write!(f, "SetEnv({name})"),
             Self::UnsetEnv { name } => write!(f, "UnsetEnv({name})"),
             Self::RedactedEnv { name, .. } => write!(f, "RedactedEnv({name})"),
+            Self::OutputVar {
+                task: Some(t),
+                name,
+                ..
+            } => write!(f, "OutputVar({name}[{t}])"),
+            Self::OutputVar {
+                task: None, name, ..
+            } => write!(f, "OutputVar({name})"),
             Self::CancelMarkFailed { fail_message } => {
                 write!(f, "CancelMarkFailed({fail_message})")
             }
@@ -69,12 +89,23 @@ impl std::fmt::Display for ActionMessage {
     }
 }
 
+/// The output values of an Action (RFC 0010 `CONTROL_FLOW`): each Task's
+/// values, keyed by the Task's `CHUNK[INT]` value in a chunked Step (in the
+/// chunk's order) and by `None` otherwise.
+pub type ActionOutputs = indexmap::IndexMap<Option<i64>, openjd_model::outputs::TaskOutputs>;
+
 /// Result of running an action.
 #[derive(Debug)]
 pub struct ActionResult {
     pub state: ActionState,
     pub exit_code: Option<i32>,
     pub stdout: String,
+    /// The output values the Action reported, when the Step declares output
+    /// variables and the Action succeeded; `None` otherwise. Keyed by
+    /// `CHUNK[INT]` value, not position, because a chunk's values are sorted
+    /// while the Step's Tasks iterate in a list range's written order. A
+    /// `PATH` value is in the submission path context.
+    pub outputs: Option<ActionOutputs>,
 }
 
 #[cfg(test)]
@@ -121,6 +152,24 @@ mod tests {
             }
             .to_string(),
             "CancelMarkFailed(bad)"
+        );
+        assert_eq!(
+            ActionMessage::OutputVar {
+                task: None,
+                name: "N".into(),
+                value: openjd_expr::ExprValue::Int(1)
+            }
+            .to_string(),
+            "OutputVar(N)"
+        );
+        assert_eq!(
+            ActionMessage::OutputVar {
+                task: Some(-4),
+                name: "N".into(),
+                value: openjd_expr::ExprValue::Int(1)
+            }
+            .to_string(),
+            "OutputVar(N[-4])"
         );
     }
 }

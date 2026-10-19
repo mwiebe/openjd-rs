@@ -20,6 +20,7 @@ the runtime. Each directive is a single line matching `^openjd_<kind>: <payload>
 | `openjd_unset_env` | `NAME` | Unset environment variable |
 | `openjd_redacted_env` | `NAME=VALUE` | Set env var + redact value in logs |
 | `openjd_session_runtime_loglevel` | `DEBUG\|INFO\|WARNING\|ERROR` | Change log level |
+| `openjd_output_var` | `<Name>[<Int>]=<JSON>` or `=@<FilePath>` | Report a Task output value (`CONTROL_FLOW`); see [below](#openjd_output_var) |
 
 ## ActionFilter Interface
 
@@ -31,6 +32,8 @@ pub struct ActionFilter {
     redacted_values: HashSet<String>,
     redacted_lines: HashSet<String>,
     log_level: u32,
+    /// The action's `openjd_output_var` treatment and collector.
+    output_vars: OutputVars,
 }
 
 impl ActionFilter {
@@ -40,8 +43,13 @@ impl ActionFilter {
         -> (Vec<FilterCallback>, bool, String);
 
     pub fn min_log_level(&self) -> u32;
+    pub fn echo_openjd_directives(&self) -> bool;
 
     pub fn add_redacted_values(&mut self, values: &[String]);
+
+    pub fn set_output_vars(&mut self, output_vars: OutputVars);
+    pub fn output_vars_mut(&mut self) -> &mut OutputVars;
+    pub fn take_output_vars(&mut self) -> OutputVars;
 }
 ```
 
@@ -205,6 +213,49 @@ Environment variable values can be JSON-encoded (e.g., `openjd_env: {"NAME": "VA
 The filter detects JSON format and decodes it, supporting values that contain newlines
 or special characters that can't be represented in the simple `NAME=VALUE` format.
 
+## `openjd_output_var`
+
+RFC 0010 (`CONTROL_FLOW`) adds `openjd_output_var`, which has its own recognizer in
+`output_vars.rs` rather than going through `parse_directive`: `parse_directive` matches
+only `openjd_<kind>: ` with a non-empty payload, but the RFC recognizes any line that
+begins with `openjd_output_var:`, with optional whitespace after the colon. So
+`openjd_output_var:N=1` is a valid directive, and `openjd_output_var: ` with nothing
+after it is an invalid one; neither falls through as ordinary output. The line readers
+check `OutputVars::begin` before `filter_message`; a line it does not claim goes through
+`filter_message` as before.
+
+`OutputVars` holds the action's treatment, chosen by the Session (see
+[session.md § Output variables](session.md#output-variables-control_flow)):
+
+- **Ignored** (no `CONTROL_FLOW`, or an Environment Template action): `begin` claims no
+  line; the directive is ordinary output.
+- **Forbidden** (any other Job Template action): any line starting with
+  `openjd_output_var:` is invalid: "Invalid openjd_output_var directive: this Action can't
+  report output values; only the onRun action of a Step that declares outputVariables
+  can, in '<line>'".
+- **Allowed**: the payload goes to `openjd_model::outputs::parse_output_directive` and the
+  action's `OutputCollector`. An inline value is accepted at once; for an `@` value,
+  `check_name` runs first (so an undeclared name is reported even if the file is
+  missing), and `begin` returns a file request for the reader to satisfy before
+  `finish_file` accepts the content.
+
+A line that the reader truncated at the line limit, or had to decode with `\xNN`
+escapes because it was not valid UTF-8, is invalid as a directive (RFC 0010 §Limits item
+1, §Processing a directive item 9); the discarded remainder of an over-long line is never
+read as a line of its own. After the first invalid directive, later directive lines are
+not processed: the action is already being canceled.
+
+Messages for invalid directives come from the collector, so they name the output, the
+problem, and the offending text; text quoted by `output_vars.rs` itself is cut to 200
+characters with control characters escaped, as the model's messages are.
+
+### Logging
+
+A valid directive line is treated like the other directives: logged by default, hidden
+when `echo_openjd_directives` is `false`. An invalid or Forbidden one is always logged,
+with ` -- ERROR: <message>` appended, as the `openjd_env` error branches are; it never
+takes the shared `pass_through = echo_openjd_directives` path. Redaction applies to both.
+
 ## Integration with Subprocess
 
 The subprocess stdout loop calls `filter.filter_message(line, session_id)` for each line:
@@ -222,3 +273,9 @@ if pass_through {
 
 Messages flow through the mpsc channel to `Session::drive_action()`. Non-directive lines
 are logged with redaction applied.
+
+The real loop is `subprocess::process_line(line, output, filter, …)`, shared by the direct
+and helper paths. `output` is what `OutputVars` made of an `openjd_output_var` line, if it
+claimed it: an accepted value becomes `ActionMessage::OutputVar`; an invalid directive sets
+the reader's `saw_fail` and sends `ActionMessage::CancelMarkFailed` carrying the
+collector's message (not a fixed one), so the `fail_message` names the problem.

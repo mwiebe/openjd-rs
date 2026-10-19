@@ -208,7 +208,8 @@ that would exhaust memory if materialized.
 For each task:
 1. Get the next parameter set from the iterator
 2. Copy it into a `TaskParameterSet`
-3. Call `Session::run_task()`; the sessions crate builds symbols and materializes the script
+3. Call `Session::run_task()` with `RunTaskOptions` carrying the Step's `output_variables` and
+   `path_inputs`; the sessions crate builds symbols and materializes the script
 4. Check the result and stop on failure
 
 `--maximum-tasks` limits the iteration count. A value of -1 (default) means no limit.
@@ -268,6 +269,12 @@ the environment template's own parameters.
 Step environments receive the step's symbol table (`step_symtab`) for format string
 resolution. Job and template environments receive `None` for the step symbol table.
 
+Each environment is entered and exited with an `EnvironmentOptions` whose `origin` is
+`EnvironmentTemplate` for an `--environment` file and `JobTemplate` for a job or step
+environment, so that under `CONTROL_FLOW` an `openjd_output_var` directive in a job
+template environment's action fails it, while one in an environment template's action is
+ordinary output. The origin used on entry is recorded and passed again on exit.
+
 **Single-wrap-layer preflight (RFC 0008).** Before entering any environment,
 the CLI validates every session stack this run will build — external
 environment templates + job environments + each selected step's step
@@ -320,6 +327,8 @@ The `SessionConfig` struct is populated with:
 | `session_root_directory` | `None` (use system temp) |
 | `user` | `None` (run as current user) |
 | `profile` | `ModelProfile` built from the job template's declared extensions |
+| `control_flow` | Whether that profile, the Job Template's own, lists `CONTROL_FLOW` |
+| `output_callback` | `None` (the CLI does not yet report output values; plan PR 6) |
 | `limits` | `SessionLimits` with `max_resolved_arg_len = common::DEFAULT_MAX_ARG_LEN` (the CLI's uniform 32K-character default — see [check.md § Caller-Limits Policy](check.md#caller-limits-policy)); everything else `None` |
 
 The same OS-max cap applies at every enforcing stage the CLI drives:

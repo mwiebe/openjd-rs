@@ -18,7 +18,7 @@ use openjd_model::types::{JobParameterValues, ModelProfile, TaskParameterSet};
 use openjd_model::StepDependencyGraph;
 use openjd_sessions::action::ActionState;
 use openjd_sessions::path_mapping::PathMappingRule;
-use openjd_sessions::session::Session;
+use openjd_sessions::session::{EnvironmentOptions, EnvironmentOrigin, RunTaskOptions, Session};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +50,8 @@ struct EnteredEnvironment {
     identifier: String,
     name: String,
     symtab: EnvSymtab,
+    /// Passed again when the Environment is exited.
+    origin: EnvironmentOrigin,
 }
 
 struct RunContext {
@@ -87,17 +89,28 @@ impl RunContext {
         self.session_failed || self.interrupted.load(Ordering::SeqCst)
     }
 
-    async fn enter_environment(&mut self, env: &Environment, name: &str, symtab: EnvSymtab) {
+    async fn enter_environment(
+        &mut self,
+        env: &Environment,
+        name: &str,
+        symtab: EnvSymtab,
+        origin: EnvironmentOrigin,
+    ) {
         self.print_action_banner(&format!("Entering Environment: {name}"));
+        let options = EnvironmentOptions {
+            origin,
+            path_inputs: &[],
+        };
         match self
             .session
-            .enter_environment(env, symtab.as_ref(), None, None)
+            .enter_environment(env, symtab.as_ref(), None, None, &options)
             .await
         {
             Ok(identifier) => self.entered_envs.push(EnteredEnvironment {
                 identifier,
                 name: name.to_string(),
                 symtab,
+                origin,
             }),
             Err(e) => {
                 eprintln!("ERROR: Environment setup failed: {e}");
@@ -117,6 +130,7 @@ impl RunContext {
                             identifier: identifier.clone(),
                             name: name.to_string(),
                             symtab,
+                            origin,
                         });
                     }
                 }
@@ -134,7 +148,16 @@ impl RunContext {
             self.print_action_banner(&format!("Exiting Environment: {}", entered.name));
             if let Err(e) = self
                 .session
-                .exit_environment(&entered.identifier, entered.symtab.as_ref(), true, None)
+                .exit_environment(
+                    &entered.identifier,
+                    entered.symtab.as_ref(),
+                    true,
+                    None,
+                    &EnvironmentOptions {
+                        origin: entered.origin,
+                        path_inputs: &[],
+                    },
+                )
                 .await
             {
                 eprintln!("ERROR: Environment teardown failed: {e}");
@@ -157,6 +180,13 @@ impl RunContext {
                 task_values,
                 step.resolved_symtab.as_ref(),
                 None,
+                // Until `openjd run` simulates step input binding (plan PR
+                // 6), it attaches no Steps.* inputs, and it does not report
+                // the values a Task returns.
+                &RunTaskOptions {
+                    output_variables: step.output_variables.as_deref(),
+                    path_inputs: &step.path_inputs,
+                },
             )
             .await
             .map_err(|e| format!("Step '{}': {e}", step.name))?;
@@ -316,6 +346,8 @@ mod tests {
             sticky_bit_policy: Default::default(),
             debug_collect_stdout: false,
             echo_openjd_directives: true,
+            control_flow: false,
+            output_callback: None,
             limits: Default::default(),
         })
         .unwrap();

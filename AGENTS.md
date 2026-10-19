@@ -97,6 +97,7 @@ Local job execution runtime. Manages session lifecycle, runs actions via subproc
 - **Session** (`src/session.rs`) — Session state machine: enter environments, run task actions, cleanup.
 - **Subprocess** (`src/subprocess.rs`) — Process spawning, I/O streaming, signal handling (SIGTERM/SIGKILL), process tree management.
 - **Action filter** (`src/action_filter.rs`) — Real-time stdout/stderr message parsing, redaction, and annotation.
+- **Output variables** (`src/output_vars.rs`) — CONTROL_FLOW `openjd_output_var` treatments (allowed/forbidden/ignored), `@` file reads, and feeding the model's `OutputCollector`.
 - **Cross-user** (`src/cross_user_helper.rs`) — Subprocess execution as a different OS user via an embedded helper binary.
 - **Embedded helper** (`src/helper/`) — **Separate Cargo project** with its own `Cargo.toml` and `Cargo.lock`. Built by `build.rs` and embedded into the sessions binary. CI runs clippy and tests on it independently. Platform-specific runners: `src/helper/src/runner.rs` (Unix) and `runner_win.rs` (Windows).
 - **Platform-specific code** — `win32.rs`, `win32_permissions.rs`, `win32_locate.rs` use `#[cfg(target_os = "windows")]`. Cross-user tests require Docker (Linux) or a test user account (Windows).

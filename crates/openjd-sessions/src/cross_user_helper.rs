@@ -17,6 +17,7 @@ use std::path::Path;
 use crate::action::{ActionMessage, ActionState};
 use crate::error::SessionError;
 use crate::logging::LogContent;
+use crate::output_vars::{Begin, HelperFileParts, LineOutcome};
 
 /// Maximum bytes for a single JSON response line from the helper's stdout.
 /// Matches the helper binary's own `MAX_LINE_LENGTH` (128 KB).
@@ -580,12 +581,19 @@ pub(crate) async fn run_via_helper(
         })
         .collect();
 
-    let cmd = serde_json::json!({
+    let mut cmd = serde_json::json!({
         "command": args[0],
         "args": &args[1..],
         "env": env,
         "cwd": config.working_dir,
     });
+    // An Action that may report output values has the helper read each `@`
+    // file as the job user (RFC 0010 §File values item 3). For any other
+    // Action the helper leaves `openjd_output_var:` lines alone, so they reach
+    // the filter here unchanged: ordinary output, or invalid when Forbidden.
+    if let Some(max_bytes) = filter.output_vars_mut().max_bytes() {
+        cmd["outputFiles"] = serde_json::json!({ "maxBytes": max_bytes });
+    }
 
     helper.send_command(&cmd)?;
 
@@ -614,6 +622,8 @@ pub(crate) async fn run_via_helper(
 
     let mut stdout_collected = String::new();
     let mut saw_fail = false;
+    // An `@` directive the helper resolved, while its data frames arrive.
+    let mut pending_file: Option<PendingOutputFile> = None;
 
     loop {
         tokio::select! {
@@ -637,22 +647,63 @@ pub(crate) async fn run_via_helper(
                     continue;
                 }
 
+                if let Some(pending) = pending_file.as_mut() {
+                    // Between an `outputFile` header and its last data frame,
+                    // only data frames may arrive.
+                    let Some(data) = resp.get("outputFileData").and_then(|v| v.as_str()) else {
+                        return Err(SessionError::HelperCommunication(format!(
+                            "Expected outputFileData from the helper, got: {resp}"
+                        )));
+                    };
+                    if !pending.push(data)? {
+                        continue;
+                    }
+                    let pending = pending_file.take().expect("checked above");
+                    let (line, parts, content) = pending.into_parts();
+                    let outcome = filter
+                        .output_vars_mut()
+                        .finish_helper_file(&line, &parts, content);
+                    log_line(&line, Some(outcome), filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
+                    continue;
+                }
+
+                if let Some(header) = resp.get("outputFile") {
+                    let Some(max_bytes) = filter.output_vars_mut().max_bytes() else {
+                        return Err(SessionError::HelperCommunication(
+                            "The helper sent an outputFile frame for an Action that can't \
+                             report output values"
+                                .into(),
+                        ));
+                    };
+                    let pending = PendingOutputFile::new(header, max_bytes)?;
+                    if pending.is_complete() {
+                        let (line, parts, content) = pending.into_parts();
+                        let outcome = filter
+                            .output_vars_mut()
+                            .finish_helper_file(&line, &parts, content);
+                        log_line(&line, Some(outcome), filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
+                    } else {
+                        pending_file = Some(pending);
+                    }
+                    continue;
+                }
+
                 if let Some(line) = resp.get("out").and_then(|v| v.as_str()) {
                     let line = crate::subprocess::truncate_line(line);
-                    let (display, pass_through) = crate::subprocess::process_line(
-                        line,
-                        filter,
-                        session_id,
-                        &message_tx,
-                        &mut saw_fail,
-                    );
-                    if pass_through && filter.min_log_level() <= 20 {
-                        session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
-                    }
-                    if config.debug_collect_stdout {
-                        stdout_collected.push_str(&display);
-                        stdout_collected.push('\n');
-                    }
+                    let flag = |key: &str| resp.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
+                    let output = match filter
+                        .output_vars_mut()
+                        .begin(line, flag("truncated"), flag("lossy"))
+                    {
+                        Begin::NotDirective => None,
+                        Begin::Done(outcome) => Some(outcome),
+                        // The helper resolves every `@` directive the parser
+                        // reads as one, so this is a disagreement between them.
+                        Begin::ReadFile(request) => Some(
+                            filter.output_vars_mut().unresolved_on_helper_path(&request),
+                        ),
+                    };
+                    log_line(line, output, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
                     continue;
                 }
 
@@ -731,6 +782,139 @@ pub(crate) async fn run_via_helper(
                 }
             }
         }
+    }
+}
+
+/// Process and log one line of the helper's output, as the direct path does.
+#[allow(clippy::too_many_arguments)]
+fn log_line(
+    line: &str,
+    output: Option<LineOutcome>,
+    filter: &mut crate::action_filter::ActionFilter,
+    session_id: &str,
+    message_tx: &tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    collect: bool,
+    stdout_collected: &mut String,
+    saw_fail: &mut bool,
+) {
+    let (display, pass_through) =
+        crate::subprocess::process_line(line, output, filter, session_id, message_tx, saw_fail);
+    if pass_through && filter.min_log_level() <= 20 {
+        session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
+    }
+    if collect {
+        stdout_collected.push_str(&display);
+        stdout_collected.push('\n');
+    }
+}
+
+/// An `@` directive the helper resolved: its `outputFile` header, and the
+/// `outputFileData` frames received so far, which together carry the line
+/// and then the valid UTF-8 prefix of the file's content.
+#[derive(Debug)]
+struct PendingOutputFile {
+    line_len: usize,
+    parts: HelperFileParts,
+    error: Option<String>,
+    size: usize,
+    valid_utf8: usize,
+    data: String,
+}
+
+impl PendingOutputFile {
+    /// Check a header against what the helper was asked to do. Anything
+    /// inconsistent is a protocol error, not a directive error: the helper is
+    /// trusted only to report what it read, and its numbers bound how much
+    /// the parent buffers.
+    fn new(header: &serde_json::Value, max_bytes: usize) -> Result<Self, SessionError> {
+        let bad =
+            || SessionError::HelperCommunication(format!("Malformed outputFile header: {header}"));
+        let usize_of = |key: &str| {
+            header
+                .get(key)
+                .and_then(|v| v.as_u64())
+                .and_then(|v| usize::try_from(v).ok())
+        };
+        let range_of = |key: &str| -> Option<std::ops::Range<usize>> {
+            let a = header.get(key)?.as_array()?;
+            match a.as_slice() {
+                [s, e] => {
+                    Some(usize::try_from(s.as_u64()?).ok()?..usize::try_from(e.as_u64()?).ok()?)
+                }
+                _ => None,
+            }
+        };
+        let line_len = usize_of("lineLen").ok_or_else(bad)?;
+        let size = usize_of("size").ok_or_else(bad)?;
+        let valid_utf8 = usize_of("validUtf8").ok_or_else(bad)?;
+        let task = match header.get("task") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(v) => Some(v.as_i64().ok_or_else(bad)?),
+        };
+        let error = match header.get("error") {
+            None => None,
+            Some(v) => Some(v.as_str().ok_or_else(bad)?.to_string()),
+        };
+        let parts = HelperFileParts {
+            name: range_of("name").ok_or_else(bad)?,
+            task,
+            path: range_of("path").ok_or_else(bad)?,
+        };
+        if line_len > crate::subprocess::LOG_LINE_MAX_LENGTH
+            || size > max_bytes.saturating_add(1)
+            || valid_utf8 > size
+            || (error.is_some() && size != 0)
+        {
+            return Err(bad());
+        }
+        Ok(Self {
+            line_len,
+            parts,
+            error,
+            size,
+            valid_utf8,
+            data: String::new(),
+        })
+    }
+
+    fn expected_len(&self) -> usize {
+        self.line_len + self.valid_utf8
+    }
+
+    fn is_complete(&self) -> bool {
+        self.data.len() == self.expected_len()
+    }
+
+    /// Add a data frame; `true` once the data is complete.
+    fn push(&mut self, data: &str) -> Result<bool, SessionError> {
+        if self.data.len() + data.len() > self.expected_len() {
+            return Err(SessionError::HelperCommunication(
+                "The helper sent more outputFileData than its header announced".into(),
+            ));
+        }
+        self.data.push_str(data);
+        Ok(self.is_complete())
+    }
+
+    /// The line, what the helper found in it, and what it read: the content,
+    /// with one invalid byte in place of everything after the valid UTF-8
+    /// prefix (so the collector reports where the content stops being
+    /// UTF-8), or the read error.
+    fn into_parts(self) -> (String, HelperFileParts, Result<Vec<u8>, String>) {
+        let line = self.data[..self.line_len.min(self.data.len())].to_string();
+        let content = match self.error {
+            Some(error) => Err(error),
+            None => {
+                let mut content = self.data.into_bytes().split_off(self.line_len);
+                if self.valid_utf8 < self.size {
+                    content.push(0xFF);
+                    // Keep the reported size, so the size check sees it.
+                    content.resize(self.size, 0xFF);
+                }
+                Ok(content)
+            }
+        };
+        (line, self.parts, content)
     }
 }
 

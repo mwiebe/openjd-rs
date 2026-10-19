@@ -456,3 +456,108 @@ impl ChildWaitExt for std::process::Child {
         }
     }
 }
+
+/// Run `script` with `sh -c` in a fresh directory with `outputFiles` set, and
+/// return every response line up to and including `exited`.
+#[cfg(unix)]
+fn run_sh_collect(script: &str, output_files: bool) -> Vec<serde_json::Value> {
+    let dir = std::env::temp_dir().join(format!(
+        "openjd_helper_output_test_{}_{}",
+        std::process::id(),
+        script.len()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let mut child = spawn_helper_with_token(TEST_TOKEN);
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut cmd = serde_json::json!({
+        "token": TEST_TOKEN,
+        "command": "sh",
+        "args": ["-c", script],
+        "cwd": dir.to_string_lossy(),
+    });
+    if output_files {
+        cmd["outputFiles"] = serde_json::json!({"maxBytes": 1_048_576});
+    }
+    send_cmd(&mut stdin, &cmd.to_string());
+    let mut responses = Vec::new();
+    loop {
+        let line = read_line(&mut stdout);
+        assert!(!line.is_empty(), "helper closed stdout");
+        assert!(line.len() <= 128 * 1024, "response over the line limit");
+        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let done = v.get("exited").is_some();
+        if v.get("pid").is_none() {
+            responses.push(v);
+        }
+        if done {
+            break;
+        }
+    }
+    send_cmd(&mut stdin, &shutdown_json(TEST_TOKEN));
+    child.wait().unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    responses
+}
+
+/// An `@` directive is resolved by the helper: the file content travels in
+/// `outputFileData` frames after the header, in place of the `out` line, and
+/// later lines keep their order.
+#[cfg(unix)]
+#[test]
+fn test_helper_resolves_output_file() {
+    let r = run_sh_collect(
+        "printf '[1, 2]' > v.json; echo 'openjd_output_var:\tK= @v.json \t'; echo after",
+        true,
+    );
+    let line = "openjd_output_var:\tK= @v.json \t";
+    assert_eq!(
+        r[0],
+        serde_json::json!({"outputFile": {
+            "lineLen": line.len(), "name": [19, 20], "task": null,
+            "path": [23, 29], "size": 6, "validUtf8": 6
+        }})
+    );
+    // The line and the content may be split across frames; together they
+    // are the line followed by the content.
+    let data: String = r[1..3]
+        .iter()
+        .map(|v| v["outputFileData"].as_str().unwrap())
+        .collect();
+    assert_eq!(data, format!("{line}[1, 2]"));
+    assert_eq!(r[3], serde_json::json!({"out": "after"}));
+    assert_eq!(r[4], serde_json::json!({"exited": 0}));
+}
+
+/// Without `outputFiles` the helper leaves the line alone, and only the
+/// line terminator is stripped: trailing spaces, tabs, and a form feed stay
+/// (the Unix runner used to trim all trailing whitespace).
+#[cfg(unix)]
+#[test]
+fn test_helper_without_output_files_sends_out_unchanged() {
+    let r = run_sh_collect("printf 'openjd_output_var: K=@v.json \\t\\f\\r\\n'", false);
+    assert_eq!(
+        r[0],
+        serde_json::json!({"out": "openjd_output_var: K=@v.json \t\u{0c}"})
+    );
+}
+
+/// An over-long line and a non-UTF-8 line are sent as `out` with their
+/// flags, and their `@` directives are not resolved.
+#[cfg(unix)]
+#[test]
+fn test_helper_flags_truncated_and_lossy_lines() {
+    let r = run_sh_collect(
+        "printf 1 > f; printf 'openjd_output_var: K=@f%070000d\\n' 0; \
+         printf 'openjd_output_var: K=@f\\377\\n'",
+        true,
+    );
+    assert_eq!(r[0]["truncated"], serde_json::json!(true));
+    assert!(r[0].get("lossy").is_none());
+    assert_eq!(r[0]["out"].as_str().unwrap().len(), 64 * 1024);
+    assert_eq!(
+        r[1],
+        serde_json::json!({"out": "openjd_output_var: K=@f\\xff", "lossy": true})
+    );
+}

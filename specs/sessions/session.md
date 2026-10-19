@@ -72,6 +72,11 @@ pub struct SessionConfig {
     /// Caller-policy caps and evaluation budgets enforced by this session
     /// (see [limits](#limits)). Default: no limits beyond the spec.
     pub limits: SessionLimits,
+    /// Whether the Job Template lists CONTROL_FLOW (see
+    /// [Output variables](#output-variables-control_flow)).
+    pub control_flow: bool,
+    /// Called once per accepted output value: (session_id, task, name, value).
+    pub output_callback: Option<OutputCallbackType>,
 }
 ```
 
@@ -85,7 +90,8 @@ a job that never passed through this client's template validation or
 job creation, so the checks must hold here on the final resolved values
 regardless of what earlier stages did. The four fields mirror the
 corresponding `openjd_model::CallerLimits` fields a submitting service
-would set:
+would set (`max_task_output_bytes` is the fifth, described in
+[Output variables](#output-variables-control_flow)):
 
 - `max_resolved_arg_len` — the resolved action `command` and every final
   argv entry (after null-skip and list-flatten) — see
@@ -163,8 +169,11 @@ set to `true`. Production code should always use `Session::with_config`.
 
 ### Enter
 
-`enter_environment(env, resolved_symtab, identifier, os_env_vars) -> Result<String, SessionError>`,
-where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
+`enter_environment(env, resolved_symtab, identifier, os_env_vars, options) -> Result<String, SessionError>`,
+where `resolved_symtab`, `identifier` and `os_env_vars` are all optional. `options`
+(`EnvironmentOptions`) gives the environment's origin, which decides how its actions treat
+`openjd_output_var` lines (see [Output variables](#output-variables-control_flow)), and for a
+Step Environment its Step's `path_inputs` (see [Symbol Table Construction](#symbol-table-construction)):
 
 1. Validates state is `Ready`
 2. Sets state to `Running`
@@ -190,7 +199,8 @@ where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
 
 ### Exit
 
-`exit_environment(identifier, resolved_symtab, keep_session_running, os_env_vars)`:
+`exit_environment(identifier, resolved_symtab, keep_session_running, os_env_vars, options)`,
+where `options` is as for Enter and the caller passes the origin the environment was entered with:
 
 1. Validates state is `Ready` or `ReadyEnding`
 2. Validates the identifier matches the most recently entered environment (LIFO order)
@@ -207,14 +217,20 @@ in an inconsistent state. The Python library enforces this, and the Rust crate m
 
 ## Task Execution
 
-`run_task(script, task_parameter_values, resolved_symtab, os_env_vars)`:
+`run_task(step_name, script, task_parameter_values, resolved_symtab, os_env_vars, options)`:
 
 1. Validates state is `Ready`
-2. Sets state to `Running`
-3. Adds `Task.Param.*` and `Task.RawParam.*` to the symbol table
-4. Creates a `StepScriptRunner` and calls `run()` (runs `onRun` action)
-5. Processes `ActionMessage` values via `drive_action()`
-6. On completion: state → `Ready` or `ReadyEnding` based on result
+2. Builds the symbol table: adds `Task.Param.*` and `Task.RawParam.*`, and the Step's
+   path-typed `Steps.*` inputs from `options.path_inputs`
+3. Sets state to `Running`
+4. With `CONTROL_FLOW`, sets up output collection for the action (see
+   [Output variables](#output-variables-control_flow)); a `CHUNK[INT]` value that is not a
+   range expression fails the action here
+5. Creates a `StepScriptRunner` and calls `run()` (runs `onRun` action)
+6. Processes `ActionMessage` values via `drive_action()`
+7. On success with output collection, calls `OutputCollector::finish`; an error fails the
+   action with its message, and success fills `ActionResult::outputs`
+8. On completion: state → `Ready` or `ReadyEnding` based on result
 
 When a wrap hook is dispatched, the borrow of the active environment stack is
 released by copying only the wrapper data needed for symbol seeding: its name,
@@ -305,6 +321,7 @@ pub fn build_symbol_table(
     &self,
     task_parameter_values: Option<&TaskParameterSet>,
     base: Option<&SerializedSymbolTable>,
+    path_inputs: &[openjd_model::job::PathInput],
 ) -> Result<SymbolTable, SessionError>
 ```
 
@@ -348,6 +365,28 @@ PATH and LIST_PATH `Param.*` values are excluded from the base symtab — they a
 in template scope because their concrete values depend on session-time path mapping. The
 session populates these from `self.job_parameter_values` with the session's path mapping
 rules applied.
+
+### Path-typed `Steps.*` inputs (`CONTROL_FLOW`)
+
+A consumer Step's path-typed `Steps.*` values arrive in `base` only in their `Raw` forms
+(`Steps.P.RawOutput.V`, `Steps.P.TaskRawParam.N`), stored by `attach_step_inputs` as
+`string`, `list[string]`, or `list[list[string]]` in the submission path context, and
+listed in `path_inputs` (`job::Step::path_inputs`). They are stored as strings for the
+same reason `RawParam.*` is: `to_symtab(PathFormat::host())` rewrites `/` to `\` in every
+`path`-typed entry on a Windows worker, so a POSIX submission path would no longer match a
+POSIX rule. For each entry, after the `Param.*` loop:
+
+- the `Raw` symbol is set to `path` values in the stored form, each with the stored
+  value's own format (URI for a URI, Windows for a drive path or one starting with `\\`,
+  POSIX otherwise), not the host's; `ExprValue::new_path` normalizes separators within
+  that format, so `C:/x` reads back as `C:\x`;
+- its twin (`Steps.P.Output.V`, `Steps.P.TaskParam.N`) is set to the forward-mapped
+  `path` values in the host format, element by element, with the Session's rules;
+- a `null` (from a skipped producer) is left as `null` and gets no twin.
+
+A symbol of another form, or one that is missing from `base`, is a
+`SessionError::Runtime` naming it. Step Environments receive the same inputs through
+`EnvironmentOptions::path_inputs`.
 
 ## Path Mapping Materialization
 
@@ -485,9 +524,11 @@ Handles each `ActionMessage` variant:
 | `SetEnv { name, value }` | Adds to current environment's change set |
 | `UnsetEnv { name }` | Adds unset to current environment's change set |
 | `RedactedEnv { name, value }` | Same as SetEnv + adds value to redaction set |
+| `OutputVar { task, name, value }` | Calls `SessionConfig::output_callback`; no `ActionStatus` field changes, so the status callback is not invoked |
 | `CancelMarkFailed` | Sets `action_fail_message`, triggers cancelation with `mark_action_failed = true` |
 
-After each message, the user callback is invoked with the updated `ActionStatus`.
+After each message other than `OutputVar`, the user callback is invoked with the updated
+`ActionStatus`.
 
 
 ## Builder Methods
@@ -561,6 +602,7 @@ pub async fn enter_environment_with_output(
     resolved_symtab: Option<&SerializedSymbolTable>,
     identifier: Option<&str>,
     os_env_vars: Option<&HashMap<String, String>>,
+    options: &EnvironmentOptions<'_>,
 ) -> Result<(String, String), SessionError>
 ```
 
@@ -660,3 +702,80 @@ or when an operator wants the log to reflect only the underlying tool's output
 and not the OpenJD orchestration metadata. Use redaction (the
 `REDACTED_ENV_VARS` extension) to keep secrets out of logs; use this flag to
 keep the log readable.
+
+## Output variables (`CONTROL_FLOW`)
+
+RFC 0010 lets a Task report output values by printing `openjd_output_var:` directives
+(see [action-filter.md](action-filter.md#openjd_output_var) for recognition and logging,
+and `specs/model/outputs.md` for the grammar, conversion, and collect modes). The Session
+decides, per action, how such lines are treated, owns the collector, and returns the
+values.
+
+### Treatments
+
+| Action | `SessionConfig::control_flow` | Treatment |
+|---|---|---|
+| any | `false` | Ignored: the line is ordinary output |
+| `run_task` with `RunTaskOptions::output_variables: Some(..)` | `true` | Allowed: directives report values |
+| `run_task` with `output_variables: None` | `true` | Forbidden: a directive is invalid |
+| `enter`/`exit_environment` with `EnvironmentOrigin::JobTemplate` | `true` | Forbidden |
+| `enter`/`exit_environment` with `EnvironmentOrigin::EnvironmentTemplate` | `true` | Ignored |
+
+Under `WRAP_ACTIONS` the treatment follows the action a hook runs in place of: a
+directive from `onWrapTaskRun` counts for the Task, and one from `onWrapEnvEnter` or
+`onWrapEnvExit` follows the wrapped environment's origin, whichever template defines the
+wrapping environment. This falls out of the design: the treatment is chosen by the
+`run_task` / `enter_environment` / `exit_environment` call, not by the action that runs.
+
+`control_flow` is an explicit field rather than read from `profile`, because the profile
+is documented as selecting functions and redaction, and a caller may pass one wider than
+the Job Template's own extensions.
+
+### Collection
+
+For an Allowed action, `run_task` builds an `openjd_model::outputs::OutputCollector` with
+the Step's declarations, `SessionLimits::task_output_bytes()`, the Session's sorted path
+mapping rules (so `PATH` values are mapped back to the submission path context), the host
+path format, and the chunk. The Step is chunked when an entry of `task_parameter_values`
+has `TaskParameterType::ChunkInt`: its value is an `ExprValue::RangeExpr` (as `openjd run`
+passes) or a string that parses as one (such as `"10-12"`), whose values are the chunk;
+anything else fails the action with `SessionError::Runtime` ("CHUNK[INT] parameter
+'<name>' value '<value>' is not a range expression"). A collector that refuses its inputs
+(a chunk that repeats a value, or `APPEND` on a scalar type) fails the action the same
+way.
+
+The collector lives in the action's `ActionFilter` (through the runner) and is fed
+synchronously by the line reader, so an `@` file is read before any later line, and each
+accepted value is sent as `ActionMessage::OutputVar` and forwarded to
+`SessionConfig::output_callback` as it arrives. The first invalid directive sends
+`CancelMarkFailed` with the collector's message, which the Session applies as
+`cancel_action(None, true)`: the action's own cancelation runs at once, and the action is
+reported Failed with that message as `fail_message`. The reader also marks the action
+failed itself, so an action that exits 0 before the cancel reaches it still fails. Later
+directive lines are not processed.
+
+When the action exits successfully, `run_task` calls `finish`. An error (a `ONCE` or
+`LAST` output with no value, or an `APPEND` list below `minLength`, for any Task of the
+chunk) fails the action: the state becomes Failed, `fail_message` is set, the status
+callback fires, and the session moves to `ReadyEnding`. Otherwise `ActionResult::outputs`
+holds each Task's values keyed by `CHUNK[INT]` value (`None` for an unchunked Step), in
+the chunk's order. A failed, canceled, or timed-out action returns `outputs: None`; values
+already passed to the output callback are discarded by the caller.
+
+### `@` files
+
+A directive's `@<FilePath>` is resolved against the Session working directory; the file
+actually opened must be a regular file inside it after following links, checked on the
+opened handle; the open does not block (a FIFO is refused, not waited on); and at most
+`remaining_bytes_for(name, task) + 1` bytes are read. See
+[subprocess.md](subprocess.md#output-variable-files) for the direct path and
+[embedded-cross-user-helper.md](embedded-cross-user-helper.md#output-variable-files) for
+the cross-user path, where the helper reads the file as the job user.
+
+### Size limit
+
+`SessionLimits::max_task_output_bytes` (mirrored from `CallerLimits::max_task_output_bytes`)
+sets the per-Task limit of RFC 0010 §Limits item 2. `None` and any value below
+`openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT` (1 MiB) give 1 MiB, because a runtime must
+accept at least that much. The 64 KiB line limit (`LOG_LINE_MAX_LENGTH`) is unchanged and
+meets the RFC's line floor.

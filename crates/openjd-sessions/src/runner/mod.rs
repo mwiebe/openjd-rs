@@ -113,6 +113,10 @@ pub(crate) struct ScriptRunnerBase {
     #[cfg(windows)]
     pub helper: Option<crate::cross_user_helper::CrossUserHelperWin>,
     pub cancel_writer: Option<std::fs::File>,
+    /// How the action treats `openjd_output_var` lines (RFC 0010), with its
+    /// collector. Moved into the action's filter while it runs and back out
+    /// afterwards, so the caller can take the collector.
+    pub output_vars: crate::output_vars::OutputVars,
 }
 
 impl ScriptRunnerBase {
@@ -138,6 +142,7 @@ impl ScriptRunnerBase {
             limits: crate::limits::SessionLimits::default(),
             helper: None,
             cancel_writer: None,
+            output_vars: crate::output_vars::OutputVars::ignored(),
         }
     }
 
@@ -181,9 +186,10 @@ impl ScriptRunnerBase {
             self.redactions_enabled,
         );
         filter.add_redacted_values(&self.initial_redacted_values);
+        filter.set_output_vars(std::mem::take(&mut self.output_vars));
 
-        if let Some(ref mut helper) = self.helper {
-            let result = crate::cross_user_helper::run_via_helper(
+        let result = if let Some(ref mut helper) = self.helper {
+            crate::cross_user_helper::run_via_helper(
                 helper,
                 &config,
                 &mut filter,
@@ -191,19 +197,19 @@ impl ScriptRunnerBase {
                 message_tx,
                 self.cancel_writer.as_ref(),
             )
-            .await?;
-            self.state = state_from_action(result.state);
-            return Ok(result);
-        }
-
-        let result = run_subprocess(
-            config,
-            &mut filter,
-            &self.session_id,
-            message_tx,
-            self.cancel_token.clone(),
-        )
-        .await?;
+            .await
+        } else {
+            run_subprocess(
+                config,
+                &mut filter,
+                &self.session_id,
+                message_tx,
+                self.cancel_token.clone(),
+            )
+            .await
+        };
+        self.output_vars = filter.take_output_vars();
+        let result = result?;
 
         self.state = state_from_action(result.state);
         Ok(result)
@@ -817,12 +823,13 @@ mod tests {
     #[test]
     fn session_limits_from_caller_limits_mirrors_runtime_fields() {
         // One policy value drives both stages: the conversion copies the
-        // four run-time-relevant fields and ignores the rest.
+        // five run-time-relevant fields and ignores the rest.
         let caller = openjd_model::CallerLimits {
             max_resolved_arg_len: Some(1),
             max_resolved_data_len: Some(2),
             max_eval_memory_bytes: Some(3),
             max_eval_operations: Some(4),
+            max_task_output_bytes: Some(5),
             max_step_count: Some(99), // no run-time counterpart
             ..Default::default()
         };
@@ -834,6 +841,7 @@ mod tests {
                 max_resolved_data_len: Some(2),
                 max_eval_memory_bytes: Some(3),
                 max_eval_operations: Some(4),
+                max_task_output_bytes: Some(5),
             }
         );
     }
