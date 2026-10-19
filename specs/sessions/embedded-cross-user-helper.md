@@ -581,9 +581,15 @@ read its Run command reaches the idle helper first, which drops it (see the
 runner notes above). So `run_via_helper`, right after it sends Run, checks the
 action's cancel-request channel and, if a cancel was requested, writes it
 again (`write_cancel`, which maps the action's cancel method and the
-request's time limit as the same-user runner does). A cancel that arrived
-just after Run is then delivered twice; the second only repeats the notify
-signal and restarts the grace period a moment later.
+request's time limit as the same-user runner does, in whole seconds). The
+session records the request in that channel before it writes the first
+cancel to the pipe, so the check can't miss a cancel the helper has
+already dropped. A cancel that arrived just after Run is then delivered
+twice. The two can differ: the first comes from the session's
+`send_helper_cancel_command`, which sends a TERMINATE action's cancel as
+NOTIFY_THEN_TERMINATE with the 5 second default, and the second from
+`write_cancel`, which sends TERMINATE for it. A second NOTIFY_THEN_TERMINATE
+repeats the notify signal and restarts the grace period a moment later.
 
 The session stores the token string alongside the `cancel_writer` so the
 cancel path doesn't depend on the helper struct (which may be moved into

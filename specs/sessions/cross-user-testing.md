@@ -123,12 +123,13 @@ These use shell scripts in `tests/support/`:
 | `test_cross_user_runner_env_vars` | Explicit env vars are propagated to cross-user subprocess |
 | `test_cross_user_no_env_inheritance` | Host process env vars do NOT leak into cross-user subprocess |
 
-### Session Tests (2)
+### Session Tests
 
 | Test | Validates |
 |---|---|
 | `test_cross_user_session_cleanup` | Cleanup deletes files owned by target user with 700/600 permissions |
 | `test_cross_user_session_run_subprocess` | `Session::run_subprocess` runs as configured target user |
+| `test_cross_user_early_cancel_cancels_the_run` | A cancel that lands before the helper reads the Run command (and is dropped by the idle helper) is sent again, so the run is canceled |
 
 The cleanup test creates files via `sudo -u targetuser` with restrictive permissions
 (owner-only), then verifies `session.cleanup()` successfully removes them. This exercises

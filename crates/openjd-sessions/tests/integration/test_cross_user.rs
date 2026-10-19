@@ -950,7 +950,9 @@ async fn test_cross_user_output_var_failures() {
     for (script, message) in [
         (
             "echo 'openjd_output_var: M=@missing'",
-            "Output variable 'M': the Step does not declare it (declared: 'N')".to_string(),
+            "Output variable 'M': the Step does not declare it (declared: 'N'), in \
+             'openjd_output_var: M=@missing'"
+                .to_string(),
         ),
         (
             "echo 'openjd_output_var: N=@missing'",
