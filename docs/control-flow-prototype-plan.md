@@ -290,7 +290,8 @@ today never sees a partial Step. The materialized parameter space and the evalua
 `PendingBinding` and move into the Step's own fields when it is bound. Its script and Environments are kept as they
 are, because they are carried forward as format strings anyway. `PendingBinding` and `GroupState` derive what
 `job::Step` derives (M1); their payloads already do, because they are `job::Step` field types. The prototype has
-no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the scene-graph golden test).
+no Task graph group: `TASK_DEPENDENCIES` is rejected as unsupported (see the scene-graph golden tests; the
+verbatim sample fails earlier, on its unknown `dependsOnSubspace` field).
 
 1. **Group inputs.** Each group's inputs come from static analysis, not from evaluating with `Unresolved` values. The
    RFC's rule is about what a field *references*, and a reference inside a branch that is never taken still counts.
@@ -983,7 +984,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   * Sweep: a 2×1×1×2 space for a short runtime, run once with a winner and once taking the `fail(...)` path. The
     output shows `VideoCount`, `BestSingleTaskErrorMm`, and `ResultDirs` appearing after `Discover`, `Sweep`, and
     `RunWinner`, and a variant with path mapping rules shows `ResultDirs` in the submission form.
-  * Scene graph: `openjd check` rejects `TASK_DEPENDENCIES` as unsupported. A variant without `dependsOnSubspace` runs
+  * Scene graph: `openjd check` rejects `TASK_DEPENDENCIES` as unsupported. The verbatim sample fails earlier, on
+    its unknown `dependsOnSubspace` field, so the extension check runs on a copy without that field. A variant without `dependsOnSubspace` runs
     the computed fan-out.
   * Render and QC: `EncodeVideo=false` (static skip, so `Publish` prints `frames only`), noise above and below the
     threshold (dynamic skip), and `BadFrames=[]` (zero Tasks).
