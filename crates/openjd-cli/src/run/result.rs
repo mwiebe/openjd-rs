@@ -78,7 +78,7 @@ impl std::fmt::Display for RunResult {
                 }
                 for (name, waits) in &cf.not_evaluated {
                     if waits.is_empty() {
-                        write!(f, "\n  {name}: not evaluated (its evaluation failed)")?;
+                        write!(f, "\n  {name}: has no value (its evaluation failed)")?;
                     } else {
                         write!(
                             f,
