@@ -597,6 +597,22 @@ pub(crate) async fn run_via_helper(
 
     helper.send_command(&cmd)?;
 
+    // A cancel requested after the session armed this action but before the
+    // helper read the Run command was written ahead of it, and the helper,
+    // then idle, dropped it (a cancel is for the current run only). Send it
+    // again now that the run exists.
+    if let (Some(writer), Some(rx)) = (cancel_writer, config.cancel_request_rx.as_ref()) {
+        if rx.has_changed().unwrap_or(false) {
+            let time_limit = *rx.borrow();
+            write_cancel(
+                writer,
+                helper.auth_token(),
+                &config.cancel_method,
+                time_limit,
+            )?;
+        }
+    }
+
     // Log the actual command (not the helper protocol)
     session_log!(
         info,
@@ -745,33 +761,45 @@ pub(crate) async fn run_via_helper(
                 timed_out = true;
                 // Send cancel to helper via the cancel_writer
                 if let Some(writer) = cancel_writer {
-                    use std::io::Write;
-                    let mut w = writer.try_clone().map_err(|e| {
-                        SessionError::HelperCommunication(format!("Failed to clone cancel_writer: {e}"))
-                    })?;
-                    let token = helper.auth_token();
-                    let cancel_method = &config.cancel_method;
-                    let notify_period = match cancel_method {
-                        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => {
-                            terminate_delay.as_secs()
-                        }
-                        crate::runner::CancelMethod::Terminate => 0,
-                    };
-                    // The token alphabet excludes `"` and `\`, so no
-                    // escaping is needed to embed it in a JSON literal.
-                    if notify_period == 0 {
-                        let _ = writeln!(w, r#"{{"token":"{token}","cancel":"TERMINATE"}}"#);
-                    } else {
-                        let _ = writeln!(
-                            w,
-                            r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
-                        );
-                    }
-                    let _ = w.flush();
+                    write_cancel(writer, helper.auth_token(), &config.cancel_method, None)?;
                 }
             }
         }
     }
+}
+
+/// Write a cancel for the current run to the helper's cancel pipe, as the
+/// same-user runner cancels: TERMINATE for a TERMINATE action or a zero
+/// `time_limit`, otherwise NOTIFY_THEN_TERMINATE with the declared period,
+/// capped by `time_limit`.
+fn write_cancel(
+    writer: &std::fs::File,
+    token: &str,
+    cancel_method: &crate::runner::CancelMethod,
+    time_limit: Option<std::time::Duration>,
+) -> Result<(), SessionError> {
+    use std::io::Write;
+    let mut w = writer.try_clone().map_err(|e| {
+        SessionError::HelperCommunication(format!("Failed to clone cancel_writer: {e}"))
+    })?;
+    let notify_period = match cancel_method {
+        crate::runner::CancelMethod::NotifyThenTerminate { terminate_delay } => time_limit
+            .map_or(*terminate_delay, |l| l.min(*terminate_delay))
+            .as_secs(),
+        crate::runner::CancelMethod::Terminate => 0,
+    };
+    // The token alphabet excludes `"` and `\`, so no escaping is needed to
+    // embed it in a JSON literal.
+    if notify_period == 0 {
+        let _ = writeln!(w, r#"{{"token":"{token}","cancel":"TERMINATE"}}"#);
+    } else {
+        let _ = writeln!(
+            w,
+            r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
+        );
+    }
+    let _ = w.flush();
+    Ok(())
 }
 
 /// Process and log one line of the helper's output, as the direct path does.

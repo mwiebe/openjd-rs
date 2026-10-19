@@ -440,8 +440,16 @@ Key details:
 - Every cancel line read inside the runner is passed through the same
   constant-time token check the main loop uses. The Windows runner
   (`runner_win.rs`) receives already-validated `CancelMethod` values
-  over its `mpsc::Receiver`, so token validation for it stays in
+  through a `next_cancel` closure, so token validation for it stays in
   `main.rs` where stdin is actually read.
+- A cancel is for the current run only. Between runs, the Unix main loop
+  drops one; the Windows stdin reader thread tags each cancel with the
+  number of Run commands it has read, and `next_cancel(rx, run)` (in
+  `main.rs`) gives a run only the cancels tagged with its number. Without
+  the tag, a cancel the parent sent after a run exited (an invalid
+  `openjd_output_var` line in a script that exits at once makes the
+  session cancel an action that already ended) would wait in the channel
+  and cancel the next run, such as the Environment's `onExit`.
 
 ### Windows runner: Job Object kill-on-close
 
@@ -567,6 +575,15 @@ if let Some(ref mut writer) = self.cancel_writer {
     writer.flush()?;
 }
 ```
+
+A cancel requested after the session armed an action but before the helper
+read its Run command reaches the idle helper first, which drops it (see the
+runner notes above). So `run_via_helper`, right after it sends Run, checks the
+action's cancel-request channel and, if a cancel was requested, writes it
+again (`write_cancel`, which maps the action's cancel method and the
+request's time limit as the same-user runner does). A cancel that arrived
+just after Run is then delivered twice; the second only repeats the notify
+signal and restarts the grace period a moment later.
 
 The session stores the token string alongside the `cancel_writer` so the
 cancel path doesn't depend on the helper struct (which may be moved into
