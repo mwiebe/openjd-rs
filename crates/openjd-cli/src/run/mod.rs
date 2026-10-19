@@ -52,6 +52,9 @@ struct EnteredEnvironment {
     symtab: EnvSymtab,
     /// Passed again when the Environment is exited.
     origin: EnvironmentOrigin,
+    /// A Step Environment's Step's path-typed `Steps.*` inputs, passed again
+    /// on exit.
+    path_inputs: Vec<openjd_model::job::PathInput>,
 }
 
 struct RunContext {
@@ -95,11 +98,12 @@ impl RunContext {
         name: &str,
         symtab: EnvSymtab,
         origin: EnvironmentOrigin,
+        path_inputs: &[openjd_model::job::PathInput],
     ) {
         self.print_action_banner(&format!("Entering Environment: {name}"));
         let options = EnvironmentOptions {
             origin,
-            path_inputs: &[],
+            path_inputs,
         };
         match self
             .session
@@ -111,6 +115,7 @@ impl RunContext {
                 name: name.to_string(),
                 symtab,
                 origin,
+                path_inputs: path_inputs.to_vec(),
             }),
             Err(e) => {
                 eprintln!("ERROR: Environment setup failed: {e}");
@@ -131,6 +136,7 @@ impl RunContext {
                             name: name.to_string(),
                             symtab,
                             origin,
+                            path_inputs: path_inputs.to_vec(),
                         });
                     }
                 }
@@ -155,7 +161,7 @@ impl RunContext {
                     None,
                     &EnvironmentOptions {
                         origin: entered.origin,
-                        path_inputs: &[],
+                        path_inputs: &entered.path_inputs,
                     },
                 )
                 .await

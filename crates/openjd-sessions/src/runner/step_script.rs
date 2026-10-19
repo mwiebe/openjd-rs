@@ -113,10 +113,10 @@ impl StepScriptRunner {
         self
     }
 
-    /// The action's `openjd_output_var` state after it ran, with its
-    /// collector.
-    pub(crate) fn take_output_vars(&mut self) -> crate::output_vars::OutputVars {
-        std::mem::take(&mut self.base.output_vars)
+    /// The output values the action reported, when it exited successfully
+    /// with every Task's values complete.
+    pub(crate) fn take_outputs(&mut self) -> Option<crate::action::ActionOutputs> {
+        self.base.outputs.take()
     }
 
     pub(crate) fn with_cancel_writer(mut self, writer: std::fs::File) -> Self {

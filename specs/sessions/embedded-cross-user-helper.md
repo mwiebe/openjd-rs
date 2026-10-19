@@ -226,7 +226,9 @@ placeholder for some other encoding.
 
 {"outputFile": {"lineLen": 31, "name": [19, 23], "task": null, "path": [25, 31], "size": 5, "validUtf8": 5}}
 
-{"outputFileData": "openjd_output_var: Keys=@k.json[\"a\"]"}
+{"data": "openjd_output_var: Keys=@k.json[\"a\"]"}
+
+{"outLong": {"len": 65533}}
 
 {"exited": 0}
 
@@ -241,7 +243,17 @@ send a command, read responses until `exited` or `error`, then send the next.
 `out` carries `truncated: true` when the line was cut to fit a limit (the raw line over
 64 KiB, the decoded line over 64 KiB, or the serialized response over the 128 KiB line
 the parent accepts) and `lossy: true` when the line was not valid UTF-8 and was decoded
-with `\xNN` escapes. Each flag is serialized only when set, so an ordinary line is
+with `\xNN` escapes. The framer strips one `\r` before the `\n` before it applies the
+64 KiB cap, as the direct path does, so a CRLF line of exactly 64 KiB is not cut; and when
+a cap cuts a valid UTF-8 line inside a character, the partial character is dropped rather
+than escaped, so the line is not flagged `lossy`.
+
+For an Action that may report output values (`outputFiles` set), a line that starts with
+`openjd_output_var:` and does not fit one `out` response once escaped (a line of at most
+64 KiB can escape to six times that) is sent whole instead of cut: an `outLong` header
+with its byte length and flags, then `data` frames that carry the text. The parent
+processes it as an `out` line, so a valid directive of up to 64 KiB is accepted as on the
+direct path (RFC 0010 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
 `{"out": "..."}` as before. The parent rejects an `openjd_output_var` directive on a
 flagged line.
 
@@ -270,7 +282,7 @@ before any later line) falls out of the stream.
 - For a recognized line the helper reads the file with `read_output_file` (the same
   rules as the direct path, see [subprocess.md](subprocess.md#output-variable-files))
   under `RunCommand.cwd`, the Session working directory, up to `maxBytes + 1` bytes, and
-  sends an `outputFile` header in place of the `out` line, then `outputFileData` frames.
+  sends an `outputFile` header in place of the `out` line, then `data` frames.
   The data is one string: the directive's line (`lineLen` bytes) followed by the first
   `validUtf8` bytes of the file. It is split into frames that each fit the 128 KiB
   response line once escaped (the line alone can be 64 KiB, which would not fit in the
@@ -288,9 +300,12 @@ before any later line) falls out of the stream.
   helper's name, selector, or path is invalid. An `@` directive that arrives as a plain
   `out` line in an Allowed action (the helper did not recognize it) is invalid too. The
   parent never reads the file. A header that is inconsistent (a line over 64 KiB, `size`
-  over `maxBytes + 1`, `validUtf8` over `size`, an error with data) or data frames that
-  run past what the header announced are a `SessionError::HelperCommunication`, not a
-  directive error.
+  over `maxBytes + 1`, `validUtf8` over `size`, an error with data, a `lineLen` that ends
+  inside a character) or data frames that run past what the header announced are a
+  `SessionError::HelperCommunication`, not a directive error. The helper's stdout carries
+  whatever processes of the job user write to it, so the parent never indexes the data
+  with a number from a header without checking it. An error phrase from the helper is cut
+  and escaped like quoted text before it goes into a message.
 - A helper command to read a file on request, answered while a `Run` is in progress, was
   considered. Its reply would arrive on the stream the parent's `select!` loop reads,
   interleaved with later `out` lines, which the parent would have to hold back to keep
@@ -298,8 +313,9 @@ before any later line) falls out of the stream.
 
 ### Line ends
 
-Both runners hand each framed line to `emit::emit_line`, which strips only the line
-terminator's `\r`. The Unix runner used to send `line.trim_end()`, which strips all
+The framer strips only the line terminator (`\n` and one `\r` before it), and both runners
+hand each framed line to `emit::emit_line` unchanged. The Unix runner used to send
+`line.trim_end()`, which strips all
 trailing Unicode whitespace, while the Windows runner and the direct path strip only the
 terminator; a directive followed by a form feed was then valid on one path and invalid on
 the others. The directive grammar decides what whitespace is allowed.
@@ -752,7 +768,7 @@ openjd-sessions/
         framer.rs       ← bounded line framer (FramedLine with truncated
                           and lossy flags); also #[path]-included by
                           openjd-sessions for tests
-        emit.rs         ← one line to an out response or outputFile frames
+        emit.rs         ← one line to an out response, or outLong or outputFile frames
         output_file.rs  ← @ directive recognizer and file reader; also
                           #[path]-included by openjd-sessions
         runner.rs       ← poll(2) loop, child management, cancel with

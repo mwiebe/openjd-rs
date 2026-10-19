@@ -366,6 +366,7 @@ async fn run_workload(
             &template.environment.name,
             None,
             openjd_sessions::session::EnvironmentOrigin::EnvironmentTemplate,
+            &[],
         )
         .await;
     }
@@ -379,6 +380,7 @@ async fn run_workload(
                 &env.name,
                 None,
                 openjd_sessions::session::EnvironmentOrigin::JobTemplate,
+                &[],
             )
             .await;
         }
@@ -412,6 +414,7 @@ async fn execute_step(
                 &env.name,
                 step.resolved_symtab.clone(),
                 openjd_sessions::session::EnvironmentOrigin::JobTemplate,
+                &step.path_inputs,
             )
             .await;
         }

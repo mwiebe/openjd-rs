@@ -463,7 +463,10 @@ async fn job_template_on_enter_fails_and_environment_template_is_ordinary() {
         .enter_environment(&e, None, None, None, &EnvironmentOptions::default())
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("onEnter"), "{err}");
+    assert_eq!(
+        err.to_string(),
+        "Environment 'E' onEnter failed: exit code: 0"
+    );
     assert_eq!(f.fail_message(), FORBIDDEN);
 
     let mut f = fixture();
@@ -573,15 +576,15 @@ async fn directive_line_over_64_kib_is_invalid() {
     let r = f
         .run(r#"printf 'openjd_output_var: S="%070000d"\n' 0"#, Some(&d))
         .await;
-    assert_eq!(r.state, ActionState::Failed);
-    assert!(
-        f.fail_message().starts_with(
+    assert_failed(
+        &f,
+        &r,
+        &format!(
             "Invalid openjd_output_var directive: the line is longer than the 65536 byte line \
              limit, so it was cut; write a large value to a file and report it with @<file>, in \
-             'openjd_output_var: S=\"0000"
+             'openjd_output_var: S=\"{}...'",
+            "0".repeat(178)
         ),
-        "{}",
-        f.fail_message()
     );
 }
 
@@ -606,12 +609,11 @@ async fn trailing_form_feed_is_not_directive_whitespace() {
     let r = f
         .run(r#"printf 'openjd_output_var: N=1\f\n'"#, Some(&d))
         .await;
-    assert_eq!(r.state, ActionState::Failed);
-    assert!(
-        f.fail_message()
-            .starts_with("Output variable 'N': '1\\u{c}' is not one valid JSON value"),
-        "{}",
-        f.fail_message()
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N': '1\\u{c}' is not one valid JSON value: trailing characters at \
+         line 1 column 2",
     );
     // A CRLF line end is stripped like a LF one.
     let mut f = fixture();
@@ -904,12 +906,12 @@ async fn path_output_is_returned_in_the_submission_form() {
     let r = f
         .run(r#"echo 'openjd_output_var: P="/tmp/x"'"#, Some(&d))
         .await;
-    assert_eq!(r.state, ActionState::Failed);
-    assert!(
-        f.fail_message()
-            .starts_with("Output variable 'P': value '/tmp/x' is not a valid PATH output"),
-        "{}",
-        f.fail_message()
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'P': value '/tmp/x' is not a valid PATH output: no path mapping rule \
+         maps the path back to the submission path context, so it names a location only this \
+         worker can see",
     );
 }
 
@@ -1033,4 +1035,480 @@ async fn task_script_reads_path_inputs() {
         "{}",
         r.stdout
     );
+}
+
+// ── Audit round 1 ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn openjd_fail_after_an_invalid_directive_keeps_its_message() {
+    // A cancel handler that prints openjd_fail must not replace the reason
+    // RFC 0010 requires: the output, the problem, and the text.
+    let mut f = fixture();
+    let d = decls(N_INT);
+    let mut script = step(
+        "trap 'echo \"openjd_fail: trapped\"; exit 0' TERM
+         echo 'openjd_output_var: N=x'
+         sleep 20 & wait",
+    );
+    script.actions.on_run.cancelation =
+        Some(openjd_model::job::CancelationMode::NotifyThenTerminate {
+            notify_period_in_seconds: Some(fs("5")),
+        });
+    let r = f
+        .session
+        .run_task(
+            "S",
+            &script,
+            None,
+            None,
+            None,
+            &RunTaskOptions {
+                output_variables: Some(&d),
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap();
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N': 'x' is not one valid JSON value: expected value at line 1 column 1",
+    );
+}
+
+/// Records every status callback's state and fail message.
+type Statuses = Arc<Mutex<Vec<(ActionState, Option<String>)>>>;
+
+fn status_fixture() -> (Fixture, Statuses) {
+    let mut f = fixture();
+    let statuses: Statuses = Arc::default();
+    let sink = statuses.clone();
+    let tmp = TempDir::new().unwrap();
+    let config = SessionConfig {
+        limits: Default::default(),
+        session_id: "cf".into(),
+        job_parameter_values: Default::default(),
+        session_root_directory: Some(tmp.path().to_path_buf()),
+        path_mapping_rules: None,
+        retain_working_dir: false,
+        callback: Some(Box::new(move |_, status| {
+            sink.lock()
+                .unwrap()
+                .push((status.state, status.fail_message.clone()))
+        })),
+        os_env_vars: None,
+        user: None,
+        profile: None,
+        cancel_token: None,
+        debug_collect_stdout: true,
+        echo_openjd_directives: true,
+        control_flow: true,
+        output_callback: None,
+        sticky_bit_policy: openjd_sessions::StickyBitPolicy::Disabled,
+    };
+    f.session = Session::with_config(config).unwrap();
+    f._tmp = tmp;
+    (f, statuses)
+}
+
+#[tokio::test]
+async fn missing_output_fails_without_a_success_status_first() {
+    let (mut f, statuses) = status_fixture();
+    let d = decls(N_INT);
+    let r = f.run("echo hi", Some(&d)).await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N': no value was reported (collect mode ONCE)",
+    );
+    let statuses = statuses.lock().unwrap().clone();
+    assert!(
+        !statuses.iter().any(|(s, _)| *s == ActionState::Success),
+        "{statuses:?}"
+    );
+    assert_eq!(
+        statuses.last().unwrap(),
+        &(
+            ActionState::Failed,
+            Some("Output variable 'N': no value was reported (collect mode ONCE)".to_string())
+        )
+    );
+    // The session is left as after any failed action.
+    assert_eq!(
+        f.session.state(),
+        openjd_sessions::SessionState::ReadyEnding
+    );
+}
+
+#[tokio::test]
+async fn output_values_fire_no_status_callback() {
+    let d = decls(r#"[{"name": "A", "type": "LIST[INT]", "collect": "APPEND"}]"#);
+    let (mut f, without) = status_fixture();
+    f.run("true", Some(&d)).await;
+    let (mut f, with) = status_fixture();
+    f.run(
+        "for i in 1 2 3 4 5; do echo \"openjd_output_var: A=$i\"; done",
+        Some(&d),
+    )
+    .await;
+    assert_eq!(without.lock().unwrap().len(), with.lock().unwrap().len());
+}
+
+#[tokio::test]
+async fn invalid_directive_is_logged_after_the_log_level_is_raised() {
+    testing_logger::setup();
+    let mut f = fixture();
+    let d = decls(N_INT);
+    f.run(
+        "echo 'openjd_session_runtime_loglevel: ERROR'; echo 'openjd_output_var: N=x'; \
+         echo 'openjd_output_var: N=1' >/dev/null; echo hidden",
+        Some(&d),
+    )
+    .await;
+    testing_logger::validate(|captured| {
+        let lines = logged(captured);
+        assert!(
+            lines.iter().any(|l| l.ends_with(
+                "openjd_output_var: N=x -- ERROR: Output variable 'N': 'x' is not one valid JSON \
+                 value: expected value at line 1 column 1"
+            )),
+            "{lines:#?}"
+        );
+        assert!(!lines.iter().any(|l| l.ends_with("hidden")), "{lines:#?}");
+    });
+}
+
+#[tokio::test]
+async fn valid_directive_is_hidden_after_the_log_level_is_raised() {
+    testing_logger::setup();
+    let mut f = fixture();
+    let d = decls(N_INT);
+    f.run(
+        "echo 'openjd_session_runtime_loglevel: ERROR'; echo 'openjd_output_var: N=1'",
+        Some(&d),
+    )
+    .await;
+    testing_logger::validate(|captured| {
+        let lines = logged(captured);
+        assert!(
+            !lines.iter().any(|l| l.ends_with("openjd_output_var: N=1")),
+            "{lines:#?}"
+        );
+    });
+}
+
+#[tokio::test]
+async fn directive_lines_are_redacted() {
+    let mut f = fixture_with(true, true, None, Default::default());
+    let d = decls(r#"[{"name": "S", "type": "STRING"}]"#);
+    let mut env = env(
+        "E",
+        Some(sh_action("echo 'openjd_redacted_env: SEC=hunter2'")),
+        None,
+    );
+    env.name = "E".into();
+    f.session
+        .enter_environment(
+            &env,
+            None,
+            None,
+            None,
+            &EnvironmentOptions {
+                origin: EnvironmentOrigin::EnvironmentTemplate,
+                path_inputs: &[],
+            },
+        )
+        .await
+        .unwrap();
+    let r = f
+        .run(
+            r#"echo 'openjd_output_var: S="hunter2"'; echo 'openjd_output_var: S=hunter2'"#,
+            Some(&d),
+        )
+        .await;
+    assert_eq!(r.state, ActionState::Failed);
+    assert!(!r.stdout.contains("hunter2"), "{}", r.stdout);
+    assert!(
+        r.stdout.contains("openjd_output_var: S=\"********\""),
+        "{}",
+        r.stdout
+    );
+}
+
+#[tokio::test]
+async fn at_file_size_limit_is_exact() {
+    let d = decls(r#"[{"name": "S", "type": "STRING"}]"#);
+    // Exactly 1 MiB: accepted.
+    let mut f = fixture();
+    let r = f
+        .run(
+            r#"printf '"%01048574d"' 0 > v; echo 'openjd_output_var: S=@v'"#,
+            Some(&d),
+        )
+        .await;
+    assert_eq!(r.state, ActionState::Success, "{}", f.fail_message());
+    // One byte more: refused.
+    let mut f = fixture();
+    let r = f
+        .run(
+            r#"printf '"%01048575d"' 0 > v; echo 'openjd_output_var: S=@v'"#,
+            Some(&d),
+        )
+        .await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'S': the @ file 'v' is larger than the 1048576 bytes the Task's output \
+         values have left (the limit is 1048576 bytes per Task)",
+    );
+}
+
+#[tokio::test]
+async fn at_file_is_bounded_by_what_the_task_has_left() {
+    let mut f = fixture();
+    let d = decls(r#"[{"name": "A", "type": "STRING"}, {"name": "B", "type": "STRING"}]"#);
+    let r = f
+        .run(
+            r#"printf '"%0999998d"' 0 > a; echo 'openjd_output_var: A=@a'
+               printf '"%099998d"' 0 > b; echo 'openjd_output_var: B=@b'"#,
+            Some(&d),
+        )
+        .await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'B': the @ file 'b' is larger than the 48576 bytes the Task's output \
+         values have left (the limit is 1048576 bytes per Task)",
+    );
+}
+
+/// The format of a `path` value (`ExprValue`'s equality ignores it).
+fn format_of(v: &ExprValue) -> PathFormat {
+    match v {
+        ExprValue::Path { format, .. } => *format,
+        other => panic!("not a path: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn path_inputs_keep_each_stored_format() {
+    let f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let mut st = SymbolTable::new();
+    st.set(
+        "Steps.P.RawOutput.U",
+        ExprValue::String(r"\\srv\share\x".into()),
+    )
+    .unwrap();
+    st.set("Steps.P.RawOutput.W", ExprValue::String("C:/x/y".into()))
+        .unwrap();
+    st.set("Steps.P.RawOutput.I", ExprValue::String("s3://b/k".into()))
+        .unwrap();
+    st.set("Steps.P.RawOutput.X", ExprValue::String("/src/a".into()))
+        .unwrap();
+    let inner = |v: &[&str]| {
+        ExprValue::make_list(
+            v.iter().map(|s| ExprValue::String(s.to_string())).collect(),
+            ExprType::STRING,
+        )
+        .unwrap()
+    };
+    st.set(
+        "Steps.P.TaskRawParam.G",
+        ExprValue::make_list(
+            vec![inner(&["/src/a", "/src/b"]), inner(&[])],
+            ExprType::list(ExprType::STRING),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let input = |s: &str, ty: ExprType| PathInput {
+        symbol: s.into(),
+        ty,
+    };
+    let inputs = vec![
+        input("Steps.P.RawOutput.U", ExprType::PATH),
+        input("Steps.P.RawOutput.W", ExprType::PATH),
+        input("Steps.P.RawOutput.I", ExprType::PATH),
+        input("Steps.P.RawOutput.X", ExprType::PATH),
+        input(
+            "Steps.P.TaskRawParam.G",
+            ExprType::list(ExprType::list(ExprType::PATH)),
+        ),
+    ];
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let st = f
+        .session
+        .build_symbol_table(None, Some(&base), &inputs)
+        .unwrap();
+    let get = |k: &str| st.get_value(k).cloned().unwrap();
+    assert_eq!(format_of(&get("Steps.P.RawOutput.U")), PathFormat::Windows);
+    assert_eq!(format_of(&get("Steps.P.RawOutput.W")), PathFormat::Windows);
+    assert_eq!(format_of(&get("Steps.P.RawOutput.I")), PathFormat::Uri);
+    assert_eq!(format_of(&get("Steps.P.RawOutput.X")), PathFormat::Posix);
+    assert_eq!(format_of(&get("Steps.P.Output.X")), PathFormat::host());
+    assert_eq!(
+        get("Steps.P.TaskParam.G").to_display_string(),
+        r#"[["/mnt/dst/a", "/mnt/dst/b"], []]"#
+    );
+    assert_eq!(
+        get("Steps.P.TaskRawParam.G").expr_type(),
+        ExprType::list(ExprType::list(ExprType::PATH))
+    );
+}
+
+#[tokio::test]
+async fn path_input_errors_name_the_symbol() {
+    let f = fixture();
+    let mut st = SymbolTable::new();
+    st.set("Steps.P.RawOutput.X", ExprValue::String("/a".into()))
+        .unwrap();
+    st.set("Steps.P.RawOutput.N", ExprValue::Int(3)).unwrap();
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let err = |inputs: Vec<PathInput>, base: Option<&openjd_expr::SerializedSymbolTable>| {
+        f.session
+            .build_symbol_table(None, base, &inputs)
+            .unwrap_err()
+            .to_string()
+    };
+    let input = |s: &str, ty: ExprType| PathInput {
+        symbol: s.into(),
+        ty,
+    };
+    assert_eq!(
+        err(
+            vec![input("Steps.P.RawOutput.Y", ExprType::PATH)],
+            Some(&base)
+        ),
+        "Path input 'Steps.P.RawOutput.Y' in resolved_symtab: missing"
+    );
+    assert_eq!(
+        err(vec![input("Steps.P.Output.X", ExprType::PATH)], Some(&base)),
+        "Path input 'Steps.P.Output.X' in resolved_symtab: not a \
+         Steps.<Step>.RawOutput.<Name> or Steps.<Step>.TaskRawParam.<Name> symbol"
+    );
+    assert_eq!(
+        err(
+            vec![input("Steps.P.RawOutput.N", ExprType::PATH)],
+            Some(&base)
+        ),
+        "Path input 'Steps.P.RawOutput.N' in resolved_symtab: it is recorded as \
+         path, so its value must be stored as a string, but it is int"
+    );
+    assert_eq!(
+        err(
+            vec![input("Steps.P.RawOutput.X", ExprType::list(ExprType::PATH))],
+            Some(&base)
+        ),
+        "Path input 'Steps.P.RawOutput.X' in resolved_symtab: it is recorded as \
+         list[path], so its value must be stored as a list of strings, but it is string"
+    );
+    assert_eq!(
+        err(
+            vec![input("Steps.P.RawOutput.X", ExprType::INT)],
+            Some(&base)
+        ),
+        "Path input 'Steps.P.RawOutput.X' in resolved_symtab: its type int is not \
+         path, list[path], or list[list[path]]"
+    );
+    assert_eq!(
+        err(vec![input("Steps.P.RawOutput.X", ExprType::PATH)], None),
+        "Path input 'Steps.P.RawOutput.X' has no value: path inputs are read from \
+         the Step's resolved_symtab, and none was given"
+    );
+}
+
+#[tokio::test]
+async fn environments_read_path_inputs_on_enter_and_exit() {
+    let mut f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let (base, inputs) = consumer_symtab();
+    let trace = f.wd().join("trace");
+    let mut e = env(
+        "E",
+        Some(sh_action(&format!(
+            "echo enter={{{{Steps.P.Output.X}}}} >> {}",
+            trace.display()
+        ))),
+        None,
+    );
+    e.script.as_mut().unwrap().actions.on_exit = Some(sh_action(&format!(
+        "echo exit={{{{Steps.P.Output.X}}}} >> {}",
+        trace.display()
+    )));
+    let options = EnvironmentOptions {
+        origin: EnvironmentOrigin::JobTemplate,
+        path_inputs: &inputs,
+    };
+    let id = f
+        .session
+        .enter_environment(&e, Some(&base), None, None, &options)
+        .await
+        .unwrap();
+    f.session
+        .exit_environment(&id, Some(&base), true, None, &options)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&trace).unwrap(),
+        "enter=/mnt/dst/shot/out\nexit=/mnt/dst/shot/out\n"
+    );
+}
+
+#[tokio::test]
+async fn exit_environment_follows_its_origin() {
+    // An Environment Template's onExit may print a directive; a Job
+    // Template's may not.
+    for (origin, fails) in [
+        (EnvironmentOrigin::EnvironmentTemplate, false),
+        (EnvironmentOrigin::JobTemplate, true),
+    ] {
+        let mut f = fixture();
+        let mut e = env("E", None, None);
+        e.script.as_mut().unwrap().actions.on_exit =
+            Some(sh_action("echo 'openjd_output_var: N=1'"));
+        let options = EnvironmentOptions {
+            origin,
+            path_inputs: &[],
+        };
+        let id = f
+            .session
+            .enter_environment(&e, None, None, None, &options)
+            .await
+            .unwrap();
+        let r = f
+            .session
+            .exit_environment(&id, None, true, None, &options)
+            .await;
+        assert_eq!(r.is_err(), fails, "{origin:?}");
+        if fails {
+            assert_eq!(f.fail_message(), FORBIDDEN);
+        }
+    }
+}
+
+#[tokio::test]
+async fn directive_lines_up_to_64_kib_are_accepted() {
+    // The same lines as the cross-user test_cross_user_output_var_long_lines.
+    let mut f = fixture();
+    let d = decls(r#"[{"name": "A", "type": "STRING"}, {"name": "B", "type": "STRING"}]"#);
+    let r = f
+        .run(
+            r#"printf 'openjd_output_var: A="%s"\r\n' "$(head -c 65513 /dev/zero | tr '\0' a)"
+               printf 'openjd_output_var: B="'; head -c 65512 /dev/zero | tr '\0' '\\'; printf '"\n'"#,
+            Some(&d),
+        )
+        .await;
+    assert_eq!(r.state, ActionState::Success, "{}", f.fail_message());
+    let outputs = r.outputs.unwrap();
+    assert_eq!(outputs[&None]["A"], ExprValue::String("a".repeat(65_513)));
+    assert_eq!(outputs[&None]["B"], ExprValue::String("\\".repeat(32_756)));
 }

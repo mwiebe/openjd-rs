@@ -55,8 +55,12 @@ pub enum ActionMessage {
     /// is the new element. The value is not committed until the Action
     /// succeeds.
     OutputVar {
+        /// The Task's `CHUNK[INT]` value in a chunked Step, `None` otherwise.
         task: Option<i64>,
+        /// The output's name.
         name: String,
+        /// The accepted value (under `collect: APPEND`, the new element),
+        /// with a `PATH` value in the submission path context.
         value: openjd_expr::ExprValue,
     },
     /// Request to cancel the action and mark it as failed (from a malformed

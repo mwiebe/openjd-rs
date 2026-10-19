@@ -622,8 +622,8 @@ pub(crate) async fn run_via_helper(
 
     let mut stdout_collected = String::new();
     let mut saw_fail = false;
-    // An `@` directive the helper resolved, while its data frames arrive.
-    let mut pending_file: Option<PendingOutputFile> = None;
+    // A long line or resolved `@` directive whose data frames are arriving.
+    let mut pending_slot: Option<PendingFrames> = None;
 
     loop {
         tokio::select! {
@@ -647,23 +647,20 @@ pub(crate) async fn run_via_helper(
                     continue;
                 }
 
-                if let Some(pending) = pending_file.as_mut() {
-                    // Between an `outputFile` header and its last data frame,
-                    // only data frames may arrive.
-                    let Some(data) = resp.get("outputFileData").and_then(|v| v.as_str()) else {
+                if let Some(pending) = pending_slot.as_mut() {
+                    // Between an `outLong` or `outputFile` header and its last
+                    // data frame, only data frames may arrive.
+                    let Some(data) = resp.get("data").and_then(|v| v.as_str()) else {
                         return Err(SessionError::HelperCommunication(format!(
-                            "Expected outputFileData from the helper, got: {resp}"
+                            "Expected a data frame from the helper, got: {resp}"
                         )));
                     };
                     if !pending.push(data)? {
                         continue;
                     }
-                    let pending = pending_file.take().expect("checked above");
-                    let (line, parts, content) = pending.into_parts();
-                    let outcome = filter
-                        .output_vars_mut()
-                        .finish_helper_file(&line, &parts, content);
-                    log_line(&line, Some(outcome), filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
+                    let complete = pending_take(&mut pending_slot)?;
+                    let outcome = complete.outcome(filter);
+                    log_line(complete.line(), outcome, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
                     continue;
                 }
 
@@ -675,34 +672,26 @@ pub(crate) async fn run_via_helper(
                                 .into(),
                         ));
                     };
-                    let pending = PendingOutputFile::new(header, max_bytes)?;
-                    if pending.is_complete() {
-                        let (line, parts, content) = pending.into_parts();
-                        let outcome = filter
-                            .output_vars_mut()
-                            .finish_helper_file(&line, &parts, content);
-                        log_line(&line, Some(outcome), filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
-                    } else {
-                        pending_file = Some(pending);
+                    start_frames(PendingFrames::file(header, max_bytes)?, &mut pending_slot, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail)?;
+                    continue;
+                }
+
+                if let Some(header) = resp.get("outLong") {
+                    if filter.output_vars_mut().max_bytes().is_none() {
+                        return Err(SessionError::HelperCommunication(
+                            "The helper sent an outLong frame for an Action that can't \
+                             report output values"
+                                .into(),
+                        ));
                     }
+                    start_frames(PendingFrames::long_line(header)?, &mut pending_slot, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail)?;
                     continue;
                 }
 
                 if let Some(line) = resp.get("out").and_then(|v| v.as_str()) {
                     let line = crate::subprocess::truncate_line(line);
                     let flag = |key: &str| resp.get(key).and_then(|v| v.as_bool()).unwrap_or(false);
-                    let output = match filter
-                        .output_vars_mut()
-                        .begin(line, flag("truncated"), flag("lossy"))
-                    {
-                        Begin::NotDirective => None,
-                        Begin::Done(outcome) => Some(outcome),
-                        // The helper resolves every `@` directive the parser
-                        // reads as one, so this is a disagreement between them.
-                        Begin::ReadFile(request) => Some(
-                            filter.output_vars_mut().unresolved_on_helper_path(&request),
-                        ),
-                    };
+                    let output = out_line_outcome(filter, line, flag("truncated"), flag("lossy"));
                     log_line(line, output, filter, session_id, &message_tx, config.debug_collect_stdout, &mut stdout_collected, &mut saw_fail);
                     continue;
                 }
@@ -797,9 +786,9 @@ fn log_line(
     stdout_collected: &mut String,
     saw_fail: &mut bool,
 ) {
-    let (display, pass_through) =
+    let (display, log) =
         crate::subprocess::process_line(line, output, filter, session_id, message_tx, saw_fail);
-    if pass_through && filter.min_log_level() <= 20 {
+    if log {
         session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
     }
     if collect {
@@ -808,33 +797,133 @@ fn log_line(
     }
 }
 
-/// An `@` directive the helper resolved: its `outputFile` header, and the
-/// `outputFileData` frames received so far, which together carry the line
-/// and then the valid UTF-8 prefix of the file's content.
-#[derive(Debug)]
-struct PendingOutputFile {
-    line_len: usize,
-    parts: HelperFileParts,
-    error: Option<String>,
-    size: usize,
-    valid_utf8: usize,
-    data: String,
+/// What `Begin` on an ordinary `out` line of the helper path comes to.
+///
+/// The helper resolves every `@` directive the parser reads as one (a parity
+/// test pins its recognizer to the parser), so an `@` directive that arrives
+/// as an `out` line in an Action that may report outputs means the two
+/// disagree; it is invalid rather than read here, because the parent never
+/// reads the file.
+fn out_line_outcome(
+    filter: &mut crate::action_filter::ActionFilter,
+    line: &str,
+    truncated: bool,
+    lossy: bool,
+) -> Option<LineOutcome> {
+    match filter.output_vars_mut().begin(line, truncated, lossy) {
+        Begin::NotDirective => None,
+        Begin::Done(outcome) => Some(outcome),
+        Begin::ReadFile(request) => {
+            Some(filter.output_vars_mut().unresolved_on_helper_path(&request))
+        }
+    }
 }
 
-impl PendingOutputFile {
-    /// Check a header against what the helper was asked to do. Anything
-    /// inconsistent is a protocol error, not a directive error: the helper is
-    /// trusted only to report what it read, and its numbers bound how much
-    /// the parent buffers.
-    fn new(header: &serde_json::Value, max_bytes: usize) -> Result<Self, SessionError> {
-        let bad =
-            || SessionError::HelperCommunication(format!("Malformed outputFile header: {header}"));
-        let usize_of = |key: &str| {
-            header
-                .get(key)
-                .and_then(|v| v.as_u64())
-                .and_then(|v| usize::try_from(v).ok())
+/// Hold `frames` until its data arrives, or process it at once when there is
+/// none to wait for.
+#[allow(clippy::too_many_arguments)]
+fn start_frames(
+    frames: PendingFrames,
+    slot: &mut Option<PendingFrames>,
+    filter: &mut crate::action_filter::ActionFilter,
+    session_id: &str,
+    message_tx: &tokio::sync::mpsc::UnboundedSender<ActionMessage>,
+    collect: bool,
+    stdout_collected: &mut String,
+    saw_fail: &mut bool,
+) -> Result<(), SessionError> {
+    if frames.is_complete() {
+        let complete = frames.complete()?;
+        let outcome = complete.outcome(filter);
+        log_line(
+            complete.line(),
+            outcome,
+            filter,
+            session_id,
+            message_tx,
+            collect,
+            stdout_collected,
+            saw_fail,
+        );
+    } else {
+        *slot = Some(frames);
+    }
+    Ok(())
+}
+
+/// Take the completed frames out of `slot`.
+fn pending_take(slot: &mut Option<PendingFrames>) -> Result<CompleteFrames, SessionError> {
+    slot.take().expect("caller checked the slot").complete()
+}
+
+/// What a header announced: a long directive line, or a resolved `@`
+/// directive.
+#[derive(Debug)]
+enum FramesKind {
+    /// `outLong`: the data is the line; the flags mean what they mean on
+    /// `out`.
+    Line { truncated: bool, lossy: bool },
+    /// `outputFile`: the data is the line, then the valid UTF-8 prefix of the
+    /// file's content.
+    File {
+        parts: HelperFileParts,
+        error: Option<String>,
+        size: usize,
+        valid_utf8: usize,
+    },
+}
+
+/// A header and the `data` frames received for it so far.
+#[derive(Debug)]
+struct PendingFrames {
+    line_len: usize,
+    expected: usize,
+    data: String,
+    kind: FramesKind,
+}
+
+fn bad_header(kind: &str, header: &serde_json::Value) -> SessionError {
+    SessionError::HelperCommunication(format!("Malformed {kind} header: {header}"))
+}
+
+fn header_usize(header: &serde_json::Value, key: &str) -> Option<usize> {
+    header
+        .get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| usize::try_from(v).ok())
+}
+
+impl PendingFrames {
+    /// Check an `outLong` header.
+    fn long_line(header: &serde_json::Value) -> Result<Self, SessionError> {
+        let bad = || bad_header("outLong", header);
+        let len = header_usize(header, "len").ok_or_else(bad)?;
+        let flag = |key: &str| match header.get(key) {
+            None => Ok(false),
+            Some(v) => v.as_bool().ok_or_else(bad),
         };
+        let kind = FramesKind::Line {
+            truncated: flag("truncated")?,
+            lossy: flag("lossy")?,
+        };
+        if len > crate::subprocess::LOG_LINE_MAX_LENGTH {
+            return Err(bad());
+        }
+        Ok(Self {
+            line_len: len,
+            expected: len,
+            data: String::new(),
+            kind,
+        })
+    }
+
+    /// Check an `outputFile` header against what the helper was asked to do.
+    /// Anything inconsistent is a protocol error, not a directive error: the
+    /// helper is trusted only to report what it read, its output stream can
+    /// carry what processes of the job user write to it, and its numbers
+    /// bound how much the parent buffers.
+    fn file(header: &serde_json::Value, max_bytes: usize) -> Result<Self, SessionError> {
+        let bad = || bad_header("outputFile", header);
         let range_of = |key: &str| -> Option<std::ops::Range<usize>> {
             let a = header.get(key)?.as_array()?;
             match a.as_slice() {
@@ -844,9 +933,9 @@ impl PendingOutputFile {
                 _ => None,
             }
         };
-        let line_len = usize_of("lineLen").ok_or_else(bad)?;
-        let size = usize_of("size").ok_or_else(bad)?;
-        let valid_utf8 = usize_of("validUtf8").ok_or_else(bad)?;
+        let line_len = header_usize(header, "lineLen").ok_or_else(bad)?;
+        let size = header_usize(header, "size").ok_or_else(bad)?;
+        let valid_utf8 = header_usize(header, "validUtf8").ok_or_else(bad)?;
         let task = match header.get("task") {
             None | Some(serde_json::Value::Null) => None,
             Some(v) => Some(v.as_i64().ok_or_else(bad)?),
@@ -869,52 +958,292 @@ impl PendingOutputFile {
         }
         Ok(Self {
             line_len,
-            parts,
-            error,
-            size,
-            valid_utf8,
+            expected: line_len + valid_utf8,
             data: String::new(),
+            kind: FramesKind::File {
+                parts,
+                error,
+                size,
+                valid_utf8,
+            },
         })
     }
 
-    fn expected_len(&self) -> usize {
-        self.line_len + self.valid_utf8
-    }
-
     fn is_complete(&self) -> bool {
-        self.data.len() == self.expected_len()
+        self.data.len() == self.expected
     }
 
     /// Add a data frame; `true` once the data is complete.
     fn push(&mut self, data: &str) -> Result<bool, SessionError> {
-        if self.data.len() + data.len() > self.expected_len() {
+        if self.data.len() + data.len() > self.expected {
             return Err(SessionError::HelperCommunication(
-                "The helper sent more outputFileData than its header announced".into(),
+                "The helper sent more data than its header announced".into(),
             ));
         }
         self.data.push_str(data);
         Ok(self.is_complete())
     }
 
-    /// The line, what the helper found in it, and what it read: the content,
-    /// with one invalid byte in place of everything after the valid UTF-8
-    /// prefix (so the collector reports where the content stops being
-    /// UTF-8), or the read error.
-    fn into_parts(self) -> (String, HelperFileParts, Result<Vec<u8>, String>) {
-        let line = self.data[..self.line_len.min(self.data.len())].to_string();
-        let content = match self.error {
-            Some(error) => Err(error),
-            None => {
-                let mut content = self.data.into_bytes().split_off(self.line_len);
-                if self.valid_utf8 < self.size {
-                    content.push(0xFF);
-                    // Keep the reported size, so the size check sees it.
-                    content.resize(self.size, 0xFF);
+    /// The complete data split into the line and what follows it. The split
+    /// must fall on a character boundary: a header whose `lineLen` cuts a
+    /// character is a protocol error.
+    fn complete(self) -> Result<CompleteFrames, SessionError> {
+        if !self.data.is_char_boundary(self.line_len) {
+            return Err(SessionError::HelperCommunication(
+                "The helper's header puts the end of the line inside a character".into(),
+            ));
+        }
+        let mut line = self.data;
+        let rest = line.split_off(self.line_len);
+        Ok(match self.kind {
+            FramesKind::Line { truncated, lossy } => CompleteFrames::Line {
+                line,
+                truncated,
+                lossy,
+            },
+            FramesKind::File {
+                parts,
+                error,
+                size,
+                valid_utf8,
+            } => {
+                let content = match error {
+                    Some(error) => Err(error),
+                    None => {
+                        let mut content = rest.into_bytes();
+                        if valid_utf8 < size {
+                            // Stand-in bytes for what was not valid UTF-8, so
+                            // the collector reports where the content stops
+                            // being UTF-8 and the size check sees the size
+                            // the helper read.
+                            content.resize(size, 0xFF);
+                        }
+                        Ok(content)
+                    }
+                };
+                CompleteFrames::File {
+                    line,
+                    parts,
+                    content,
                 }
-                Ok(content)
             }
-        };
-        (line, self.parts, content)
+        })
+    }
+}
+
+/// Frames whose data has all arrived.
+#[derive(Debug)]
+enum CompleteFrames {
+    Line {
+        line: String,
+        truncated: bool,
+        lossy: bool,
+    },
+    File {
+        line: String,
+        parts: HelperFileParts,
+        content: Result<Vec<u8>, String>,
+    },
+}
+
+impl CompleteFrames {
+    fn line(&self) -> &str {
+        match self {
+            Self::Line { line, .. } | Self::File { line, .. } => line,
+        }
+    }
+
+    /// Process the line as the Action's `openjd_output_var` state says.
+    fn outcome(&self, filter: &mut crate::action_filter::ActionFilter) -> Option<LineOutcome> {
+        match self {
+            Self::Line {
+                line,
+                truncated,
+                lossy,
+            } => out_line_outcome(filter, line, *truncated, *lossy),
+            Self::File {
+                line,
+                parts,
+                content,
+            } => Some(
+                filter
+                    .output_vars_mut()
+                    .finish_helper_file(line, parts, content.clone()),
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod frames_tests {
+    use super::*;
+    use crate::output_vars::OutputVars;
+    use openjd_expr::{ExprValue, PathFormat};
+    use openjd_model::outputs::OutputCollector;
+    use serde_json::json;
+
+    fn filter() -> crate::action_filter::ActionFilter {
+        let declared: Vec<openjd_model::job::OutputVariable> =
+            serde_json::from_str(r#"[{"name": "N", "type": "STRING"}]"#).unwrap();
+        let collector =
+            OutputCollector::new(&declared, 100, &[], PathFormat::host(), None).unwrap();
+        let mut f = crate::action_filter::ActionFilter::new("s", true, false);
+        f.set_output_vars(OutputVars::allowed(collector, std::env::temp_dir(), 100));
+        f
+    }
+
+    fn header(line_len: usize, size: usize, valid: usize) -> serde_json::Value {
+        json!({"lineLen": line_len, "name": [19, 20], "task": null,
+               "path": [22, 23], "size": size, "validUtf8": valid})
+    }
+
+    fn message(e: SessionError) -> String {
+        e.to_string()
+    }
+
+    #[test]
+    fn file_header_is_validated() {
+        let ok = header(23, 2, 2);
+        assert!(PendingFrames::file(&ok, 100).is_ok());
+        for (bad, why) in [
+            (header(65_537, 0, 0), "line over the line limit"),
+            (header(23, 102, 102), "size over max_bytes + 1"),
+            (header(23, 2, 3), "validUtf8 over size"),
+            (
+                json!({"lineLen": 23, "name": [19, 20], "path": [22, 23], "size": 1,
+                       "validUtf8": 1, "error": "does not exist"}),
+                "an error with data",
+            ),
+            (
+                json!({"lineLen": 23, "size": 0, "validUtf8": 0}),
+                "no ranges",
+            ),
+            (
+                json!({"lineLen": 23, "name": [19], "path": [22, 23], "size": 0, "validUtf8": 0}),
+                "a short range",
+            ),
+            (
+                json!({"lineLen": 23, "name": [19, 20], "path": [22, 23], "task": "x",
+                       "size": 0, "validUtf8": 0}),
+                "a task that is not an integer",
+            ),
+        ] {
+            let e = PendingFrames::file(&bad, 100).expect_err(why);
+            assert!(
+                message(e).starts_with("Cross-user helper error: Malformed outputFile header: "),
+                "{why}"
+            );
+        }
+        // Exactly max_bytes + 1 is allowed: that is how the helper reports a
+        // file that is too large.
+        assert!(PendingFrames::file(&header(23, 101, 101), 100).is_ok());
+    }
+
+    #[test]
+    fn long_line_header_is_validated() {
+        assert!(PendingFrames::long_line(&json!({"len": 65_536})).is_ok());
+        for bad in [
+            json!({"len": 65_537}),
+            json!({}),
+            json!({"len": 3, "lossy": "yes"}),
+        ] {
+            let e = PendingFrames::long_line(&bad).unwrap_err();
+            assert!(message(e).starts_with("Cross-user helper error: Malformed outLong header: "));
+        }
+    }
+
+    #[test]
+    fn data_must_match_the_header() {
+        let mut p = PendingFrames::file(&header(23, 2, 2), 100).unwrap();
+        assert!(!p.push("openjd_output_var: N=@f").unwrap());
+        assert!(p.push("\"x").is_ok());
+        assert_eq!(
+            message(p.push("\"y").unwrap_err()),
+            "Cross-user helper error: The helper sent more data than its header announced"
+        );
+    }
+
+    #[test]
+    fn line_end_inside_a_character_is_refused() {
+        // "é" is two bytes. A file header whose lineLen is 1 and whose
+        // content is 1 byte announces 2 bytes of data, and the line ends
+        // inside the character.
+        let mut p = PendingFrames::file(
+            &json!({"lineLen": 1, "name": [0, 1], "task": null, "path": [0, 1],
+                    "size": 1, "validUtf8": 1}),
+            100,
+        )
+        .unwrap();
+        assert!(p.push("é").unwrap());
+        assert_eq!(
+            message(p.complete().unwrap_err()),
+            "Cross-user helper error: The helper's header puts the end of the line inside a \
+             character"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_content_keeps_the_reported_size() {
+        let line = "openjd_output_var: N=@f";
+        let mut p = PendingFrames::file(&header(23, 50, 2), 100).unwrap();
+        assert!(p.push(&format!("{line}ab")).unwrap());
+        match p.complete().unwrap() {
+            CompleteFrames::File {
+                line: l, content, ..
+            } => {
+                assert_eq!(l, line);
+                let content = content.unwrap();
+                assert_eq!(content.len(), 50);
+                assert_eq!(&content[..3], b"ab\xff");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn complete_file_frames_feed_the_collector() {
+        let line = "openjd_output_var: N=@f";
+        let mut p = PendingFrames::file(&header(23, 3, 3), 100).unwrap();
+        assert!(p.push(&format!("{line}\"x\"")).unwrap());
+        let mut f = filter();
+        match p.complete().unwrap().outcome(&mut f) {
+            Some(LineOutcome::Accepted { name, value, .. }) => {
+                assert_eq!((name.as_str(), value), ("N", ExprValue::String("x".into())));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn long_lines_are_processed_as_out_lines() {
+        let text = format!("openjd_output_var: N=\"{}\"", "\\\\".repeat(10));
+        let mut p = PendingFrames::long_line(&json!({"len": text.len()})).unwrap();
+        assert!(p.push(&text).unwrap());
+        let mut f = filter();
+        assert!(matches!(
+            p.complete().unwrap().outcome(&mut f),
+            Some(LineOutcome::Accepted { .. })
+        ));
+        // With a flag, it is rejected like an out line with it.
+        let mut p =
+            PendingFrames::long_line(&json!({"len": text.len(), "truncated": true})).unwrap();
+        assert!(p.push(&text).unwrap());
+        let mut f = filter();
+        assert!(matches!(
+            p.complete().unwrap().outcome(&mut f),
+            Some(LineOutcome::Invalid(m)) if m.starts_with("Invalid openjd_output_var directive: the line is longer")
+        ));
+    }
+
+    #[test]
+    fn unresolved_at_directive_on_the_helper_path_is_invalid() {
+        let mut f = filter();
+        assert!(matches!(
+            out_line_outcome(&mut f, "openjd_output_var: N=@f", false, false),
+            Some(LineOutcome::Invalid(m)) if m == "Output variable 'N': the cross-user helper did not read the @ file 'f'"
+        ));
+        let mut f = filter();
+        assert!(out_line_outcome(&mut f, "hello", false, false).is_none());
     }
 }
 

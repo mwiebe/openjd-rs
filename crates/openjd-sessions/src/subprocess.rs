@@ -1145,8 +1145,8 @@ pub async fn run_subprocess(
                                     Some(filter.output_vars_mut().finish_file(&request, content))
                                 }
                             };
-                            let (display, pass_through) = process_line(&line, output, filter, session_id, &message_tx, &mut saw_fail);
-                            if pass_through && filter.min_log_level() <= 20 {
+                            let (display, log) = process_line(&line, output, filter, session_id, &message_tx, &mut saw_fail);
+                            if log {
                                 session_log!(info, session_id, LogContent::COMMAND_OUTPUT, "{}", display);
                             }
                             if config.debug_collect_stdout {
@@ -1235,7 +1235,7 @@ pub async fn run_subprocess(
 }
 
 /// Turn one line of Action output into messages, and return the line to log
-/// and whether to log it.
+/// and whether to log it now, at the filter's current log level.
 ///
 /// `output` is what [`OutputVars`](crate::output_vars::OutputVars) made of the
 /// line when it is an `openjd_output_var` directive the Action recognizes;
@@ -1259,7 +1259,7 @@ pub(crate) fn process_line(
             let _ = message_tx.send(ActionMessage::OutputVar { task, name, value });
             return (
                 filter.apply_redaction(line),
-                filter.echo_openjd_directives(),
+                filter.echo_openjd_directives() && filter.min_log_level() <= 20,
             );
         }
         Some(LineOutcome::Invalid(message)) => {
@@ -1268,9 +1268,26 @@ pub(crate) fn process_line(
             let _ = message_tx.send(ActionMessage::CancelMarkFailed {
                 fail_message: message,
             });
+            // Whatever `openjd_session_runtime_loglevel` set: an invalid
+            // directive always stays in the log (RFC 0010).
             return (display, true);
         }
     }
+    let (display, pass_through) =
+        process_filtered_line(line, filter, session_id, message_tx, saw_fail);
+    (display, pass_through && filter.min_log_level() <= 20)
+}
+
+/// [`process_line`] for a line that is not an `openjd_output_var` directive
+/// of the Action: the filter's directives. The `bool` is the filter's
+/// pass-through decision, before the log level is applied.
+fn process_filtered_line(
+    line: &str,
+    filter: &mut ActionFilter,
+    session_id: &str,
+    message_tx: &mpsc::UnboundedSender<ActionMessage>,
+    saw_fail: &mut bool,
+) -> (String, bool) {
     let (callbacks, pass_through, display) = filter.filter_message(line, session_id);
     for cb in callbacks {
         let cancel = cb.cancel;

@@ -190,12 +190,12 @@ impl Session {
     /// directive cancels and fails the action at once, and on success
     /// the values are checked for completeness and returned in
     /// `ActionResult::outputs`. With `CONTROL_FLOW` and `None`, a
-    /// directive is invalid. A `CHUNK[INT]` entry of
-    /// `task_parameter_values` (a `RangeExpr`, or a string that parses as
-    /// one) makes the action a chunk whose Tasks are its values; one
-    /// that doesn't parse fails the action with `SessionError::Runtime`
-    /// ("CHUNK[INT] parameter '<name>' value '<value>' is not a range
-    /// expression").
+    /// directive is invalid. For a Step with output variables, a
+    /// `CHUNK[INT]` entry of `task_parameter_values` (a `RangeExpr`, or a
+    /// string that parses as one) makes the action a chunk whose Tasks are
+    /// its values; one that doesn't parse fails the action with
+    /// `SessionError::Runtime` ("CHUNK[INT] parameter '<name>' value
+    /// '<value>' is not a range expression").
     pub async fn run_task(
         &mut self,
         step_name: &str,
@@ -297,7 +297,8 @@ impl Session {
     /// starting with `\\`, URI for a URI, POSIX otherwise), and its
     /// `Output.V` / `TaskParam.N` twin becomes the forward-mapped `path`
     /// values, element by element. A `null` stays `null`. A symbol of
-    /// another form, or one missing from `base`, is a
+    /// another form, one missing from `base`, a stored value whose shape
+    /// does not match its `ty`, and any `path_inputs` with no `base` are a
     /// `SessionError::Runtime`.
     pub fn build_symbol_table(
         &self,
@@ -613,7 +614,8 @@ pub enum ActionMessage {
     OutputVar { task: Option<i64>, name: String, value: ExprValue },
     /// Internal signal (emitted when a malformed env-directive or an
     /// invalid `openjd_output_var` directive is found): cancel this
-    /// action and mark it failed with `fail_message`.
+    /// action and mark it failed with `fail_message`. The first one's
+    /// message is final for the action.
     CancelMarkFailed { fail_message: String },
 }
 
@@ -1139,6 +1141,11 @@ pub enum SessionError {
 ## Re-exports
 
 ```rust
+pub use action::{ActionMessage, ActionOutputs, ActionResult, ActionState};
+pub use session::{
+    EnvironmentIdentifier, EnvironmentOptions, EnvironmentOrigin, OutputCallbackType,
+    RunTaskOptions, Session, SessionCancelHandle, SessionConfig, SessionState,
+};
 pub use openjd_expr::path_mapping;           // the module
 pub use openjd_expr::path_mapping::PathFormat;
 pub use openjd_expr::path_mapping::PathMappingRule;

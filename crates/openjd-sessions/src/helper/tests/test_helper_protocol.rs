@@ -502,7 +502,7 @@ fn run_sh_collect(script: &str, output_files: bool) -> Vec<serde_json::Value> {
 }
 
 /// An `@` directive is resolved by the helper: the file content travels in
-/// `outputFileData` frames after the header, in place of the `out` line, and
+/// `data` frames after the header, in place of the `out` line, and
 /// later lines keep their order.
 #[cfg(unix)]
 #[test]
@@ -523,7 +523,7 @@ fn test_helper_resolves_output_file() {
     // are the line followed by the content.
     let data: String = r[1..3]
         .iter()
-        .map(|v| v["outputFileData"].as_str().unwrap())
+        .map(|v| v["data"].as_str().unwrap())
         .collect();
     assert_eq!(data, format!("{line}[1, 2]"));
     assert_eq!(r[3], serde_json::json!({"out": "after"}));

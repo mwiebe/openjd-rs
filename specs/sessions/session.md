@@ -223,13 +223,14 @@ in an inconsistent state. The Python library enforces this, and the Rust crate m
 2. Builds the symbol table: adds `Task.Param.*` and `Task.RawParam.*`, and the Step's
    path-typed `Steps.*` inputs from `options.path_inputs`
 3. Sets state to `Running`
-4. With `CONTROL_FLOW`, sets up output collection for the action (see
-   [Output variables](#output-variables-control_flow)); a `CHUNK[INT]` value that is not a
-   range expression fails the action here
-5. Creates a `StepScriptRunner` and calls `run()` (runs `onRun` action)
+4. With `CONTROL_FLOW`, sets up how the action treats `openjd_output_var` lines (see
+   [Output variables](#output-variables-control_flow)); for a Step with output variables,
+   a `CHUNK[INT]` value that is not a range expression fails the action here
+5. Creates a `StepScriptRunner` and calls `run()` (runs `onRun` action); at a successful
+   exit with output collection the runner calls `OutputCollector::finish`, and an error
+   fails the action with its message
 6. Processes `ActionMessage` values via `drive_action()`
-7. On success with output collection, calls `OutputCollector::finish`; an error fails the
-   action with its message, and success fills `ActionResult::outputs`
+7. Returns the runner's outputs in `ActionResult::outputs` when the action succeeded
 8. On completion: state → `Ready` or `ReadyEnding` based on result
 
 When a wrap hook is dispatched, the borrow of the active environment stack is
@@ -384,8 +385,10 @@ POSIX rule. For each entry, after the `Param.*` loop:
   `path` values in the host format, element by element, with the Session's rules;
 - a `null` (from a skipped producer) is left as `null` and gets no twin.
 
-A symbol of another form, or one that is missing from `base`, is a
-`SessionError::Runtime` naming it. Step Environments receive the same inputs through
+Each is a `SessionError::Runtime` naming the symbol: a symbol of another form, one
+missing from `base`, a type that is not `path`, `list[path]`, or `list[list[path]]`, a
+stored value whose shape does not match that type, and any `path_inputs` at all when
+`base` is `None`. Step Environments receive the same inputs through
 `EnvironmentOptions::path_inputs`.
 
 ## Path Mapping Materialization
@@ -750,14 +753,17 @@ accepted value is sent as `ActionMessage::OutputVar` and forwarded to
 `SessionConfig::output_callback` as it arrives. The first invalid directive sends
 `CancelMarkFailed` with the collector's message, which the Session applies as
 `cancel_action(None, true)`: the action's own cancelation runs at once, and the action is
-reported Failed with that message as `fail_message`. The reader also marks the action
+reported Failed with that message as `fail_message`. That message is final: a later
+`openjd_fail` (such as one a cancel handler prints) does not replace it. The reader also marks the action
 failed itself, so an action that exits 0 before the cancel reaches it still fails. Later
 directive lines are not processed.
 
-When the action exits successfully, `run_task` calls `finish`. An error (a `ONCE` or
-`LAST` output with no value, or an `APPEND` list below `minLength`, for any Task of the
-chunk) fails the action: the state becomes Failed, `fail_message` is set, the status
-callback fires, and the session moves to `ReadyEnding`. Otherwise `ActionResult::outputs`
+When the action exits successfully, the runner calls `finish`, before the session
+computes the action's final state. An error (a `ONCE` or `LAST` output with no value, or
+an `APPEND` list below `minLength`, for any Task of the chunk) fails the action: the
+runner sends `ActionMessage::Fail` with the message and reports `Failed`, so the status
+callback reports `Failed` (never `Success` first) and the session moves to
+`ReadyEnding`. Otherwise `ActionResult::outputs`
 holds each Task's values keyed by `CHUNK[INT]` value (`None` for an unchunked Step), in
 the chunk's order. A failed, canceled, or timed-out action returns `outputs: None`; values
 already passed to the output callback are discarded by the caller.
@@ -771,6 +777,12 @@ opened handle; the open does not block (a FIFO is refused, not waited on); and a
 [subprocess.md](subprocess.md#output-variable-files) for the direct path and
 [embedded-cross-user-helper.md](embedded-cross-user-helper.md#output-variable-files) for
 the cross-user path, where the helper reads the file as the job user.
+
+### Logging
+
+An invalid directive line is logged with ` -- ERROR: <message>` whatever the log level
+set by `openjd_session_runtime_loglevel`, so the cause of the failure is always in the
+log; a valid one follows `echo_openjd_directives` and the log level like other output.
 
 ### Size limit
 

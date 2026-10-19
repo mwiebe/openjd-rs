@@ -56,7 +56,7 @@ helper/                     # Standalone helper binary crate
     ├── main.rs             # Shared stdin reader, command dispatch loop
     ├── protocol.rs         # Command/Response JSON serde types
     ├── framer.rs           # Bounded line framer with truncated/lossy flags
-    ├── emit.rs             # One line to an out response or outputFile frames
+    ├── emit.rs             # One line to an out response, or outLong or outputFile frames
     ├── output_file.rs      # @ directive recognizer and file reader (also used
     │                       # by openjd-sessions through #[path])
     ├── runner.rs           # poll(2) loop, child management, cancel handling

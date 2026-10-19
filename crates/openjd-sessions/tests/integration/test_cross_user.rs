@@ -957,6 +957,12 @@ async fn test_cross_user_output_var_failures() {
             "Output variable 'N': the @ file 'missing' does not exist".to_string(),
         ),
         (
+            "truncate -s 2M big; echo 'openjd_output_var: N=@big'",
+            "Output variable 'N': the @ file 'big' is larger than the 1048576 bytes the Task's \
+             output values have left (the limit is 1048576 bytes per Task)"
+                .to_string(),
+        ),
+        (
             "mkfifo p; echo 'openjd_output_var: N=@p'",
             "Output variable 'N': the @ file 'p' is not a regular file".to_string(),
         ),
@@ -1106,5 +1112,33 @@ async fn test_cross_user_output_var_environment_actions() {
         .await
         .unwrap();
     assert!(out.contains("openjd_output_var: N=@f"), "{out}");
+    session.cleanup();
+}
+
+/// Directive lines of up to 64 KiB are accepted through the helper as on
+/// the direct path (RFC 0010 §Limits item 1): with a CRLF line end at the
+/// cap, and when JSON escaping makes the line too long for one response.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_output_var_long_lines() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let r = run_cf(
+        &mut session,
+        r#"printf 'openjd_output_var: A="%s"\r\n' "$(head -c 65513 /dev/zero | tr '\0' a)"
+           printf 'openjd_output_var: B="'; head -c 65512 /dev/zero | tr '\0' '\\'; printf '"\n'"#,
+        r#"[{"name": "A", "type": "STRING"}, {"name": "B", "type": "STRING"}]"#,
+        None,
+    )
+    .await;
+    assert_eq!(r.state, ActionState::Success, "{}", fail_message(&session));
+    assert_eq!(
+        single(&r, "A"),
+        Some(openjd_expr::ExprValue::String("a".repeat(65_513)))
+    );
+    assert_eq!(
+        single(&r, "B"),
+        Some(openjd_expr::ExprValue::String("\\".repeat(32_756)))
+    );
     session.cleanup();
 }

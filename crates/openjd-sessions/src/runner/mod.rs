@@ -117,6 +117,9 @@ pub(crate) struct ScriptRunnerBase {
     /// collector. Moved into the action's filter while it runs and back out
     /// afterwards, so the caller can take the collector.
     pub output_vars: crate::output_vars::OutputVars,
+    /// The output values the action reported, once it exited successfully
+    /// with every Task's values complete.
+    pub outputs: Option<crate::action::ActionOutputs>,
 }
 
 impl ScriptRunnerBase {
@@ -143,6 +146,7 @@ impl ScriptRunnerBase {
             helper: None,
             cancel_writer: None,
             output_vars: crate::output_vars::OutputVars::ignored(),
+            outputs: None,
         }
     }
 
@@ -187,6 +191,7 @@ impl ScriptRunnerBase {
         );
         filter.add_redacted_values(&self.initial_redacted_values);
         filter.set_output_vars(std::mem::take(&mut self.output_vars));
+        let finish_tx = message_tx.clone();
 
         let result = if let Some(ref mut helper) = self.helper {
             crate::cross_user_helper::run_via_helper(
@@ -209,7 +214,30 @@ impl ScriptRunnerBase {
             .await
         };
         self.output_vars = filter.take_output_vars();
-        let result = result?;
+        let mut result = result?;
+
+        // RFC 0010: at a successful exit, check the Tasks' outputs are
+        // complete. Done here, before the session computes the action's
+        // final state, so a missing output fails the action without a
+        // Success status first.
+        self.outputs = None;
+        if result.state == ActionState::Success {
+            match self.output_vars.finish() {
+                Some(Ok(outputs)) => self.outputs = Some(outputs),
+                Some(Err(message)) => {
+                    crate::session_log!(
+                        info,
+                        &self.session_id,
+                        crate::logging::LogContent::EXCEPTION_INFO,
+                        "Action failed: {}",
+                        message
+                    );
+                    let _ = finish_tx.send(ActionMessage::Fail(message));
+                    result.state = ActionState::Failed;
+                }
+                None => {}
+            }
+        }
 
         self.state = state_from_action(result.state);
         Ok(result)

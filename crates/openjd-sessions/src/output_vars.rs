@@ -146,9 +146,13 @@ impl OutputVars {
         self.invalid
     }
 
-    /// The collector, for `finish` when the Action has exited.
-    pub fn into_collector(self) -> Option<OutputCollector> {
-        self.collector
+    /// At a successful exit: the collector's `finish`, which checks that
+    /// every Task has its `ONCE` and `LAST` outputs and its `APPEND`
+    /// `minLength`. `None` when the Action reports no outputs. Takes the
+    /// collector, so a second call is `None`.
+    pub fn finish(&mut self) -> Option<Result<crate::action::ActionOutputs, String>> {
+        let collector = self.collector.take()?;
+        Some(collector.finish().map_err(|e| e.message().to_string()))
     }
 
     /// Start processing `line` (without its line terminator). `truncated`
@@ -223,10 +227,16 @@ impl OutputVars {
     ) -> LineOutcome {
         let label = label(&request.name, request.task);
         let outcome = match content {
-            Err(phrase) => LineOutcome::Invalid(format!(
-                "Output variable '{label}': the @ file {} {phrase}",
-                quote(&request.path)
-            )),
+            Err(phrase) => {
+                // On the helper path the phrase comes from the helper's
+                // output stream, so it is cut and escaped like quoted text.
+                let phrase = quote(&phrase);
+                LineOutcome::Invalid(format!(
+                    "Output variable '{label}': the @ file {} {}",
+                    quote(&request.path),
+                    &phrase[1..phrase.len() - 1]
+                ))
+            }
             Ok(content) if content.len() > request.max_bytes => LineOutcome::Invalid(format!(
                 "Output variable '{label}': the @ file {} is larger than the {} bytes the \
                  Task's output values have left (the limit is {} bytes per Task)",
@@ -514,10 +524,35 @@ mod tests {
                 helper read the directive differently from the parser, in \
                 'openjd_output_var: N=@f'"
         ));
+        const DIFFERS: &str = "Invalid openjd_output_var directive: the cross-user helper read \
+                               the directive differently from the parser, in \
+                               'openjd_output_var: N=@f'";
+        let differs = |parts: &HelperFileParts| {
+            let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
+            match v.finish_helper_file(line, parts, Ok(b"5".to_vec())) {
+                LineOutcome::Invalid(m) => m == DIFFERS,
+                _ => false,
+            }
+        };
+        assert!(differs(&HelperFileParts {
+            name: 18..20,
+            ..parts.clone()
+        }));
+        assert!(differs(&HelperFileParts {
+            task: Some(0),
+            ..parts.clone()
+        }));
         let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
         assert!(matches!(
             v.finish_helper_file("plain", &parts, Ok(b"5".to_vec())),
-            LineOutcome::Invalid(m) if m.contains("for a line that is not one")
+            LineOutcome::Invalid(m) if m == "Invalid openjd_output_var directive: the \
+                cross-user helper reported an @ file for a line that is not one, in 'plain'"
+        ));
+        // A read error from the helper is cut and escaped like quoted text.
+        let mut v = allowed(r#"[{"name": "N", "type": "INT"}]"#, None);
+        assert!(matches!(
+            v.finish_helper_file(line, &parts, Err("can't be read:\nforged".into())),
+            LineOutcome::Invalid(m) if m == r"Output variable 'N': the @ file 'f' can't be read:\nforged"
         ));
     }
 

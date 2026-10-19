@@ -245,16 +245,19 @@ escapes because it was not valid UTF-8, is invalid as a directive (RFC 0010 §Li
 read as a line of its own. After the first invalid directive, later directive lines are
 not processed: the action is already being canceled.
 
-Messages for invalid directives come from the collector, so they name the output, the
-problem, and the offending text; text quoted by `output_vars.rs` itself is cut to 200
-characters with control characters escaped, as the model's messages are.
+Messages for invalid directives come from the collector, or for a Forbidden, cut,
+non-UTF-8, or helper-disagreement line from `output_vars.rs`, so they name the output (when
+there is one), the problem, and the offending text; text quoted by `output_vars.rs` itself,
+including a read error the cross-user helper reports, is cut to 200 characters with
+control characters escaped, as the model's messages are.
 
 ### Logging
 
 A valid directive line is treated like the other directives: logged by default, hidden
-when `echo_openjd_directives` is `false`. An invalid or Forbidden one is always logged,
-with ` -- ERROR: <message>` appended, as the `openjd_env` error branches are; it never
-takes the shared `pass_through = echo_openjd_directives` path. Redaction applies to both.
+when `echo_openjd_directives` is `false` or when `openjd_session_runtime_loglevel` raised
+the level above INFO. An invalid or Forbidden one is always logged, with
+` -- ERROR: <message>` appended, whatever the echo flag and the log level; it never takes
+the shared `pass_through = echo_openjd_directives` path. Redaction applies to both.
 
 ## Integration with Subprocess
 

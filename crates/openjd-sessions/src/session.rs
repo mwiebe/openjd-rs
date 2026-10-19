@@ -261,6 +261,11 @@ struct ActionStatusFields {
     progress: Option<f64>,
     status_message: Option<String>,
     fail_message: Option<String>,
+    /// Set when a `CancelMarkFailed` gave the reason the action is failing:
+    /// a later `openjd_fail` (often printed from a cancel handler) or another
+    /// cancel request must not replace it, because RFC 0010 requires the
+    /// failure of an invalid `openjd_output_var` directive to name it.
+    fail_message_final: bool,
     exit_code: Option<i32>,
     started_at: Option<std::time::SystemTime>,
     ended_at: Option<std::time::SystemTime>,
@@ -273,6 +278,7 @@ impl ActionStatusFields {
             progress: None,
             status_message: None,
             fail_message: None,
+            fail_message_final: false,
             exit_code: None,
             started_at: None,
             ended_at: None,
@@ -287,6 +293,7 @@ impl ActionStatusFields {
         self.progress = None;
         self.status_message = None;
         self.fail_message = None;
+        self.fail_message_final = false;
         self.exit_code = None;
     }
 }
@@ -2073,30 +2080,17 @@ impl Session {
             .drive_action(runner_fut, &mut rx, &step_identifier)
             .await;
         self.cross_user.helper = runner.take_helper();
-        let output_vars = runner.take_output_vars();
+        // Checked by the runner at a successful exit (RFC 0010 §Processing a
+        // directive: every Task has its ONCE and LAST outputs and its APPEND
+        // minLength); `None` for an attempt that failed.
+        let outputs = runner.take_outputs();
         let result = result?;
 
-        // RFC 0010 §Processing a directive: at a successful exit, every Task
-        // must have its ONCE and LAST outputs and its APPEND minLength; a
-        // failed attempt has no outputs.
-        let mut state = result.state;
-        let outputs = match output_vars.into_collector() {
-            Some(collector) if state == ActionState::Success => match collector.finish() {
-                Ok(outputs) => Some(outputs),
-                Err(e) => {
-                    self.fail_completed_action(e.message().to_string());
-                    state = ActionState::Failed;
-                    None
-                }
-            },
-            _ => None,
-        };
-
         Ok(ActionResult {
-            state,
+            state: result.state,
             exit_code: result.exit_code,
             stdout: result.stdout,
-            outputs,
+            outputs: outputs.filter(|_| result.state == ActionState::Success),
         })
     }
 
@@ -2141,21 +2135,6 @@ impl Session {
             self.working_directory.clone(),
             max_bytes,
         ))
-    }
-
-    /// Fail an action that has already finished successfully: its outputs
-    /// are incomplete. Logs the message and reports the Failed state.
-    fn fail_completed_action(&mut self, message: String) {
-        session_log!(
-            info,
-            &self.session_id,
-            LogContent::EXCEPTION_INFO,
-            "Action failed: {message}"
-        );
-        self.action.state = Some(ActionState::Failed);
-        self.action.fail_message = Some(message);
-        self.state = SessionState::ReadyEnding;
-        self.notify_callback();
     }
 
     /// Run an ad-hoc subprocess within the Session.
@@ -2472,7 +2451,9 @@ impl Session {
                 self.action.status_message = Some(s);
             }
             ActionMessage::Fail(s) => {
-                self.action.fail_message = Some(s);
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(s);
+                }
             }
             ActionMessage::SetEnv { name, value } => {
                 let key = normalize_env_key(&name);
@@ -2506,7 +2487,10 @@ impl Session {
                 return;
             }
             ActionMessage::CancelMarkFailed { fail_message } => {
-                self.action.fail_message = Some(fail_message);
+                if !self.action.fail_message_final {
+                    self.action.fail_message = Some(fail_message);
+                    self.action.fail_message_final = true;
+                }
                 let _ = self.cancel_action(None, true);
             }
         }
@@ -2664,6 +2648,15 @@ impl Session {
         use openjd_model::types::TaskParameterType;
 
         let host_path_format = openjd_expr::path_mapping::PathFormat::host();
+        if base.is_none() {
+            if let Some(input) = path_inputs.first() {
+                return Err(SessionError::Runtime(format!(
+                    "Path input '{}' has no value: path inputs are read from the Step's \
+                     resolved_symtab, and none was given",
+                    input.symbol
+                )));
+            }
+        }
         let mut symtab = if let Some(base) = base {
             // Deserialize with host path format — this is the template→session boundary.
             // Path values stored as Posix in template scope get normalized to host format.
@@ -2870,22 +2863,25 @@ impl Session {
                     .to_string(),
             ));
         };
+        let depth = path_type_depth(&input.ty).ok_or_else(|| {
+            err(format!(
+                "its type {} is not path, list[path], or list[list[path]]",
+                input.ty
+            ))
+        })?;
         let Some(stored) = symtab.get_value(&input.symbol).cloned() else {
             return Err(err("missing".to_string()));
         };
         if matches!(stored, openjd_expr::ExprValue::Null) {
             return Ok(());
         }
-        let raw = map_stored_paths(&stored, &mut |s| {
-            Ok(openjd_expr::ExprValue::new_path(s, stored_path_format(s)))
+        let raw = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
+            openjd_expr::ExprValue::new_path(s, stored_path_format(s))
         })
         .map_err(err)?;
         let host = openjd_expr::path_mapping::PathFormat::host();
-        let mapped = map_stored_paths(&stored, &mut |s| {
-            Ok(openjd_expr::ExprValue::new_path(
-                self.apply_path_mapping_to_string(s),
-                host,
-            ))
+        let mapped = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
+            openjd_expr::ExprValue::new_path(self.apply_path_mapping_to_string(s), host)
         })
         .map_err(err)?;
         symtab
@@ -3189,28 +3185,61 @@ fn stored_path_format(path: &str) -> openjd_expr::path_mapping::PathFormat {
     }
 }
 
-/// Turn a stored `string`, `list[string]`, or `list[list[string]]` into the
-/// same shape of `path` values, converting each string with `f`.
+/// How many list levels `ty` has around `path`: 0 for `path`, 1 for
+/// `list[path]`, 2 for `list[list[path]]`; `None` for any other type.
+fn path_type_depth(ty: &openjd_expr::ExprType) -> Option<usize> {
+    use openjd_expr::ExprType;
+    if *ty == ExprType::PATH {
+        Some(0)
+    } else if *ty == ExprType::list(ExprType::PATH) {
+        Some(1)
+    } else if *ty == ExprType::list(ExprType::list(ExprType::PATH)) {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// Turn a stored `string` (`depth` 0), `list[string]` (1), or
+/// `list[list[string]]` (2) into the same shape of `path` values, converting
+/// each string with `f`. A stored value of another shape is an error that
+/// names `ty`, the type the input was recorded with.
 fn map_stored_paths(
     value: &openjd_expr::ExprValue,
-    f: &mut dyn FnMut(&str) -> Result<openjd_expr::ExprValue, String>,
+    depth: usize,
+    ty: &openjd_expr::ExprType,
+    f: &mut dyn FnMut(&str) -> openjd_expr::ExprValue,
 ) -> Result<openjd_expr::ExprValue, String> {
     use openjd_expr::{ExprType, ExprValue};
-    match value {
-        ExprValue::String(s) => f(s),
-        ExprValue::ListString(items, _) => {
-            let paths = items.iter().map(|s| f(s)).collect::<Result<Vec<_>, _>>()?;
-            ExprValue::make_list(paths, ExprType::PATH).map_err(|e| e.to_string())
+    let paths = |items: Vec<ExprValue>, elem: ExprType| {
+        ExprValue::make_list(items, elem).map_err(|e| e.to_string())
+    };
+    match (depth, value) {
+        (0, ExprValue::String(s)) => Ok(f(s)),
+        (1, ExprValue::ListString(items, _)) => {
+            paths(items.iter().map(|s| f(s)).collect(), ExprType::PATH)
         }
-        ExprValue::ListList(items, _, _) => {
+        // An empty list can be stored without its element type.
+        (1, ExprValue::ListList(items, _, _)) if items.is_empty() => {
+            paths(Vec::new(), ExprType::PATH)
+        }
+        (2, ExprValue::ListList(items, _, _)) => {
             let lists = items
                 .iter()
-                .map(|v| map_stored_paths(v, f))
+                .map(|v| map_stored_paths(v, 1, ty, f))
                 .collect::<Result<Vec<_>, _>>()?;
-            ExprValue::make_list(lists, ExprType::list(ExprType::PATH)).map_err(|e| e.to_string())
+            paths(lists, ExprType::list(ExprType::PATH))
         }
-        other => Err(format!(
-            "expected a string or a list of strings, got {}",
+        (2, ExprValue::ListString(items, _)) if items.is_empty() => {
+            paths(Vec::new(), ExprType::list(ExprType::PATH))
+        }
+        (_, other) => Err(format!(
+            "it is recorded as {ty}, so its value must be stored as {}, but it is {}",
+            match depth {
+                0 => "a string",
+                1 => "a list of strings",
+                _ => "a list of lists of strings",
+            },
             other.expr_type()
         )),
     }

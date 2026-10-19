@@ -398,6 +398,13 @@ mod tests {
             read_output_file(&root, "fifo", 100).unwrap_err(),
             "is not a regular file"
         );
+        // An absolute link makes openat2 refuse (EXDEV), so the fallback
+        // opens the path; it must not block on the FIFO either.
+        std::os::unix::fs::symlink(root.join("fifo"), root.join("abs_fifo")).unwrap();
+        assert_eq!(
+            read_output_file(&root, "abs_fifo", 100).unwrap_err(),
+            "is not a regular file"
+        );
         assert_eq!(
             read_output_file(&root, "missing", 100).unwrap_err(),
             "does not exist"
