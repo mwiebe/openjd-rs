@@ -20,6 +20,9 @@ the [`openjd-rs`] workspace.
   I/O, signal handling (SIGTERM/SIGKILL), and whole-process-tree teardown.
 - **Action-message filter** — real-time parsing, redaction, and
   annotation of `openjd_*` messages emitted on stdout/stderr.
+- **Output values** (`CONTROL_FLOW`, prototype) — collecting the
+  `openjd_output_var` values a Task reports, including `@` file values
+  read as the job user, and returning them in `ActionResult::outputs`.
 - **Cross-user execution** — running subprocesses as a different OS user
   on Linux/macOS (via `sudo`) and on Windows (via a logon-based helper
   binary), with an **embedded helper** built by `build.rs` and baked

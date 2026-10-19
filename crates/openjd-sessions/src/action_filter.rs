@@ -95,6 +95,9 @@ pub struct ActionFilter {
     redacted_values: HashSet<String>,
     redacted_lines: HashSet<String>,
     log_level: u32,
+    /// How this Action treats `openjd_output_var` lines, and its collector.
+    /// The line readers consult it before [`filter_message`](Self::filter_message).
+    output_vars: crate::output_vars::OutputVars,
 }
 
 impl ActionFilter {
@@ -106,7 +109,28 @@ impl ActionFilter {
             redacted_values: HashSet::new(),
             redacted_lines: HashSet::new(),
             log_level: 20, // INFO
+            output_vars: crate::output_vars::OutputVars::ignored(),
         }
+    }
+
+    /// Whether recognized directive lines are kept in the log.
+    pub fn echo_openjd_directives(&self) -> bool {
+        self.echo_openjd_directives
+    }
+
+    /// Set how this Action treats `openjd_output_var` lines.
+    pub fn set_output_vars(&mut self, output_vars: crate::output_vars::OutputVars) {
+        self.output_vars = output_vars;
+    }
+
+    /// The Action's `openjd_output_var` state.
+    pub fn output_vars_mut(&mut self) -> &mut crate::output_vars::OutputVars {
+        &mut self.output_vars
+    }
+
+    /// Take the Action's `openjd_output_var` state, leaving `Ignored`.
+    pub fn take_output_vars(&mut self) -> crate::output_vars::OutputVars {
+        std::mem::take(&mut self.output_vars)
     }
 
     /// Current minimum log level for command output (10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR).
