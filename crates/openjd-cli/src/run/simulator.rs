@@ -64,7 +64,7 @@ enum Placement {
     /// Tasks run.
     Sequential(usize),
     /// A chunked space, or Tasks given with `--tasks` or `--task-param`.
-    Indexed(ChunkTaskIndex),
+    Indexed(Box<ChunkTaskIndex>),
 }
 
 /// What the simulator knows of one Step.
@@ -112,9 +112,24 @@ pub(super) struct Simulator {
     /// output's value once evaluated.
     pub(super) job: Job,
     pub(super) records: Vec<StepRecord>,
-    /// Every concrete `Steps.*` value so far, of the Steps something reads.
+    /// Every concrete `Steps.*` value so far, of the Steps something reads,
+    /// except the `TaskParam` lists of the Steps in `tasks_known_pending`.
     inputs: StepInputs,
+    /// Read Steps whose Tasks are known but whose `TaskParam` lists have not
+    /// been built into `inputs` yet: they are built only when something
+    /// that reads the Step is advanced, attached, or evaluated, so a large
+    /// parameter space is not enumerated for nothing.
+    tasks_known_pending: BTreeSet<String>,
     read: BTreeSet<String>,
+    /// Bumped on every change of a Step's state that can make `Steps.*`
+    /// symbols concrete.
+    generation: u64,
+    /// The generation of each Step's last such change.
+    changed: Vec<u64>,
+    /// The generation at which each pending Step was last advanced: it is
+    /// advanced again only once one of its producers has changed since, as
+    /// nothing else can make more of its groups evaluable.
+    advanced: Vec<u64>,
     /// Whether each Step is one this run runs.
     in_run: Vec<bool>,
     /// Every Step, in dependency order.
@@ -199,8 +214,19 @@ impl Simulator {
                 supplied: false,
             })
             .collect();
-        let inputs = crate::common::creation_inputs(&job).map_err(internal)?;
         let read = crate::common::read_producers(&job);
+        let mut inputs = StepInputs::new();
+        let mut tasks_known_pending = BTreeSet::new();
+        for step in job.steps.iter().filter(|s| read.contains(&s.name)) {
+            if matches!(step.binding, StepBinding::Skipped) {
+                inputs
+                    .add_producer(step, ProducerState::Skipped)
+                    .map_err(internal)?;
+            } else if step.tasks_known().is_some() {
+                tasks_known_pending.insert(step.name.clone());
+            }
+        }
+        let step_count = job.steps.len();
         let control_flow = jt
             .profile()
             .has_extension(openjd_model::types::ModelExtension::ControlFlow);
@@ -212,7 +238,11 @@ impl Simulator {
             job,
             records,
             inputs,
+            tasks_known_pending,
             read,
+            generation: 0,
+            changed: vec![0; step_count],
+            advanced: vec![0; step_count],
             in_run,
             order,
             failed_outputs: BTreeSet::new(),
@@ -337,8 +367,13 @@ impl Simulator {
                     },
                 )
                 .map_err(|e| format!("--step-inputs: {e}"))?;
+            // Succeeded carries the TaskParam lists too; building them again
+            // as TasksKnown would replace the supplied outputs.
+            self.tasks_known_pending.remove(&p);
             self.records[pi].supplied = true;
+            self.mark_changed(pi);
         }
+        self.ensure_for_step(target)?;
 
         // Every Steps.* value the target reads must now be concrete. Both
         // calls are pure, so the run repeats them when it starts the Step.
@@ -388,11 +423,18 @@ impl Simulator {
             )
             .into());
         }
-        if step.binding.is_bound() && !step.input_producers().is_empty() {
-            if let Err(e) = openjd_model::attach_step_inputs(&step, &self.inputs) {
-                return Err(
-                    format!("Step '{target_name}' cannot run alone: {e}\n{missing_hint}").into(),
-                );
+        if step.binding.is_bound() {
+            let missing: Vec<String> = step
+                .input_symbols()
+                .into_iter()
+                .filter(|s| !self.is_concrete(s))
+                .collect();
+            if !missing.is_empty() {
+                return Err(format!(
+                    "Step '{target_name}' reads Steps.* values of Steps this run does not run: {}.\n{missing_hint}",
+                    missing.join(", ")
+                )
+                .into());
             }
         }
         Ok(())
@@ -405,6 +447,52 @@ impl Simulator {
 
     fn step_index(&self, name: &str) -> Option<usize> {
         self.job.steps.iter().position(|s| s.name == name)
+    }
+
+    /// Record that Step `idx`'s state changed in a way that can make its
+    /// `Steps.*` symbols concrete.
+    fn mark_changed(&mut self, idx: usize) {
+        self.generation += 1;
+        self.changed[idx] = self.generation;
+    }
+
+    /// Build into `inputs` the `TaskParam` lists of each of `producers`
+    /// whose Tasks are known and that have not been built yet.
+    fn ensure_task_params<'a>(
+        &mut self,
+        producers: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), RunError> {
+        for p in producers {
+            if self.tasks_known_pending.remove(p) {
+                let pi = self
+                    .step_index(p)
+                    .ok_or_else(|| internal(format!("no Step '{p}'")))?;
+                self.inputs
+                    .add_producer(&self.job.steps[pi], ProducerState::TasksKnown)
+                    .map_err(internal)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `symbol` (`Steps.<Step>.<Member>.<Name>`) is concrete,
+    /// counting the `TaskParam` and `TaskRawParam` symbols of Steps in
+    /// `tasks_known_pending`.
+    fn is_concrete(&self, symbol: &str) -> bool {
+        if self.inputs.is_concrete(symbol) {
+            return true;
+        }
+        let mut parts = symbol.splitn(4, '.');
+        let (_, Some(p), Some(member)) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
+        matches!(member, "TaskParam" | "TaskRawParam") && self.tasks_known_pending.contains(p)
+    }
+
+    /// Build the `TaskParam` lists Step `idx` may read.
+    fn ensure_for_step(&mut self, idx: usize) -> Result<(), RunError> {
+        let producers = self.job.steps[idx].input_producers();
+        self.ensure_task_params(producers.iter().map(String::as_str))
     }
 
     /// The Task count of every other Step whose Tasks are known, for the
@@ -423,6 +511,8 @@ impl Simulator {
     /// it gains, and record the result (see [`Advanced`]). A group that
     /// fails is printed and fails the Step.
     fn advance(&mut self, idx: usize) -> Result<Advanced, RunError> {
+        self.ensure_for_step(idx)?;
+        self.advanced[idx] = self.generation;
         let before = &self.job.steps[idx];
         let had_enabled = enablement_known(before);
         let had_tasks = before.tasks_known().is_some();
@@ -458,6 +548,7 @@ impl Simulator {
                         .add_producer(&step, ProducerState::Skipped)
                         .map_err(internal)?;
                 }
+                self.mark_changed(idx);
                 opened = true;
             }
             _ => {
@@ -470,10 +561,9 @@ impl Simulator {
                         tasks_noun(n)
                     ));
                     if self.read.contains(&name) {
-                        self.inputs
-                            .add_producer(&step, ProducerState::TasksKnown)
-                            .map_err(internal)?;
+                        self.tasks_known_pending.insert(name.clone());
                     }
+                    self.mark_changed(idx);
                     opened = true;
                 }
                 if !had_host && host_known(&step) && has_host_requirements(&step) {
@@ -505,8 +595,21 @@ impl Simulator {
                 if !self.in_run[idx] || self.records[idx].state != SimStepState::Pending {
                     continue;
                 }
+                let since = self.advanced[idx];
+                let fresh = self.job.steps[idx]
+                    .input_producers()
+                    .iter()
+                    .any(|p| self.step_index(p).is_some_and(|j| self.changed[j] > since));
+                if !fresh {
+                    continue;
+                }
                 match self.advance(idx)? {
-                    Advanced::Failed => return Ok(true),
+                    Advanced::Failed => {
+                        // The run stops, but job outputs whose inputs are
+                        // concrete are still evaluated and committed.
+                        self.evaluate_job_outputs()?;
+                        return Ok(true);
+                    }
                     Advanced::Opened => opened = true,
                     Advanced::Quiet => {}
                 }
@@ -530,9 +633,15 @@ impl Simulator {
                 continue;
             }
             let symbols = openjd_model::job_output_inputs(&self.job, i);
-            if !symbols.iter().all(|s| self.inputs.is_concrete(s)) {
+            if !symbols.iter().all(|s| self.is_concrete(s)) {
                 continue;
             }
+            let producers: BTreeSet<String> = symbols
+                .iter()
+                .filter_map(|s| crate::common::step_of_symbol(s).map(str::to_string))
+                .collect();
+            self.ensure_task_params(producers.iter().map(String::as_str))?;
+            let output = &self.job.outputs.as_ref().expect("counted")[i];
             match openjd_model::evaluate_job_output(
                 &self.jt,
                 &self.params,
@@ -572,6 +681,14 @@ impl Simulator {
                 SimStepState::Blocked => {
                     return Some(format!("its dependency '{}' is blocked", dep.depends_on))
                 }
+                // A skipped Step behind a failure never satisfies dependsOn
+                // (RFC 0010 §Conditional execution, Failure is not skipping).
+                SimStepState::Skipped if self.records[j].reason.is_some() => {
+                    return Some(format!(
+                        "its dependency '{}' is skipped but never satisfies dependsOn",
+                        dep.depends_on
+                    ))
+                }
                 _ => {}
             }
         }
@@ -597,13 +714,13 @@ impl Simulator {
     /// interruption, a failed job output) keeps its state.
     pub(super) fn block_unreachable(&mut self) {
         for idx in self.order.clone() {
-            let state = self.records[idx].state;
-            if !self.in_run[idx]
-                || matches!(
-                    state,
-                    SimStepState::Succeeded | SimStepState::Failed | SimStepState::Blocked
-                )
-            {
+            let record = &self.records[idx];
+            let done = match record.state {
+                SimStepState::Succeeded | SimStepState::Failed | SimStepState::Blocked => true,
+                SimStepState::Skipped => record.reason.is_some(),
+                _ => false,
+            };
+            if !self.in_run[idx] || done {
                 continue;
             }
             if let Some(reason) = self.blocked_reason(idx) {
@@ -612,13 +729,20 @@ impl Simulator {
         }
     }
 
+    /// Record that Step `idx` can never run, for `reason`. A skipped Step
+    /// stays `SKIPPED`, which is terminal (RFC 0010 §Step states), but its
+    /// dependents are blocked behind it.
     fn block(&mut self, idx: usize, reason: String) {
-        say(&format!(
-            "Step '{}' is blocked: {reason}",
-            self.job.steps[idx].name
-        ));
+        let name = &self.job.steps[idx].name;
         let record = &mut self.records[idx];
-        record.state = SimStepState::Blocked;
+        if record.state == SimStepState::Skipped {
+            say(&format!(
+                "Step '{name}' is skipped and never satisfies dependsOn: {reason}"
+            ));
+        } else {
+            say(&format!("Step '{name}' is blocked: {reason}"));
+            record.state = SimStepState::Blocked;
+        }
         record.reason = Some(reason);
     }
 
@@ -667,6 +791,7 @@ impl Simulator {
                 )))
             }
             SimStepState::Bound => {
+                self.ensure_for_step(idx)?;
                 let step = &self.job.steps[idx];
                 let step = if step.input_producers().is_empty() {
                     step.clone()
@@ -691,7 +816,7 @@ impl Simulator {
                 let placement = match &step.parameter_space {
                     _ if step.output_variables.is_none() => None,
                     Some(space) if chunked || explicit_tasks => {
-                        Some(Placement::Indexed(ChunkTaskIndex::new(space)?))
+                        Some(Placement::Indexed(Box::new(ChunkTaskIndex::new(space)?)))
                     }
                     _ => Some(Placement::Sequential(0)),
                 };
@@ -784,6 +909,9 @@ impl Simulator {
         };
         let step = &self.job.steps[idx];
         if self.read.contains(&step.name) && record.complete() {
+            // Succeeded carries the TaskParam lists too; building them again
+            // as TasksKnown would replace the outputs.
+            self.tasks_known_pending.remove(&step.name);
             let task_outputs: Vec<TaskOutputs> = if declares_outputs {
                 record.task_outputs.values().cloned().collect()
             } else {
@@ -797,6 +925,7 @@ impl Simulator {
                     },
                 )
                 .map_err(internal)?;
+            self.mark_changed(idx);
         }
         Ok(())
     }
@@ -816,7 +945,7 @@ impl Simulator {
             }
             let mut steps: Vec<String> = openjd_model::job_output_inputs(&self.job, i)
                 .iter()
-                .filter(|s| !self.inputs.is_concrete(s))
+                .filter(|s| !self.is_concrete(s))
                 .filter_map(|s| crate::common::step_of_symbol(s).map(str::to_string))
                 .collect();
             steps.dedup();
@@ -1137,6 +1266,39 @@ steps:
             serde_json::json!([0, 1, 2])
         );
         assert!(sim.not_evaluated().is_empty());
+    }
+
+    /// A read Step whose Tasks are known has its TaskParam lists built only
+    /// when something that reads it needs them.
+    #[test]
+    fn task_param_lists_are_built_only_when_needed() {
+        let template = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables:
+  - {name: V, type: INT}
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  script: {actions: {onRun: {command: "{{Steps.P.TaskParam.I}} {{Steps.P.Output.V}}"}}}
+"#;
+        let mut sim = simulator(template, None);
+        assert!(sim.is_concrete("Steps.P.TaskParam.I"));
+        assert!(!sim.is_concrete("Steps.P.Output.V"));
+        assert_eq!(sim.inputs.get("Steps.P.TaskParam.I"), None);
+        sim.ensure_for_step(1).unwrap();
+        assert_eq!(
+            sim.inputs
+                .get("Steps.P.TaskParam.I")
+                .map(|v| v.to_display_string()),
+            Some("[1, 2]".to_string())
+        );
     }
 
     #[test]

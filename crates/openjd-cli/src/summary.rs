@@ -114,27 +114,45 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     let control_flow = job_template
         .profile()
         .has_extension(openjd_model::types::ModelExtension::ControlFlow);
+    // Task parameter names and types come from the template, so a pending
+    // Step, whose parameter space is not materialized, still lists them.
+    let task_params: std::collections::HashMap<String, Vec<(String, String)>> = job_template
+        .steps
+        .iter()
+        .map(|step| {
+            let mut v: Vec<(String, String)> = step
+                .parameter_space
+                .iter()
+                .flat_map(|ps| &ps.task_parameter_definitions)
+                .map(|tp| {
+                    (
+                        tp.name().to_string(),
+                        tp.task_param_type().as_spec_str().to_string(),
+                    )
+                })
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            (step.name.clone(), v)
+        })
+        .collect();
 
     if let Some(step_name) = &args.step {
-        output_step_summary(&the_job, step_name, control_flow, &args.output)
+        output_step_summary(
+            &the_job,
+            step_name,
+            &task_params,
+            control_flow,
+            &args.output,
+        )
     } else {
         output_job_summary(
             &the_job,
             &param_order,
             &param_descriptions,
+            &task_params,
             control_flow,
             &args.output,
         )
-    }
-}
-
-fn task_param_type_name(tp: &job::TaskParameter) -> &'static str {
-    match tp {
-        job::TaskParameter::Int { .. } => "INT",
-        job::TaskParameter::Float { .. } => "FLOAT",
-        job::TaskParameter::String { .. } => "STRING",
-        job::TaskParameter::Path { .. } => "PATH",
-        job::TaskParameter::ChunkInt { .. } => "CHUNK[INT]",
     }
 }
 
@@ -175,10 +193,8 @@ fn binding_json(step: &job::Step) -> Option<serde_json::Value> {
 }
 
 /// What is known of each job output at Job creation.
-fn job_output_infos(job: &job::Job) -> Result<Vec<JobOutputInfo>, Box<dyn std::error::Error>> {
-    let inputs = crate::common::creation_inputs(job)?;
-    Ok(job
-        .outputs
+fn job_output_infos(job: &job::Job) -> Vec<JobOutputInfo> {
+    job.outputs
         .iter()
         .flatten()
         .enumerate()
@@ -190,16 +206,17 @@ fn job_output_infos(job: &job::Job) -> Result<Vec<JobOutputInfo>, Box<dyn std::e
             value: o.evaluated.clone(),
             waits_on: openjd_model::job_output_inputs(job, i)
                 .into_iter()
-                .filter(|s| !inputs.is_concrete(s))
+                .filter(|s| !crate::common::concrete_at_creation(job, s))
                 .collect(),
         })
-        .collect())
+        .collect()
 }
 
 fn output_job_summary(
     job: &job::Job,
     param_order: &[String],
     param_descriptions: &std::collections::HashMap<&str, &str>,
+    template_task_params: &std::collections::HashMap<String, Vec<(String, String)>>,
     control_flow: bool,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -210,18 +227,9 @@ fn output_job_summary(
         .iter()
         .map(|s| {
             let total_tasks = step_total_tasks(s);
-            let task_params: Vec<(String, String)> = s
-                .parameter_space
-                .as_ref()
-                .map(|ps| {
-                    let mut v: Vec<_> = ps
-                        .task_parameter_definitions
-                        .iter()
-                        .map(|(name, tp)| (name.clone(), task_param_type_name(tp).to_string()))
-                        .collect();
-                    v.sort_by(|a, b| a.0.cmp(&b.0));
-                    v
-                })
+            let task_params = template_task_params
+                .get(&s.name)
+                .cloned()
                 .unwrap_or_default();
             let envs: Vec<String> = s
                 .step_environments
@@ -298,7 +306,7 @@ fn output_job_summary(
         total_tasks,
         tasks_at_run_time,
         total_envs,
-        job_outputs: job_output_infos(job)?,
+        job_outputs: job_output_infos(job),
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -307,6 +315,7 @@ fn output_job_summary(
 fn output_step_summary(
     job: &job::Job,
     step_name: &str,
+    template_task_params: &std::collections::HashMap<String, Vec<(String, String)>>,
     control_flow: bool,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -317,18 +326,9 @@ fn output_step_summary(
         .ok_or_else(|| format!("Step '{step_name}' does not exist in Job '{}'.", job.name))?;
 
     let total_tasks = step_total_tasks(step);
-    let task_params: Vec<(String, String)> = step
-        .parameter_space
-        .as_ref()
-        .map(|ps| {
-            let mut v: Vec<_> = ps
-                .task_parameter_definitions
-                .iter()
-                .map(|(name, tp)| (name.clone(), task_param_type_name(tp).to_string()))
-                .collect();
-            v.sort_by(|a, b| a.0.cmp(&b.0));
-            v
-        })
+    let task_params = template_task_params
+        .get(&step.name)
+        .cloned()
         .unwrap_or_default();
     let envs: Vec<EnvInfo> = step
         .step_environments
@@ -549,7 +549,7 @@ impl fmt::Display for JobSummaryResult {
             for o in &self.job_outputs {
                 writeln!(f, "  - {}", o.line())?;
                 if let Some(d) = &o.description {
-                    writeln!(f, " {d}")?;
+                    writeln!(f, "    {d}")?;
                 }
             }
         }

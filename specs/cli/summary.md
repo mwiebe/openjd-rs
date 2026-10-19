@@ -194,12 +194,14 @@ For a template that lists `CONTROL_FLOW`:
 * **Disabled Environments** are listed with `(from 'P', disabled by its enableIf)`.
 * **Job outputs** are listed after the Environments, with their types and units, and
   either the value `create_job` evaluated or the `Steps.*` symbols each waits on that are
-  not concrete at creation (`common::creation_inputs`):
+  not concrete at creation (`common::concrete_at_creation`, decided from the Steps'
+  bindings without building any value), with each description indented under its item:
 
   ```
   --- Job outputs in 'Fan' ---
     - Frames (LIST[INT]): pending; waits for Steps.C.TaskParam.F
     - Total (INT, px): pending; waits for Steps.C.Output.Done
+      Total pixels
   ```
 
   In JSON, `job_outputs` is a list of `{name, type, unit?, description?, state, value?,
@@ -254,11 +256,13 @@ output.
 
 ## Task Parameter Type Names
 
-`task_param_type_name()` maps `job::TaskParameter` variants to their specification string
-names:
+Task parameter names and types come from the Job Template's step definitions
+(`TaskParameterDefinition::task_param_type().as_spec_str()`), not from the job's
+materialized parameter space, so a `CONTROL_FLOW` Step that is pending inputs still lists
+them. The names are:
 
-| Variant | Display Name |
-|---------|-------------|
+| Type | Display Name |
+|------|-------------|
 | `Int` | `INT` |
 | `Float` | `FLOAT` |
 | `String` | `STRING` |

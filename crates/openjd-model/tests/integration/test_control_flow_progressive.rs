@@ -1215,17 +1215,18 @@ fn gpu_is_q(job: &openjd_model::job::Job) -> StepInputs {
     inputs
 }
 
-/// A reported `PATH` output carries its stored form's format (a URI's own, or
-/// a reverse-mapping rule's source format). A group and a job output read it
-/// in the model's evaluation format, keeping its text, so neither fails with
-/// "Path format mismatch".
+/// A reported URI `PATH` output carries `PathFormat::Uri`. A group and a job
+/// output read it in the model's evaluation format, keeping its text, so
+/// neither fails with "Path format mismatch". A Windows-format stored path
+/// (a reverse rule's source format) is not relabelled, since that would make
+/// path operations wrong, and reading it in the model is refused.
 #[test]
-fn path_outputs_in_another_format_are_readable_by_groups_and_job_outputs() {
+fn uri_path_outputs_are_readable_by_groups_and_job_outputs() {
     let f = Fixture::new(
         &format!(
             "{}jobOutputDefinitions:
 - {{name: J, type: PATH, value: '{{{{Steps.P.RawOutput.U}}}}'}}
-- {{name: W, type: STRING, value: '{{{{Steps.P.RawOutput.W[0]}}}}'}}
+- {{name: W, type: STRING, value: '{{{{Steps.P.RawOutput.W[0].name}}}}'}}
 steps:
 - name: P
   outputVariables: [{{name: U, type: PATH}}, {{name: W, type: 'LIST[PATH]'}}]
@@ -1234,7 +1235,7 @@ steps:
   dependencies: [{{dependsOn: P}}]
   parameterSpace:
     taskParameterDefinitions:
-    - {{name: X, type: STRING, range: '{{{{[string(Steps.P.RawOutput.U), string(Steps.P.RawOutput.W[0])]}}}}'}}
+    - {{name: X, type: STRING, range: '{{{{[string(Steps.P.RawOutput.U), Steps.P.RawOutput.U.name]}}}}'}}
   script: {{actions: {{onRun: {{command: echo}}}}}}
 ",
             header("[EXPR, CONTROL_FLOW]")
@@ -1242,10 +1243,10 @@ steps:
         &[],
     );
     let mut job = f.job();
-    let uri = ExprValue::new_path("s3://b/k", openjd_expr::PathFormat::Uri);
+    let uri = ExprValue::new_path("s3://b/k.exr", openjd_expr::PathFormat::Uri);
     let windows = ExprValue::make_list(
         vec![ExprValue::new_path(
-            r"C:\out\a",
+            r"C:\out\a.exr",
             openjd_expr::PathFormat::Windows,
         )],
         openjd_expr::ExprType::PATH,
@@ -1273,16 +1274,23 @@ steps:
     else {
         panic!("X is a STRING parameter")
     };
-    assert_eq!(range, &["s3://b/k".to_string(), r"C:\out\a".to_string()]);
+    assert_eq!(range, &["s3://b/k.exr".to_string(), "k.exr".to_string()]);
 
     let mut inputs = StepInputs::new();
     succeeded(&mut inputs, &job, "P", &produced);
-    let value = |i| {
-        openjd_model::evaluate_job_output(&f.jt, &f.params, &f.ctx, &job, i, &inputs)
-            .unwrap()
-            .unwrap()
-            .to_display_string()
-    };
-    assert_eq!(value(0), "s3://b/k");
-    assert_eq!(value(1), r"C:\out\a");
+    let evaluate =
+        |i| openjd_model::evaluate_job_output(&f.jt, &f.params, &f.ctx, &job, i, &inputs);
+    assert_eq!(
+        evaluate(0).unwrap().unwrap().to_display_string(),
+        "s3://b/k.exr"
+    );
+    assert_eq!(
+        evaluate(1).unwrap_err().to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobOutputDefinitions[1] -> value:\n\
+         \tJob output 'W': Path format mismatch for 'Steps.P.RawOutput.W': value has Windows \
+         but evaluator uses Posix\n  \
+         Steps.P.RawOutput.W[0].name\n  \
+         ~~~~~~~~~~~~~~~~~~^"
+    );
 }
