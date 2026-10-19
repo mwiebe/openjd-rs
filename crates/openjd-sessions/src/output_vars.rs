@@ -194,12 +194,12 @@ impl OutputVars {
                                 name: name.to_string(),
                                 value,
                             },
-                            Err(e) => LineOutcome::Invalid(e.message().to_string()),
+                            Err(e) => LineOutcome::Invalid(with_text(&e, line)),
                         }
                     }
                     Ok(OutputDirective::File { name, task, path }) => {
                         match collector.check_name(name, task) {
-                            Err(e) => LineOutcome::Invalid(e.message().to_string()),
+                            Err(e) => LineOutcome::Invalid(with_text(&e, line)),
                             Ok(()) => {
                                 return Begin::ReadFile(FileRequest {
                                     name: name.to_string(),
@@ -367,6 +367,21 @@ fn quote(text: &str) -> String {
     out.push_str(cut);
     out.push('\'');
     out
+}
+
+/// The collector's message for a directive on `line`, with the line quoted
+/// after it when the message does not quote the value itself (a second
+/// `ONCE` value, a task selector problem, or the size limit), because RFC
+/// 0010 §Processing a directive requires the failure to name the offending
+/// text.
+fn with_text(e: &openjd_model::outputs::OutputError, line: &str) -> String {
+    use openjd_model::outputs::OutputErrorKind;
+    match e.kind() {
+        OutputErrorKind::Repeated | OutputErrorKind::Selector | OutputErrorKind::Size => {
+            format!("{}, in {}", e.message(), quote(line))
+        }
+        _ => e.message().to_string(),
+    }
 }
 
 /// `N`, or `N[3]` in a chunked Step, with a long name cut as by [`quote`].

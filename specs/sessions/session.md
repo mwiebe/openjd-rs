@@ -55,12 +55,15 @@ pub struct SessionConfig {
     pub job_parameter_values: JobParameterValues,
     pub path_mapping_rules: Option<Vec<PathMappingRule>>,
     pub retain_working_dir: bool,
-    pub callback: Option<Box<dyn Fn(&str, &ActionStatus) + Send + Sync>>,
+    pub callback: Option<SessionCallbackType>,
     pub os_env_vars: Option<HashMap<String, String>>,
     pub session_root_directory: Option<PathBuf>,
     pub user: Option<Arc<dyn SessionUser>>,
-    pub revision_extensions: Option<ValidationContext>,
+    /// The Job's revision and extensions, which decide expression and
+    /// directive behavior (see public-api.md).
+    pub profile: Option<openjd_model::ModelProfile>,
     pub cancel_token: Option<CancellationToken>,
+    pub sticky_bit_policy: StickyBitPolicy,
     /// Whether to accumulate subprocess stdout into result strings.
     /// Intended for debugging only. Default is `false`.
     pub debug_collect_stdout: bool,
@@ -131,7 +134,8 @@ values.
 
 The callback fires on:
 - Action start (state = Running)
-- Every `openjd_*` directive (progress, status, fail)
+- Every `openjd_*` directive (progress, status, fail), except `openjd_output_var`, whose
+  values go to `output_callback` instead
 - Action completion (state = Success/Failed/Canceled/Timeout)
 
 The worker agent uses this to forward real-time progress to the Deadline service. The
@@ -676,6 +680,7 @@ directives). Recognised directives are:
 | `openjd_redacted_env: NAME=VALUE` | Set env var and redact value in logs |
 | `openjd_unset_env: NAME` | Unset environment variable |
 | `openjd_session_runtime_loglevel: LEVEL` | Change runtime log level |
+| `openjd_output_var: NAME=VALUE` | `CONTROL_FLOW`: report a Task output value (see [Output variables](#output-variables-control_flow)); this setting hides a valid one only, and an invalid one is always logged |
 
 When `true`, the directive line is logged after redaction is applied (so the
 secret value in `openjd_redacted_env` is replaced with `********` before reach

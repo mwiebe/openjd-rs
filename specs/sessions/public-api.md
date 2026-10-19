@@ -195,7 +195,8 @@ impl Session {
     /// string that parses as one) makes the action a chunk whose Tasks are
     /// its values; one that doesn't parse fails the action with
     /// `SessionError::Runtime` ("CHUNK[INT] parameter '<name>' value
-    /// '<value>' is not a range expression").
+    /// '<value>' is not a range expression", followed by `: <reason>`
+    /// from the range parser for a string).
     pub async fn run_task(
         &mut self,
         step_name: &str,

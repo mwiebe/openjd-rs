@@ -286,7 +286,8 @@ async fn collector_failures_fail_the_task_with_their_message() {
         (
             N_INT,
             "echo 'openjd_output_var: N=1'; echo 'openjd_output_var: N=2'",
-            "Output variable 'N': a second value was reported, but its collect mode is ONCE",
+            "Output variable 'N': a second value was reported, but its collect mode is ONCE, in \
+             'openjd_output_var: N=2'",
         ),
         (
             N_INT,
@@ -297,7 +298,7 @@ async fn collector_failures_fail_the_task_with_their_message() {
             N_INT,
             "echo 'openjd_output_var: N[1]=1'",
             "Output variable 'N[1]': a task selector is only allowed in a Step with a CHUNK[INT] \
-             parameter",
+             parameter, in 'openjd_output_var: N[1]=1'",
         ),
         (
             N_INT,
@@ -815,7 +816,22 @@ async fn chunk_selector_rules_and_missing_task() {
         &f,
         &r,
         "Output variable 'N': a task selector, as in 'N[<value>]', is required in a Step with a \
-         CHUNK[INT] parameter",
+         CHUNK[INT] parameter, in 'openjd_output_var: N=1'",
+    );
+    let mut f = fixture();
+    let r = f
+        .run_with(
+            "echo 'openjd_output_var: N[7]=1'",
+            Some(&d),
+            Some(&chunk(ExprValue::String("1-2".into()))),
+        )
+        .await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N[7]': 7 is not a value of the chunk being run (chunk values 1, \
+         2), in \
+         'openjd_output_var: N[7]=1'",
     );
     let mut f = fixture();
     let r = f
@@ -845,7 +861,16 @@ async fn unparsable_chunk_fails_the_action() {
             "CHUNK[INT] parameter 'F' value '1,1' is not a range expression: Range expression \
              has overlapping ranges: 1 and 1",
         ),
+        (
+            "",
+            "CHUNK[INT] parameter 'F' value '3' is not a range expression",
+        ),
     ] {
+        // An empty text stands for an integer value, which is not a range.
+        let value = match text {
+            "" => ExprValue::Int(3),
+            t => ExprValue::String(t.into()),
+        };
         let mut f = fixture();
         let d = decls(N_INT);
         let err = f
@@ -853,7 +878,7 @@ async fn unparsable_chunk_fails_the_action() {
             .run_task(
                 "S",
                 &step("true"),
-                Some(&chunk(ExprValue::String(text.into()))),
+                Some(&chunk(value)),
                 None,
                 None,
                 &RunTaskOptions {
@@ -1735,4 +1760,27 @@ fn control_flow_types_are_reexported_at_the_crate_root() {
         path_inputs: &[],
     };
     let _ = openjd_sessions::RunTaskOptions::default();
+}
+
+#[tokio::test]
+async fn inline_values_over_the_size_limit_fail_with_the_line() {
+    // 18 APPEND values of 60,002 bytes each pass the 1 MiB per-Task limit.
+    let mut f = fixture();
+    let d = decls(r#"[{"name": "A", "type": "LIST[STRING]", "collect": "APPEND"}]"#);
+    let r = f
+        .run(
+            r#"v=$(head -c 60000 /dev/zero | tr '\0' a)
+               for i in $(seq 18); do echo "openjd_output_var: A=\"$v\""; done"#,
+            Some(&d),
+        )
+        .await;
+    assert_failed(
+        &f,
+        &r,
+        &format!(
+            "Output variable 'A': the value's 60002 bytes take the Task's output values to \
+             1080036 bytes, over the limit of 1048576 bytes, in 'openjd_output_var: A=\"{}...'",
+            "a".repeat(178)
+        ),
+    );
 }
