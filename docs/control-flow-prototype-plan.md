@@ -964,11 +964,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 
 **openjd-cli golden tests**, one per RFC sample:
 
-* Location: `crates/openjd-cli/tests/templates/control_flow/<sample>.yaml`, with
-  `<sample>.expected.txt` beside it.
-* Each sample is the RFC YAML with the application commands (`ffmpeg`, `boto3`, `bake-node`, ...) replaced by
-  deterministic Python stubs that print a marker and write fixed outputs. The existing Python shim in `cli_tests.rs`
-  supplies an interpreter.
+* Location: `crates/openjd-cli/tests/templates/control_flow/<sample>.yaml`, with one `<case>.expected.txt` per
+  `openjd` command beside it (`<sample>.<variant>` for a variant).
+* Each sample is the RFC YAML, verbatim where it is short enough to run. Its application commands (`ffmpeg`,
+  `boto3`, `bake-node`, ...) are deterministic Python stubs that print a marker and write fixed outputs, found
+  first on `PATH` and `PYTHONPATH`. The existing Python shim in `cli_tests.rs` supplies an interpreter.
 * The test runs `openjd run`, normalizes timestamps and temporary paths, and compares the result with the expected
   file. `OPENJD_UPDATE_GOLDEN=1` rewrites the file. The helper is a few dozen lines in the test file, so the
   workspace gets no new dev-dependency such as `insta` (that would need `cargo deny`).
@@ -984,8 +984,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   * Sweep: a 2×1×1×2 space for a short runtime, run once with a winner and once taking the `fail(...)` path. The
     output shows `VideoCount`, `BestSingleTaskErrorMm`, and `ResultDirs` appearing after `Discover`, `Sweep`, and
     `RunWinner`, and a variant with path mapping rules shows `ResultDirs` in the submission form.
-  * Scene graph: `openjd check` rejects `TASK_DEPENDENCIES` as unsupported. The verbatim sample fails earlier, on
-    its unknown `dependsOnSubspace` field, so the extension check runs on a copy without that field. A variant without `dependsOnSubspace` runs
+  * Scene graph: `openjd check` rejects `TASK_DEPENDENCIES` as unsupported. The verbatim sample fails earlier,
+    on its unknown `dependsOnSubspace` field, so the extension check runs on a copy without that field. A variant without `dependsOnSubspace` runs
     the computed fan-out.
   * Render and QC: `EncodeVideo=false` (static skip, so `Publish` prints `frames only`), noise above and below the
     threshold (dynamic skip), and `BadFrames=[]` (zero Tasks).

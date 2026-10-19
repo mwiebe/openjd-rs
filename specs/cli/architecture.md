@@ -37,7 +37,8 @@ Each command module exports an `Args` struct (clap derive) and an `execute()` fu
 
 Integration tests live in `tests/cli_tests.rs` and run the `openjd` binary on the templates
 in `tests/templates/`. Its `control_flow_golden` module (`tests/control_flow_golden/`,
-Linux only) holds golden-file tests: each runs the RFC 0010 sample templates in
+Linux only) holds golden-file tests: each runs one of the RFC 0010 sample templates, or
+one of the CONTROL_FLOW plan's progressive binding templates, in
 `tests/templates/control_flow/` with deterministic stubs for their application commands,
 normalizes timestamps and temporary paths, and compares the output with a
 `<case>.expected.txt` file. `OPENJD_UPDATE_GOLDEN=1` rewrites the expected files (see that
