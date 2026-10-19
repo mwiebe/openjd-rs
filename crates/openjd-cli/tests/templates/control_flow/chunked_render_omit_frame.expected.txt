@@ -1,0 +1,47 @@
+$ openjd run {T}/chunked_render_omit_frame.yaml
+exit code: 1
+--- stdout
+Session start
+Running job 'Chunked render'
+Running step 'Render'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(CHUNK[INT]) = 1-3
+Output:
+render stub: frame 1
+openjd_output_var: RenderTimeS[1]=1.250
+render stub: frame 2
+openjd_output_var: RenderTimeS[2]=1.250
+render stub: frame 3
+openjd_output_var: RenderTimeS[3]=1.250
+Process exited with code: 0
+Output RenderTimeS[1] = 1.250 s
+Output RenderTimeS[2] = 1.250 s
+Output RenderTimeS[3] = 1.250 s
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(CHUNK[INT]) = 4-6
+Output:
+render stub: frame 4
+openjd_output_var: RenderTimeS[4]=1.250
+render stub: frame 5
+render stub: frame 6
+openjd_output_var: RenderTimeS[6]=1.250
+ERROR: Output variable 'RenderTimeS[5]': no value was reported (collect mode ONCE)
+Process exited with code: 0
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: Chunked render
+Duration: {DURATION}
+Chunks run: 2
+--- stderr

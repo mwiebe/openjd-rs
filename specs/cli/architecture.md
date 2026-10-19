@@ -35,6 +35,14 @@ src/
 Each command module exports an `Args` struct (clap derive) and an `execute()` function.
 `main.rs` dispatches to the appropriate `execute()` based on the parsed subcommand.
 
+Integration tests live in `tests/cli_tests.rs` and run the `openjd` binary on the templates
+in `tests/templates/`. Its `control_flow_golden` module (`tests/control_flow_golden/`,
+Linux only) holds golden-file tests: each runs the RFC 0010 sample templates in
+`tests/templates/control_flow/` with deterministic stubs for their application commands,
+normalizes timestamps and temporary paths, and compares the output with a
+`<case>.expected.txt` file. `OPENJD_UPDATE_GOLDEN=1` rewrites the expected files (see that
+directory's `README.md`).
+
 ## Dependencies
 
 | Dependency | Purpose |

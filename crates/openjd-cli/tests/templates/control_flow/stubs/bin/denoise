@@ -1,0 +1,14 @@
+#!/usr/bin/env python
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright by contributors to this project.
+# SPDX-License-Identifier: (Apache-2.0 OR MIT)
+"""Deterministic denoise stub: `denoise --in-place FRAME` halves the frame's noise."""
+import os
+import sys
+
+path = sys.argv[sys.argv.index("--in-place") + 1]
+with open(path, encoding="utf-8") as f:
+    noise = float(f.read().split(": ", 1)[1])
+with open(path, "w", encoding="utf-8") as f:
+    f.write(f"noise: {noise / 2}\n")
+print(f"denoise stub: {os.path.basename(path)} noise {noise} -> {noise / 2}")
