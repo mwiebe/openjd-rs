@@ -162,6 +162,43 @@ pub fn parse_tasks_arg(
 }
 
 /// Coerce string task parameter values to the types declared in the parameter space.
+/// Parse `--step-inputs`: `file://path` (JSON, or YAML for any other
+/// extension) or inline JSON, decoding to a map from `Steps.*` symbol to
+/// value.
+pub fn parse_step_inputs(
+    arg: &str,
+) -> Result<serde_json::Map<String, serde_json::Value>, Box<dyn std::error::Error>> {
+    const SHAPE: &str = "--step-inputs argument must be a map from Steps.<Step>.Output.<Name> to a value when decoded.";
+    let arg = arg.trim();
+    let raw: serde_json::Value = if let Some(path) = arg.strip_prefix("file://") {
+        let path = std::path::Path::new(path);
+        let content = read_input_file_with(
+            path,
+            Some(MAX_FILE_INPUT_SIZE),
+            || {
+                format!(
+                    "Provided step inputs file '{}' does not exist.",
+                    path.display()
+                )
+            },
+            || format!("Cannot read step inputs file '{}'", path.display()),
+        )?;
+        if crate::common::document_type(path) == openjd_model::template::parse::DocumentType::Json {
+            serde_json::from_str(&content)?
+        } else {
+            serde_saphyr::from_str(&content)?
+        }
+    } else {
+        serde_json::from_str(arg).map_err(|_| {
+            "--step-inputs argument must be a JSON encoded map or a string with the file:// prefix."
+        })?
+    };
+    match raw {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => Err(SHAPE.into()),
+    }
+}
+
 pub fn coerce_task_params(
     params: &HashMap<String, String>,
     space: &openjd_model::job::StepParameterSpace,

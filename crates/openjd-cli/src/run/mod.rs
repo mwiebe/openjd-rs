@@ -7,6 +7,7 @@
 mod execution;
 mod params;
 mod result;
+mod simulator;
 
 pub use params::parse_cli_parameters;
 
@@ -33,6 +34,8 @@ type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<openjd_expr::SerializedSymbolTable>;
 
 struct PreparedRun {
+    job_template: openjd_model::template::JobTemplate,
+    validation_ctx: openjd_model::types::ValidationContext,
     job: Job,
     env_templates: Vec<EnvironmentTemplate>,
     param_values: JobParameterValues,
@@ -55,6 +58,15 @@ struct EnteredEnvironment {
     /// A Step Environment's Step's path-typed `Steps.*` inputs, passed again
     /// on exit.
     path_inputs: Vec<openjd_model::job::PathInput>,
+}
+
+/// The result of one Action that ran a Task (or a chunk of Tasks).
+struct TaskRun {
+    duration: f64,
+    succeeded: bool,
+    /// The values its Tasks reported, when the Step declares output
+    /// variables and the Action succeeded.
+    outputs: Option<openjd_sessions::action::ActionOutputs>,
 }
 
 struct RunContext {
@@ -176,7 +188,7 @@ impl RunContext {
         &mut self,
         step: &Step,
         task_values: Option<&TaskParameterSet>,
-    ) -> Result<f64, RunError> {
+    ) -> Result<TaskRun, RunError> {
         let task_start = Instant::now();
         let result = self
             .session
@@ -186,9 +198,6 @@ impl RunContext {
                 task_values,
                 step.resolved_symtab.as_ref(),
                 None,
-                // Until `openjd run` simulates step input binding (plan PR
-                // 6), it attaches no Steps.* inputs, and it does not report
-                // the values a Task returns.
                 &RunTaskOptions {
                     output_variables: step.output_variables.as_deref(),
                     path_inputs: &step.path_inputs,
@@ -196,7 +205,7 @@ impl RunContext {
             )
             .await
             .map_err(|e| format!("Step '{}': {e}", step.name))?;
-        let task_duration = task_start.elapsed().as_secs_f64();
+        let duration = task_start.elapsed().as_secs_f64();
 
         println!(
             "{}\tProcess exited with code: {}",
@@ -204,10 +213,15 @@ impl RunContext {
             result.exit_code.unwrap_or(-1)
         );
         self.tasks_run += 1;
-        if result.state != ActionState::Success {
+        let succeeded = result.state == ActionState::Success;
+        if !succeeded {
             self.session_failed = true;
         }
-        Ok(task_duration)
+        Ok(TaskRun {
+            duration,
+            succeeded,
+            outputs: result.outputs,
+        })
     }
 
     fn record_interruption(&mut self) {
@@ -259,6 +273,13 @@ pub struct RunArgs {
     /// Path mapping rules (file://path or inline JSON). Must have version 'pathmapping-1.0'.
     #[arg(long = "path-mapping-rules")]
     pub path_mapping_rules: Option<String>,
+
+    /// CONTROL_FLOW: the Steps.* output values that the Step given with --step reads, for
+    /// running it without --run-dependencies (file://path, or inline JSON
+    /// '{"Steps.P.Output.V": value}'; a list with one value per Task for a Step with a
+    /// parameterSpace).
+    #[arg(long = "step-inputs")]
+    pub step_inputs: Option<String>,
 
     /// Run dependency steps before the target step
     #[arg(long = "run-dependencies")]

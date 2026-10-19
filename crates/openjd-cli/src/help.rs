@@ -113,12 +113,37 @@ pub fn format_help(template: &JobTemplate, path: &Path) -> String {
         out.push('\n');
     }
 
+    // CONTROL_FLOW job outputs: what the Job reports back.
+    let outputs = template.job_output_definitions_list();
+    if !outputs.is_empty() {
+        out.push_str("Job Outputs:\n");
+        for output in outputs {
+            out.push_str(&format!("  {} ({}", output.name(), output.job_param_type()));
+            if let Some(unit) = output.unit() {
+                out.push_str(&format!(", {unit}"));
+            }
+            out.push_str(")\n");
+            if let Some(description) = output.description() {
+                out.push_str(&format!("    {description}\n"));
+            }
+        }
+        out.push('\n');
+    }
+
     // Standard options
     out.push_str("Standard Options:\n");
     out.push_str(
         "  -p, --job-param <KEY=VALUE>  Job parameters (Key=Value, file://path, or inline JSON)\n",
     );
     out.push_str("  --environment <PATH>       Environment template files\n");
+    if template
+        .profile()
+        .has_extension(openjd_model::types::ModelExtension::ControlFlow)
+    {
+        out.push_str(
+            "  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step reads\n",
+        );
+    }
     out.push_str("  --verbose                  Enable verbose logging\n");
     out.push_str(
         "  -h, --help                 Print help (leave out template to list all options)\n",

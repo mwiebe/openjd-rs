@@ -110,7 +110,7 @@ Session ended successfully
 Job: MyJob
 Step: Render
 Duration: 42.123 seconds
-Tasks run: 100
+Chunks run: 100
 ```
 
 **JSON:**
@@ -121,7 +121,7 @@ Tasks run: 100
   "job_name": "MyJob",
   "step_name": "Render",
   "duration": 42.123,
-  "tasks_run": 100
+  "chunks_run": 100
 }
 ```
 
@@ -132,8 +132,16 @@ message: Session ended successfully
 job_name: MyJob
 step_name: Render
 duration: 42.123
-tasks_run: 100
+chunks_run: 100
 ```
+
+**CONTROL_FLOW.** For a template that lists `CONTROL_FLOW`, the run's JSON and YAML also
+have `steps` (each Step's state, Task count, and per-Task outputs), `job_outputs` (each
+evaluated job output's value), and `job_outputs_not_evaluated`, and its human-readable
+result ends with a `Job outputs:` list; `summary` adds each Step's `state`, a pending
+Step's `binding`, and `job_outputs`. See [run.md](run.md) § Result Output and
+[summary.md](summary.md) § CONTROL_FLOW. Other templates' output is unchanged, matching
+the Python CLI's.
 
 ## Implementation Pattern
 JSON and YAML share the same code path — a `serde_json::Value` object is built once, then

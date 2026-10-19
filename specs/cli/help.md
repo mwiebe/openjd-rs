@@ -81,7 +81,8 @@ try_context_aware_help(&args)
           ├── Job description (if present)
           ├── Parameter definitions (if any)
           │   └── For each parameter: format_parameter()
-          └── Standard options list (static)
+          ├── Job outputs (CONTROL_FLOW, if any): "Name (TYPE, unit)" and description
+          └── Standard options list (plus --step-inputs for a CONTROL_FLOW template)
 ```
 
 ## Parameter Formatting
@@ -149,9 +150,15 @@ The hint on `--help` tells users how to see the full option list:
 Standard Options:
   -p, --parameter <KEY=VALUE> Job parameters (Key=Value, file://path, or inline JSON)
   --environment <PATH>       Environment template files
+  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step reads
   --verbose                  Enable verbose logging
   -h, --help                 Print help (leave out template to list all options)
 ```
+
+The `--step-inputs` line appears only for a template that lists `CONTROL_FLOW` (see
+[run.md](run.md) § CONTROL_FLOW). Before the options, a template with
+`jobOutputDefinitions` gets a `Job Outputs:` list, one `Name (TYPE, unit)` line per
+output followed by its description, so the user can see what the Job reports back.
 
 Running `openjd run --help` (without a template path) bypasses the context-aware
 interception and falls through to clap's standard help, which lists every option with

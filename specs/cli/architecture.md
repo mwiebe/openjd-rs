@@ -21,12 +21,14 @@ session management logic lives in the CLI crate itself.
 src/
 ├── main.rs       # Entry point: Cli/Commands structs, SessionLogger, tokio::main
 ├── check.rs      # CheckArgs + execute(): template validation
+├── common.rs     # Shared helpers: file reads, extensions, output, CONTROL_FLOW reports
 ├── summary.rs    # SummaryArgs + execute(): job/step summary output
 ├── run/
 │   ├── mod.rs    # RunArgs, RunContext, lifecycle primitives
 │   ├── execution.rs # Preflight, step/task execution, reporting phases
-│   ├── params.rs # Job/task parameter and path mapping parsing
-│   └── result.rs # Structured run result
+│   ├── params.rs # Job/task parameter, --step-inputs, and path mapping parsing
+│   ├── result.rs # Structured run result
+│   └── simulator.rs # CONTROL_FLOW scheduler simulator: Step states, binding, job outputs
 └── help.rs       # Context-aware help: template-driven --help for run command
 ```
 

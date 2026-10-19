@@ -38,6 +38,7 @@ openjd_model              — crate root re-exports, the main public surface
 ├── job                   — instantiated (resolved) job types
 │   ├── create_job        — pipeline functions + MergedParameterDefinition
 │   ├── step_param_space  — StepParameterSpaceIterator
+│   ├── ChunkTaskIndex    — per-Task indices of the Tasks an Action ran (CONTROL_FLOW)
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── outputs               — CONTROL_FLOW output directive parser + collector
 ├── symbol_table          — re-exported from openjd_expr
@@ -1746,6 +1747,36 @@ forces sequential iteration, because chunk size depends on runtime
 feedback; for that case, callers mutate
 `set_chunks_default_task_count` while iterating to reshape chunks
 dynamically.
+
+### `ChunkTaskIndex` (CONTROL_FLOW)
+
+Re-exported at the crate root and from `job`. Maps each Task an Action ran to its index in
+the Step's per-Task iteration order (`new_with_chunk_override(space, Some(1))`), the
+order of a producer's `Steps.*` lists and of `ProducerState::Succeeded`. A chunked Step's
+session reports outputs keyed by `CHUNK[INT]` value, not position (a chunk's values are
+sorted, a list range iterates in written order), so a caller uses this to place them.
+
+```rust
+pub struct ChunkTaskIndex { /* private fields */ }
+
+impl ChunkTaskIndex {
+    /// Index the Tasks of `space`, iterated with chunking disabled.
+    pub fn new(space: &job::StepParameterSpace) -> Result<Self, ModelError>;
+    /// The number of Tasks, with chunking disabled.
+    pub fn task_count(&self) -> usize;
+    /// The space's `CHUNK[INT]` parameter, if any.
+    pub fn chunk_parameter_name(&self) -> Option<&str>;
+    /// The next unused index of the Task with `CHUNK[INT]` value `value`
+    /// (`None` for a space without one) in the Action whose Task parameter
+    /// values are `action`; `None` when no unused Task matches.
+    pub fn take(&mut self, action: &TaskParameterSet, value: Option<i64>) -> Option<usize>;
+}
+```
+
+A Task is keyed by the values of the other Task parameters (fixed within a chunk), each
+with its type, compared by name in any order, and its `CHUNK[INT]` value. A key can repeat
+(a `STRING` range `[a, a]`), so each has a queue of indices handed out in order; Tasks with
+the same key have identical parameters, so which gets which index is not observable.
 
 ## Step Dependency Graph
 

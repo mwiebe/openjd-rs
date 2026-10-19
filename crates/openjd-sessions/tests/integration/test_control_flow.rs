@@ -1096,6 +1096,51 @@ async fn task_script_reads_path_inputs() {
     );
 }
 
+#[tokio::test]
+async fn task_script_reads_a_uri_path_input() {
+    // A URI output is stored unchanged; with no rule for it both forms are
+    // the URI, and the evaluator can read the Raw form.
+    let mut f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let mut st = SymbolTable::new();
+    st.set(
+        "Steps.P.RawOutput.U",
+        ExprValue::String("s3://bucket/key.exr".into()),
+    )
+    .unwrap();
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let inputs = vec![PathInput {
+        symbol: "Steps.P.RawOutput.U".into(),
+        ty: ExprType::PATH,
+    }];
+    let r = f
+        .session
+        .run_task(
+            "S",
+            &step("echo R={{Steps.P.RawOutput.U}} O={{Steps.P.Output.U}}"),
+            None,
+            Some(&base),
+            None,
+            &RunTaskOptions {
+                output_variables: None,
+                path_inputs: &inputs,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Success, "{}", f.fail_message());
+    assert!(
+        r.stdout
+            .contains("R=s3://bucket/key.exr O=s3://bucket/key.exr"),
+        "{}",
+        r.stdout
+    );
+}
+
 // ── Audit round 1 ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1411,7 +1456,9 @@ async fn path_inputs_keep_each_stored_format() {
     let get = |k: &str| st.get_value(k).cloned().unwrap();
     assert_eq!(format_of(&get("Steps.P.RawOutput.U")), PathFormat::Windows);
     assert_eq!(format_of(&get("Steps.P.RawOutput.W")), PathFormat::Windows);
-    assert_eq!(format_of(&get("Steps.P.RawOutput.I")), PathFormat::Uri);
+    // A URI is recognized by its value, so it takes the host's format, the
+    // only one the evaluator reads.
+    assert_eq!(format_of(&get("Steps.P.RawOutput.I")), PathFormat::host());
     assert_eq!(format_of(&get("Steps.P.RawOutput.X")), PathFormat::Posix);
     assert_eq!(format_of(&get("Steps.P.RawOutput.C")), PathFormat::Posix);
     assert_eq!(format_of(&get("Steps.P.Output.X")), PathFormat::host());

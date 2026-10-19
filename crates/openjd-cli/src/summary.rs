@@ -111,12 +111,20 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
         .with_caller_limits(crate::common::caller_limits());
 
     let the_job = openjd_model::create_job(&job_template, &param_values, &ctx)?;
-    crate::common::require_bound_job(&the_job)?;
+    let control_flow = job_template
+        .profile()
+        .has_extension(openjd_model::types::ModelExtension::ControlFlow);
 
     if let Some(step_name) = &args.step {
-        output_step_summary(&the_job, step_name, &args.output)
+        output_step_summary(&the_job, step_name, control_flow, &args.output)
     } else {
-        output_job_summary(&the_job, &param_order, &param_descriptions, &args.output)
+        output_job_summary(
+            &the_job,
+            &param_order,
+            &param_descriptions,
+            control_flow,
+            &args.output,
+        )
     }
 }
 
@@ -130,22 +138,69 @@ fn task_param_type_name(tp: &job::TaskParameter) -> &'static str {
     }
 }
 
-fn step_total_tasks(step: &job::Step) -> usize {
-    match &step.parameter_space {
-        None => 1,
-        Some(ps) => {
-            match openjd_model::StepParameterSpaceIterator::new_with_chunk_override(ps, Some(1)) {
-                Ok(it) => it.len(),
-                Err(_) => 1,
-            }
-        }
+/// The Step's Task count, `None` while it is determined at run time (a
+/// pending Step whose Tasks are not known).
+fn step_total_tasks(step: &job::Step) -> Option<usize> {
+    step.tasks_known().map(|n| n as usize)
+}
+
+/// The RFC's name for a `CONTROL_FLOW` Step's state at Job creation.
+fn step_state(step: &job::Step) -> &'static str {
+    match step.binding {
+        job::StepBinding::Bound => "READY",
+        job::StepBinding::PendingInputs(_) => "PENDING_INPUTS",
+        job::StepBinding::Skipped => "SKIPPED",
     }
+}
+
+/// A pending Step's binding report as JSON: for each group, whether it is
+/// known and, if not, the `Steps.*` symbols it waits on and whether it
+/// waits for the Step's `enableIf`.
+fn binding_json(step: &job::Step) -> Option<serde_json::Value> {
+    let report = step.binding_report()?;
+    let group = |g: &job::GroupReport| match g {
+        job::GroupReport::Known => serde_json::json!({"known": true}),
+        job::GroupReport::Waiting { on, for_enablement } => serde_json::json!({
+            "known": false,
+            "waits_on": on,
+            "waits_for_enable_if": for_enablement,
+        }),
+    };
+    Some(serde_json::json!({
+        "enablement": group(&report.enablement),
+        "tasks": group(&report.tasks),
+        "host_requirements": group(&report.host_requirements),
+        "remaining": group(&report.remaining),
+    }))
+}
+
+/// What is known of each job output at Job creation.
+fn job_output_infos(job: &job::Job) -> Result<Vec<JobOutputInfo>, Box<dyn std::error::Error>> {
+    let inputs = crate::common::creation_inputs(job)?;
+    Ok(job
+        .outputs
+        .iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, o)| JobOutputInfo {
+            name: o.declaration.name.clone(),
+            output_type: o.declaration.param_type.as_spec_str().to_string(),
+            unit: o.declaration.unit.clone(),
+            description: o.description.clone(),
+            value: o.evaluated.clone(),
+            waits_on: openjd_model::job_output_inputs(job, i)
+                .into_iter()
+                .filter(|s| !inputs.is_concrete(s))
+                .collect(),
+        })
+        .collect())
 }
 
 fn output_job_summary(
     job: &job::Job,
     param_order: &[String],
     param_descriptions: &std::collections::HashMap<&str, &str>,
+    control_flow: bool,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect step summaries
@@ -179,6 +234,7 @@ fn output_job_summary(
                         name: e.name.clone(),
                         description: e.description.clone(),
                         parent: s.name.clone(),
+                        enabled: e.enabled,
                     });
                 }
             }
@@ -194,11 +250,15 @@ fn output_job_summary(
                 task_params,
                 envs,
                 deps,
+                state: control_flow.then(|| step_state(s)),
+                binding_lines: crate::common::binding_lines(s),
+                binding_json: binding_json(s),
             }
         })
         .collect();
 
-    let total_tasks: usize = step_summaries.iter().map(|s| s.total_tasks).sum();
+    let total_tasks: usize = step_summaries.iter().filter_map(|s| s.total_tasks).sum();
+    let tasks_at_run_time = step_summaries.iter().any(|s| s.total_tasks.is_none());
     let step_envs: usize = step_summaries.iter().map(|s| s.envs.len()).sum();
     let root_envs: Vec<EnvInfo> = job
         .job_environments
@@ -209,6 +269,7 @@ fn output_job_summary(
                     name: e.name.clone(),
                     description: e.description.clone(),
                     parent: "root".into(),
+                    enabled: e.enabled,
                 })
                 .collect()
         })
@@ -235,7 +296,9 @@ fn output_job_summary(
         root_envs,
         step_envs: step_envs_info,
         total_tasks,
+        tasks_at_run_time,
         total_envs,
+        job_outputs: job_output_infos(job)?,
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -244,6 +307,7 @@ fn output_job_summary(
 fn output_step_summary(
     job: &job::Job,
     step_name: &str,
+    control_flow: bool,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let step = job
@@ -275,6 +339,7 @@ fn output_step_summary(
                     name: e.name.clone(),
                     description: e.description.clone(),
                     parent: step.name.clone(),
+                    enabled: e.enabled,
                 })
                 .collect()
         })
@@ -292,6 +357,9 @@ fn output_step_summary(
         task_params,
         envs,
         deps,
+        state: control_flow.then(|| step_state(step)),
+        binding_lines: crate::common::binding_lines(step),
+        binding_json: binding_json(step),
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -308,8 +376,12 @@ struct JobSummaryResult {
     step_summaries: Vec<StepInfo>,
     root_envs: Vec<EnvInfo>,
     step_envs: Vec<EnvInfo>,
+    /// The Tasks of every Step whose Tasks are known.
     total_tasks: usize,
+    /// Whether some Step's Tasks are determined at run time.
+    tasks_at_run_time: bool,
     total_envs: usize,
+    job_outputs: Vec<JobOutputInfo>,
 }
 
 impl CliResult for JobSummaryResult {
@@ -345,6 +417,9 @@ impl CliResult for JobSummaryResult {
             "total_tasks".into(),
             serde_json::Value::Number(self.total_tasks.into()),
         );
+        if self.tasks_at_run_time {
+            obj.insert("tasks_determined_at_run_time".into(), true.into());
+        }
         if self.total_envs > 0 {
             obj.insert("total_environments".into(), self.total_envs.into());
         }
@@ -354,7 +429,7 @@ impl CliResult for JobSummaryResult {
                 serde_json::json!(self
                     .root_envs
                     .iter()
-                    .map(|e| serde_json::json!({"name": e.name, "parent": e.parent}))
+                    .map(EnvInfo::to_json)
                     .collect::<Vec<_>>()),
             );
         }
@@ -368,6 +443,12 @@ impl CliResult for JobSummaryResult {
                     m.insert("description".into(), d.clone().into());
                 }
                 m.insert("total_tasks".into(), s.total_tasks.into());
+                if let Some(state) = s.state {
+                    m.insert("state".into(), state.into());
+                }
+                if let Some(binding) = &s.binding_json {
+                    m.insert("binding".into(), binding.clone());
+                }
                 if !s.task_params.is_empty() {
                     m.insert(
                         "parameter_definitions".into(),
@@ -388,6 +469,16 @@ impl CliResult for JobSummaryResult {
             })
             .collect();
         obj.insert("steps".into(), steps_json.into());
+        if !self.job_outputs.is_empty() {
+            obj.insert(
+                "job_outputs".into(),
+                self.job_outputs
+                    .iter()
+                    .map(JobOutputInfo::to_json)
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+        }
         serde_json::Value::Object(obj)
     }
 }
@@ -409,13 +500,24 @@ impl fmt::Display for JobSummaryResult {
         }
         writeln!(f)?;
         writeln!(f, "Total steps: {}", self.step_summaries.len())?;
-        writeln!(f, "Total tasks: {}", self.total_tasks)?;
+        if self.tasks_at_run_time {
+            writeln!(
+                f,
+                "Total tasks: {} + (determined at run time)",
+                self.total_tasks
+            )?;
+        } else {
+            writeln!(f, "Total tasks: {}", self.total_tasks)?;
+        }
         writeln!(f, "Total environments: {}", self.total_envs)?;
         writeln!(f)?;
         writeln!(f, "--- Steps in '{}' ---", self.name)?;
         writeln!(f)?;
         for (i, s) in self.step_summaries.iter().enumerate() {
-            writeln!(f, "{}. '{}' ({} total Tasks)", i + 1, s.name, s.total_tasks)?;
+            writeln!(f, "{}. '{}' ({})", i + 1, s.name, s.heading())?;
+            for line in &s.binding_lines {
+                writeln!(f, "  {line}")?;
+            }
             if !s.task_params.is_empty() {
                 writeln!(f, "  Task parameters:")?;
                 for (name, tp) in &s.task_params {
@@ -433,19 +535,22 @@ impl fmt::Display for JobSummaryResult {
         if self.total_envs > 0 {
             writeln!(f)?;
             writeln!(f, "--- Environments in '{}' ---", self.name)?;
-            for e in &self.root_envs {
-                write!(f, "  - {} (from '{}')", e.name, e.parent)?;
+            for e in self.root_envs.iter().chain(&self.step_envs) {
+                write!(f, "  - {}", e.heading())?;
                 if let Some(d) = &e.description {
                     write!(f, "\n {d}")?;
                 }
                 writeln!(f)?;
             }
-            for e in &self.step_envs {
-                write!(f, "  - {} (from '{}')", e.name, e.parent)?;
-                if let Some(d) = &e.description {
-                    write!(f, "\n {d}")?;
+        }
+        if !self.job_outputs.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "--- Job outputs in '{}' ---", self.name)?;
+            for o in &self.job_outputs {
+                writeln!(f, "  - {}", o.line())?;
+                if let Some(d) = &o.description {
+                    writeln!(f, " {d}")?;
                 }
-                writeln!(f)?;
             }
         }
         Ok(())
@@ -455,10 +560,13 @@ impl fmt::Display for JobSummaryResult {
 struct StepSummaryResult {
     job_name: String,
     step_name: String,
-    total_tasks: usize,
+    total_tasks: Option<usize>,
     task_params: Vec<(String, String)>,
     envs: Vec<EnvInfo>,
     deps: Vec<String>,
+    state: Option<&'static str>,
+    binding_lines: Vec<String>,
+    binding_json: Option<serde_json::Value>,
 }
 
 impl CliResult for StepSummaryResult {
@@ -476,6 +584,12 @@ impl CliResult for StepSummaryResult {
         obj.insert("job_name".into(), self.job_name.clone().into());
         obj.insert("step_name".into(), self.step_name.clone().into());
         obj.insert("total_tasks".into(), self.total_tasks.into());
+        if let Some(state) = self.state {
+            obj.insert("state".into(), state.into());
+        }
+        if let Some(binding) = &self.binding_json {
+            obj.insert("binding".into(), binding.clone());
+        }
         obj.insert("total_parameters".into(), self.task_params.len().into());
         obj.insert("total_environments".into(), self.envs.len().into());
         if !self.deps.is_empty() {
@@ -511,7 +625,14 @@ impl fmt::Display for StepSummaryResult {
             self.step_name, self.job_name
         )?;
         writeln!(f)?;
-        writeln!(f, "Total tasks: {}", self.total_tasks)?;
+        match (self.total_tasks, self.state) {
+            (Some(n), Some("SKIPPED")) => writeln!(f, "Total tasks: {n} (SKIPPED)")?,
+            (Some(n), _) => writeln!(f, "Total tasks: {n}")?,
+            (None, _) => writeln!(f, "Total tasks: determined at run time")?,
+        }
+        for line in &self.binding_lines {
+            writeln!(f, "{line}")?;
+        }
         writeln!(f, "Total task parameters: {}", self.task_params.len())?;
         writeln!(f, "Total environments: {}", self.envs.len())?;
         if !self.deps.is_empty() {
@@ -532,7 +653,7 @@ impl fmt::Display for StepSummaryResult {
             writeln!(f)?;
             writeln!(f, "Environments:")?;
             for e in &self.envs {
-                write!(f, "- {} (from '{}')", e.name, e.parent)?;
+                write!(f, "- {}", e.heading())?;
                 if let Some(d) = &e.description {
                     write!(f, "\n {d}")?;
                 }
@@ -548,10 +669,85 @@ impl fmt::Display for StepSummaryResult {
 struct StepInfo {
     name: String,
     description: Option<String>,
-    total_tasks: usize,
+    /// `None` while the Step's Tasks are determined at run time.
+    total_tasks: Option<usize>,
     task_params: Vec<(String, String)>,
     envs: Vec<String>,
     deps: Vec<String>,
+    /// The Step's state, for a template that lists `CONTROL_FLOW`.
+    state: Option<&'static str>,
+    /// What is known of a pending Step (`common::binding_lines`).
+    binding_lines: Vec<String>,
+    binding_json: Option<serde_json::Value>,
+}
+
+impl StepInfo {
+    /// The parenthesized part of the Step's line in the human-readable
+    /// summary.
+    fn heading(&self) -> String {
+        match (self.state, self.total_tasks) {
+            (Some("SKIPPED"), _) => "SKIPPED, 0 total Tasks".to_string(),
+            (Some("PENDING_INPUTS"), Some(n)) => format!("{n} total Tasks; pending inputs"),
+            (Some("PENDING_INPUTS"), None) => {
+                "pending inputs; Tasks determined at run time".to_string()
+            }
+            (_, n) => format!("{} total Tasks", n.unwrap_or(0)),
+        }
+    }
+}
+
+/// A job output in the summary.
+struct JobOutputInfo {
+    name: String,
+    output_type: String,
+    unit: Option<String>,
+    description: Option<String>,
+    /// Its value, when `create_job` evaluated it.
+    value: Option<job::JobOutputValue>,
+    /// The `Steps.*` symbols it waits on that are not concrete yet.
+    waits_on: Vec<String>,
+}
+
+impl JobOutputInfo {
+    /// `Name (TYPE, unit): value`, or `...: pending; waits for <symbols>`.
+    fn line(&self) -> String {
+        let kind = match &self.unit {
+            Some(unit) => format!("{}, {unit}", self.output_type),
+            None => self.output_type.clone(),
+        };
+        let value = match &self.value {
+            Some(job::JobOutputValue::Value(v)) => crate::common::display_value(v),
+            Some(job::JobOutputValue::Null) => "null (no value)".to_string(),
+            None => format!("pending; waits for {}", self.waits_on.join(", ")),
+        };
+        format!("{} ({kind}): {value}", self.name)
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let mut m = serde_json::Map::new();
+        m.insert("name".into(), self.name.clone().into());
+        m.insert("type".into(), self.output_type.clone().into());
+        if let Some(unit) = &self.unit {
+            m.insert("unit".into(), unit.clone().into());
+        }
+        if let Some(d) = &self.description {
+            m.insert("description".into(), d.clone().into());
+        }
+        match &self.value {
+            Some(job::JobOutputValue::Value(v)) => {
+                m.insert("state".into(), "VALUE".into());
+                m.insert("value".into(), crate::common::expr_value_to_json(v));
+            }
+            Some(job::JobOutputValue::Null) => {
+                m.insert("state".into(), "NULL".into());
+            }
+            None => {
+                m.insert("state".into(), "PENDING".into());
+                m.insert("waits_on".into(), self.waits_on.clone().into());
+            }
+        }
+        serde_json::Value::Object(m)
+    }
 }
 
 struct ParamInfo {
@@ -565,4 +761,28 @@ struct EnvInfo {
     name: String,
     description: Option<String>,
     parent: String,
+    /// `false` for an Environment whose `enableIf` is `false`.
+    enabled: bool,
+}
+
+impl EnvInfo {
+    /// `Name (from 'Parent')`, marked when disabled.
+    fn heading(&self) -> String {
+        if self.enabled {
+            format!("{} (from '{}')", self.name, self.parent)
+        } else {
+            format!(
+                "{} (from '{}', disabled by its enableIf)",
+                self.name, self.parent
+            )
+        }
+    }
+
+    fn to_json(&self) -> serde_json::Value {
+        let mut value = serde_json::json!({"name": self.name, "parent": self.parent});
+        if !self.enabled {
+            value["enabled"] = false.into();
+        }
+        value
+    }
 }
