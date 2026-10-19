@@ -6376,3 +6376,10 @@ steps:
         );
     }
 }
+
+// ============================================================
+// CONTROL_FLOW: golden-file tests of the RFC 0010 sample templates
+// ============================================================
+
+#[cfg(target_os = "linux")]
+mod control_flow_golden;

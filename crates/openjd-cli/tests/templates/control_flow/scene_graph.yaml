@@ -1,0 +1,63 @@
+# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# "Scene-graph DAG", verbatim.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, TASK_DEPENDENCIES, FEATURE_BUNDLE_1]
+name: "Bake lighting for {{path(RawParam.Scene).stem}}"
+parameterDefinitions:
+  - name: Scene
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+  - name: BakeDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+steps:
+  - name: AnalyzeSceneGraph
+    outputVariables:
+      - name: Children
+        type: LIST[LIST[INT]]
+        maxLength: 10000
+        description: Children[i] lists the nodes whose bakes node i consumes.
+      - name: NodeNames
+        type: LIST[STRING]
+        maxLength: 10000
+    python:
+      script: |
+        import json
+        from scenetools import load_graph
+        g = load_graph({{repr_py(Param.Scene)}})
+        for name, value in [("Children", [n.child_indices for n in g.nodes]),
+                            ("NodeNames", [n.name for n in g.nodes])]:
+            with open(f"{name}.json", "w", encoding="utf-8") as f:
+                json.dump(value, f)
+            print(f"openjd_output_var: {name}=@{name}.json", flush=True)
+
+  - name: BakeNode
+    dependencies:
+      - dependsOn: AnalyzeSceneGraph
+      - dependsOn: BakeNode
+        dependsOnSubspace:
+          - name: Node
+            range: "{{Steps.AnalyzeSceneGraph.Output.Children[Task.Param.Node]}}"
+    let:
+      - children = Steps.AnalyzeSceneGraph.Output.Children
+      - names = Steps.AnalyzeSceneGraph.Output.NodeNames
+      - node_count = len(children) if len(children) == len(names) else fail("Children and NodeNames differ in length")
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Node
+          type: INT
+          range: "{{range(node_count)}}"
+    bash:
+      script: |
+        bake-node --scene {{repr_sh(Param.Scene)}} --node {{repr_sh(names[Task.Param.Node])}} \
+          {{repr_sh(flatten([['--input', string(Param.BakeDir / (names[c] + '.bake'))] for c in children[Task.Param.Node]]))}} \
+          --out {{repr_sh(Param.BakeDir / (names[Task.Param.Node] + '.bake'))}}
+
+  - name: AssembleLightmaps
+    dependencies:
+      - dependsOn: BakeNode
+    bash:
+      script: |
+        assemble-lightmaps {{repr_sh(Param.BakeDir)}}

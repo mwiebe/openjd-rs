@@ -1,0 +1,27 @@
+$ openjd summary {T}/progressive_let.yaml
+exit code: 0
+--- stdout
+
+--- Summary for 'Progressive binding with a step let' ---
+
+Parameters:
+  - Count (INT): 3
+
+Total steps: 2
+Total tasks: 4
+Total environments: 0
+
+--- Steps in 'Progressive binding with a step let' ---
+
+1. 'Q' (1 total Tasks)
+
+2. 'C' (3 total Tasks; pending inputs)
+  Enabled: yes
+  Tasks: 3 (known; Step pending inputs for Steps.Q.Output.Label)
+  Host requirements: known
+  Task parameters:
+    - I (INT)
+  1 dependencies
+
+
+--- stderr

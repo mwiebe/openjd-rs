@@ -1,0 +1,5 @@
+$ openjd check {T}/scene_graph.yaml
+exit code: 1
+--- stdout
+--- stderr
+ERROR: Validation error: 'jobtemplate-2023-09' failed checks: unknown field `dependsOnSubspace`, expected `dependsOn`

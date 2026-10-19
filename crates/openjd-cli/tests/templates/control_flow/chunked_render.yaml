@@ -1,0 +1,29 @@
+# RFC 0010 (openjd-specifications 619d910), Specification, "Chunked Steps": the
+# example Step, in a Job Template, with range "1-6" instead of "1-240" and
+# defaultTaskCount 3 instead of 10, so it runs two chunks.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, TASK_CHUNKING, FEATURE_BUNDLE_1]
+name: Chunked render
+steps:
+- name: Render
+  parameterSpace:
+    taskParameterDefinitions:
+      - name: Frame
+        type: CHUNK[INT]
+        range: "1-6"
+        chunks:
+          defaultTaskCount: 3
+          rangeConstraint: CONTIGUOUS
+  outputVariables:
+    - name: RenderTimeS
+      type: FLOAT
+      unit: s
+  bash:
+    script: |
+      set -euo pipefail
+      for frame in {{repr_sh([string(f) for f in list(Task.Param.Frame)])}}; do
+        start=$(date +%s.%N)
+        render --frame "$frame"
+        seconds=$(awk -v a="$start" -v b="$(date +%s.%N)" 'BEGIN { printf "%.3f", b - a }')
+        echo "openjd_output_var: RenderTimeS[$frame]=$seconds"
+      done
