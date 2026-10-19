@@ -15,7 +15,7 @@
 //! without `CONTROL_FLOW` has only bound Steps and no job outputs, so for it
 //! the simulator only records what ran.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use openjd_model::job::{
     GroupReport, Job, JobOutputValue, ProducerState, Step, StepBinding, StepInputs,
@@ -55,15 +55,31 @@ impl SimStepState {
     }
 }
 
+/// How the Tasks of a running Step's Actions are placed in its per-Task
+/// iteration order (only for a Step that declares output variables).
+#[derive(Debug)]
+enum Placement {
+    /// An unchunked parameter space iterated in order: the next Action is the
+    /// next Task. No index is built, so a large space costs nothing until its
+    /// Tasks run.
+    Sequential(usize),
+    /// A chunked space, or Tasks given with `--tasks` or `--task-param`.
+    Indexed(ChunkTaskIndex),
+}
+
 /// What the simulator knows of one Step.
 #[derive(Debug)]
 pub(super) struct StepRecord {
     pub(super) state: SimStepState,
-    /// Each Task's outputs, in the Step's per-Task iteration order: `None`
-    /// for a Task that has not succeeded. Sized when the Step starts.
-    pub(super) task_outputs: Vec<Option<TaskOutputs>>,
-    /// Maps the Tasks of each Action to their per-Task indices.
-    index: Option<ChunkTaskIndex>,
+    /// The outputs of each Task that succeeded, by per-Task index, for a
+    /// Step that declares output variables. Kept sparse, so a run that stops
+    /// early in a large space holds only what ran.
+    pub(super) task_outputs: BTreeMap<usize, TaskOutputs>,
+    /// Places each Action's Tasks; `None` while the Step has not started, or
+    /// when it declares no output variables.
+    placement: Option<Placement>,
+    /// Whether every one of its Tasks ran and succeeded.
+    all_tasks_ran: bool,
     /// Why the Step failed or is blocked.
     pub(super) reason: Option<String>,
     /// Whether `--step-inputs` gave its outputs.
@@ -73,7 +89,7 @@ pub(super) struct StepRecord {
 impl StepRecord {
     /// Whether the Step succeeded with every one of its Tasks.
     fn complete(&self) -> bool {
-        self.state == SimStepState::Succeeded && self.task_outputs.iter().all(Option::is_some)
+        self.state == SimStepState::Succeeded && self.all_tasks_ran
     }
 }
 
@@ -105,6 +121,8 @@ pub(super) struct Simulator {
     order: Vec<usize>,
     /// Job outputs whose evaluation failed, so they are not retried.
     failed_outputs: BTreeSet<usize>,
+    /// Whether the Job Template lists `CONTROL_FLOW`.
+    control_flow: bool,
 }
 
 /// Print one line of the run's log.
@@ -174,15 +192,20 @@ impl Simulator {
                     StepBinding::PendingInputs(_) => SimStepState::Pending,
                     StepBinding::Skipped => SimStepState::Skipped,
                 },
-                task_outputs: Vec::new(),
-                index: None,
+                task_outputs: BTreeMap::new(),
+                placement: None,
+                all_tasks_ran: false,
                 reason: None,
                 supplied: false,
             })
             .collect();
         let inputs = crate::common::creation_inputs(&job).map_err(internal)?;
         let read = crate::common::read_producers(&job);
+        let control_flow = jt
+            .profile()
+            .has_extension(openjd_model::types::ModelExtension::ControlFlow);
         Ok(Self {
+            control_flow,
             jt,
             params,
             vctx,
@@ -204,7 +227,8 @@ impl Simulator {
                 say(&job_output_line(output, value));
             }
         }
-        for step in &self.job.steps {
+        let in_run = self.job.steps.iter().zip(&self.in_run);
+        for step in in_run.filter(|(_, run)| **run).map(|(step, _)| step) {
             match step.binding {
                 StepBinding::Skipped => {
                     say(&format!("Step '{}' skipped (enableIf is false)", step.name))
@@ -374,6 +398,11 @@ impl Simulator {
         Ok(())
     }
 
+    /// Whether the Job Template lists `CONTROL_FLOW`.
+    pub(super) fn control_flow(&self) -> bool {
+        self.control_flow
+    }
+
     fn step_index(&self, name: &str) -> Option<usize> {
         self.job.steps.iter().position(|s| s.name == name)
     }
@@ -490,9 +519,11 @@ impl Simulator {
     }
 
     /// Evaluate each job output not yet evaluated whose inputs are all
-    /// concrete, and print it. Returns `true` when one fails.
+    /// concrete, and print it. Returns `true` when one fails; the others
+    /// whose inputs are concrete are evaluated too.
     fn evaluate_job_outputs(&mut self) -> Result<bool, RunError> {
         let count = self.job.outputs.as_ref().map_or(0, Vec::len);
+        let mut failed = false;
         for i in 0..count {
             let output = &self.job.outputs.as_ref().expect("counted")[i];
             if output.evaluated.is_some() || self.failed_outputs.contains(&i) {
@@ -519,11 +550,11 @@ impl Simulator {
                 Err(e) => {
                     eprintln!("ERROR: {e}");
                     self.failed_outputs.insert(i);
-                    return Ok(true);
+                    failed = true;
                 }
             }
         }
-        Ok(false)
+        Ok(failed)
     }
 
     /// Why Step `idx` can never run, when a dependency this run runs has
@@ -559,6 +590,28 @@ impl Simulator {
         })
     }
 
+    /// At the end of a run that stopped early, mark every Step of the run
+    /// that can never run because a dependency failed or is blocked, so its
+    /// state and the job outputs waiting on it say so (RFC 0010 §Job outputs
+    /// item 4). A Step the run did not reach for another reason (an
+    /// interruption, a failed job output) keeps its state.
+    pub(super) fn block_unreachable(&mut self) {
+        for idx in self.order.clone() {
+            let state = self.records[idx].state;
+            if !self.in_run[idx]
+                || matches!(
+                    state,
+                    SimStepState::Succeeded | SimStepState::Failed | SimStepState::Blocked
+                )
+            {
+                continue;
+            }
+            if let Some(reason) = self.blocked_reason(idx) {
+                self.block(idx, reason);
+            }
+        }
+    }
+
     fn block(&mut self, idx: usize, reason: String) {
         say(&format!(
             "Step '{}' is blocked: {reason}",
@@ -573,7 +626,15 @@ impl Simulator {
     /// failed or blocked dependency, advance it if it is still pending (its
     /// dependencies have finished, so it binds, is skipped, or fails), and
     /// for a bound Step attach its `Steps.*` inputs.
-    pub(super) fn begin_step(&mut self, idx: usize) -> Result<Begin, RunError> {
+    ///
+    /// `explicit_tasks` is whether the run gives this Step's Tasks with
+    /// `--tasks` or `--task-param`, so its Actions do not follow iteration
+    /// order.
+    pub(super) fn begin_step(
+        &mut self,
+        idx: usize,
+        explicit_tasks: bool,
+    ) -> Result<Begin, RunError> {
         if self.records[idx].state == SimStepState::Failed {
             return Ok(Begin::NotRun);
         }
@@ -621,14 +682,23 @@ impl Simulator {
                         }
                     }
                 };
-                let index = match &step.parameter_space {
-                    Some(space) => Some(ChunkTaskIndex::new(space)?),
-                    None => None,
+                let chunked = step.parameter_space.as_ref().is_some_and(|space| {
+                    space
+                        .task_parameter_definitions
+                        .values()
+                        .any(|p| matches!(p, openjd_model::job::TaskParameter::ChunkInt { .. }))
+                });
+                let placement = match &step.parameter_space {
+                    _ if step.output_variables.is_none() => None,
+                    Some(space) if chunked || explicit_tasks => {
+                        Some(Placement::Indexed(ChunkTaskIndex::new(space)?))
+                    }
+                    _ => Some(Placement::Sequential(0)),
                 };
                 let record = &mut self.records[idx];
-                record.task_outputs =
-                    vec![None; index.as_ref().map_or(1, ChunkTaskIndex::task_count)];
-                record.index = index;
+                record.task_outputs.clear();
+                record.all_tasks_ran = false;
+                record.placement = placement;
                 Ok(Begin::Run(Box::new(step)))
             }
             other => Err(internal(format!(
@@ -640,8 +710,8 @@ impl Simulator {
 
     /// Record a successful Action of Step `idx` whose Task parameter values
     /// were `action` (`None` for a Step without a `parameterSpace`): each
-    /// Task's `outputs`, or empty maps for a Step without output variables.
-    /// Prints each output value with its unit (plan C1 item 4).
+    /// Task's `outputs`, placed at its per-Task index. Prints each output
+    /// value with its unit (plan C1 item 4).
     pub(super) fn record_action(
         &mut self,
         idx: usize,
@@ -650,14 +720,10 @@ impl Simulator {
     ) {
         let step = &self.job.steps[idx];
         let record = &mut self.records[idx];
-        let entries: Vec<(Option<i64>, TaskOutputs)> = match outputs {
-            Some(outputs) => outputs.into_iter().collect(),
-            None => chunk_values(record.index.as_ref(), action)
-                .into_iter()
-                .map(|v| (v, TaskOutputs::new()))
-                .collect(),
+        let Some(outputs) = outputs else {
+            return;
         };
-        for (value, task_outputs) in entries {
+        for (value, task_outputs) in outputs {
             for (name, output) in &task_outputs {
                 let unit = step
                     .output_variables
@@ -674,34 +740,55 @@ impl Simulator {
                     crate::common::with_unit(output, unit)
                 ));
             }
-            let slot = match (record.index.as_mut(), action) {
-                (Some(index), Some(action)) => index.take(action, value),
-                (None, _) => Some(0),
-                (Some(_), None) => None,
+            let slot = match (record.placement.as_mut(), action) {
+                (Some(Placement::Sequential(next)), _) => {
+                    *next += 1;
+                    Some(*next - 1)
+                }
+                (Some(Placement::Indexed(index)), Some(action)) => index.take(action, value),
+                _ => None,
             };
-            if let Some(slot) = slot.filter(|&s| s < record.task_outputs.len()) {
-                record.task_outputs[slot] = Some(task_outputs);
+            if let Some(slot) = slot {
+                record.task_outputs.insert(slot, task_outputs);
             }
         }
     }
 
-    /// Record that Step `idx` finished: failed, or succeeded (with all of
-    /// its Tasks or not). A Step that succeeded with all of them gives its
-    /// outputs to its consumers and to the job outputs.
-    pub(super) fn finish_step(&mut self, idx: usize, failed: bool) -> Result<(), RunError> {
+    /// Record that Step `idx` finished: failed, or succeeded. `ran_all` is
+    /// whether every one of its Tasks ran (not so after `--maximum-tasks`,
+    /// `--tasks`, or `--task-param`). A Step that succeeded with all of them
+    /// gives its outputs to its consumers and to the job outputs.
+    pub(super) fn finish_step(
+        &mut self,
+        idx: usize,
+        failed: bool,
+        ran_all: bool,
+    ) -> Result<(), RunError> {
+        let task_count = self.job.steps[idx].tasks_known().unwrap_or(0) as usize;
+        let declares_outputs = self.job.steps[idx].output_variables.is_some();
         let record = &mut self.records[idx];
         if failed {
             record.state = SimStepState::Failed;
+            record
+                .reason
+                .get_or_insert_with(|| "a Task failed".to_string());
             return Ok(());
         }
         record.state = SimStepState::Succeeded;
+        // With output variables, count the Tasks whose outputs arrived, so a
+        // Task given twice with `--tasks` does not stand in for another.
+        record.all_tasks_ran = if declares_outputs {
+            record.task_outputs.len() == task_count
+        } else {
+            ran_all
+        };
         let step = &self.job.steps[idx];
         if self.read.contains(&step.name) && record.complete() {
-            let task_outputs: Vec<TaskOutputs> = record
-                .task_outputs
-                .iter()
-                .map(|t| t.clone().expect("complete"))
-                .collect();
+            let task_outputs: Vec<TaskOutputs> = if declares_outputs {
+                record.task_outputs.values().cloned().collect()
+            } else {
+                vec![TaskOutputs::new(); task_count]
+            };
             self.inputs
                 .add_producer(
                     step,
@@ -715,11 +802,16 @@ impl Simulator {
     }
 
     /// The job outputs not evaluated, each with the Steps it waits on and
-    /// why each has not given its values.
+    /// why each has not given its values; an output whose evaluation failed
+    /// has none.
     pub(super) fn not_evaluated(&self) -> Vec<(String, Vec<String>)> {
         let mut result = Vec::new();
         for (i, output) in self.job.outputs.iter().flatten().enumerate() {
             if output.evaluated.is_some() {
+                continue;
+            }
+            if self.failed_outputs.contains(&i) {
+                result.push((output.declaration.name.clone(), Vec::new()));
                 continue;
             }
             let mut steps: Vec<String> = openjd_model::job_output_inputs(&self.job, i)
@@ -732,21 +824,18 @@ impl Simulator {
                 .into_iter()
                 .map(|p| {
                     let why = self.step_index(&p).map_or("is unknown", |j| {
-                        let record = &self.records[j];
-                        if self.failed_outputs.contains(&i) {
-                            "gave values the output failed on"
-                        } else if !self.in_run[j] {
-                            "was not run"
+                        if !self.in_run[j] {
+                            "this run does not run"
                         } else {
-                            match record.state {
+                            match self.records[j].state {
                                 SimStepState::Failed => "failed",
                                 SimStepState::Blocked => "is blocked",
                                 SimStepState::Succeeded => "did not run all of its Tasks",
-                                _ => "did not run",
+                                _ => "the run stopped before",
                             }
                         }
                     });
-                    format!("Step '{p}' {why}")
+                    format!("Step '{p}', which {why}")
                 })
                 .collect();
             result.push((output.declaration.name.clone(), waits));
@@ -759,12 +848,12 @@ impl Simulator {
         for (name, waits) in self.not_evaluated() {
             if waits.is_empty() {
                 say(&format!(
-                    "Job output {name} was not evaluated: its evaluation failed"
+                    "Job output {name} has no value: its evaluation failed"
                 ));
             } else {
                 say(&format!(
                     "Job output {name} was not evaluated: it waits on {}",
-                    waits.join(", ")
+                    waits.join("; ")
                 ));
             }
         }
@@ -791,13 +880,24 @@ impl Simulator {
                 if let Some(reason) = &record.reason {
                     m.insert("reason".into(), reason.clone().into());
                 }
-                if step.output_variables.is_some() && !record.task_outputs.is_empty() {
-                    m.insert(
-                        "outputs".into(),
+                if step.output_variables.is_some() && record.placement.is_some() {
+                    // One entry per Task up to the last whose outputs
+                    // arrived (`null` for a Task without them), so a run
+                    // that stopped early lists only what ran; a complete
+                    // Step has one per Task.
+                    let len = if record.complete() {
+                        record.task_outputs.len()
+                    } else {
                         record
                             .task_outputs
-                            .iter()
-                            .map(|t| match t {
+                            .keys()
+                            .next_back()
+                            .map_or(0, |last| last + 1)
+                    };
+                    m.insert(
+                        "outputs".into(),
+                        (0..len)
+                            .map(|i| match record.task_outputs.get(&i) {
                                 Some(t) => serde_json::Value::Object(
                                     t.iter()
                                         .map(|(k, v)| {
@@ -869,28 +969,6 @@ fn job_output_line(output: &openjd_model::job::JobOutput, value: &JobOutputValue
             crate::common::with_unit(v, output.declaration.unit.as_deref())
         ),
         JobOutputValue::Null => format!("Job output {name} = null (no value)"),
-    }
-}
-
-/// The `CHUNK[INT]` values of the Tasks an Action ran, from its Task
-/// parameter values: `[None]` for a Step without a `CHUNK[INT]` parameter.
-fn chunk_values(
-    index: Option<&ChunkTaskIndex>,
-    action: Option<&TaskParameterSet>,
-) -> Vec<Option<i64>> {
-    use openjd_expr::ExprValue;
-    let name = index.and_then(ChunkTaskIndex::chunk_parameter_name);
-    let (Some(name), Some(action)) = (name, action) else {
-        return vec![None];
-    };
-    match action.get(name).map(|v| &v.value) {
-        Some(ExprValue::RangeExpr(r)) => r.iter().map(Some).collect(),
-        Some(ExprValue::Int(i)) => vec![Some(*i)],
-        Some(ExprValue::String(s)) => s
-            .parse::<openjd_expr::RangeExpr>()
-            .map(|r| r.iter().map(Some).collect())
-            .unwrap_or_default(),
-        _ => Vec::new(),
     }
 }
 
@@ -1040,7 +1118,7 @@ steps:
         let mut sim = simulator(FAN_OUT, None);
         assert_eq!(sim.records[1].state, SimStepState::Pending);
         assert!(!sim.settle().unwrap());
-        let Begin::Run(_) = sim.begin_step(0).unwrap() else {
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
             panic!("P runs")
         };
         sim.record_action(
@@ -1048,7 +1126,7 @@ steps:
             None,
             Some(outputs(&[("N", openjd_expr::ExprValue::Int(3))])),
         );
-        sim.finish_step(0, false).unwrap();
+        sim.finish_step(0, false, true).unwrap();
         assert!(!sim.settle().unwrap());
         assert_eq!(sim.records[1].state, SimStepState::Bound);
         assert_eq!(sim.job.steps[1].tasks_known(), Some(3));
@@ -1064,11 +1142,11 @@ steps:
     #[test]
     fn failed_producer_blocks_its_consumer() {
         let mut sim = simulator(FAN_OUT, None);
-        let Begin::Run(_) = sim.begin_step(0).unwrap() else {
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
             panic!("P runs")
         };
-        sim.finish_step(0, true).unwrap();
-        let Begin::NotRun = sim.begin_step(1).unwrap() else {
+        sim.finish_step(0, true, false).unwrap();
+        let Begin::NotRun = sim.begin_step(1, false).unwrap() else {
             panic!("C is blocked")
         };
         assert_eq!(sim.records[1].state, SimStepState::Blocked);
@@ -1080,7 +1158,7 @@ steps:
             sim.not_evaluated(),
             [(
                 "Frames".to_string(),
-                vec!["Step 'C' is blocked".to_string()]
+                vec!["Step 'C', which is blocked".to_string()]
             )]
         );
     }
@@ -1104,7 +1182,7 @@ steps:
   script: {actions: {onRun: {command: "{{Steps.P.Output.N}}"}}}
 "#;
         let mut sim = simulator(template, None);
-        let Begin::Run(step) = sim.begin_step(0).unwrap() else {
+        let Begin::Run(step) = sim.begin_step(0, false).unwrap() else {
             panic!("P runs")
         };
         let first =
@@ -1117,9 +1195,9 @@ steps:
             Some(&first),
             Some(outputs(&[("N", openjd_expr::ExprValue::Int(1))])),
         );
-        sim.finish_step(0, false).unwrap();
+        sim.finish_step(0, false, true).unwrap();
         assert!(!sim.records[0].complete());
-        let Begin::NotRun = sim.begin_step(1).unwrap() else {
+        let Begin::NotRun = sim.begin_step(1, false).unwrap() else {
             panic!("C is blocked")
         };
         assert_eq!(
@@ -1153,9 +1231,10 @@ steps:
             .give_step_inputs(1, Some(&values))
             .unwrap_err()
             .to_string();
-        assert!(
-            err.starts_with("--step-inputs: Step 'P': Steps.P.Output.N: Output variable 'N':"),
-            "{err}"
+        assert_eq!(
+            err,
+            "--step-inputs: Step 'P': Steps.P.Output.N: Output variable 'N': value (float) \
+             '1.5' does not convert to int: Cannot coerce float to int: 1.5 is not a whole number"
         );
         for (json, want) in [
             (
@@ -1189,7 +1268,7 @@ steps:
             "range: \"{{range(Steps.P.Output.N) if Steps.P.Output.N > 0 else fail('none')}}\"",
         );
         let mut sim = simulator(&template, None);
-        let Begin::Run(_) = sim.begin_step(0).unwrap() else {
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
             panic!("P runs")
         };
         sim.record_action(
@@ -1197,12 +1276,20 @@ steps:
             None,
             Some(outputs(&[("N", openjd_expr::ExprValue::Int(0))])),
         );
-        sim.finish_step(0, false).unwrap();
+        sim.finish_step(0, false, true).unwrap();
         assert!(sim.settle().unwrap());
         assert_eq!(sim.records[1].state, SimStepState::Failed);
         let reason = sim.records[1].reason.clone().unwrap();
-        assert!(reason.contains("none"), "{reason}");
-        let Begin::NotRun = sim.begin_step(1).unwrap() else {
+        assert_eq!(
+            reason,
+            "Step 'C' failed in its Task enumeration group:\n\
+             Model validation error: 1 validation error for JobTemplate\n\
+             steps[1] -> parameterSpace -> taskParameterDefinitions[0] -> range:\n\
+             \tnone\n  \
+             range(Steps.P.Output.N) if Steps.P.Output.N > 0 else fail('none')\n  \
+             \x20                                                    ^~~~~~~~~~~~"
+        );
+        let Begin::NotRun = sim.begin_step(1, false).unwrap() else {
             panic!("a failed Step does not run")
         };
     }

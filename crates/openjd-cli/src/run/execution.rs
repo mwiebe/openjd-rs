@@ -452,21 +452,24 @@ async fn run_workload(
         if ctx.is_stopping() {
             break;
         }
-        match sim.begin_step(step_idx)? {
+        let explicit_tasks = selection.explicit_task_params.is_some()
+            && selection.selected_step_idx == Some(step_idx);
+        match sim.begin_step(step_idx, explicit_tasks)? {
             Begin::Failed => {
                 ctx.session_failed = true;
                 break;
             }
             Begin::NotRun => {}
             Begin::Run(step) => {
-                execute_step(ctx, args, &step, step_idx, selection, sim).await?;
-                sim.finish_step(step_idx, ctx.session_failed)?;
+                let ran_all = execute_step(ctx, args, &step, step_idx, selection, sim).await?;
+                sim.finish_step(step_idx, ctx.session_failed, ran_all)?;
             }
         }
         if !ctx.is_stopping() && sim.settle()? {
             ctx.session_failed = true;
         }
     }
+    sim.block_unreachable();
     Ok(())
 }
 
@@ -477,7 +480,7 @@ async fn execute_step(
     step_idx: usize,
     selection: &RunSelection,
     sim: &mut Simulator,
-) -> Result<(), RunError> {
+) -> Result<bool, RunError> {
     println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
     let environment_baseline = ctx.entered_envs.len();
     if let Some(step_envs) = &step.step_environments {
@@ -505,7 +508,7 @@ async fn execute_step(
     }
 
     let result = if ctx.session_failed {
-        Ok(())
+        Ok(false)
     } else {
         execute_step_tasks(ctx, args, step, step_idx, selection, sim).await
     };
@@ -514,6 +517,9 @@ async fn execute_step(
     result
 }
 
+/// Run the Step's Tasks, returning whether every one of them ran (not so
+/// after `--maximum-tasks`, or for Tasks given with `--tasks` or
+/// `--task-param`).
 async fn execute_step_tasks(
     ctx: &mut RunContext,
     args: &RunArgs,
@@ -521,7 +527,7 @@ async fn execute_step_tasks(
     step_idx: usize,
     selection: &RunSelection,
     sim: &mut Simulator,
-) -> Result<(), RunError> {
+) -> Result<bool, RunError> {
     let explicit = selection
         .explicit_task_params
         .as_deref()
@@ -540,7 +546,7 @@ async fn execute_step_tasks(
         if run.succeeded {
             sim.record_action(step_idx, None, run.outputs);
         }
-        return Ok(());
+        return Ok(true);
     };
 
     let mut iter = openjd_model::StepParameterSpaceIterator::new(parameter_space)?;
@@ -554,12 +560,17 @@ async fn execute_step_tasks(
             &iter,
             sim,
         )
-        .await;
+        .await
+        .map(|()| false);
     }
     // `iter.len()` is not the Task count of an adaptively chunked space.
     if step.tasks_known() == Some(0) {
-        println!("{}\tStep '{}' has 0 tasks", ctx.timestamp(), step.name);
-        return Ok(());
+        // Printed only for CONTROL_FLOW, so other templates' output is
+        // unchanged.
+        if sim.control_flow() {
+            println!("{}\tStep '{}' has 0 tasks", ctx.timestamp(), step.name);
+        }
+        return Ok(true);
     }
     execute_parameter_space_tasks(ctx, args.maximum_tasks, step, step_idx, &mut iter, sim).await
 }
@@ -605,7 +616,7 @@ async fn execute_parameter_space_tasks(
     step_idx: usize,
     iter: &mut openjd_model::StepParameterSpaceIterator,
     sim: &mut Simulator,
-) -> Result<(), RunError> {
+) -> Result<bool, RunError> {
     let is_adaptive = iter.chunks_adaptive();
     let chunks_param_name = iter.chunks_parameter_name().map(String::from);
     let target_runtime_seconds = adaptive_target_runtime(step, is_adaptive);
@@ -617,8 +628,10 @@ async fn execute_parameter_space_tasks(
         i64::MAX
     };
 
+    let mut exhausted = false;
     while remaining_tasks > 0 && !ctx.is_stopping() {
         let Some(task_params) = iter.next() else {
+            exhausted = true;
             break;
         };
         ctx.print_banner("Running Task");
@@ -663,7 +676,11 @@ async fn execute_parameter_space_tasks(
             );
         }
     }
-    Ok(())
+    // A run stopped by --maximum-tasks may still have run every Task.
+    if !exhausted && remaining_tasks == 0 && !ctx.is_stopping() {
+        exhausted = iter.next().is_none();
+    }
+    Ok(exhausted)
 }
 
 fn adaptive_target_runtime(step: &Step, is_adaptive: bool) -> f64 {

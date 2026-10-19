@@ -179,7 +179,10 @@ impl StepInputs {
     ///   since its `TaskParam` is concrete as `null`.
     ///
     /// For a type that is or contains `path`, only the `Raw` form gets a
-    /// value; the other is concrete but derived on the worker host.
+    /// value, with each path in the Posix format the model evaluates in and
+    /// its text unchanged (a reported value may carry another format, which
+    /// the evaluator would refuse); the other is concrete but derived on the
+    /// worker host.
     ///
     /// Errors, each a [`ModelError::Compatibility`] (a caller error), when
     /// the state does not match the producer's binding (`Succeeded` needs a
@@ -322,6 +325,11 @@ fn insert(
     value: ExprValue,
     is_path: bool,
 ) {
+    let value = if is_path {
+        in_eval_format(value)
+    } else {
+        value
+    };
     if is_path {
         entry.derived.insert(format!("{member}.{name}"));
     } else {
@@ -330,6 +338,31 @@ fn insert(
             .insert(format!("{member}.{name}"), value.clone());
     }
     entry.values.insert(format!("{raw_member}.{name}"), value);
+}
+
+/// `value`, a `path` value or a (nested) list of them, with every path in
+/// the path format the model evaluates in (POSIX; see `create_job`), its
+/// text unchanged. A reported `PATH` output carries the format of its
+/// stored form (a URI's own, or a reverse-mapping rule's source format),
+/// and the EXPR evaluator refuses to read a `path` value in another format
+/// than its own, so a group or job output reading it would otherwise fail
+/// with "Path format mismatch". EXPR recognizes a URI by its text, so a URI
+/// is unaffected. Anything else, such as a skipped producer's `null`, is
+/// returned as it is.
+fn in_eval_format(value: ExprValue) -> ExprValue {
+    match &value {
+        ExprValue::Path { value: text, .. } => ExprValue::new_path(text.clone(), PathFormat::Posix),
+        v if v.is_list() => {
+            let ty = v.expr_type();
+            let Some(elements) = v.list_elements() else {
+                return value;
+            };
+            let element_ty = ty.list_element_type().cloned().unwrap_or(ExprType::PATH);
+            let elements: Vec<ExprValue> = elements.into_iter().map(in_eval_format).collect();
+            ExprValue::make_list(elements, element_ty).unwrap_or(value)
+        }
+        _ => value,
+    }
 }
 
 /// Convert `value` to `ty` with EXPR's implicit coercion, unless it already

@@ -161,7 +161,6 @@ pub fn parse_tasks_arg(
     Ok(result)
 }
 
-/// Coerce string task parameter values to the types declared in the parameter space.
 /// Parse `--step-inputs`: `file://path` (JSON, or YAML for any other
 /// extension) or inline JSON, decoding to a map from `Steps.*` symbol to
 /// value.
@@ -199,6 +198,7 @@ pub fn parse_step_inputs(
     }
 }
 
+/// Coerce string task parameter values to the types declared in the parameter space.
 pub fn coerce_task_params(
     params: &HashMap<String, String>,
     space: &openjd_model::job::StepParameterSpace,
