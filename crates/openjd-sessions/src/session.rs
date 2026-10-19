@@ -491,8 +491,9 @@ fn send_helper_cancel_command(
             r#"{{{token_field}"cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
         )
     };
-    let _ = writer.write_all(cmd.as_bytes());
-    let _ = writer.write_all(b"\n");
+    // One write, so the line can't interleave with a cancel the action's
+    // runner writes to the same pipe at the same time.
+    let _ = writer.write_all(format!("{cmd}\n").as_bytes());
     let _ = writer.flush();
 }
 

@@ -1182,7 +1182,9 @@ async fn test_cross_user_output_var_at_line_after_an_invalid_directive() {
     let mut session = make_cf_session(user);
     let r = run_cf(
         &mut session,
-        "printf 1 > f; echo 'openjd_output_var: N=x'; echo 'openjd_output_var: N=@f'; sleep 5",
+        // One printf, so the cancel the first line causes can't stop the
+        // second from being printed.
+        "printf 1 > f; printf 'openjd_output_var: N=x\nopenjd_output_var: N=@f\n'; sleep 5",
         r#"[{"name": "N", "type": "INT"}]"#,
         None,
     )
@@ -1289,7 +1291,8 @@ async fn test_cross_user_early_urgent_cancel_terminates() {
 }
 
 /// A timeout cancels a notify action with its notify signal, so its trap
-/// runs, as on the direct path.
+/// runs. (The direct path kills a timed-out action at once; that difference
+/// predates this test, which guards the helper-path cancel method.)
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_cross_user_timeout_notifies_a_notify_action() {

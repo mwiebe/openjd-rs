@@ -584,6 +584,9 @@ again (`write_cancel`, which maps the action's cancel method and the
 request's time limit as the same-user runner does, in whole seconds, so a
 non-zero period under a second is sent as one second, as the session's own
 cancel path also does). The
+session writes each cancel line to the pipe in one call, so two cancels
+written at once (its own and this resend) can't interleave into an
+unparsable line (a write of up to `PIPE_BUF` bytes is atomic). The
 session records the request in that channel before it writes the first
 cancel to the pipe, so the check can't miss a cancel the helper has
 already dropped. A cancel that arrived just after Run is then delivered
@@ -730,12 +733,13 @@ localuser container, validating the helper end-to-end:
 cd ~/openjd-rs
 docker build -t openjd-cross-user -f testing_containers/localuser_sudo_environment/Dockerfile .
 docker run --rm openjd-cross-user
-# test result: ok. 12 passed; 0 failed
 ```
 
 Tests cover: basic execution, stdout streaming, notify-then-terminate cancel,
 immediate terminate cancel, process tree kill, uid/gid verification,
-env vars, env isolation, cleanup, permissions, and disjoint user rejection.
+env vars, env isolation, cleanup, permissions, disjoint user rejection,
+`CONTROL_FLOW` `@` file reads, `outLong` and truncation flags, and early
+cancels (see [cross-user-testing.md](cross-user-testing.md)).
 
 Additional token-focused tests added in `helper/tests/test_helper_protocol.rs`:
 
