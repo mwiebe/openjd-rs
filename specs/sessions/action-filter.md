@@ -249,7 +249,9 @@ Messages for invalid directives come from the collector, or for a Forbidden, cut
 non-UTF-8, or helper-disagreement line from `output_vars.rs`, so they name the output (when
 there is one), the problem, and the offending text. A collector message that does not
 quote the value (a second value under `ONCE`, a task selector problem, or the size limit)
-gets `, in '<line>'` appended, as `output_vars.rs`'s own messages have. Text quoted by `output_vars.rs` itself,
+gets `, in '<line>'` appended, as `output_vars.rs`'s own messages have; so does every
+collector message about an `@` file's content, which names neither the file nor the
+line. Text quoted by `output_vars.rs` itself,
 including a read error the cross-user helper reports, is cut to 200 characters with
 control characters escaped, as the model's messages are.
 
