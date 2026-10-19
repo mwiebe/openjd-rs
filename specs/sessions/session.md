@@ -421,9 +421,12 @@ Unset takes precedence over set within the same environment, matching the spec.
 
 1. Validates state is `Running`
 2. Sets state to `Canceling`
-3. Cancels the `CancellationToken` — the subprocess loop responds by sending the
-   appropriate cancel command to the helper (`NOTIFY_THEN_TERMINATE` with a notify
-   period for graceful cancel, or `TERMINATE` for immediate kill)
+3. Sends `time_limit` on the action's cancel-request channel, then, in a cross-user
+   session, writes the cancel command to the helper's pipe itself
+   (`NOTIFY_THEN_TERMINATE` with a notify period for graceful cancel, or `TERMINATE`
+   for immediate kill; `run_via_helper` resends it if the helper had not read the Run
+   command yet), then cancels the `CancellationToken`, which the same-user subprocess
+   loop responds to
 4. If `mark_action_failed` is true, the action result is `Failed` instead of `Canceled`
 
 The `time_limit` parameter sets a deadline for the cancelation to complete. If the
@@ -440,10 +443,12 @@ channel, `mark_failed` flag, all behind one `Arc<Mutex<..>>`).
 `SessionCancelHandle::cancel(time_limit, mark_action_failed) -> bool`:
 
 - Returns `false` if no action is running (no per-action token installed).
-- Otherwise delivers exactly what `cancel_action` delivers — the helper pipe cancel
-  command (cross-user sessions), the `time_limit` over the watch channel, and the
-  token cancel — while holding the shared lock so the target action cannot change
-  mid-delivery.
+- Otherwise delivers exactly what `cancel_action` delivers, in this order: the
+  `time_limit` over the watch channel, the helper pipe cancel command (cross-user
+  sessions), and the token cancel. It holds the shared lock throughout, so the target
+  action cannot change mid-delivery. The request goes on the channel first because
+  `run_via_helper` reads it to resend a cancel the idle helper dropped (see
+  [embedded-cross-user-helper.md](embedded-cross-user-helper.md#cancel-via-dupd-stdin-fd)).
 - Unlike `cancel_action`, it cannot set the session's transient `Canceling` state
   (the `Session` is owned elsewhere); the state moves directly to the terminal value
   when the canceled action finishes.
@@ -729,6 +734,7 @@ values.
 | `run_task` with `output_variables: None` | `true` | Forbidden: a directive is invalid |
 | `enter`/`exit_environment` with `EnvironmentOrigin::JobTemplate` | `true` | Forbidden |
 | `enter`/`exit_environment` with `EnvironmentOrigin::EnvironmentTemplate` | `true` | Ignored |
+| `run_subprocess` | `true` | Ignored: it is not an action of the Job |
 
 Under `WRAP_ACTIONS` the treatment follows the action a hook runs in place of: a
 directive from `onWrapTaskRun` counts for the Task, and one from `onWrapEnvEnter` or

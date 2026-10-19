@@ -565,36 +565,44 @@ let raw_fd = child_stdin.as_raw_fd();
 let dup_fd = nix::unistd::dup(raw_fd)?;
 let cancel_writer = File::from_raw_fd(dup_fd);
 
-// In Session::cancel_action (token is the helper's 22-char auth_token):
-if let Some(ref mut writer) = self.cancel_writer {
-    writeln!(
-        writer,
-        r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":5}}"#,
-        token = self.helper_auth_token,
-    )?;
-    writer.flush()?;
-}
+// In Session::cancel_action and SessionCancelHandle::cancel, through
+// send_helper_cancel_command (token is the helper's 22-char auth_token):
+let line = format!(r#"{{"token":"{token}","cancel":"TERMINATE"}}"#); // or NOTIFY_THEN_TERMINATE
+let _ = writer.write_all(format!("{line}\n").as_bytes()); // one write per line
+let _ = writer.flush();
 ```
+
+`send_helper_cancel_command` sends TERMINATE for a zero time limit, and
+otherwise NOTIFY_THEN_TERMINATE with the smaller of the time limit and the
+action's declared notify period, or 5 seconds when neither is given. The
+protocol counts whole seconds, so a non-zero period under a second is sent
+as one second.
+
+Every line written to the helper's stdin, by `send_command` (both platforms)
+or by a cancel writer, is written in one call. On POSIX a pipe write of up to
+`PIPE_BUF` bytes is atomic, so two cancels written at once can't interleave
+into a line the helper can't parse. A Run command longer than `PIPE_BUF`
+could still interleave with a concurrent cancel; Run commands in practice are
+far shorter (the cross-user suite's largest is about 600 bytes), and the
+helper answers a garbled line with a parse error rather than hanging.
 
 A cancel requested after the session armed an action but before the helper
 read its Run command reaches the idle helper first, which drops it (see the
 runner notes above). So `run_via_helper`, right after it sends Run, checks the
 action's cancel-request channel and, if a cancel was requested, writes it
-again (`write_cancel`, which maps the action's cancel method and the
-request's time limit as the same-user runner does, in whole seconds, so a
-non-zero period under a second is sent as one second, as the session's own
-cancel path also does). The
-session writes each cancel line to the pipe in one call, so two cancels
-written at once (its own and this resend) can't interleave into an
-unparsable line (a write of up to `PIPE_BUF` bytes is atomic). The
-session records the request in that channel before it writes the first
-cancel to the pipe, so the check can't miss a cancel the helper has
-already dropped. A cancel that arrived just after Run is then delivered
-twice. The two can differ: the first comes from the session's
-`send_helper_cancel_command`, which sends a TERMINATE action's cancel as
-NOTIFY_THEN_TERMINATE with the 5 second default, and the second from
-`write_cancel`, which sends TERMINATE for it. A second NOTIFY_THEN_TERMINATE
-repeats the notify signal and restarts the grace period a moment later.
+again with `write_cancel`. That function maps the action's cancel method and
+the request's time limit as the same-user runner does: TERMINATE for a
+TERMINATE action or a zero limit, otherwise NOTIFY_THEN_TERMINATE with the
+declared period capped by the limit, in whole seconds as above.
+
+For that check to work, the session records the request on the channel
+before it writes the first cancel to the pipe; then the check can't miss a
+cancel the helper has already dropped. Any cancel recorded before the check
+is therefore written twice. The two lines can differ: for an action with no
+declared cancelation (a TERMINATE action), `send_helper_cancel_command` sends
+NOTIFY_THEN_TERMINATE with the 5 second default, and `write_cancel` sends
+TERMINATE. A second NOTIFY_THEN_TERMINATE repeats the notify signal and
+restarts the grace period a moment later.
 
 The session stores the token string alongside the `cancel_writer` so the
 cancel path doesn't depend on the helper struct (which may be moved into
