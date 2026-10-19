@@ -749,8 +749,8 @@ path format, and the chunk. The Step is chunked when an entry of `task_parameter
 has `TaskParameterType::ChunkInt`: its value is an `ExprValue::RangeExpr` (as `openjd run`
 passes) or a string that parses as one (such as `"10-12"`), whose values are the chunk;
 anything else fails the action with `SessionError::Runtime` ("CHUNK[INT] parameter
-'<name>' value '<value>' is not a range expression: <reason>", with the range parser's
-reason, such as overlapping ranges).
+'<name>' value '<value>' is not a range expression", followed for a string by `: <reason>`
+with the range parser's reason, such as overlapping ranges).
 
 The collector lives in the action's `ActionFilter` (through the runner) and is fed
 synchronously by the line reader, so an `@` file is read before any later line, and each

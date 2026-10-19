@@ -968,7 +968,8 @@ async fn test_cross_user_output_var_failures() {
         ),
         (
             "printf '1\\377' > z; echo 'openjd_output_var: N=@z'",
-            "Output variable 'N': the @ file's content is not valid UTF-8 (at byte 1)"
+            "Output variable 'N': the @ file's content is not valid UTF-8 (at byte 1), in \
+             'openjd_output_var: N=@z'"
                 .to_string(),
         ),
         (
@@ -1194,5 +1195,40 @@ async fn test_cross_user_output_var_at_line_after_an_invalid_directive() {
         "{}",
         r.stdout
     );
+    session.cleanup();
+}
+
+/// A cancel that lands as soon as the action is armed, usually before the
+/// helper has read the Run command (which the idle helper would drop), still
+/// cancels the run instead of letting it finish.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn test_cross_user_early_cancel_cancels_the_run() {
+    let user = require_target_user();
+    let mut session = make_cf_session(user);
+    let handle = session.cancel_handle();
+    let canceller = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if handle.cancel(None, false) {
+                return true;
+            }
+            std::hint::spin_loop();
+        }
+        false
+    });
+    let started = std::time::Instant::now();
+    let r = run_cf(
+        &mut session,
+        "sleep 30",
+        r#"[{"name": "N", "type": "INT"}]"#,
+        None,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    assert!(canceller.join().unwrap());
+    assert_eq!(r.state, ActionState::Canceled);
+    // At most the 5 second notify period of a helper-pipe cancel.
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
     session.cleanup();
 }

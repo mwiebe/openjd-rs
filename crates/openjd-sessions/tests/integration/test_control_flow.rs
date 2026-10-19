@@ -688,11 +688,15 @@ async fn at_files_that_are_not_regular_files_inside_fail() {
         ),
         (
             "printf '1\\000' > z; echo 'openjd_output_var: N=@z'".to_string(),
-            "Output variable 'N': the @ file's content contains a NUL character".to_string(),
+            "Output variable 'N': the @ file's content contains a NUL character, in \
+             'openjd_output_var: N=@z'"
+                .to_string(),
         ),
         (
             "printf '1\\377' > z; echo 'openjd_output_var: N=@z'".to_string(),
-            "Output variable 'N': the @ file's content is not valid UTF-8 (at byte 1)".to_string(),
+            "Output variable 'N': the @ file's content is not valid UTF-8 (at byte 1), in \
+             'openjd_output_var: N=@z'"
+                .to_string(),
         ),
     ] {
         let mut f = fixture();
@@ -1782,5 +1786,64 @@ async fn inline_values_over_the_size_limit_fail_with_the_line() {
              1080036 bytes, over the limit of 1048576 bytes, in 'openjd_output_var: A=\"{}...'",
             "a".repeat(178)
         ),
+    );
+}
+
+// ── Audit round 4 ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn at_directive_failures_name_the_line() {
+    for (decl, script, message) in [
+        (
+            N_INT,
+            "printf 2 > f; echo 'openjd_output_var: N=1'; echo 'openjd_output_var: N=@f'",
+            "Output variable 'N': a second value was reported, but its collect mode is ONCE, in \
+             'openjd_output_var: N=@f'",
+        ),
+        (
+            N_INT,
+            "printf x > f; echo 'openjd_output_var: N=@f'",
+            "Output variable 'N': the @ file's content is not one valid JSON value: expected \
+             value at line 1 column 1, in 'openjd_output_var: N=@f'",
+        ),
+        (
+            N_INT,
+            "printf '\"abc\"' > f; echo 'openjd_output_var: N=@f'",
+            "Output variable 'N': value (string) does not convert to int, in \
+             'openjd_output_var: N=@f'",
+        ),
+        (
+            r#"[{"name": "N", "type": "INT", "constraints": {"minValue": {"int": 5}}}]"#,
+            "printf 1 > f; echo 'openjd_output_var: N=@f'",
+            "Output variable 'N': value 1 is less than minimum 5, in 'openjd_output_var: N=@f'",
+        ),
+        (
+            r#"[{"name": "E", "type": "LIST[INT]", "collect": "APPEND"}]"#,
+            "printf 1 > a; printf x > b; echo 'openjd_output_var: E=@a'; \
+             echo 'openjd_output_var: E=@b'",
+            "Output variable 'E': the @ file's content is not one valid JSON value: expected \
+             value at line 1 column 1, in 'openjd_output_var: E=@b'",
+        ),
+    ] {
+        let mut f = fixture();
+        let d = decls(decl);
+        let r = f.run(script, Some(&d)).await;
+        assert_failed(&f, &r, message);
+    }
+    // A selector problem on an @ directive, in a chunked Step.
+    let mut f = fixture();
+    let d = decls(N_INT);
+    let r = f
+        .run_with(
+            "printf 1 > f; echo 'openjd_output_var: N[7]=@f'",
+            Some(&d),
+            Some(&chunk(ExprValue::String("1-2".into()))),
+        )
+        .await;
+    assert_failed(
+        &f,
+        &r,
+        "Output variable 'N[7]': 7 is not a value of the chunk being run (chunk values 1, 2), \
+         in 'openjd_output_var: N[7]=@f'",
     );
 }

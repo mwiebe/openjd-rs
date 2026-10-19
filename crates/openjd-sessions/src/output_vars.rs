@@ -73,6 +73,9 @@ pub(crate) struct FileRequest {
     pub root: PathBuf,
     /// The bytes the file may have; read at most one more.
     pub max_bytes: usize,
+    /// The directive's line, quoted after a collector error about the
+    /// file's content so the message names the offending text.
+    pub line: String,
 }
 
 impl FileRequest {
@@ -207,6 +210,7 @@ impl OutputVars {
                                     path: path.to_string(),
                                     root: self.root.clone(),
                                     max_bytes: collector.remaining_bytes_for(name, task),
+                                    line: line.to_string(),
                                 });
                             }
                         }
@@ -266,7 +270,13 @@ impl OutputVars {
                         name: request.name.clone(),
                         value,
                     },
-                    Err(e) => LineOutcome::Invalid(e.message().to_string()),
+                    // The collector's message names neither the file nor
+                    // the line (it saw only the content).
+                    Err(e) => LineOutcome::Invalid(format!(
+                        "{}, in {}",
+                        e.message(),
+                        quote(&request.line)
+                    )),
                 }
             }
         };
@@ -373,7 +383,8 @@ fn quote(text: &str) -> String {
 /// after it when the message does not quote the value itself (a second
 /// `ONCE` value, a task selector problem, or the size limit), because RFC
 /// 0010 §Processing a directive requires the failure to name the offending
-/// text.
+/// text. (For an `@` file's content, see `finish_file_sized`, which always
+/// adds the line.)
 fn with_text(e: &openjd_model::outputs::OutputError, line: &str) -> String {
     use openjd_model::outputs::OutputErrorKind;
     match e.kind() {
