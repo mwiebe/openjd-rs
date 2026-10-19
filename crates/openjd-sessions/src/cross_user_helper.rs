@@ -335,11 +335,12 @@ impl CrossUserHelper {
     pub fn send_command(&mut self, cmd: &serde_json::Value) -> Result<(), SessionError> {
         use std::io::Write;
         let payload = augment_with_token(cmd, &self.auth_token)?;
-        serde_json::to_writer(&mut self.stdin, &payload).map_err(|e| {
+        // One write per line, so a cancel another thread writes to the same
+        // pipe (through the cancel writer) can't land inside it, for a line
+        // up to PIPE_BUF bytes.
+        let line = command_line(&payload)?;
+        self.stdin.write_all(&line).map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
-        })?;
-        self.stdin.write_all(b"\n").map_err(|e| {
-            SessionError::HelperCommunication(format!("Failed to write newline to helper: {e}"))
         })?;
         self.stdin.flush().map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to flush helper stdin: {e}"))
@@ -476,11 +477,12 @@ impl CrossUserHelperWin {
     pub fn send_command(&mut self, cmd: &serde_json::Value) -> Result<(), SessionError> {
         use std::io::Write;
         let payload = augment_with_token(cmd, &self.auth_token)?;
-        serde_json::to_writer(&mut self.stdin, &payload).map_err(|e| {
+        // One write per line, so a cancel another thread writes to the same
+        // pipe (through the cancel writer) can't land inside it, for a line
+        // up to PIPE_BUF bytes.
+        let line = command_line(&payload)?;
+        self.stdin.write_all(&line).map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
-        })?;
-        self.stdin.write_all(b"\n").map_err(|e| {
-            SessionError::HelperCommunication(format!("Failed to write newline to helper: {e}"))
         })?;
         self.stdin.flush().map_err(|e| {
             SessionError::HelperCommunication(format!("Failed to flush helper stdin: {e}"))
@@ -793,17 +795,27 @@ fn write_cancel(
         crate::runner::CancelMethod::Terminate => 0,
     };
     // The token alphabet excludes `"` and `\`, so no escaping is needed to
-    // embed it in a JSON literal.
-    if notify_period == 0 {
-        let _ = writeln!(w, r#"{{"token":"{token}","cancel":"TERMINATE"}}"#);
+    // embed it in a JSON literal. The line is written in one call, so it
+    // can't interleave with a cancel another thread writes at the same time.
+    let line = if notify_period == 0 {
+        format!(r#"{{"token":"{token}","cancel":"TERMINATE"}}"#)
     } else {
-        let _ = writeln!(
-            w,
+        format!(
             r#"{{"token":"{token}","cancel":"NOTIFY_THEN_TERMINATE","notifyPeriodInSeconds":{notify_period}}}"#
-        );
-    }
+        )
+    };
+    let _ = w.write_all(format!("{line}\n").as_bytes());
     let _ = w.flush();
     Ok(())
+}
+
+/// A helper command as one JSON line, newline included.
+fn command_line(payload: &serde_json::Value) -> Result<Vec<u8>, SessionError> {
+    let mut line = serde_json::to_vec(payload).map_err(|e| {
+        SessionError::HelperCommunication(format!("Failed to write to helper stdin: {e}"))
+    })?;
+    line.push(b'\n');
+    Ok(line)
 }
 
 /// Process and log one line of the helper's output, as the direct path does.

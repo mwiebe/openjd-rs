@@ -22,6 +22,7 @@ openjd-sessions
 ├── shlex           # Shell-safe argument quoting for cross-user scripts
 ├── log             # Logging facade with kv feature for structured metadata
 ├── bitflags        # LogContent flag type
+├── indexmap        # IndexMap in ActionOutputs (public API)
 └── uuid            # Session ID generation in tests
 ```
 
