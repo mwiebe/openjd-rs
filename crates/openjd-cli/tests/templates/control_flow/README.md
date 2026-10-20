@@ -1,7 +1,7 @@
 # CONTROL_FLOW golden tests
 
-Golden-file tests of `openjd` on the sample templates of RFC 0011 (CONTROL_FLOW) and on the
-plan's progressive binding templates, run by
+Golden-file tests of `openjd` on the sample templates of RFC 0011 and RFC 0012
+(CONTROL_FLOW) and on the plan's progressive binding templates, run by
 `tests/control_flow_golden/mod.rs` as part of `cli_tests`. Each case runs one `openjd`
 command and compares its normalized output with `<case>.expected.txt` in this directory.
 
@@ -18,20 +18,20 @@ The tests run on Linux only, because the samples' `bash` scripts rely on GNU cor
 
 | Template | Source | Changes from the source |
 |---|---|---|
-| `video_frame_count.yaml` | RFC Basic Examples, "Video frame count" | none |
-| `s3_fan_out.yaml` | "S3 prefix fan-out with a manifest" | none |
-| `task_metrics.yaml` | "Task metrics from a parameter sweep" | parameter space cut from 10×3×3×3 to 2×1×1×1 |
-| `sweep.yaml` | "Parameter sweep, then run the winner" | `Window`, `Overlap`, `DetConf` ranges cut to 2×1×1; run with `EpisodeCount=2` |
-| `scene_graph.yaml` | "Scene-graph DAG" | none |
+| `video_frame_count.yaml` | RFC 0011 Basic Examples, "Video frame count" | none |
+| `s3_fan_out.yaml` | RFC 0011 Basic Examples, "S3 prefix fan-out with a manifest" | none |
+| `task_metrics.yaml` | RFC 0012 Basic Examples, "Task metrics from a parameter sweep" | parameter space cut from 10×3×3×3 to 2×1×1×1 |
+| `sweep.yaml` | RFC 0011 Basic Examples, "Parameter sweep, then run the winner" | `Window`, `Overlap`, `DetConf` ranges cut to 2×1×1; run with `EpisodeCount=2` |
+| `scene_graph.yaml` | RFC 0011 Basic Examples, "Scene-graph DAG" | none |
 | `scene_graph_no_subspace.yaml` | "Scene-graph DAG" | no `TASK_DEPENDENCIES`: the `BakeNode` self-dependency with `dependsOnSubspace` is removed |
 | `scene_graph_extension.yaml` | "Scene-graph DAG" | the `dependsOnSubspace` self-dependency is removed, but `TASK_DEPENDENCIES` is still listed |
-| `render_qc.yaml` | "Render, quality check, and optional steps" | none |
-| `chunked_render.yaml` | Specification, "Chunked Steps" | wrapped in a Job Template; range `1-6` and `defaultTaskCount: 3` |
+| `render_qc.yaml` | RFC 0011 Basic Examples, "Render, quality check, and optional steps" | none |
+| `chunked_render.yaml` | RFC 0012 Specification, "Chunked Steps" | wrapped in a Job Template; range `1-6` and `defaultTaskCount: 3` |
 | `chunked_render_omit_frame.yaml` | as `chunked_render.yaml` | frame 5 reports no `RenderTimeS` |
 | `progressive.yaml`, `progressive_enable_if.yaml`, `progressive_let.yaml` | not RFC samples: the plan's progressive binding tests | — |
 
-The RFC YAML is from openjd-specifications commit `619d910`. Each template's first comment
-names its source.
+The RFC 0011 and RFC 0012 YAML is from openjd-specifications commit `c3f583b`; it has
+not changed since `619d910`. Each template's first comment names its source.
 
 ## Stubs and fixtures
 

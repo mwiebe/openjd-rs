@@ -255,13 +255,13 @@ For an Action that may report output values (`outputFiles` set), a line that sta
 64 KiB can escape to six times that) is sent whole instead of cut: an `outLong` header
 with its byte length and flags, then `data` frames that carry the text. The parent
 processes it as an `out` line, so a valid directive of up to 64 KiB is accepted as on the
-direct path (RFC 0011 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
+direct path (RFC 0012 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
 `{"out": "..."}` as before. The parent rejects an `openjd_output_var` directive on a
 flagged line.
 
 ### Output variable files
 
-RFC 0011 §File values item 3 requires an `@<FilePath>` value to be read with no more
+RFC 0012 §File values item 3 requires an `@<FilePath>` value to be read with no more
 access than the action's user. The parent must not read the file itself, even with an
 ownership or link-count check, so the helper, which runs as the job user, resolves `@`
 directives as it reads the action's output, and the RFC's ordering (the file is read
@@ -296,7 +296,7 @@ before any later line) falls out of the stream.
   header can't make it.
 - The helper does not know the declared outputs or the values so far, so it reads before
   the parent's checks. The parent applies `check_name` first, then the read result, then
-  the remaining-size check, so the outcome matches the RFC's order even though the helper
+  the remaining-size check, so the outcome matches RFC 0012's order even though the helper
   may read a file whose directive is then rejected, and reads up to the whole per-Task
   limit rather than what remains.
 - The parent re-parses the line with the model parser, and a disagreement with the

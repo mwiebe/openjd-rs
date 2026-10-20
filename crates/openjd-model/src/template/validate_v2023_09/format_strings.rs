@@ -1366,7 +1366,7 @@ fn validate_int_range_items(
 /// pass 8 does not otherwise evaluate: a whole-field expression `range` of a
 /// `STRING`, `PATH`, or `FLOAT` Task parameter, and a format-string item of
 /// a `FLOAT` range list. Those fields are checked only when job creation
-/// resolves them, a gap that predates `CONTROL_FLOW`; the RFC's `Steps.*`
+/// resolves them, a gap that predates `CONTROL_FLOW`; RFC 0011's `Steps.*`
 /// scope rules are still enforced on them here.
 fn check_steps_refs_only(
     fs: &FormatString,
@@ -1438,7 +1438,7 @@ fn check_string_converts(
 }
 
 /// Validate each `<JobOutputDefinition>` `value` (RFC 0011 §Validation item
-/// 10) against the job output scope: `Param.*` (minus `PATH` types),
+/// 9) against the job output scope: `Param.*` (minus `PATH` types),
 /// `RawParam.*`, `Job.Name`, and the TEMPLATE-scope `Steps.*` symbols of
 /// every Step with an `<Identifier>` name, with no dependency required. No
 /// `Step.Name`, `Task.*`, `Session.*`, or `let` names. The target type is

@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Job-side `CONTROL_FLOW` types (RFC 0011): a Step's output variable
+//! Job-side `CONTROL_FLOW` types (RFC 0011, RFC 0012): a Step's output variable
 //! declarations, its binding state, and the path-typed `Steps.*` inputs it
 //! reads.
 //!
@@ -18,12 +18,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{JobParameterType, OutputCollectMode};
 
-/// One output variable declared by a Step (RFC 0011 `<OutputVariableDefinition>`),
+/// One output variable declared by a Step (RFC 0012 `<OutputVariableDefinition>`),
 /// in the form `create_job` stores on [`job::Step`](super::Step).
 ///
 /// The constraint checks apply only the properties the definition declared:
 /// no property that a job parameter of the same type implies when omitted is
-/// checked (RFC 0011 `<OutputVariableDefinition>` item 6).
+/// checked (RFC 0012 `<OutputVariableDefinition>` item 6).
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputVariable {
@@ -555,7 +555,7 @@ pub enum GroupState<T> {
     Waiting {
         /// The group's own inputs that are not concrete yet: `Steps.*`
         /// symbols in the form `Steps.<Step>.<Member>.<Name>`, sorted. It
-        /// does not count the enablement group's inputs, which the RFC also
+        /// does not count the enablement group's inputs, which RFC 0011 also
         /// counts as inputs of every other group, so it is empty for a group
         /// that waits only for `enableIf`. Every binding call recomputes it,
         /// also while enablement is still waiting.

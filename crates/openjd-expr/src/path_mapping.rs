@@ -704,8 +704,7 @@ pub enum UnmapError {
 
 /// Map a path reported on the worker back to the submission path context.
 ///
-/// Implements the reference inverse of the CONTROL_FLOW RFC's "Path values"
-/// section:
+/// Implements the reference inverse of RFC 0012 §Path values (CONTROL_FLOW):
 ///
 /// 1. A URI (see [`is_uri`]) is returned unchanged.
 /// 2. Any other path must be absolute under `worker_format`, or the result is

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! Reverse path mapping (`path_mapping::unapply_rules`), the reference inverse
-//! of the CONTROL_FLOW RFC's "Path values" section. See
+//! of RFC 0012 §Path values (CONTROL_FLOW). See
 //! `specs/expr/path-mapping.md` § Reverse mapping.
 
 use openjd_expr::path_mapping::{
@@ -159,7 +159,7 @@ fn no_rules_returns_absolute_path_unchanged_without_normalizing() {
 
 #[test]
 fn rfc_conversion_table_row() {
-    // RFC "Processing a directive" conversion table: `P="/mnt/proj/shot01/out"`
+    // RFC 0012 §Processing a directive conversion table: `P="/mnt/proj/shot01/out"`
     // is stored as `P:\shot01\out` with a rule from `P:\` (WINDOWS) to `/mnt/proj`.
     let rules = [windows("P:\\", "/mnt/proj")];
     assert_eq!(
@@ -189,7 +189,7 @@ fn source_path_without_trailing_separator_gets_one() {
 
 #[test]
 fn rfc_nested_rule_example() {
-    // RFC "Path values" step 4: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`,
+    // RFC 0012 §Path values step 4: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`,
     // `/mnt/p/x/f` can't be stored as `P:\x\f`, which maps forward to
     // `/data/x/f`. Rules listed as the Session sorts them (longest source first).
     let rules = [windows("P:\\x", "/data/x"), windows("P:\\", "/mnt/p")];

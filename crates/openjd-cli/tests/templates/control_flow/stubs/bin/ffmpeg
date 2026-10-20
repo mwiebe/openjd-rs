@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
 """Deterministic ffmpeg stub for the CONTROL_FLOW golden tests.
 
-Accepts the command lines the RFC samples use: `-i INPUT` and a final
+Accepts the command lines the RFC 0011 samples use: `-i INPUT` and a final
 OUTPUT argument, either of which may be a frame pattern such as
 `in_%06d.png` or `beauty_####.exr`. A plain input file is a text "video" whose lines are
 `key: value`; its `frames` entry says how many frames to extract (default 1), and a

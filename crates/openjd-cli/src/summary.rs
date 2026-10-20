@@ -162,7 +162,7 @@ fn step_total_tasks(step: &job::Step) -> Option<usize> {
     step.tasks_known().map(|n| n as usize)
 }
 
-/// The RFC's name for a `CONTROL_FLOW` Step's state at Job creation.
+/// RFC 0011's name for a `CONTROL_FLOW` Step's state at Job creation.
 fn step_state(step: &job::Step) -> &'static str {
     match step.binding {
         job::StepBinding::Bound => "READY",

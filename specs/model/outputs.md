@@ -3,7 +3,7 @@
 [README](README.md) · Output Values
 
 The `openjd_model::outputs` module turns the `openjd_output_var` directives that one
-Action prints into each Task's output values (RFC 0011 §Output emission). It is the
+Action prints into each Task's output values (RFC 0012 §Output emission). It is the
 model's half of output collection: it parses a directive, checks it against the Step's
 declarations, converts its JSON to a typed `ExprValue`, maps a `PATH` value back to the
 submission path context, checks constraints, applies the collect mode, and counts the
@@ -14,10 +14,11 @@ The caller (`openjd-sessions`, see `specs/sessions/session.md` § Output variabl
 outside world:
 
 * recognizing a line that begins with `openjd_output_var:` in an Action's stdout or
-  stderr, deciding whether the Action may print one (RFC invalid-directive item 8), and
+  stderr, deciding whether the Action may print one (RFC 0012 §Processing a directive,
+  invalid-directive item 8), and
   rejecting a line that is too long or not valid UTF-8 (items 7 and 9, for the line);
 * stripping the line terminator and the `openjd_output_var:` prefix;
-* opening and reading an `@` file under §File values (a regular file inside the Session
+* opening and reading an `@` file under RFC 0012 §File values (a regular file inside the Session
   Working Directory, read as the Action's user, at most
   `remaining_bytes_for(..) + 1` bytes);
 * canceling the Action as soon as a directive is invalid, and reporting the error.
@@ -54,7 +55,7 @@ Source: `crates/openjd-model/src/outputs/` (`mod.rs`, `directive.rs`, `convert.r
   not be empty, and it is not parsed here. Only spaces and tabs are removed, as `<WS>`
   says; other JSON whitespace around the value (a stray `\r` left by a `\r\r\n` line end)
   stays in the text, and `serde_json` then accepts it as JSON-text whitespace (RFC 8259
-  §2). The RFC's `<JSON>` does not say whether that is allowed; the prototype allows it,
+  §2). RFC 0012's `<JSON>` does not say whether that is allowed; the prototype allows it,
   and the characters count toward the value's size.
 
 The result is `OutputDirective::Inline { name, task, json }` or
@@ -70,14 +71,14 @@ the directives of one Action:
 | Argument | Meaning |
 |---|---|
 | `declared` | The Step's `job::Step::output_variables` (`step.output_variables.as_deref().unwrap_or_default()`). A repeated name keeps its first declaration (validation rejects repeats). |
-| `max_bytes` | The per-Task size limit. RFC 0011 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
+| `max_bytes` | The per-Task size limit. RFC 0012 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
 | `path_rules` | The Session's full path mapping rules, in the order it applies them (`Session::path_mapping_rules()`), unfiltered, as `unapply_rules` requires. |
 | `worker_format` | The worker host's path format: the format a reported `PATH` value is parsed in. |
 | `chunk` | The values of the Step's `CHUNK[INT]` parameter in the chunk being run, in iteration order; `None` for a Step without one. |
 
 `new` returns `Result`, where the plan's signature returned `Self`, for two refusals:
 
-* A chunk that repeats a value (`OutputErrorKind::Selector`). The RFC requires distinct
+* A chunk that repeats a value (`OutputErrorKind::Selector`). RFC 0012 requires distinct
   values in a Step with outputs (§Chunked Steps item 1), so that a value names one Task;
   binding rejects duplicates, and the collector refuses them rather than merging two
   Tasks.
@@ -87,7 +88,7 @@ the directives of one Action:
 
 A runtime calls, for each directive:
 
-1. `check_name(name, task)`: RFC §Processing a directive steps 1–2 (below), before an `@`
+1. `check_name(name, task)`: RFC 0012 §Processing a directive steps 1–2 (below), before an `@`
    file is opened.
 2. For an `@` directive, `remaining_bytes_for(name, task)`, to bound the read.
 3. `accept(name, task, bytes, from_file)`: steps 4–6. It repeats `check_name` first, so it
@@ -98,7 +99,7 @@ and when the Action exits successfully, `finish()`. Every method that fails leav
 collector's state as it was; the runtime fails the Action anyway.
 
 Each Task (each value of `chunk`, or the single Task `None`) has its own values,
-collect-mode state, and size, as §Chunked Steps item 2 requires.
+collect-mode state, and size, as RFC 0012 §Chunked Steps item 2 requires.
 
 ### Name and selector checks
 
@@ -119,7 +120,7 @@ lines. An inline value's bytes are its JSON text; non-UTF-8 bytes there are a `G
 error (`Invalid openjd_output_var directive: the value of 'N' is not valid UTF-8`), and
 surrounding spaces and tabs are removed. The text must be exactly one JSON value
 (`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, and trailing text. A number
-too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as the RFC's
+too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as RFC 0012's
 type conversion rules say, does not convert. So validity is checked first without
 converting numbers (`serde::de::IgnoredAny`), so `1e400 garbage` is a `Json` error for
 its trailing text. Valid JSON can still fail to become a `serde_json::Value` in three
@@ -134,7 +135,7 @@ first of these it meets, so a value with two of them is reported for the earlier
 `[1e400, "\ud800"]` is a `Conversion` error and `["\ud800", 1e400]` a `Json` error, and
 `null` or an object in the same value is not reported.
 
-Conversion (`Conversion` errors) follows §Processing a directive, "Type conversion":
+Conversion (`Conversion` errors) follows RFC 0012 §Processing a directive, "Type conversion":
 
 1. `null` and objects are rejected at any depth, before anything else, with the position
    (`item[1][0]`).
@@ -179,7 +180,7 @@ EXPR's string conversions allow.
 A `PATH` value, each element of a `LIST[PATH]` value, and each `PATH` element under
 `APPEND` is mapped back with
 `openjd_expr::path_mapping::unapply_rules_with_source_format(path_rules, value,
-worker_format)` (RFC §Path values; `specs/expr/path-mapping.md` § Reverse mapping). A
+worker_format)` (RFC 0012 §Path values; `specs/expr/path-mapping.md` § Reverse mapping). A
 `Relative` or `NoRoundTrip` result is a `Path` error naming the path. The stored
 `ExprValue::Path` gets the format the function returns: the matching rule's
 `source_path_format`, `Uri` for a URI, or `worker_format` when there are no rules. A
@@ -204,14 +205,14 @@ is checked by `finish` (`check_length(len, true)`). Only declared properties app
 A `RANGE_EXPR` value reported as a JSON string is checked in its written spelling, as a
 `RANGE_EXPR` job parameter value is, and stored as the `ExprValue::RangeExpr`, whose
 canonical spelling may differ: `"1-10:2"` is 6 characters and displays as `1-9:2`, and
-`"3,1"` displays as `1,3`. This differs from the RFC table, whose `RANGE_EXPR` row shows
+`"3,1"` displays as `1,3`. This differs from the RFC 0012 table, whose `RANGE_EXPR` row shows
 the result `1-10:2`; `ExprValue::RangeExpr` keeps no spelling, as for a `RANGE_EXPR` job
 parameter, so the prototype records the divergence here rather than changing the
 type.
 
 ### Size
 
-The size counted for a value (§Limits item 2) is its reported bytes: the inline JSON text
+The size counted for a value (RFC 0012 §Limits item 2) is its reported bytes: the inline JSON text
 without the spaces and tabs around it, or the whole content of its `@` file, byte order
 mark and whitespace included. For a `PATH` or `LIST[PATH]` value, or a `PATH` element, it
 is the larger of that and the length of the JSON serialization of its stored form. A
@@ -237,7 +238,7 @@ value's size can grow with its stored form, `accept` checks the limit again.
 directives arrived in), or by `None` for an unchunked Step. `TaskOutputs` is an
 `IndexMap<String, ExprValue>` in declaration order. The first Task with a missing value
 or a short `APPEND` list fails the whole call, so one Task fails the whole chunk
-(§Chunked Steps item 3).
+(RFC 0012 §Chunked Steps item 3).
 
 ## Errors
 
@@ -248,8 +249,8 @@ describe the chunk or the declaration. Every other message begins
 names the problem and, where it has one, the position in the value (`item[1][0]`).
 
 Messages quote an inline value's text and the converted value or element that is
-invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. The
-RFC asks for "the offending text". Some do not (a `null` or an object, an undeclared
+invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. RFC 0012
+§Processing a directive asks for "the offending text". Some do not (a `null` or an object, an undeclared
 name, a second `ONCE` value, a selector, size, or `maxLength` problem); the sessions
 runtime appends the directive's line to those (see
 `specs/sessions/action-filter.md`). They never quote an `@` file's text as such: a JSON
@@ -269,7 +270,7 @@ directive (`[ 1.50 , "a" ]` is quoted `'[1.5,"a"]'`). A float in a constraint me
 shows its spelling, cut to 200 characters like quoted text.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
-the converted invalid value follows the RFC instead. The runtime adds the file path and
+the converted invalid value follows RFC 0012 instead. The runtime adds the file path and
 Action context.
 
 | Kind | Cause |

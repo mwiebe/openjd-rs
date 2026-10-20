@@ -395,7 +395,7 @@ pub enum RangeConstraint {
 }
 ```
 
-## CONTROL_FLOW Types (RFC 0011)
+## CONTROL_FLOW Types (RFC 0011, RFC 0012)
 
 The `CONTROL_FLOW` extension adds `enableIf` to `<StepTemplate>` and `<Environment>`,
 `outputVariables` to `<StepTemplate>`, and `jobOutputDefinitions` to the Job Template.

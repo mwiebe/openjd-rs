@@ -2,8 +2,8 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Golden-file tests of `openjd` on the RFC 0011 (CONTROL_FLOW) sample
-//! templates and the plan's progressive binding templates.
+//! Golden-file tests of `openjd` on the RFC 0011 and RFC 0012 (CONTROL_FLOW)
+//! sample templates and the plan's progressive binding templates.
 //!
 //! Each case runs `openjd` on a template in `tests/templates/control_flow/`,
 //! normalizes the output, and compares it with `<case>.expected.txt` beside
