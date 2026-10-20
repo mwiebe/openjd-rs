@@ -41,7 +41,7 @@ short-circuiting), so users see all problems at once.
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` scope and types `enableIf` as `bool` |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
-| 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0010) |
+| 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0011) |
 
 ### Environment template pipeline
 
@@ -297,7 +297,7 @@ for an authored `script`).
 like every other format-string field; it no longer survives to job
 creation.
 
-### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0010)
+### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0011)
 
 With `CONTROL_FLOW`, pass 8 implements items 3 to 7 of the RFC's §Validation, "At
 template validation", and the scope and typing part of item 10 (see § Job output values
@@ -654,7 +654,7 @@ separately-validated env templates are composed into a session at assembly time
 
 ## Pass 11: CONTROL_FLOW Gating and Structure
 
-Validates or rejects the fields `CONTROL_FLOW` (RFC 0010) adds. It implements items 1, 2,
+Validates or rejects the fields `CONTROL_FLOW` (RFC 0011) adds. It implements items 1, 2,
 the Environment Template part of item 6, and the structural part of item 10 of the RFC's
 §Validation, "At template validation". Items 3 to 7 (the `Steps.*` scope and `enableIf`)
 and the scope and typing of a job output's `value` (the rest of item 10) are in pass 8.
@@ -674,7 +674,7 @@ Scope and `enableIf`).
 
 **EXPR prerequisite.** `CONTROL_FLOW` without `EXPR` is an error at `extensions`
 (`CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC
-0010).`). The check is `helpers::check_expr_prerequisite`, which pass 10 shares for
+0011).`). The check is `helpers::check_expr_prerequisite`, which pass 10 shares for
 `WRAP_ACTIONS`.
 
 **With the extension**, each Step's `outputVariables` must satisfy:
@@ -715,7 +715,7 @@ Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks
 distinct-values rule on the integer items of a `range` written as a YAML list. A range
 string such as `"1-10"` cannot repeat a value, because its sub-ranges may not overlap. A
 computed range, and a YAML list with format-string items, is checked when it is
-materialized (RFC 0010 §Chunked Steps item 1), in the Task enumeration group at job
+materialized (RFC 0011 §Chunked Steps item 1), in the Task enumeration group at job
 creation or at step input binding (see [job-creation.md](job-creation.md) § Step input
 binding).
 

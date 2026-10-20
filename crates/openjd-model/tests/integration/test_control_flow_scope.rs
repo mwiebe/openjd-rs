@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) `Steps.*` scope and `enableIf` typing in
+//! `CONTROL_FLOW` (RFC 0011) `Steps.*` scope and `enableIf` typing in
 //! template validation (pass 8), and the `create_job` re-checks that see the
 //! same `Steps.*` symbols.
 //!
@@ -1532,7 +1532,7 @@ fn enable_if_may_not_read_any_session_symbol() {
 
 #[test]
 fn environment_enable_if_may_not_read_session_env_file_or_its_own_let() {
-    // RFC 0010 <Environment> enableIf constraints 2 and 3, at both
+    // RFC 0011 <Environment> enableIf constraints 2 and 3, at both
     // locations: no Session.*, no Env.*, no names bound by let (here the
     // Environment's own script let), and for a Step Environment no Task.*.
     let env = |value: &str| {

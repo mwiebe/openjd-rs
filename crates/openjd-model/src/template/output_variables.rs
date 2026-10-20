@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Template types the `CONTROL_FLOW` extension adds (RFC 0010):
+//! Template types the `CONTROL_FLOW` extension adds (RFC 0011):
 //! `<OutputVariableDefinition>`, `<JobOutputDefinition>`, and the `enableIf`
 //! field value.
 //!
@@ -28,7 +28,7 @@ use crate::job::{JobOutput, OutputAllowedValues, OutputBound, OutputConstraints,
 use crate::types::{JobParameterType, OutputCollectMode};
 
 /// A field that is either a YAML `bool` or a format string, such as
-/// `enableIf` (RFC 0010 `<StepTemplate>` and `<Environment>`).
+/// `enableIf` (RFC 0011 `<StepTemplate>` and `<Environment>`).
 #[derive(Debug, Clone)]
 pub enum BoolOrFormatString {
     /// A literal `true` or `false`.
@@ -63,7 +63,7 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
     }
 }
 
-/// RFC 0010 `<OutputVariableDefinition>`: one output variable a Step's
+/// RFC 0011 `<OutputVariableDefinition>`: one output variable a Step's
 /// Tasks report.
 ///
 /// Wraps the [`JobParameterDefinition`] of the declared type, which holds
@@ -145,7 +145,7 @@ fn parse_definition(
             Some(v) => serde_json::from_value(v).map_err(|e| format!("collect: {e}"))?,
         },
         // A job output is evaluated, not reported, so it has no collect
-        // mode (RFC 0010 `<JobOutputDefinition>`). Reported by validation
+        // mode (RFC 0011 `<JobOutputDefinition>`). Reported by validation
         // at its own path.
         DefinitionKind::JobOutput => {
             if map.remove("collect").is_some_and(|v| !v.is_null()) {
@@ -297,7 +297,7 @@ impl OutputVariableDefinition {
     }
 }
 
-/// RFC 0010 `<JobOutputDefinition>`: one of the Job's outputs, a typed value
+/// RFC 0011 `<JobOutputDefinition>`: one of the Job's outputs, a typed value
 /// computed from its parameters and its Steps' outputs (Template Schemas
 /// §2.17).
 ///

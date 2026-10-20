@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) progressive step input binding: each group of a
+//! `CONTROL_FLOW` (RFC 0011) progressive step input binding: each group of a
 //! pending Step is evaluated as soon as its inputs are concrete, `enableIf`
 //! first, and the first failing group fails the Step. Each test asserts the
 //! Step's binding after every `create_job` or `advance_step_binding` call.

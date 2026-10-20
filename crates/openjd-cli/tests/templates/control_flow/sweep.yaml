@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Basic Examples, "Parameter sweep,
+# RFC 0011 (openjd-specifications 619d910), Basic Examples, "Parameter sweep,
 # then run the winner", with the Window, Overlap and DetConf ranges cut from
 # 3x3x3 to 2x1x1 for a short run. Run it with EpisodeCount=2.
 specificationVersion: jobtemplate-2023-09

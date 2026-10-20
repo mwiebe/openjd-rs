@@ -223,10 +223,10 @@ budgets template validation and the session runtime apply.
      their values only. A list literal emptied by null-skips or empty lists is
      rejected ("has no elements after resolution") without `CONTROL_FLOW`, since the
      ≥1-element rule was checked on field presence at decode; with `CONTROL_FLOW` it
-     may be empty (RFC 0010 §Empty parameter spaces). Without `CONTROL_FLOW` every
+     may be empty (RFC 0011 §Empty parameter spaces). Without `CONTROL_FLOW` every
      resolved list range is capped at `max_task_param_range_len` (1024); with it, the
      cap applies only to a list literal's items as written (the structure pass), not
-     to resolved values (RFC 0010 §Range length). Both relaxations are decided in
+     to resolved values (RFC 0011 §Range length). Both relaxations are decided in
      `ranges::RangeRules`. Attribute `anyOf`/`allOf` values get the list-item
      treatment in `instantiate`. String-backed FLOAT range elements are trimmed and
      must resolve to finite `f64` values.
@@ -247,7 +247,7 @@ budgets template validation and the session runtime apply.
 6. Convert environments from template to job types
 7. Build step dependency list
 8. Attach resolved symbol table to each step
-9. With `CONTROL_FLOW` (RFC 0010): copy each Step's `outputVariables` onto
+9. With `CONTROL_FLOW` (RFC 0011): copy each Step's `outputVariables` onto
    `job::Step::output_variables` as `job::OutputVariable` values, decide each
    Job Environment's `enableIf` (setting `job::Environment::enabled`; a disabled
    one's fields are not checked), and bind each Step as far as the values
@@ -329,7 +329,7 @@ time, with everything only a session can know left `Unresolved`:
   at pass 8 with everything unresolved, so a failure here comes from
   the real parameter values and would deterministically recur in every
   session that enters the environment.
-- **`Steps.*`** (`CONTROL_FLOW` only; RFC 0010): both tables of a Step,
+- **`Steps.*`** (`CONTROL_FLOW` only; RFC 0011): both tables of a Step,
   and those of its Step Environments, also hold the `Steps.*` symbols of
   the Step's direct dependencies: the concrete value for each symbol its
   materialization groups read that is concrete, and an `Unresolved` value
@@ -461,7 +461,7 @@ once at submission instead of per-task-per-worker.
 
 ### Step input binding (`CONTROL_FLOW`)
 
-RFC 0010 §Step input binding. A Step's materialization expressions — its
+RFC 0011 §Step input binding. A Step's materialization expressions — its
 format strings resolved before a Session exists, plus `enableIf` — fall into
 four groups, evaluated separately (`MaterializationGroup`), and in this order
 when more than one can be:
@@ -512,7 +512,7 @@ creation), and a `StepInputs`:
      `CHUNK[INT]` range in a Step that declares `outputVariables` has distinct
      values (`must have distinct values in a Step with outputVariables, so that
      each value names one Task; value 1 appears more than once.`), and checks
-     the Task-count limits (below). Every error is located, as RFC 0010 §How a
+     the Task-count limits (below). Every error is located, as RFC 0011 §How a
      Step is bound item 3 asks ("the failure message names the field and the
      expression"). A range string that fails to parse after its expressions
      are evaluated names both, and each symbol it reads that is `null`:
@@ -572,7 +572,7 @@ error it holds:
 
 Whether this path is taken, and whether the `CONTROL_FLOW` range rules apply, is decided
 by the template's own `extensions`, not by the context, which may enable more: a template
-that does not list `CONTROL_FLOW` behaves exactly as before (RFC 0010 Technical
+that does not list `CONTROL_FLOW` behaves exactly as before (RFC 0011 Technical
 Requirement 1). A template that lists `CONTROL_FLOW` but uses none of its features takes
 this path too, so its *errors* can differ from the same template without the extension:
 a Step stops at its first failing group, so after a step `let` error its script and Step
@@ -583,7 +583,7 @@ template order; a failed step `let` still lets that Step's carried-forward
 checks run; host requirements resolve before the parameter space; and the
 job-total Task-count limit is checked once, after every Step.
 
-**Task-count limits** (RFC 0010 §Limits item 4) are checked in the Task
+**Task-count limits** (RFC 0011 §Limits item 4) are checked in the Task
 enumeration group, when a Step's Tasks become known: `max_step_task_count`
 against the Step's Tasks (`Step 'S' has 5 Tasks, which exceeds the caller
 limit of 4 Tasks per Step.`), and `max_task_count` against the Step's Tasks
