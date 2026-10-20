@@ -1417,6 +1417,7 @@ impl Default for ModelProfile { /* ... */ }
 /// Every field is optional; `None` means "no additional restriction."
 #[derive(Debug, Clone, Default)]
 pub struct CallerLimits {
+    /// Each top-level Step, loop, and loop body Step (RFC 0013) counts once.
     pub max_step_count: Option<usize>,
     pub max_env_count: Option<usize>,
     /// With CONTROL_FLOW, checked as each Step's Tasks become known.

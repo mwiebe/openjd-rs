@@ -279,7 +279,7 @@ enum DependencyScope<'a> {
     /// §Job Template constraint 2).
     TopLevel,
     /// A body Step of the named loop: only Steps of the same body (RFC 0013
-    /// §<LoopDefinition> item 5.3).
+    /// §`<LoopDefinition>` item 5.3).
     Body(&'a str),
 }
 

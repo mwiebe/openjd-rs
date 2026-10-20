@@ -509,10 +509,13 @@ pub enum StepEntry { Step(StepTemplate), Loop(StepLoop) }
 
 One entry of `steps` (RFC 0013 §Job Template). Its `Deserialize` reads the entry as a
 mapping and chooses `Loop` when it has a `loop` key and `Step` otherwise, then
-deserializes that shape, so a malformed entry gets the errors of the shape it chose:
-`unknown field `script`` for a loop with a script, rather than an untagged-enum error
-that names neither shape. Without `CONTROL_FLOW` a `loop` entry still parses as a
-`StepLoop`, and pass 11 reports it at `steps[i] -> loop`. The accessors `name()`,
+deserializes that shape, so a malformed entry gets the errors of the shape it chose,
+rather than an untagged-enum error that names neither shape. A loop's error is prefixed
+`loop '<name>': `, except an unknown field of the `<StepLoop>` itself, which names the
+field that decided the shape: `steps entry 'L' has a 'loop' field, so it is a loop
+(CONTROL_FLOW, RFC 0013), which has no such field: unknown field `script`, expected one
+of ...`. That holds with or without `CONTROL_FLOW`. Without the extension a well-formed
+`loop` entry still parses as a `StepLoop`, and pass 11 reports it at `steps[i] -> loop`. The accessors `name()`,
 `dependencies()` (empty when absent), and `enable_if()` read either shape, and
 `as_step()` and `as_loop()` select one.
 
@@ -539,11 +542,12 @@ pub struct LoopDefinition {
 
 Both use `deny_unknown_fields`, so a loop with `script`, `parameterSpace`,
 `hostRequirements`, `stepEnvironments`, or `let` fails as an unknown field of a loop, and
-a missing `maxIterations` as `missing field `maxIterations``. `while` and `until` are
-both optional here so that pass 11 can report "exactly one" at `steps[i] -> loop`. The
-body is deserialized element by element: an element with a `loop` key fails with
-`loop body entry <j> '<name>' has a 'loop' field, but loops do not nest: a loop's body
-may contain only Steps (RFC 0013).`, and every other element is a `StepTemplate`.
+a missing `maxIterations` as `loop 'L': missing field `maxIterations``. `while` and
+`until` are both optional here so that pass 11 can report "exactly one" at
+`steps[i] -> loop`. The body is deserialized element by element: an element with a
+`loop` key fails with `loop body entry <j> '<name>' has a 'loop' field, but loops do not
+nest: a loop's body may contain only Steps (RFC 0013).`, and every other element is a
+`StepTemplate`, whose errors are prefixed `loop body entry <j> '<name>': `.
 `StepLoop::variables()`, `output_variables_list()`, and `body()` return slices, empty
 when a list is absent.
 
@@ -552,7 +556,8 @@ when a list is absent.
 One `<LoopVariableDefinition>`. It wraps the `JobParameterDefinition` of the declared
 type, as `OutputVariableDefinition` does, and is deserialized the same way after
 `initial` and `next` (format strings, both required) are removed. A missing one reads
-`missing 'initial' field in loop variable definition` (or `'next'`). `collect` and `unit`
+`missing 'initial' field in loop variable definition` (or `'next'`), after the loop's
+`loop 'L': ` prefix. `collect` and `unit`
 are recorded with `default`, `userInterface`, and `dataFlow`, so pass 11 reports each at
 its own path (`is not allowed in a loop variable definition.`), and an unknown field lists
 `initial` and `next` as the extra fields. The accessors are `name`, `job_param_type`,
