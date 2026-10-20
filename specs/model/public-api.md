@@ -1459,8 +1459,10 @@ impl job::LoopError {
     pub fn is_caller_error(&self) -> bool;
 }
 /// "Loop '<L>' failed at the boundary of iteration <N>, in <field>:" (or
-/// "after zero iterations"; for a caller error "Evaluating loop '<L>' ...
-/// was refused, in <field>:"), then each error on its own line.
+/// "after zero iterations"; for a caller error "Evaluating the boundary of
+/// iteration <N> of loop '<L>' was refused, in <field>:", or "Ending loop
+/// '<L>' without iterations was refused, ..."), then each error on its own
+/// line.
 impl Display for job::LoopError;
 impl std::error::Error for job::LoopError;
 

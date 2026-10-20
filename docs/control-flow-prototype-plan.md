@@ -1107,7 +1107,8 @@ The caller calls `evaluate_iteration_boundary` when every instance of the iterat
 2. `until`, if present. If it is `true`, the loop ends: check each `APPEND` output's `minLength` and return
    `Succeeded` with `N + 1` iterations. No `next` is evaluated.
 3. Every variable's `next`, each reading iteration `N`'s values, never another variable's new value. Each result is
-   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values (A21).
+   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values and the loop
+   outputs so far (A21).
 4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`. If it is `false`, the loop ends as in
    step 2.
 5. The bound: if `N + 1` equals `maxIterations`, the loop fails with a message that names `maxIterations` and its
@@ -1427,7 +1428,8 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 * Loop binding and iterations (`tests/integration/test_control_flow_loops_running.rs`), one test per case:
   * `create_job`: a loop bound at creation; one pending on a dependency's output; a static skip that evaluates
     nothing else; `maxIterations` from a parameter, and 0 and 1,001 from a parameter failing `create_job`; an
-    `initial` constraint violation and a first `while` that is `null`, each failing `create_job`; a body Step whose
+    `initial` that is `null` or doesn't convert, a first `while` that fails, and an `enableIf` that fails, each failing
+    `create_job`, and an `initial` constraint violation failing `advance_loop_binding`; a body Step whose
     script would fail its carried-forward check, which `create_job` doesn't report (L3).
   * `start_iteration`: `Loop.*` concrete in every instance; an instance's range from a loop variable evaluated at
     iteration start; a group error failing the iteration; an instance pending on a body dependency and then bound by

@@ -1173,6 +1173,12 @@ fn filter_symtab_for_step(
                         }
                     }
                 }
+                // The Session evaluates a Step Environment's script `let`
+                // bindings with the Step's table, so the symbols they read
+                // must be in it, as for a Job Environment.
+                if let Some(bindings) = &es.let_bindings {
+                    collect_let_binding_refs(bindings, full, &mut filtered);
+                }
             }
         }
     }
@@ -1209,7 +1215,8 @@ fn include_raw_param_fallbacks(
 }
 
 /// Collect all symbol names accessed by format strings in a step's script,
-/// step environments, and let bindings.
+/// step environments (including their script `let` bindings), and let
+/// bindings.
 pub(crate) fn collect_all_accessed_symbols(
     script: Option<&job::StepScript>,
     step_environments: &Option<Vec<job::Environment>>,
@@ -1251,15 +1258,19 @@ pub(crate) fn collect_all_accessed_symbols(
         }
     }
 
-    if let Some(bindings) = step_let_bindings {
+    fn collect_from_lets(bindings: &[String], out: &mut std::collections::HashSet<String>) {
         for binding in bindings {
             if let Some(eq_pos) = binding.find('=') {
                 let expr = binding[eq_pos + 1..].trim();
                 if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                    symbols.extend(parsed.accessed_symbols().iter().cloned());
+                    out.extend(parsed.accessed_symbols().iter().cloned());
                 }
             }
         }
+    }
+
+    if let Some(bindings) = step_let_bindings {
+        collect_from_lets(bindings, &mut symbols);
     }
 
     if let Some(s) = script {
@@ -1272,14 +1283,7 @@ pub(crate) fn collect_all_accessed_symbols(
             }
         }
         if let Some(bindings) = &s.let_bindings {
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let expr = binding[eq_pos + 1..].trim();
-                    if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                        symbols.extend(parsed.accessed_symbols().iter().cloned());
-                    }
-                }
-            }
+            collect_from_lets(bindings, &mut symbols);
         }
     }
 
@@ -1300,6 +1304,9 @@ pub(crate) fn collect_all_accessed_symbols(
                             collect_from_fs(d, &mut symbols);
                         }
                     }
+                }
+                if let Some(bindings) = &es.let_bindings {
+                    collect_from_lets(bindings, &mut symbols);
                 }
             }
         }

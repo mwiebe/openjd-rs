@@ -343,11 +343,14 @@ fn check_size(
     };
     let total = values_size(job_loop, variables, outputs);
     if total > max {
+        let bytes = |n: usize| format!("{n} byte{}", if n == 1 { "" } else { "s" });
         return Err(error_at(
             &entry_path(job_loop.entry_index),
             format!(
-                "Loop '{}': its loop variable and loop output values total {total} bytes, over the limit of {max} bytes.",
-                job_loop.name
+                "Loop '{}': its loop variable and loop output values total {}, over the limit of {}.",
+                job_loop.name,
+                bytes(total),
+                bytes(max)
             ),
         ));
     }

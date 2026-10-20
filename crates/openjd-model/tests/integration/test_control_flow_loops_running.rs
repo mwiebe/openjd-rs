@@ -1960,7 +1960,7 @@ fn loop_functions_refuse_caller_errors() {
     assert!(e.is_caller_error());
     assert_eq!(
         e.to_string(),
-        "Evaluating loop 'L' after zero iterations was refused, in its arguments:\n\
+        "Ending loop 'L' without iterations was refused, in its arguments:\n\
          Compatibility error: loop 'L' is not a bound loop whose first while is false."
     );
     // A boundary that reads a body Step not in the inputs.
@@ -3599,5 +3599,121 @@ fn step_name_in_a_body_instance_is_the_body_step_name() {
     assert_eq!(
         st.get_value("Step.Name"),
         Some(&ExprValue::String("W".into()))
+    );
+}
+
+#[test]
+fn a_body_step_environment_let_carries_its_loop_values() {
+    let fx = Fixture::new(
+        &body_loop(
+            "    - name: W
+      stepEnvironments:
+      - name: E
+        script:
+          let: ['d = Loop.D', 'r = RawLoop.D', 'k = Loop.K + Loop.Iteration']
+          actions:
+            onEnter:
+              command: echo
+              args: ['{{d}}', '{{r}}', '{{k}}']
+      script:
+        actions:
+          onRun:
+            command: echo
+",
+        )
+        .replace(
+            "  loop:\n",
+            "  loop:\n    variables:\n    - {name: D, type: PATH, initial: /src/base, next: '{{RawLoop.D}}'}\n    - {name: K, type: INT, initial: '{{7}}', next: '{{Loop.K}}'}\n",
+        ),
+        &[],
+    );
+    let w = start0(&fx).unwrap().steps.remove(0);
+    let st = w
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(
+        st.get_value("RawLoop.D"),
+        Some(&ExprValue::String("/src/base".into()))
+    );
+    assert_eq!(st.get_value("Loop.K"), Some(&ExprValue::Int(7)));
+    assert_eq!(st.get_value("Loop.Iteration"), Some(&ExprValue::Int(0)));
+    assert_eq!(
+        w.path_inputs,
+        [PathInput {
+            symbol: "RawLoop.D".into(),
+            ty: ExprType::PATH
+        }]
+    );
+}
+
+#[test]
+fn a_step_environment_let_carries_its_steps_inputs() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: P
+  outputVariables:
+  - {{name: V, type: INT}}
+  {SCRIPT}
+- name: C
+  dependencies:
+  - dependsOn: P
+  stepEnvironments:
+  - name: E
+    script:
+      let: ['v = Steps.P.Output.V']
+      actions:
+        onEnter:
+          command: echo
+          args: ['{{{{v}}}}']
+  {SCRIPT}
+"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let c = step(&job, "C");
+    assert_eq!(c.input_producers(), ["P"]);
+    let mut inputs = StepInputs::new();
+    super::control_flow_binding_support::succeeded(
+        &mut inputs,
+        &job,
+        "P",
+        &[outputs(&[("V", ExprValue::Int(4))])],
+    );
+    let attached = attach_step_inputs(c, &inputs).unwrap();
+    let st = attached
+        .resolved_symtab
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(st.get_value("Steps.P.Output.V"), Some(&ExprValue::Int(4)));
+}
+
+#[test]
+fn loop_errors_name_one_byte_and_a_refused_boundary_call() {
+    let b = "{name: V, type: INT, initial: '{{1}}', next: '{{Loop.V}}'}";
+    assert_eq!(
+        size_err(b, "", 0),
+        Some(expected(&[(
+            "steps[0]",
+            "Loop 'L': its loop variable and loop output values total 1 byte, over the limit of 0 bytes."
+        )]))
+    );
+    let fx = Fixture::new(&body_loop(W), &[]);
+    let job = fx.job();
+    let mut p = LoopProgress::new(&job.loops[0]).unwrap();
+    p.iteration = 2;
+    let e =
+        evaluate_iteration_boundary(&fx.jt, &fx.params, &fx.ctx, &job, 0, &p, &StepInputs::new())
+            .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        "Evaluating the boundary of iteration 2 of loop 'L' was refused, in its arguments:\nCompatibility error: loop 'L' has maxIterations 2, so it has no iteration 2."
     );
 }
