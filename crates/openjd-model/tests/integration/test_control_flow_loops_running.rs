@@ -3355,3 +3355,249 @@ fn a_missing_known_input_names_the_body_instance() {
         "Compatibility error: the enablement group of Step 'L[0].B' was evaluated with 'Steps.P.Output.G', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped."
     );
 }
+
+// ── Body Step Environments, host requirements, and Step.Name ──────
+
+/// A loop whose body Step `W` has two Step Environments: `E0`, enabled only
+/// in iteration 1, whose `onEnter` fails its check in iteration 0, and `E1`
+/// with `enableIf` `e1`.
+fn body_environments(e1: &str) -> Fixture {
+    Fixture::new(
+        &body_loop(&format!(
+            "    - name: W
+      stepEnvironments:
+      - name: E0
+        enableIf: '{{{{Loop.Iteration == 1}}}}'
+        script:
+          actions:
+            onEnter:
+              command: \"{{{{fail('disabled env checked') if Loop.Iteration == 0 else 'a'}}}}\"
+      - name: E1
+        enableIf: \"{e1}\"
+        script:
+          actions:
+            onEnter:
+              command: echo
+      script:
+        actions:
+          onRun:
+            command: echo
+"
+        )),
+        &[],
+    )
+}
+
+#[test]
+fn body_step_environment_enable_if_reads_loop_and_skips_the_disabled_one() {
+    let it = start0(&body_environments("{{Loop.Iteration == 0}}")).unwrap();
+    let enabled: Vec<bool> = it.steps[0]
+        .step_environments
+        .iter()
+        .flatten()
+        .map(|e| e.enabled)
+        .collect();
+    // E0 is disabled, so its failing check is not run.
+    assert_eq!(enabled, [false, true]);
+}
+
+#[test]
+fn body_step_environment_enable_if_errors_name_the_body_path() {
+    let e = start0(&body_environments(
+        "{{fail('bad enable') if Loop.Iteration == 0 else true}}",
+    ))
+    .unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "Step 'L[0].W' failed in its remaining group:\n{}",
+            expected(&[(
+                "steps[0] -> loop -> steps[0] -> stepEnvironments[1] -> enableIf",
+                "bad enable\n  fail('bad enable') if Loop.Iteration == 0 else true\n  ^~~~~~~~~~~~~~~~~~"
+            )])
+        )
+    );
+}
+
+#[test]
+fn body_step_environment_reads_the_loops_dependencies() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: Setup
+  outputVariables:
+  - {{name: Base, type: INT}}
+  {SCRIPT}
+- name: L
+  dependencies:
+  - dependsOn: Setup
+  loop:
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+    - name: W
+      stepEnvironments:
+      - name: E
+        script:
+          actions:
+            onEnter:
+              command: echo
+              args: ['{{{{Steps.Setup.Output.Base + Loop.Iteration}}}}']
+      script:
+        actions:
+          onRun:
+            command: echo
+"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let mut deps = StepInputs::new();
+    super::control_flow_binding_support::succeeded(
+        &mut deps,
+        &job,
+        "Setup",
+        &[outputs(&[("Base", ExprValue::Int(5))])],
+    );
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    let it = start_iteration(&fx.jt, &fx.params, &fx.ctx, &job, 0, &progress, &deps, 0).unwrap();
+    assert!(matches!(it.steps[0].binding, StepBinding::Bound));
+}
+
+/// `start_iteration`'s error for a body Step `W` with these
+/// `hostRequirements` lines, each failing only in iteration 0.
+fn body_host_requirements_error(hr: &str) -> String {
+    let fx = Fixture::new(
+        &format!(
+            "{}parameterDefinitions:
+- {{name: Arches, type: 'LIST[STRING]', default: [x86_64, arm64]}}
+steps:
+- name: L
+  loop:
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+    - name: W
+      hostRequirements:
+{hr}
+      script:
+        actions:
+          onRun:
+            command: echo
+",
+            header("[EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]")
+        ),
+        &[],
+    );
+    let e = start0(&fx).unwrap_err();
+    assert_eq!(e.group, MaterializationGroup::HostSelection);
+    e.errors[0].to_string()
+}
+
+#[test]
+fn body_step_host_requirement_resolution_errors_name_the_body_path() {
+    let at = "steps[0] -> loop -> steps[0] -> hostRequirements";
+    for (hr, path, message) in [
+        (
+            "        attributes:\n        - {name: attr.custom.tag, anyOf: ['{{ null if Loop.Iteration == 0 else 1 }}']}",
+            at.to_string(),
+            format!("{at} -> attributes[0] -> anyOf: has no elements after resolution"),
+        ),
+        (
+            "        attributes:\n        - {name: attr.worker.cpu.arch, allOf: ['{{ RawParam.Arches if Loop.Iteration == 0 else [] }}']}",
+            at.to_string(),
+            format!("{at} -> attributes[0] -> allOf: single-valued attribute cannot have more than 1 element after resolution"),
+        ),
+        (
+            "        attributes:\n        - {name: 'attr.custom.{{\"x\" if Loop.Iteration == 0 else \"y\"}}', anyOf: [a]}\n        - {name: attr.custom.x, anyOf: [b]}",
+            format!("{at} -> attributes[1]"),
+            "duplicate attribute name 'attr.custom.x'.".to_string(),
+        ),
+        (
+            "        amounts:\n        - {name: amount.worker.gpu, min: '{{5 if Loop.Iteration == 0 else 0}}', max: 1}",
+            format!("{at} -> amounts[0]"),
+            "min (5) > max (1).".to_string(),
+        ),
+        (
+            "        attributes:\n        - {name: attr.worker.os.family, anyOf: ['{{\"bogus\" if Loop.Iteration == 0 else \"linux\"}}']}",
+            format!("{at} -> attributes[0] -> anyOf[0]"),
+            "value 'bogus' is not valid for attr.worker.os.family.".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            body_host_requirements_error(hr),
+            expected(&[(path.as_str(), message.as_str())]),
+            "{hr}"
+        );
+    }
+}
+
+#[test]
+fn a_loop_binds_at_creation_from_producers_known_then() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: M
+  parameterSpace:
+    taskParameterDefinitions:
+    - {{name: F, type: INT, range: '1-3'}}
+  {SCRIPT}
+- name: S
+  enableIf: false
+  outputVariables:
+  - {{name: G, type: BOOL}}
+  {SCRIPT}
+- name: L
+  dependencies:
+  - dependsOn: M
+  - dependsOn: S
+  enableIf: '{{{{Steps.S.Output.G == null}}}}'
+  loop:
+    variables:
+    - {{name: Count, type: INT, initial: '{{{{len(Steps.M.TaskParam.F)}}}}', next: '{{{{Loop.Count}}}}'}}
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+{W}"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let LoopBinding::Bound(b) = &job.loops[0].binding else {
+        panic!("{:?}", job.loops[0].binding)
+    };
+    assert_eq!(b.start.initial["Count"], ExprValue::Int(3));
+}
+
+#[test]
+fn step_name_in_a_body_instance_is_the_body_step_name() {
+    let it = start0(&Fixture::new(
+        &body_loop(
+            "    - name: W
+      enableIf: \"{{Step.Name == 'W'}}\"
+      script:
+        actions:
+          onRun:
+            command: echo
+            args: ['{{Step.Name}}']
+",
+        ),
+        &[],
+    ))
+    .unwrap();
+    assert!(matches!(it.steps[0].binding, StepBinding::Bound));
+    let st = it.steps[0]
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(
+        st.get_value("Step.Name"),
+        Some(&ExprValue::String("W".into()))
+    );
+}
