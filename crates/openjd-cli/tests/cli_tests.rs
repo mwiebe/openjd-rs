@@ -4616,7 +4616,7 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "--step-inputs requires --step (or a Job with one Step) without --run-dependencies.\n"
+                "--step-inputs requires --step (or a Job with one Step or loop) without --run-dependencies.\n"
             ),
             "stderr: {stderr}"
         );
@@ -4741,7 +4741,7 @@ steps:
             "stdout: {stdout}"
         );
         assert!(
-            stdout.contains("  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step reads\n"),
+            stdout.contains("  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step or loop reads\n"),
             "stdout: {stdout}"
         );
         let template = templates_dir().join("basic.yaml");
@@ -6384,46 +6384,719 @@ steps:
 #[cfg(target_os = "linux")]
 mod control_flow_golden;
 
-/// `openjd run` and `openjd summary` refuse a template with a loop (RFC
-/// 0013), which `openjd check` accepts, until they can run loops.
+/// `openjd run` and `openjd summary` on templates with loops (RFC 0013, plan
+/// L8): the iterations, the `<Loop>[<N>].<Step>` naming, the flag rules, and
+/// `--step-inputs` for loops.
 mod control_flow_loops {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    const LOOP: &str = r#"specificationVersion: jobtemplate-2023-09
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    /// The log lines, without their timestamps.
+    fn lines(stdout: &str) -> Vec<&str> {
+        stdout
+            .lines()
+            .map(|l| l.split_once('\t').map_or(l, |(_, rest)| rest))
+            .collect()
+    }
+
+    /// The position of the first log line equal to `line`.
+    fn at(stdout: &str, line: &str) -> usize {
+        lines(stdout)
+            .iter()
+            .position(|l| *l == line)
+            .unwrap_or_else(|| panic!("no line {line:?} in:\n{stdout}"))
+    }
+
+    fn has(stdout: &str, line: &str) -> bool {
+        lines(stdout).contains(&line)
+    }
+
+    /// The JSON result after the log.
+    fn json(stdout: &str) -> serde_json::Value {
+        let start = stdout.find("{\n").expect("JSON result");
+        serde_json::from_str(&stdout[start..]).unwrap()
+    }
+
+    /// A Python one-liner Action.
+    fn py(code: &str) -> String {
+        format!(
+            "script:\n        actions:\n          onRun:\n            command: python\n            args: ['-c', {}]",
+            serde_json::Value::String(code.to_string())
+        )
+    }
+
+    /// A loop `L` that runs two iterations. Its body Step `P` has two Tasks
+    /// and reports `V`; `Q` reads `P`'s outputs, and `R` depends on `P`
+    /// without reading them. `C` after the loop fans out over the APPEND
+    /// output `H`.
+    fn two_iterations() -> String {
+        format!(
+            r#"specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW]
 name: Loops
+jobOutputDefinitions:
+- name: Sum
+  type: INT
+  value: "{{{{sum(Steps.L.Output.H)}}}}"
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 1}}"
-    maxIterations: 3
+    variables:
+    - name: X
+      type: INT
+      initial: "{{{{1}}}}"
+      next: "{{{{Loop.X * 10}}}}"
+    until: "{{{{Loop.Iteration >= 1}}}}"
+    maxIterations: 5
+    steps:
+    - name: P
+      parameterSpace:
+        taskParameterDefinitions:
+        - {{name: I, type: INT, range: [1, 2]}}
+      outputVariables:
+      - {{name: V, type: INT}}
+      {p}
+    - name: Q
+      dependencies: [{{dependsOn: P}}]
+      {q}
+    - name: R
+      dependencies: [{{dependsOn: P}}]
+      {r}
+  outputVariables:
+  - name: H
+    type: LIST[INT]
+    collect: APPEND
+    value: "{{{{sum(Steps.P.Output.V)}}}}"
+- name: C
+  dependencies: [{{dependsOn: L}}]
+  parameterSpace:
+    taskParameterDefinitions:
+    - {{name: Y, type: INT, range: "{{{{Steps.L.Output.H}}}}"}}
+  {c}
+"#,
+            p = py("print('openjd_output_var: V=' + str({{Task.Param.I}} * {{Loop.X}}))"),
+            q = py("print('Q_' + '{{Loop.Iteration}}' + '_' + str({{Steps.P.Output.V}}))"),
+            r = py("print('R_' + '{{Loop.Iteration}}')"),
+            c = py("print('C_' + '{{Task.Param.Y}}')").replace("\n      ", "\n  "),
+        )
+    }
+
+    #[test]
+    fn a_loop_runs_its_iterations_and_feeds_its_dependents() {
+        let job = write(&two_iterations());
+        let path = job.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["check", path]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let (code, stdout, stderr) = run_cli(&["run", path]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let order = [
+            "Running loop 'L'",
+            "Loop 'L' iteration 0: X = 1",
+            "Running step 'L[0].P'",
+            "Running step 'L[0].Q'",
+            "Q_0_[1, 2]",
+            "Running step 'L[0].R'",
+            "Loop 'L' iteration 0 outputs: H = 3",
+            "Loop 'L' iteration 1: X = 10",
+            "Running step 'L[1].P'",
+            "Q_1_[10, 20]",
+            "Loop 'L' iteration 1 outputs: H = 30",
+            "Loop 'L' succeeded after 2 iterations (until is true)",
+            "Loop 'L' outputs: H = [3, 30]",
+            "Step 'C': Tasks known (2 tasks)",
+            "Step 'C' is ready",
+            "Job output Sum = 33",
+            "Running step 'C'",
+            "C_3",
+            "C_30",
+        ];
+        let positions: Vec<usize> = order.iter().map(|l| at(&stdout, l)).collect();
+        assert!(
+            positions.windows(2).all(|w| w[0] < w[1]),
+            "out of order: {positions:?}\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn json_output_lists_the_loop_and_each_body_step_instance() {
+        let job = write(&two_iterations());
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let result = json(&stdout);
+        let steps = result["steps"].as_array().unwrap();
+        let names: Vec<&str> = steps.iter().map(|s| s["name"].as_str().unwrap()).collect();
+        assert_eq!(
+            names,
+            ["L", "L[0].P", "L[0].Q", "L[0].R", "L[1].P", "L[1].Q", "L[1].R", "C"]
+        );
+        assert_eq!(
+            steps[0],
+            serde_json::json!({
+                "name": "L", "kind": "loop", "state": "SUCCEEDED", "max_iterations": 5,
+                "iterations": 2, "outputs": {"H": [3, 30]},
+                "iteration_values": [
+                    {"iteration": 0, "variables": {"X": 1}, "outputs": {"H": 3}},
+                    {"iteration": 1, "variables": {"X": 10}, "outputs": {"H": 30}},
+                ],
+            })
+        );
+        assert_eq!(
+            steps[4],
+            serde_json::json!({
+                "name": "L[1].P", "loop": "L", "iteration": 1, "state": "SUCCEEDED",
+                "task_count": 2, "outputs": [{"V": 10}, {"V": 20}],
+            })
+        );
+        assert_eq!(result["job_outputs"], serde_json::json!({"Sum": 33}));
+    }
+
+    #[test]
+    fn a_failed_body_step_instance_fails_the_loop_and_blocks_its_dependents() {
+        let template = two_iterations().replace(
+            "print('R_' + '{{Loop.Iteration}}')",
+            "import sys; sys.exit({{Loop.Iteration}})",
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            at(
+                &stdout,
+                "Loop 'L' failed: its body Step instance 'L[1].R' failed"
+            ) < at(&stdout, "Step 'C' is blocked: its dependency 'L' failed")
+        );
+        assert!(!has(&stdout, "Running step 'C'"));
+        let result = json(&stdout);
+        let steps = result["steps"].as_array().unwrap();
+        assert_eq!(steps[0]["state"], "FAILED");
+        assert_eq!(steps[0]["reason"], "its body Step instance 'L[1].R' failed");
+        assert_eq!(steps[0]["iterations"], 2);
+        assert!(steps[0].get("outputs").is_none(), "{}", steps[0]);
+        assert_eq!(steps[6]["name"], "L[1].R");
+        assert_eq!(steps[6]["state"], "FAILED");
+        assert_eq!(steps[6]["reason"], "a Task failed");
+        assert_eq!(steps[7]["state"], "BLOCKED");
+        assert_eq!(
+            result["job_outputs_not_evaluated"],
+            serde_json::json!([{"name": "Sum", "waits_on": ["Loop 'L', which failed"]}])
+        );
+    }
+
+    /// RFC 0013 §Implementation Impact: `--maximum-tasks` applies to each
+    /// body Step instance. `L[0].P` runs one of its two Tasks, so `L[0].Q`,
+    /// which reads its outputs, is blocked, `L[0].R` runs, and the boundary
+    /// is never evaluated: the loop and `C` are blocked.
+    #[test]
+    fn maximum_tasks_applies_to_each_body_step_instance() {
+        let job = write(&two_iterations());
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--maximum-tasks",
+            "1",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        for line in [
+            "Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran",
+            "R_0",
+            "Loop 'L' is blocked: its body Step instance 'L[0].P' did not run all of its Tasks, so iteration 0 never completes",
+            "Step 'C' is blocked: its dependency 'L' is blocked",
+            "Job output Sum was not evaluated: it waits on Loop 'L', which is blocked",
+        ] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
+        }
+        assert!(!has(&stdout, "Loop 'L' iteration 1: X = 10"));
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[0]["state"], "BLOCKED");
+        assert_eq!(steps[1]["incomplete"], true);
+        assert_eq!(steps[2]["state"], "BLOCKED");
+        assert_eq!(steps[3]["state"], "SUCCEEDED");
+        assert_eq!(steps[4]["name"], "C");
+        assert_eq!(steps[4]["state"], "BLOCKED");
+    }
+
+    #[test]
+    fn step_naming_a_body_step_is_an_error_that_names_its_loop() {
+        let job = write(&two_iterations());
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap(), "--step", "Q"]);
+        assert_eq!(code, 1, "{stdout}");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'Q' is a body Step of loop 'L', so it runs only within the loop's iterations. Use --step L to run the whole loop."
+        );
+        let (code, _, stderr) = run_cli(&["summary", job.path().to_str().unwrap(), "--step", "Q"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'Q' is a body Step of loop 'L'; summarize the loop with --step L."
+        );
+    }
+
+    /// A Job whose only top-level entry is a loop, so it is selected without
+    /// `--step`.
+    fn only_a_loop() -> String {
+        let t = two_iterations();
+        let end = t.find("- name: C\n").unwrap();
+        t[..end]
+            .replace("jobOutputDefinitions:\n- name: Sum\n  type: INT\n  value: \"{{sum(Steps.L.Output.H)}}\"\n", "")
+    }
+
+    #[test]
+    fn tasks_and_task_param_are_rejected_for_a_selected_loop() {
+        let two = write(&two_iterations());
+        let one = write(&only_a_loop());
+        for (job, step) in [(&two, Some("L")), (&one, Some("L")), (&one, None)] {
+            for (flag, value, option) in [
+                ("--tasks", r#"[{"I": "1"}]"#, "--tasks"),
+                ("--task-param", "I=1", "--task-param"),
+            ] {
+                let mut args = vec!["run", job.path().to_str().unwrap(), flag, value];
+                if let Some(step) = step {
+                    args.extend(["--step", step]);
+                }
+                let (code, stdout, stderr) = run_cli(&args);
+                assert_eq!(code, 1, "{args:?}: {stdout}");
+                assert_eq!(
+                    stderr.trim_end(),
+                    format!(
+                        "ERROR: Loop 'L' has no Task parameters or Tasks of its own; {option} cannot be used."
+                    ),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
+    /// An explicit `--maximum-tasks`, even its default value, is rejected
+    /// with `--step` naming a loop; selecting the only loop without `--step`
+    /// applies it to each body Step instance.
+    #[test]
+    fn explicit_maximum_tasks_is_rejected_only_with_step_naming_a_loop() {
+        let job = write(&only_a_loop());
+        let path = job.path().to_str().unwrap();
+        for value in ["1", "-1"] {
+            let (code, stdout, stderr) =
+                run_cli(&["run", path, "--step", "L", "--maximum-tasks", value]);
+            assert_eq!(code, 1, "{stdout}");
+            assert_eq!(
+                stderr.trim_end(),
+                "ERROR: Loop 'L' has no Tasks of its own; --maximum-tasks cannot be used with --step naming a loop. Without --step, --maximum-tasks applies to each body Step instance."
+            );
+        }
+        let (code, stdout, stderr) = run_cli(&["run", path, "--step", "L"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(
+            &stdout,
+            "Loop 'L' succeeded after 2 iterations (until is true)"
+        ));
+        let (code, stdout, stderr) = run_cli(&["run", path, "--maximum-tasks", "1"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(
+            &stdout,
+            "Loop 'L' is blocked: its body Step instance 'L[0].P' did not run all of its Tasks, so iteration 0 never completes"
+        ));
+    }
+
+    /// `B` reports `N`; loop `L` depends on `B`, its `initial` reads `N`,
+    /// and its body reads `B`'s `Text`.
+    const READS_DEPENDENCY: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Dep
+steps:
+- name: B
+  outputVariables:
+  - {name: N, type: INT}
+  - {name: Text, type: STRING}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: N=2'); print('openjd_output_var: Text=\"hi\"')"]
+- name: X
+  outputVariables:
+  - {name: Z, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: Z=1')"]
+- name: L
+  dependencies: [{dependsOn: B}]
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{Steps.B.Output.N}}", next: "{{Loop.K - 1}}"}
+    while: "{{Loop.K > 0}}"
+    maxIterations: 5
     steps:
     - name: W
       script:
         actions:
           onRun:
-            command: echo
+            command: python
+            args: ['-c', "print('W_{{Loop.K}}_{{Steps.B.Output.Text}}')"]
 "#;
 
     #[test]
-    fn run_and_summary_refuse_loops_that_check_accepts() {
-        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
-        f.write_all(LOOP.as_bytes()).unwrap();
-        let path = f.path().to_str().unwrap();
-        let (code, stdout, _) = run_cli(&["check", path]);
-        assert_eq!(code, 0, "{stdout}");
-        for command in ["run", "summary"] {
-            let (code, stdout, stderr) = run_cli(&[command, path]);
-            assert_eq!(code, 1, "{stdout}");
-            assert_eq!(stdout, "");
-            assert_eq!(
-                stderr.trim_end(),
-                format!(
-                    "ERROR: openjd {command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop 'L'."
-                )
-            );
+    fn a_pending_loop_is_bound_when_its_dependency_succeeds() {
+        let job = write(READS_DEPENDENCY);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let pending = at(&stdout, "Loop 'L' is pending inputs:");
+        assert_eq!(
+            lines(&stdout)[pending + 1..pending + 4],
+            [
+                "  Enabled: yes",
+                "  maxIterations: 5",
+                "  Start (initial values and first while): determined at run time from Steps.B.Output.N",
+            ]
+        );
+        assert!(at(&stdout, "Loop 'L' is ready") > at(&stdout, "Running step 'B'"));
+        for line in [
+            "W_2_hi",
+            "W_1_hi",
+            "Loop 'L' succeeded after 2 iterations (while is false)",
+        ] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
         }
+    }
+
+    #[test]
+    fn step_inputs_supply_a_loops_dependencies_for_step_naming_the_loop() {
+        let job = write(READS_DEPENDENCY);
+        let path = job.path().to_str().unwrap();
+        // initial reads N while the loop is pending.
+        let (code, _, stderr) = run_cli(&["run", path, "--step", "L"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.B.Output.N.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+        );
+        // Every ONCE output of a supplied producer must be given.
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 1}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Step 'B': Output variable 'Text': no value was reported (collect mode ONCE)"
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 1, "Steps.B.Output.Text": "yo"}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(&stdout, "W_1_yo"), "{stdout}");
+        assert!(!has(&stdout, "Running step 'B'"));
+        // X is not a dependency of L, so L cannot read it.
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.X.Output.Z": 1}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Loop 'L' does not read the outputs of Step 'X'."
+        );
+        // --run-dependencies runs B first.
+        let (code, stdout, stderr) = run_cli(&["run", path, "--step", "L", "--run-dependencies"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(at(&stdout, "Running step 'B'") < at(&stdout, "Running loop 'L'"));
+        assert!(!has(&stdout, "Running step 'X'"));
+    }
+
+    /// A body Step reads a loop dependency that only its script reads, which
+    /// is found from iteration 0's instances.
+    #[test]
+    fn step_inputs_find_what_the_body_reads() {
+        let template =
+            READS_DEPENDENCY.replace("initial: \"{{Steps.B.Output.N}}\"", "initial: \"{{2}}\"");
+        let job = write(&template);
+        let (code, _, stderr) = run_cli(&["run", job.path().to_str().unwrap(), "--step", "L"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.B.Output.Text.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+        );
+    }
+
+    #[test]
+    fn step_inputs_supply_loop_outputs_in_their_declared_type() {
+        let job = write(&two_iterations());
+        let path = job.path().to_str().unwrap();
+        let (code, _, stderr) = run_cli(&["run", path, "--step", "C"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run: Steps.L.Output.H.\nGive them with --step-inputs, or run Step 'C' with --run-dependencies."
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.H": [7, 8, 9]}"#,
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        for line in ["C_7", "C_8", "C_9", "Job output Sum = 24"] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
+        }
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[0]["name"], "L");
+        assert_eq!(steps[0]["inputs_supplied"], true);
+        for (value, want) in [
+            (
+                r#"{"Steps.L.Output.H": 3}"#,
+                "ERROR: --step-inputs: Loop 'L': Steps.L.Output.H: an APPEND output must be given as a list",
+            ),
+            (
+                r#"{"Steps.L.Output.H": ["a"]}"#,
+                "ERROR: --step-inputs: Loop 'L': Steps.L.Output.H: Output variable 'H': element (string) 'a' does not convert to int: Cannot convert 'a' to int: invalid digit found in string",
+            ),
+            (
+                r#"{"Steps.L.TaskParam.H": [1]}"#,
+                "ERROR: --step-inputs: Loop 'L' has no Task parameters; remove 'Steps.L.TaskParam.H'.",
+            ),
+            (
+                r#"{"Steps.L.Output.G": [1]}"#,
+                "ERROR: --step-inputs: Loop 'L' declares no output variable 'G'.",
+            ),
+            (
+                r#"{"Steps.P.Output.V": [1]}"#,
+                "ERROR: --step-inputs: Step 'P' is a body Step of loop 'L', and its outputs are not available outside the loop.",
+            ),
+        ] {
+            let (code, _, stderr) =
+                run_cli(&["run", path, "--step", "C", "--step-inputs", value]);
+            assert_eq!(code, 1, "{value}");
+            assert_eq!(stderr.trim_end(), want, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_zero_iteration_loop_succeeds_with_empty_outputs() {
+        let template = READS_DEPENDENCY
+            .replace("initial: \"{{Steps.B.Output.N}}\"", "initial: \"{{0}}\"")
+            + "  outputVariables:\n  - {name: Last, type: INT, collect: LAST, value: \"{{Loop.K}}\"}\n  - {name: All, type: 'LIST[INT]', collect: APPEND, value: \"{{Loop.K}}\"}\n";
+        let job = write(&template);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(
+            &stdout,
+            "Loop 'L' succeeded after 0 iterations (the first while is false)"
+        ));
+        assert!(has(&stdout, "Loop 'L' outputs: Last = null, All = []"));
+        assert!(!has(&stdout, "Running loop 'L'"));
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(
+            steps[2],
+            serde_json::json!({
+                "name": "L", "kind": "loop", "state": "SUCCEEDED", "max_iterations": 5,
+                "iterations": 0, "outputs": {"Last": null, "All": []},
+            })
+        );
+    }
+
+    #[test]
+    fn a_skipped_loop_runs_no_iterations_and_its_outputs_are_null() {
+        let template = two_iterations()
+            .replace(
+                "- name: L\n  loop:",
+                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+            )
+            .replace(
+                "range: \"{{Steps.L.Output.H}}\"",
+                "range: \"{{Steps.L.Output.H or [5]}}\"",
+            )
+            .replace(
+                "{{sum(Steps.L.Output.H)}}",
+                "{{len(Steps.L.Output.H or [])}}",
+            );
+        let job = write(&template);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        for line in [
+            "Loop 'L' skipped (enableIf is false)",
+            "Job output Sum = 0",
+            "Loop 'L' is skipped; it runs no iterations",
+            "C_5",
+        ] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
+        }
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(
+            steps[0],
+            serde_json::json!({
+                "name": "L", "kind": "loop", "state": "SKIPPED", "iterations": 0,
+                "outputs": {"H": null},
+            })
+        );
+    }
+
+    /// An error in a body Step instance's group, at the start of an
+    /// iteration, fails the loop finally.
+    #[test]
+    fn an_instance_group_error_fails_the_loop() {
+        let template = two_iterations().replace(
+            "range: [1, 2]",
+            "range: \"{{[1, 2] if Loop.Iteration == 0 else fail('no frames in ' + string(Loop.Iteration))}}\"",
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed: Step 'L[1].P' failed in its Task enumeration group"
+        ));
+        assert!(
+            stderr.starts_with("ERROR: Step 'L[1].P' failed in its Task enumeration group:\n"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("\tno frames in 1\n"), "{stderr}");
+        assert!(has(
+            &stdout,
+            "Step 'C' is blocked: its dependency 'L' failed"
+        ));
+    }
+
+    #[test]
+    fn template_help_lists_loops_and_their_body_steps() {
+        let job = write(&two_iterations());
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap(), "--help"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "Loops (--step <Loop> runs the whole loop; its body Steps run only within it):\n  L: body Steps P, Q, R\n\n"
+            ),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    fn summary_counts_a_zero_iteration_loop_as_zero_tasks() {
+        let template =
+            READS_DEPENDENCY.replace("initial: \"{{Steps.B.Output.N}}\"", "initial: \"{{0}}\"");
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("Total tasks: 2\n"), "{stdout}");
+        assert!(
+            stdout.contains("3. 'L' (loop; 0 iterations, 0 total Tasks)\n"),
+            "{stdout}"
+        );
+        let skipped = two_iterations()
+            .replace(
+                "- name: L\n  loop:",
+                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+            )
+            .replace(
+                "range: \"{{Steps.L.Output.H}}\"",
+                "range: \"{{Steps.L.Output.H or [5]}}\"",
+            )
+            .replace(
+                "{{sum(Steps.L.Output.H)}}",
+                "{{len(Steps.L.Output.H or [])}}",
+            );
+        let job = write(&skipped);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("1. 'L' (loop; SKIPPED, 0 total Tasks)\n  Condition: until\n  maxIterations: not evaluated (the loop is skipped)\n"), "{stdout}");
+    }
+
+    #[test]
+    fn summary_step_naming_a_loop_and_a_pending_loop() {
+        let job = write(READS_DEPENDENCY);
+        let (code, stdout, stderr) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--step", "L"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stdout,
+            "\n--- Summary for loop 'L' in Job 'Dep' ---\n\n\
+             State: PENDING_INPUTS (loop; pending inputs; Tasks determined at run time)\n\
+             Enabled: yes\n\
+             maxIterations: 5\n\
+             Start (initial values and first while): determined at run time from Steps.B.Output.N\n\
+             Condition: while\n\
+             Loop variables:\n  - K (INT)\n\
+             Body Steps (Tasks determined at run time in each iteration):\n  - 'W'\n\
+             1 dependencies\n\n\
+             Dependencies (1):\n- 'B'\n\n"
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "summary",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["binding"],
+            serde_json::json!({
+                "enablement": {"known": true},
+                "bound": {"known": true},
+                "start": {"known": false, "waits_on": ["Steps.B.Output.N"], "waits_for_enable_if": false},
+            })
+        );
+        assert_eq!(
+            result["dependencies"],
+            serde_json::json!([{"step_name": "B"}])
+        );
+    }
+
+    #[test]
+    fn summary_reports_a_loops_bound_and_body() {
+        let job = write(&two_iterations());
+        let (code, stdout, stderr) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["total_steps"], 4);
+        assert_eq!(result["total_loops"], 1);
+        assert_eq!(result["tasks_determined_at_run_time"], true);
+        assert_eq!(
+            result["steps"][0],
+            serde_json::json!({
+                "name": "L", "kind": "loop", "total_tasks": null, "state": "READY",
+                "condition": "until", "max_iterations": 5,
+                "variables": [{"name": "X", "type": "INT"}],
+                "outputs": [{"name": "H", "type": "LIST[INT]", "collect": "APPEND"}],
+                "body": [
+                    {"name": "P", "parameter_definitions": [{"name": "I", "type": "INT"}]},
+                    {"name": "Q", "dependencies": 1},
+                    {"name": "R", "dependencies": 1},
+                ],
+            })
+        );
     }
 }

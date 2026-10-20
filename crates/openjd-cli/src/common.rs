@@ -59,14 +59,27 @@ pub fn caller_limits() -> openjd_model::CallerLimits {
     }
 }
 
-/// The Steps whose `Steps.*` symbols something in `job` reads: a Step's
-/// groups, script, or Step Environments, or a job output.
+/// The Steps and loops whose `Steps.*` symbols something in `job` reads: a
+/// Step's groups, script, or Step Environments, a pending loop's groups, a
+/// job output, or a loop's body or boundary. A loop's body and boundary read
+/// only its dependencies outside the loop (RFC 0013 §`Steps.*` in and around
+/// a loop), and its body Steps are not instantiated until it runs, so every
+/// dependency of a loop counts as read.
 pub fn read_producers(job: &openjd_model::job::Job) -> std::collections::BTreeSet<String> {
     let mut producers: std::collections::BTreeSet<String> = job
         .steps
         .iter()
         .flat_map(|step| step.input_producers())
         .collect();
+    for l in &job.loops {
+        producers.extend(l.input_producers());
+        producers.extend(
+            l.dependencies
+                .iter()
+                .flatten()
+                .map(|d| d.depends_on.clone()),
+        );
+    }
     for i in 0..job.outputs.as_ref().map_or(0, Vec::len) {
         for symbol in openjd_model::job_output_inputs(job, i) {
             if let Some(step) = step_of_symbol(&symbol) {
@@ -83,14 +96,17 @@ pub fn step_of_symbol(symbol: &str) -> Option<&str> {
 }
 
 /// Whether `Steps.*` symbol `symbol` (`Steps.<Step>.<Member>.<Name>`) is
-/// concrete once `create_job` returns: every symbol of a skipped Step, and
-/// the `TaskParam` and `TaskRawParam` symbols of a Step whose Tasks are
-/// known. Decided from the Steps' bindings, without building any value.
+/// concrete once `create_job` returns: every symbol of a skipped Step or
+/// loop, and the `TaskParam` and `TaskRawParam` symbols of a Step whose Tasks
+/// are known. Decided from the bindings, without building any value.
 pub fn concrete_at_creation(job: &openjd_model::job::Job, symbol: &str) -> bool {
     let mut parts = symbol.strip_prefix("Steps.").unwrap_or("").splitn(3, '.');
     let (Some(p), Some(member)) = (parts.next(), parts.next()) else {
         return false;
     };
+    if let Some(l) = job.loops.iter().find(|l| l.name == p) {
+        return matches!(l.binding, openjd_model::job::LoopBinding::Skipped);
+    }
     let Some(step) = job.steps.iter().find(|s| s.name == p) else {
         return false;
     };
@@ -113,22 +129,10 @@ pub fn binding_lines(step: &openjd_model::job::Step) -> Vec<String> {
     let Some(report) = step.binding_report() else {
         return Vec::new();
     };
-    fn waiting(group: &GroupReport) -> String {
-        match group {
-            GroupReport::Known => String::new(),
-            GroupReport::Waiting { on, for_enablement } => match (on.is_empty(), for_enablement) {
-                (true, _) => "determined at run time (waiting for enableIf)".to_string(),
-                (false, false) => format!("determined at run time from {}", on.join(", ")),
-                (false, true) => {
-                    format!("determined at run time from {} and enableIf", on.join(", "))
-                }
-            },
-        }
-    }
     let mut lines = Vec::new();
     lines.push(match &report.enablement {
         GroupReport::Known => "Enabled: yes".to_string(),
-        other => format!("Enabled: {}", waiting(other)),
+        other => format!("Enabled: {}", waiting_text(other)),
     });
     lines.push(match (&report.tasks, step.tasks_known()) {
         (GroupReport::Known, Some(n)) => {
@@ -150,13 +154,68 @@ pub fn binding_lines(step: &openjd_model::job::Step) -> Vec<String> {
                 )
             }
         }
-        (group, _) => format!("Tasks: {}", waiting(group)),
+        (group, _) => format!("Tasks: {}", waiting_text(group)),
     });
     lines.push(match &report.host_requirements {
         GroupReport::Known => "Host requirements: known".to_string(),
-        other => format!("Host requirements: {}", waiting(other)),
+        other => format!("Host requirements: {}", waiting_text(other)),
     });
     lines
+}
+
+/// `determined at run time from <symbols>`, with `and enableIf` (or
+/// `(waiting for enableIf)` alone) when the group also waits for `enableIf`.
+fn waiting_text(group: &openjd_model::job::GroupReport) -> String {
+    use openjd_model::job::GroupReport;
+    match group {
+        GroupReport::Known => String::new(),
+        GroupReport::Waiting { on, for_enablement } => match (on.is_empty(), for_enablement) {
+            (true, _) => "determined at run time (waiting for enableIf)".to_string(),
+            (false, false) => format!("determined at run time from {}", on.join(", ")),
+            (false, true) => {
+                format!("determined at run time from {} and enableIf", on.join(", "))
+            }
+        },
+    }
+}
+
+/// What is known of a pending loop, one line per group (RFC 0013 §Loop
+/// binding), as [`binding_lines`] reports a Step's:
+///
+/// * `Enabled: yes` or `Enabled: determined at run time from <symbols>`;
+/// * `maxIterations: <N>`, or as for `Enabled`;
+/// * `Start (initial values and first while): known`, or as for `Enabled`.
+///
+/// Empty for a loop that is not pending.
+pub fn loop_binding_lines(job_loop: &openjd_model::job::Loop) -> Vec<String> {
+    use openjd_model::job::{GroupReport, GroupState, LoopBinding};
+    let Some(report) = job_loop.binding_report() else {
+        return Vec::new();
+    };
+    let bound = match &job_loop.binding {
+        LoopBinding::PendingInputs(p) => match p.bound {
+            GroupState::Known(n) => Some(n),
+            GroupState::Waiting { .. } => None,
+        },
+        _ => None,
+    };
+    vec![
+        match &report.enablement {
+            GroupReport::Known => "Enabled: yes".to_string(),
+            other => format!("Enabled: {}", waiting_text(other)),
+        },
+        match (&report.bound, bound) {
+            (GroupReport::Known, Some(n)) => format!("maxIterations: {n}"),
+            (other, _) => format!("maxIterations: {}", waiting_text(other)),
+        },
+        match &report.start {
+            GroupReport::Known => "Start (initial values and first while): known".to_string(),
+            other => format!(
+                "Start (initial values and first while): {}",
+                waiting_text(other)
+            ),
+        },
+    ]
 }
 
 /// A value as JSON, for `--output json|yaml`: a `RangeExpr` as its string,
@@ -382,18 +441,6 @@ pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
             Ok(exts)
         }
         None => Ok(supported.iter().map(|s| s.to_string()).collect()),
-    }
-}
-
-/// Refuse a Job with a loop (`CONTROL_FLOW`, RFC 0013): `command` cannot run
-/// or summarize loops yet, though `openjd check` validates them.
-pub(crate) fn reject_loops(job: &openjd_model::job::Job, command: &str) -> Result<(), String> {
-    match job.loops.first() {
-        None => Ok(()),
-        Some(l) => Err(format!(
-            "{command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop '{}'.",
-            l.name
-        )),
     }
 }
 
