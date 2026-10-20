@@ -29,9 +29,9 @@ The tests run on Linux only, because the samples' `bash` scripts rely on GNU cor
 | `chunked_render.yaml` | RFC 0012 Specification, "Chunked Steps" | wrapped in a Job Template; range `1-6` and `defaultTaskCount: 3` |
 | `chunked_render_omit_frame.yaml` | as `chunked_render.yaml` | frame 5 reports no `RenderTimeS` |
 | `progressive.yaml`, `progressive_enable_if.yaml`, `progressive_let.yaml` | not RFC samples: the plan's progressive binding tests | — |
-| `refine.yaml` | RFC 0013 Basic Examples, "Render, check, and re-render until clean" | none; run with `Frames=1-4` |
+| `refine.yaml` | RFC 0013 Basic Examples, "Render, check, and re-render until clean" | none; run with `Frames=1-4`, also with `MaxPasses=2` or `--maximum-tasks 2`, and alone with `--step` |
 | `solver.yaml` | RFC 0013 Basic Examples, "Iterative solver" | none; run with `Tolerance=0.01` or `0.1`, or with `StartDamping=0.0015` so that `Damping`'s `next` breaks its `minValue` |
-| `s3_pages.yaml` | RFC 0013 Basic Examples, "Paginated listing, then fan out" | none; listed in pages of two keys with `OPENJD_GOLDEN_S3_PAGE_SIZE=2` |
+| `s3_pages.yaml` | RFC 0013 Basic Examples, "Paginated listing, then fan out" | none; listed in pages of two keys with `OPENJD_GOLDEN_S3_PAGE_SIZE=2`, or over an empty prefix |
 | `s3_pages_zero.yaml` | "Paginated listing, then fan out" | `Loop.Iteration == 0 or` removed from `while`, so the loop has zero iterations |
 | `solver_optional.yaml` | "Iterative solver" | an `enableIf` on `Relax` that skips it when `Prepare`'s residual is under the tolerance; the job outputs handle `null` loop outputs; run with `Tolerance=2` to skip it |
 
