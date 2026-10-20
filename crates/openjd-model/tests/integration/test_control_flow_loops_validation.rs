@@ -278,7 +278,7 @@ fn a_loop_has_no_step_fields() {
     ] {
         assert_decode_err(
             &single_loop(UNTIL, &format!("  {field}: {value}\n")),
-            &format!("unknown field `{field}`, expected one of `name`, `description`, `enableIf`, `dependencies`, `loop`, `outputVariables`"),
+            &format!("steps entry 'L' has a 'loop' field, so it is a loop (CONTROL_FLOW, RFC 0013), which has no such field: unknown field `{field}`, expected one of `name`, `description`, `enableIf`, `dependencies`, `loop`, `outputVariables`"),
         );
     }
 }
@@ -287,7 +287,7 @@ fn a_loop_has_no_step_fields() {
 fn a_loop_definition_has_only_its_own_fields() {
     assert_decode_err(
         &single_loop(&format!("{UNTIL}    script: x\n"), ""),
-        "unknown field `script`, expected one of `variables`, `while`, `until`, `maxIterations`, `steps`",
+        "loop 'L': unknown field `script`, expected one of `variables`, `while`, `until`, `maxIterations`, `steps`",
     );
 }
 
@@ -309,7 +309,7 @@ fn loops_do_not_nest() {
               {SCRIPT}
 "
         )),
-        "loop body entry 0 'Inner' has a 'loop' field, but loops do not nest: a loop's body may contain only Steps (RFC 0013).",
+        "loop 'Outer': loop body entry 0 'Inner' has a 'loop' field, but loops do not nest: a loop's body may contain only Steps (RFC 0013).",
     );
 }
 
@@ -317,7 +317,7 @@ fn loops_do_not_nest() {
 fn max_iterations_is_required() {
     assert_decode_err(
         &single_loop("    until: true\n", ""),
-        "missing field `maxIterations`",
+        "loop 'L': missing field `maxIterations`",
     );
 }
 
@@ -328,14 +328,14 @@ fn a_loop_variable_requires_initial_and_next() {
             &format!("    variables: [{{name: V, type: INT, next: \"1\"}}]\n{UNTIL}"),
             "",
         ),
-        "missing 'initial' field in loop variable definition",
+        "loop 'L': missing 'initial' field in loop variable definition",
     );
     assert_decode_err(
         &single_loop(
             &format!("    variables: [{{name: V, type: INT, initial: \"1\"}}]\n{UNTIL}"),
             "",
         ),
-        "missing 'next' field in loop variable definition",
+        "loop 'L': missing 'next' field in loop variable definition",
     );
 }
 
@@ -346,7 +346,7 @@ fn a_loop_output_requires_value() {
             UNTIL,
             "  outputVariables: [{name: O, type: INT, collect: LAST}]\n",
         ),
-        "missing 'value' field in loop output definition",
+        "loop 'L': missing 'value' field in loop output definition",
     );
 }
 
@@ -359,7 +359,7 @@ fn an_unknown_loop_variable_field_lists_the_loop_variable_fields() {
             ),
             "",
         ),
-        "unknown field `bogus`, expected one of `name`, `description`, `allowedValues`, `minValue`, `maxValue`, `initial`, `next`",
+        "loop 'L': unknown field `bogus`, expected one of `name`, `description`, `allowedValues`, `minValue`, `maxValue`, `initial`, `next`",
     );
 }
 
@@ -1458,6 +1458,252 @@ fn loop_outputs_type_check_after_the_loop() {
   script: {{actions: {{onRun: {{command: x, args: [\"{{{{Steps.L.Output.Last + sum(Steps.L.Output.All)}}}}\"]}}}}}}
 "
     )));
+}
+
+// ── Round 1 audit additions ───────────────────────────────────────
+
+#[test]
+fn a_body_step_error_names_its_loop_and_entry() {
+    assert_decode_err(
+        &single_loop(UNTIL, "").replace(
+            "        outputVariables: [{name: X, type: INT}]\n",
+            "        bogus: 1\n",
+        ),
+        "loop 'L': loop body entry 0 'W': unknown field `bogus`, expected one of `name`, `description`, `enableIf`, `let`, `dependencies`, `stepEnvironments`, `hostRequirements`, `parameterSpace`, `outputVariables`, `script`, `bash`, `python`, `cmd`, `powershell`, `node`",
+    );
+}
+
+#[test]
+fn without_control_flow_a_loop_with_a_script_names_the_loop_field() {
+    assert_decode_err(
+        &template_with(
+            "[EXPR]",
+            "",
+            &format!(
+                "- name: L
+  {SCRIPT}
+  loop: {{until: true, maxIterations: 2, steps: [{{name: W, {SCRIPT}}}]}}
+"
+            ),
+        ),
+        "steps entry 'L' has a 'loop' field, so it is a loop (CONTROL_FLOW, RFC 0013), which has no such field: unknown field `script`, expected one of `name`, `description`, `enableIf`, `dependencies`, `loop`, `outputVariables`",
+    );
+}
+
+#[test]
+fn a_computed_max_iterations_is_checked_at_both_bounds() {
+    for n in [1, 1000] {
+        decode_ok(&single_loop(
+            &format!("    until: true\n    maxIterations: \"{{{{{n}}}}}\"\n"),
+            "",
+        ));
+    }
+    for n in [0, 1001] {
+        assert_errs(
+            &single_loop(
+                &format!("    until: true\n    maxIterations: \"{{{{{n}}}}}\"\n"),
+                "",
+            ),
+            &[(
+                "steps[0] -> loop -> maxIterations",
+                "maxIterations must be from 1 to 1000.",
+            )],
+        );
+    }
+}
+
+/// Two loops, `A` (body `WA`, output `X`) and `B` (body `WB`, output `K`),
+/// where `B` depends on `A`; `wb_args` are `WB`'s script args and `b_until`
+/// is `B`'s `until`.
+fn two_loops(wb_args: &str, b_until: &str) -> String {
+    template(&format!(
+        "- name: A
+  loop:
+    until: true
+    maxIterations: 2
+    steps:
+      - name: WA
+        outputVariables: [{{name: X, type: INT}}]
+        {SCRIPT}
+  outputVariables: [{{name: X, type: INT, collect: LAST, value: \"{{{{Steps.WA.Output.X}}}}\"}}]
+- name: B
+  dependencies: [{{dependsOn: A}}]
+  loop:
+    until: \"{b_until}\"
+    maxIterations: 2
+    steps:
+      - name: WB
+        outputVariables: [{{name: K, type: INT}}]
+        script: {{actions: {{onRun: {{command: x, args: [{wb_args}]}}}}}}
+"
+    ))
+}
+
+#[test]
+fn a_body_step_of_another_loop_is_not_available_in_a_loop() {
+    // Through its loop's dependency on A, WB reads A's outputs.
+    decode_ok(&two_loops(
+        "\"{{Steps.A.Output.X}}\"",
+        "{{Steps.WB.Output.K > 0}}",
+    ));
+    assert_errs(
+        &two_loops("\"{{Steps.WA.Output.X}}\"", "{{Steps.WA.Output.X > 0}}"),
+        &[
+            (
+                "steps[1] -> loop -> steps[0] -> script -> actions -> onRun -> args[0]",
+                "'Steps.WA.Output.X': Step 'WA' is a body Step of loop 'A', and is available only within that loop. Read a loop output instead, as Steps.A.Output.<Name>.",
+            ),
+            (
+                "steps[1] -> loop -> until",
+                "'Steps.WA.Output.X': Step 'WA' is a body Step of loop 'A', and is available only within that loop. Read a loop output instead, as Steps.A.Output.<Name>.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn only_a_loops_enable_if_reads_step_name() {
+    decode_ok(&single_loop(
+        UNTIL,
+        "  enableIf: \"{{Step.Name == 'L'}}\"\n",
+    ));
+    assert_errs(
+        &single_loop("    while: \"{{Step.Name == 'L'}}\"\n    maxIterations: 2\n", ""),
+        &[(
+            "steps[0] -> loop -> while",
+            "Failed to parse interpolation expression at [0, 20]. Undefined variable: 'Step.Name'. Did you mean: Job.Name\n  Step.Name == 'L'\n  ~~~~~^~~~",
+        )],
+    );
+}
+
+#[test]
+fn two_loops_are_both_listed() {
+    let jt = decode_ok(&two_loops("\"x\"", "true"));
+    let names: Vec<&str> = jt.loops().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["A", "B"]);
+}
+
+/// A loop whose body Step `W` has `w_fields` (eight-space indented) and a
+/// script, under `extensions`.
+fn body_step(extensions: &str, w_fields: &str) -> String {
+    template_with(
+        extensions,
+        "",
+        &format!(
+            "- name: L
+  loop:
+    until: true
+    maxIterations: 2
+    steps:
+      - name: W
+{w_fields}        {SCRIPT}
+"
+        ),
+    )
+}
+
+#[test]
+fn a_body_steps_output_variables_get_the_rfc_0012_checks() {
+    assert_errs(
+        &body_step(
+            "[EXPR, CONTROL_FLOW]",
+            "        outputVariables: [{name: K, type: INT}, {name: K, type: INT}]\n",
+        ),
+        &[(
+            "steps[0] -> loop -> steps[0] -> outputVariables[1]",
+            "duplicate output variable name: 'K'",
+        )],
+    );
+}
+
+#[test]
+fn a_body_steps_host_requirements_and_environments_are_checked() {
+    assert_errs(
+        &body_step(
+            "[EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]",
+            "        hostRequirements:\n          amounts: [{name: amount.worker.vcpu, min: \"{{Param.Nope}}\"}]\n        stepEnvironments: []\n",
+        ),
+        &[
+            (
+                "steps[0] -> loop -> steps[0] -> stepEnvironments",
+                "must not be empty.",
+            ),
+            (
+                "steps[0] -> loop -> steps[0] -> hostRequirements -> amounts[0] -> min",
+                "Failed to parse interpolation expression at [0, 14]. Undefined variable: 'Param.Nope'. Did you mean: Param.Name\n  Param.Nope\n  ~~~~~~^~~~",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_body_steps_environments_get_the_per_environment_checks() {
+    // WRAP_ACTIONS gating, the FEATURE_BUNDLE_1 endOfLine gate, and the
+    // comprehension check (reported at the root, as for any Step).
+    let template = body_step(
+        "[EXPR, CONTROL_FLOW]",
+        "        stepEnvironments:
+          - name: E
+            script:
+              let: [\"x = 1\"]
+              actions:
+                onEnter: {command: x, args: [\"{{[x for x in [1]]}}\"]}
+                onWrapTaskRun: {command: y}
+              embeddedFiles: [{name: F, type: TEXT, data: d, endOfLine: LF}]
+",
+    );
+    let err = decode(&template).expect_err("expected a validation error");
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 3 validation errors for JobTemplate
+steps[0] -> loop -> steps[0] -> stepEnvironments[0] -> script -> embeddedFiles[0] -> endOfLine:
+\trequires the FEATURE_BUNDLE_1 extension.
+JobTemplate: List comprehension variable 'x' shadows a let binding
+steps[0] -> loop -> steps[0] -> stepEnvironments[0] -> script -> actions -> onWrapTaskRun:
+\tonWrapTaskRun requires the WRAP_ACTIONS extension."
+    );
+}
+
+#[test]
+fn a_body_steps_environment_gets_the_structural_checks() {
+    assert_errs(
+        &body_step(
+            "[EXPR, CONTROL_FLOW]",
+            "        stepEnvironments: [{name: E}]\n",
+        ),
+        &[(
+            "steps[0] -> loop -> steps[0] -> stepEnvironments[0]",
+            "must have at least one of 'script' or 'variables'.",
+        )],
+    );
+}
+
+#[test]
+fn a_body_step_name_gets_the_length_limit() {
+    assert_errs(
+        &single_loop(UNTIL, "").replace(
+            "      - name: W",
+            &format!("      - name: {}", "w".repeat(65)),
+        ),
+        &[(
+            "steps[0] -> loop -> steps[0] -> name",
+            "exceeds 64 characters.",
+        )],
+    );
+}
+
+#[test]
+fn a_body_step_task_parameter_type_is_case_sensitive_without_expr() {
+    assert_errs(
+        &body_step(
+            "[CONTROL_FLOW]",
+            "        parameterSpace:\n          taskParameterDefinitions: [{name: I, type: int, range: [1]}]\n",
+        ),
+        &[(
+            "steps[0] -> loop -> steps[0] -> parameterSpace -> taskParameterDefinitions[0]",
+            "task parameter type 'int' is not recognized. Type names are case-sensitive without the EXPR extension; expected 'INT'.",
+        )],
+    );
 }
 
 // ── Limits and job creation ───────────────────────────────────────

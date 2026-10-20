@@ -29,6 +29,9 @@ use crate::error::PathElement;
 /// entry is a [`StepTemplate`]. The choice is made on the key alone, so a
 /// malformed entry gets the errors of the shape it chose (an unknown field of
 /// a loop, for example `script`), not an error that names neither shape.
+/// A loop's error is prefixed `loop '<name>': `, and an unknown field's
+/// with `steps entry '<name>' has a 'loop' field, so it is a loop
+/// (CONTROL_FLOW, RFC 0013), which has no such field: `.
 /// Without `CONTROL_FLOW` a `loop` entry still parses as a `StepLoop`, and
 /// template validation reports it at `steps[i] -> loop`.
 // A Step is much larger than a loop, and nearly every entry is one; boxing
@@ -48,9 +51,29 @@ impl<'de> Deserialize<'de> for StepEntry {
         use serde::de::Error as _;
         let value = serde_json::Value::deserialize(deserializer)?;
         if has_loop_key(&value) {
-            serde_json::from_value(value)
-                .map(Self::Loop)
-                .map_err(D::Error::custom)
+            // Name the loop, and for an unknown field the `loop` field that
+            // decided the shape, so that an error such as an unknown
+            // `script` explains itself, with or without CONTROL_FLOW.
+            let name = value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|n| format!(" '{n}'"))
+                .unwrap_or_default();
+            serde_json::from_value(value).map(Self::Loop).map_err(|e| {
+                let e = e.to_string();
+                // Only an unknown field of the `<StepLoop>` itself, whose
+                // list of expected fields includes `loop`; not one of its
+                // `loop` mapping or of a body Step.
+                let own_unknown_field =
+                    e.starts_with("unknown field") && e.contains(STEP_LOOP_FIELDS);
+                D::Error::custom(if own_unknown_field {
+                    format!(
+                        "steps entry{name} has a 'loop' field, so it is a loop (CONTROL_FLOW, RFC 0013), which has no such field: {e}"
+                    )
+                } else {
+                    format!("loop{name}: {e}")
+                })
+            })
         } else {
             serde_json::from_value(value)
                 .map(Self::Step)
@@ -58,6 +81,11 @@ impl<'de> Deserialize<'de> for StepEntry {
         }
     }
 }
+
+/// The end of serde's unknown-field message for a `<StepLoop>`: the fields
+/// it expects.
+const STEP_LOOP_FIELDS: &str =
+    "expected one of `name`, `description`, `enableIf`, `dependencies`, `loop`, `outputVariables`";
 
 /// Whether a `steps` element is a loop: a mapping with a `loop` key.
 fn has_loop_key(value: &serde_json::Value) -> bool {
@@ -178,7 +206,8 @@ pub struct LoopDefinition {
 
 /// Deserialize a loop body, rejecting an entry with a `loop` key with a
 /// message that says loops do not nest, rather than as an unknown field of a
-/// `<StepTemplate>` (RFC 0013 §`<LoopDefinition>` item 5.2).
+/// `<StepTemplate>` (RFC 0013 §`<LoopDefinition>` item 5.2). Any other error
+/// of an entry is prefixed `loop body entry <j> '<name>': `.
 fn deserialize_body<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<StepTemplate>, D::Error> {
@@ -188,17 +217,18 @@ fn deserialize_body<'de, D: serde::Deserializer<'de>>(
         .into_iter()
         .enumerate()
         .map(|(j, entry)| {
+            let name = entry
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .map(|n| format!(" '{n}'"))
+                .unwrap_or_default();
             if has_loop_key(&entry) {
-                let name = entry
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .map(|n| format!(" '{n}'"))
-                    .unwrap_or_default();
                 return Err(D::Error::custom(format!(
                     "loop body entry {j}{name} has a 'loop' field, but loops do not nest: a loop's body may contain only Steps (RFC 0013)."
                 )));
             }
-            serde_json::from_value(entry).map_err(D::Error::custom)
+            serde_json::from_value(entry)
+                .map_err(|e| D::Error::custom(format!("loop body entry {j}{name}: {e}")))
         })
         .collect()
 }

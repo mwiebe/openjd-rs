@@ -891,8 +891,9 @@ struct FsEval<'a> {
     memory_limit: Option<usize>,
     operation_limit: Option<usize>,
     /// With `CONTROL_FLOW`, where the format strings this evaluates sit, so
-    /// that a `Steps.*` reference that is not available gets a specific
-    /// message (see [`steps_ref_errors`]) instead of EXPR's generic one.
+    /// that a `Steps.*`, `Loop.*`, or `RawLoop.*` reference that is not
+    /// available gets a specific message (see [`control_flow_ref_errors`])
+    /// instead of EXPR's generic one.
     /// `None` without `CONTROL_FLOW`, and in the job-creation re-checks,
     /// which only see templates that passed this check.
     steps: Option<StepsRefContext<'a>>,
