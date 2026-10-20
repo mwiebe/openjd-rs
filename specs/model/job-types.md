@@ -544,13 +544,15 @@ and the loop's format strings stay in the `JobTemplate`, which the loop function
 Each loop output's declaration is an `OutputVariable` whose `collect` is `LAST` or
 `APPEND`; a loop variable's has the default `collect`, which means nothing for it.
 
-`Loop`, `LoopBinding`, `BoundLoop`, `LoopStart`, and `PendingLoopBinding` derive `Debug`,
-`Clone`, `PartialEq`, `Hash`, and `Serialize`, but not `Deserialize`, because the bound
+`Loop`, `LoopBinding`, `BoundLoop`, `LoopStart`, and `PendingLoopBinding` implement `Debug`,
+`Clone`, `PartialEq`, `Hash`, and `Serialize` (`LoopStart`'s `Hash` is written by hand, over
+its `initial` entries sorted by name), but not `Deserialize`, because the bound
 values are `ExprValue`s (as for `JobOutput`). `LoopBinding` is internally tagged on
 `state`, as `StepBinding` is:
 
 ```json
-{"name": "L", "entryIndex": 0, "condition": "UNTIL", "body": ["W"],
+{"name": "L", "entryIndex": 0, "condition": "UNTIL",
+ "variables": [{"name": "N", "type": "INT"}], "body": ["W"],
  "binding": {"state": "BOUND", "maxIterations": 4,
              "start": {"initial": {"N": {"Int": 2}}}}}
 ```

@@ -10,7 +10,10 @@ body.
 ```rust
 impl StepDependencyGraph {
     pub fn new(job: &Job) -> Result<Self, ModelError>
+    pub fn node_count(&self) -> usize
     pub fn step_node(&self, name: &str) -> Option<&StepDependencyNode>
+    pub fn node(&self, index: usize) -> Option<&StepDependencyNode>
+    pub fn edge(&self, index: usize) -> Option<&StepDependencyEdge>
     pub fn max_indegree(&self) -> usize
     pub fn max_outdegree(&self) -> usize
     pub fn topo_sorted(&self) -> Result<Vec<usize>, ModelError>

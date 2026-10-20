@@ -53,6 +53,9 @@ pub(super) struct StepSite<'a> {
     pub(super) loc: StepLocation,
     /// `steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step.
     pub(super) path: Vec<PathElement>,
+    /// How messages name it: the Step's name, or `<Loop>[<N>].<Step>` for a
+    /// body Step instance.
+    pub(super) name: String,
     /// The `Loop.*` and `RawLoop.*` values of a body Step instance's
     /// iteration (RFC 0013 §Iterations item 1); `None` for a top-level Step.
     pub(super) loop_layer: Option<super::loops::LoopLayer<'a>>,
@@ -69,6 +72,7 @@ impl<'a> StepSite<'a> {
             st,
             loc: StepLocation::top(entry),
             path: step_path(entry).to_vec(),
+            name: st.name.clone(),
             loop_layer: None,
         })
     }
@@ -621,7 +625,7 @@ fn enumerate_tasks(
         }
     }
     let task_count = job::binding::task_count(space.as_ref())?;
-    check_task_count(cx.ctx, &st.name, task_count, committed_task_count)
+    check_task_count(cx.ctx, &site.name, task_count, committed_task_count)
         .map_err(|e| located(step_path, &e))?;
     Ok(space)
 }

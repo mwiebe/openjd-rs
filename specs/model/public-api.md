@@ -1365,7 +1365,8 @@ impl job::BoundLoop {
     pub fn has_iterations(&self) -> bool;
 }
 
-#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+/// Hash by hand: `initial` entries sorted by name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct job::LoopStart {
     /// Each `initial`, converted, in declaration order.
     pub initial: IndexMap<String, ExprValue>,
