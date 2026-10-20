@@ -14,7 +14,8 @@ The caller (`openjd-sessions`, see `specs/sessions/session.md` § Output variabl
 outside world:
 
 * recognizing a line that begins with `openjd_output_var:` in an Action's stdout or
-  stderr, deciding whether the Action may print one (RFC invalid-directive item 8), and
+  stderr, deciding whether the Action may print one (RFC 0012 §Processing a directive,
+  invalid-directive item 8), and
   rejecting a line that is too long or not valid UTF-8 (items 7 and 9, for the line);
 * stripping the line terminator and the `openjd_output_var:` prefix;
 * opening and reading an `@` file under RFC 0012 §File values (a regular file inside the Session
@@ -77,8 +78,8 @@ the directives of one Action:
 
 `new` returns `Result`, where the plan's signature returned `Self`, for two refusals:
 
-* A chunk that repeats a value (`OutputErrorKind::Selector`). The RFC requires distinct
-  values in a Step with outputs (RFC 0012 §Chunked Steps item 1), so that a value names one Task;
+* A chunk that repeats a value (`OutputErrorKind::Selector`). RFC 0012 requires distinct
+  values in a Step with outputs (§Chunked Steps item 1), so that a value names one Task;
   binding rejects duplicates, and the collector refuses them rather than merging two
   Tasks.
 * A declaration with `collect: APPEND` on a type that is not a list
@@ -204,7 +205,7 @@ is checked by `finish` (`check_length(len, true)`). Only declared properties app
 A `RANGE_EXPR` value reported as a JSON string is checked in its written spelling, as a
 `RANGE_EXPR` job parameter value is, and stored as the `ExprValue::RangeExpr`, whose
 canonical spelling may differ: `"1-10:2"` is 6 characters and displays as `1-9:2`, and
-`"3,1"` displays as `1,3`. This differs from the RFC table, whose `RANGE_EXPR` row shows
+`"3,1"` displays as `1,3`. This differs from the RFC 0012 table, whose `RANGE_EXPR` row shows
 the result `1-10:2`; `ExprValue::RangeExpr` keeps no spelling, as for a `RANGE_EXPR` job
 parameter, so the prototype records the divergence here rather than changing the
 type.
@@ -248,8 +249,8 @@ describe the chunk or the declaration. Every other message begins
 names the problem and, where it has one, the position in the value (`item[1][0]`).
 
 Messages quote an inline value's text and the converted value or element that is
-invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. The
-RFC asks for "the offending text". Some do not (a `null` or an object, an undeclared
+invalid: a `PATH` with no submission-context form, a string not in `allowedValues`. RFC 0012
+§Processing a directive asks for "the offending text". Some do not (a `null` or an object, an undeclared
 name, a second `ONCE` value, a selector, size, or `maxLength` problem); the sessions
 runtime appends the directive's line to those (see
 `specs/sessions/action-filter.md`). They never quote an `@` file's text as such: a JSON
@@ -269,7 +270,7 @@ directive (`[ 1.50 , "a" ]` is quoted `'[1.5,"a"]'`). A float in a constraint me
 shows its spelling, cut to 200 characters like quoted text.
 Constraint messages come from `job::OutputVariable` and name the value as job parameter
 constraint messages do. The plan said messages never quote an `@` file's content; quoting
-the converted invalid value follows the RFC instead. The runtime adds the file path and
+the converted invalid value follows RFC 0012 instead. The runtime adds the file path and
 Action context.
 
 | Kind | Cause |

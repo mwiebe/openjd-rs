@@ -42,7 +42,7 @@ pub(super) enum SimStepState {
 }
 
 impl SimStepState {
-    /// The RFC's name for the state, for `--output json|yaml`.
+    /// RFC 0011's name for the state, for `--output json|yaml`.
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "PENDING_INPUTS",
