@@ -296,7 +296,7 @@ before any later line) falls out of the stream.
   header can't make it.
 - The helper does not know the declared outputs or the values so far, so it reads before
   the parent's checks. The parent applies `check_name` first, then the read result, then
-  the remaining-size check, so the outcome matches the RFC's order even though the helper
+  the remaining-size check, so the outcome matches RFC 0012's order even though the helper
   may read a file whose directive is then rejected, and reads up to the whole per-Task
   limit rather than what remains.
 - The parent re-parses the line with the model parser, and a disagreement with the

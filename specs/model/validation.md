@@ -309,7 +309,7 @@ Step `S` lists in its `dependencies`, that is not `S`, and whose name is an
 `<Identifier>`, the symbols `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of
 `P`'s output variables and, when `P` has a `parameterSpace`, `Steps.P.TaskParam.<N>` and
 `Steps.P.TaskRawParam.<N>` for each Task parameter. Each is `ExprValue::unresolved(T)`,
-typed by the RFC's table:
+typed by the table of RFC 0011 §The `Steps.*` scope:
 
 | Producer `P` | `Output.<V>` | `TaskParam.<N>` |
 |---|---|---|
@@ -322,7 +322,7 @@ typed by the RFC's table:
 producer's `LIST[INT]` output is `list[list[int]]`). `U` is `int`, `float`, `string`, or
 `path` for an `INT`, `FLOAT`, `STRING`, or `PATH` Task parameter, and `int` for
 `CHUNK[INT]`, one element per Task. Any `enableIf`, including a literal `true`, makes the
-type optional, because the RFC's table is keyed on the field being present. The `Raw`
+type optional, because RFC 0011's table is keyed on the field being present. The `Raw`
 forms have the same types. In a TEMPLATE-scope field, an `Output` or `TaskParam` whose
 type is or contains `path` (`PATH`, `LIST[PATH]` outputs; `PATH` Task parameters) is not
 seeded; its `Raw` form is.

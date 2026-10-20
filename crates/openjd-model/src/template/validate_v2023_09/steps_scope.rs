@@ -8,7 +8,7 @@
 //! job-creation re-checks in `create_job`:
 //!
 //! - [`add_steps_scope`] seeds a Step's symbol table with the `Steps.*`
-//!   symbols of its direct dependencies, as `unresolved` values of the RFC's
+//!   symbols of its direct dependencies, as `unresolved` values of RFC 0011's
 //!   types, so every expression that reads one type-checks with EXPR's
 //!   progressive evaluator.
 //! - [`steps_ref_errors`] scans the symbols a format string or `let`
@@ -53,7 +53,7 @@ fn is_identifier(name: &str) -> bool {
 const MEMBERS: [&str; 4] = ["Output", "RawOutput", "TaskParam", "TaskRawParam"];
 
 /// The expression type of one Task's value of a Task parameter: `U` in the
-/// RFC's table. A `CHUNK[INT]` parameter is `int`, because the list has one
+/// RFC 0011 table. A `CHUNK[INT]` parameter is `int`, because the list has one
 /// element per Task, not per chunk.
 fn task_param_type(tp: &TaskParameterDefinition) -> ExprType {
     match tp {
@@ -66,7 +66,7 @@ fn task_param_type(tp: &TaskParameterDefinition) -> ExprType {
 
 /// Wrap one Task's value type `t` into the type of the `Steps.*` symbol for
 /// `producer`: `list[t]` when it has a `parameterSpace`, and optional when it
-/// has an `enableIf` (any `enableIf`, including a literal, as the RFC's table
+/// has an `enableIf` (any `enableIf`, including a literal, as RFC 0011's table
 /// is keyed on the field being present).
 fn shape(producer: &StepTemplate, t: ExprType) -> ExprType {
     let t = if producer.parameter_space.is_some() {

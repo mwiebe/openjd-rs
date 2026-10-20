@@ -879,7 +879,7 @@ pub(super) fn creation_inputs(
 /// `Steps.*` values in `inputs` (RFC 0011 §How a Step is bound).
 ///
 /// Evaluates every group of the Step that has not evaluated and whose
-/// inputs are now concrete, in the RFC's order: enablement first, and
+/// inputs are now concrete, in RFC 0011's order: enablement first, and
 /// nothing else until it is `true`; then Task enumeration (materialize the
 /// parameter space, check distinct `CHUNK[INT]` values in a Step with
 /// outputs and the Task-count limits); then host selection; then the
