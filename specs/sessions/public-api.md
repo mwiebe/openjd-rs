@@ -349,7 +349,7 @@ impl Session {
     /// (if base is provided) everything already in the resolved
     /// step-scope symbol table.
     ///
-    /// `path_inputs` (`job::Step::path_inputs`, RFC 0011) lists the
+    /// `path_inputs` (`job::Step::path_inputs`, RFC 0012 §Path values) lists the
     /// path-typed `Steps.*` values in `base`, stored there as strings
     /// in the submission path context. Each `Steps.P.RawOutput.V` /
     /// `Steps.P.TaskRawParam.N` becomes `path` values in that stored
@@ -492,7 +492,7 @@ pub struct SessionConfig {
     /// set. Default: no limits beyond the spec.
     pub limits: SessionLimits,
 
-    /// Whether the Job's Job Template lists `CONTROL_FLOW` (RFC 0011).
+    /// Whether the Job's Job Template lists `CONTROL_FLOW` (RFC 0012).
     /// Only then are `openjd_output_var` lines directives: the `onRun`
     /// of a Step with output variables reports values, and a directive
     /// in any other Job Template action is invalid. When `false` every
@@ -534,7 +534,7 @@ pub struct SessionLimits {
     /// (`openjd_expr::path_mapping::DEFAULT_MAX_TRIE_BYTES`). Applies in
     /// `with_config`, `with_path_mapping` and `extend_path_mapping_rules`.
     pub max_path_mapping_trie_bytes: Option<usize>,
-    /// Bytes of output values each Task holds (RFC 0011 §Limits item 2,
+    /// Bytes of output values each Task holds (RFC 0012 §Limits item 2,
     /// `CONTROL_FLOW`). `None` = `openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT`
     /// (1 MiB); a smaller value is raised to it.
     pub max_task_output_bytes: Option<usize>,
@@ -580,7 +580,7 @@ pub type OutputCallbackType =
 ```
 
 Called with `(session_id, task, name, value)` once for each output
-value a running Task reports (RFC 0011 §Committing values). `task` is
+value a running Task reports (RFC 0012 §Committing values). `task` is
 the Task's `CHUNK[INT]` value in a chunked Step and `None` otherwise;
 under `collect: APPEND`, `value` is the new element; a `PATH` value is
 in the submission path context. The values are not committed: if the

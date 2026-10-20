@@ -1,5 +1,5 @@
 # Not an RFC sample: a pending Step whose Task count is known at Job creation
-# (plan, Test strategy; RFC A11). C's range reads only a job parameter, and its
+# (plan, Test strategy, and RFC ambiguity A11). C's range reads only a job parameter, and its
 # step let, read only by its script, reads Steps.Q.Output.Label, so only C's
 # remaining group waits for Q.
 specificationVersion: jobtemplate-2023-09

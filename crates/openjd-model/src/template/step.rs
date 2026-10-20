@@ -247,7 +247,7 @@ pub struct StepTemplate {
     pub host_requirements: Option<HostRequirements>,
     pub parameter_space: Option<StepParameterSpaceDefinition>,
     /// The output variables every Task of the Step reports (`CONTROL_FLOW`,
-    /// RFC 0011).
+    /// RFC 0012).
     pub output_variables: Option<Vec<OutputVariableDefinition>>,
     pub script: Option<StepScript>,
     // SimpleAction syntax sugar (§3.5, FEATURE_BUNDLE_1)

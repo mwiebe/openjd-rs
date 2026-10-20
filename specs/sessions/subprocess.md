@@ -174,7 +174,7 @@ Truncation is no longer silent: the reader knows a line was cut (`truncate_line`
 returned less than the decoded line), and passes that, with whether decoding was lossy
 (`decode_backslashreplace` returned an owned, escaped string), to the output-variable
 recognizer. A truncated or lossy line that starts with `openjd_output_var:` is an
-invalid directive (RFC 0011 §Limits item 1, §Processing a directive item 9). Only the
+invalid directive (RFC 0012 §Limits item 1, §Processing a directive item 9). Only the
 line terminator (`\n`, then one `\r`) is stripped, as on both helper runners, so the
 directive grammar sees the same text on every path.
 
@@ -380,7 +380,7 @@ On the direct (same-user) path an `@<FilePath>` value is read by
 Failures are phrases that complete "Output variable 'N': the @ file '<path>' …" ("does
 not exist", "can't be opened: <os error>"). The read is blocking I/O, so the async
 reader runs it with `spawn_blocking` and awaits it before reading the next line, which
-keeps the RFC's ordering. The runtime never modifies or deletes the file.
+keeps RFC 0012's ordering. The runtime never modifies or deletes the file.
 
 ## Windows Signal Delivery
 

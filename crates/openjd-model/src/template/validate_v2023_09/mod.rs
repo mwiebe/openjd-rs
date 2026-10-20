@@ -11,7 +11,7 @@
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
 //! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
-//! - Pass 11: CONTROL_FLOW (validate or reject, RFC 0011)
+//! - Pass 11: CONTROL_FLOW (validate or reject, RFC 0011 and RFC 0012)
 
 mod control_flow;
 mod feature_bundle_1;
@@ -207,7 +207,7 @@ pub(crate) fn validate_job_template(
     // Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
     wrap_actions::validate_wrap_actions_job_template(jt, ctx, &mut errors);
 
-    // Pass 11: CONTROL_FLOW (validate or reject, RFC 0011)
+    // Pass 11: CONTROL_FLOW (validate or reject, RFC 0011 and RFC 0012)
     control_flow::validate_control_flow_job_template(jt, &limits, ctx, &mut errors);
 
     errors.into_result("JobTemplate")

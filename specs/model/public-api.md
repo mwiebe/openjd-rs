@@ -463,7 +463,7 @@ impl JobParameterDefinition {
 }
 ```
 
-### CONTROL_FLOW Template Types (RFC 0011)
+### CONTROL_FLOW Template Types (RFC 0011, RFC 0012)
 
 `CONTROL_FLOW` adds `JobTemplate::job_output_definitions` (above) and fields to
 two structural template types:
@@ -841,7 +841,7 @@ pub enum job::CancelationMode {
 }
 ```
 
-### CONTROL_FLOW Job Types (RFC 0011)
+### CONTROL_FLOW Job Types (RFC 0011, RFC 0012)
 
 Re-exported from `job`. Every new `job::Step` field has `#[serde(default)]` and is
 skipped when it holds its default, so a Step serialized before `CONTROL_FLOW` still
@@ -990,11 +990,11 @@ pub struct job::StepInputs { /* private */ }
 
 impl job::StepInputs {
     pub fn new() -> Self;
-    /// Add or replace a producer's `Steps.*` values, typed by the RFC's
-    /// table. Path-typed values are held only in their Raw form, a URI in
-    /// the Posix format the model evaluates in (text unchanged). TasksKnown
-    /// on a skipped producer is Skipped. A caller error is a
-    /// ModelError::Compatibility.
+    /// Add or replace a producer's `Steps.*` values, typed as RFC 0011
+    /// §The `Steps.*` scope table types them. Path-typed values are held
+    /// only in their Raw form, a URI in the Posix format the model
+    /// evaluates in (text unchanged). TasksKnown on a skipped producer is
+    /// Skipped. A caller error is a ModelError::Compatibility.
     pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
         -> Result<(), ModelError>;
     /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
@@ -1132,11 +1132,11 @@ pub struct job::StepDependency {
 ## Output Values (`outputs::*`, CONTROL_FLOW)
 
 The `openjd_output_var` directive parser and the collector that turns one
-Action's directives into each Task's output values (RFC 0011 §Output
+Action's directives into each Task's output values (RFC 0012 §Output
 emission). No I/O. See [outputs.md](outputs.md).
 
 ```rust
-/// RFC 0011 §Limits item 2: the least `max_bytes` a runtime may pass.
+/// RFC 0012 §Limits item 2: the least `max_bytes` a runtime may pass.
 pub const outputs::MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
 
 /// The text after `openjd_output_var:`, parsed. Borrows from the payload.
@@ -1239,7 +1239,7 @@ pub enum ModelExtension {
     FeatureBundle1,    // RFC 0004 — "FEATURE_BUNDLE_1"
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
-    ControlFlow,       // RFC 0011 — "CONTROL_FLOW" (requires EXPR; Job Templates only)
+    ControlFlow,       // RFC 0011, RFC 0012 — "CONTROL_FLOW" (requires EXPR; Job Templates only)
 }
 
 impl ModelExtension {
@@ -1323,7 +1323,7 @@ pub struct CallerLimits {
     /// spec-recommended default (`openjd_expr::DEFAULT_OPERATION_LIMIT`,
     /// 10 million).
     pub max_eval_operations: Option<usize>,
-    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0011
+    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0012
     /// §Limits item 2). Enforced only at run time, when mirrored into
     /// `SessionLimits`. `None` = `outputs::MIN_OUTPUT_BYTES_LIMIT`
     /// (1 MiB); the runtime raises a smaller value to it.
@@ -1431,7 +1431,7 @@ pub enum DataFlow {
     None, In, Out, Inout,
 }
 
-/// RFC 0011 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
+/// RFC 0012 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OutputCollectMode {
@@ -1979,13 +1979,13 @@ entity kind, data direction) whose sets of variants are not expected
 to change.
 
 The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
-`OutputCollectMode` (the RFC's three modes), `template::BoolOrFormatString`
-(the two forms of an `enableIf` value), `job::StepBinding` (the RFC's three
+`OutputCollectMode` (RFC 0012's three modes), `template::BoolOrFormatString`
+(the two forms of an `enableIf` value), `job::StepBinding` (RFC 0011's three
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
-(the RFC's two directive forms), `job::GroupState` and `job::GroupReport`
+(RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`
 (the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` (the states a producer
 contributes inputs in), and `template::IntRangeItem` (the two forms of an
-`<IntRangeList>` item). A change to the RFC that adds
+`<IntRangeList>` item). A change to the RFCs that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows.

@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The `CONTROL_FLOW` output collector (RFC 0011 §Processing a directive,
+//! The `CONTROL_FLOW` output collector (RFC 0012 §Processing a directive,
 //! §Collect modes, §Chunked Steps, §Path values, §Limits):
 //! `outputs::OutputCollector`. See `specs/model/outputs.md`.
 
@@ -174,7 +174,7 @@ fn path_parts(v: &ExprValue) -> (String, PathFormat) {
 
 // ══════════════════════════════════════════════════════════════
 // The RFC's conversion table, row by row
-// (§Processing a directive, "Type conversion")
+// (RFC 0012 §Processing a directive, "Type conversion")
 // ══════════════════════════════════════════════════════════════
 
 #[test]
@@ -506,7 +506,7 @@ fn strings_keep_their_exact_text() {
 
 #[test]
 fn inline_values_have_no_bom_and_nul_is_a_json_error() {
-    // A BOM is allowed only at the start of an @ file (RFC 0011 §File
+    // A BOM is allowed only at the start of an @ file (RFC 0012 §File
     // values item 4), and a NUL is a file-content problem only for files.
     let mut c = collector(&["{name: 'N', type: INT}"]);
     let e = c.accept("N", None, b"\xEF\xBB\xBF1", false).unwrap_err();
@@ -571,7 +571,7 @@ fn non_finite_numbers_are_invalid() {
 
 #[test]
 fn numbers_too_large_for_a_float_do_not_convert() {
-    // Valid JSON (RFC 8259), but RFC 0011 makes it a conversion error.
+    // Valid JSON (RFC 8259), but RFC 0012 makes it a conversion error.
     let mut c = collector(&["{name: X, type: FLOAT}"]);
     assert_eq!(
         err(&mut c, "X=1e400", OutputErrorKind::Conversion),
@@ -1204,7 +1204,7 @@ fn file_conversion_failure_does_not_quote_the_value() {
 #[test]
 fn file_value_path_and_constraint_errors_name_the_converted_value() {
     // The file's text is never quoted, but the invalid value after conversion
-    // is, as for an inline value (the RFC asks for the offending text).
+    // is, as for an inline value (RFC 0012 asks for the offending text).
     let rules = [rule(PathFormat::Posix, "/proj", "/mnt/proj")];
     let mut c = with_rules(
         &["{name: P, type: 'LIST[PATH]'}"],
@@ -1407,7 +1407,7 @@ fn file_under_append_supplies_one_element() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Size limit (§Limits item 2)
+// Size limit (RFC 0012 §Limits item 2)
 // ══════════════════════════════════════════════════════════════
 
 #[test]
@@ -1540,7 +1540,7 @@ fn list_path_size_uses_the_stored_list() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// PATH values (§Path values)
+// PATH values (RFC 0012 §Path values)
 // ══════════════════════════════════════════════════════════════
 
 #[test]
@@ -1750,7 +1750,7 @@ fn empty_list_path_takes_the_worker_format() {
 }
 
 // ══════════════════════════════════════════════════════════════
-// Chunked Steps (§Chunked Steps)
+// Chunked Steps (RFC 0012 §Chunked Steps)
 // ══════════════════════════════════════════════════════════════
 
 const RENDER_TIME: &str = "{name: RenderTimeS, type: FLOAT, unit: s}";

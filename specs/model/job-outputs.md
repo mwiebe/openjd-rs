@@ -49,7 +49,7 @@ output values) checks each `value` against the job output scope:
 | `Steps.<P>.RawOutput.*` and `Steps.<P>.TaskRawParam.*` of every Step `P` with an `<Identifier>` name, with no dependency required | `Steps.<P>.Output.*` and `Steps.<P>.TaskParam.*` whose type is or contains `path` (use the `Raw` form) |
 | `Steps.<P>.Output.*` and `Steps.<P>.TaskParam.*` of those Steps, for other types | |
 
-The `Steps.*` symbols have the types of the RFC's §The `Steps.*` scope table, as in a
+The `Steps.*` symbols have the types of RFC 0011 §The `Steps.*` scope table, as in a
 Step's fields. The target type is the declared type's expression type made optional, so
 a `null` result is allowed and an unresolved `T?` from a conditional producer type-checks.
 A literal value, and a value with text around an expression that is fully static, is

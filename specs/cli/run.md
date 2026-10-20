@@ -195,7 +195,7 @@ group:` and the located message), marks the Step `Failed`, and stops the run bef
 more Tasks start, as a failed Task does. The pass still advances the other pending Steps
 and then evaluates the job outputs whose inputs are concrete, as a scheduler evaluates
 each as soon as its inputs are, so what is known does not depend on the order Steps are
-declared in. This is the RFC's early failure: a Step whose
+declared in. This is RFC 0011's early failure: a Step whose
 parameter space fails fails as soon as the producer it reads finishes, before a later
 producer that only its script reads has run. Then every job output not yet evaluated
 whose inputs (`job_output_inputs`) are all concrete is evaluated with
@@ -540,9 +540,9 @@ evaluated output (`Total = 30 px`) and per output not evaluated (`Sum: not evalu
 For a template that lists `CONTROL_FLOW`, three more fields follow (other templates'
 output matches the Python CLI's):
 
-* `steps`: one entry per Step, `{name, state, task_count}` with the RFC's state name
+* `steps`: one entry per Step, `{name, state, task_count}` with RFC 0011's state name
   (`PENDING_INPUTS`, `READY`, `SKIPPED`, `SUCCEEDED`, `FAILED`), or `BLOCKED`, the
-  simulator's own name for a Step that can never run because a dependency failed (the RFC
+  simulator's own name for a Step that can never run because a dependency failed (RFC 0011
   has no state for it: "blocked; never runs, as today"), and
   `task_count` `null` while its Tasks are unknown; `incomplete: true` for a Step that did
   not run all of its Tasks; `reason` for a failed or blocked Step; and, for a Step that

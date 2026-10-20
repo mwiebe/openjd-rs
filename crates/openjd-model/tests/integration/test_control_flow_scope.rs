@@ -668,7 +668,7 @@ fn a_multi_task_output_reduces_and_task_params_align() {
 #[test]
 fn a_conditional_output_is_accepted_where_its_type_is_required() {
     // `Steps.R.Output.Go` is `bool?`, accepted where `bool` is required, and
-    // checked when concrete (RFC Design Choice 8).
+    // checked when concrete (RFC 0011 Design Choice 5).
     decode_ok(&c_arg(
         "    let: ['x = 1 if Steps.R.Output.Go else 2']\n",
         "{{x}}",
