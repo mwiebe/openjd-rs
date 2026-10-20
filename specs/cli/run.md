@@ -369,6 +369,11 @@ false`), then `Loop 'L' outputs: FinalSamples = 256, NoisyFrameCounts = [2, 1, 0
 succeeded loop is added to the run's `StepInputs` with `add_loop_producer`, its
 dependents are advanced, and the job outputs that read it are evaluated.
 
+**Limits.** The CLI sets no limit on the total size of a loop's variable and output values
+(`CallerLimits::max_loop_value_bytes` is `None`), which RFC 0013 §Limits item 4's 1 MiB
+minimum allows, as it sets none on job outputs. Each iteration's log line prints its values
+in full.
+
 **Failure.** A failed body Task fails its instance and the loop, as a failed Task fails a
 Step: `Loop 'L' failed: its body Step instance 'L[1].Work' failed`. The CLI has no
 retries, so every loop failure is final. An instance group that fails, a boundary error,
@@ -711,7 +716,8 @@ output matches the Python CLI's):
   `iterations` the number it ran (or started, for a loop that did not succeed); `outputs`
   the committed loop outputs, for a loop that succeeded or is skipped (`null`s); and
   `iteration_values`, one `{iteration, variables, outputs?}` per iteration started, with
-  its loop variable values and the loop output values its boundary evaluated. `reason` and
+  its loop variable values and the loop output values its boundary evaluated, omitted when
+  no iteration started. `reason` and
   `inputs_supplied` are as for a Step. One entry per body Step instance follows it, in run
   order, with `name` `<Loop>[<N>].<Step>`, `loop`, `iteration`, and the fields of a Step.
   When an instance's group fails as its iteration starts, `start_iteration` returns no

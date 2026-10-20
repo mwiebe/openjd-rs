@@ -24,7 +24,7 @@ openjd summary <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [--extensions <EXT>] [
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `path` | `PathBuf` | Yes | Path to the job template file |
-| `--step` | `Option<String>` | No | Print summary for this step only |
+| `--step` | `Option<String>` | No | Print summary for this Step or loop only (not a loop's body Step) |
 | `-p`, `--parameter` | `Vec<String>` | No | Job parameters (`Key=Value`, `file://path`, or inline JSON) |
 | `--extensions` | `Option<String>` | No | Comma-separated extension names |
 | `--output` | `String` | No | Output format: `human-readable` (default), `json`, `yaml` |

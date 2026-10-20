@@ -7732,18 +7732,28 @@ steps:
             stderr.trim_end(),
             "ERROR: --step-inputs: Loop 'M': Steps.M.Output.O: Output variable 'O': value is null; output values cannot be or contain null"
         );
-        let job = write(&until.replace("until: \"{{True}}\"", "while: \"{{False}}\""));
-        let (code, stdout, stderr) = run_cli(&[
-            "run",
-            job.path().to_str().unwrap(),
-            "--step",
-            "C",
-            "--step-inputs",
-            r#"{"Steps.M.Output.O": null}"#,
-        ]);
-        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
-        // A null interpolates as the empty string.
-        assert!(has(&stdout, "C_"), "{stdout}");
+        // A while loop's LAST output, and one of a loop with an enableIf, is
+        // T?.
+        for nullable in [
+            until.replace("until: \"{{True}}\"", "while: \"{{False}}\""),
+            until.replace(
+                "- name: M\n  loop:",
+                "- name: M\n  enableIf: \"{{True}}\"\n  loop:",
+            ),
+        ] {
+            let job = write(&nullable);
+            let (code, stdout, stderr) = run_cli(&[
+                "run",
+                job.path().to_str().unwrap(),
+                "--step",
+                "C",
+                "--step-inputs",
+                r#"{"Steps.M.Output.O": null}"#,
+            ]);
+            assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+            // A null interpolates as the empty string.
+            assert!(has(&stdout, "C_"), "{stdout}");
+        }
     }
 
     #[test]
@@ -8188,22 +8198,56 @@ steps:
                 lines: &["Step 'L[0].P': Tasks known (2 tasks)", "Step 'L[0].Q': Tasks known (2 tasks)", "Step 'L[0].Q' is ready", "Q ran 1"],
                 absent: &["Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran"],
             },
+            // A pending instance whose Tasks are known as the iteration
+            // starts gives its TaskParam to a reader advanced later.
+            LoopCase {
+                file: "pending_tasks_known.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &[
+                    "Step 'L[0].P' is pending inputs:",
+                    "  Tasks: 2 (known; Step pending inputs for Steps.O.Output.N)",
+                    "Step 'L[0].Q': Tasks known (2 tasks)", "Step 'L[0].Q' is ready", "Q ran 1",
+                ],
+                absent: &["Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran"],
+            },
+            // An instance reads the TaskParam of a loop dependency that did
+            // not run all of its Tasks.
+            LoopCase {
+                file: "dep_taskparam.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &["Running loop 'L'", "P ran 1"],
+                absent: &["Step 'L[0].P' is blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran"],
+            },
+            // An instance with zero Tasks is named in its log line.
+            LoopCase {
+                file: "zero_tasks.yaml", args: &[], code: 0,
+                lines: &["Running step 'L[0].P'", "Step 'L[0].P' has 0 tasks", "Running step 'L[1].P'", "P ran 7"],
+                absent: &[],
+            },
+            // A job output reads a skipped loop's null.
+            LoopCase {
+                file: "job_output_waits.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' skipped (enableIf is false)", "Job output Out = 4"],
+                absent: &[],
+            },
         ] {
             check_loop_case(&case);
         }
     }
 
-    /// `--step L` checks what the boundary reads before the Session starts.
+    /// `--step L` checks what the boundary reads (`until`, a loop output's
+    /// `value`, a variable's `next`) before the Session starts.
     #[test]
     fn step_naming_a_loop_checks_its_boundary_reads_first() {
-        let path = templates_dir().join("control_flow_loops").join("bnd.yaml");
-        let (code, stdout, stderr) = run_cli(&["run", path.to_str().unwrap(), "--step", "L"]);
-        assert_eq!(code, 1);
-        assert_eq!(stdout, "");
-        assert_eq!(
-            stderr.trim_end(),
-            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.A.Output.V.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
-        );
+        for file in ["bnd.yaml", "bnd_value.yaml", "bnd_next.yaml"] {
+            let path = templates_dir().join("control_flow_loops").join(file);
+            let (code, stdout, stderr) = run_cli(&["run", path.to_str().unwrap(), "--step", "L"]);
+            assert_eq!(code, 1, "{file}");
+            assert_eq!(stdout, "", "{file}");
+            assert_eq!(
+                stderr.trim_end(),
+                "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.A.Output.V.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies.",
+                "{file}"
+            );
+        }
     }
 
     /// A body Step instance whose group fails while it advances is FAILED.
@@ -8308,6 +8352,76 @@ steps:
         assert_eq!(result["step_name"], "L");
         assert!(result.get("name").is_none(), "{result}");
         assert_eq!(result["kind"], "loop");
+    }
+
+    #[test]
+    fn summary_counts_a_skipped_loop_and_lists_what_job_outputs_wait_on() {
+        let path = templates_dir()
+            .join("control_flow_loops")
+            .join("job_output_waits.yaml");
+        let (code, stdout, stderr) = run_cli(&["summary", path.to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("Total tasks: 1\n"), "{stdout}");
+        // A skipped loop's outputs are concrete at Job creation.
+        assert!(
+            stdout.contains("  - Out (INT): pending; waits for Steps.A.Output.V\n"),
+            "{stdout}"
+        );
+        // The job summary shows a loop's dependency count.
+        let job = write(READS_DEPENDENCY);
+        let (code, stdout, _) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains("    - 'W'\n  1 dependencies\n"), "{stdout}");
+        // `--step L` in JSON.
+        let (code, stdout, _) = run_cli(&[
+            "summary",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["status"], "success");
+        assert_eq!(result["message"], "Summary for loop 'L' in Job 'Dep'");
+        assert_eq!(result["job_name"], "Dep");
+    }
+
+    /// RFC 0008: a top-level Step's stack is still checked before any
+    /// Environment is entered.
+    #[test]
+    fn a_wrap_environment_conflict_in_a_top_level_step_is_rejected_before_entering() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, WRAP_ACTIONS]
+name: Wrap
+steps:
+- name: S
+  stepEnvironments:
+  - name: SW
+    script:
+      actions:
+        onWrapEnvEnter: {command: python, args: ['-c', 'pass']}
+        onWrapTaskRun: {command: python, args: ['-c', 'pass']}
+        onWrapEnvExit: {command: python, args: ['-c', 'pass']}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('S')"]}
+"#;
+        let job = write(template);
+        let env = templates_dir().join("wrap_env_second.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--environment",
+            env.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: RFC 0008: a session may have at most one Environment defining wrap hooks (onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit). Found 2: WrapB, SW."
+        );
     }
 
     #[test]
