@@ -1,14 +1,19 @@
 # Step Dependency Graph
 
 The `step_dependency_graph` module builds and queries a directed acyclic graph of step-to-step
-dependencies from an instantiated `job::Job`.
+dependencies from an instantiated `job::Job`. With `CONTROL_FLOW` loops (RFC 0013), a loop is
+a node like a Step; its body Steps are not nodes, since their dependencies stay within the
+body.
 
 ## Public API
 
 ```rust
 impl StepDependencyGraph {
     pub fn new(job: &Job) -> Result<Self, ModelError>
+    pub fn node_count(&self) -> usize
     pub fn step_node(&self, name: &str) -> Option<&StepDependencyNode>
+    pub fn node(&self, index: usize) -> Option<&StepDependencyNode>
+    pub fn edge(&self, index: usize) -> Option<&StepDependencyEdge>
     pub fn max_indegree(&self) -> usize
     pub fn max_outdegree(&self) -> usize
     pub fn topo_sorted(&self) -> Result<Vec<usize>, ModelError>
@@ -25,16 +30,19 @@ pub struct StepDependencyGraph {
     name_to_index: HashMap<String, usize>,
 }
 
+pub enum StepNodeKind { Step, Loop }
+
 pub struct StepDependencyNode {
-    pub step_index: usize,
+    pub step_index: usize,        // into job.steps for a Step, job.loops for a loop
+    pub kind: StepNodeKind,
     pub name: String,
     pub in_edges: Vec<usize>,     // Indices into edges vec
     pub out_edges: Vec<usize>,    // Indices into edges vec
 }
 
 pub struct StepDependencyEdge {
-    pub origin: usize,            // Index of dependency (upstream step)
-    pub dependent: usize,         // Index of dependent (downstream step)
+    pub origin: usize,            // Node index of the dependency (upstream Step or loop)
+    pub dependent: usize,         // Node index of the dependent (downstream Step or loop)
 }
 ```
 
@@ -42,14 +50,21 @@ pub struct StepDependencyEdge {
 
 `StepDependencyGraph::new(job)` builds the graph from an instantiated job:
 
-1. Creates a node for each step, indexed by position in `job.steps`
+1. Creates a node for each top-level Step and loop, in template order: each loop at its
+   `entry_index`, and the Steps filling the other places in `job.steps` order. For a Job
+   without loops, node `i` is `job.steps[i]`. A loop whose `entry_index` does not fit is
+   an error.
 2. Builds `name_to_index` lookup map
-3. For each step's dependencies, creates edges from the dependency target to the step
-4. Errors on unknown dependency targets (step name not found)
+3. For each node's dependencies, creates edges from the dependency target to the node
+4. Errors on unknown dependency targets (`Step '<S>' depends on unknown step '<D>'`, or
+   `Loop '<L>' ...` for a loop)
+
+`topo_sorted()` returns node indices; `node(i).kind` tells a Step from a loop.
 
 ## Topological Sort
 
-`topo_sorted()` returns step indices in dependency-respecting order using iterative
+`topo_sorted()` returns node indices (for a Job without loops, indices into `job.steps`)
+in dependency-respecting order using iterative
 DFS-based topological sort with three-state marking.
 
 **Algorithm:**

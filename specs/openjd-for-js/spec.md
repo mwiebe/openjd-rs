@@ -176,9 +176,10 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 | `maxEvalMemoryBytes` | `number` | Evaluation memory budget per format-string expression, in bytes. Omit for the spec-recommended 100 MB default. |
 | `maxEvalOperations` | `number` | Evaluation operation budget per format-string expression. Omit for the spec-recommended 10 M default. |
 
-The Rust field `max_task_output_bytes` (the per-Task `CONTROL_FLOW` output size limit a
-runtime applies) is not exposed: the bindings parse and create Jobs but run no Tasks, so it
-is always `None`.
+The Rust fields `max_task_output_bytes` (the per-Task `CONTROL_FLOW` output size limit a
+runtime applies) and `max_loop_value_bytes` (the RFC 0013 loop value limit, checked as a
+loop is bound and runs) are not exposed: the bindings parse and create Jobs but run no Tasks
+and refuse loops, so both are always `None`.
 
 `CallerLimits` is exposed as a plain object rather than an exported class: callers construct object literals and reuse them across calls with no `.free()` ceremony. Resolves review finding F4.
 
@@ -192,7 +193,7 @@ is always `None`.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. With `CONTROL_FLOW`, a Step may come back pending inputs (its `binding` names what it waits for, and its parameter space, host requirements, and resolved symbol table are absent) or skipped; the bindings do not expose `advanceStepBinding` to finish one. The Job's `toJSON()` includes its job outputs (`outputs`), each with `evaluated` when `createJob` evaluated it; the bindings do not expose `evaluateJobOutput` for the rest. A job output that fails at creation makes `createJob` throw. |
+| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. With `CONTROL_FLOW`, a Step may come back pending inputs (its `binding` names what it waits for, and its parameter space, host requirements, and resolved symbol table are absent) or skipped; the bindings do not expose `advanceStepBinding` to finish one. The Job's `toJSON()` includes its job outputs (`outputs`), each with `evaluated` when `createJob` evaluated it; the bindings do not expose `evaluateJobOutput` for the rest. A job output that fails at creation makes `createJob` throw. A Job with a loop (`CONTROL_FLOW`, RFC 0013) makes it throw `createJob does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop '<name>'.`, because the bindings expose only Steps; `JobTemplate` validation accepts loops. |
 | `preprocessJobParameters` | `(template: JobTemplate, rawValues: Record<string, string>, pathOptions: PathParameterOptions) → Map<string, ExprValue>` | Coerce raw string parameter values to typed ExprValues per the parameter definitions. |
 | `mergeJobParameterDefinitions` | `(templates: (JobTemplate \| EnvironmentTemplate)[]) → JobParameterDefinition[]` | Merge parameter definitions from multiple templates per the spec's merging rules. |
 | `evaluateLetBindings` | `(bindings: string[], symbols: SymbolTable) → SymbolTable` | Evaluate `let` bindings and add results to the symbol table. |

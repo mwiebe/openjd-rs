@@ -30,10 +30,11 @@ pub use error::ModelError;
 pub use error::{DiagnosticSpan, ErrorDetail};
 pub use error::{PathElement, ValidationError, ValidationErrors};
 pub use job::create_job::{
-    advance_step_binding, attach_step_inputs, build_symbol_table, convert_environment,
-    convert_environment_with_symtab, create_job, evaluate_job_output, evaluate_let_bindings,
-    job_output_inputs, merge_job_parameter_definitions, preprocess_job_parameters,
-    MergedParameterDefinition, PathParameterOptions,
+    advance_body_step_binding, advance_loop_binding, advance_step_binding, attach_step_inputs,
+    build_symbol_table, convert_environment, convert_environment_with_symtab, create_job,
+    end_without_iterations, evaluate_iteration_boundary, evaluate_job_output,
+    evaluate_let_bindings, job_output_inputs, merge_job_parameter_definitions,
+    preprocess_job_parameters, start_iteration, MergedParameterDefinition, PathParameterOptions,
 };
 pub use job::ChunkTaskIndex;
 pub use step_dependency_graph::StepDependencyGraph;

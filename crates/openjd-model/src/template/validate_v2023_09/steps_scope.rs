@@ -429,7 +429,9 @@ pub(crate) fn add_control_flow_scope(
     Ok(())
 }
 
-/// [`add_control_flow_scope`] for top-level Step `step_index`.
+/// [`add_control_flow_scope`] for top-level Step `step_index` (used by the
+/// tests; the job-creation callers pass a [`StepLocation`]).
+#[cfg(test)]
 pub(crate) fn add_steps_scope(
     symtab: &mut SymbolTable,
     jt: &JobTemplate,

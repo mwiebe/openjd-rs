@@ -350,14 +350,15 @@ impl Session {
     /// step-scope symbol table.
     ///
     /// `path_inputs` (`job::Step::path_inputs`, RFC 0012 §Path values) lists the
-    /// path-typed `Steps.*` values in `base`, stored there as strings
-    /// in the submission path context. Each `Steps.P.RawOutput.V` /
-    /// `Steps.P.TaskRawParam.N` becomes `path` values in that stored
+    /// path-typed `Steps.*` values in `base`, and a loop body Step
+    /// instance's path-typed `RawLoop.*` values (RFC 0013), stored there as
+    /// strings in the submission path context. Each `Steps.P.RawOutput.V` /
+    /// `Steps.P.TaskRawParam.N` / `RawLoop.V` becomes `path` values in that stored
     /// form (each with its own format: Windows for a drive path or one
     /// starting with `\\`, POSIX otherwise, and the host's for a URI,
     /// which EXPR recognizes by its value and the evaluator reads only in
     /// the host's format), and its
-    /// `Output.V` / `TaskParam.N` twin becomes the forward-mapped `path`
+    /// `Output.V` / `TaskParam.N` / `Loop.V` twin becomes the forward-mapped `path`
     /// values, element by element. A `null` stays `null`. A symbol of
     /// another form, one missing from `base`, a stored value whose shape
     /// does not match its `ty`, and any `path_inputs` with no `base` are a

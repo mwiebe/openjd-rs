@@ -9,8 +9,9 @@
 //! `<StepTemplate>` otherwise. A loop's body is a list of `<StepTemplate>`s,
 //! and a body entry with a `loop` key is rejected because loops do not nest.
 //!
-//! These are template types only. Instantiating a loop into a Job is not
-//! implemented yet: `create_job` rejects a template that has one.
+//! These are template types. `create_job` turns each loop into a
+//! [`job::Loop`](crate::job::Loop), and the loop functions in
+//! [`create_job`](crate::create_job) run it.
 
 use serde::Deserialize;
 

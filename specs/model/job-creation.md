@@ -152,12 +152,10 @@ pub fn create_job(
 ) -> Result<job::Job, ModelError>
 ```
 
-Full template instantiation pipeline. A template with a loop (`CONTROL_FLOW`, RFC 0013)
-is not supported yet: `create_job` returns `Compatibility("create_job does not support
-loops (RFC 0013) yet: steps[<i>] is loop '<name>'.")` for the first loop, before
-anything else is evaluated. Template validation accepts such a template (see
-[validation.md](validation.md) § Loops), and the rest of this section is about templates
-without loops, whose `steps` are all `StepTemplate`s. Environment templates should
+Full template instantiation pipeline. A loop (`CONTROL_FLOW`, RFC 0013) becomes a
+`job::Loop` in `job::Job::loops`, bound with the Steps in dependency order, and its body
+Steps are not evaluated (see [Loops](#loops-control_flow-rfc-0013) below); the rest of
+this section is about the top-level Steps. Environment templates should
 already be merged into `job_parameter_values` via `preprocess_job_parameters` before
 calling this function. `ctx` carries the model profile and the
 `CallerLimits` that apply to this job instance. Its revision must
@@ -338,9 +336,12 @@ time, with everything only a session can know left `Unresolved`:
   and those of its Step Environments, also hold the `Steps.*` symbols of
   the Step's direct dependencies: the concrete value for each symbol its
   materialization groups read that is concrete, and an `Unresolved` value
-  of its RFC type for every other, seeded by `add_steps_scope` exactly as
-  pass 8 seeds them (see `specs/model/validation.md` § The `Steps.*`
-  scope; `add_steps_scope` keeps a key the table already holds). Without
+  of its RFC type for every other, seeded by `add_control_flow_scope`
+  exactly as pass 8 seeds them (see `specs/model/validation.md` § The
+  `Steps.*` scope; it keeps a key the table already holds). For a body Step
+  instance (RFC 0013), the tables also hold the iteration's concrete
+  `Loop.*` values, and, in the host-scope tables, an `Unresolved` path for a
+  path-typed `Loop.<V>`, whose concrete form is `RawLoop.<V>`. Without
   them, every script that reads `Steps.*` would fail here with `Undefined
   variable`, so a template that passes `openjd check` would fail
   `create_job`. The template-scope table that the carried-forward
@@ -731,6 +732,169 @@ for a skipped Step. `job::Step::input_symbols()` lists the
 read (what `attach_step_inputs` needs concrete) and, for a pending Step, those
 its groups still wait on (a known group's inputs are not listed); none for a
 skipped Step.
+
+### Loops (`CONTROL_FLOW`, RFC 0013)
+
+A loop is a node of the step graph, bound like a Step (RFC 0013 §Loop binding). Its body
+Steps run once per iteration: each iteration has an instance of every body Step, which is
+a `job::Step` bound by the same core as a top-level Step (`bind_step`, over a `StepSite`
+that names the Step's template, its location, its error path, and for an instance its
+iteration's `Loop.*` values). The caller keeps the loop's progress between iterations,
+as it keeps a Step's state. The functions are in `create_job/loops.rs`.
+
+#### Loop binding
+
+`create_job` and `advance_loop_binding` bind a loop with three groups, in order:
+
+1. **Enablement** (`MaterializationGroup::Enablement`): `enableIf`, with `Step.Name` the
+   loop's name. While its `Steps.*` inputs are not concrete, the loop is `PendingInputs`
+   and nothing else of it is evaluated. `false` makes it `Skipped`.
+2. **Bound** (`LoopBound`): `maxIterations`, a literal or a format string of type `int`,
+   from 1 to 1,000 (`maxIterations must be from 1 to 1000; it is <n>.`, with the
+   expression on a line after it for a format string). It reads no `Steps.*` symbol, so it
+   is evaluated as soon as `enableIf` is `true`.
+3. **Start** (`LoopStart`): each variable's `initial`, in declaration order, with its
+   type as the target type, converted with EXPR's implicit coercion and checked against
+   its constraints (messages prefixed `Loop variable '<V>': `); then
+   `CallerLimits::max_loop_value_bytes` on the initial values (see Limits); then, for a
+   `while` loop, the first `while` with `Loop.Iteration` 0 and the initial values. Its
+   inputs are the `Steps.*` symbols of the `initial`s and the `while`.
+
+A group whose inputs are concrete at Job creation is evaluated then, and a failure in any
+of the three fails `create_job` (it is reported alone, as an `enableIf` error is). Later,
+`advance_loop_binding(job_template, job_parameter_values, ctx, job, loop_index, inputs)`
+evaluates the rest as the loop's dependencies (`job::Loop::input_producers()`) become
+known, and returns the loop `PendingInputs` with more known, `Bound`, or `Skipped`, or a
+`BindingError` (step: the loop's name) that fails the loop finally. Called on a bound or
+skipped loop it returns it unchanged. `create_job` evaluates nothing of a body Step,
+including the carried-forward checks it runs for every other Step: those are evaluation,
+found when iteration 0 starts (RFC 0013 Open Question 6). A body Step's Tasks are not
+counted in `max_task_count` at creation, and the `minLength` of a loop's `APPEND` outputs
+is never checked there.
+
+A bound loop whose first `while` is `false` has zero iterations
+(`BoundLoop::has_iterations`): once its dependencies are satisfied, the caller calls
+`end_without_iterations(job, loop_index)`, which checks each `APPEND` output's `minLength`
+against `[]` and gives a `LoopResult` with zero iterations, each `LAST` output `null`, and
+each `APPEND` output `[]`.
+
+`job::Loop::tasks_known()` is `Some(0)` for a skipped loop and `None` otherwise, since a
+loop's Tasks are not known until it ends. `job::Loop::binding_report()` reports the three
+groups as `job::Step::binding_report()` does a Step's.
+
+#### Iterations
+
+`LoopProgress::new(&job_loop)` gives iteration 0 with the `initial` values and no outputs.
+Every loop function that takes a `LoopProgress` checks its shape: exactly the loop's
+variables, each of its declared type, and exactly its outputs (`LAST` `null` or of its
+type, `APPEND` a list of its type); anything else is a caller error, so a progress
+restored from a scheduler's records cannot be mistaken for a loop failure.
+`start_iteration(.., loop_index, &progress, inputs, committed_task_count)` creates an
+instance of every body Step for `progress.iteration`, in body dependency order, each bound
+as `create_job` binds a top-level Step: every group whose inputs are concrete then is
+evaluated (RFC 0013 §Iterations item 3), including the carried-forward checks of its
+script and Step Environments. `inputs` holds the loop's dependencies; an instance skipped
+by its `enableIf`, or whose Tasks are known, makes its symbols concrete for the instances
+of the same iteration that read them. The result is a `LoopIteration` with one instance
+per body Step, in body order.
+
+- An instance is named by its body Step's name, unique in the template, so
+  `StepInputs::add_producer`, `attach_step_inputs`, and `Step::input_producers()` work
+  on it unchanged, and `Steps.<Body>.*` within the iteration needs no new symbol form.
+  `Step.Name` in an instance is the body Step's name (plan A20).
+  `LoopIteration::instance_name(j)` is `<Loop>[<N>].<Step>`, and a `BindingError` from
+  an instance names it so.
+- Its symbol table is the job table, `Step.Name`, the iteration's `Loop.Iteration`,
+  `Loop.<V>`, and `RawLoop.<V>`, and the concrete `Steps.*` values its groups read. A
+  variable whose type is or contains `path` has only `RawLoop.<V>` there, in the
+  submission path context. When the instance is bound, a path-typed variable that its
+  worker-resolved fields read, as `Loop.<V>` or `RawLoop.<V>`, is stored in its
+  `resolved_symtab` as `RawLoop.<V>`, a `string` or list of strings, and recorded in
+  `job::Step::path_inputs`; the Session derives `Loop.<V>` from it (see
+  [../sessions/session.md](../sessions/session.md)). `attach_step_inputs` keeps these
+  records and replaces only the `Steps.*` ones.
+- Task-count limits apply per instance as its Tasks become known:
+  `max_step_task_count`, and `max_task_count` with `committed_task_count`, which counts
+  the Tasks of every Step and earlier instance whose Tasks are known; `start_iteration`
+  adds each instance's Tasks to it as it goes (plan A19). An instance over a limit fails,
+  and the message names it as `<Loop>[<N>].<Step>`.
+
+`advance_body_step_binding(.., loop_index, &progress, &iteration, body_index, inputs,
+committed_task_count)` is `advance_step_binding` for a pending instance: `inputs` holds the
+loop's dependencies and the instances of the same iteration in the instance's
+`input_producers()` whose state is known. The caller swaps the result into
+`iteration.steps`. Every instance group error is a `BindingError` that fails the
+instance, and so the loop, finally (RFC 0013 §Failure).
+
+#### The iteration boundary
+
+When every instance of the iteration has succeeded or been skipped, the caller calls
+`evaluate_iteration_boundary(.., loop_index, &progress, inputs)`, with `inputs` holding
+the loop's dependencies and every instance of the iteration (`add_producer`, succeeded or
+skipped). With `Loop.*` holding the iteration's values, it evaluates, in RFC 0013's
+order:
+
+1. Each loop output's `value`, with its type (under `APPEND` its element type) as the
+   target type, converted, and checked: under `LAST` every constraint property, under
+   `APPEND` the `item` constraints on the new element (`check_element`) and `maxLength`
+   on the grown list. It becomes the iteration's value. Then the size limit.
+2. `until`, if present: `true` ends the loop, with no `next`, and it succeeds with `N + 1`
+   iterations once each `APPEND` output's `minLength` holds.
+3. Every variable's `next`, each reading iteration `N`'s values, converted and checked
+   against its constraints. Then the size limit on the new values and the outputs so far
+   (plan A21).
+4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`: `false` ends the
+   loop as in step 2.
+5. The bound: if `N + 1` is `maxIterations`, the loop fails (`Loop '<L>' has run
+   maxIterations (<n>) iterations without ending, so it fails.`, followed by a line holding
+   the expression when `maxIterations` is a format string).
+
+It returns `BoundaryOutcome::Continue(LoopProgress)` for iteration `N + 1`, or
+`Succeeded(LoopResult { iterations, ended_by, outputs })`. The first error stops it and
+fails the loop finally: a `LoopError` with the loop's name, the iteration, the field
+(`LoopErrorField`), and the error, a `ModelValidation` at the field's path
+(`steps[i] -> outputVariables[k] -> value`, `steps[i] -> loop -> until`,
+`steps[i] -> loop -> variables[k] -> next`, `steps[i] -> loop -> while`,
+`steps[i] -> loop -> maxIterations`, `steps[i] -> outputVariables[k] -> minLength`, or
+`steps[i]` for the size limit). An evaluation error quotes the expression with a caret;
+a conversion or constraint error ends with a line holding the expression. A symbol a
+boundary expression reads that is not concrete in `inputs` is a caller error.
+
+A loop's outputs reach its consumers like a Step's:
+`StepInputs::add_loop_producer(&job_loop, LoopProducerState::Succeeded { outputs })` (or
+`Skipped`) sets `Output.<V>` and `RawOutput.<V>` to each value itself, with no per-Task
+list; a path-typed output is held only in its `Raw` form and derived on the worker, unless
+it is `null`. `create_job` uses a skipped loop's `null`s for the Steps and job outputs
+that read it.
+
+#### Failure, recovery, and consumption
+
+Every error the loop functions return for a loop is final (RFC 0013 §Failure): a loop
+group, an instance group, a Task-count limit, the boundary, `minLength`, the size limit,
+and the bound. The model never sees a Task attempt, so the one recoverable failure, of
+the Tasks of an instance of the iteration in progress, is the caller's to handle; the CLI
+has no retries. `BindingError::is_caller_error()` and `LoopError::is_caller_error()` tell
+a caller error, which says nothing about the loop, from a failure. A loop's
+`BindingError` is displayed as a Step's is (`Step 'L' failed in its start group:`, or
+`Binding Step 'L' was refused in its enablement group:` for a caller error, whose group
+is always `Enablement`), since a loop is a Step of the step graph.
+
+`job::Loop::expression_inputs(job_template, &LoopExpression)` lists the `Steps.*` symbols
+that one of the loop's expressions (`enableIf`, an `initial`, `while`, `until`, a `next`,
+or an output `value`) references, by symbol collection, so a scheduler that allows
+re-runs can mark them consumed when it evaluates the field (RFC 0013 §Retries and
+re-runs, RFC 0012 rule 3).
+
+#### Limits
+
+`CallerLimits::max_loop_value_bytes` (RFC 0013 §Limits item 4) bounds the total of a
+loop's variable and output values, each measured as its JSON serialization (numbers,
+strings, booleans, and arrays; a path as its text): each variable's value; each `LAST`
+output's value, or nothing while it is `null`; and the sum of each `APPEND` output's
+elements, so an `APPEND` output with no elements counts nothing (its brackets and commas
+are not counted). It is checked
+after the `initial` values, and at each boundary after step 1 and after step 3. `None`
+is no limit; the CLI sets none.
 
 ### convert_environment
 
