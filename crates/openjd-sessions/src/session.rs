@@ -99,7 +99,7 @@ pub type EnvironmentIdentifier = String;
 pub type SessionCallbackType = Box<dyn Fn(&str, &ActionStatus) + Send + Sync>;
 
 /// Callback invoked once for each output value a running Task reports
-/// (RFC 0010 §Committing values): `(session_id, task, name, value)`. `task`
+/// (RFC 0011 §Committing values): `(session_id, task, name, value)`. `task`
 /// is the Task's `CHUNK[INT]` value in a chunked Step and `None` otherwise;
 /// under `collect: APPEND`, `value` is the new element. A `PATH` value is in
 /// the submission path context. The values are not committed: if the Action
@@ -109,7 +109,7 @@ pub type OutputCallbackType =
 
 /// Which template defines an Environment, which decides how its actions
 /// treat `openjd_output_var` lines in a Session whose Job lists
-/// `CONTROL_FLOW` (RFC 0010 §The `openjd_output_var` directive).
+/// `CONTROL_FLOW` (RFC 0011 §The `openjd_output_var` directive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EnvironmentOrigin {
     /// A Job Environment or Step Environment of the Job Template. A
@@ -146,7 +146,7 @@ pub struct RunTaskOptions<'a> {
     /// The Step's `job::Step::output_variables`. `Some` makes the Task's
     /// `openjd_output_var` directives report values, which
     /// [`ActionResult::outputs`] returns; `None`, in a Session whose Job
-    /// lists `CONTROL_FLOW`, makes a directive invalid (RFC 0010).
+    /// lists `CONTROL_FLOW`, makes a directive invalid (RFC 0011).
     pub output_variables: Option<&'a [openjd_model::job::OutputVariable]>,
     /// The Step's `job::Step::path_inputs`: the path-typed `Steps.*` values
     /// in `resolved_symtab` (see [`Session::build_symbol_table`]).
@@ -216,7 +216,7 @@ pub struct SessionConfig {
     /// set. Defaults to no limits beyond the OpenJD specification.
     pub limits: crate::limits::SessionLimits,
     /// Whether the Job's Job Template lists the `CONTROL_FLOW` extension
-    /// (RFC 0010). Only then are `openjd_output_var` lines directives: a Task
+    /// (RFC 0011). Only then are `openjd_output_var` lines directives: a Task
     /// of a Step with output variables reports values, and a directive in any
     /// other Job Template action is invalid. When `false`, every such line is
     /// ordinary output, as it is without the extension. Set it from the Job
@@ -263,7 +263,7 @@ struct ActionStatusFields {
     fail_message: Option<String>,
     /// Set when an invalid `openjd_output_var` directive gave the reason the
     /// action is failing: a later `openjd_fail` (often printed from a cancel
-    /// handler) or `CancelMarkFailed` must not replace it, because RFC 0010
+    /// handler) or `CancelMarkFailed` must not replace it, because RFC 0011
     /// requires the failure to name the output, the problem, and the text.
     /// Other messages keep the last-write-wins behavior of the Python
     /// reference.
@@ -1861,7 +1861,7 @@ impl Session {
     /// `onWrapTaskRun` hook (RFC 0008).
     ///
     /// `options` carries the Step's output variables and path-typed
-    /// `Steps.*` inputs (RFC 0010, see [`RunTaskOptions`]). In a Session
+    /// `Steps.*` inputs (RFC 0011, see [`RunTaskOptions`]). In a Session
     /// whose Job lists `CONTROL_FLOW` and a Step that declares output
     /// variables, the Task's `openjd_output_var` directives are collected as
     /// they are printed (each accepted value goes to
@@ -2092,7 +2092,7 @@ impl Session {
             .drive_action(runner_fut, &mut rx, &step_identifier)
             .await;
         self.cross_user.helper = runner.take_helper();
-        // Checked by the runner at a successful exit (RFC 0010 §Processing a
+        // Checked by the runner at a successful exit (RFC 0011 §Processing a
         // directive: every Task has its ONCE and LAST outputs and its APPEND
         // minLength); `None` for an attempt that failed.
         let outputs = runner.take_outputs();
@@ -2649,7 +2649,7 @@ impl Session {
     /// If `base` is None, builds from scratch using self.job_parameter_values.
     ///
     /// `path_inputs` lists the path-typed `Steps.*` values in `base`
-    /// (`job::Step::path_inputs`, RFC 0010). Each is stored there as a
+    /// (`job::Step::path_inputs`, RFC 0011). Each is stored there as a
     /// string, or a list of them, in the submission path context. The table
     /// gets its `RawOutput.<V>` or `TaskRawParam.<N>` symbol as `path` values
     /// in that stored form, each with the stored value's own path format

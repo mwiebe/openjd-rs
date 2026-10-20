@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Job output evaluation (`CONTROL_FLOW`, RFC 0010 §Job outputs).
+//! Job output evaluation (`CONTROL_FLOW`, RFC 0011 §Job outputs).
 //!
 //! A job output's `value` is evaluated once every `Steps.*` symbol it reads
 //! is concrete: at Job creation for one that reads none, or only the `null`s
@@ -68,7 +68,7 @@ pub fn job_output_inputs(job: &job::Job, output_index: usize) -> Vec<String> {
 }
 
 /// Evaluate job output `output_index` of `job` with the `Steps.*` values in
-/// `inputs` (RFC 0010 §Job outputs).
+/// `inputs` (RFC 0011 §Job outputs).
 ///
 /// The `value` is resolved against the job symbol table (`Param.*`,
 /// `RawParam.*`, `Job.Name`) and the `Steps.*` symbols from `inputs`, with
@@ -160,7 +160,7 @@ fn evaluate(
         return Ok(None);
     }
     // These failures have no caret, so the message ends with a line holding
-    // the value format string, to name the expression (RFC 0010 §Job
+    // the value format string, to name the expression (RFC 0011 §Job
     // outputs item 3). It and the coercion error, which repeats the value,
     // are shortened and their control characters escaped, as a Step output
     // value's messages are, so the message stays on its lines and a value

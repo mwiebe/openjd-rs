@@ -64,7 +64,7 @@ pub struct JobOutput {
 pub enum JobOutputValue { Value(ExprValue), Null }
 ```
 
-`declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0010)),
+`declaration` is an `OutputVariable` (see [CONTROL_FLOW fields](#control_flow-fields-rfc-0011)),
 so its constraint checks are the ones a Step's outputs use; its `collect` is always
 `ONCE`. `object_type` carries a `PATH` or `LIST[PATH]` output's `objectType` for tools and
 user interfaces; it is not checked. `evaluated` is `None` while the output is pending, `Value` with the value
@@ -119,8 +119,8 @@ pub struct Step {
 }
 ```
 
-The three `CONTROL_FLOW` fields (RFC 0010) are described in
-[CONTROL_FLOW fields](#control_flow-fields-rfc-0010) below.
+The three `CONTROL_FLOW` fields (RFC 0011) are described in
+[CONTROL_FLOW fields](#control_flow-fields-rfc-0011) below.
 
 `resolved_symtab` exists to transport symbol values across the network to the worker host
 that runs the job. The worker evaluates the format strings that remain unresolved after job
@@ -141,7 +141,7 @@ The type is `SerializedSymbolTable` (not `SymbolTable`) — a wire-format type s
 `[{"name": str, "value": ..., "type": str}]` for cross-host transfer in a Python-compatible
 format.
 
-### CONTROL_FLOW fields (RFC 0010)
+### CONTROL_FLOW fields (RFC 0011)
 
 `job::Step` derives `PartialEq`, `Hash`, `Serialize`, and `Deserialize`. The
 template's `JobParameterDefinition` implements none of the first three, so an output
@@ -214,7 +214,7 @@ also waits for: it is empty for a group that waits only for `enableIf`.
 **`OutputConstraints`** holds the constraint properties the definition *declared*, and
 only those. A property that a job parameter of the same type implies when omitted (the
 RFC's example is the 1024-character default `maxLength` of a `RANGE_EXPR` parameter) is
-never added (RFC 0010 `<OutputVariableDefinition>` item 6). Floats are `Float64`, so the
+never added (RFC 0011 `<OutputVariableDefinition>` item 6). Floats are `Float64`, so the
 struct is hashable. For a list type, `min_length`/`max_length` bound the number of
 elements and `item` holds the element constraints; `LIST[LIST[INT]]` nests a second
 `item`. For `STRING`, `PATH`, and `RANGE_EXPR`, the lengths count characters.

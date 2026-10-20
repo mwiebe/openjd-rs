@@ -118,7 +118,7 @@ pub(super) struct RangeRules {
     /// `EXPR` is enabled: a list item resolves as an expression with a
     /// target type (Expression Language §1.3.2).
     pub(super) expr: bool,
-    /// `CONTROL_FLOW` is enabled (RFC 0010 §Task parameter ranges).
+    /// `CONTROL_FLOW` is enabled (RFC 0011 §Task parameter ranges).
     pub(super) control_flow: bool,
 }
 
@@ -128,7 +128,7 @@ impl RangeRules {
     /// Without `CONTROL_FLOW`, every resolved list range is capped at
     /// `max_task_param_range_len` (§3.4.1), whether it came from a list
     /// literal or a format string, and an `<IntRangeExpr>` is not. With
-    /// `CONTROL_FLOW` (RFC 0010 §Range length) the cap applies to a list
+    /// `CONTROL_FLOW` (RFC 0011 §Range length) the cap applies to a list
     /// literal's items as written, which the structure pass checks, and not
     /// to resolved values. The RFC may still key this relaxation on ranges
     /// that read `Steps.*` (plan ambiguity A3); this is the one place to
@@ -154,7 +154,7 @@ impl RangeRules {
 
     /// A whole-field range expression that resolved to `null`. With
     /// `CONTROL_FLOW` a conditional producer's outputs are `T?`, so a `null`
-    /// range is an ordinary mistake and gets its own message (RFC 0010 §How a
+    /// range is an ordinary mistake and gets its own message (RFC 0011 §How a
     /// Step is bound item 3: "a `null` where a value is required"); without
     /// it the existing messages are kept.
     fn check_not_null(self, value: &ExprValue, param_name: &str) -> Result<(), ModelError> {
@@ -169,7 +169,7 @@ impl RangeRules {
     /// A list literal whose items were all skipped (`null`) or flattened
     /// from empty lists. An error without `CONTROL_FLOW`; with it, the
     /// result follows the rules for a format-string range and may be empty
-    /// (RFC 0010 §Empty parameter spaces).
+    /// (RFC 0011 §Empty parameter spaces).
     fn check_list_literal_not_emptied(
         self,
         len: usize,
@@ -497,7 +497,7 @@ fn resolve_int_range(
 
 /// A range string that does not parse once its expressions are evaluated,
 /// under `CONTROL_FLOW`: the message names the expression as written and the
-/// text it resolved to (RFC 0010 §How a Step is bound item 3), and each
+/// text it resolved to (RFC 0011 §How a Step is bound item 3), and each
 /// symbol it reads whose value is `null`, such as a skipped producer's output
 /// in `"1-{{Steps.P.Output.N}}"`.
 fn range_string_error(

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
-    /// Whether the Environment is entered (`CONTROL_FLOW`, RFC 0010).
+    /// Whether the Environment is entered (`CONTROL_FLOW`, RFC 0011).
     /// Permitted only in a Job Template.
     pub enable_if: Option<BoolOrFormatString>,
     pub script: Option<EnvironmentScript>,

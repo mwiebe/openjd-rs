@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Specification, "Chunked Steps": the
+# RFC 0011 (openjd-specifications 619d910), Specification, "Chunked Steps": the
 # example Step, in a Job Template, with range "1-6" instead of "1-240" and
 # defaultTaskCount 3 instead of 10, so it runs two chunks. Unlike
 # chunked_render.yaml, frame 5 reports no RenderTimeS, which fails its chunk.

@@ -3,7 +3,7 @@
 [README](README.md) · Output Values
 
 The `openjd_model::outputs` module turns the `openjd_output_var` directives that one
-Action prints into each Task's output values (RFC 0010 §Output emission). It is the
+Action prints into each Task's output values (RFC 0011 §Output emission). It is the
 model's half of output collection: it parses a directive, checks it against the Step's
 declarations, converts its JSON to a typed `ExprValue`, maps a `PATH` value back to the
 submission path context, checks constraints, applies the collect mode, and counts the
@@ -70,7 +70,7 @@ the directives of one Action:
 | Argument | Meaning |
 |---|---|
 | `declared` | The Step's `job::Step::output_variables` (`step.output_variables.as_deref().unwrap_or_default()`). A repeated name keeps its first declaration (validation rejects repeats). |
-| `max_bytes` | The per-Task size limit. RFC 0010 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
+| `max_bytes` | The per-Task size limit. RFC 0011 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
 | `path_rules` | The Session's full path mapping rules, in the order it applies them (`Session::path_mapping_rules()`), unfiltered, as `unapply_rules` requires. |
 | `worker_format` | The worker host's path format: the format a reported `PATH` value is parsed in. |
 | `chunk` | The values of the Step's `CHUNK[INT]` parameter in the chunk being run, in iteration order; `None` for a Step without one. |

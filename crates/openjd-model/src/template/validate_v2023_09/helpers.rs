@@ -180,7 +180,7 @@ pub fn validate_env_var_name(name: &str, path: &[PathElement], errors: &mut Vali
 /// Enforce an extension's EXPR prerequisite: when `ext` is listed in a
 /// template's `extensions:`, `EXPR` must also be listed. RFC 0002 defines no
 /// dependencies between extensions; `WRAP_ACTIONS` (RFC 0008) and
-/// `CONTROL_FLOW` (RFC 0010) each state this rule themselves, and `rfc` names
+/// `CONTROL_FLOW` (RFC 0011) each state this rule themselves, and `rfc` names
 /// the one that does.
 pub fn check_expr_prerequisite(
     ctx: &ValidationContext,

@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` output values (RFC 0010 §Output emission): the
+//! `CONTROL_FLOW` output values (RFC 0011 §Output emission): the
 //! `openjd_output_var` directive parser and the collector that turns one
 //! Action's directives into each Task's output values.
 //!
@@ -20,7 +20,7 @@ pub use collector::{OutputCollector, TaskOutputs};
 pub use directive::{parse_output_directive, OutputDirective};
 
 /// The least number of bytes of output values per Task that a runtime must
-/// accept (RFC 0010 §Limits item 2: 1 MiB). A runtime passes this, or more,
+/// accept (RFC 0011 §Limits item 2: 1 MiB). A runtime passes this, or more,
 /// as `max_bytes` to [`OutputCollector::new`].
 pub const MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
 

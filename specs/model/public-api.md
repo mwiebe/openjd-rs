@@ -456,7 +456,7 @@ impl JobParameterDefinition {
 }
 ```
 
-### CONTROL_FLOW Template Types (RFC 0010)
+### CONTROL_FLOW Template Types (RFC 0011)
 
 `CONTROL_FLOW` adds `JobTemplate::job_output_definitions` (above) and fields to
 two structural template types:
@@ -834,7 +834,7 @@ pub enum job::CancelationMode {
 }
 ```
 
-### CONTROL_FLOW Job Types (RFC 0010)
+### CONTROL_FLOW Job Types (RFC 0011)
 
 Re-exported from `job`. Every new `job::Step` field has `#[serde(default)]` and is
 skipped when it holds its default, so a Step serialized before `CONTROL_FLOW` still
@@ -1123,11 +1123,11 @@ pub struct job::StepDependency {
 ## Output Values (`outputs::*`, CONTROL_FLOW)
 
 The `openjd_output_var` directive parser and the collector that turns one
-Action's directives into each Task's output values (RFC 0010 §Output
+Action's directives into each Task's output values (RFC 0011 §Output
 emission). No I/O. See [outputs.md](outputs.md).
 
 ```rust
-/// RFC 0010 §Limits item 2: the least `max_bytes` a runtime may pass.
+/// RFC 0011 §Limits item 2: the least `max_bytes` a runtime may pass.
 pub const outputs::MIN_OUTPUT_BYTES_LIMIT: usize = 1_048_576;
 
 /// The text after `openjd_output_var:`, parsed. Borrows from the payload.
@@ -1230,7 +1230,7 @@ pub enum ModelExtension {
     FeatureBundle1,    // RFC 0004 — "FEATURE_BUNDLE_1"
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
-    ControlFlow,       // RFC 0010 — "CONTROL_FLOW" (requires EXPR; Job Templates only)
+    ControlFlow,       // RFC 0011 — "CONTROL_FLOW" (requires EXPR; Job Templates only)
 }
 
 impl ModelExtension {
@@ -1314,7 +1314,7 @@ pub struct CallerLimits {
     /// spec-recommended default (`openjd_expr::DEFAULT_OPERATION_LIMIT`,
     /// 10 million).
     pub max_eval_operations: Option<usize>,
-    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0010
+    /// Bytes of output values each Task holds (CONTROL_FLOW, RFC 0011
     /// §Limits item 2). Enforced only at run time, when mirrored into
     /// `SessionLimits`. `None` = `outputs::MIN_OUTPUT_BYTES_LIMIT`
     /// (1 MiB); the runtime raises a smaller value to it.
@@ -1422,7 +1422,7 @@ pub enum DataFlow {
     None, In, Out, Inout,
 }
 
-/// RFC 0010 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
+/// RFC 0011 `<OutputCollectMode>` (CONTROL_FLOW). Case-sensitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum OutputCollectMode {

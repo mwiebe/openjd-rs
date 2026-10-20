@@ -104,7 +104,7 @@ impl EvalBudgets {
 /// requirements or parameter space) abort immediately and are reported
 /// alone.
 ///
-/// With `CONTROL_FLOW` (RFC 0010 §When groups are evaluated), each Step's
+/// With `CONTROL_FLOW` (RFC 0011 §When groups are evaluated), each Step's
 /// `outputVariables` are copied onto [`job::Step::output_variables`], and
 /// each Step is bound as far as the values concrete at job creation allow:
 /// its `enableIf` is decided if its inputs are concrete (a `false` Step is
@@ -273,7 +273,7 @@ pub fn create_job(
     let mut check_errors = crate::error::ValidationErrors::default();
     // Keyed on the template's own extensions, not the context's: a context
     // may enable more extensions than the template lists, and a template
-    // that does not list CONTROL_FLOW keeps today's behavior (RFC 0010
+    // that does not list CONTROL_FLOW keeps today's behavior (RFC 0011
     // Technical Requirement 1), including its order of evaluation and its
     // range rules.
     let control_flow = template_profile.has_extension(crate::types::ModelExtension::ControlFlow);
@@ -373,7 +373,7 @@ pub fn create_job(
         steps
     };
 
-    // CONTROL_FLOW (RFC 0010 §Job outputs item 1): every job output whose
+    // CONTROL_FLOW (RFC 0011 §Job outputs item 1): every job output whose
     // inputs are concrete now is evaluated, and a failure fails Job
     // creation, as an invalid job parameter value does.
     let outputs = job_outputs::evaluate_at_creation(job_template, &symtab, &steps, budgets)?;
@@ -448,7 +448,7 @@ pub fn create_job(
     })
 }
 
-/// `create_job`'s Steps under `CONTROL_FLOW` (RFC 0010 §When groups are
+/// `create_job`'s Steps under `CONTROL_FLOW` (RFC 0011 §When groups are
 /// evaluated): every Step is bound as far as the values concrete at job
 /// creation allow, in dependency order so that a producer skipped or with
 /// known Tasks makes its symbols concrete for the Steps that read them.

@@ -590,7 +590,7 @@ pub(crate) async fn run_via_helper(
         "cwd": config.working_dir,
     });
     // An Action that may report output values has the helper read each `@`
-    // file as the job user (RFC 0010 §File values item 3). For any other
+    // file as the job user (RFC 0011 §File values item 3). For any other
     // Action the helper leaves `openjd_output_var:` lines alone, so they reach
     // the filter here unchanged: ordinary output, or invalid when Forbidden.
     if let Some(max_bytes) = filter.output_vars_mut().max_bytes() {

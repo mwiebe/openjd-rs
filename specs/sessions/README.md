@@ -63,6 +63,6 @@ Currently implements `2023-09` with extensions:
 - `FEATURE_BUNDLE_1` (RFC 0004)
 - `EXPR` (RFC 0005)
 - `WRAP_ACTIONS` (RFC 0008)
-- `CONTROL_FLOW` (RFC 0010, prototype): the `openjd_output_var` directive, `@` file values,
+- `CONTROL_FLOW` (RFC 0011, prototype): the `openjd_output_var` directive, `@` file values,
   per-Task output values in `ActionResult::outputs`, and path-typed `Steps.*` inputs. See
   [session.md § Output variables](session.md#output-variables-control_flow).

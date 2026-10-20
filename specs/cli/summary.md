@@ -8,7 +8,7 @@ single step. The command instantiates the job (resolving parameters and creating
 object) to produce accurate task counts that reflect parameter space expansion.
 
 For a `CONTROL_FLOW` Job, `create_job` may leave a Step skipped or pending inputs, and
-`summary` reports what it knows of each (plan C2, RFC 0010 §Implementation strategy), as
+`summary` reports what it knows of each (plan C2, RFC 0011 §Implementation strategy), as
 described in [CONTROL_FLOW](#control_flow) below. A job output that fails at creation
 fails `create_job`, so `summary` reports that error.
 

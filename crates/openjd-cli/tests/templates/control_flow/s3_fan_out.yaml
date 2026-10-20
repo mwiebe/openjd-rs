@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# RFC 0011 (openjd-specifications 619d910), Basic Examples,
 # "S3 prefix fan-out with a manifest", verbatim.
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]

@@ -94,7 +94,7 @@ impl fmt::Display for DataFlow {
     }
 }
 
-/// RFC 0010 `<OutputCollectMode>`: how the directives a Task prints for one
+/// RFC 0011 `<OutputCollectMode>`: how the directives a Task prints for one
 /// output variable become that Task's value (`CONTROL_FLOW`).
 ///
 /// The template default is [`Once`](Self::Once).
@@ -397,7 +397,7 @@ pub enum ModelExtension {
     WrapActions,
     /// `CONTROL_FLOW` — enables `outputVariables` and `enableIf` on
     /// `<StepTemplate>` and `enableIf` on `<Environment>`. Requires
-    /// `EXPR`. See RFC 0010.
+    /// `EXPR`. See RFC 0011.
     ControlFlow,
 }
 
@@ -466,7 +466,7 @@ pub struct CallerLimits {
     /// Maximum total task count across all steps in a job template.
     /// Checked after parameter space ranges are resolved in `create_job`.
     ///
-    /// With `CONTROL_FLOW` (RFC 0010 §Limits item 4), it is checked as each
+    /// With `CONTROL_FLOW` (RFC 0011 §Limits item 4), it is checked as each
     /// Step's Tasks become known: in `create_job` for the Steps whose Tasks
     /// are known then, and in
     /// [`advance_step_binding`](crate::create_job::advance_step_binding)
@@ -474,7 +474,7 @@ pub struct CallerLimits {
     /// (`committed_task_count`). The Step whose Tasks would take the total
     /// over the limit fails.
     pub max_task_count: Option<u64>,
-    /// Maximum task count of one Step (RFC 0010 §Limits item 4), checked
+    /// Maximum task count of one Step (RFC 0011 §Limits item 4), checked
     /// when the Step's Tasks become known: at job creation, or with
     /// `CONTROL_FLOW` at step input binding. `None` (default) imposes no
     /// per-Step limit.
@@ -522,7 +522,7 @@ pub struct CallerLimits {
     /// ([`openjd_expr::DEFAULT_OPERATION_LIMIT`], 10 million). Applied at
     /// the same stages as [`max_eval_memory_bytes`](Self::max_eval_memory_bytes).
     pub max_eval_operations: Option<usize>,
-    /// Maximum bytes of output values each Task holds (RFC 0010 §Limits
+    /// Maximum bytes of output values each Task holds (RFC 0011 §Limits
     /// item 2, `CONTROL_FLOW`). Enforced only at run time, by the session
     /// runtime when the caller mirrors it into `SessionLimits`. `None`
     /// (default) uses the RFC's minimum,

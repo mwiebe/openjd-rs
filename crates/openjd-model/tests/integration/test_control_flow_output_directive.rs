@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The `openjd_output_var` directive grammar (RFC 0010 §The
+//! The `openjd_output_var` directive grammar (RFC 0011 §The
 //! `openjd_output_var` directive): `outputs::parse_output_directive`. See
 //! `specs/model/outputs.md` § Directive grammar.
 

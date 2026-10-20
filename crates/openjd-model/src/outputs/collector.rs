@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The output collector (RFC 0010 §Processing a directive, §Collect modes,
+//! The output collector (RFC 0011 §Processing a directive, §Collect modes,
 //! §Chunked Steps, §Limits).
 
 use indexmap::IndexMap;
@@ -62,7 +62,7 @@ impl OutputCollector {
     ///
     /// * `declared` — the Step's `job::Step::output_variables`. Names are
     ///   unique there; a repeated name keeps its first declaration.
-    /// * `max_bytes` — the per-Task size limit of RFC 0010 §Limits item 2. A
+    /// * `max_bytes` — the per-Task size limit of RFC 0011 §Limits item 2. A
     ///   runtime passes at least [`MIN_OUTPUT_BYTES_LIMIT`](super::MIN_OUTPUT_BYTES_LIMIT).
     /// * `path_rules` — the Session's full path mapping rules in the order it
     ///   applies them, for reverse-mapping `PATH` values
@@ -133,7 +133,7 @@ impl OutputCollector {
         })
     }
 
-    /// Steps 1 and 2 of RFC 0010 §Processing a directive: `name` is a
+    /// Steps 1 and 2 of RFC 0011 §Processing a directive: `name` is a
     /// declared output; `task` is present exactly when the Step is chunked and
     /// names a value of the chunk; and a `collect: ONCE` output has no value
     /// yet (for that Task). Call it before reading an `@` file.
@@ -187,7 +187,7 @@ impl OutputCollector {
             .saturating_sub(state.size.saturating_sub(replaced))
     }
 
-    /// Steps 4 to 6 of RFC 0010 §Processing a directive: convert `json` (an
+    /// Steps 4 to 6 of RFC 0011 §Processing a directive: convert `json` (an
     /// inline value's text, or an `@` file's whole content when `from_file`
     /// is `true`) to the declared type, or under `collect: APPEND` to its
     /// element type; map a `PATH` value back to the submission path context;
@@ -256,7 +256,7 @@ impl OutputCollector {
         };
         // Validity first, without converting numbers: a number too large for
         // a float is valid JSON (RFC 8259), and its failure is a conversion
-        // error (RFC 0010 §Processing a directive, "Type conversion").
+        // error (RFC 0011 §Processing a directive, "Type conversion").
         serde_json::from_str::<serde::de::IgnoredAny>(text).map_err(|e| {
             err(
                 OutputErrorKind::Json,

@@ -49,7 +49,7 @@ pub enum ActionMessage {
     UnsetEnv { name: String },
     /// `openjd_redacted_env: <var>=<value>`
     RedactedEnv { name: String, value: String },
-    /// `openjd_output_var: <name>=<value>` (RFC 0010, `CONTROL_FLOW`): a value
+    /// `openjd_output_var: <name>=<value>` (RFC 0011, `CONTROL_FLOW`): a value
     /// the output collector accepted. `task` is the Task's `CHUNK[INT]` value
     /// in a chunked Step, `None` otherwise. Under `collect: APPEND`, `value`
     /// is the new element. The value is not committed until the Action
@@ -66,7 +66,7 @@ pub enum ActionMessage {
     /// Request to cancel the action and mark it as failed (from a malformed
     /// env command), with the message to fail it with.
     CancelMarkFailed { fail_message: String },
-    /// An invalid `openjd_output_var` directive (RFC 0010): cancel the action
+    /// An invalid `openjd_output_var` directive (RFC 0011): cancel the action
     /// and mark it as failed with `fail_message`, which names the output,
     /// the problem, and the text. Unlike `CancelMarkFailed`, the message is
     /// final for the action: a later `Fail` (such as an `openjd_fail` a
@@ -101,7 +101,7 @@ impl std::fmt::Display for ActionMessage {
     }
 }
 
-/// The output values of an Action (RFC 0010 `CONTROL_FLOW`): each Task's
+/// The output values of an Action (RFC 0011 `CONTROL_FLOW`): each Task's
 /// values, keyed by the Task's `CHUNK[INT]` value in a chunked Step (in the
 /// chunk's order) and by `None` otherwise.
 pub type ActionOutputs = indexmap::IndexMap<Option<i64>, openjd_model::outputs::TaskOutputs>;

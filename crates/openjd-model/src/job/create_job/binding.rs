@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Progressive step input binding (`CONTROL_FLOW`, RFC 0010 §Step input
+//! Progressive step input binding (`CONTROL_FLOW`, RFC 0011 §Step input
 //! binding).
 //!
 //! A Step's materialization expressions fall into four groups (enablement,
@@ -285,7 +285,7 @@ fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<String> {
 
 // ── The core ──────────────────────────────────────────────────────
 
-/// Bind Step `step_index` as far as `inputs` allow (RFC 0010 §How a Step is
+/// Bind Step `step_index` as far as `inputs` allow (RFC 0011 §How a Step is
 /// bound): the Step as it now is, `PendingInputs` (with more known than
 /// `prior`, or the same), `Bound`, or `Skipped`; or the first group that
 /// failed.
@@ -541,7 +541,7 @@ pub(super) fn evaluate_enable_if(
 /// combination, its distinct `CHUNK[INT]` values in a Step with outputs, and
 /// the Task-count limits. `None` for a Step without a `parameterSpace`.
 ///
-/// Every error is located (RFC 0010 §How a Step is bound item 3: the message
+/// Every error is located (RFC 0011 §How a Step is bound item 3: the message
 /// names the field and the expression): a range or `chunks` error at
 /// `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
 /// `-> chunks`), a combination error at `steps[i] -> parameterSpace`, and a
@@ -617,7 +617,7 @@ fn located(path: &[PathElement], error: &ModelError) -> ModelError {
 }
 
 /// In a Step that declares `outputVariables`, a `CHUNK[INT]` range must
-/// have distinct values, so that a task selector names one Task (RFC 0010
+/// have distinct values, so that a task selector names one Task (RFC 0011
 /// §Chunked Steps). A range expression's values are distinct by
 /// construction. The error names the parameter's index.
 fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (usize, ModelError)> {
@@ -656,7 +656,7 @@ fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (u
 }
 
 /// The caller's Task-count limits, checked when a Step's Tasks become known
-/// (RFC 0010 §Limits item 4).
+/// (RFC 0011 §Limits item 4).
 pub(super) fn check_task_count(
     ctx: &ValidationContext,
     step: &str,
@@ -876,7 +876,7 @@ pub(super) fn creation_inputs(
 // ── Public API ────────────────────────────────────────────────────
 
 /// Advance the binding of pending Step `step_index` of `job` with the
-/// `Steps.*` values in `inputs` (RFC 0010 §How a Step is bound).
+/// `Steps.*` values in `inputs` (RFC 0011 §How a Step is bound).
 ///
 /// Evaluates every group of the Step that has not evaluated and whose
 /// inputs are now concrete, in the RFC's order: enablement first, and
@@ -983,7 +983,7 @@ pub fn advance_step_binding(
 
 /// Merge the concrete `Steps.*` values that bound Step `step`'s script and
 /// Step Environments read into its `resolved_symtab`, so its Tasks can run
-/// (RFC 0010 §Concreteness: they are concrete once its dependencies have
+/// (RFC 0011 §Concreteness: they are concrete once its dependencies have
 /// finished).
 ///
 /// A path-typed `Steps.P.Output.X` or `Steps.P.TaskParam.N` is not in

@@ -88,7 +88,7 @@ must be sorted by decreasing `source_path` length; the Session sorts them
 `unapply_rules(rules, path, worker_format) -> Result<String, UnmapError>` maps a
 path reported on a worker back to the submission path context, the form in which
 `PATH` job parameters are given. The CONTROL_FLOW extension stores `PATH` output
-values in that form (RFC 0010 §Path values, Design Choice 14). The RFC states the
+values in that form (RFC 0011 §Path values, Design Choice 14). The RFC states the
 requirement on the outcome: the stored value must map forward, with the producing
 Session's rules, to the reported path. `unapply_rules` implements the RFC's
 reference inverse:
@@ -192,7 +192,7 @@ and otherwise the `source_path_format` of the rule whose candidate was returned.
 `unapply_rules` is this function without the format. A caller that stores the result
 as an `ExprValue::Path`, as the CONTROL_FLOW output collector does
 (`specs/model/outputs.md`), uses the format so the value carries the format of the
-submission path context it is in (RFC 0010 §Path values).
+submission path context it is in (RFC 0011 §Path values).
 
 `UnmapError` implements `Display` and `std::error::Error`. The caller, which knows
 the path and the output's name, builds the user-facing message around it.
@@ -409,4 +409,4 @@ overhead of constructing path objects for simple prefix matching.
 URI path handling is functionally identical between implementations.
 
 The reverse mapping, `unapply_rules` and `unapply_rules_with_source_format`, has no
-Python counterpart yet: it is part of the draft CONTROL_FLOW extension (RFC 0010), which this crate prototypes first.
+Python counterpart yet: it is part of the draft CONTROL_FLOW extension (RFC 0011), which this crate prototypes first.

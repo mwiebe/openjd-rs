@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) step input binding at job creation, the range
+//! `CONTROL_FLOW` (RFC 0011) step input binding at job creation, the range
 //! rules it brings, [`StepInputs::add_producer`], and [`attach_step_inputs`].
 //! The group-by-group progress of a pending Step is in
 //! `test_control_flow_progressive.rs`.
@@ -158,7 +158,7 @@ fn an_int_list_item_format_string_is_checked_at_validation() {
 #[test]
 fn a_list_literal_that_flattens_to_nothing() {
     // An error with EXPR alone; with CONTROL_FLOW the result may be empty
-    // (RFC 0010 §Empty parameter spaces), so the Step has zero Tasks.
+    // (RFC 0011 §Empty parameter spaces), so the Step has zero Tasks.
     let params = "  - {name: L, type: 'LIST[INT]', default: []}\n  - {name: S, type: 'LIST[STRING]', default: []}\n  - {name: F, type: 'LIST[FLOAT]', default: []}\n";
     for x in [
         "{name: X, type: INT, range: ['{{Param.L}}']}",
@@ -248,7 +248,7 @@ fn the_1024_cap_is_lifted_for_computed_ranges() {
 
 #[test]
 fn a_context_enabling_control_flow_does_not_change_a_template_without_it() {
-    // The relaxations are keyed on the template's extensions (RFC 0010
+    // The relaxations are keyed on the template's extensions (RFC 0011
     // Technical Requirement 1), not on a wider context.
     let x = "{name: X, type: INT, range: '{{range(2000)}}'}";
     let jt = decode(&one_param(EXPR_ONLY, "", x));

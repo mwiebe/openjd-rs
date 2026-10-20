@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! JSON value to typed `ExprValue` (RFC 0010 §Processing a directive, "Type
+//! JSON value to typed `ExprValue` (RFC 0011 §Processing a directive, "Type
 //! conversion").
 //!
 //! A JSON value first gets its natural EXPR type: an integer-spelled number

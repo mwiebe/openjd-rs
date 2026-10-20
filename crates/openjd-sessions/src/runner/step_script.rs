@@ -107,7 +107,7 @@ impl StepScriptRunner {
         self.base.helper.take()
     }
 
-    /// How the action treats `openjd_output_var` lines (RFC 0010).
+    /// How the action treats `openjd_output_var` lines (RFC 0011).
     pub(crate) fn with_output_vars(mut self, output_vars: crate::output_vars::OutputVars) -> Self {
         self.base.output_vars = output_vars;
         self

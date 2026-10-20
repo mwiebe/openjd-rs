@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The `Steps.*` scope of `CONTROL_FLOW` (RFC 0010 §The `Steps.*` scope).
+//! The `Steps.*` scope of `CONTROL_FLOW` (RFC 0011 §The `Steps.*` scope).
 //!
 //! Two things live here, shared by template validation (pass 8) and the
 //! job-creation re-checks in `create_job`:
@@ -156,7 +156,7 @@ pub(crate) fn add_steps_scope(
 
 /// Seed `symtab` with the `Steps.*` symbols a `<JobOutputDefinition>`'s
 /// `value` may read: those of every Step with an `<Identifier>` name, with
-/// no dependency required (RFC 0010 §Job outputs), each typed as for
+/// no dependency required (RFC 0011 §Job outputs), each typed as for
 /// [`add_steps_scope`] in [`StepsFieldScope::Template`], so a value whose
 /// type is or contains `path` is available only through `RawOutput` and
 /// `TaskRawParam`.
