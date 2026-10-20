@@ -555,7 +555,7 @@ pub enum GroupState<T> {
     Waiting {
         /// The group's own inputs that are not concrete yet: `Steps.*`
         /// symbols in the form `Steps.<Step>.<Member>.<Name>`, sorted. It
-        /// does not count the enablement group's inputs, which the RFC also
+        /// does not count the enablement group's inputs, which RFC 0011 also
         /// counts as inputs of every other group, so it is empty for a group
         /// that waits only for `enableIf`. Every binding call recomputes it,
         /// also while enablement is still waiting.

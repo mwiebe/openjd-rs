@@ -990,11 +990,11 @@ pub struct job::StepInputs { /* private */ }
 
 impl job::StepInputs {
     pub fn new() -> Self;
-    /// Add or replace a producer's `Steps.*` values, typed by the RFC's
-    /// table. Path-typed values are held only in their Raw form, a URI in
-    /// the Posix format the model evaluates in (text unchanged). TasksKnown
-    /// on a skipped producer is Skipped. A caller error is a
-    /// ModelError::Compatibility.
+    /// Add or replace a producer's `Steps.*` values, typed as RFC 0011
+    /// §The `Steps.*` scope table types them. Path-typed values are held
+    /// only in their Raw form, a URI in the Posix format the model
+    /// evaluates in (text unchanged). TasksKnown on a skipped producer is
+    /// Skipped. A caller error is a ModelError::Compatibility.
     pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
         -> Result<(), ModelError>;
     /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
