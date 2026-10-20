@@ -164,11 +164,11 @@ fn prepare_selection(
                     .map(Node::Loop)
             })
     };
-    let entry_names: Vec<&String> = job
-        .steps
-        .iter()
-        .map(|step| &step.name)
-        .chain(job.loops.iter().map(|l| &l.name))
+    // In template order.
+    let graph = StepDependencyGraph::new(job)?;
+    let entry_names: Vec<&str> = (0..graph.node_count())
+        .filter_map(|n| graph.node(n))
+        .map(|n| n.name.as_str())
         .collect();
     let selected = if let Some(step_name) = &args.step {
         match entry(step_name) {
@@ -272,24 +272,21 @@ fn prepare_selection(
     let to_run = match selected {
         Some(node) if args.run_dependencies => resolve_step_dependencies(job, node),
         Some(node) => vec![node],
-        None => {
-            let graph = StepDependencyGraph::new(job)?;
-            graph
-                .topo_sorted()?
-                .into_iter()
-                .map(|i| {
-                    let n = graph.node(i).expect("a node of the graph");
-                    match n.kind {
-                        openjd_model::step_dependency_graph::StepNodeKind::Step => {
-                            Node::Step(n.step_index)
-                        }
-                        openjd_model::step_dependency_graph::StepNodeKind::Loop => {
-                            Node::Loop(n.step_index)
-                        }
+        None => graph
+            .topo_sorted()?
+            .into_iter()
+            .map(|i| {
+                let n = graph.node(i).expect("a node of the graph");
+                match n.kind {
+                    openjd_model::step_dependency_graph::StepNodeKind::Step => {
+                        Node::Step(n.step_index)
                     }
-                })
-                .collect()
-        }
+                    openjd_model::step_dependency_graph::StepNodeKind::Loop => {
+                        Node::Loop(n.step_index)
+                    }
+                }
+            })
+            .collect(),
     };
 
     Ok(RunSelection {
@@ -609,34 +606,61 @@ async fn run_loop(
             sim.stop_loop(li, "the run stopped before its iteration completed");
             return Ok(());
         }
-        if !sim.start_next_iteration(li)? || sim.settle_iteration()? {
-            ctx.session_failed = true;
-            return Ok(());
+        let started = match sim.start_next_iteration(li)? {
+            None => sim.settle_iteration()?,
+            end => end,
+        };
+        match started {
+            None => {}
+            Some(IterationEnd::Failed) => {
+                ctx.session_failed = true;
+                return Ok(());
+            }
+            Some(_) => return Ok(()),
         }
         for &j in &order {
-            if ctx.is_stopping() {
+            if ctx.is_stopping() || !sim.is_running(li) {
                 break;
             }
-            match sim.begin_instance(j)? {
-                Begin::NotRun | Begin::Failed => {}
-                Begin::Run(step) => {
-                    check_wrap_environment_stack(base_wrap_envs, &step)?;
-                    let slot = Slot::Body(j);
-                    let name = sim.instance_name(j);
-                    let ran_all = execute_step(ctx, args, &step, &name, slot, None, sim).await?;
-                    if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
-                        sim.set_reason(slot, "the run was interrupted");
-                    }
-                    sim.finish_step(slot, ctx.session_failed, ran_all)?;
-                    if ctx.session_failed {
-                        return Ok(());
-                    }
-                    if sim.settle_iteration()? {
-                        ctx.session_failed = true;
-                        return Ok(());
-                    }
+            let step = match sim.begin_instance(j)? {
+                Begin::NotRun => continue,
+                Begin::Failed => {
+                    ctx.session_failed = true;
+                    return Ok(());
                 }
+                Begin::Run(step) => step,
+            };
+            let slot = Slot::Body(j);
+            let name = sim.instance_name(j);
+            // RFC 0008: a body Step instance's Step Environments are known
+            // only now, so its stack is checked as it starts. A conflict
+            // fails the instance, and so the loop.
+            if let Err(e) = check_wrap_environment_stack(base_wrap_envs, &step) {
+                eprintln!("ERROR: {e}");
+                sim.set_reason(slot, &e.to_string());
+                ctx.session_failed = true;
+                sim.finish_step(slot, true, false)?;
+                return Ok(());
             }
+            let ran_all = execute_step(ctx, args, &step, &name, slot, None, sim).await?;
+            if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
+                sim.set_reason(slot, "the run was interrupted");
+            }
+            sim.finish_step(slot, ctx.session_failed, ran_all)?;
+            if ctx.session_failed {
+                return Ok(());
+            }
+            match sim.settle_iteration()? {
+                None => {}
+                Some(IterationEnd::Failed) => {
+                    ctx.session_failed = true;
+                    return Ok(());
+                }
+                Some(_) => return Ok(()),
+            }
+        }
+        if !sim.is_running(li) {
+            return Ok(());
         }
         if ctx.is_stopping() {
             sim.stop_loop(li, "the run stopped before its iteration completed");

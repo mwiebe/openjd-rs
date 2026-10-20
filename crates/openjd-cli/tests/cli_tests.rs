@@ -2882,6 +2882,38 @@ steps:
             "",
         ]);
         assert_ne!(code, 0, "conflicting options should fail");
+        assert!(
+            _stderr.starts_with(
+                "error: the argument '--task-param <TASK_PARAMS>' cannot be used with '--maximum-tasks <MAXIMUM_TASKS>'\n"
+            ),
+            "{_stderr}"
+        );
+    }
+
+    /// `--maximum-tasks` is an `Option<i64>`, and still conflicts with
+    /// `--tasks`, even at `-1`.
+    #[test]
+    fn test_run_tasks_conflicts_with_maximum_tasks() {
+        let tdir = templates_dir();
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            tdir.join("job_with_test_steps.yaml").to_str().unwrap(),
+            "--step",
+            "TaskParamStep",
+            "--tasks",
+            r#"[{"TaskNumber": "1"}]"#,
+            "--maximum-tasks",
+            "-1",
+            "--extensions",
+            "",
+        ]);
+        assert_eq!(code, 2);
+        assert!(
+            stderr.starts_with(
+                "error: the argument '--tasks <TASKS>' cannot be used with '--maximum-tasks <MAXIMUM_TASKS>'\n"
+            ),
+            "{stderr}"
+        );
     }
 
     #[test]
@@ -7046,8 +7078,7 @@ steps:
              Start (initial values and first while): determined at run time from Steps.B.Output.N\n\
              Condition: while\n\
              Loop variables:\n  - K (INT)\n\
-             Body Steps (Tasks determined at run time in each iteration):\n  - 'W'\n\
-             1 dependencies\n\n\
+             Body Steps (Tasks determined at run time in each iteration):\n  - 'W'\n\n\
              Dependencies (1):\n- 'B'\n\n"
         );
         let (code, stdout, stderr) = run_cli(&[
@@ -7071,6 +7102,491 @@ steps:
         assert_eq!(
             result["dependencies"],
             serde_json::json!([{"step_name": "B"}])
+        );
+    }
+
+    /// `A` has two Tasks and reports `V`; loop `L` depends on `A`, and only
+    /// its boundary (`until`) reads `A`'s outputs.
+    const BOUNDARY_READS_DEPENDENCY: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Boundary
+steps:
+- name: A
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables:
+  - {name: V, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: V={{Task.Param.I}}')"]
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    until: "{{Loop.Iteration + 1 >= len(Steps.A.Output.V)}}"
+    maxIterations: 5
+    steps:
+    - name: B
+      script:
+        actions:
+          onRun:
+            command: python
+            args: ['-c', "print('B_{{Loop.Iteration}}')"]
+"#;
+
+    /// A dependency that did not run all of its Tasks blocks a loop whose
+    /// boundary reads it, before its first iteration.
+    #[test]
+    fn an_incomplete_dependency_the_boundary_reads_blocks_the_loop() {
+        let job = write(BOUNDARY_READS_DEPENDENCY);
+        let path = job.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", path]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(
+            &stdout,
+            "Loop 'L' succeeded after 2 iterations (until is true)"
+        ));
+        let (code, stdout, stderr) =
+            run_cli(&["run", path, "--maximum-tasks", "1", "--output", "json"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(stderr, "");
+        assert!(has(
+            &stdout,
+            "Loop 'L' is blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran"
+        ));
+        assert!(!has(&stdout, "Running loop 'L'"));
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[1]["state"], "BLOCKED");
+    }
+
+    /// `Q` runs only from iteration 1, and reads `A`, which `--step L` does
+    /// not run: the preflight sees only iteration 0, so the loop fails when
+    /// iteration 1 needs the value.
+    #[test]
+    fn a_later_iteration_reading_a_dependency_not_run_fails_the_loop() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Later
+steps:
+- name: A
+  outputVariables:
+  - {name: Base, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: Base=7')"]
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: Q
+      enableIf: "{{Loop.Iteration >= 1}}"
+      script:
+        actions:
+          onRun:
+            command: python
+            args: ['-c', "print('Q_{{Steps.A.Output.Base}}')"]
+"#;
+        let job = write(template);
+        let path = job.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", path, "--step", "L", "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values of 'A', which this run does not run.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed: Loop 'L' reads, in iteration 1, Steps.* values of 'A', which this run does not run."
+        ));
+        assert_eq!(json(&stdout)["steps"][1]["state"], "FAILED");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.A.Output.Base": 3}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(&stdout, "Q_3"), "{stdout}");
+    }
+
+    #[test]
+    fn run_dependencies_for_a_step_after_a_loop_runs_the_loop() {
+        let template = two_iterations().replace(
+            "steps:\n- name: L\n",
+            "steps:\n- name: Other\n  script:\n    actions:\n      onRun:\n        command: python\n        args: ['-c', \"print('OTHER')\"]\n- name: L\n",
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--run-dependencies",
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(at(&stdout, "Running loop 'L'") < at(&stdout, "Running step 'C'"));
+        for line in ["C_3", "C_30", "Job output Sum = 33"] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
+        }
+        assert!(!has(&stdout, "OTHER"));
+    }
+
+    #[test]
+    fn task_params_without_step_name_every_top_level_entry_in_template_order() {
+        let job = write(&two_iterations());
+        let (code, _, stderr) = run_cli(&["run", job.path().to_str().unwrap(), "-t", "I=1"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Providing task parameters requires a specified step or a job with a single step.\n2 steps: [\"L\", \"C\"]."
+        );
+    }
+
+    #[test]
+    fn a_null_last_output_is_given_only_where_its_type_is_optional() {
+        let until = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Nullable
+steps:
+- name: M
+  loop:
+    until: "{{True}}"
+    maxIterations: 1
+    steps:
+    - name: W
+      script: {actions: {onRun: {command: python, args: ['-c', 'pass']}}}
+  outputVariables:
+  - {name: O, type: INT, collect: LAST, value: "{{1}}"}
+- name: C
+  dependencies: [{dependsOn: M}]
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('C_{{Steps.M.Output.O}}')"]
+"#;
+        let job = write(until);
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.M.Output.O": null}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Loop 'M': Steps.M.Output.O: Output variable 'O': value is null; output values cannot be or contain null"
+        );
+        let job = write(&until.replace("until: \"{{True}}\"", "while: \"{{False}}\""));
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.M.Output.O": null}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        // A null interpolates as the empty string.
+        assert!(has(&stdout, "C_"), "{stdout}");
+    }
+
+    #[test]
+    fn step_inputs_refuse_keys_for_loops_the_target_cannot_be_given() {
+        let job = write(&two_iterations());
+        let path = job.path().to_str().unwrap();
+        // The target loop's own outputs.
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            path,
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.L.Output.H": [1]}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: 'Steps.L.Output.H' names Loop 'L' itself; give the outputs of the Steps it reads."
+        );
+        // A loop the target does not read.
+        let two_loops = format!(
+            "{}- name: L2\n  loop:\n    until: \"{{{{True}}}}\"\n    maxIterations: 1\n    steps:\n    - name: W2\n      script: {{actions: {{onRun: {{command: python, args: ['-c', 'pass']}}}}}}\n  outputVariables:\n  - {{name: G, type: INT, collect: LAST, value: \"{{{{1}}}}\"}}\n",
+            two_iterations()
+        );
+        let job = write(&two_loops);
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L2.Output.G": 1}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Step 'C' does not read the outputs of Loop 'L2'."
+        );
+        // A skipped loop.
+        let skipped = two_iterations()
+            .replace(
+                "- name: L\n  loop:",
+                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+            )
+            .replace(
+                "range: \"{{Steps.L.Output.H}}\"",
+                "range: \"{{Steps.L.Output.H or [5]}}\"",
+            )
+            .replace(
+                "{{sum(Steps.L.Output.H)}}",
+                "{{len(Steps.L.Output.H or [])}}",
+            );
+        let job = write(&skipped);
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.H": [1]}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Loop 'L' is skipped by its enableIf, so its Steps.* values are null; remove 'Steps.L.Output.H'."
+        );
+        // A loop pending inputs at Job creation.
+        let pending = format!(
+            "{READS_DEPENDENCY}  outputVariables:\n  - {{name: Last, type: INT, collect: LAST, value: \"{{{{Loop.K}}}}\"}}\n- name: C\n  dependencies: [{{dependsOn: L}}]\n  script: {{actions: {{onRun: {{command: python, args: ['-c', \"print({{{{Steps.L.Output.Last}}}})\"]}}}}}}\n"
+        );
+        let job = write(&pending);
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.Last": 1}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Loop 'L' is pending inputs itself, which --step-inputs cannot simulate; use --run-dependencies."
+        );
+        // Every output of the loop is given together.
+        let job = write(&format!(
+            "{}    - {{name: Extra, type: INT, collect: LAST, value: \"{{{{1}}}}\"}}\n",
+            two_iterations().replace(
+                "    value: \"{{sum(Steps.P.Output.V)}}\"\n",
+                "    value: \"{{sum(Steps.P.Output.V)}}\"\n  - {name: Extra, type: INT, collect: LAST, value: \"{{1}}\"}\n",
+            ).trim_end_matches(|_| false)
+        ).replace("    - {name: Extra, type: INT, collect: LAST, value: \"{{1}}\"}\n", ""));
+        let (code, _, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.H": [1]}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Loop 'L': --step-inputs gives a loop's outputs together, so every output of the loop must be given; missing Steps.L.Output.Extra"
+        );
+    }
+
+    /// RFC 0008: a body Step Environment with wrap hooks, enabled only in
+    /// iteration 1, conflicts with a wrap Environment Template there. The
+    /// instance fails, which fails the loop, and the run reports its result.
+    #[test]
+    fn a_wrap_environment_conflict_in_a_body_step_instance_fails_the_loop() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, WRAP_ACTIONS]
+name: Wrap
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: W
+      stepEnvironments:
+      - name: SW
+        enableIf: "{{Loop.Iteration == 1}}"
+        script:
+          actions:
+            onWrapEnvEnter: {command: python, args: ['-c', 'pass']}
+            onWrapTaskRun: {command: python, args: ['-c', 'pass']}
+            onWrapEnvExit: {command: python, args: ['-c', 'pass']}
+      script:
+        actions:
+          onRun:
+            command: python
+            args: ['-c', "print('W_{{Loop.Iteration}}')"]
+"#;
+        let job = write(template);
+        let env = templates_dir().join("wrap_env_second.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--environment",
+            env.to_str().unwrap(),
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        // WrapB's onWrapTaskRun runs in place of iteration 0's Task.
+        assert!(at(&stdout, "WrapB Task") < at(&stdout, "Loop 'L' iteration 1"));
+        assert!(!has(&stdout, "Running step 'L[1].W'"));
+        assert!(
+            stderr.starts_with(
+                "ERROR: RFC 0008: a session may have at most one Environment defining wrap hooks"
+            ),
+            "{stderr}"
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed: its body Step instance 'L[1].W' failed"
+        ));
+        let result = json(&stdout);
+        assert_eq!(result["status"], "error");
+        let steps = result["steps"].as_array().unwrap();
+        assert_eq!(steps[2]["name"], "L[1].W");
+        assert_eq!(steps[2]["state"], "FAILED");
+        assert!(
+            steps[2]["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("RFC 0008: "),
+            "{}",
+            steps[2]
+        );
+    }
+
+    #[test]
+    fn loop_failures_at_binding_at_the_boundary_and_after_zero_iterations() {
+        // A loop's own start group fails when its dependency succeeds.
+        let template = READS_DEPENDENCY.replace(
+            "initial: \"{{Steps.B.Output.N}}\"",
+            "initial: \"{{fail('bad start') if Steps.B.Output.N == 2 else 1}}\"",
+        ) + "- name: D\n  dependencies: [{dependsOn: L}]\n  script: {actions: {onRun: {command: python, args: ['-c', 'pass']}}}\n";
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.starts_with("ERROR: Step 'L' failed in its start group:\n"),
+            "{stderr}"
+        );
+        assert!(
+            stderr.contains("\tLoop variable 'K': bad start\n"),
+            "{stderr}"
+        );
+        assert!(
+            at(&stdout, "Loop 'L' failed in its start group")
+                < at(&stdout, "Step 'D' is blocked: its dependency 'L' failed")
+        );
+        // next fails at the boundary of iteration 1.
+        let template = READS_DEPENDENCY.replace(
+            "next: \"{{Loop.K - 1}}\"",
+            "next: \"{{fail('no next') if Loop.K == 1 else Loop.K - 1}}\"",
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.starts_with("ERROR: Loop 'L' failed at the boundary of iteration 1, in the next of loop variable 'K':\n"),
+            "{stderr}"
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed at the boundary of iteration 1, in the next of loop variable 'K'"
+        ));
+        // A zero-iteration loop whose APPEND output needs an element.
+        let template = READS_DEPENDENCY.replace("initial: \"{{Steps.B.Output.N}}\"", "initial: \"{{0}}\"")
+            + "  outputVariables:\n  - {name: All, type: 'LIST[INT]', collect: APPEND, value: \"{{Loop.K}}\", minLength: 1}\n";
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.starts_with("ERROR: Loop 'L' failed after zero iterations, in the minLength of loop output 'All':\n"),
+            "{stderr}"
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed after zero iterations, in the minLength of loop output 'All'"
+        ));
+    }
+
+    /// A skipped loop behind a failed dependency never satisfies `dependsOn`,
+    /// as a skipped Step does not.
+    #[test]
+    fn a_skipped_loop_behind_a_failure_blocks_its_dependents() {
+        let template = format!(
+            "{}- name: D\n  dependencies: [{{dependsOn: L}}]\n  script: {{actions: {{onRun: {{command: python, args: ['-c', 'pass']}}}}}}\n",
+            READS_DEPENDENCY
+                .replace("- name: L\n  dependencies:", "- name: L\n  enableIf: \"{{False}}\"\n  dependencies:")
+                .replace("print('openjd_output_var: N=2'); ", "import sys; sys.exit(1); ")
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        for line in [
+            "Loop 'L' skipped (enableIf is false)",
+            "Loop 'L' is skipped and never satisfies dependsOn: its dependency 'B' failed",
+            "Step 'D' is blocked: its dependency 'L' is skipped but never satisfies dependsOn",
+        ] {
+            assert!(has(&stdout, line), "no line {line:?} in:\n{stdout}");
+        }
+    }
+
+    #[test]
+    fn summary_lists_loop_totals_and_body_step_environments() {
+        let template = two_iterations().replace(
+            "    - name: R\n",
+            "    - name: R\n      stepEnvironments:\n      - name: REnv\n        script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}\n",
+        );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains("Total steps: 4\nTotal loops: 1\nTotal tasks: 0 + (determined at run time)\nTotal environments: 1\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("    - 'R'\n      1 environments\n      1 dependencies\n"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("  - REnv (from body Step 'R' of loop 'L')\n"),
+            "{stdout}"
+        );
+        let (code, stdout, _) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            result["step_environments"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or(0)
+                + result["total_environments"].as_u64().unwrap() as usize,
+            if result.get("step_environments").is_some() {
+                2
+            } else {
+                1
+            }
         );
     }
 

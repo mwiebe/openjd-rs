@@ -353,9 +353,13 @@ dependency order through the path of a top-level Step, named `<Loop>[<N>].<Step>
 every line (`Running step 'L[0].RenderPass'`, `Step 'L[1].P': Tasks known (3 tasks)`): a
 pending instance is advanced with `advance_body_step_binding` after each instance
 finishes, until nothing changes; a bound one gets `attach_step_inputs` with the
-iteration's inputs, its stack is checked against RFC 0008's single-wrap-layer rule, its
-enabled Step Environments are entered, and its Tasks run, `--maximum-tasks` applying to
-it as to any Step. When every instance has succeeded with all of its Tasks or been
+iteration's inputs, its stack is checked against RFC 0008's single-wrap-layer rule (a
+conflict fails the instance), its enabled Step Environments are entered, and its Tasks
+run, `--maximum-tasks` applying to it as to any Step. Only the instances that another
+instance or the boundary reads (`input_producers()` of the instances, and the producers
+`Loop::expression_inputs` finds in the boundary expressions) get their `TaskParam` lists
+and outputs built into the iteration's inputs, so a large parameter space that nothing
+reads is not enumerated. When every instance has succeeded with all of its Tasks or been
 skipped, the simulator calls `evaluate_iteration_boundary`, prints the iteration's loop
 output values (`Loop 'L' iteration 0 outputs: FinalSamples = 64, NoisyFrameCounts = 2`:
 the `LAST` value, or the element `APPEND` added), and either starts the next iteration or
@@ -369,9 +373,10 @@ Step: `Loop 'L' failed: its body Step instance 'L[1].Work' failed`. The CLI has 
 retries, so every loop failure is final. An instance group that fails, a boundary error,
 reaching `maxIterations`, and a `minLength` violation print the model's error on stderr
 and its first line on stdout (`Loop 'Refine' failed at the boundary of iteration 1, in
-maxIterations`), and fail the loop. A failed loop stops the run, and its dependents are
-blocked with `its dependency 'L' failed`; a job output that reads it waits on `Loop 'L',
-which failed`.
+maxIterations`), and fail the loop. A loop's own group that fails at binding prints its `BindingError` on stderr and
+`Loop 'L' failed in its start group` (or `enablement`, `bound`) on stdout. A failed loop
+stops the run, and its dependents are blocked with `its dependency 'L' failed`; a job
+output that reads it waits on `Loop 'L', which failed`.
 
 **Incomplete instances.** An instance that did not run all of its Tasks
 (`--maximum-tasks`) is incomplete. The other instances of its iteration follow the rule
@@ -380,7 +385,10 @@ for an incomplete producer: one that reads its outputs is blocked with `inputs f
 runs. The iteration never completes, so the boundary is not evaluated, and the loop is
 blocked: `Loop 'L' is blocked: its body Step instance 'L[0].P' did not run all of its
 Tasks, so iteration 0 never completes`. Its dependents are blocked behind it, and the run
-does not fail.
+does not fail. A dependency of the loop that did not run all of its Tasks blocks the loop
+before its first iteration when the loop's boundary expressions read it (`Loop 'L' is
+blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran`), and blocks
+the instances that read it as for any producer.
 
 **Flag rules** (RFC 0013 §Implementation Impact):
 
@@ -404,11 +412,20 @@ does not fail.
   (`Loop::expression_inputs`) and the body Step instances of iteration 0 read (a
   `start_iteration` call it discards). A missing one fails as for a Step: `Loop 'L' reads
   Steps.* values of Steps this run does not run: Steps.B.Output.Text.` followed by the
-  hint. An instance that iteration 0 skips is not checked.
+  hint. An instance that iteration 0 skips is not checked. If a later iteration then reads
+  a dependency this run does not run, the loop fails there with `Loop 'L' reads, in
+  iteration 1, Steps.* values of 'A', which this run does not run.` followed by `Give them
+  with --step-inputs, or run Loop 'L' with --run-dependencies.`, and the run reports its
+  result.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
-  type: one value under `LAST` (`null` is accepted, as after zero iterations of a `while`
-  loop) and the whole list under `APPEND`, each element checked as a reported value is.
-  Every output of the loop must be given. A `Steps.L.TaskParam.*` key is refused (`Loop 'L'
+  type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
+  reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a
+  `while` loop, or a loop with an `enableIf`; RFC 0013 §`Steps.*` in and around a loop).
+  Every output of the loop must be given, even one the Step does not read, as every
+  declared `ONCE` or `LAST` output of a Step must (`--step-inputs gives a loop's outputs
+  together, so every output of the loop must be given; missing Steps.L.Output.H`). A key
+  that names the target itself is refused (`--step-inputs: 'Steps.L.Output.H' names Loop
+  'L' itself; give the outputs of the Steps it reads.`). A `Steps.L.TaskParam.*` key is refused (`Loop 'L'
   has no Task parameters`), as is a key naming a body Step (`Step 'P' is a body Step of
   loop 'L', and its outputs are not available outside the loop.`).
 
@@ -556,6 +573,13 @@ defines a wrap hook. The RFC requires rejection "before entering any
 Environment", so this happens before the first wrapper's own `onEnter` can
 run. The session's enter-time check (`SessionError::MultipleWrapEnvironments`)
 remains as defense in depth for library callers.
+
+A loop's body Step instances (RFC 0013) are the exception: an instance's Step
+Environments, and whether each is enabled, are known only when its iteration
+starts, so its stack is checked as the instance starts, before its first Step
+Environment is entered. A conflict prints `ERROR: RFC 0008: ...`, fails the
+instance with that reason, and so fails the loop and the run, which still
+reports its result (see [Loops](#control_flow-loops)).
 
 Every entered environment — template, job, and step scoped — is tracked in an
 `entered_envs` list of `EnteredEnvironment` values containing its identifier,
