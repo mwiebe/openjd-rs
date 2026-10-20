@@ -86,7 +86,7 @@ Template parsing, validation, and job creation. Parses YAML/JSON templates, vali
 - **Parsing** (`src/parse.rs`) — Serde-based YAML/JSON deserialization with post-deserialization validation.
 - **Template types** (`src/template/`) — All v2023-09 model types including parameters, steps, environments, actions, host requirements.
 - **Validation** (`src/validate.rs`, `src/validate/`) — Structural and cross-field constraint validation with Pydantic-compatible error paths.
-- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs, CONTROL_FLOW progressive step input binding (`advance_step_binding`, `StepInputs`, `attach_step_inputs`), and CONTROL_FLOW job output evaluation (`evaluate_job_output`).
+- **Job creation** (`src/job/`) — Instantiates jobs from templates: parameter resolution, format string evaluation, parameter space iteration, step dependency graphs, CONTROL_FLOW progressive step input binding (`advance_step_binding`, `StepInputs`, `attach_step_inputs`), CONTROL_FLOW job output evaluation (`evaluate_job_output`), and CONTROL_FLOW loops (`job::Loop`, `advance_loop_binding`, `start_iteration`, `advance_body_step_binding`, `evaluate_iteration_boundary`, `end_without_iterations`).
 - **Capabilities** (`src/capabilities.rs`) — Host requirement capability matching.
 - **Outputs** (`src/outputs/`) — CONTROL_FLOW `openjd_output_var` directive parser and output collector (no I/O).
 
@@ -112,7 +112,7 @@ CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
-- **run** (`src/run/`) — Local job execution using the sessions runtime, with a CONTROL_FLOW scheduler simulator (`src/run/simulator.rs`) that advances step input binding and evaluates job outputs.
+- **run** (`src/run/`) — Local job execution using the sessions runtime, with a CONTROL_FLOW scheduler simulator (`src/run/simulator.rs`) that advances step input binding and evaluates job outputs. `run` and `summary` refuse a Job with a loop until the simulator runs loops.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`

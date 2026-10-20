@@ -765,12 +765,8 @@ fn check_progress(job_loop: &job::Loop, progress: &LoopProgress) -> Result<(), M
             job_loop.name
         ))
     };
-    let has_type = |value: &ExprValue, decl: &OutputVariable| {
-        value.expr_type() == decl.param_type.expr_type()
-            || (value.is_list()
-                && value.list_elements().is_some_and(|e| e.is_empty())
-                && decl.param_type.expr_type().list_element_type().is_some())
-    };
+    let has_type =
+        |value: &ExprValue, decl: &OutputVariable| value.expr_type() == decl.param_type.expr_type();
     for decl in &job_loop.variables {
         match progress.values.get(&decl.name) {
             None => return Err(refuse(format!("has no value for variable '{}'", decl.name))),
@@ -870,6 +866,7 @@ fn body_site<'a>(
             body: Some(j),
         },
         path: body_path(entry, j),
+        name: job::step_loop_instance_name(&l.name, iteration, &l.body()[j].name),
         loop_layer: Some(LoopLayer {
             step_loop: l,
             iteration,

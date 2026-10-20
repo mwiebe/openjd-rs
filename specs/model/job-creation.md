@@ -807,7 +807,8 @@ per body Step, in body order.
 - Task-count limits apply per instance as its Tasks become known:
   `max_step_task_count`, and `max_task_count` with `committed_task_count`, which counts
   the Tasks of every Step and earlier instance whose Tasks are known; `start_iteration`
-  adds each instance's Tasks to it as it goes (plan A19). An instance over a limit fails.
+  adds each instance's Tasks to it as it goes (plan A19). An instance over a limit fails,
+  and the message names it as `<Loop>[<N>].<Step>`.
 
 `advance_body_step_binding(.., loop_index, &progress, &iteration, body_index, inputs,
 committed_task_count)` is `advance_step_binding` for a pending instance: `inputs` holds the
@@ -836,7 +837,8 @@ order:
 4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`: `false` ends the
    loop as in step 2.
 5. The bound: if `N + 1` is `maxIterations`, the loop fails (`Loop '<L>' has run
-   maxIterations (<n>) iterations without ending, so it fails.`).
+   maxIterations (<n>) iterations without ending, so it fails.`, followed by a line holding
+   the expression when `maxIterations` is a format string).
 
 It returns `BoundaryOutcome::Continue(LoopProgress)` for iteration `N + 1`, or
 `Succeeded(LoopResult { iterations, ended_by, outputs })`. The first error stops it and
@@ -863,7 +865,10 @@ group, an instance group, a Task-count limit, the boundary, `minLength`, the siz
 and the bound. The model never sees a Task attempt, so the one recoverable failure, of
 the Tasks of an instance of the iteration in progress, is the caller's to handle; the CLI
 has no retries. `BindingError::is_caller_error()` and `LoopError::is_caller_error()` tell
-a caller error, which says nothing about the loop, from a failure.
+a caller error, which says nothing about the loop, from a failure. A loop's
+`BindingError` is displayed as a Step's is (`Step 'L' failed in its start group:`, or
+`Binding Step 'L' was refused in its enablement group:` for a caller error, whose group
+is always `Enablement`), since a loop is a Step of the step graph.
 
 `job::Loop::expression_inputs(job_template, &LoopExpression)` lists the `Steps.*` symbols
 that one of the loop's expressions (`enableIf`, an `initial`, `while`, `until`, a `next`,

@@ -46,9 +46,12 @@ pub enum ModelError {
     /// template (`create_job`), incompatible environment-template parameter
     /// merges (§1.2.1), or, with `CONTROL_FLOW`, a step input binding call
     /// whose arguments do not match the Job (`advance_step_binding`,
-    /// `StepInputs::add_producer`, `attach_step_inputs`): a caller error, not
-    /// a failed Step. Also a template with a loop (RFC 0013) passed to
-    /// `create_job`, which does not instantiate loops yet.
+    /// `StepInputs::add_producer`, `attach_step_inputs`) or a loop function
+    /// call whose arguments do not match the Job or loop
+    /// (`advance_loop_binding`, `start_iteration`, `advance_body_step_binding`,
+    /// `evaluate_iteration_boundary`, `end_without_iterations`,
+    /// `StepInputs::add_loop_producer`, `Loop::expression_inputs`): a caller
+    /// error, not a failed Step or loop.
     #[error("Compatibility error: {0}")]
     Compatibility(String),
 

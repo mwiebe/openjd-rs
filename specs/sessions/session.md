@@ -407,12 +407,12 @@ A consumer Step's path-typed `Steps.*` values arrive in `base` only in their `Ra
 listed in `path_inputs` (`job::Step::path_inputs`). A loop body Step instance's
 path-typed loop variable (RFC 0013 §`<LoopVariableDefinition>`) arrives the same way, as
 `RawLoop.V` (`string` or `list[string]`), stored by the model when the instance is bound;
-its twin is `Loop.V`. A body Step instance is otherwise a Step for the Session: its Step
-Environments are entered and exited around its Tasks as any Step's are (RFC 0013
-§Sessions). They are stored as strings for the
-same reason `RawParam.*` is: `to_symtab(PathFormat::host())` rewrites `/` to `\` in every
+its twin is `Loop.V`. These values are stored as strings for the same reason `RawParam.*`
+is: `to_symtab(PathFormat::host())` rewrites `/` to `\` in every
 `path`-typed entry on a Windows worker, so a POSIX submission path would no longer match a
-POSIX rule. For each entry, after the `Param.*` loop:
+POSIX rule. A body Step instance is otherwise a Step for the Session: its Step
+Environments are entered and exited around its Tasks as any Step's are (RFC 0013
+§Sessions). For each entry, after the `Param.*` loop:
 
 - the `Raw` symbol is set to `path` values in the stored form, each with the stored
   value's own format (Windows for a drive path or one starting with `\\`, POSIX

@@ -994,8 +994,9 @@ A `job::Job` represents a loop as its own entry, beside its Steps:
   enablement (`enableIf`), bound (`maxIterations`, which must be 1 to 1,000), and start (each `initial` in
   declaration order, then the first `while` with `Loop.Iteration` 0 and the initial values). `MaterializationGroup`
   (`job/binding.rs:32`) gains `LoopBound` and `LoopStart` so that a `BindingError` names the group. Each `initial`
-  value is converted and checked as a job output's value is (RFC 0013 §`<LoopVariableDefinition>`), through the
-  conversion `evaluate_job_output` uses (`job/create_job/job_outputs.rs:145`, made shared). The 1 MiB total of RFC
+  value is converted and checked as a job output's value is (RFC 0013 §`<LoopVariableDefinition>`), with the
+  conversion rules and message forms `evaluate_job_output` uses (`job/create_job/job_outputs.rs:145`), except that
+  the target type is not optional, so `null` is an error; the loop code shares its message helper. The 1 MiB total of RFC
   0013 §Limits item 4 is checked after the `initial` values (L5).
 * Group inputs come from symbol collection, as in M4.1: the enablement group reads `enableIf`, the bound group reads
   no `Steps.*` (validation guarantees it), and the start group reads the `initial` expressions and `while`. A group
@@ -1033,7 +1034,7 @@ simulator keeps a `StepRecord`:
 /// A running loop's state between iterations, kept by the caller.
 pub struct LoopProgress {
     pub iteration: u32,                                  // the iteration about to start or in progress
-    pub values: IndexMap<String, ExprValue>,             // Loop.<V> for `iteration`, in the stored form
+    pub values: IndexMap<String, ExprValue>,             // Loop.<V> for `iteration`, converted to each type
     pub outputs: IndexMap<String, ExprValue>,            // per loop output: the LAST value (null) or the APPEND list
 }
 impl LoopProgress { pub fn new(job_loop: &job::Loop) -> Option<Self>; }   // None unless the loop is Bound
