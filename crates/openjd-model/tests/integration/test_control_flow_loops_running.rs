@@ -3717,3 +3717,117 @@ fn loop_errors_name_one_byte_and_a_refused_boundary_call() {
         "Evaluating the boundary of iteration 2 of loop 'L' was refused, in its arguments:\nCompatibility error: loop 'L' has maxIterations 2, so it has no iteration 2."
     );
 }
+
+// ── Script and Step Environment lets reading path values ──────────
+
+#[test]
+fn a_body_script_let_reading_a_path_variable_records_it() {
+    let fx = Fixture::new(
+        &body_loop(
+            "    - name: W
+      script:
+        let: ['d = Loop.D']
+        actions:
+          onRun:
+            command: echo
+            args: ['{{d}}']
+",
+        )
+        .replace(
+            "  loop:\n",
+            "  loop:\n    variables:\n    - {name: D, type: PATH, initial: /src/base, next: '{{RawLoop.D}}'}\n",
+        ),
+        &[],
+    );
+    let w = start0(&fx).unwrap().steps.remove(0);
+    assert_eq!(
+        w.path_inputs,
+        [PathInput {
+            symbol: "RawLoop.D".into(),
+            ty: ExprType::PATH
+        }]
+    );
+}
+
+/// The `RawParam.X` value in the `resolved_symtab` of top-level Step `S`,
+/// whose `field` (`script` or `env`) has `let: ['p = Param.X']` for a PATH
+/// parameter `X`.
+fn path_param_fallback(field: &str) -> Option<ExprValue> {
+    let body = match field {
+        "script" => "  script:\n    let: ['p = Param.X']\n    actions:\n      onRun:\n        command: echo\n        args: ['{{p}}']\n".to_string(),
+        _ => format!("  stepEnvironments:\n  - name: E\n    script:\n      let: ['p = Param.X']\n      actions:\n        onEnter:\n          command: echo\n          args: ['{{{{p}}}}']\n  {SCRIPT}\n"),
+    };
+    let fx = Fixture::new(
+        &template(
+            "parameterDefinitions:\n- {name: X, type: PATH}\n",
+            &format!("- name: S\n{body}"),
+        ),
+        &[("X", "/src/x")],
+    );
+    let job = fx.job();
+    step(&job, "S")
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap()
+        .get_value("RawParam.X")
+        .cloned()
+}
+
+#[test]
+fn a_let_reading_a_path_param_carries_its_raw_param() {
+    for field in ["script", "env"] {
+        assert!(path_param_fallback(field).is_some(), "{field}");
+    }
+}
+
+#[test]
+fn a_first_while_reading_steps_waits_in_the_start_group() {
+    let fx = Fixture::new(
+        &after_producer("", "{{1}}", "{{Steps.P.Output.V > 0}}"),
+        &[],
+    );
+    let job = fx.job();
+    let LoopBinding::PendingInputs(p) = &job.loops[0].binding else {
+        panic!("{:?}", job.loops[0].binding)
+    };
+    assert_eq!(
+        format!("{:?}", p.start),
+        "Waiting { on: [\"Steps.P.Output.V\"] }"
+    );
+    let bound =
+        advance_loop_binding(&fx.jt, &fx.params, &fx.ctx, &job, 0, &p_succeeded(&job, 0)).unwrap();
+    let LoopBinding::Bound(b) = &bound.binding else {
+        panic!()
+    };
+    assert_eq!(b.start.first_while, Some(false));
+}
+
+#[test]
+fn the_initial_size_check_runs_after_every_initial() {
+    // B's initial fails; the size limit, which A alone exceeds, is checked
+    // only after both.
+    let fx = Fixture::with_limits(
+        &template(
+            "parameterDefinitions:\n- {name: S, type: STRING, default: abc}\n",
+            &single_loop(
+                "    variables:\n    - {name: A, type: INT, initial: '{{10}}', next: '{{Loop.A}}'}\n    - {name: B, type: INT, initial: '{{int(Param.S)}}', next: '{{Loop.B}}'}\n    until: '{{true}}'\n    maxIterations: 2\n",
+                "",
+                "",
+            ),
+        ),
+        &[],
+        CallerLimits {
+            max_loop_value_bytes: Some(1),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        fx.create().unwrap_err().to_string(),
+        expected(&[(
+            "steps[0] -> loop -> variables[1] -> initial",
+            "Loop variable 'B': Cannot convert 'abc' to int\n  int(Param.S)\n  ^~~~~~~~~~~~"
+        )])
+    );
+}
