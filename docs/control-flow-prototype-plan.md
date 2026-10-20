@@ -1576,7 +1576,9 @@ through, so the numbering stays stable.
   ... at any moment" and checks the total after boundary step 3 (`next`). It doesn't say whether the values of
   iteration `N`, which `next` replaces, still count then. (`Loop.Iteration` is not a declared loop variable, so it
   doesn't count.) Prototype: after step 3 the total is the new variable values plus every loop output value so far
-  (the current `LAST` value and every `APPEND` element), each measured as the JSON serialization of its stored form.
+  (the current `LAST` value and every `APPEND` element), each measured as the JSON serialization of its stored form;
+  an `APPEND` output counts the sum of its elements, not its brackets and commas, and a `LAST` output with no value
+  yet counts nothing.
 
 ## Citation map from the single RFC
 

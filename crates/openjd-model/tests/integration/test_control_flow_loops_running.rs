@@ -1729,8 +1729,8 @@ fn loop_value_size_limit_is_checked_at_three_points() {
         max_loop_value_bytes: Some(n),
         ..Default::default()
     };
-    // After `initial`: "1234567890" is 12 bytes as JSON and the empty list
-    // of H 2, over 11, so Job creation fails.
+    // After `initial`: "1234567890" is 12 bytes as JSON, and H, with no
+    // elements, counts nothing: over 11, so Job creation fails.
     let err = Fixture::with_limits(&tpl, &[("S", "1234567890")], limits(11))
         .create()
         .unwrap_err();
@@ -1738,11 +1738,11 @@ fn loop_value_size_limit_is_checked_at_three_points() {
         err.to_string(),
         expected(&[(
             "steps[0]",
-            "Loop 'L': its loop variable and loop output values total 14 bytes, over the limit of 11 bytes."
+            "Loop 'L': its loop variable and loop output values total 12 bytes, over the limit of 11 bytes."
         )])
     );
-    // After the outputs: "" (2) + [""] (4) is 6, over 5.
-    let fx = Fixture::with_limits(&tpl, &[], limits(5));
+    // After the outputs: V "" (2) and H's one element "" (2) are 4, over 3.
+    let fx = Fixture::with_limits(&tpl, &[], limits(3));
     let job = fx.job();
     let run = run_loop(&fx, &job, "L", &StepInputs::new(), nothing);
     assert_eq!(
@@ -1751,13 +1751,13 @@ fn loop_value_size_limit_is_checked_at_three_points() {
             "Loop 'L' failed at the boundary of iteration 0, in the size of its values:\n{}",
             expected(&[(
                 "steps[0]",
-                "Loop 'L': its loop variable and loop output values total 6 bytes, over the limit of 5 bytes."
+                "Loop 'L': its loop variable and loop output values total 4 bytes, over the limit of 3 bytes."
             )])
         )
     );
-    // After `next`: "abcdefghij" (12) + [""] (4) is 16, over 15; after the
-    // outputs it was 6.
-    let fx = Fixture::with_limits(&tpl, &[], limits(15));
+    // After `next`: "abcdefghij" (12) and H's "" (2) are 14, over 13; after
+    // the outputs it was 4.
+    let fx = Fixture::with_limits(&tpl, &[], limits(13));
     let job = fx.job();
     let run = run_loop(&fx, &job, "L", &StepInputs::new(), nothing);
     assert_eq!(
@@ -1766,7 +1766,7 @@ fn loop_value_size_limit_is_checked_at_three_points() {
             "Loop 'L' failed at the boundary of iteration 0, in the size of its values:\n{}",
             expected(&[(
                 "steps[0]",
-                "Loop 'L': its loop variable and loop output values total 16 bytes, over the limit of 15 bytes."
+                "Loop 'L': its loop variable and loop output values total 14 bytes, over the limit of 13 bytes."
             )])
         )
     );
@@ -1950,7 +1950,7 @@ fn loop_functions_refuse_caller_errors() {
     };
     assert_eq!(
         start(&job, 0, &no_values),
-        "Compatibility error: the progress of loop 'L' has no value for variable 'N'."
+        "Compatibility error: the progress of loop 'L' has no value for variable 'N'; pass the progress the loop functions returned."
     );
     let e = end_without_iterations(&job, 0).unwrap_err();
     assert!(e.is_caller_error());
@@ -2065,4 +2065,818 @@ fn loop_functions_refuse_caller_errors() {
     )
     .unwrap();
     assert_eq!(c.tasks_known(), Some(1));
+}
+
+// ── Iteration start, without the driver ───────────────────────────
+//
+// `run_loop` advances every pending instance with full inputs, so it would
+// hide an instance that `start_iteration` leaves pending; these inspect
+// `start_iteration`'s own result.
+
+/// The body Step `W` with a script, at body indentation.
+const W: &str = "    - name: W
+      script:
+        actions:
+          onRun:
+            command: echo
+";
+
+/// A loop `L` that runs once, with this body, and nothing else.
+fn body_loop(body: &str) -> String {
+    template(
+        "",
+        &format!("- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{body}"),
+    )
+}
+
+/// `start_iteration` of iteration 0 of loop 0, with no inputs.
+fn start0(fx: &Fixture) -> Result<openjd_model::job::LoopIteration, BindingError> {
+    let job = fx.job();
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    start_iteration(
+        &fx.jt,
+        &fx.params,
+        &fx.ctx,
+        &job,
+        0,
+        &progress,
+        &StepInputs::new(),
+        0,
+    )
+}
+
+const SKIPPED_A: &str = "    - name: A
+      enableIf: '{{Loop.Iteration < 0}}'
+      outputVariables:
+      - {name: X, type: INT}
+      script:
+        actions:
+          onRun:
+            command: echo
+";
+
+const B_READS_A: &str = "    - name: B
+      dependencies:
+      - dependsOn: A
+      enableIf: '{{Steps.A.Output.X == null}}'
+      script:
+        actions:
+          onRun:
+            command: echo
+";
+
+#[test]
+fn start_iteration_makes_a_skipped_instance_concrete_for_its_dependents() {
+    let it = start0(&Fixture::new(
+        &body_loop(&format!("{SKIPPED_A}{B_READS_A}")),
+        &[],
+    ))
+    .unwrap();
+    assert!(matches!(it.steps[0].binding, StepBinding::Skipped));
+    assert!(matches!(it.steps[1].binding, StepBinding::Bound));
+}
+
+#[test]
+fn start_iteration_binds_in_body_dependency_order_and_returns_body_order() {
+    // B comes first in the body but depends on A.
+    let it = start0(&Fixture::new(
+        &body_loop(&format!("{B_READS_A}{SKIPPED_A}")),
+        &[],
+    ))
+    .unwrap();
+    let names: Vec<&str> = it.steps.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["B", "A"]);
+    assert!(matches!(it.steps[0].binding, StepBinding::Bound));
+    assert_eq!(it.instance_name(0).as_deref(), Some("L[0].B"));
+    assert_eq!(it.instance_name(2), None);
+}
+
+#[test]
+fn start_iteration_makes_known_tasks_concrete_down_a_chain() {
+    let body = |name: &str, range: &str, dep: Option<&str>| {
+        let deps = dep.map_or(String::new(), |d| {
+            format!("      dependencies:\n      - dependsOn: {d}\n")
+        });
+        format!(
+            "    - name: {name}\n{deps}      parameterSpace:\n        taskParameterDefinitions:\n        - {{name: F, type: INT, range: '{range}'}}\n      script:\n        actions:\n          onRun:\n            command: echo\n"
+        )
+    };
+    let it = start0(&Fixture::new(
+        &body_loop(&format!(
+            "{}{}{}",
+            body("A", "1-3", None),
+            body("B", "{{Steps.A.TaskParam.F}}", Some("A")),
+            body("C", "{{Steps.B.TaskParam.F[1:]}}", Some("B")),
+        )),
+        &[],
+    ))
+    .unwrap();
+    let tasks: Vec<Option<u64>> = it.steps.iter().map(|s| s.tasks_known()).collect();
+    assert_eq!(tasks, [Some(3), Some(3), Some(2)]);
+}
+
+#[test]
+fn start_iteration_counts_each_instance_toward_max_task_count() {
+    let r = |n: &str| {
+        format!("    - name: {n}\n      parameterSpace:\n        taskParameterDefinitions:\n        - {{name: F, type: INT, range: '1-3'}}\n      script:\n        actions:\n          onRun:\n            command: echo\n")
+    };
+    let fx = Fixture::with_limits(
+        &body_loop(&format!("{}{}", r("R1"), r("R2"))),
+        &[],
+        CallerLimits {
+            max_task_count: Some(5),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        binding_error(start0(&fx).unwrap_err()),
+        (
+            "L[0].R2".to_string(),
+            MaterializationGroup::TaskEnumeration,
+            expected(&[(
+                "steps[0] -> loop -> steps[1]",
+                "Total task count (6) exceeds caller limit of 5: Step 'R2' has 3 Tasks, and the Steps whose Tasks are known before it have 3."
+            )])
+        )
+    );
+}
+
+#[test]
+fn body_step_host_requirement_errors_name_the_body_path() {
+    let fx = Fixture::new(
+        &template(
+            "parameterDefinitions:\n- {name: A, type: STRING, default: 'bad name'}\n",
+            &format!(
+                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}{}",
+                "    - name: C
+      hostRequirements:
+        attributes:
+        - {name: 'attr.{{Param.A}}', anyOf: [x]}
+      script:
+        actions:
+          onRun:
+            command: echo
+"
+            ),
+        ),
+        &[],
+    );
+    assert_eq!(
+        binding_error(start0(&fx).unwrap_err()),
+        (
+            "L[0].C".to_string(),
+            MaterializationGroup::HostSelection,
+            expected(&[(
+                "steps[0] -> loop -> steps[1] -> hostRequirements -> attributes[0]",
+                "name 'attr.bad name' does not match capability name pattern."
+            )])
+        )
+    );
+}
+
+#[test]
+fn top_level_step_after_a_loop_reports_its_template_path() {
+    let fx = Fixture::new(
+        &template(
+            "parameterDefinitions:\n- {name: A, type: STRING, default: 'bad name'}\n",
+            &format!(
+                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}- name: C
+  hostRequirements:
+    attributes:
+    - {{name: 'attr.{{{{Param.A}}}}', anyOf: [x]}}
+  {SCRIPT}
+"
+            ),
+        ),
+        &[],
+    );
+    assert_eq!(
+        fx.create().unwrap_err().to_string(),
+        expected(&[(
+            "steps[1] -> hostRequirements -> attributes[0]",
+            "name 'attr.bad name' does not match capability name pattern."
+        )])
+    );
+}
+
+#[test]
+fn raw_loop_of_a_non_path_variable_is_its_value() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            "- name: L
+  loop:
+    variables:
+    - {name: 'N', type: INT, initial: '{{7}}', next: '{{Loop.N}}'}
+    until: '{{true}}'
+    maxIterations: 2
+    steps:
+    - name: W
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: F, type: INT, range: '{{[RawLoop.N, Loop.N]}}'}
+      script:
+        actions:
+          onRun:
+            command: echo
+",
+        ),
+        &[],
+    );
+    let it = start0(&fx).unwrap();
+    let space = it.steps[0].parameter_space.as_ref().unwrap();
+    let fs: Vec<String> = StepParameterSpaceIterator::new(space)
+        .unwrap()
+        .map(|set| set["F"].value.to_display_string())
+        .collect();
+    assert_eq!(fs, ["7", "7"]);
+}
+
+/// A loop with path variables `Dir` and `Other`, whose body Step `W` has
+/// these `args`; the first iteration's `W`.
+fn path_instance(args: &str) -> openjd_model::job::Step {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: L
+  loop:
+    variables:
+    - {{name: Dir, type: PATH, initial: /src/out, next: '{{{{RawLoop.Dir}}}}'}}
+    - {{name: Other, type: PATH, initial: /src/other, next: '{{{{RawLoop.Other}}}}'}}
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+    - name: W
+      script:
+        actions:
+          onRun:
+            command: echo
+            args: [{args}]
+"
+            ),
+        ),
+        &[],
+    );
+    start0(&fx).unwrap().steps.remove(0)
+}
+
+#[test]
+fn only_the_path_variables_an_instance_reads_are_stored() {
+    for args in ["'{{Loop.Dir}}'", "'{{Loop.Dir.name}}'", "'{{RawLoop.Dir}}'"] {
+        let w = path_instance(args);
+        let symbols: Vec<&str> = w.path_inputs.iter().map(|p| p.symbol.as_str()).collect();
+        assert_eq!(symbols, ["RawLoop.Dir"], "{args}");
+        // Stored as a string in the submission form, as the Session expects.
+        let json = serde_json::to_value(w.resolved_symtab.as_ref().unwrap()).unwrap();
+        let entry = json
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["name"] == "RawLoop.Dir")
+            .unwrap();
+        assert_eq!(
+            entry,
+            &serde_json::json!({"name": "RawLoop.Dir", "type": "string", "value": "/src/out"}),
+            "{args}"
+        );
+    }
+    // A literal PATH `initial` is converted to a path.
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: L
+  loop:
+    variables:
+    - {{name: F, type: FLOAT, initial: '{{{{1}}}}', next: '{{{{Loop.F}}}}'}}
+    - {{name: P, type: PATH, initial: /a, next: '{{{{RawLoop.P}}}}'}}
+    - {{name: LP, type: 'LIST[PATH]', initial: \"{{{{['/a']}}}}\", next: '{{{{RawLoop.LP}}}}'}}
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+{W}"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let LoopBinding::Bound(b) = &job.loops[0].binding else {
+        panic!()
+    };
+    let types: Vec<String> = b
+        .start
+        .initial
+        .values()
+        .map(|v| v.expr_type().to_string())
+        .collect();
+    assert_eq!(types, ["float", "path", "list[path]"]);
+}
+
+#[test]
+fn attach_step_inputs_keeps_raw_loop_records_beside_steps_inputs() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: P
+  outputVariables:
+  - {{name: V, type: INT}}
+  {SCRIPT}
+- name: L
+  dependencies:
+  - dependsOn: P
+  loop:
+    variables:
+    - {{name: Dir, type: PATH, initial: /src/out, next: '{{{{RawLoop.Dir}}}}'}}
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+    - name: W
+      script:
+        actions:
+          onRun:
+            command: echo
+            args: ['{{{{Loop.Dir}}}}', '{{{{Steps.P.Output.V}}}}']
+"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let deps = p_succeeded(&job, 3);
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    let it = start_iteration(&fx.jt, &fx.params, &fx.ctx, &job, 0, &progress, &deps, 0).unwrap();
+    let attached = attach_step_inputs(&it.steps[0], &deps).unwrap();
+    assert_eq!(
+        attached.path_inputs,
+        [PathInput {
+            symbol: "RawLoop.Dir".into(),
+            ty: ExprType::PATH
+        }]
+    );
+    let st = attached
+        .resolved_symtab
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(st.get_value("Steps.P.Output.V"), Some(&ExprValue::Int(3)));
+}
+
+// ── Loop binding edges ────────────────────────────────────────────
+
+#[test]
+fn a_false_enable_if_evaluates_nothing_else() {
+    // maxIterations 0 would fail the bound group.
+    let fx = Fixture::new(
+        &template(
+            "parameterDefinitions:\n- {name: M, type: INT, default: 0}\n",
+            &format!("- name: L\n  enableIf: '{{{{Param.M > 0}}}}'\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
+        ),
+        &[],
+    );
+    assert!(matches!(fx.job().loops[0].binding, LoopBinding::Skipped));
+}
+
+#[test]
+fn a_waiting_start_group_names_its_producers() {
+    let fx = Fixture::new(
+        &after_producer("", "{{Steps.P.Output.V}}", "{{Loop.N < 2}}"),
+        &[],
+    );
+    assert_eq!(fx.job().loops[0].input_producers(), ["P"]);
+}
+
+#[test]
+fn step_name_in_a_loop_enable_if_is_the_loop_name() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!("- name: L\n  enableIf: \"{{{{Step.Name == 'L'}}}}\"\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}"),
+        ),
+        &[],
+    );
+    assert!(matches!(fx.job().loops[0].binding, LoopBinding::Bound(_)));
+}
+
+#[test]
+fn max_iterations_accepts_1_and_1000() {
+    for m in [1, 1000] {
+        let fx = Fixture::new(
+            &template(
+                "parameterDefinitions:\n- {name: M, type: INT}\n",
+                &format!("- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: '{{{{Param.M}}}}'\n    steps:\n{W}"),
+            ),
+            &[("M", &m.to_string())],
+        );
+        let LoopBinding::Bound(b) = &fx.job().loops[0].binding else {
+            panic!()
+        };
+        assert_eq!(b.max_iterations, m);
+    }
+}
+
+// ── The size measurement ──────────────────────────────────────────
+
+/// The size error of a loop with this one variable and these outputs, under
+/// `limit`, at Job creation; `None` when it creates.
+fn size_err(variable: &str, outputs: &str, limit: usize) -> Option<String> {
+    let fx = Fixture::with_limits(
+        &template(
+            "",
+            &format!("- name: L\n  loop:\n    variables:\n    - {variable}\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}{outputs}"),
+        ),
+        &[],
+        CallerLimits {
+            max_loop_value_bytes: Some(limit),
+            ..Default::default()
+        },
+    );
+    fx.create().err().map(|e| e.to_string())
+}
+
+fn size_message(total: usize, limit: usize) -> String {
+    expected(&[(
+        "steps[0]",
+        &format!("Loop 'L': its loop variable and loop output values total {total} bytes, over the limit of {limit} bytes."),
+    )])
+}
+
+#[test]
+fn loop_value_size_is_json_bytes() {
+    // "abc" is 5 bytes: at the limit is accepted.
+    let v = "{name: V, type: STRING, initial: abc, next: '{{Loop.V}}'}";
+    assert_eq!(size_err(v, "", 5), None);
+    assert_eq!(size_err(v, "", 4), Some(size_message(5, 4)));
+    // A LAST output with no value yet, and an APPEND output with no
+    // elements, count nothing.
+    let o = "  outputVariables:\n  - {name: O, type: INT, collect: LAST, value: '{{1}}'}\n  - {name: H, type: 'LIST[INT]', collect: APPEND, value: '{{1}}'}\n";
+    assert_eq!(size_err(v, o, 5), None);
+    // A path counts its text; a float its spelling; an int its digits.
+    let p = "{name: V, type: PATH, initial: /abcdefghij, next: '{{RawLoop.V}}'}";
+    assert_eq!(size_err(p, "", 12), Some(size_message(13, 12)));
+    let f = "{name: V, type: FLOAT, initial: '{{1.5}}', next: '{{Loop.V}}'}";
+    assert_eq!(size_err(f, "", 3), None);
+    assert_eq!(size_err(f, "", 2), Some(size_message(3, 2)));
+    let i = "{name: V, type: INT, initial: '{{12345}}', next: '{{Loop.V}}'}";
+    assert_eq!(size_err(i, "", 4), Some(size_message(5, 4)));
+    let l = "{name: V, type: 'LIST[INT]', initial: '{{[1, 22]}}', next: '{{Loop.V}}'}";
+    assert_eq!(size_err(l, "", 5), Some(size_message(6, 5)));
+}
+
+// ── Loops downstream ──────────────────────────────────────────────
+
+#[test]
+fn a_loop_skipped_at_creation_is_null_for_steps_that_read_it() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: L
+  enableIf: false
+  loop:
+    until: '{{{{true}}}}'
+    maxIterations: 2
+    steps:
+{W}  outputVariables:
+  - {{name: O, type: INT, collect: LAST, value: '{{{{1}}}}'}}
+- name: C
+  dependencies:
+  - dependsOn: L
+  enableIf: '{{{{Steps.L.Output.O == null}}}}'
+  {SCRIPT}
+"
+            ),
+        ),
+        &[],
+    );
+    assert!(matches!(step(&fx.job(), "C").binding, StepBinding::Bound));
+}
+
+#[test]
+fn two_loops_keep_template_order_in_the_job_and_the_graph() {
+    let lp = |n: &str| {
+        format!("- name: {n}\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n    - name: W{n}\n      {SCRIPT}\n")
+    };
+    let job = Fixture::new(
+        &template(
+            "",
+            &format!("{}- name: S\n  {SCRIPT}\n{}", lp("L1"), lp("L2")),
+        ),
+        &[],
+    )
+    .job();
+    let names: Vec<&str> = job.loops.iter().map(|l| l.name.as_str()).collect();
+    assert_eq!(names, ["L1", "L2"]);
+    let entries: Vec<usize> = job.loops.iter().map(|l| l.entry_index).collect();
+    assert_eq!(entries, [0, 2]);
+    let g = StepDependencyGraph::new(&job).unwrap();
+    assert_eq!(g.topo_sorted_names().unwrap(), ["L1", "S", "L2"]);
+    let n = g.step_node("S").unwrap();
+    assert_eq!((n.kind, n.step_index), (StepNodeKind::Step, 0));
+    let n = g.step_node("L2").unwrap();
+    assert_eq!((n.kind, n.step_index), (StepNodeKind::Loop, 1));
+    // A Job whose loops do not fit the template order is refused.
+    let mut bad = job.clone();
+    bad.loops[1].entry_index = 0;
+    assert_eq!(
+        StepDependencyGraph::new(&bad).unwrap_err().to_string(),
+        "Validation error: Loop 'L2' has entry index 0, which does not fit the Job's 3 Steps and loops"
+    );
+    let mut bad = job.clone();
+    bad.loops[1].dependencies = Some(vec![openjd_model::job::StepDependency {
+        depends_on: "Nope".into(),
+    }]);
+    assert_eq!(
+        StepDependencyGraph::new(&bad).unwrap_err().to_string(),
+        "Validation error: Loop 'L2' depends on unknown step 'Nope'"
+    );
+}
+
+#[test]
+fn add_loop_producer_holds_list_path_outputs_raw_and_needs_a_bound_loop() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: P, type: 'LIST[PATH]', collect: APPEND, value: \"{{{{'/a'}}}}\"}}\n"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let mut values = IndexMap::new();
+    values.insert(
+        "P".to_string(),
+        ExprValue::make_list(
+            vec![ExprValue::new_path("/a", PathFormat::Posix)],
+            ExprType::PATH,
+        )
+        .unwrap(),
+    );
+    let mut inputs = StepInputs::new();
+    inputs
+        .add_loop_producer(
+            &job.loops[0],
+            LoopProducerState::Succeeded { outputs: &values },
+        )
+        .unwrap();
+    assert_eq!(inputs.get("Steps.L.Output.P"), None);
+    assert!(inputs.is_concrete("Steps.L.Output.P"));
+    assert_eq!(
+        inputs
+            .get("Steps.L.RawOutput.P")
+            .map(ExprValue::to_display_string),
+        Some(r#"["/a"]"#.to_string())
+    );
+    let mut skipped = job.clone();
+    skipped.loops[0].binding = LoopBinding::Skipped;
+    assert_eq!(
+        StepInputs::new()
+            .add_loop_producer(
+                &skipped.loops[0],
+                LoopProducerState::Succeeded { outputs: &values }
+            )
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: loop 'L' is not bound, so it cannot have succeeded."
+    );
+}
+
+#[test]
+fn loop_progress_new_and_output_lookup() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{W}  outputVariables:\n  - {{name: A, type: 'LIST[INT]', collect: APPEND, value: '{{{{1}}}}'}}\n  - {{name: B, type: INT, collect: LAST, value: '{{{{1}}}}'}}\n"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let p = LoopProgress::new(&job.loops[0]).unwrap();
+    assert_eq!(p.iteration, 0);
+    assert_eq!(p.outputs["A"], ints(&[]));
+    assert_eq!(p.outputs["A"].expr_type(), ExprType::list(ExprType::INT));
+    assert_eq!(p.outputs["B"], ExprValue::Null);
+    assert_eq!(job.loops[0].output_variable("B").unwrap().name, "B");
+    assert!(job.loops[0].output_variable("Z").is_none());
+    let mut skipped = job.clone();
+    skipped.loops[0].binding = LoopBinding::Skipped;
+    assert_eq!(LoopProgress::new(&skipped.loops[0]), None);
+}
+
+// ── More caller errors ────────────────────────────────────────────
+
+/// The caller error text of a `BindingError`.
+fn caller_error(e: BindingError) -> String {
+    assert!(e.is_caller_error(), "{e}");
+    e.errors[0].to_string()
+}
+
+#[test]
+fn loop_functions_refuse_a_mismatched_template_or_zero_iteration_loop() {
+    let tpl = |name: &str| {
+        template(
+            "",
+            &format!("- name: {name}\n  loop:\n    while: '{{{{false}}}}'\n    maxIterations: 2\n    steps:\n{W}"),
+        )
+    };
+    let fx = Fixture::new(&tpl("L"), &[]);
+    let job = fx.job();
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    let start = |jt: &openjd_model::template::JobTemplate| {
+        caller_error(
+            start_iteration(
+                jt,
+                &fx.params,
+                &fx.ctx,
+                &job,
+                0,
+                &progress,
+                &StepInputs::new(),
+                0,
+            )
+            .unwrap_err(),
+        )
+    };
+    assert_eq!(
+        start(&fx.jt),
+        "Compatibility error: loop 'L' has zero iterations: its first while is false; end it with end_without_iterations."
+    );
+    let other = Fixture::new(&tpl("Z"), &[]);
+    assert_eq!(
+        start(&other.jt),
+        "Compatibility error: loop 0 of the Job is 'L', at entry 0 of the template's steps, but the template has no such loop there; pass the template the Job was created from."
+    );
+    assert_eq!(
+        job.loops[0]
+            .expression_inputs(&other.jt, &LoopExpression::While)
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: the template has no loop 'L' at entry 0 of its steps; pass the template the Job was created from."
+    );
+    let e = end_without_iterations(&job, 2).unwrap_err();
+    assert_eq!(
+        e.errors[0].to_string(),
+        "Compatibility error: the Job has 1 loop, so it has no loop 2."
+    );
+}
+
+#[test]
+fn advance_body_step_binding_checks_the_instance_and_leaves_a_bound_one() {
+    let fx = Fixture::with_limits(
+        &body_loop(
+            "    - name: R
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: F, type: INT, range: '1-3'}
+      script:
+        actions:
+          onRun:
+            command: echo
+",
+        ),
+        &[],
+        CallerLimits {
+            max_task_count: Some(5),
+            ..Default::default()
+        },
+    );
+    let job = fx.job();
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    let it = start_iteration(
+        &fx.jt,
+        &fx.params,
+        &fx.ctx,
+        &job,
+        0,
+        &progress,
+        &StepInputs::new(),
+        0,
+    )
+    .unwrap();
+    let advance = |it: &openjd_model::job::LoopIteration, committed| {
+        advance_body_step_binding(
+            &fx.jt,
+            &fx.params,
+            &fx.ctx,
+            &job,
+            0,
+            &progress,
+            it,
+            0,
+            &StepInputs::new(),
+            committed,
+        )
+    };
+    // A bound instance is returned as it is, whatever the committed count.
+    assert_eq!(advance(&it, 100).unwrap(), it.steps[0]);
+    let mut renamed = it.clone();
+    renamed.steps[0].name = "X".into();
+    assert_eq!(
+        caller_error(advance(&renamed, 0).unwrap_err()),
+        "Compatibility error: instance 0 of the iteration is 'X', but the template's body Step is 'R'."
+    );
+}
+
+#[test]
+fn loop_functions_refuse_a_progress_of_the_wrong_shape() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &single_loop(
+                "    variables:\n    - {name: 'N', type: INT, initial: '{{0}}', next: '{{Loop.N + 1}}'}\n    until: '{{Loop.Iteration >= 2}}'\n    maxIterations: 5\n",
+                "  outputVariables:\n  - {name: Ns, type: 'LIST[INT]', collect: APPEND, value: '{{Loop.N}}'}\n  - {name: Last, type: INT, collect: LAST, value: '{{Loop.N}}'}\n",
+                "",
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let good = LoopProgress::new(&job.loops[0]).unwrap();
+    let refused = |edit: &dyn Fn(&mut LoopProgress)| {
+        let mut p = good.clone();
+        edit(&mut p);
+        let start = caller_error(
+            start_iteration(
+                &fx.jt,
+                &fx.params,
+                &fx.ctx,
+                &job,
+                0,
+                &p,
+                &StepInputs::new(),
+                0,
+            )
+            .unwrap_err(),
+        );
+        let e = evaluate_iteration_boundary(
+            &fx.jt,
+            &fx.params,
+            &fx.ctx,
+            &job,
+            0,
+            &p,
+            &StepInputs::new(),
+        )
+        .unwrap_err();
+        assert!(e.is_caller_error(), "{e}");
+        assert_eq!(e.errors[0].to_string(), start);
+        start
+    };
+    let msg = |m: &str| {
+        format!("Compatibility error: the progress of loop 'L' {m}; pass the progress the loop functions returned.")
+    };
+    assert_eq!(
+        refused(&|p| {
+            p.values.insert("N".into(), ExprValue::String("x".into()));
+        }),
+        msg("has a value of type string for variable 'N', which is INT")
+    );
+    assert_eq!(
+        refused(&|p| {
+            p.values.insert("Q".into(), ExprValue::Int(1));
+        }),
+        msg("has a value for 'Q', which is not a variable of the loop")
+    );
+    assert_eq!(
+        refused(&|p| {
+            p.outputs.shift_remove("Ns");
+        }),
+        msg("has no value for output 'Ns'")
+    );
+    assert_eq!(
+        refused(&|p| {
+            p.outputs.insert("Ns".into(), ExprValue::Int(3));
+        }),
+        msg("has a value of type int for APPEND output 'Ns', which is LIST[INT]")
+    );
+    assert_eq!(
+        refused(&|p| {
+            p.outputs.insert("Ns".into(), ExprValue::Null);
+        }),
+        msg("has a value of type nulltype for APPEND output 'Ns', which is LIST[INT]")
+    );
+    assert_eq!(
+        refused(&|p| {
+            p.outputs.insert("Z".into(), ExprValue::Null);
+        }),
+        msg("has a value for 'Z', which is not an output of the loop")
+    );
+    // A LAST output may be null or of its type.
+    let mut p = good.clone();
+    p.outputs.insert("Last".into(), ExprValue::Int(4));
+    start_iteration(
+        &fx.jt,
+        &fx.params,
+        &fx.ctx,
+        &job,
+        0,
+        &p,
+        &StepInputs::new(),
+        0,
+    )
+    .unwrap();
 }

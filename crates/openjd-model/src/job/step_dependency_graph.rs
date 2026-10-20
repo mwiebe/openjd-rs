@@ -11,12 +11,12 @@ use crate::job;
 
 type NodeIndex = usize;
 
-/// A step-to-step dependency edge.
+/// A dependency edge between two nodes (top-level Steps or loops).
 #[derive(Debug)]
 pub struct StepDependencyEdge {
-    /// Index of the step that is depended upon.
+    /// Node index of the Step or loop that is depended upon.
     pub origin: NodeIndex,
-    /// Index of the step that depends on origin.
+    /// Node index of the Step or loop that depends on origin.
     pub dependent: NodeIndex,
 }
 
@@ -114,11 +114,16 @@ impl StepDependencyGraph {
 
         let mut edges = Vec::new();
 
-        for (dep_idx, (_, _, name, deps)) in entries.iter().enumerate() {
+        for (dep_idx, (kind, _, name, deps)) in entries.iter().enumerate() {
             for dep in deps.iter().copied().flatten() {
                 let origin_idx = *name_to_index.get(&dep.depends_on).ok_or_else(|| {
                     ModelError::DecodeValidation(format!(
-                        "Step '{name}' depends on unknown step '{}'",
+                        "{} '{name}' depends on unknown step '{}'",
+                        if matches!(kind, StepNodeKind::Loop) {
+                            "Loop"
+                        } else {
+                            "Step"
+                        },
                         dep.depends_on
                     ))
                 })?;

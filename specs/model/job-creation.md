@@ -785,6 +785,10 @@ groups as `job::Step::binding_report()` does a Step's.
 #### Iterations
 
 `LoopProgress::new(&job_loop)` gives iteration 0 with the `initial` values and no outputs.
+Every loop function that takes a `LoopProgress` checks its shape: exactly the loop's
+variables, each of its declared type, and exactly its outputs (`LAST` `null` or of its
+type, `APPEND` a list of its type); anything else is a caller error, so a progress
+restored from a scheduler's records cannot be mistaken for a loop failure.
 `start_iteration(.., loop_index, &progress, inputs, committed_task_count)` creates an
 instance of every body Step for `progress.iteration`, in body dependency order, each bound
 as `create_job` binds a top-level Step: every group whose inputs are concrete then is
@@ -880,8 +884,10 @@ re-runs, RFC 0012 rule 3).
 
 `CallerLimits::max_loop_value_bytes` (RFC 0013 §Limits item 4) bounds the total of a
 loop's variable and output values, each measured as its JSON serialization (numbers,
-strings, booleans, and arrays; a path as its text), with a `LAST` output that has no
-value yet counting nothing and an `APPEND` output counting every element. It is checked
+strings, booleans, and arrays; a path as its text): each variable's value; each `LAST`
+output's value, or nothing while it is `null`; and the sum of each `APPEND` output's
+elements, so an `APPEND` output with no elements counts nothing (its brackets and commas
+are not counted). It is checked
 after the `initial` values, and at each boundary after step 1 and after step 3. `None`
 is no limit; the CLI sets none.
 
