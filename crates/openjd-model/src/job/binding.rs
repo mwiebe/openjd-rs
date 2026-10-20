@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Step input binding (`CONTROL_FLOW`, RFC 0010 §Step input binding): the
+//! Step input binding (`CONTROL_FLOW`, RFC 0011 §Step input binding): the
 //! inputs a caller assembles for it ([`StepInputs`]), its error
 //! ([`BindingError`]), and the read-only views of a [`Step`]'s binding
 //! ([`Step::tasks_known`], [`Step::binding_report`], [`Step::input_producers`]).
@@ -24,7 +24,7 @@ use crate::outputs::TaskOutputs;
 use crate::step_param_space::StepParameterSpaceIterator;
 use crate::types::JobParameterType;
 
-/// A Step's materialization groups (RFC 0010 §Materialization groups), in the
+/// A Step's materialization groups (RFC 0011 §Materialization groups), in the
 /// order they are evaluated when more than one can be. There is no Task
 /// graph group: `TASK_DEPENDENCIES` is not implemented, and would add one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,7 +55,7 @@ impl fmt::Display for MaterializationGroup {
 }
 
 /// A materialization group that failed to evaluate, which fails its Step at
-/// once (RFC 0010 §How a Step is bound, item 3).
+/// once (RFC 0011 §How a Step is bound, item 3).
 #[derive(Debug)]
 pub struct BindingError {
     /// The Step's name.
@@ -149,7 +149,7 @@ struct ProducerInputs {
 /// `Output`, `RawOutput`, `TaskParam`, or `TaskRawParam`. Values are in the
 /// submission path context: a `PATH` or `LIST[PATH]` value is held only in
 /// its `Raw` form, and the `Output` or `TaskParam` form is derived from it on
-/// the worker host (RFC 0010 §Path values).
+/// the worker host (RFC 0011 §Path values).
 #[derive(Debug, Clone, Default)]
 pub struct StepInputs {
     producers: BTreeMap<String, ProducerInputs>,
@@ -209,7 +209,7 @@ impl StepInputs {
                 entry.skipped = true;
             }
             // A skipped producer's TaskParam is concrete too, as `null`
-            // (RFC 0010 §The `Steps.*` scope, Concreteness), and
+            // (RFC 0011 §The `Steps.*` scope, Concreteness), and
             // `tasks_known` reports its zero Tasks.
             ProducerState::TasksKnown if matches!(producer.binding, StepBinding::Skipped) => {
                 entry.skipped = true;
@@ -482,7 +482,7 @@ pub enum GroupReport {
     },
 }
 
-/// What is known of a pending Step (RFC 0010 §Implementation strategy): for
+/// What is known of a pending Step (RFC 0011 §Implementation strategy): for
 /// its enablement, its Tasks, its host requirements, and its remaining
 /// group, whether each is known and what it waits for.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

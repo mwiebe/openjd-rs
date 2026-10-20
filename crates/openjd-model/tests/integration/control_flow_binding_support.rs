@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Shared helpers for the `CONTROL_FLOW` (RFC 0010) step input binding tests.
+//! Shared helpers for the `CONTROL_FLOW` (RFC 0011) step input binding tests.
 
 use openjd_expr::ExprValue;
 use openjd_model::job::{BindingError, Job, ProducerState, Step, StepInputs};

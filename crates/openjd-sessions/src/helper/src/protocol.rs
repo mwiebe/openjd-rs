@@ -22,7 +22,7 @@ pub struct RunCommand {
     #[serde(default)]
     pub env: HashMap<String, String>,
     pub cwd: String,
-    /// Set when the Action may report `openjd_output_var` values (RFC 0010):
+    /// Set when the Action may report `openjd_output_var` values (RFC 0011):
     /// the helper then reads the file of each `@` directive as the job user
     /// and sends it as `Response::OutputFile` frames in place of the line.
     /// Absent, every line is sent as `Response::Out`.

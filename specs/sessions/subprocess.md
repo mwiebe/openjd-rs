@@ -174,7 +174,7 @@ Truncation is no longer silent: the reader knows a line was cut (`truncate_line`
 returned less than the decoded line), and passes that, with whether decoding was lossy
 (`decode_backslashreplace` returned an owned, escaped string), to the output-variable
 recognizer. A truncated or lossy line that starts with `openjd_output_var:` is an
-invalid directive (RFC 0010 §Limits item 1, §Processing a directive item 9). Only the
+invalid directive (RFC 0011 §Limits item 1, §Processing a directive item 9). Only the
 line terminator (`\n`, then one `\r`) is stripped, as on both helper runners, so the
 directive grammar sees the same text on every path.
 

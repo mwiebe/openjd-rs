@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) schema, gating, and structural validation:
+//! `CONTROL_FLOW` (RFC 0011) schema, gating, and structural validation:
 //! `outputVariables`, `enableIf`, and validation pass 11.
 //!
 //! Failure tests assert the full error output (count, path, and message), as
@@ -122,7 +122,7 @@ fn control_flow_requires_expr() {
         "JobTemplate",
         &[(
             "extensions",
-            "CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC 0010).",
+            "CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC 0011).",
         )],
     );
 }
@@ -280,7 +280,7 @@ fn environment_template_may_not_list_control_flow() {
         SUPPORTED,
         &[(
             "extensions",
-            "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0010).",
+            "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0011).",
         )],
     );
 }
@@ -292,7 +292,7 @@ fn environment_template_may_not_use_enable_if() {
         SUPPORTED,
         &[(
             "environment -> enableIf",
-            "enableIf is not allowed in an Environment Template (RFC 0010).",
+            "enableIf is not allowed in an Environment Template (RFC 0011).",
         )],
     );
 }
@@ -305,11 +305,11 @@ fn environment_template_with_control_flow_and_enable_if_reports_both() {
         &[
             (
                 "extensions",
-                "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0010).",
+                "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0011).",
             ),
             (
                 "environment -> enableIf",
-                "enableIf is not allowed in an Environment Template (RFC 0010).",
+                "enableIf is not allowed in an Environment Template (RFC 0011).",
             ),
         ],
     );

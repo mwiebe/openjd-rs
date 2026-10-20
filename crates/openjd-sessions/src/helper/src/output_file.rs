@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `@` file values of the `openjd_output_var` directive (RFC 0010 §File
+//! `@` file values of the `openjd_output_var` directive (RFC 0011 §File
 //! values): recognizing the `@` form of a directive line, and reading the
 //! file it names.
 //!
