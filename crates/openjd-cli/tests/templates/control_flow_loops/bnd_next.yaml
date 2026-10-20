@@ -1,0 +1,24 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: only loop L's variable's next reads its dependency A.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Bnd
+steps:
+- name: A
+  outputVariables:
+  - {name: V, type: INT}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: V=1')"]}
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    variables:
+    - {name: X, type: INT, initial: "{{0}}", next: "{{Steps.A.Output.V}}"}
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 4
+    steps:
+    - name: P
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P ran {{Loop.Iteration}}')"]}
+

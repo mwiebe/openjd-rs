@@ -119,7 +119,7 @@ CLI binary (`openjd`) with `check`, `summary`, and `run` subcommands.
 
 - **check** (`src/check.rs`) — Template validation.
 - **summary** (`src/summary.rs`) — Job/step summary display.
-- **run** (`src/run/`) — Local job execution using the sessions runtime, with a CONTROL_FLOW scheduler simulator (`src/run/simulator.rs`) that advances step input binding and evaluates job outputs. `run` and `summary` refuse a Job with a loop until the simulator runs loops.
+- **run** (`src/run/`) — Local job execution using the sessions runtime, with a CONTROL_FLOW scheduler simulator (`src/run/simulator.rs`) that advances step input binding, runs CONTROL_FLOW loops iteration by iteration, and evaluates job outputs.
 - **help** (`src/help.rs`) — Context-aware help text with markdown stripping for terminal display.
 
 Spec entry point: `specs/cli/README.md`

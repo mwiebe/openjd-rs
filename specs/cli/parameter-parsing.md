@@ -192,8 +192,9 @@ JSON for path mapping rules.
 
 ## Step Inputs (`--step-inputs`, CONTROL_FLOW)
 
-`parse_step_inputs()` reads the `Steps.*` output values that a Step run alone reads (see
-[run.md](run.md) § CONTROL_FLOW for how they are checked and used). It accepts:
+`parse_step_inputs()` reads the `Steps.*` output values that a Step or loop run alone
+reads (see [run.md](run.md) § CONTROL_FLOW and § CONTROL_FLOW: loops for how they are
+checked and used). It accepts:
 
 - `file://path`: JSON when the file name ends in `.json`, YAML otherwise, read with the
   same `MAX_FILE_INPUT_SIZE` cap as the other `file://` inputs;

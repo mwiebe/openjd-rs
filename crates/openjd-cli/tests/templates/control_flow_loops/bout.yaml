@@ -1,0 +1,18 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Only the loop output's value reads body Step P.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Bout
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: P
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
+  outputVariables:
+  - {name: H, type: INT, collect: LAST, unit: frames, value: "{{Steps.P.Output.V}}"}
