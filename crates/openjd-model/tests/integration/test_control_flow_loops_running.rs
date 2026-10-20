@@ -3831,3 +3831,22 @@ fn the_initial_size_check_runs_after_every_initial() {
         )])
     );
 }
+
+#[test]
+fn without_control_flow_a_step_environment_let_carries_its_param() {
+    let fx = Fixture::new(
+        &format!(
+            "{}parameterDefinitions:\n- {{name: Q, type: INT, default: 3}}\nsteps:\n- name: S\n  stepEnvironments:\n  - name: E\n    script:\n      let: ['q = Param.Q']\n      actions:\n        onEnter:\n          command: echo\n          args: ['{{{{q}}}}']\n  {SCRIPT}\n",
+            header("[EXPR]")
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let st = step(&job, "S")
+        .resolved_symtab
+        .as_ref()
+        .unwrap()
+        .to_symtab(PathFormat::Posix)
+        .unwrap();
+    assert_eq!(st.get_value("Param.Q"), Some(&ExprValue::Int(3)));
+}

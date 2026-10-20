@@ -143,7 +143,8 @@ host-context (SESSION and TASK scope); timeout and notifyPeriodInSeconds are tem
 worker, referencing only the job-creation-stage symbols carried in `resolved_symtab`.
 
 Contents include `RawParam.*`, non-PATH `Param.*` values, `Job.Name`, `Step.Name`, and
-let bindings. PATH-typed `Param.*` entries and any `apply_path_mapping` results are excluded
+let bindings, and for a loop body Step instance (RFC 0013) the `Loop.*` values it reads, with
+a path-typed loop variable stored only as `RawLoop.<V>`. PATH-typed `Param.*` entries and any `apply_path_mapping` results are excluded
 because path mapping rules aren't available until session time. The session layers these
 plus `Session.*` and `Task.*` values on top at runtime.
 
@@ -215,7 +216,8 @@ states, and `advance_step_binding` moves a pending Step on (see
 them waits in its `PendingBinding` and moves into the Step's fields when it is bound. Its
 script, Step Environments, dependencies, and outputs are filled in as for a bound Step. A
 `Skipped` Step has the same three fields `None` for good, and zero Tasks. `path_inputs` is
-recorded by `attach_step_inputs`.
+recorded by `attach_step_inputs` for `Steps.*` values, and, for a loop body Step instance,
+by the model when the instance is bound, for its `RawLoop.*` values.
 
 `GroupState::Waiting::on` lists the group's own inputs (`Steps.<Step>.<Member>.<Name>`)
 that are not concrete, not counting the enablement group's inputs, which every other group

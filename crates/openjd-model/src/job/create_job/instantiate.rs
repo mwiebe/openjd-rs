@@ -1095,7 +1095,7 @@ pub fn evaluate_let_bindings(
 // Step and Environment have different sets of these format strings:
 //   Step  — step-level let bindings, script (actions, embedded files,
 //           script-level let bindings), and step-scoped environments
-//           (variables, actions, embedded files).
+//           (variables, actions, embedded files, script-level let bindings).
 //   Env   — variables, script (actions, embedded files, script-level
 //           let bindings).
 //
