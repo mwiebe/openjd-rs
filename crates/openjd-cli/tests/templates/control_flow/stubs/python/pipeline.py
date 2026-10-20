@@ -49,3 +49,8 @@ def extract_hand_actions(video, window, overlap, det_conf, on_progress):
 
 def score_against_hot3d(trajectory):
     return _Score(trajectory.video, trajectory.frames)
+
+
+def process_key(bucket, key):
+    """The RFC 0013 paginated listing sample's per-key work."""
+    print(f"pipeline stub: processed s3://{bucket}/{key}")

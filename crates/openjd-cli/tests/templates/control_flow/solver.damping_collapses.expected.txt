@@ -1,0 +1,64 @@
+$ openjd run {T}/solver.yaml -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p StartDamping=0.0015
+exit code: 1
+--- stdout
+Session start
+Running job 'Relax mesh'
+Loop 'Relax' is pending inputs:
+  Enabled: yes
+  maxIterations: 200
+  Start (initial values and first while): determined at run time from Steps.Prepare.Output.Residual
+Running step 'Prepare'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: prepared, residual 1.0
+openjd_output_var: Residual=1.0
+Process exited with code: 0
+Output Residual = 1.0
+Loop 'Relax' is ready
+Running loop 'Relax'
+Loop 'Relax' iteration 0: Residual = 1.0, Damping = 0.0015
+Running step 'Relax[0].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 0, damping 0.0015, residual 0.9985
+openjd_output_var: Residual=0.9985
+Process exited with code: 0
+Output Residual = 0.9985
+Loop 'Relax' iteration 0 outputs: FinalResidual = 0.9985, ResidualHistory = 0.9985
+Loop 'Relax' iteration 1: Residual = 0.9985, Damping = 0.0015
+Running step 'Relax[1].RelaxStep'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: step 1, damping 0.0015, residual 1.49775
+openjd_output_var: Residual=1.49775
+Process exited with code: 0
+Output Residual = 1.49775
+Loop 'Relax' failed at the boundary of iteration 1, in the next of loop variable 'Damping'
+Job output Iterations was not evaluated: it waits on Loop 'Relax', which failed
+Job output FinalResidual was not evaluated: it waits on Loop 'Relax', which failed
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: Relax mesh
+Duration: {DURATION}
+Chunks run: 3
+Job outputs:
+  Iterations: not evaluated (waits on Loop 'Relax', which failed)
+  FinalResidual: not evaluated (waits on Loop 'Relax', which failed)
+--- stderr
+ERROR: Loop 'Relax' failed at the boundary of iteration 1, in the next of loop variable 'Damping':
+Model validation error: 1 validation error for JobTemplate
+steps[1] -> loop -> variables[1] -> next:
+	Loop variable 'Damping': value 0.00075 is less than minimum 0.001
+  {{Loop.Damping * 0.5 if Steps.RelaxStep.Output.Residual > Loop.Residual else Loop.Damping}}

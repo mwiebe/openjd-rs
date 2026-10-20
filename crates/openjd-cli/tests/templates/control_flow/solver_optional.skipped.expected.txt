@@ -1,0 +1,37 @@
+$ openjd run {T}/solver_optional.yaml -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p Tolerance=2
+exit code: 0
+--- stdout
+Session start
+Running job 'Relax mesh'
+Loop 'Relax' is pending inputs:
+  Enabled: determined at run time from Steps.Prepare.Output.Residual
+  maxIterations: determined at run time (waiting for enableIf)
+  Start (initial values and first while): determined at run time from Steps.Prepare.Output.Residual and enableIf
+Running step 'Prepare'
+==============================================
+--------- Running Task
+==============================================
+Output:
+solver stub: prepared, residual 1.0
+openjd_output_var: Residual=1.0
+Process exited with code: 0
+Output Residual = 1.0
+Loop 'Relax' skipped (enableIf is false)
+Job output Iterations = 0
+Job output FinalResidual = 1.0
+Loop 'Relax' is skipped; it runs no iterations
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Relax mesh
+Duration: {DURATION}
+Chunks run: 1
+Job outputs:
+  Iterations = 0
+  FinalResidual = 1.0
+--- stderr
