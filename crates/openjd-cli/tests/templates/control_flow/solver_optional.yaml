@@ -1,0 +1,81 @@
+# RFC 0013 (openjd-specifications c3f583b), Basic Examples, "Iterative solver",
+# with an enableIf on Relax that skips it when Prepare's residual is already under
+# the tolerance. Its outputs are then null, so the job outputs fall back to 0
+# iterations and Prepare's residual.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Relax {{path(RawParam.Mesh).stem}}"
+parameterDefinitions:
+  - name: Mesh
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+  - name: WorkDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+  - name: Tolerance
+    type: FLOAT
+    default: 0.000001
+    minValue: 0
+  - name: StartDamping
+    type: FLOAT
+    default: 0.8
+jobOutputDefinitions:
+  - name: Iterations
+    type: INT
+    value: "{{0 if Steps.Relax.Output.ResidualHistory == null else len(Steps.Relax.Output.ResidualHistory)}}"
+  - name: FinalResidual
+    type: FLOAT
+    value: "{{Steps.Prepare.Output.Residual if Steps.Relax.Output.FinalResidual == null else Steps.Relax.Output.FinalResidual}}"
+steps:
+  - name: Prepare
+    outputVariables:
+      - name: Residual
+        type: FLOAT
+        minValue: 0
+    python:
+      script: |
+        from solver import prepare
+        residual = prepare({{repr_py(Param.Mesh)}}, state={{repr_py(Param.WorkDir / 'state.npz')}})
+        print(f"openjd_output_var: Residual={residual}")
+
+  - name: Relax
+    enableIf: "{{Steps.Prepare.Output.Residual >= Param.Tolerance}}"
+    dependencies:
+      - dependsOn: Prepare
+    loop:
+      variables:
+        - name: Residual
+          type: FLOAT
+          initial: "{{Steps.Prepare.Output.Residual}}"
+          next: "{{min(Loop.Residual, Steps.RelaxStep.Output.Residual)}}"
+        - name: Damping
+          type: FLOAT
+          minValue: 0.001       # the loop fails if the damping collapses
+          initial: "{{Param.StartDamping}}"
+          next: "{{Loop.Damping * 0.5 if Steps.RelaxStep.Output.Residual > Loop.Residual else Loop.Damping}}"
+      until: "{{Steps.RelaxStep.Output.Residual < Param.Tolerance}}"
+      maxIterations: 200
+      steps:
+        - name: RelaxStep
+          outputVariables:
+            - name: Residual
+              type: FLOAT
+              minValue: 0
+          python:
+            script: |
+              from solver import relax_step
+              # relax_step keeps the state file at its best so far, so a rejected step changes nothing.
+              residual = relax_step({{repr_py(Param.WorkDir / 'state.npz')}}, damping={{Loop.Damping}},
+                                    best={{Loop.Residual}})
+              print(f"openjd_output_var: Residual={residual}")
+    outputVariables:
+      - name: FinalResidual
+        type: FLOAT
+        collect: LAST
+        value: "{{Steps.RelaxStep.Output.Residual}}"
+      - name: ResidualHistory
+        type: LIST[FLOAT]
+        collect: APPEND
+        value: "{{Steps.RelaxStep.Output.Residual}}"

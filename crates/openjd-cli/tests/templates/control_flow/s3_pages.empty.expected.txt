@@ -1,0 +1,52 @@
+$ openjd run {T}/s3_pages.yaml -p Bucket=media -p Prefix=none/ -p WorkDir={W}/work
+$ s3 fixtures/s3_two_keys
+exit code: 0
+--- stdout
+Session start
+Running job 'Process s3://media/none/'
+Step 'ProcessPage' is pending inputs:
+  Enabled: yes
+  Tasks: determined at run time from Steps.ListObjects.RawOutput.Manifests
+  Host requirements: known
+Running loop 'ListObjects'
+Loop 'ListObjects' iteration 0: Token = ""
+Running step 'ListObjects[0].ListPage'
+==============================================
+--------- Running Task
+==============================================
+Output:
+openjd_output_var: Manifest="{W}/work/pages/page_0000.json"
+openjd_output_var: Count=0
+openjd_output_var: NextToken=""
+Process exited with code: 0
+Output Manifest = "{W}/work/pages/page_0000.json"
+Output Count = 0
+Output NextToken = ""
+Loop 'ListObjects' iteration 0 outputs: Manifests = "{W}/work/pages/page_0000.json", PageSizes = 0
+Loop 'ListObjects' succeeded after 1 iteration (while is false)
+Loop 'ListObjects' outputs: Manifests = ["{W}/work/pages/page_0000.json"], PageSizes = [0]
+Step 'ProcessPage': Tasks known (1 task)
+Step 'ProcessPage' is ready
+Job output ObjectCount = 0
+Running step 'ProcessPage'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Manifest(PATH) = {W}/work/pages/page_0000.json
+Output:
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Process s3://media/none/
+Duration: {DURATION}
+Chunks run: 2
+Job outputs:
+  ObjectCount = 0
+--- stderr

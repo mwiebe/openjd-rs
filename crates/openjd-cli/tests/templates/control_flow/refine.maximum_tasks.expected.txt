@@ -1,0 +1,50 @@
+$ openjd run {T}/refine.yaml -p Frames=1-4 --maximum-tasks 2 -p SceneFile={T}/fixtures/refine.scene -p OutputPattern={W}/out/beauty_####.exr -p OutputVideo={W}/out/beauty.mp4
+exit code: 1
+--- stdout
+Session start
+Running job 'Render refine until clean'
+Running loop 'Refine'
+Loop 'Refine' iteration 0: Samples = 64, Frames = [1, 2, 3, 4]
+Running step 'Refine[0].RenderPass'
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 1
+Output:
+render stub: frame 1 at 64 samples -> beauty_0001.exr (noise 0.01)
+Process exited with code: 0
+==============================================
+--------- Running Task
+==============================================
+Parameter values:
+Frame(INT) = 2
+Output:
+render stub: frame 2 at 64 samples -> beauty_0002.exr (noise 0.03)
+Process exited with code: 0
+Running step 'Refine[0].CheckPass'
+==============================================
+--------- Running Task
+==============================================
+Output:
+qc stub: frame 3 was not rendered
+Process exited with code: 1
+Loop 'Refine' failed: its body Step instance 'Refine[0].CheckPass' failed
+Step 'EncodeVideo' is blocked: its dependency 'Refine' failed
+Job output Passes was not evaluated: it waits on Loop 'Refine', which failed
+Job output FinalSamples was not evaluated: it waits on Loop 'Refine', which failed
+
+Session ended with errors.
+Local session ended.
+
+--- Results of local session ---
+
+Session ended with errors; see Task logs for details
+
+Job: Render refine until clean
+Duration: {DURATION}
+Chunks run: 3
+Job outputs:
+  Passes: not evaluated (waits on Loop 'Refine', which failed)
+  FinalSamples: not evaluated (waits on Loop 'Refine', which failed)
+--- stderr

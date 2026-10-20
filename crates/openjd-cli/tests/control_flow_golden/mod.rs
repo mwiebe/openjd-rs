@@ -2,8 +2,8 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Golden-file tests of `openjd` on the RFC 0011 and RFC 0012 (CONTROL_FLOW)
-//! sample templates and the plan's progressive binding templates.
+//! Golden-file tests of `openjd` on the RFC 0011, RFC 0012 and RFC 0013
+//! (CONTROL_FLOW) sample templates and the plan's progressive binding templates.
 //!
 //! Each case runs `openjd` on a template in `tests/templates/control_flow/`,
 //! normalizes the output, and compares it with `<case>.expected.txt` beside
@@ -52,7 +52,7 @@ fn copy_dir(from: &Path, to: &Path) {
 
 /// The output with each log line's relative timestamp removed, the template
 /// and scratch directories replaced by `{T}` and `{W}`, and the session
-/// duration replaced by `{DURATION}`.
+/// duration (also in `--output json`) replaced by `{DURATION}`.
 fn normalize(text: &str, dir: &str, scratch: &str) -> String {
     let mut out = String::new();
     for line in text.lines() {
@@ -71,6 +71,11 @@ fn normalize(text: &str, dir: &str, scratch: &str) -> String {
         let line = line.replace(scratch, "{W}").replace(dir, "{T}");
         let line = match line.strip_prefix("Duration: ") {
             Some(rest) if rest.ends_with(" seconds") => "Duration: {DURATION}".to_string(),
+            // `--output json`'s top-level field, which is indented two spaces.
+            _ if line.starts_with("  \"duration\": ") => {
+                let comma = if line.ends_with(',') { "," } else { "" };
+                format!("  \"duration\": {{DURATION}}{comma}")
+            }
             _ => line,
         };
         out.push_str(&line);
@@ -400,5 +405,168 @@ golden! {
         name: "progressive_let",
         args: &["run", "{T}/progressive_let.yaml"],
         env: NO_ENV, s3: None,
+    };
+    // RFC 0013 render-until-clean: frames 2 and 3 are noisy at 64 samples,
+    // frame 3 still at 128, and none at 256, so Refine runs 3 iterations.
+    refine: Case {
+        name: "refine",
+        args: &["run", "{T}/refine.yaml", "-p", "Frames=1-4",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    // MaxPasses=2: frame 3 is still noisy after 2 iterations, so Refine
+    // reaches maxIterations and fails, and EncodeVideo is blocked.
+    refine_max_passes: Case {
+        name: "refine.max_passes",
+        args: &["run", "{T}/refine.yaml", "-p", "Frames=1-4", "-p", "MaxPasses=2",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    // summary shows the loop's condition, bound, variables, outputs and body.
+    refine_summary: Case {
+        name: "refine.summary",
+        args: &["summary", "{T}/refine.yaml", "-p", "SceneFile={T}/fixtures/refine.scene"],
+        env: NO_ENV, s3: None,
+    };
+    // summary --step for the loop.
+    refine_summary_loop: Case {
+        name: "refine.summary_loop",
+        args: &["summary", "{T}/refine.yaml", "--step", "Refine",
+            "-p", "SceneFile={T}/fixtures/refine.scene"],
+        env: NO_ENV, s3: None,
+    };
+    // EncodeVideo run alone, with the loop's outputs given in their declared
+    // types: one value for LAST, the whole list for APPEND.
+    refine_step_inputs: Case {
+        name: "refine.step_inputs",
+        args: &["run", "{T}/refine.yaml", "--step", "EncodeVideo", "-p", "Frames=1-4",
+            "--step-inputs",
+            r#"{"Steps.Refine.Output.FinalSamples": 256, "Steps.Refine.Output.NoisyFrameCounts": [2, 1, 0], "Steps.Refine.Output.MeanNoise": [0.0275, 0.0225, 0.015]}"#,
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    // --maximum-tasks applies to each body Step instance: Refine[0].RenderPass
+    // runs 2 of its 4 Tasks. CheckPass reads none of RenderPass's outputs, so
+    // it still runs, finds frame 3 not rendered, and fails the loop.
+    refine_maximum_tasks: Case {
+        name: "refine.maximum_tasks",
+        args: &["run", "{T}/refine.yaml", "-p", "Frames=1-4", "--maximum-tasks", "2",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    // The flag rules for a loop: --tasks, --task-param and an explicit
+    // --maximum-tasks are rejected with --step naming the loop, and --step
+    // naming a body Step names its loop.
+    refine_loop_tasks: Case {
+        name: "refine.loop_tasks",
+        args: &["run", "{T}/refine.yaml", "--step", "Refine", "--tasks", "0",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    refine_loop_task_param: Case {
+        name: "refine.loop_task_param",
+        args: &["run", "{T}/refine.yaml", "--step", "Refine", "--task-param", "Frame=1",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    refine_loop_maximum_tasks: Case {
+        name: "refine.loop_maximum_tasks",
+        args: &["run", "{T}/refine.yaml", "--step", "Refine", "--maximum-tasks", "1",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    refine_body_step: Case {
+        name: "refine.body_step",
+        args: &["run", "{T}/refine.yaml", "--step", "CheckPass",
+            "-p", "SceneFile={T}/fixtures/refine.scene",
+            "-p", "OutputPattern={W}/out/beauty_####.exr", "-p", "OutputVideo={W}/out/beauty.mp4"],
+        env: NO_ENV, s3: None,
+    };
+    // RFC 0013 iterative solver: step 1 overshoots, which halves Damping, and
+    // the residual is under the tolerance after 8 iterations.
+    solver: Case {
+        name: "solver",
+        args: &["run", "{T}/solver.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work", "-p", "Tolerance=0.01"],
+        env: NO_ENV, s3: None,
+    };
+    // The same with --output json: the loop's record, with each iteration's
+    // values, and one record per body Step instance.
+    solver_json: Case {
+        name: "solver.json",
+        args: &["run", "{T}/solver.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work", "-p", "Tolerance=0.1", "--output", "json"],
+        env: NO_ENV, s3: None,
+    };
+    // The loop run alone, with its dependency's output given on the command line.
+    solver_step_inputs: Case {
+        name: "solver.step_inputs",
+        args: &["run", "{T}/solver.yaml", "--step", "Relax",
+            "--step-inputs", r#"{"Steps.Prepare.Output.Residual": 0.5}"#,
+            "-p", "Mesh={T}/fixtures/mesh.txt", "-p", "WorkDir={W}/work", "-p", "Tolerance=0.1"],
+        env: NO_ENV, s3: None,
+    };
+    // RelaxStep fails in iteration 2, which fails the loop: the earlier
+    // iterations' values are shown, and the job outputs are not evaluated.
+    solver_body_fails: Case {
+        name: "solver.body_fails",
+        args: &["run", "{T}/solver.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work", "-p", "Tolerance=0.01"],
+        env: &[("OPENJD_GOLDEN_SOLVER_FAIL_STEP", "2")], s3: None,
+    };
+    // StartDamping=0.0015: the overshoot in iteration 1 halves Damping to
+    // 0.00075, under its minValue, so Damping's next fails the loop.
+    solver_damping_collapses: Case {
+        name: "solver.damping_collapses",
+        args: &["run", "{T}/solver.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work", "-p", "StartDamping=0.0015"],
+        env: NO_ENV, s3: None,
+    };
+    // Prepare's residual, 1.0, is under Tolerance=2, so Relax's enableIf is
+    // false at run time: the loop is skipped, and --output json shows both of
+    // its outputs as null (not [] for the APPEND one).
+    solver_optional_skipped: Case {
+        name: "solver_optional.skipped",
+        args: &["run", "{T}/solver_optional.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work", "-p", "Tolerance=2", "--output", "json"],
+        env: NO_ENV, s3: None,
+    };
+    // summary shows a loop pending on its dependency for its enableIf and start.
+    solver_optional_summary: Case {
+        name: "solver_optional.summary",
+        args: &["summary", "{T}/solver_optional.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
+            "-p", "WorkDir={W}/work"],
+        env: NO_ENV, s3: None,
+    };
+    // RFC 0013 paginated listing: three keys in pages of two, so ListPage runs
+    // twice, and ProcessPage fans out over the two manifests.
+    s3_pages_two_pages: Case {
+        name: "s3_pages.two_pages",
+        args: &["run", "{T}/s3_pages.yaml",
+            "-p", "Bucket=media", "-p", "Prefix=shots/", "-p", "WorkDir={W}/work"],
+        env: &[("OPENJD_GOLDEN_S3_PAGE_SIZE", "2")], s3: Some("s3_two_keys"),
+    };
+    // An empty prefix: one ListPage instance reports Count 0, and ProcessPage
+    // runs one Task over an empty manifest.
+    s3_pages_empty: Case {
+        name: "s3_pages.empty",
+        args: &["run", "{T}/s3_pages.yaml",
+            "-p", "Bucket=media", "-p", "Prefix=none/", "-p", "WorkDir={W}/work"],
+        env: NO_ENV, s3: Some("s3_two_keys"),
+    };
+    // Without "Loop.Iteration == 0 or", the first while is false: zero
+    // iterations, empty APPEND outputs, and a zero-Task ProcessPage.
+    s3_pages_zero: Case {
+        name: "s3_pages_zero",
+        args: &["run", "{T}/s3_pages_zero.yaml",
+            "-p", "Bucket=media", "-p", "Prefix=shots/", "-p", "WorkDir={W}/work"],
+        env: NO_ENV, s3: Some("s3_two_keys"),
     };
 }

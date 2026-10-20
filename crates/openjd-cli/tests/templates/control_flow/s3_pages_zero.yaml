@@ -1,0 +1,86 @@
+# RFC 0013 (openjd-specifications c3f583b), Basic Examples, "Paginated listing,
+# then fan out", with "Loop.Iteration == 0 or" removed from while. The first
+# while reads the empty initial Token and is false, so the loop has zero
+# iterations: Manifests and PageSizes are [], and ProcessPage has no Tasks.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Process s3://{{Param.Bucket}}/{{Param.Prefix}}"
+parameterDefinitions:
+  - name: Bucket
+    type: STRING
+  - name: Prefix
+    type: STRING
+  - name: WorkDir
+    type: PATH
+    objectType: DIRECTORY
+    dataFlow: OUT
+jobOutputDefinitions:
+  - name: ObjectCount
+    type: INT
+    value: "{{sum(Steps.ListObjects.Output.PageSizes)}}"
+steps:
+  - name: ListObjects
+    loop:
+      variables:
+        - name: Token
+          type: STRING
+          initial: "{{''}}"
+          next: "{{Steps.ListPage.Output.NextToken}}"
+      # The first request has no token, and the last page returns none.
+      while: "{{Loop.Token != ''}}"
+      maxIterations: 1000
+      steps:
+        - name: ListPage
+          outputVariables:
+            - name: Manifest
+              type: PATH
+              objectType: FILE
+            - name: Count
+              type: INT
+              minValue: 0
+              maxValue: 1000
+            - name: NextToken
+              type: STRING
+          python:
+            script: |
+              import boto3, json, os
+              request = {"Bucket": {{repr_py(Param.Bucket)}}, "Prefix": {{repr_py(Param.Prefix)}}, "MaxKeys": 1000}
+              token = {{repr_py(Loop.Token)}}
+              if token:
+                  request["ContinuationToken"] = token
+              page = boto3.client("s3").list_objects_v2(**request)
+              keys = [o["Key"] for o in page.get("Contents", [])]
+              manifest = {{repr_py((Param.WorkDir / 'pages' / 'page_%04d.json').with_number(Loop.Iteration))}}
+              os.makedirs(os.path.dirname(manifest), exist_ok=True)
+              with open(manifest, "w", encoding="utf-8") as f:
+                  json.dump(keys, f)
+              print("openjd_output_var: Manifest=" + json.dumps(manifest))
+              print(f"openjd_output_var: Count={len(keys)}")
+              print("openjd_output_var: NextToken=" + json.dumps(page.get("NextContinuationToken", "")))
+    outputVariables:
+      - name: Manifests
+        type: LIST[PATH]
+        objectType: FILE
+        collect: APPEND
+        value: "{{Steps.ListPage.RawOutput.Manifest}}"
+      - name: PageSizes
+        type: LIST[INT]
+        collect: APPEND
+        value: "{{Steps.ListPage.Output.Count}}"
+
+  - name: ProcessPage
+    dependencies:
+      - dependsOn: ListObjects
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Manifest
+          type: PATH
+          range: "{{Steps.ListObjects.RawOutput.Manifests}}"
+    python:
+      script: |
+        import json
+        from pipeline import process_key
+        with open({{repr_py(Task.Param.Manifest)}}, encoding="utf-8") as f:
+            keys = json.load(f)
+        for key in keys:
+            process_key({{repr_py(Param.Bucket)}}, key)
