@@ -38,8 +38,8 @@ pub struct StepDependencyNode {
 }
 
 pub struct StepDependencyEdge {
-    pub origin: usize,            // Index of dependency (upstream step)
-    pub dependent: usize,         // Index of dependent (downstream step)
+    pub origin: usize,            // Node index of the dependency (upstream Step or loop)
+    pub dependent: usize,         // Node index of the dependent (downstream Step or loop)
 }
 ```
 
@@ -53,13 +53,15 @@ pub struct StepDependencyEdge {
    an error.
 2. Builds `name_to_index` lookup map
 3. For each node's dependencies, creates edges from the dependency target to the node
-4. Errors on unknown dependency targets (step name not found)
+4. Errors on unknown dependency targets (`Step '<S>' depends on unknown step '<D>'`, or
+   `Loop '<L>' ...` for a loop)
 
 `topo_sorted()` returns node indices; `node(i).kind` tells a Step from a loop.
 
 ## Topological Sort
 
-`topo_sorted()` returns step indices in dependency-respecting order using iterative
+`topo_sorted()` returns node indices (for a Job without loops, indices into `job.steps`)
+in dependency-respecting order using iterative
 DFS-based topological sort with three-state marking.
 
 **Algorithm:**

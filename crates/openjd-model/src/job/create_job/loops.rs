@@ -300,35 +300,54 @@ fn to_json(value: &ExprValue) -> serde_json::Value {
     }
 }
 
-/// The bytes of the loop's current values: each variable's value and each
-/// output's value so far, as JSON. A `LAST` output with no value yet (`null`)
-/// counts nothing.
-fn values_size<'a>(values: impl Iterator<Item = &'a ExprValue>) -> usize {
-    values
-        .filter(|v| !matches!(v, ExprValue::Null))
-        .map(|v| to_json(v).to_string().len())
-        .sum()
+/// The bytes of `value` as JSON.
+fn json_len(value: &ExprValue) -> usize {
+    to_json(value).to_string().len()
+}
+
+/// The bytes of a loop's current values (RFC 0013 §Limits item 4, plan A21):
+/// each variable's value as JSON; each `LAST` output's value as JSON, or
+/// nothing while it is `null` (no value yet); and each `APPEND` output's
+/// elements, each as JSON, so an output with no elements yet counts nothing.
+fn values_size(
+    job_loop: &job::Loop,
+    variables: &IndexMap<String, ExprValue>,
+    outputs: &IndexMap<String, ExprValue>,
+) -> usize {
+    let vars: usize = variables.values().map(json_len).sum();
+    let outs: usize = job_loop
+        .output_variables
+        .iter()
+        .filter_map(|o| outputs.get(&o.name).map(|v| (o, v)))
+        .map(|(o, v)| match (o.collect, v) {
+            (_, ExprValue::Null) => 0,
+            (OutputCollectMode::Append, v) => v
+                .list_elements()
+                .map_or_else(|| json_len(v), |e| e.iter().map(json_len).sum()),
+            (_, v) => json_len(v),
+        })
+        .sum();
+    vars + outs
 }
 
 /// Check RFC 0013 §Limits item 4, `CallerLimits::max_loop_value_bytes`, on
 /// `variables` and `outputs`. The error is at the loop's path.
 fn check_size(
     ctx: &ValidationContext,
-    l: &StepLoop,
-    entry: usize,
+    job_loop: &job::Loop,
     variables: &IndexMap<String, ExprValue>,
     outputs: &IndexMap<String, ExprValue>,
 ) -> Result<(), ModelError> {
     let Some(max) = ctx.caller_limits.max_loop_value_bytes else {
         return Ok(());
     };
-    let total = values_size(variables.values().chain(outputs.values()));
+    let total = values_size(job_loop, variables, outputs);
     if total > max {
         return Err(error_at(
-            &entry_path(entry),
+            &entry_path(job_loop.entry_index),
             format!(
                 "Loop '{}': its loop variable and loop output values total {total} bytes, over the limit of {max} bytes.",
-                l.name
+                job_loop.name
             ),
         ));
     }
@@ -582,8 +601,7 @@ fn evaluate_start(
     }
     check_size(
         cx.ctx,
-        l,
-        entry,
+        job_loop,
         &initial,
         &job::step_loop_empty_outputs(job_loop),
     )?;
@@ -731,17 +749,78 @@ fn running_loop<'a>(
             job_loop.name, bound.max_iterations, progress.iteration
         )));
     }
-    if let Some(var) = job_loop
-        .variables
-        .iter()
-        .find(|v| !progress.values.contains_key(&v.name))
+    check_progress(job_loop, progress)?;
+    Ok((job_loop, l, bound))
+}
+
+/// Check that `progress` has the shape a loop function gave it: exactly the
+/// loop's variables, each of its declared type, and exactly its outputs, a
+/// `LAST` output `null` or of its type and an `APPEND` output a list of its
+/// type. A value of the right type is not re-checked against its
+/// constraints.
+fn check_progress(job_loop: &job::Loop, progress: &LoopProgress) -> Result<(), ModelError> {
+    let refuse = |what: String| {
+        ModelError::Compatibility(format!(
+            "the progress of loop '{}' {what}; pass the progress the loop functions returned.",
+            job_loop.name
+        ))
+    };
+    let has_type = |value: &ExprValue, decl: &OutputVariable| {
+        value.expr_type() == decl.param_type.expr_type()
+            || (value.is_list()
+                && value.list_elements().is_some_and(|e| e.is_empty())
+                && decl.param_type.expr_type().list_element_type().is_some())
+    };
+    for decl in &job_loop.variables {
+        match progress.values.get(&decl.name) {
+            None => return Err(refuse(format!("has no value for variable '{}'", decl.name))),
+            Some(v) if !has_type(v, decl) => {
+                return Err(refuse(format!(
+                    "has a value of type {} for variable '{}', which is {}",
+                    v.expr_type(),
+                    decl.name,
+                    decl.param_type.as_spec_str()
+                )))
+            }
+            Some(_) => {}
+        }
+    }
+    if let Some(name) = progress
+        .values
+        .keys()
+        .find(|k| !job_loop.variables.iter().any(|v| &v.name == *k))
     {
-        return Err(ModelError::Compatibility(format!(
-            "the progress of loop '{}' has no value for variable '{}'.",
-            job_loop.name, var.name
+        return Err(refuse(format!(
+            "has a value for '{name}', which is not a variable of the loop"
         )));
     }
-    Ok((job_loop, l, bound))
+    for decl in &job_loop.output_variables {
+        let append = decl.collect == OutputCollectMode::Append;
+        match progress.outputs.get(&decl.name) {
+            None => return Err(refuse(format!("has no value for output '{}'", decl.name))),
+            Some(ExprValue::Null) if !append => {}
+            Some(v) if has_type(v, decl) => {}
+            Some(v) => {
+                return Err(refuse(format!(
+                    "has a value of type {} for {} output '{}', which is {}",
+                    v.expr_type(),
+                    decl.collect.as_spec_str(),
+                    decl.name,
+                    decl.param_type.as_spec_str()
+                )))
+            }
+        }
+    }
+    if let Some(name) = progress
+        .outputs
+        .keys()
+        .find(|k| job_loop.output_variable(k).is_none())
+    {
+        return Err(refuse(format!(
+            "has a value for '{name}', which is not an output of the loop"
+        )));
+    }
+    Ok(())
 }
 
 /// The body Steps' indices in dependency order, ties broken by body order.
@@ -825,8 +904,9 @@ fn body_site<'a>(
 /// finally (RFC 0013 §Failure). Its `BindingError::step` is the instance's
 /// name, `<Loop>[<N>].<Step>`. Caller errors are a `BindingError` whose error
 /// is a [`ModelError::Compatibility`]: a loop that is not bound or has zero
-/// iterations, an iteration at or past `maxIterations`, a `progress` without a
-/// value for a variable, and the errors of [`advance_loop_binding`].
+/// iterations, an iteration at or past `maxIterations`, a `progress` whose
+/// variables or outputs are not the loop's or not of their declared types,
+/// and the errors of [`advance_loop_binding`].
 #[allow(clippy::too_many_arguments)]
 pub fn start_iteration(
     job_template: &JobTemplate,
@@ -1159,7 +1239,7 @@ pub fn evaluate_iteration_boundary(
         };
         outputs.insert(ov.name().to_string(), new);
     }
-    check_size(ctx, l, entry, &progress.values, &outputs)
+    check_size(ctx, job_loop, &progress.values, &outputs)
         .map_err(|e| fail(LoopErrorField::ValueSize, e))?;
 
     let succeed = |outputs: IndexMap<String, ExprValue>, ended_by: LoopEnd| {
@@ -1204,7 +1284,7 @@ pub fn evaluate_iteration_boundary(
         })?;
         values.insert(var.name().to_string(), value);
     }
-    check_size(ctx, l, entry, &values, &outputs).map_err(|e| fail(LoopErrorField::ValueSize, e))?;
+    check_size(ctx, job_loop, &values, &outputs).map_err(|e| fail(LoopErrorField::ValueSize, e))?;
 
     // 4. while, with the new values and Loop.Iteration N + 1.
     if let Some(condition) = &l.loop_definition.while_condition {
@@ -1291,9 +1371,10 @@ pub fn end_without_iterations(job: &job::Job, loop_index: usize) -> Result<LoopR
         errors: vec![ModelError::Compatibility(message)],
     };
     let Some(job_loop) = job.loops.get(loop_index) else {
+        let n = job.loops.len();
         return Err(misuse(format!(
-            "the Job has {} loops, so it has no loop {loop_index}.",
-            job.loops.len()
+            "the Job has {n} loop{}, so it has no loop {loop_index}.",
+            if n == 1 { "" } else { "s" }
         )));
     };
     match &job_loop.binding {

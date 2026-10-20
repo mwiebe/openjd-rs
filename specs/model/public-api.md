@@ -2231,8 +2231,8 @@ the same key have identical parameters, so which gets which index is not observa
 ```rust
 #[derive(Debug)]
 pub struct StepDependencyEdge {
-    pub origin: usize,     // index of the depended-upon step
-    pub dependent: usize,  // index of the depending step
+    pub origin: usize,     // node index of the depended-upon Step or loop
+    pub dependent: usize,  // node index of the depending Step or loop
 }
 
 /// Whether a node is a top-level Step or a loop (CONTROL_FLOW, RFC 0013).
