@@ -575,7 +575,8 @@ impl serde::Serialize for ModelExtension {
 /// Caller limits can only add restrictions, never relax spec-defined ones.
 #[derive(Debug, Clone, Default)]
 pub struct CallerLimits {
-    /// Maximum number of steps in a job template.
+    /// Maximum number of steps in a job template. Each top-level Step, each
+    /// loop, and each loop body Step (`CONTROL_FLOW`, RFC 0013) counts once.
     pub max_step_count: Option<usize>,
     /// Maximum number of environments (job + all step environments combined)
     /// in a job template.

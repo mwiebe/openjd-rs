@@ -2,21 +2,27 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The `Steps.*` scope of `CONTROL_FLOW` (RFC 0011 §The `Steps.*` scope).
+//! The `Steps.*` scope of `CONTROL_FLOW` (RFC 0011 §The `Steps.*` scope), with
+//! the loop additions of RFC 0013: the `Loop.*` scope (RFC 0013 §The `Loop.*`
+//! scope) and `Steps.*` in and around a loop (RFC 0013 §`Steps.*` in and
+//! around a loop).
 //!
 //! Two things live here, shared by template validation (pass 8) and the
 //! job-creation re-checks in `create_job`:
 //!
-//! - [`add_steps_scope`] seeds a Step's symbol table with the `Steps.*`
-//!   symbols of its direct dependencies, as `unresolved` values of RFC 0011's
-//!   types, so every expression that reads one type-checks with EXPR's
-//!   progressive evaluator.
-//! - [`steps_ref_errors`] scans the symbols a format string or `let`
-//!   binding reads for the `Steps.` prefix and explains each reference that
-//!   is not available, instead of EXPR's generic "Undefined variable". The
-//!   scan is static, so it also catches a reference in a branch that is
-//!   never evaluated.
+//! - [`add_control_flow_scope`] seeds a field's symbol table with the
+//!   `Steps.*` symbols of the Steps and loops it may read, and, in a loop's
+//!   body Steps and the loop's own expressions, with the `Loop.*` and
+//!   `RawLoop.*` symbols, all as `unresolved` values of the RFCs' types, so
+//!   every expression that reads one type-checks with EXPR's progressive
+//!   evaluator.
+//! - [`control_flow_ref_errors`] scans the symbols a format string or `let`
+//!   binding reads for the `Steps.`, `Loop.`, and `RawLoop.` prefixes and
+//!   explains each reference that is not available, instead of EXPR's
+//!   generic "Undefined variable". The scan is static, so it also catches a
+//!   reference in a branch that is never evaluated.
 
+use std::fmt;
 use std::sync::LazyLock;
 
 use openjd_expr::symbol_table::SymbolTable;
@@ -24,18 +30,21 @@ use openjd_expr::types::ExprType;
 use openjd_expr::value::ExprValue;
 use regex::Regex;
 
-use crate::template::{JobTemplate, StepTemplate, TaskParameterDefinition};
-use crate::types::JobParameterType;
+use crate::template::{
+    JobTemplate, StepEntry, StepLoop, StepTemplate, StepTemplateRef, TaskParameterDefinition,
+};
+use crate::types::{JobParameterType, OutputCollectMode};
 
 /// Where a format string is resolved, which decides whether the path-typed
-/// `Steps.*.Output.*` and `Steps.*.TaskParam.*` values are available.
+/// `Steps.*.Output.*`, `Steps.*.TaskParam.*`, and `Loop.*` values are
+/// available.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StepsFieldScope {
     /// Resolved on the worker host (`@fmtstring[host]`): every symbol.
     Host,
-    /// Resolved before a Session exists (job creation or step input
-    /// binding): a value whose type is or contains `path` only through
-    /// `RawOutput` and `TaskRawParam`.
+    /// Resolved before a Session exists (job creation, step input binding,
+    /// or an iteration boundary): a value whose type is or contains `path`
+    /// only through `RawOutput`, `TaskRawParam`, and `RawLoop`.
     Template,
 }
 
@@ -52,6 +61,140 @@ fn is_identifier(name: &str) -> bool {
 /// The members of a `Steps.<StepName>` table.
 const MEMBERS: [&str; 4] = ["Output", "RawOutput", "TaskParam", "TaskRawParam"];
 
+/// Where a `<StepTemplate>` is in its Job Template: its entry in `steps`,
+/// and, for a body Step, its index in that loop's body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StepLocation {
+    /// The index of its entry in `steps`: its own, or its loop's.
+    pub(crate) entry: usize,
+    /// Its index in its loop's body, `None` for a top-level Step.
+    pub(crate) body: Option<usize>,
+}
+
+impl StepLocation {
+    /// A top-level Step, entry `entry` of `steps`.
+    pub(crate) fn top(entry: usize) -> Self {
+        Self { entry, body: None }
+    }
+
+    /// The location of `st`.
+    pub(crate) fn of(st: &StepTemplateRef<'_>) -> Self {
+        Self {
+            entry: st.entry_index,
+            body: st.body_index,
+        }
+    }
+
+    /// The Step at this location, and its loop for a body Step.
+    fn resolve(self, jt: &JobTemplate) -> Option<(&StepTemplate, Option<&StepLoop>)> {
+        match (jt.steps.get(self.entry)?, self.body) {
+            (StepEntry::Step(s), None) => Some((s, None)),
+            (StepEntry::Loop(l), Some(j)) => Some((l.body().get(j)?, Some(l))),
+            _ => None,
+        }
+    }
+}
+
+/// One of a loop's own expression fields (RFC 0013 §`<StepLoop>` and
+/// §`<LoopDefinition>`), which decides the `Steps.*` and `Loop.*` symbols
+/// available in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoopField {
+    /// `enableIf`: the loop's dependencies; no `Loop.*`.
+    EnableIf,
+    /// `maxIterations`: neither `Steps.*` nor `Loop.*`.
+    MaxIterations,
+    /// A variable's `initial`: the loop's dependencies; no `Loop.*`.
+    Initial,
+    /// `while`: the loop's dependencies and `Loop.*`.
+    While,
+    /// `until`: the loop's dependencies, its body Steps, and `Loop.*`.
+    Until,
+    /// A variable's `next`: as `until`.
+    Next,
+    /// A loop output's `value`: as `until`.
+    OutputValue,
+}
+
+impl LoopField {
+    /// Whether the field may read `Steps.*` at all.
+    fn reads_steps(self) -> bool {
+        self != Self::MaxIterations
+    }
+
+    /// Whether the field may read the loop's body Steps.
+    fn reads_body(self) -> bool {
+        matches!(self, Self::Until | Self::Next | Self::OutputValue)
+    }
+
+    /// Whether the field may read `Loop.*` and `RawLoop.*`.
+    fn reads_loop(self) -> bool {
+        matches!(
+            self,
+            Self::While | Self::Until | Self::Next | Self::OutputValue
+        )
+    }
+}
+
+impl fmt::Display for LoopField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::EnableIf => "enableIf",
+            Self::MaxIterations => "maxIterations",
+            Self::Initial => "initial",
+            Self::While => "while",
+            Self::Until => "until",
+            Self::Next => "next",
+            Self::OutputValue => "output value",
+        })
+    }
+}
+
+/// What reads a field, which decides the `Steps.*` and `Loop.*` symbols
+/// available in it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StepsReader {
+    /// A field where `Steps.*` is not available at all (the job name,
+    /// `jobEnvironments`).
+    None,
+    /// A field of a Step: its direct dependencies' symbols, and for a body
+    /// Step also its loop's dependencies' symbols and `Loop.*`.
+    Step(StepLocation),
+    /// A loop's own field: see [`LoopField`].
+    Loop {
+        /// The loop's entry in `steps`.
+        entry: usize,
+        /// Which of its fields.
+        field: LoopField,
+    },
+    /// A `<JobOutputDefinition>`'s `value`: any top-level Step's or loop's
+    /// symbols.
+    JobOutput,
+}
+
+/// A Step or a loop, as the producer of `Steps.<Name>.*` symbols.
+#[derive(Debug, Clone, Copy)]
+enum Producer<'a> {
+    Step(&'a StepTemplate),
+    Loop(&'a StepLoop),
+}
+
+impl<'a> Producer<'a> {
+    fn of(entry: &'a StepEntry) -> Self {
+        match entry {
+            StepEntry::Step(s) => Self::Step(s),
+            StepEntry::Loop(l) => Self::Loop(l),
+        }
+    }
+
+    fn name(self) -> &'a str {
+        match self {
+            Self::Step(s) => &s.name,
+            Self::Loop(l) => &l.name,
+        }
+    }
+}
+
 /// The expression type of one Task's value of a Task parameter: `U` in the
 /// RFC 0011 table. A `CHUNK[INT]` parameter is `int`, because the list has one
 /// element per Task, not per chunk.
@@ -62,6 +205,14 @@ fn task_param_type(tp: &TaskParameterDefinition) -> ExprType {
         TaskParameterDefinition::STRING(_) => ExprType::STRING,
         TaskParameterDefinition::PATH(_) => ExprType::PATH,
     }
+}
+
+fn optional(t: ExprType) -> ExprType {
+    ExprType::union(vec![t, ExprType::NULLTYPE])
+}
+
+fn is_path_type(ty: JobParameterType) -> bool {
+    matches!(ty, JobParameterType::Path | JobParameterType::ListPath)
 }
 
 /// Wrap one Task's value type `t` into the type of the `Steps.*` symbol for
@@ -75,7 +226,7 @@ fn shape(producer: &StepTemplate, t: ExprType) -> ExprType {
         t
     };
     if producer.enable_if.is_some() {
-        ExprType::union(vec![t, ExprType::NULLTYPE])
+        optional(t)
     } else {
         t
     }
@@ -83,15 +234,39 @@ fn shape(producer: &StepTemplate, t: ExprType) -> ExprType {
 
 /// The symbol type of `Steps.<P>.Output.<name>` (and `RawOutput`), with
 /// whether its value is or contains `path`.
-fn output_symbol(producer: &StepTemplate, name: &str) -> Option<(ExprType, bool)> {
-    let ov = producer
-        .output_variables
-        .as_deref()?
+fn output_symbol(producer: Producer<'_>, name: &str) -> Option<(ExprType, bool)> {
+    match producer {
+        Producer::Step(step) => {
+            let ov = step
+                .output_variables
+                .as_deref()?
+                .iter()
+                .find(|ov| ov.name() == name)?;
+            let ty = ov.job_param_type();
+            Some((shape(step, ty.expr_type()), is_path_type(ty)))
+        }
+        Producer::Loop(l) => loop_output_symbol(l, name),
+    }
+}
+
+/// The symbol type of loop output `name` of `l`, by RFC 0013 §`Steps.*` in
+/// and around a loop's table: a `LAST` output is `T` for an `until` loop and
+/// `T?` for a `while` loop; an `APPEND` output is the declared list type;
+/// and both are optional in a loop with `enableIf`. A loop has no Tasks, so
+/// its outputs are never wrapped in a per-Task list. An output whose
+/// `collect` is missing or `ONCE`, which validation rejects, is typed as
+/// `LAST`.
+fn loop_output_symbol(l: &StepLoop, name: &str) -> Option<(ExprType, bool)> {
+    let ov = l
+        .output_variables_list()
         .iter()
         .find(|ov| ov.name() == name)?;
     let ty = ov.job_param_type();
-    let is_path = matches!(ty, JobParameterType::Path | JobParameterType::ListPath);
-    Some((shape(producer, ty.expr_type()), is_path))
+    let append = ov.collect() == Some(OutputCollectMode::Append);
+    let is_optional =
+        l.enable_if.is_some() || (!append && l.loop_definition.while_condition.is_some());
+    let t = ty.expr_type();
+    Some((if is_optional { optional(t) } else { t }, is_path_type(ty)))
 }
 
 /// The symbol type of `Steps.<P>.TaskParam.<name>` (and `TaskRawParam`),
@@ -107,71 +282,191 @@ fn task_param_symbol(producer: &StepTemplate, name: &str) -> Option<(ExprType, b
     Some((shape(producer, task_param_type(tp)), is_path))
 }
 
-/// The Steps whose `Steps.*` symbols Step `step_index` may read: its direct
-/// whole-Step dependencies that exist, are not the Step itself, and have an
-/// `<Identifier>` name. (Structure rejects a duplicate dependency.)
-fn visible_producers(jt: &JobTemplate, step_index: usize) -> Vec<&StepTemplate> {
-    let step = &jt.steps[step_index];
-    step.dependencies
+/// The top-level entry named `name`.
+fn top_level<'a>(jt: &'a JobTemplate, name: &str) -> Option<(usize, Producer<'a>)> {
+    jt.steps
         .iter()
-        .flatten()
-        .map(|dep| dep.depends_on.as_str())
-        .filter(|name| *name != step.name && is_identifier(name))
-        .filter_map(|name| jt.steps.iter().find(|s| s.name == name))
+        .enumerate()
+        .find(|(_, e)| e.name() == name)
+        .map(|(i, e)| (i, Producer::of(e)))
+}
+
+/// The top-level entries that `deps` name, other than `own` and those
+/// without an `<Identifier>` name.
+fn top_level_producers<'a>(
+    jt: &'a JobTemplate,
+    deps: impl Iterator<Item = &'a str>,
+    own: &str,
+) -> Vec<Producer<'a>> {
+    deps.filter(|name| *name != own && is_identifier(name))
+        .filter_map(|name| top_level(jt, name).map(|(_, p)| p))
         .collect()
 }
 
-/// Seed `symtab` with the `Steps.*` symbols that Step `step_index` may read
-/// in a field resolved in `scope`, each an `unresolved` value of the type
-/// RFC 0011 §The `Steps.*` scope table gives it.
+fn dependency_names(
+    deps: Option<&[crate::template::StepDependency]>,
+) -> impl Iterator<Item = &str> {
+    deps.into_iter().flatten().map(|d| d.depends_on.as_str())
+}
+
+/// The Steps and loops whose `Steps.*` symbols `reader` may read (RFC 0011
+/// §The `Steps.*` scope, RFC 0013 §`Steps.*` in and around a loop):
+///
+/// - a top-level Step: its direct whole-Step dependencies;
+/// - a body Step of loop `L`: the body Steps it depends on, and `L`'s
+///   dependencies;
+/// - a loop's `enableIf`, `while`, and each `initial`: its dependencies;
+/// - a loop's `until`, `next`, and output `value`s: its dependencies and
+///   every body Step;
+/// - a job output: every top-level Step and loop.
+///
+/// A producer must exist, not be the reader itself, and have an
+/// `<Identifier>` name. (Structure rejects a duplicate dependency.)
+fn visible_producers(jt: &JobTemplate, reader: StepsReader) -> Vec<Producer<'_>> {
+    match reader {
+        StepsReader::None => Vec::new(),
+        StepsReader::JobOutput => jt
+            .steps
+            .iter()
+            .filter(|e| is_identifier(e.name()))
+            .map(Producer::of)
+            .collect(),
+        StepsReader::Step(loc) => {
+            let Some((step, step_loop)) = loc.resolve(jt) else {
+                return Vec::new();
+            };
+            let own_deps = dependency_names(step.dependencies.as_deref());
+            match step_loop {
+                None => top_level_producers(jt, own_deps, &step.name),
+                Some(l) => {
+                    let mut producers: Vec<Producer<'_>> = own_deps
+                        .filter(|name| *name != step.name && is_identifier(name))
+                        .filter_map(|name| l.body().iter().find(|s| s.name == name))
+                        .map(Producer::Step)
+                        .collect();
+                    producers.extend(top_level_producers(
+                        jt,
+                        dependency_names(l.dependencies.as_deref()),
+                        &l.name,
+                    ));
+                    producers
+                }
+            }
+        }
+        StepsReader::Loop { entry, field } => {
+            let Some(StepEntry::Loop(l)) = jt.steps.get(entry) else {
+                return Vec::new();
+            };
+            if !field.reads_steps() {
+                return Vec::new();
+            }
+            let mut producers =
+                top_level_producers(jt, dependency_names(l.dependencies.as_deref()), &l.name);
+            if field.reads_body() {
+                producers.extend(
+                    l.body()
+                        .iter()
+                        .filter(|s| is_identifier(&s.name))
+                        .map(Producer::Step),
+                );
+            }
+            producers
+        }
+    }
+}
+
+/// The loop whose `Loop.*` and `RawLoop.*` symbols `reader` may read (RFC
+/// 0013 §The `Loop.*` scope): a body Step's loop, and the loop itself in its
+/// `while`, `until`, `next`, and output `value`s.
+fn readable_loop(jt: &JobTemplate, reader: StepsReader) -> Option<&StepLoop> {
+    match reader {
+        StepsReader::Step(StepLocation {
+            entry,
+            body: Some(_),
+        }) => jt.steps.get(entry)?.as_loop(),
+        StepsReader::Loop { entry, field } if field.reads_loop() => jt.steps.get(entry)?.as_loop(),
+        _ => None,
+    }
+}
+
+/// Seed `symtab` with the `Steps.*` and `Loop.*` symbols available to
+/// `reader` in a field resolved in `scope`, each an `unresolved` value of the
+/// type the RFCs give it.
 ///
 /// For each visible producer `P` (see [`visible_producers`]):
 /// `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of its output
-/// variables, and, when it has a `parameterSpace`, `Steps.P.TaskParam.<N>`
-/// and `Steps.P.TaskRawParam.<N>` for each Task parameter. The `Raw` forms
-/// have the same types as the others. In [`StepsFieldScope::Template`], an
-/// `Output` or `TaskParam` whose type is or contains `path` is left out:
-/// only its `Raw` form is available there.
+/// variables (a loop's are its loop outputs), and, for a Step with a
+/// `parameterSpace`, `Steps.P.TaskParam.<N>` and `Steps.P.TaskRawParam.<N>`
+/// for each Task parameter. For the readable loop `L` (see
+/// [`readable_loop`]): `Loop.Iteration` (`int`), and `Loop.<V>` and
+/// `RawLoop.<V>` for each of its variables. The `Raw` forms have the same
+/// types as the others. In [`StepsFieldScope::Template`], an `Output`,
+/// `TaskParam`, or `Loop` symbol whose type is or contains `path` is left
+/// out: only its `Raw` form is available there.
 ///
 /// A key the table already holds is left as it is, so step input binding can
-/// seed placeholders around the `Steps.*` values that are concrete.
+/// seed placeholders around the values that are concrete.
 ///
 /// Never call this for the job name, `jobEnvironments`, or an Environment
-/// Template: `Steps.*` is not available there.
+/// Template: neither `Steps.*` nor `Loop.*` is available there.
 ///
 /// `Err` only when a key collides with an existing scalar entry. No user
-/// symbol can start with the uppercase `Steps` root (a `let` name starts
-/// lowercase), and only `<Identifier>`-named producers are seeded, so
-/// `Steps.<P>` never contains a dot that could make one producer's table
-/// overlap another's (a Step named `A.Output` would otherwise collide with
-/// Step `A`'s output `Output`).
+/// symbol can start with the uppercase `Steps`, `Loop`, or `RawLoop` roots (a
+/// `let` name starts lowercase), and only `<Identifier>`-named producers are
+/// seeded, so `Steps.<P>` never contains a dot that could make one
+/// producer's table overlap another's (a Step named `A.Output` would
+/// otherwise collide with Step `A`'s output `Output`).
+pub(crate) fn add_control_flow_scope(
+    symtab: &mut SymbolTable,
+    jt: &JobTemplate,
+    reader: StepsReader,
+    scope: StepsFieldScope,
+) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
+    seed_producers(symtab, visible_producers(jt, reader), scope)?;
+    if let Some(l) = readable_loop(jt, reader) {
+        seed_loop(symtab, l, scope)?;
+    }
+    Ok(())
+}
+
+/// [`add_control_flow_scope`] for top-level Step `step_index`.
 pub(crate) fn add_steps_scope(
     symtab: &mut SymbolTable,
     jt: &JobTemplate,
     step_index: usize,
     scope: StepsFieldScope,
 ) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
-    seed_producers(symtab, visible_producers(jt, step_index), scope)
+    add_control_flow_scope(
+        symtab,
+        jt,
+        StepsReader::Step(StepLocation::top(step_index)),
+        scope,
+    )
 }
 
 /// Seed `symtab` with the `Steps.*` symbols a `<JobOutputDefinition>`'s
-/// `value` may read: those of every Step with an `<Identifier>` name, with
-/// no dependency required (RFC 0011 §Job outputs), each typed as for
-/// [`add_steps_scope`] in [`StepsFieldScope::Template`], so a value whose
-/// type is or contains `path` is available only through `RawOutput` and
-/// `TaskRawParam`.
+/// `value` may read: those of every top-level Step and loop with an
+/// `<Identifier>` name, with no dependency required (RFC 0011 §Job outputs,
+/// RFC 0013 §`Steps.*` in and around a loop item 4), each typed as for
+/// [`add_control_flow_scope`] in [`StepsFieldScope::Template`], so a value
+/// whose type is or contains `path` is available only through `RawOutput`
+/// and `TaskRawParam`.
 pub(crate) fn add_job_output_steps_scope(
     symtab: &mut SymbolTable,
     jt: &JobTemplate,
 ) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
-    let producers = jt.steps.iter().filter(|s| is_identifier(&s.name)).collect();
-    seed_producers(symtab, producers, StepsFieldScope::Template)
+    add_control_flow_scope(
+        symtab,
+        jt,
+        StepsReader::JobOutput,
+        StepsFieldScope::Template,
+    )
 }
 
-/// Seed the `Steps.*` symbols of `producers`; see [`add_steps_scope`].
+/// Seed the `Steps.*` symbols of `producers`; see [`add_control_flow_scope`].
 fn seed_producers(
     symtab: &mut SymbolTable,
-    producers: Vec<&StepTemplate>,
+    producers: Vec<Producer<'_>>,
     scope: StepsFieldScope,
 ) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
     // A symbol already in the table (a concrete value at step input binding)
@@ -184,18 +479,34 @@ fn seed_producers(
         }
     };
     for producer in producers {
-        let p = &producer.name;
-        for ov in producer.output_variables.iter().flatten() {
-            if let Some((ty, is_path)) = output_symbol(producer, ov.name()) {
+        let p = producer.name();
+        let output_names: Vec<&str> = match producer {
+            Producer::Step(s) => s
+                .output_variables
+                .iter()
+                .flatten()
+                .map(|ov| ov.name())
+                .collect(),
+            Producer::Loop(l) => l
+                .output_variables_list()
+                .iter()
+                .map(|ov| ov.name())
+                .collect(),
+        };
+        for name in output_names {
+            if let Some((ty, is_path)) = output_symbol(producer, name) {
                 if !(is_path && scope == StepsFieldScope::Template) {
-                    seed(format!("Steps.{p}.Output.{}", ov.name()), ty.clone())?;
+                    seed(format!("Steps.{p}.Output.{name}"), ty.clone())?;
                 }
-                seed(format!("Steps.{p}.RawOutput.{}", ov.name()), ty)?;
+                seed(format!("Steps.{p}.RawOutput.{name}"), ty)?;
             }
         }
-        if let Some(ps) = &producer.parameter_space {
+        let Producer::Step(step) = producer else {
+            continue;
+        };
+        if let Some(ps) = &step.parameter_space {
             for tp in &ps.task_parameter_definitions {
-                if let Some((ty, is_path)) = task_param_symbol(producer, tp.name()) {
+                if let Some((ty, is_path)) = task_param_symbol(step, tp.name()) {
                     if !(is_path && scope == StepsFieldScope::Template) {
                         seed(format!("Steps.{p}.TaskParam.{}", tp.name()), ty.clone())?;
                     }
@@ -207,19 +518,37 @@ fn seed_producers(
     Ok(())
 }
 
-/// What reads a field, which decides the `Steps.*` symbols available in it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StepsReader {
-    /// A field where `Steps.*` is not available at all (the job name,
-    /// `jobEnvironments`).
-    None,
-    /// A field of Step `i`: its direct dependencies' symbols.
-    Step(usize),
-    /// A `<JobOutputDefinition>`'s `value`: any Step's symbols.
-    JobOutput,
+/// Seed the `Loop.*` and `RawLoop.*` symbols of `l`; see
+/// [`add_control_flow_scope`]. A variable named `Iteration`, which
+/// validation rejects, is not seeded, so `Loop.Iteration` stays an `int`.
+fn seed_loop(
+    symtab: &mut SymbolTable,
+    l: &StepLoop,
+    scope: StepsFieldScope,
+) -> Result<(), openjd_expr::symbol_table::SymbolTableError> {
+    let mut seed = |key: String, ty: ExprType| {
+        if symtab.contains(&key) {
+            Ok(())
+        } else {
+            symtab.set(&key, ExprValue::unresolved(ty))
+        }
+    };
+    seed("Loop.Iteration".to_string(), ExprType::INT)?;
+    for var in l.variables() {
+        let name = var.name();
+        if name == "Iteration" {
+            continue;
+        }
+        let ty = var.job_param_type();
+        if !(is_path_type(ty) && scope == StepsFieldScope::Template) {
+            seed(format!("Loop.{name}"), ty.expr_type())?;
+        }
+        seed(format!("RawLoop.{name}"), ty.expr_type())?;
+    }
+    Ok(())
 }
 
-/// Where a reference is being checked, for [`steps_ref_errors`].
+/// Where a reference is being checked, for [`control_flow_ref_errors`].
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StepsRefContext<'a> {
     pub(crate) jt: &'a JobTemplate,
@@ -227,47 +556,186 @@ pub(crate) struct StepsRefContext<'a> {
     pub(crate) scope: StepsFieldScope,
 }
 
-/// Explain every `Steps.*` symbol in `symbols` that is not available in a
-/// field described by `ctx`, one message per symbol, in sorted symbol
-/// order. Symbols outside the `Steps` root, and available ones, produce
-/// nothing.
+fn is_steps_symbol(s: &str) -> bool {
+    s == "Steps" || s.starts_with("Steps.")
+}
+
+fn is_loop_symbol(s: &str) -> bool {
+    s == "Loop" || s == "RawLoop" || s.starts_with("Loop.") || s.starts_with("RawLoop.")
+}
+
+/// Explain every `Steps.*`, `Loop.*`, and `RawLoop.*` symbol in `symbols`
+/// that is not available in a field described by `ctx`, one message per
+/// symbol, in sorted symbol order. Other symbols, and available ones,
+/// produce nothing.
 ///
-/// Each message starts with the symbol, as written except in the path-type
-/// message, which names only the four-part symbol and not a property read
-/// from it. The checks, in order, the first that fails being reported: the
-/// field allows `Steps.*`; the reference names a member
-/// (`Steps.<StepName>.<Member>.<Name>`); the Step exists; its name is an
-/// `<Identifier>`; it is not the reading Step; it is a direct dependency
-/// (these two only for a Step's field: a job output may read any Step);
-/// the member is one of the four; the output or Task parameter exists; and
+/// For a `Steps.*` symbol, each message starts with the symbol, as written
+/// except in the path-type message, which names only the four-part symbol
+/// and not a property read from it. The checks, in order, the first that
+/// fails being reported: the field allows `Steps.*`; the reference names a
+/// member (`Steps.<StepName>.<Member>.<Name>`); the Step exists; its name
+/// is an `<Identifier>`; the reader may read it (see [`visible_producers`]:
+/// it is not the reader itself, it is a dependency the reader may read, and
+/// it is not a body Step read from outside its loop or from a field of its
+/// loop that runs before an iteration); the member is one of the four, and
+/// not a Task parameter of a loop; the output or Task parameter exists; and
 /// a path-typed `Output` or `TaskParam` is not read in a TEMPLATE-scope
-/// field.
-pub(crate) fn steps_ref_errors<'s>(
+/// field. For a `Loop.*` symbol, see [`loop_ref_error`].
+pub(crate) fn control_flow_ref_errors<'s>(
     symbols: impl IntoIterator<Item = &'s String>,
     ctx: &StepsRefContext<'_>,
 ) -> Vec<String> {
-    let mut steps_symbols: Vec<&String> = symbols
+    let mut cf_symbols: Vec<&String> = symbols
         .into_iter()
-        .filter(|s| *s == "Steps" || s.starts_with("Steps."))
+        .filter(|s| is_steps_symbol(s) || is_loop_symbol(s))
         .collect();
-    steps_symbols.sort();
-    steps_symbols.dedup();
-    steps_symbols
+    cf_symbols.sort();
+    cf_symbols.dedup();
+    cf_symbols
         .into_iter()
-        .filter_map(|sym| steps_ref_error(sym, ctx))
+        .filter_map(|sym| {
+            if is_steps_symbol(sym) {
+                steps_ref_error(sym, ctx)
+            } else {
+                loop_ref_error(sym, ctx)
+            }
+        })
         .collect()
 }
 
+/// Where a Step or loop named in a `Steps.*` reference is.
+enum Named<'a> {
+    /// Top-level entry `entry`.
+    TopLevel {
+        entry: usize,
+        producer: Producer<'a>,
+    },
+    /// A body Step of `step_loop`.
+    Body {
+        step: &'a StepTemplate,
+        step_loop: &'a StepLoop,
+    },
+}
+
+fn find_named<'a>(jt: &'a JobTemplate, name: &str) -> Option<Named<'a>> {
+    if let Some((entry, producer)) = top_level(jt, name) {
+        return Some(Named::TopLevel { entry, producer });
+    }
+    jt.loops().find_map(|l| {
+        l.body()
+            .iter()
+            .find(|s| s.name == name)
+            .map(|step| Named::Body { step, step_loop: l })
+    })
+}
+
+fn names_dependency(deps: Option<&[crate::template::StepDependency]>, p: &str) -> bool {
+    dependency_names(deps).any(|d| d == p)
+}
+
+/// The message for a body Step of loop `l` read where it is not available.
+fn body_step_outside_loop(sym: &str, p: &str, l: &str) -> String {
+    format!(
+        "'{sym}': Step '{p}' is a body Step of loop '{l}', and is available only within that loop. Read a loop output instead, as Steps.{l}.Output.<Name>."
+    )
+}
+
+/// Why `reader` may not read Step or loop `p` (found as `named`), or `None`
+/// when it may.
+fn reader_error(
+    sym: &str,
+    p: &str,
+    named: &Named<'_>,
+    ctx: &StepsRefContext<'_>,
+) -> Option<String> {
+    let jt = ctx.jt;
+    match ctx.reader {
+        // Answered before the reference is parsed.
+        StepsReader::None => None,
+        StepsReader::JobOutput => match named {
+            Named::Body { step_loop, .. } => Some(body_step_outside_loop(sym, p, &step_loop.name)),
+            Named::TopLevel { .. } => None,
+        },
+        StepsReader::Step(loc) => {
+            let (reader, reader_loop) = loc.resolve(jt)?;
+            if p == reader.name {
+                return Some(format!(
+                    "'{sym}': a Step cannot read its own Steps.* symbols."
+                ));
+            }
+            let reads_own = names_dependency(reader.dependencies.as_deref(), p);
+            let not_direct = || {
+                format!(
+                    "'{sym}': Step '{p}' is not a direct dependency of Step '{}'. Add 'dependsOn: {p}' to its dependencies to read Steps.{p}.*.",
+                    reader.name
+                )
+            };
+            match (reader_loop, named) {
+                (None, Named::TopLevel { .. }) => (!reads_own).then(not_direct),
+                (None, Named::Body { step_loop, .. }) => {
+                    Some(body_step_outside_loop(sym, p, &step_loop.name))
+                }
+                (Some(l), Named::Body { step_loop, .. }) if step_loop.name != l.name => {
+                    Some(body_step_outside_loop(sym, p, &step_loop.name))
+                }
+                (Some(_), Named::Body { .. }) => (!reads_own).then(not_direct),
+                (Some(l), Named::TopLevel { entry, .. }) if *entry == loc.entry => Some(format!(
+                    "'{sym}': Step '{}' is in the body of loop '{}', which cannot read the loop's own outputs: they are available only after the loop ends.",
+                    reader.name, l.name
+                )),
+                (Some(l), Named::TopLevel { .. }) => {
+                    (!names_dependency(l.dependencies.as_deref(), p)).then(|| {
+                        format!(
+                            "'{sym}': Step '{p}' is not a dependency of loop '{}'. A body Step reads the Steps its loop depends on: add 'dependsOn: {p}' to the dependencies of loop '{}' to read Steps.{p}.*.",
+                            l.name, l.name
+                        )
+                    })
+                }
+            }
+        }
+        StepsReader::Loop { entry, field } => {
+            let l = jt.steps.get(entry)?.as_loop()?;
+            match named {
+                Named::TopLevel { entry: e, .. } if *e == entry => Some(format!(
+                    "'{sym}': a loop cannot read its own Steps.* symbols; they are available only after the loop ends."
+                )),
+                Named::TopLevel { .. } => (!names_dependency(l.dependencies.as_deref(), p)).then(|| {
+                    format!(
+                        "'{sym}': Step '{p}' is not a direct dependency of loop '{}'. Add 'dependsOn: {p}' to its dependencies to read Steps.{p}.*.",
+                        l.name
+                    )
+                }),
+                Named::Body { step_loop, .. } if step_loop.name != l.name => {
+                    Some(body_step_outside_loop(sym, p, &step_loop.name))
+                }
+                Named::Body { .. } => (!field.reads_body()).then(|| {
+                    format!(
+                        "'{sym}': Step '{p}' is a body Step of loop '{}', which the loop's {field} cannot read: it is evaluated before an iteration runs. The loop's until, next, and output values may read its body Steps.",
+                        l.name
+                    )
+                }),
+            }
+        }
+    }
+}
+
 fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
-    let reader_index = match ctx.reader {
+    match ctx.reader {
         StepsReader::None => {
             return Some(format!(
-                "'{sym}': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, and a job output's value, may read them."
+                "'{sym}': Steps.* symbols are not available in this field. Only a Step's enableIf, let, hostRequirements, parameterSpace, stepEnvironments, and script, a loop's enableIf, while, until, initial, next, and output values, and a job output's value, may read them."
             ));
         }
-        StepsReader::Step(i) => Some(i),
-        StepsReader::JobOutput => None,
-    };
+        StepsReader::Loop {
+            field: LoopField::MaxIterations,
+            ..
+        } => {
+            return Some(format!(
+                "'{sym}': Steps.* symbols are not available in a loop's maxIterations, which is known at Job creation: it may read only Param.*, RawParam.*, and Job.Name."
+            ));
+        }
+        _ => {}
+    }
     let parts: Vec<&str> = sym.split('.').collect();
     if parts.len() < 4 {
         return Some(format!(
@@ -275,8 +743,7 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
         ));
     }
     let (p, member, name) = (parts[1], parts[2], parts[3]);
-    let jt = ctx.jt;
-    let Some(producer) = jt.steps.iter().find(|s| s.name == p) else {
+    let Some(named) = find_named(ctx.jt, p) else {
         return Some(format!("'{sym}': there is no Step named '{p}'."));
     };
     if !is_identifier(p) {
@@ -284,40 +751,38 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
             "'{sym}': Step '{p}' cannot be referenced through Steps.*, because its name is not an <Identifier>."
         ));
     }
-    if let Some(reader) = reader_index.map(|i| &jt.steps[i]) {
-        if p == reader.name {
-            return Some(format!(
-                "'{sym}': a Step cannot read its own Steps.* symbols."
-            ));
-        }
-        let is_direct = reader
-            .dependencies
-            .iter()
-            .flatten()
-            .any(|d| d.depends_on == p);
-        if !is_direct {
-            return Some(format!(
-                "'{sym}': Step '{p}' is not a direct dependency of Step '{}'. Add 'dependsOn: {p}' to its dependencies to read Steps.{p}.*.",
-                reader.name
-            ));
-        }
+    if let Some(message) = reader_error(sym, p, &named, ctx) {
+        return Some(message);
     }
-    let (found, raw_member) = match member {
-        "Output" | "RawOutput" => {
+    let producer = match named {
+        Named::TopLevel { producer, .. } => producer,
+        Named::Body { step, .. } => Producer::Step(step),
+    };
+    let (found, raw_member) = match (member, producer) {
+        ("Output" | "RawOutput", _) => {
             let Some(found) = output_symbol(producer, name) else {
+                let noun = match producer {
+                    Producer::Step(_) => "Step",
+                    Producer::Loop(_) => "loop",
+                };
                 return Some(format!(
-                    "'{sym}': Step '{p}' has no output variable '{name}'."
+                    "'{sym}': {noun} '{p}' has no output variable '{name}'."
                 ));
             };
             (found, "RawOutput")
         }
-        "TaskParam" | "TaskRawParam" => {
-            if producer.parameter_space.is_none() {
+        ("TaskParam" | "TaskRawParam", Producer::Loop(_)) => {
+            return Some(format!(
+                "'{sym}': '{p}' is a loop, which has no Task parameters. Declare a loop output and read Steps.{p}.Output.<Name> instead."
+            ));
+        }
+        ("TaskParam" | "TaskRawParam", Producer::Step(step)) => {
+            if step.parameter_space.is_none() {
                 return Some(format!(
                     "'{sym}': Step '{p}' has no parameterSpace, so it has no Task parameters."
                 ));
             }
-            let Some(found) = task_param_symbol(producer, name) else {
+            let Some(found) = task_param_symbol(step, name) else {
                 return Some(format!(
                     "'{sym}': Step '{p}' has no Task parameter '{name}'."
                 ));
@@ -336,6 +801,69 @@ fn steps_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
         // Name the symbol itself, not a property read from it (`.name`).
         return Some(format!(
             "'Steps.{p}.{member}.{name}' has a path type, so it is available only in fields resolved on the worker host. Use Steps.{p}.{raw_member}.{name} here."
+        ));
+    }
+    None
+}
+
+/// Explain a `Loop.*` or `RawLoop.*` symbol that is not available (RFC 0013
+/// §The `Loop.*` scope, §Validation item 8). The checks, in order: the field
+/// may read a loop's symbols; the reference names a variable or
+/// `Iteration`; `Iteration` is read as `Loop.Iteration`; the variable is
+/// one of the readable loop's; and a path-typed `Loop.<V>` is not read in a
+/// TEMPLATE-scope field.
+fn loop_ref_error(sym: &str, ctx: &StepsRefContext<'_>) -> Option<String> {
+    let Some(l) = readable_loop(ctx.jt, ctx.reader) else {
+        return Some(match ctx.reader {
+            StepsReader::Loop {
+                field: LoopField::MaxIterations,
+                ..
+            } => format!(
+                "'{sym}': Loop.* and RawLoop.* symbols are not available in a loop's maxIterations, which is known at Job creation: it may read only Param.*, RawParam.*, and Job.Name."
+            ),
+            StepsReader::Loop { field, .. } => format!(
+                "'{sym}': Loop.* and RawLoop.* symbols are not available in a loop's {field}, which is evaluated before the loop's first iteration."
+            ),
+            _ => format!(
+                "'{sym}': Loop.* and RawLoop.* symbols are available only in the body Steps of a loop and in the loop's while, until, next, and output values."
+            ),
+        });
+    };
+    let parts: Vec<&str> = sym.split('.').collect();
+    let root = parts[0];
+    let Some(&name) = parts.get(1) else {
+        return Some(format!(
+            "'{sym}' is not a complete reference; expected Loop.<VarName>, RawLoop.<VarName>, or Loop.Iteration."
+        ));
+    };
+    if name == "Iteration" {
+        return (root == "RawLoop")
+            .then(|| format!("'{sym}': Loop.Iteration has no RawLoop form; use Loop.Iteration."));
+    }
+    let Some(var) = l.variables().iter().find(|v| v.name() == name) else {
+        let elsewhere = ctx
+            .jt
+            .loops()
+            .filter(|m| m.name != l.name)
+            .find(|m| m.variables().iter().any(|v| v.name() == name))
+            .map(|m| {
+                format!(
+                    " '{name}' is a variable of loop '{}', which is available only in that loop.",
+                    m.name
+                )
+            })
+            .unwrap_or_default();
+        return Some(format!(
+            "'{sym}': loop '{}' has no variable '{name}'.{elsewhere}",
+            l.name
+        ));
+    };
+    if root == "Loop"
+        && is_path_type(var.job_param_type())
+        && ctx.scope == StepsFieldScope::Template
+    {
+        return Some(format!(
+            "'Loop.{name}' has a path type, so it is available only in fields resolved on the worker host. Use RawLoop.{name} here."
         ));
     }
     None
@@ -532,6 +1060,192 @@ steps:
         // Only Steps with an <Identifier> name.
         let paths = s.all_paths("");
         assert!(paths.iter().all(|p| !p.contains("Find")), "{paths:?}");
+    }
+
+    /// A job template with three loops: `U` (`until`), `Wl` (`while`), and
+    /// `E` (`until` and `enableIf`), each with outputs `Last: INT` (`LAST`),
+    /// `All: LIST[INT]` (`APPEND`), and `P: PATH` (`LAST`). `U` depends on
+    /// `S` and has variables `V: INT`, `P: PATH`, and `G: LIST[LIST[INT]]`
+    /// and body Steps `A` (output `X: INT`) and `B` (depending on `A`). `C`
+    /// depends on the three loops.
+    const LOOPS: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+  - name: S
+    outputVariables: [{name: K, type: INT}]
+    script: {actions: {onRun: {command: x}}}
+  - name: U
+    dependencies: [{dependsOn: S}]
+    loop:
+      variables:
+        - {name: V, type: INT, initial: "1", next: "1"}
+        - {name: P, type: PATH, initial: "p", next: "p"}
+        - {name: G, type: "LIST[LIST[INT]]", initial: "{{[[1]]}}", next: "{{[[1]]}}"}
+      until: true
+      maxIterations: 2
+      steps:
+        - name: A
+          outputVariables: [{name: X, type: INT}]
+          script: {actions: {onRun: {command: x}}}
+        - name: B
+          dependencies: [{dependsOn: A}]
+          script: {actions: {onRun: {command: x}}}
+    outputVariables: &outs
+      - {name: Last, type: INT, collect: LAST, value: "1"}
+      - {name: All, type: "LIST[INT]", collect: APPEND, value: "1"}
+      - {name: P, type: PATH, collect: LAST, value: "p"}
+  - name: Wl
+    loop:
+      while: false
+      maxIterations: 2
+      steps:
+        - name: WA
+          script: {actions: {onRun: {command: x}}}
+    outputVariables: *outs
+  - name: E
+    enableIf: true
+    loop:
+      until: true
+      maxIterations: 2
+      steps:
+        - name: EA
+          script: {actions: {onRun: {command: x}}}
+    outputVariables: *outs
+  - name: C
+    dependencies: [{dependsOn: U}, {dependsOn: Wl}, {dependsOn: E}]
+    script: {actions: {onRun: {command: x}}}
+"#;
+
+    fn loops_template() -> JobTemplate {
+        crate::decode_job_template(
+            serde_saphyr::from_str(LOOPS).unwrap(),
+            Some(&["EXPR", "CONTROL_FLOW"]),
+            &CallerLimits::default(),
+        )
+        .expect("valid template")
+    }
+
+    fn seeded_for(reader: StepsReader, scope: StepsFieldScope) -> SymbolTable {
+        let jt = loops_template();
+        let mut symtab = SymbolTable::new();
+        add_control_flow_scope(&mut symtab, &jt, reader, scope).unwrap();
+        symtab
+    }
+
+    #[test]
+    fn loop_output_types_follow_the_rfc_0013_table() {
+        let s = seeded_for(
+            StepsReader::Step(StepLocation::top(4)),
+            StepsFieldScope::Host,
+        );
+        let list = ExprType::list;
+        let cases = [
+            // until, no enableIf: T and list[E].
+            ("Steps.U.Output.Last", ExprType::INT),
+            ("Steps.U.Output.All", list(ExprType::INT)),
+            ("Steps.U.Output.P", ExprType::PATH),
+            ("Steps.U.RawOutput.P", ExprType::PATH),
+            // while, no enableIf: T? and list[E].
+            ("Steps.Wl.Output.Last", opt(ExprType::INT)),
+            ("Steps.Wl.Output.All", list(ExprType::INT)),
+            // enableIf: T? and list[E]?.
+            ("Steps.E.Output.Last", opt(ExprType::INT)),
+            ("Steps.E.Output.All", opt(list(ExprType::INT))),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(ty(&s, key), Some(expected), "{key}");
+        }
+        // A loop has no Task parameters, and its body is not visible.
+        assert!(s.get_table("Steps.U.TaskParam").is_none());
+        assert!(s.get_table("Steps.A").is_none());
+        assert!(s.get_table("Loop").is_none());
+        // TEMPLATE scope keeps only the Raw form of a path output.
+        let t = seeded_for(
+            StepsReader::Step(StepLocation::top(4)),
+            StepsFieldScope::Template,
+        );
+        assert_eq!(ty(&t, "Steps.U.Output.P"), None);
+        assert_eq!(ty(&t, "Steps.U.RawOutput.P"), Some(ExprType::PATH));
+    }
+
+    #[test]
+    fn a_body_step_sees_its_body_dependencies_its_loops_dependencies_and_loop_symbols() {
+        let b = StepsReader::Step(StepLocation {
+            entry: 1,
+            body: Some(1),
+        });
+        let s = seeded_for(b, StepsFieldScope::Host);
+        assert_eq!(ty(&s, "Steps.A.Output.X"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "Steps.S.Output.K"), Some(ExprType::INT));
+        assert!(s.get_table("Steps.U").is_none());
+        assert!(s.get_table("Steps.B").is_none());
+        assert_eq!(ty(&s, "Loop.Iteration"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "Loop.V"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "RawLoop.V"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "Loop.P"), Some(ExprType::PATH));
+        assert_eq!(ty(&s, "RawLoop.P"), Some(ExprType::PATH));
+        assert_eq!(
+            ty(&s, "Loop.G"),
+            Some(ExprType::list(ExprType::list(ExprType::INT)))
+        );
+        // TEMPLATE scope: a path-typed Loop.<V> only through RawLoop.
+        let t = seeded_for(b, StepsFieldScope::Template);
+        assert_eq!(ty(&t, "Loop.P"), None);
+        assert_eq!(ty(&t, "RawLoop.P"), Some(ExprType::PATH));
+        // A body Step with no dependencies sees only its loop's.
+        let a = seeded_for(
+            StepsReader::Step(StepLocation {
+                entry: 1,
+                body: Some(0),
+            }),
+            StepsFieldScope::Host,
+        );
+        assert!(a.get_table("Steps.A").is_none());
+        assert_eq!(ty(&a, "Steps.S.Output.K"), Some(ExprType::INT));
+    }
+
+    #[test]
+    fn each_loop_field_sees_what_rfc_0013_allows() {
+        let field = |field: LoopField| {
+            seeded_for(
+                StepsReader::Loop { entry: 1, field },
+                StepsFieldScope::Template,
+            )
+        };
+        for f in [LoopField::EnableIf, LoopField::Initial] {
+            let s = field(f);
+            assert_eq!(ty(&s, "Steps.S.Output.K"), Some(ExprType::INT), "{f}");
+            assert!(s.get_table("Steps.A").is_none(), "{f}");
+            assert!(s.get_table("Loop").is_none(), "{f}");
+        }
+        let s = field(LoopField::While);
+        assert_eq!(ty(&s, "Steps.S.Output.K"), Some(ExprType::INT));
+        assert!(s.get_table("Steps.A").is_none());
+        assert_eq!(ty(&s, "Loop.V"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "Loop.P"), None);
+        for f in [LoopField::Until, LoopField::Next, LoopField::OutputValue] {
+            let s = field(f);
+            assert_eq!(ty(&s, "Steps.S.Output.K"), Some(ExprType::INT), "{f}");
+            assert_eq!(ty(&s, "Steps.A.Output.X"), Some(ExprType::INT), "{f}");
+            assert_eq!(ty(&s, "Loop.Iteration"), Some(ExprType::INT), "{f}");
+            assert_eq!(ty(&s, "RawLoop.P"), Some(ExprType::PATH), "{f}");
+        }
+        let s = field(LoopField::MaxIterations);
+        assert!(s.get_table("Steps").is_none());
+        assert!(s.get_table("Loop").is_none());
+    }
+
+    #[test]
+    fn a_job_output_sees_loops_and_not_their_body_steps() {
+        let jt = loops_template();
+        let mut s = SymbolTable::new();
+        add_job_output_steps_scope(&mut s, &jt).unwrap();
+        assert_eq!(ty(&s, "Steps.U.Output.Last"), Some(ExprType::INT));
+        assert_eq!(ty(&s, "Steps.S.Output.K"), Some(ExprType::INT));
+        assert!(s.get_table("Steps.A").is_none());
+        assert!(s.get_table("Loop").is_none());
     }
 
     #[test]

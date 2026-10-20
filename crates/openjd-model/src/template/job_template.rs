@@ -9,6 +9,7 @@ use super::environment::Environment;
 use super::output_variables::JobOutputDefinition;
 use super::parameters::JobParameterDefinition;
 use super::step::StepTemplate;
+use super::step_loop::{StepEntry, StepLoop, StepTemplateRef};
 use crate::format_string::FormatString;
 use serde::Deserialize;
 
@@ -30,7 +31,9 @@ pub struct JobTemplate {
     /// The Job's outputs (`CONTROL_FLOW`, RFC 0011 `jobOutputDefinitions`).
     pub job_output_definitions: Option<Vec<JobOutputDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
-    pub steps: Vec<StepTemplate>,
+    /// The Steps and, with `CONTROL_FLOW`, loops (RFC 0013), in template
+    /// order.
+    pub steps: Vec<StepEntry>,
 }
 
 impl JobTemplate {
@@ -59,6 +62,58 @@ impl JobTemplate {
             Some(defs) => defs,
             None => &[],
         }
+    }
+
+    /// The top-level Steps, in template order, without the loops. For a
+    /// template without loops these are all of its `steps`, so index `i` of
+    /// this iterator is entry `i`.
+    pub fn top_level_steps(&self) -> impl Iterator<Item = &StepTemplate> {
+        self.steps.iter().filter_map(StepEntry::as_step)
+    }
+
+    /// Entry `index` of `steps` when it is a Step. `create_job` rejects a
+    /// template with loops, so for the templates it accepts this is index
+    /// `index` of the Job's Steps.
+    pub(crate) fn top_level_step(&self, index: usize) -> Option<&StepTemplate> {
+        self.steps.get(index).and_then(StepEntry::as_step)
+    }
+
+    /// The loops (RFC 0013), in template order.
+    pub fn loops(&self) -> impl Iterator<Item = &StepLoop> {
+        self.steps.iter().filter_map(StepEntry::as_loop)
+    }
+
+    /// Whether any entry of `steps` is a loop.
+    pub fn has_loops(&self) -> bool {
+        self.steps.iter().any(|e| matches!(e, StepEntry::Loop(_)))
+    }
+
+    /// Every `<StepTemplate>` of the template, top-level or in a loop's
+    /// body, in template order with each loop's body in place of the loop,
+    /// each with its location and its loop.
+    pub fn step_templates(&self) -> impl Iterator<Item = StepTemplateRef<'_>> {
+        self.steps.iter().enumerate().flat_map(
+            |(entry_index, entry)| -> Box<dyn Iterator<Item = StepTemplateRef<'_>>> {
+                match entry {
+                    StepEntry::Step(step) => Box::new(std::iter::once(StepTemplateRef {
+                        step,
+                        entry_index,
+                        body_index: None,
+                        step_loop: None,
+                    })),
+                    StepEntry::Loop(l) => {
+                        Box::new(l.body().iter().enumerate().map(move |(j, step)| {
+                            StepTemplateRef {
+                                step,
+                                entry_index,
+                                body_index: Some(j),
+                                step_loop: Some(l),
+                            }
+                        }))
+                    }
+                }
+            },
+        )
     }
 
     /// The `jobOutputDefinitions`, empty when there are none.

@@ -28,16 +28,14 @@ pub fn validate_structure(
     if jt.steps.is_empty() {
         errors.add(&root, "must have at least one step.");
     }
-    // Caller-imposed step count limit
+    // Caller-imposed step count limit. Every top-level Step, loop, and body
+    // Step counts once (RFC 0013 §Limits item 3; the plan's A18).
     if let Some(max) = ctx.caller_limits.max_step_count {
-        if jt.steps.len() > max {
+        let count = jt.steps.len() + jt.loops().map(|l| l.body().len()).sum::<usize>();
+        if count > max {
             errors.add(
                 &path_field(&root, "steps"),
-                format!(
-                    "exceeds caller limit of {} steps ({} steps).",
-                    max,
-                    jt.steps.len()
-                ),
+                format!("exceeds caller limit of {max} steps ({count} steps)."),
             );
         }
     }
@@ -125,12 +123,9 @@ pub fn validate_structure(
             }
         }
     }
-    for (i, step) in jt.steps.iter().enumerate() {
-        if let Some(envs) = &step.step_environments {
-            let envs_path = path_field(
-                &[PathElement::Field("steps".into()), PathElement::Index(i)],
-                "stepEnvironments",
-            );
+    for st in jt.step_templates() {
+        if let Some(envs) = &st.step.step_environments {
+            let envs_path = path_field(&st.path(), "stepEnvironments");
             if envs.is_empty() {
                 errors.add(&envs_path, "must not be empty.");
             }
@@ -160,189 +155,85 @@ pub fn validate_structure(
         }
     }
 
-    // Step validation
-    let all_step_names: HashSet<String> = jt.steps.iter().map(|s| s.name.clone()).collect();
+    // Step validation: every top-level Step, loop, and body Step, in
+    // template order with each loop's body after the loop.
+    let names = StepNames::of(jt);
     let fb1_active = ctx
         .profile
         .has_extension(crate::types::ModelExtension::FeatureBundle1);
-    let mut step_names = HashSet::new();
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
-        let name = step.name.clone();
-        if !step_names.insert(name.clone()) {
-            errors.add(
-                &path_field(&step_path, "name"),
-                format!("duplicate step name: '{name}'"),
-            );
-        }
-        if name.is_empty() {
-            errors.add(&path_field(&step_path, "name"), "must not be empty.");
-        }
-        if name.chars().any(|c| c.is_control()) {
-            errors.add(
-                &path_field(&step_path, "name"),
-                "contains control characters.",
-            );
-        }
-        if name.contains("{{") {
-            errors.add(
-                &path_field(&step_path, "name"),
-                "must not contain format string expressions.",
-            );
-        }
-        if let Some(desc) = &step.description {
-            let dp = path_field(&step_path, "description");
-            if desc.0.chars().count() > limits.max_description_len {
-                errors.add(
-                    &dp,
-                    format!("exceeds {} characters.", limits.max_description_len),
+    let mut seen_names = HashSet::new();
+    for (i, entry) in jt.steps.iter().enumerate() {
+        let entry_path = path_index(&path_field(&root, "steps"), i);
+        match entry {
+            StepEntry::Step(step) => validate_step(
+                step,
+                &entry_path,
+                DependencyScope::TopLevel,
+                &names,
+                &mut seen_names,
+                fb1_active,
+                limits,
+                rules,
+                ctx,
+                errors,
+            ),
+            StepEntry::Loop(l) => {
+                check_step_name(&l.name, &entry_path, &mut seen_names, errors);
+                check_description(l.description.as_ref(), &entry_path, limits, errors);
+                check_dependencies(
+                    &l.name,
+                    l.dependencies.as_deref(),
+                    &entry_path,
+                    DependencyScope::TopLevel,
+                    &names,
+                    errors,
                 );
-            }
-            if has_control_chars(&desc.0) {
-                errors.add(&dp, "contains control characters.");
-            }
-        }
-        // Must have script or SimpleAction
-        if step.script.is_none()
-            && step.bash.is_none()
-            && step.python.is_none()
-            && step.cmd.is_none()
-            && step.powershell.is_none()
-            && step.node.is_none()
-        {
-            errors.add(&step_path, "must have 'script' or a simple action field.");
-        }
-
-        // Dependencies
-        if let Some(deps) = &step.dependencies {
-            let deps_path = path_field(&step_path, "dependencies");
-            if deps.is_empty() {
-                errors.add(&deps_path, "must not be empty.");
-            }
-            let mut dep_names = HashSet::new();
-            for (j, dep) in deps.iter().enumerate() {
-                let dep_path = path_index(&deps_path, j);
-                if dep.depends_on == step.name {
-                    errors.add(&dep_path, "cannot depend on itself.");
+                let body_path = path_field(&path_field(&entry_path, "loop"), "steps");
+                // RFC 0013 §<LoopDefinition> item 5.1.
+                if l.body().is_empty() {
+                    errors.add(&body_path, "must contain at least one element.");
                 }
-                if !step_names.contains(&dep.depends_on)
-                    && !all_step_names.contains(&dep.depends_on)
-                {
-                    errors.add(
-                        &dep_path,
-                        format!("dependency '{}' not found.", dep.depends_on),
-                    );
-                }
-                if !dep_names.insert(&dep.depends_on) {
-                    errors.add(
-                        &dep_path,
-                        format!("duplicate dependency '{}'.", dep.depends_on),
-                    );
-                }
-            }
-        }
-
-        // Host requirements
-        if let Some(hr) = &step.host_requirements {
-            let hr_path = path_field(&step_path, "hostRequirements");
-            match (
-                capabilities::standard_amount_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-                capabilities::standard_attribute_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-            ) {
-                (Ok(std_amounts), Ok(std_attrs)) => {
-                    validate_host_requirements(
-                        hr,
-                        &hr_path,
+                for (j, step) in l.body().iter().enumerate() {
+                    validate_step(
+                        step,
+                        &path_index(&body_path, j),
+                        DependencyScope::Body(&l.name),
+                        &names,
+                        &mut seen_names,
+                        fb1_active,
+                        limits,
                         rules,
-                        std_amounts,
-                        &std_attrs,
+                        ctx,
                         errors,
                     );
                 }
-                _ => {
-                    let ext_list: Vec<_> = ctx
-                        .profile
-                        .extensions()
-                        .iter()
-                        .map(|e| e.as_str())
-                        .collect();
-                    errors.add(
-                        &hr_path,
-                        format!(
-                            "cannot validate: no capability definitions for revision {} with extensions {:?}.",
-                            ctx.profile.revision(), ext_list
-                        ),
-                    );
-                }
-            }
-        }
-
-        // Parameter space
-        if let Some(ps) = &step.parameter_space {
-            validate_step_param_space(
-                ps,
-                &path_field(&step_path, "parameterSpace"),
-                limits,
-                rules,
-                errors,
-            );
-        }
-
-        // Script actions
-        if let Some(script) = &step.script {
-            validate_step_script(
-                script,
-                &path_field(&step_path, "script"),
-                limits,
-                rules,
-                errors,
-            );
-        }
-
-        // SimpleAction fields (§8): validate the desugared script with the
-        // same code, then re-root every error onto the authored field so no
-        // diagnostic names a synthesized node. Skipped when the extension
-        // is off (pass 7 rejects the field outright) and when the step also
-        // has `script` (pass 7 rejects the combination; validating the sugar
-        // against a step whose `Task.File.*` come from the authored script
-        // would only add noise about the generated file).
-        if fb1_active && step.script.is_none() {
-            for (kind, sa) in step.simple_actions() {
-                let sa_path = path_field(&step_path, kind.field_name());
-                // The desugared `args` always holds the generated file
-                // reference, so the shared check cannot see an authored
-                // empty list (Python's `ArgListType` requires ≥ 1).
-                if sa.args.as_ref().is_some_and(Vec::is_empty) {
-                    errors.add(
-                        &path_field(&sa_path, "args"),
-                        "if provided, must not be empty.",
-                    );
-                }
-                let mut scratch = ValidationErrors::default();
-                validate_step_script(
-                    &kind.desugar(&step.name, sa),
-                    &[],
-                    limits,
-                    rules,
-                    &mut scratch,
-                );
-                errors.extend_remapped(scratch, |rel| {
-                    let mut p = sa_path.clone();
-                    p.extend(kind.remap_desugared_path(rel));
-                    p
-                });
             }
         }
     }
 
-    // Cycle detection
-    detect_dependency_cycles(&jt.steps, errors);
+    // Cycle detection: the top-level graph, and each loop's body graph
+    // (RFC 0013 §<LoopDefinition> item 5.3).
+    detect_dependency_cycles(
+        jt.steps.iter().map(|e| (e.name(), e.dependencies())),
+        &root,
+        "step dependencies contain a cycle.",
+        errors,
+    );
+    for (i, entry) in jt.steps.iter().enumerate() {
+        if let StepEntry::Loop(l) = entry {
+            detect_dependency_cycles(
+                l.body()
+                    .iter()
+                    .map(|s| (s.name.as_str(), s.dependencies.as_deref().unwrap_or(&[]))),
+                &path_field(
+                    &path_field(&path_index(&path_field(&root, "steps"), i), "loop"),
+                    "steps",
+                ),
+                "the loop body's step dependencies contain a cycle.",
+                errors,
+            );
+        }
+    }
 
     // Environments
     if let Some(envs) = &jt.job_environments {
@@ -351,15 +242,295 @@ pub fn validate_structure(
             validate_single_environment(env, limits, rules, &path_index(&envs_path, i), errors);
         }
     }
-    for (i, step) in jt.steps.iter().enumerate() {
-        if let Some(envs) = &step.step_environments {
-            let envs_path = path_field(
-                &[PathElement::Field("steps".into()), PathElement::Index(i)],
-                "stepEnvironments",
-            );
+    for st in jt.step_templates() {
+        if let Some(envs) = &st.step.step_environments {
+            let envs_path = path_field(&st.path(), "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
                 validate_single_environment(env, limits, rules, &path_index(&envs_path, j), errors);
             }
+        }
+    }
+}
+
+/// Where every Step and loop name of a template is, for the dependency
+/// checks.
+struct StepNames<'a> {
+    /// The names of the top-level entries: Steps and loops.
+    top_level: HashSet<&'a str>,
+    /// Each body Step's name, with its loop's name.
+    body: HashMap<&'a str, &'a str>,
+}
+
+impl<'a> StepNames<'a> {
+    fn of(jt: &'a JobTemplate) -> Self {
+        let top_level = jt.steps.iter().map(StepEntry::name).collect();
+        let body = jt
+            .loops()
+            .flat_map(|l| l.body().iter().map(|s| (s.name.as_str(), l.name.as_str())))
+            .collect();
+        Self { top_level, body }
+    }
+}
+
+/// Which Steps a Step's or loop's `dependencies` may name.
+#[derive(Clone, Copy)]
+enum DependencyScope<'a> {
+    /// A top-level Step or a loop: only top-level Steps and loops (RFC 0013
+    /// §Job Template constraint 2).
+    TopLevel,
+    /// A body Step of the named loop: only Steps of the same body (RFC 0013
+    /// §`<LoopDefinition>` item 5.3).
+    Body(&'a str),
+}
+
+/// The checks on a Step's name, at `<owner_path> -> name`: unique among
+/// every Step and loop of the template (RFC 0013 §Job Template constraint 1),
+/// not empty, no control characters, and no format string.
+fn check_step_name<'a>(
+    name: &'a str,
+    owner_path: &[PathElement],
+    seen: &mut HashSet<&'a str>,
+    errors: &mut ValidationErrors,
+) {
+    let name_path = path_field(owner_path, "name");
+    if !seen.insert(name) {
+        errors.add(&name_path, format!("duplicate step name: '{name}'"));
+    }
+    if name.is_empty() {
+        errors.add(&name_path, "must not be empty.");
+    }
+    if name.chars().any(|c| c.is_control()) {
+        errors.add(&name_path, "contains control characters.");
+    }
+    if name.contains("{{") {
+        errors.add(&name_path, "must not contain format string expressions.");
+    }
+}
+
+/// The length and control-character checks on a Step's or loop's
+/// `description`.
+fn check_description(
+    desc: Option<&Description>,
+    owner_path: &[PathElement],
+    limits: &super::EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    let Some(desc) = desc else {
+        return;
+    };
+    let dp = path_field(owner_path, "description");
+    if desc.0.chars().count() > limits.max_description_len {
+        errors.add(
+            &dp,
+            format!("exceeds {} characters.", limits.max_description_len),
+        );
+    }
+    if has_control_chars(&desc.0) {
+        errors.add(&dp, "contains control characters.");
+    }
+}
+
+/// The checks on a Step's or loop's `dependencies`: not empty, not itself,
+/// no repeat, and each names a Step or loop that `scope` allows.
+fn check_dependencies(
+    owner: &str,
+    deps: Option<&[StepDependency]>,
+    owner_path: &[PathElement],
+    scope: DependencyScope<'_>,
+    names: &StepNames<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let Some(deps) = deps else {
+        return;
+    };
+    let deps_path = path_field(owner_path, "dependencies");
+    if deps.is_empty() {
+        errors.add(&deps_path, "must not be empty.");
+    }
+    let mut dep_names = HashSet::new();
+    for (j, dep) in deps.iter().enumerate() {
+        let dep_path = path_index(&deps_path, j);
+        let target = dep.depends_on.as_str();
+        if target == owner {
+            errors.add(&dep_path, "cannot depend on itself.");
+        } else if let Some(message) = dependency_scope_error(target, scope, names) {
+            errors.add(&dep_path, message);
+        }
+        if !dep_names.insert(target) {
+            errors.add(&dep_path, format!("duplicate dependency '{target}'."));
+        }
+    }
+}
+
+/// Why `scope` may not depend on `target`, or `None` when it may.
+fn dependency_scope_error(
+    target: &str,
+    scope: DependencyScope<'_>,
+    names: &StepNames<'_>,
+) -> Option<String> {
+    let body_loop = names.body.get(target).copied();
+    match scope {
+        DependencyScope::TopLevel => {
+            if names.top_level.contains(target) {
+                None
+            } else if let Some(l) = body_loop {
+                Some(format!(
+                    "dependency '{target}' is a body Step of loop '{l}'; a top-level Step or loop may depend only on top-level Steps and loops. Depend on loop '{l}' and read its outputs instead."
+                ))
+            } else {
+                Some(format!("dependency '{target}' not found."))
+            }
+        }
+        DependencyScope::Body(own) => {
+            if body_loop == Some(own) {
+                None
+            } else if target == own {
+                Some(format!(
+                    "a body Step cannot depend on its own loop '{own}'."
+                ))
+            } else if let Some(l) = body_loop {
+                Some(format!(
+                    "dependency '{target}' is a body Step of loop '{l}'; a body Step may depend only on Steps of the same body."
+                ))
+            } else if names.top_level.contains(target) {
+                Some(format!(
+                    "dependency '{target}' is not a Step of loop '{own}'s body; a body Step may depend only on Steps of the same body. Add 'dependsOn: {target}' to loop '{own}' instead: every body Step reads the Steps its loop depends on."
+                ))
+            } else {
+                Some(format!("dependency '{target}' not found."))
+            }
+        }
+    }
+}
+
+/// The checks on one `<StepTemplate>`, top-level or in a loop's body, at
+/// `step_path`, except its environments (see the end of
+/// [`validate_structure`]).
+#[allow(clippy::too_many_arguments)]
+fn validate_step<'a>(
+    step: &'a StepTemplate,
+    step_path: &[PathElement],
+    scope: DependencyScope<'_>,
+    names: &StepNames<'_>,
+    seen_names: &mut HashSet<&'a str>,
+    fb1_active: bool,
+    limits: &super::EffectiveLimits,
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    let step_path = step_path.to_vec();
+    check_step_name(&step.name, &step_path, seen_names, errors);
+    check_description(step.description.as_ref(), &step_path, limits, errors);
+    // Must have script or SimpleAction
+    if step.script.is_none()
+        && step.bash.is_none()
+        && step.python.is_none()
+        && step.cmd.is_none()
+        && step.powershell.is_none()
+        && step.node.is_none()
+    {
+        errors.add(&step_path, "must have 'script' or a simple action field.");
+    }
+
+    // Dependencies
+    check_dependencies(
+        &step.name,
+        step.dependencies.as_deref(),
+        &step_path,
+        scope,
+        names,
+        errors,
+    );
+
+    // Host requirements
+    if let Some(hr) = &step.host_requirements {
+        let hr_path = path_field(&step_path, "hostRequirements");
+        match (
+            capabilities::standard_amount_capability_names(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            ),
+            capabilities::standard_attribute_capability_names(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            ),
+        ) {
+            (Ok(std_amounts), Ok(std_attrs)) => {
+                validate_host_requirements(hr, &hr_path, rules, std_amounts, &std_attrs, errors);
+            }
+            _ => {
+                let ext_list: Vec<_> = ctx
+                    .profile
+                    .extensions()
+                    .iter()
+                    .map(|e| e.as_str())
+                    .collect();
+                errors.add(
+                        &hr_path,
+                        format!(
+                            "cannot validate: no capability definitions for revision {} with extensions {:?}.",
+                            ctx.profile.revision(), ext_list
+                        ),
+                    );
+            }
+        }
+    }
+
+    // Parameter space
+    if let Some(ps) = &step.parameter_space {
+        validate_step_param_space(
+            ps,
+            &path_field(&step_path, "parameterSpace"),
+            limits,
+            rules,
+            errors,
+        );
+    }
+
+    // Script actions
+    if let Some(script) = &step.script {
+        validate_step_script(
+            script,
+            &path_field(&step_path, "script"),
+            limits,
+            rules,
+            errors,
+        );
+    }
+
+    // SimpleAction fields (§8): validate the desugared script with the
+    // same code, then re-root every error onto the authored field so no
+    // diagnostic names a synthesized node. Skipped when the extension
+    // is off (pass 7 rejects the field outright) and when the step also
+    // has `script` (pass 7 rejects the combination; validating the sugar
+    // against a step whose `Task.File.*` come from the authored script
+    // would only add noise about the generated file).
+    if fb1_active && step.script.is_none() {
+        for (kind, sa) in step.simple_actions() {
+            let sa_path = path_field(&step_path, kind.field_name());
+            // The desugared `args` always holds the generated file
+            // reference, so the shared check cannot see an authored
+            // empty list (Python's `ArgListType` requires ≥ 1).
+            if sa.args.as_ref().is_some_and(Vec::is_empty) {
+                errors.add(
+                    &path_field(&sa_path, "args"),
+                    "if provided, must not be empty.",
+                );
+            }
+            let mut scratch = ValidationErrors::default();
+            validate_step_script(
+                &kind.desugar(&step.name, sa),
+                &[],
+                limits,
+                rules,
+                &mut scratch,
+            );
+            errors.extend_remapped(scratch, |rel| {
+                let mut p = sa_path.clone();
+                p.extend(kind.remap_desugared_path(rel));
+                p
+            });
         }
     }
 }
@@ -1073,19 +1244,21 @@ fn validate_embedded_files(
 
 // Kept as it was before `step_dependency_order` existed: its name-keyed
 // graph decides which errors a template with a repeated Step name gets, and
-// templates without CONTROL_FLOW must keep getting the same ones.
-fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationErrors) {
-    let step_names: HashSet<String> = steps.iter().map(|s| s.name.clone()).collect();
+// templates without CONTROL_FLOW must keep getting the same ones. Runs on
+// the top-level graph (Steps and loops) and on each loop body's graph,
+// reporting `message` at `path`.
+fn detect_dependency_cycles<'a>(
+    nodes: impl Iterator<Item = (&'a str, &'a [StepDependency])>,
+    path: &[PathElement],
+    message: &str,
+    errors: &mut ValidationErrors,
+) {
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-    for step in steps {
-        let name = step.name.clone();
-        let deps: Vec<String> = step
-            .dependencies
-            .as_ref()
-            .map(|d| d.iter().map(|dep| dep.depends_on.clone()).collect())
-            .unwrap_or_default();
-        adj.insert(name, deps);
+    for (name, deps) in nodes {
+        let deps: Vec<String> = deps.iter().map(|dep| dep.depends_on.clone()).collect();
+        adj.insert(name.to_string(), deps);
     }
+    let step_names: HashSet<String> = adj.keys().cloned().collect();
     // Kahn's algorithm
     let mut in_degree: HashMap<String, usize> = HashMap::new();
     for name in &step_names {
@@ -1118,27 +1291,28 @@ fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationError
         }
     }
     if visited < step_names.len() {
-        errors.add(&[], "step dependencies contain a cycle.");
+        errors.add(path, message);
     }
 }
 
-/// The template's Step indices in dependency order: every Step after the
-/// Steps it depends on, with ties broken by template index so the order is
-/// deterministic (Kahn's algorithm). `None` when the dependencies contain a
-/// cycle. A dependency on a name that is no Step is ignored (structure
-/// reports it); a dependency on a repeated name refers to its first Step.
-pub(crate) fn step_dependency_order(steps: &[StepTemplate]) -> Option<Vec<usize>> {
+/// The indices of the template's `steps` entries (Steps and loops) in
+/// dependency order: every entry after the entries it depends on, with ties
+/// broken by template index so the order is deterministic (Kahn's
+/// algorithm). `None` when the dependencies contain a cycle. A dependency on
+/// a name that is no entry is ignored (structure reports it); a dependency
+/// on a repeated name refers to its first entry.
+pub(crate) fn step_dependency_order(steps: &[StepEntry]) -> Option<Vec<usize>> {
     use std::collections::BTreeSet;
     let mut index_of: HashMap<&str, usize> = HashMap::new();
     for (i, step) in steps.iter().enumerate() {
-        index_of.entry(step.name.as_str()).or_insert(i);
+        index_of.entry(step.name()).or_insert(i);
     }
-    // dependents[d] lists the Steps that depend on Step d; in_degree[i]
-    // counts the dependencies of Step i not yet placed.
+    // dependents[d] lists the entries that depend on entry d; in_degree[i]
+    // counts the dependencies of entry i not yet placed.
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); steps.len()];
     let mut in_degree = vec![0usize; steps.len()];
     for (i, step) in steps.iter().enumerate() {
-        for dep in step.dependencies.iter().flatten() {
+        for dep in step.dependencies() {
             if let Some(&d) = index_of.get(dep.depends_on.as_str()) {
                 dependents[d].push(i);
                 in_degree[i] += 1;

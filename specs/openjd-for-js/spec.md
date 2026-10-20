@@ -165,7 +165,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `maxStepCount` | `number` | Max number of steps in a job template. |
+| `maxStepCount` | `number` | Max number of steps in a job template; each top-level Step, loop, and loop body Step (`CONTROL_FLOW`, RFC 0013) counts once. |
 | `maxEnvCount` | `number` | Max number of environments (job + all step environments combined). |
 | `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve; with `CONTROL_FLOW`, across the Steps whose Tasks are known at job creation). The Rust per-Step limit `max_step_task_count` is not exposed. |
 | `maxStepScriptSize` | `number` | Max JSON-encoded size of a step script, in bytes. |
