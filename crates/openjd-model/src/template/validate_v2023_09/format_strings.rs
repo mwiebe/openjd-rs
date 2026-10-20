@@ -411,11 +411,11 @@ enum ResolvedConstraint<'a> {
     /// resulting entry, with the same certainly-a-string gating as
     /// [`Self::TextListItem`].
     ArgListItem { max_len: usize },
-    /// RFC 0010 `<JobOutputDefinition>` `value`: target type `ty` made
+    /// RFC 0011 `<JobOutputDefinition>` `value`: target type `ty` made
     /// optional, since a `null` result means the output has no value. A
     /// fully static multi-segment string must convert to `ty`.
     JobOutputValue { ty: &'a ExprType },
-    /// RFC 0010 `enableIf`, on a Step or an Environment: target type
+    /// RFC 0011 `enableIf`, on a Step or an Environment: target type
     /// `bool`, not `bool?`, so a `null` result is an error rather than an
     /// omitted field. A whole-field expression's static non-bool value,
     /// `null` included, fails EXPR's coercion; a fully static multi-segment
@@ -1379,7 +1379,7 @@ fn check_steps_refs_only(
     }
 }
 
-/// Validate an RFC 0010 `enableIf` (Step or Environment) against `symtab`,
+/// Validate an RFC 0011 `enableIf` (Step or Environment) against `symtab`,
 /// the restricted scope its location allows.
 ///
 /// A YAML bool needs no check. A format string resolves as any typed field
@@ -1437,7 +1437,7 @@ fn check_string_converts(
     }
 }
 
-/// Validate each `<JobOutputDefinition>` `value` (RFC 0010 §Validation item
+/// Validate each `<JobOutputDefinition>` `value` (RFC 0011 §Validation item
 /// 10) against the job output scope: `Param.*` (minus `PATH` types),
 /// `RawParam.*`, `Job.Name`, and the TEMPLATE-scope `Steps.*` symbols of
 /// every Step with an `<Identifier>` name, with no dependency required. No
@@ -1843,7 +1843,7 @@ pub fn validate_format_strings(
 ) {
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
     let fb1_active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
-    // CONTROL_FLOW (RFC 0010): each Step's fields see the `Steps.*` symbols
+    // CONTROL_FLOW (RFC 0011): each Step's fields see the `Steps.*` symbols
     // of its direct dependencies, and a reference that is not available is
     // explained (see `steps_scope`). The job name and `jobEnvironments`
     // allow no `Steps.*` at all.
@@ -2110,7 +2110,7 @@ pub fn validate_format_strings(
         }
         for (i, env) in envs.iter().enumerate() {
             if cf_active {
-                // RFC 0010 <Environment> enableIf constraint 1: Param.*
+                // RFC 0011 <Environment> enableIf constraint 1: Param.*
                 // (minus PATH), RawParam.*, and Job.Name.
                 validate_enable_if(
                     env.enable_if.as_ref(),
@@ -2171,7 +2171,7 @@ pub fn validate_format_strings(
         let step_template_ev = template_ev.with_steps(step_refs(i, StepsFieldScope::Template));
         let step_host_ev = host_ev.with_steps(step_refs(i, StepsFieldScope::Host));
 
-        // RFC 0010 <StepTemplate> enableIf: target type `bool`, in the
+        // RFC 0011 <StepTemplate> enableIf: target type `bool`, in the
         // restricted scope of `step_enable_if_symtab`.
         if cf_active {
             validate_enable_if(
@@ -2517,7 +2517,7 @@ pub fn validate_format_strings(
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
                 if cf_active {
-                    // RFC 0010 <Environment> enableIf constraint 2: the
+                    // RFC 0011 <Environment> enableIf constraint 2: the
                     // Step's own enableIf scope.
                     validate_enable_if(
                         env.enable_if.as_ref(),

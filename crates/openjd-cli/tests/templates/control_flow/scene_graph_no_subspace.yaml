@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Basic Examples, "Scene-graph DAG",
+# RFC 0011 (openjd-specifications 619d910), Basic Examples, "Scene-graph DAG",
 # without TASK_DEPENDENCIES: the BakeNode self-dependency with
 # dependsOnSubspace is removed, so its Tasks run in Node order.
 specificationVersion: jobtemplate-2023-09

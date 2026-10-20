@@ -160,7 +160,7 @@ therefore do not create a working directory or print session-start banners.
 
 ### CONTROL_FLOW: the scheduler simulator
 
-`CONTROL_FLOW` (RFC 0010) is enabled by default with every other extension. For a Job
+`CONTROL_FLOW` (RFC 0011) is enabled by default with every other extension. For a Job
 whose template lists it, `run` acts as a scheduler would, in a small in-memory simulator
 (`run/simulator.rs`, plan C1). A Job without it has only bound Steps and no job outputs,
 so the simulator only records what ran, and the run's output is unchanged.
@@ -210,7 +210,7 @@ the simulator and is reported as an internal error.
 1. A `Failed` Step does not run. A Step whose dependency in this run failed or is blocked
    becomes `Blocked` and prints `Step 'X' is blocked: its dependency 'P' failed` (or
    `is blocked`). A skipped Step behind a failure stays `SKIPPED`, which is terminal
-   (RFC 0010 §Step states), but never satisfies `dependsOn` (§Conditional execution,
+   (RFC 0011 §Step states), but never satisfies `dependsOn` (§Conditional execution,
    Failure is not skipping): it prints `Step 'S' is skipped and never satisfies dependsOn:
    its dependency 'P' failed`, keeps that as its reason, and its dependents are blocked
    with `its dependency 'S' is skipped but never satisfies dependsOn`. Since a failed Task
@@ -249,7 +249,7 @@ disabled by its enableIf; not entering it`).
 
 **Incomplete producers.** `--maximum-tasks`, `--tasks`, and `--task-param` can leave a
 Step with Tasks that did not run. It is recorded `Succeeded` but its outputs are not given
-to anything (RFC 0010 §Reductions item 3). A Step that reads them becomes `Blocked` with
+to anything (RFC 0011 §Reductions item 3). A Step that reads them becomes `Blocked` with
 `inputs from Step 'P' are incomplete because not all of its Tasks ran`, and a job output
 that reads them is not evaluated. This does not fail the run. A dependent that reads none
 of them runs as before.
@@ -285,7 +285,7 @@ alone is an error (see [parameter-parsing.md](parameter-parsing.md) for its form
 dependency keeps from ever running, as in item 1 (not after an interruption, which stops
 the run without making any Step unable to run; a Step interrupted while its Tasks ran is
 `FAILED` with reason `the run was interrupted`), since the run stops at the first failure before
-reaching them (RFC 0010 §Job outputs item 4: such an output is unavailable, naming the
+reaching them (RFC 0011 §Job outputs item 4: such an output is unavailable, naming the
 Step). It then prints each job output not evaluated and why each Step it waits on has not
 given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
 (or `which is blocked`, `which this run does not run`, `which did not run all of its

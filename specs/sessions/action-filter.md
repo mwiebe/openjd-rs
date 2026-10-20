@@ -215,7 +215,7 @@ or special characters that can't be represented in the simple `NAME=VALUE` forma
 
 ## `openjd_output_var`
 
-RFC 0010 (`CONTROL_FLOW`) adds `openjd_output_var`, which has its own recognizer in
+RFC 0011 (`CONTROL_FLOW`) adds `openjd_output_var`, which has its own recognizer in
 `output_vars.rs` rather than going through `parse_directive`: `parse_directive` matches
 only `openjd_<kind>: ` with a non-empty payload, but the RFC recognizes any line that
 begins with `openjd_output_var:`, with optional whitespace after the colon. So
@@ -240,7 +240,7 @@ check `OutputVars::begin` before `filter_message`; a line it does not claim goes
   `finish_file` accepts the content.
 
 A line that the reader truncated at the line limit, or had to decode with `\xNN`
-escapes because it was not valid UTF-8, is invalid as a directive (RFC 0010 §Limits item
+escapes because it was not valid UTF-8, is invalid as a directive (RFC 0011 §Limits item
 1, §Processing a directive item 9); the discarded remainder of an over-long line is never
 read as a line of its own. After the first invalid directive, later directive lines are
 not processed: the action is already being canceled.

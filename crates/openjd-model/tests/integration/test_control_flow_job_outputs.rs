@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) job outputs: the `jobOutputDefinitions` schema
+//! `CONTROL_FLOW` (RFC 0011) job outputs: the `jobOutputDefinitions` schema
 //! and its structural rules (pass 11), the job output scope and typing of
 //! `value` (pass 8), evaluation at Job creation, and `job_output_inputs` /
 //! `evaluate_job_output`.
@@ -280,7 +280,7 @@ fn job_name_needs_expr() {
             ),
             (
                 "extensions",
-                "CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC 0010).",
+                "CONTROL_FLOW requires EXPR; both must be listed in the template's `extensions` (RFC 0011).",
             ),
         ],
     );

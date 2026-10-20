@@ -66,7 +66,7 @@ is non-terminal.
    - `InvalidOutputVar { fail_message }` → as `CancelMarkFailed`, and the message
      is final for the action: a later `Fail` (such as an `openjd_fail` printed
      by a cancel handler) or `CancelMarkFailed` does not replace it, because
-     RFC 0010 requires the failure of an invalid `openjd_output_var` directive
+     RFC 0011 requires the failure of an invalid `openjd_output_var` directive
      to name the output, the problem, and the text. The flag resets with each
      action.
    - `OutputVar { .. }` changes no field and does not fire this callback; it

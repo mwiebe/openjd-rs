@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) job-side types: `job::OutputVariable` and its
+//! `CONTROL_FLOW` (RFC 0011) job-side types: `job::OutputVariable` and its
 //! constraint checks, `StepBinding`, `PathInput`, the new `job::Step` fields
 //! and their serde defaults, and `create_job` filling them.
 
@@ -144,7 +144,7 @@ fn float_constraints_are_kept() {
 #[test]
 fn range_expr_longer_than_1024_characters_is_accepted_without_max_length() {
     // A RANGE_EXPR job parameter has an implied 1024-character maximum; an
-    // output has only the constraints it declares (RFC 0010 item 6).
+    // output has only the constraints it declares (RFC 0011 item 6).
     let long: String = (0..400)
         .map(|i| (i * 3).to_string())
         .collect::<Vec<_>>()

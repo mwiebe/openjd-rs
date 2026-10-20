@@ -13,7 +13,7 @@
 //! [`FramedLine`], so the caller emits exactly one response per line. A line
 //! carries flags that say whether it was cut to fit a limit or had to be
 //! decoded lossily, because an `openjd_output_var` directive on such a line
-//! is invalid (RFC 0010 §Limits item 1, §Processing a directive item 9).
+//! is invalid (RFC 0011 §Limits item 1, §Processing a directive item 9).
 //!
 //! Deliberately `std` + `serde_json` only: it compiles into the standalone
 //! helper binary (a nested crate that cannot depend on `openjd-sessions`) and
@@ -113,7 +113,7 @@ pub struct FramedLine {
 /// dropped the rest of an over-cap line; its `\r`, if any, was dropped with
 /// it. Only the terminator's `\r` is stripped: the `openjd_output_var`
 /// grammar decides which other whitespace around a value is allowed, so every
-/// reader path must hand it the same text (RFC 0010 §The `openjd_output_var`
+/// reader path must hand it the same text (RFC 0011 §The `openjd_output_var`
 /// directive).
 ///
 /// A cut can split a multi-byte character; the bytes of that character before

@@ -44,7 +44,7 @@ pub use expr_parameters::{
     ListFloatItemConstraints, ListIntItemConstraints, ListListIntItemConstraints,
     ListStringItemConstraints,
 };
-// output_variables (CONTROL_FLOW, RFC 0010)
+// output_variables (CONTROL_FLOW, RFC 0011)
 pub use output_variables::{BoolOrFormatString, JobOutputDefinition, OutputVariableDefinition};
 // step
 pub use step::{SimpleAction, SimpleActionKind, StepDependency, StepScript, StepTemplate};
