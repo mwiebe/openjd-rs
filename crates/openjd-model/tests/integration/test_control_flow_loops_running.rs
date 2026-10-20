@@ -3227,3 +3227,131 @@ fn loop_error_is_caller_error_needs_an_error() {
         "Loop 'L' failed at the boundary of iteration 0, in until:"
     );
 }
+
+// ── Carried-forward checks of body Steps ──────────────────────────
+
+/// A loop whose body Step `W` fails its carried-forward checks when the job
+/// parameter `Q` is 1: in its script's `args`, or in a Step Environment's
+/// `onEnter` command.
+fn bad_body(field: &str) -> Fixture {
+    let (args, env) = match field {
+        "script" => (
+            "\n            args: [\"{{fail('bad arg') if Param.Q == 1 else 'a'}}\"]",
+            "",
+        ),
+        _ => (
+            "",
+            "\n      stepEnvironments:
+      - name: E
+        script:
+          actions:
+            onEnter:
+              command: \"{{fail('bad env') if Param.Q == 1 else 'a'}}\"",
+        ),
+    };
+    Fixture::new(
+        &template(
+            "parameterDefinitions:\n- {name: Q, type: INT, default: 1}\n",
+            &format!(
+                "- name: L\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n    - name: W{env}\n      script:\n        actions:\n          onRun:\n            command: echo{args}\n"
+            ),
+        ),
+        &[],
+    )
+}
+
+#[test]
+fn body_step_carried_forward_checks_run_when_the_iteration_starts() {
+    for (field, path, message) in [
+        (
+            "script",
+            "steps[0] -> loop -> steps[0] -> script -> actions -> onRun -> args[0]",
+            // The carried-forward checks report as template validation does.
+            "Failed to parse interpolation expression at [0, 44]. bad arg\n  fail('bad arg') if Param.Q == 1 else 'a'\n  ^~~~~~~~~~~~~~~",
+        ),
+        (
+            "environment",
+            "steps[0] -> loop -> steps[0] -> stepEnvironments[0] -> script -> actions -> onEnter -> command",
+            "Failed to parse interpolation expression at [0, 44]. bad env\n  fail('bad env') if Param.Q == 1 else 'a'\n  ^~~~~~~~~~~~~~~",
+        ),
+    ] {
+        let fx = bad_body(field);
+        // Nothing of a body Step is evaluated at Job creation.
+        let job = fx.job();
+        let progress = LoopProgress::new(&job.loops[0]).unwrap();
+        let e = start_iteration(
+            &fx.jt,
+            &fx.params,
+            &fx.ctx,
+            &job,
+            0,
+            &progress,
+            &StepInputs::new(),
+            0,
+        )
+        .unwrap_err();
+        assert!(!e.is_caller_error());
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "Step 'L[0].W' failed in its remaining group:\n{}",
+                expected(&[(path, message)])
+            ),
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_known_input_names_the_body_instance() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &format!(
+                "- name: P\n  outputVariables:\n  - {{name: G, type: BOOL}}\n  {SCRIPT}\n- name: L\n  dependencies:\n  - dependsOn: P\n  loop:\n    until: '{{{{true}}}}'\n    maxIterations: 2\n    steps:\n{}{}",
+                body_step("A", "      outputVariables:\n      - {name: X, type: INT}\n"),
+                "    - name: B
+      dependencies:
+      - dependsOn: A
+      enableIf: '{{Steps.P.Output.G}}'
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: F, type: INT, range: '{{[Steps.A.Output.X]}}'}
+      script:
+        actions:
+          onRun:
+            command: echo
+"
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let mut deps = StepInputs::new();
+    super::control_flow_binding_support::succeeded(
+        &mut deps,
+        &job,
+        "P",
+        &[outputs(&[("G", ExprValue::Bool(true))])],
+    );
+    let progress = LoopProgress::new(&job.loops[0]).unwrap();
+    let it = start_iteration(&fx.jt, &fx.params, &fx.ctx, &job, 0, &progress, &deps, 0).unwrap();
+    // B's enablement was decided with P; advancing without P is refused.
+    let e = advance_body_step_binding(
+        &fx.jt,
+        &fx.params,
+        &fx.ctx,
+        &job,
+        0,
+        &progress,
+        &it,
+        1,
+        &StepInputs::new(),
+        0,
+    )
+    .unwrap_err();
+    assert_eq!(
+        caller_error(e),
+        "Compatibility error: the enablement group of Step 'L[0].B' was evaluated with 'Steps.P.Output.G', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped."
+    );
+}

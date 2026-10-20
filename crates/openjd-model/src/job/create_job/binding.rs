@@ -363,7 +363,7 @@ pub(super) fn bind_step(
                     group,
                     ModelError::Compatibility(format!(
                         "the {group} group of Step '{}' was evaluated with '{sym}', which the given inputs do not hold; on each call, pass every producer in the Step's input_producers() whose Tasks are known or that has succeeded or been skipped.",
-                        st.name
+                        site.name
                     )),
                 ));
             }

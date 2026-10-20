@@ -1443,7 +1443,8 @@ pub enum job::LoopErrorField {
 }
 impl Display for job::LoopErrorField;
 
-/// A loop failed at an iteration boundary or when it ended: final.
+/// A loop failed at an iteration boundary or when it ended, which is final;
+/// or, when is_caller_error(), a refused call that says nothing about the loop.
 #[derive(Debug)]
 pub struct job::LoopError {
     pub loop_name: String,
@@ -1453,7 +1454,8 @@ pub struct job::LoopError {
     pub errors: Vec<ModelError>,
 }
 impl job::LoopError {
-    /// Every error is a ModelError::Compatibility (a caller error).
+    /// `errors` is not empty and every error is a ModelError::Compatibility
+    /// (a caller error).
     pub fn is_caller_error(&self) -> bool;
 }
 /// "Loop '<L>' failed at the boundary of iteration <N>, in <field>:" (or
