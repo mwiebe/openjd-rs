@@ -52,7 +52,7 @@ pub struct SessionLimits {
     /// `None` uses [`openjd_expr::path_mapping::DEFAULT_MAX_TRIE_BYTES`]
     /// (30 MiB).
     pub max_path_mapping_trie_bytes: Option<usize>,
-    /// Maximum bytes of output values each Task holds (RFC 0010 §Limits
+    /// Maximum bytes of output values each Task holds (RFC 0011 §Limits
     /// item 2, `CONTROL_FLOW`). `None` uses the RFC's minimum,
     /// [`openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT`] (1 MiB); a smaller
     /// value is raised to it, because a runtime must accept at least that

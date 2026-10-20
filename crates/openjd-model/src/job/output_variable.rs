@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Job-side `CONTROL_FLOW` types (RFC 0010): a Step's output variable
+//! Job-side `CONTROL_FLOW` types (RFC 0011): a Step's output variable
 //! declarations, its binding state, and the path-typed `Steps.*` inputs it
 //! reads.
 //!
@@ -18,12 +18,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{JobParameterType, OutputCollectMode};
 
-/// One output variable declared by a Step (RFC 0010 `<OutputVariableDefinition>`),
+/// One output variable declared by a Step (RFC 0011 `<OutputVariableDefinition>`),
 /// in the form `create_job` stores on [`job::Step`](super::Step).
 ///
 /// The constraint checks apply only the properties the definition declared:
 /// no property that a job parameter of the same type implies when omitted is
-/// checked (RFC 0010 `<OutputVariableDefinition>` item 6).
+/// checked (RFC 0011 `<OutputVariableDefinition>` item 6).
 #[derive(Debug, Clone, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutputVariable {
@@ -473,7 +473,7 @@ fn element_type(ty: JobParameterType) -> Option<JobParameterType> {
     }
 }
 
-/// The binding state of a [`job::Step`](super::Step) (RFC 0010 §Step input
+/// The binding state of a [`job::Step`](super::Step) (RFC 0011 §Step input
 /// binding).
 ///
 /// Step input binding is progressive: a Step's materialization expressions
@@ -513,7 +513,7 @@ impl StepBinding {
 }
 
 /// What is known of a [`StepBinding::PendingInputs`] Step, per
-/// materialization group (RFC 0010 §Materialization groups).
+/// materialization group (RFC 0011 §Materialization groups).
 ///
 /// A pending Step keeps [`job::Step::parameter_space`](super::Step::parameter_space)
 /// and [`host_requirements`](super::Step::host_requirements) as `None`, so a

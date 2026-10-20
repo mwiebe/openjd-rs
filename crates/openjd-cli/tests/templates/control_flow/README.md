@@ -1,6 +1,6 @@
 # CONTROL_FLOW golden tests
 
-Golden-file tests of `openjd` on the sample templates of RFC 0010 (CONTROL_FLOW) and on the
+Golden-file tests of `openjd` on the sample templates of RFC 0011 (CONTROL_FLOW) and on the
 plan's progressive binding templates, run by
 `tests/control_flow_golden/mod.rs` as part of `cli_tests`. Each case runs one `openjd`
 command and compares its normalized output with `<case>.expected.txt` in this directory.

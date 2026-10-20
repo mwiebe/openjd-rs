@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Basic Examples,
+# RFC 0011 (openjd-specifications 619d910), Basic Examples,
 # "Scene-graph DAG", verbatim.
 specificationVersion: jobtemplate-2023-09
 extensions: [EXPR, CONTROL_FLOW, TASK_DEPENDENCIES, FEATURE_BUNDLE_1]

@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `CONTROL_FLOW` (RFC 0010) in the session runtime: the `openjd_output_var`
+//! `CONTROL_FLOW` (RFC 0011) in the session runtime: the `openjd_output_var`
 //! directive, `@` file values, `ActionResult::outputs`, and path-typed
 //! `Steps.*` inputs. Same-user only; the cross-user variants are in
 //! `test_cross_user.rs`.
@@ -1146,7 +1146,7 @@ async fn task_script_reads_a_uri_path_input() {
 #[tokio::test]
 async fn openjd_fail_after_an_invalid_directive_keeps_its_message() {
     // A cancel handler that prints openjd_fail must not replace the reason
-    // RFC 0010 requires: the output, the problem, and the text.
+    // RFC 0011 requires: the output, the problem, and the text.
     let mut f = fixture();
     let d = decls(N_INT);
     let mut script = step(

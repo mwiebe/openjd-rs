@@ -1,4 +1,4 @@
-# RFC 0010 (openjd-specifications 619d910), Basic Examples, "Task metrics from
+# RFC 0011 (openjd-specifications 619d910), Basic Examples, "Task metrics from
 # a parameter sweep", with the parameter space cut from 10x3x3x3 to 2x1x1x1 for
 # a short run.
 specificationVersion: jobtemplate-2023-09

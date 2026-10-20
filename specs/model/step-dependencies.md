@@ -103,7 +103,7 @@ The step graph is fixed: `enableIf` and computed ranges never add or remove edge
 `StepDependencyGraph` is the same for every Job of a template. A `Skipped` Step
 (`job::StepBinding::Skipped`) and a bound Step with an empty parameter space both have
 zero Tasks, and both satisfy the `dependsOn` of the Steps that depend on them once their
-own dependencies are satisfied (RFC 0010 §Conditional execution, §Empty parameter
+own dependencies are satisfied (RFC 0011 §Conditional execution, §Empty parameter
 spaces). A skipped producer's `Steps.*` symbols are `null`; a zero-Task producer's
 `Output` and `TaskParam` lists are `[]`. Scheduling by these rules is the caller's; the
 graph only orders the Steps.
