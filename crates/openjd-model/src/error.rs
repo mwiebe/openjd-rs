@@ -47,7 +47,8 @@ pub enum ModelError {
     /// merges (§1.2.1), or, with `CONTROL_FLOW`, a step input binding call
     /// whose arguments do not match the Job (`advance_step_binding`,
     /// `StepInputs::add_producer`, `attach_step_inputs`): a caller error, not
-    /// a failed Step.
+    /// a failed Step. Also a template with a loop (RFC 0013) passed to
+    /// `create_job`, which does not instantiate loops yet.
     #[error("Compatibility error: {0}")]
     Compatibility(String),
 

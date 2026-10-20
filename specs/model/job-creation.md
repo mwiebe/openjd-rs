@@ -152,7 +152,12 @@ pub fn create_job(
 ) -> Result<job::Job, ModelError>
 ```
 
-Full template instantiation pipeline. Environment templates should
+Full template instantiation pipeline. A template with a loop (`CONTROL_FLOW`, RFC 0013)
+is not supported yet: `create_job` returns `Compatibility("create_job does not support
+loops (RFC 0013) yet: steps[<i>] is loop '<name>'.")` for the first loop, before
+anything else is evaluated. Template validation accepts such a template (see
+[validation.md](validation.md) § Loops), and the rest of this section is about templates
+without loops, whose `steps` are all `StepTemplate`s. Environment templates should
 already be merged into `job_parameter_values` via `preprocess_job_parameters` before
 calling this function. `ctx` carries the model profile and the
 `CallerLimits` that apply to this job instance. Its revision must

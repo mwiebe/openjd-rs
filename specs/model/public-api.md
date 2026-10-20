@@ -67,6 +67,9 @@ The structural template types — `template::JobTemplate`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
 `template::ExtensionName`, `template::BoolOrFormatString`,
 `template::OutputVariableDefinition`, `template::JobOutputDefinition`,
+`template::StepEntry`, `template::StepLoop`, `template::LoopDefinition`,
+`template::LoopVariableDefinition`, `template::LoopOutputVariableDefinition`,
+`template::StepTemplateRef`,
 `template::TaskParameterDefinition`
 and its 5 per-variant inner struct types
 (`IntTaskParameterDefinition`, `FloatTaskParameterDefinition`,
@@ -280,7 +283,10 @@ at job creation allow, in dependency order: a Step may come back `Bound`,
 unresolved. It also stores each `jobOutputDefinitions` entry in
 `job::Job::outputs`, and evaluates each one whose `Steps.*` inputs are
 concrete at creation; a job output that fails there fails `create_job` (see
-[job-outputs.md](job-outputs.md)).
+[job-outputs.md](job-outputs.md)). A template with a loop (RFC 0013) is not
+instantiated yet: `create_job` returns
+`Compatibility("create_job does not support loops (RFC 0013) yet: steps[<i>] is loop '<name>'.")`
+for the first one.
 
 [`advance_step_binding`] moves a pending Step on as upstream values arrive:
 it evaluates each group of the Step whose inputs are now concrete, `enableIf`
@@ -340,7 +346,7 @@ pub struct JobTemplate {
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_output_definitions: Option<Vec<JobOutputDefinition>>,  // CONTROL_FLOW
     pub job_environments: Option<Vec<template::Environment>>,
-    pub steps: Vec<template::StepTemplate>,
+    pub steps: Vec<template::StepEntry>,   // Steps and, with CONTROL_FLOW, loops (RFC 0013)
 }
 ```
 
@@ -353,6 +359,17 @@ impl JobTemplate {
     pub fn parameter_definitions_list(&self) -> &[JobParameterDefinition];
     /// The `jobOutputDefinitions`, empty when there are none.
     pub fn job_output_definitions_list(&self) -> &[JobOutputDefinition];
+
+    /// The top-level Steps, in template order, without the loops. For a
+    /// template without loops, index `i` of this iterator is entry `i`.
+    pub fn top_level_steps(&self) -> impl Iterator<Item = &StepTemplate>;
+    /// The loops (RFC 0013), in template order.
+    pub fn loops(&self) -> impl Iterator<Item = &StepLoop>;
+    /// Whether any entry of `steps` is a loop.
+    pub fn has_loops(&self) -> bool;
+    /// Every `StepTemplate`, top-level or in a loop's body, in template
+    /// order with each loop's body in place of the loop.
+    pub fn step_templates(&self) -> impl Iterator<Item = StepTemplateRef<'_>>;
 
     /// Build a ModelProfile from the template's declared
     /// specificationVersion + extensions. Entries in `extensions` that
@@ -530,6 +547,120 @@ impl template::JobOutputDefinition {
 `BoolOrFormatString`, `OutputVariableDefinition`, and `JobOutputDefinition`
 implement `Deserialize`. See [template-types.md](template-types.md) §
 CONTROL_FLOW Types.
+
+### CONTROL_FLOW Loop Template Types (RFC 0013)
+
+`JobTemplate::steps` holds `StepEntry`s. These are template types only:
+`create_job` returns a `ModelError::Compatibility` error for a template with
+a loop (see [job-creation.md](job-creation.md)).
+
+```rust
+/// One entry of `steps`: a `<StepLoop>` when the mapping has a `loop` key,
+/// a `<StepTemplate>` otherwise.
+#[derive(Debug, Clone)]
+pub enum template::StepEntry {
+    Step(StepTemplate),
+    Loop(StepLoop),
+}
+
+impl template::StepEntry {
+    pub fn name(&self) -> &str;
+    /// Empty when there are none.
+    pub fn dependencies(&self) -> &[StepDependency];
+    pub fn enable_if(&self) -> Option<&BoolOrFormatString>;
+    pub fn as_step(&self) -> Option<&StepTemplate>;
+    pub fn as_loop(&self) -> Option<&StepLoop>;
+}
+
+/// `<StepLoop>`: `deny_unknown_fields`, so `script`, `parameterSpace`,
+/// `hostRequirements`, `stepEnvironments`, and `let` are unknown fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct template::StepLoop {
+    pub name: String,
+    pub description: Option<Description>,
+    pub enable_if: Option<BoolOrFormatString>,
+    pub dependencies: Option<Vec<StepDependency>>,
+    pub loop_definition: LoopDefinition,            // serde name `loop`
+    pub output_variables: Option<Vec<LoopOutputVariableDefinition>>,
+}
+
+impl template::StepLoop {
+    /// Empty when there are none.
+    pub fn variables(&self) -> &[LoopVariableDefinition];
+    /// Empty when there are none.
+    pub fn output_variables_list(&self) -> &[LoopOutputVariableDefinition];
+    pub fn body(&self) -> &[StepTemplate];
+}
+
+/// `<LoopDefinition>`: `deny_unknown_fields`. A body entry with a `loop`
+/// key fails to parse ("loops do not nest").
+#[derive(Debug, Clone, Deserialize)]
+pub struct template::LoopDefinition {
+    pub variables: Option<Vec<LoopVariableDefinition>>,
+    pub while_condition: Option<BoolOrFormatString>,   // serde name `while`
+    pub until_condition: Option<BoolOrFormatString>,   // serde name `until`
+    pub max_iterations: IntOrFormatString,
+    pub steps: Vec<StepTemplate>,
+}
+
+/// `<LoopVariableDefinition>`: the job parameter definition of the
+/// declared type plus `initial` and `next`.
+#[derive(Debug, Clone)]
+pub struct template::LoopVariableDefinition { /* private fields */ }
+
+impl template::LoopVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn initial(&self) -> &FormatString;
+    pub fn next(&self) -> &FormatString;
+    pub fn description(&self) -> Option<&str>;
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// Name, type, and constraints, for `check_constraints`.
+    pub fn to_output_variable(&self) -> job::OutputVariable;
+}
+
+/// `<LoopOutputVariableDefinition>`: the job parameter definition of the
+/// declared type plus `collect` (as written), `value`, and `unit`.
+#[derive(Debug, Clone)]
+pub struct template::LoopOutputVariableDefinition { /* private fields */ }
+
+impl template::LoopOutputVariableDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    /// `None` when omitted; a valid template has `LAST` or `APPEND`.
+    pub fn collect(&self) -> Option<OutputCollectMode>;
+    pub fn value(&self) -> &FormatString;
+    pub fn unit(&self) -> Option<&str>;
+    pub fn description(&self) -> Option<&str>;
+    pub fn definition(&self) -> &JobParameterDefinition;
+    pub fn constraints(&self) -> &job::OutputConstraints;
+    /// Name, type, `collect`, `unit`, and constraints, for
+    /// `check_constraints`, `check_element`, and `check_length`.
+    pub fn to_output_variable(&self) -> job::OutputVariable;
+}
+
+/// A `StepTemplate` with where it is, from `JobTemplate::step_templates`.
+#[derive(Debug, Clone, Copy)]
+pub struct template::StepTemplateRef<'a> {
+    pub step: &'a StepTemplate,
+    /// Its entry in `steps`: its own, or its loop's.
+    pub entry_index: usize,
+    /// Its index in its loop's body; `None` for a top-level Step.
+    pub body_index: Option<usize>,
+    pub step_loop: Option<&'a StepLoop>,
+}
+
+impl template::StepTemplateRef<'_> {
+    /// `steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step.
+    pub fn path(&self) -> Vec<PathElement>;
+}
+```
+
+`StepEntry`, `StepLoop`, `LoopDefinition`, `LoopVariableDefinition`, and
+`LoopOutputVariableDefinition` implement `Deserialize`. See
+[template-types.md](template-types.md) § CONTROL_FLOW Loop Types and
+[validation.md](validation.md) § Loops.
 
 ### Task Parameter Definitions
 
@@ -1280,6 +1411,7 @@ impl Default for ModelProfile { /* ... */ }
 /// Every field is optional; `None` means "no additional restriction."
 #[derive(Debug, Clone, Default)]
 pub struct CallerLimits {
+    /// Each top-level Step, loop, and loop body Step (RFC 0013) counts once.
     pub max_step_count: Option<usize>,
     pub max_env_count: Option<usize>,
     /// With CONTROL_FLOW, checked as each Step's Tasks become known.
@@ -1516,7 +1648,9 @@ pub enum ModelError {
     /// Incompatible env-template parameter merges (§1.2.1); a create_job
     /// context that does not cover the template; with CONTROL_FLOW, a caller
     /// error in step input binding (advance_step_binding,
-    /// StepInputs::add_producer, attach_step_inputs).
+    /// StepInputs::add_producer, attach_step_inputs); a template with a
+    /// loop (RFC 0013) passed to create_job, which does not instantiate
+    /// loops yet.
     Compatibility(String),
 
     /// The `specificationVersion` field named a revision this library

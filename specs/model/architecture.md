@@ -36,7 +36,8 @@ src/
 │   ├── expr_parameters.rs    # EXPR extension parameter types (§2.9-2.16)
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
 │   ├── step.rs               # StepTemplate, SimpleAction (§3)
-│   ├── output_variables.rs   # OutputVariableDefinition, JobOutputDefinition, BoolOrFormatString (CONTROL_FLOW)
+│   ├── output_variables.rs   # OutputVariableDefinition, JobOutputDefinition, LoopVariableDefinition, LoopOutputVariableDefinition, BoolOrFormatString (CONTROL_FLOW)
+│   ├── step_loop.rs          # StepEntry, StepLoop, LoopDefinition, StepTemplateRef (CONTROL_FLOW, RFC 0013)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
 │   ├── actions.rs            # Action, CancelationMode (§5)
 │   ├── host_requirements.rs  # HostRequirements (§3.3)
@@ -50,7 +51,7 @@ src/
 │       ├── task_chunking.rs  # Pass 9: TASK_CHUNKING gating
 │       ├── wrap_actions.rs   # Pass 10: WRAP_ACTIONS gating
 │       ├── control_flow.rs   # Pass 11: CONTROL_FLOW gating and structure
-│       ├── steps_scope.rs    # CONTROL_FLOW Steps.* seeding and reference checks (pass 8, create_job)
+│       ├── steps_scope.rs    # CONTROL_FLOW Steps.* and Loop.* seeding and reference checks (pass 8, create_job)
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.

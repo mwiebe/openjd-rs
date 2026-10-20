@@ -4,7 +4,7 @@
 
 //! Pass 9: TASK_CHUNKING — validate or reject.
 
-use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::error::{path_field, path_index, ValidationErrors};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
@@ -15,8 +15,9 @@ pub fn validate_task_chunking(
 ) {
     let active = ctx.profile.has_extension(ModelExtension::TaskChunking);
 
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+    for st in jt.step_templates() {
+        let step = st.step;
+        let step_path = st.path();
         if let Some(ps) = &step.parameter_space {
             let ps_path = path_field(&step_path, "parameterSpace");
             let tpd_path = path_field(&ps_path, "taskParameterDefinitions");

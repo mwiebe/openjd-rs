@@ -27,6 +27,8 @@ mod test_control_flow_binding;
 mod test_control_flow_job_outputs;
 #[path = "integration/test_control_flow_job_types.rs"]
 mod test_control_flow_job_types;
+#[path = "integration/test_control_flow_loops_validation.rs"]
+mod test_control_flow_loops_validation;
 #[path = "integration/test_control_flow_output_collector.rs"]
 mod test_control_flow_output_collector;
 #[path = "integration/test_control_flow_output_directive.rs"]

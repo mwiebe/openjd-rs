@@ -134,11 +134,11 @@ pub fn validate_wrap_actions_job_template(
     // 2. For each step, count its stepEnvironments' wrap envs and add the
     //    job-env total — that sum is exactly the set of wrap envs reachable
     //    in that step's session.
-    for (i, step) in jt.steps.iter().enumerate() {
-        let Some(envs) = &step.step_environments else {
+    for st in jt.step_templates() {
+        let Some(envs) = &st.step.step_environments else {
             continue;
         };
-        let base = path_index(&path_field(&[], "steps"), i);
+        let base = st.path();
         let envs_path = path_field(&base, "stepEnvironments");
         let mut step_env_wrap_count = 0usize;
         for (j, env) in envs.iter().enumerate() {

@@ -16,6 +16,7 @@ mod job_template;
 mod output_variables;
 mod parameters;
 mod step;
+mod step_loop;
 mod task_parameters;
 pub(crate) mod validate_v2023_09;
 pub(crate) mod validation;
@@ -44,8 +45,13 @@ pub use expr_parameters::{
     ListFloatItemConstraints, ListIntItemConstraints, ListListIntItemConstraints,
     ListStringItemConstraints,
 };
-// output_variables (CONTROL_FLOW, RFC 0011 and RFC 0012)
-pub use output_variables::{BoolOrFormatString, JobOutputDefinition, OutputVariableDefinition};
+// output_variables (CONTROL_FLOW, RFC 0011, RFC 0012, and RFC 0013)
+pub use output_variables::{
+    BoolOrFormatString, JobOutputDefinition, LoopOutputVariableDefinition, LoopVariableDefinition,
+    OutputVariableDefinition,
+};
+// step_loop (CONTROL_FLOW, RFC 0013)
+pub use step_loop::{LoopDefinition, StepEntry, StepLoop, StepTemplateRef};
 // step
 pub use step::{SimpleAction, SimpleActionKind, StepDependency, StepScript, StepTemplate};
 // environment

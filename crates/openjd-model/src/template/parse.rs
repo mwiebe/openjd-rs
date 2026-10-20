@@ -234,17 +234,27 @@ fn collect_written_type_names(
     let Some(steps) = template.get("steps").and_then(|v| v.as_array()) else {
         return;
     };
-    for (i, step) in steps.iter().enumerate() {
-        let space_path = path_field(
-            &path_index(&path_field(&root, "steps"), i),
-            "parameterSpace",
-        );
+    let collect_step = |step: &serde_json::Value, step_path: &[PathElement], out: &mut Vec<_>| {
+        let space_path = path_field(step_path, "parameterSpace");
         collect_from(
             step.get("parameterSpace")
                 .and_then(|s| s.get("taskParameterDefinitions")),
             &path_field(&space_path, "taskParameterDefinitions"),
-            task_names,
+            out,
         );
+    };
+    for (i, step) in steps.iter().enumerate() {
+        let step_path = path_index(&path_field(&root, "steps"), i);
+        collect_step(step, &step_path, task_names);
+        // A loop's body Steps (RFC 0013).
+        let body = step
+            .get("loop")
+            .and_then(|l| l.get("steps"))
+            .and_then(|b| b.as_array());
+        let body_path = path_field(&path_field(&step_path, "loop"), "steps");
+        for (j, body_step) in body.into_iter().flatten().enumerate() {
+            collect_step(body_step, &path_index(&body_path, j), task_names);
+        }
     }
 }
 
