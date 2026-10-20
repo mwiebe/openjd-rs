@@ -30,10 +30,10 @@ The tests run on Linux only, because the samples' `bash` scripts rely on GNU cor
 | `chunked_render_omit_frame.yaml` | as `chunked_render.yaml` | frame 5 reports no `RenderTimeS` |
 | `progressive.yaml`, `progressive_enable_if.yaml`, `progressive_let.yaml` | not RFC samples: the plan's progressive binding tests | — |
 | `refine.yaml` | RFC 0013 Basic Examples, "Render, check, and re-render until clean" | none; run with `Frames=1-4` |
-| `solver.yaml` | RFC 0013 Basic Examples, "Iterative solver" | none; run with `Tolerance=0.01` or `0.1` |
+| `solver.yaml` | RFC 0013 Basic Examples, "Iterative solver" | none; run with `Tolerance=0.01` or `0.1`, or with `StartDamping=0.0015` so that `Damping`'s `next` breaks its `minValue` |
 | `s3_pages.yaml` | RFC 0013 Basic Examples, "Paginated listing, then fan out" | none; listed in pages of two keys with `OPENJD_GOLDEN_S3_PAGE_SIZE=2` |
 | `s3_pages_zero.yaml` | "Paginated listing, then fan out" | `Loop.Iteration == 0 or` removed from `while`, so the loop has zero iterations |
-| `solver_optional.yaml` | "Iterative solver" | an `enableIf` on `Relax` that skips it when `Prepare`'s residual is under the tolerance; the job outputs handle `null` loop outputs |
+| `solver_optional.yaml` | "Iterative solver" | an `enableIf` on `Relax` that skips it when `Prepare`'s residual is under the tolerance; the job outputs handle `null` loop outputs; run with `Tolerance=2` to skip it |
 
 The RFC 0011 and RFC 0012 YAML is from openjd-specifications commit `c3f583b`; it has
 not changed since `619d910`. The RFC 0013 YAML is from `c3f583b`. Each template's first
@@ -79,6 +79,10 @@ duration, also in `--output json`, is `{DURATION}`.
 The harness removes `BASH_ENV`, `ENV`, `CDPATH`, `SHELLOPTS`, `BASHOPTS`, every `PYTHON*`
 variable and the stubs' own `OPENJD_GOLDEN_*` variables from the environment it inherits,
 because they change what the samples print, and then sets the `PYTHON*` variables it needs.
+
+The flag rules for a loop that is the Job's only top-level entry (`--tasks` and
+`--task-param` without `--step`) need a template with no other Step, which none of the RFC 0013
+samples is, so `cli_tests`' `control_flow_loops` module tests them instead of a golden case.
 
 To add a case, add an entry to the `golden!` list in `tests/control_flow_golden/mod.rs` and
 run with `OPENJD_UPDATE_GOLDEN=1`. A test fails if an expected file here has no case.

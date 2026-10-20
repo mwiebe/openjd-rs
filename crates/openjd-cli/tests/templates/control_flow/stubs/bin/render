@@ -2,7 +2,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # Copyright by contributors to this project.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
-"""Deterministic render stub for the render/QC and chunked render samples.
+"""Deterministic render stub for the render/QC, chunked render and RFC 0013
+render-until-clean samples.
 
 Accepts `--scene S --frame F [--samples N] [--safe-mode] [--out O]`. With
 `--out`, writes the frame file with a `noise: X` line, where X comes from the

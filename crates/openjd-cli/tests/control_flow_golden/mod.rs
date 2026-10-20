@@ -71,11 +71,10 @@ fn normalize(text: &str, dir: &str, scratch: &str) -> String {
         let line = line.replace(scratch, "{W}").replace(dir, "{T}");
         let line = match line.strip_prefix("Duration: ") {
             Some(rest) if rest.ends_with(" seconds") => "Duration: {DURATION}".to_string(),
-            // `--output json`.
-            _ if line.trim_start().starts_with("\"duration\": ") => {
-                let indent = &line[..line.len() - line.trim_start().len()];
+            // `--output json`'s top-level field, which is indented two spaces.
+            _ if line.starts_with("  \"duration\": ") => {
                 let comma = if line.ends_with(',') { "," } else { "" };
-                format!("{indent}\"duration\": {{DURATION}}{comma}")
+                format!("  \"duration\": {{DURATION}}{comma}")
             }
             _ => line,
         };
@@ -531,11 +530,12 @@ golden! {
         env: NO_ENV, s3: None,
     };
     // Prepare's residual, 1.0, is under Tolerance=2, so Relax's enableIf is
-    // false at run time: the loop is skipped and its outputs are null.
+    // false at run time: the loop is skipped, and --output json shows both of
+    // its outputs as null (not [] for the APPEND one).
     solver_optional_skipped: Case {
         name: "solver_optional.skipped",
         args: &["run", "{T}/solver_optional.yaml", "-p", "Mesh={T}/fixtures/mesh.txt",
-            "-p", "WorkDir={W}/work", "-p", "Tolerance=2"],
+            "-p", "WorkDir={W}/work", "-p", "Tolerance=2", "--output", "json"],
         env: NO_ENV, s3: None,
     };
     // summary shows a loop pending on its dependency for its enableIf and start.
