@@ -1,0 +1,48 @@
+$ openjd summary {T}/refine.yaml -p SceneFile={T}/fixtures/refine.scene
+exit code: 0
+--- stdout
+
+--- Summary for 'Render refine until clean' ---
+
+Parameters:
+  - SceneFile (PATH): {T}/fixtures/refine.scene
+  - Frames (RANGE_EXPR): 1-240
+  - OutputPattern (PATH): {T}/out/beauty_####.exr
+  - OutputVideo (PATH): {T}/out/beauty.mp4
+  - StartSamples (INT): 64
+  - NoiseThreshold (FLOAT): 0.02
+  - MaxPasses (INT): 6
+
+Total steps: 3
+Total loops: 1
+Total tasks: 1 + (determined at run time)
+Total environments: 0
+
+--- Steps in 'Render refine until clean' ---
+
+1. 'Refine' (loop; Tasks determined at run time)
+  Condition: until
+  maxIterations: 6
+  Loop variables:
+    - Samples (INT)
+    - Frames (LIST[INT])
+  Loop outputs:
+    - FinalSamples (INT, LAST)
+    - NoisyFrameCounts (LIST[INT], APPEND)
+    - MeanNoise (LIST[FLOAT], APPEND)
+  Body Steps (Tasks determined at run time in each iteration):
+    - 'RenderPass'
+      Task parameters:
+        - Frame (INT)
+    - 'CheckPass'
+      1 dependencies
+
+2. 'EncodeVideo' (1 total Tasks)
+  1 dependencies
+
+
+--- Job outputs in 'Render refine until clean' ---
+  - Passes (INT): pending; waits for Steps.Refine.Output.NoisyFrameCounts
+  - FinalSamples (INT): pending; waits for Steps.Refine.Output.FinalSamples
+
+--- stderr

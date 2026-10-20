@@ -1,0 +1,24 @@
+$ openjd summary {T}/refine.yaml --step Refine -p SceneFile={T}/fixtures/refine.scene
+exit code: 0
+--- stdout
+
+--- Summary for loop 'Refine' in Job 'Render refine until clean' ---
+
+State: READY (loop; Tasks determined at run time)
+Condition: until
+maxIterations: 6
+Loop variables:
+  - Samples (INT)
+  - Frames (LIST[INT])
+Loop outputs:
+  - FinalSamples (INT, LAST)
+  - NoisyFrameCounts (LIST[INT], APPEND)
+  - MeanNoise (LIST[FLOAT], APPEND)
+Body Steps (Tasks determined at run time in each iteration):
+  - 'RenderPass'
+    Task parameters:
+      - Frame (INT)
+  - 'CheckPass'
+    1 dependencies
+
+--- stderr

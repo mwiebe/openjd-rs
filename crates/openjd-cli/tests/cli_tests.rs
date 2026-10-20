@@ -6776,7 +6776,7 @@ steps:
 }
 
 // ============================================================
-// CONTROL_FLOW: golden-file tests of the RFC 0011 and RFC 0012 sample templates
+// CONTROL_FLOW: golden-file tests of the RFC 0011, 0012, and 0013 sample templates
 // ============================================================
 
 #[cfg(target_os = "linux")]
