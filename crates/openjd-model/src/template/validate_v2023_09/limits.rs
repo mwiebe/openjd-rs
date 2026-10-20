@@ -45,9 +45,22 @@ pub fn enforce_limits(jt: &JobTemplate, limits: &EffectiveLimits, errors: &mut V
         }
     }
 
-    // Steps
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
+    // Loops (RFC 0013): the name, as for a Step
+    for (i, entry) in jt.steps.iter().enumerate() {
+        if let StepEntry::Loop(l) = entry {
+            if l.name.chars().count() > limits.max_step_name_len {
+                errors.add(
+                    &path_field(&path_index(&path_field(&root, "steps"), i), "name"),
+                    format!("exceeds {} characters.", limits.max_step_name_len),
+                );
+            }
+        }
+    }
+
+    // Steps, top-level and in loop bodies
+    for st in jt.step_templates() {
+        let step = st.step;
+        let step_path = st.path();
         let name = &step.name;
         if name.chars().count() > limits.max_step_name_len {
             errors.add(

@@ -30,7 +30,7 @@ use openjd_model::template::{
     JobRangeExprParameterDefinition, JobStringParameterDefinition, JobTemplate,
     ListFloatUserInterface, ListIntUserInterface, ListPathUserInterface, ListSimpleUserInterface,
     PathTaskParameterDefinition, PathUserInterface, RangeConstraint, RangeExprUserInterface,
-    SimpleAction, StepActions, StepDependency, StepParameterSpaceDefinition, StepScript,
+    SimpleAction, StepActions, StepDependency, StepEntry, StepParameterSpaceDefinition, StepScript,
     StepTemplate, StringRange, StringTaskParameterDefinition, StringUserInterface,
     TaskParameterDefinition,
 };
@@ -139,9 +139,10 @@ fn job_template_field_access() {
     assert_eq!(exts.len(), 1);
     assert_eq!(exts[0].as_str(), "FEATURE_BUNDLE_1");
 
-    // Steps as `Vec<StepTemplate>`.
-    let steps: &Vec<StepTemplate> = &jt.steps;
-    assert_eq!(steps.len(), 2);
+    // Steps as `Vec<StepEntry>`, each a `StepTemplate` here.
+    let entries: &Vec<StepEntry> = &jt.steps;
+    assert_eq!(entries.len(), 2);
+    let steps: Vec<&StepTemplate> = jt.top_level_steps().collect();
     assert_eq!(steps[0].name, "S0");
     assert_eq!(steps[1].name, "S1");
 
@@ -189,7 +190,7 @@ fn step_template_full_surface() {
         ]
     }"#,
     );
-    let s = &jt.steps[0];
+    let s = &jt.steps[0].as_step().unwrap();
 
     assert_eq!(s.name, "S");
     assert_eq!(s.description.as_ref().unwrap().0, "a step");
@@ -243,7 +244,7 @@ fn simple_action_sugar_field_access() {
         &["FEATURE_BUNDLE_1"],
     );
 
-    let s = &jt.steps[0];
+    let s = &jt.steps[0].as_step().unwrap();
     assert!(s.script.is_none());
     let bash: &SimpleAction = s.bash.as_ref().unwrap();
     assert_eq!(bash.script.raw(), "echo hi");
@@ -570,8 +571,15 @@ fn function_signature_takes_template_types_by_reference() {
     }"#,
     );
 
-    assert_eq!(step_name(&jt.steps[0]), "Hello");
-    let on_run = &jt.steps[0].script.as_ref().unwrap().actions.on_run;
+    assert_eq!(step_name(jt.steps[0].as_step().unwrap()), "Hello");
+    let on_run = &jt.steps[0]
+        .as_step()
+        .unwrap()
+        .script
+        .as_ref()
+        .unwrap()
+        .actions
+        .on_run;
     assert_eq!(count_args(on_run), 3);
 }
 
@@ -594,7 +602,12 @@ fn task_parameter_definition_int_variant_field_access() {
         }]
     }"#,
     );
-    let ps: &StepParameterSpaceDefinition = jt.steps[0].parameter_space.as_ref().unwrap();
+    let ps: &StepParameterSpaceDefinition = jt.steps[0]
+        .as_step()
+        .unwrap()
+        .parameter_space
+        .as_ref()
+        .unwrap();
     assert_eq!(ps.task_parameter_definitions.len(), 1);
     match &ps.task_parameter_definitions[0] {
         TaskParameterDefinition::INT(p) => {
@@ -630,6 +643,8 @@ fn task_parameter_definition_int_range_expression() {
     }"#,
     );
     match &jt.steps[0]
+        .as_step()
+        .unwrap()
         .parameter_space
         .as_ref()
         .unwrap()
@@ -665,6 +680,8 @@ fn task_parameter_definition_float_variant_field_access() {
         &["EXPR"],
     );
     match &jt.steps[0]
+        .as_step()
+        .unwrap()
         .parameter_space
         .as_ref()
         .unwrap()
@@ -705,6 +722,8 @@ fn task_parameter_definition_string_path_variants() {
     }"#,
     );
     let defs = &jt.steps[0]
+        .as_step()
+        .unwrap()
         .parameter_space
         .as_ref()
         .unwrap()
@@ -766,6 +785,8 @@ fn task_parameter_definition_chunk_int_with_chunks_definition() {
         &["TASK_CHUNKING"],
     );
     match &jt.steps[0]
+        .as_step()
+        .unwrap()
         .parameter_space
         .as_ref()
         .unwrap()
@@ -822,6 +843,8 @@ fn chunks_definition_format_string_default_task_count() {
         &["TASK_CHUNKING", "EXPR"],
     );
     match &jt.steps[0]
+        .as_step()
+        .unwrap()
         .parameter_space
         .as_ref()
         .unwrap()

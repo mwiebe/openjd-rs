@@ -35,13 +35,21 @@ pub struct JobTemplate {
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub job_output_definitions: Option<Vec<JobOutputDefinition>>,  // CONTROL_FLOW
     pub job_environments: Option<Vec<Environment>>,
-    pub steps: Vec<StepTemplate>,
+    pub steps: Vec<StepEntry>,                              // StepTemplate | StepLoop
 }
 ```
 
 Helpers: `parameter_definitions_list()` returns `&[JobParameterDefinition]`, and
 `job_output_definitions_list()` returns `&[JobOutputDefinition]`, each defaulting to an
-empty slice when the field is `None`.
+empty slice when the field is `None`. For the `steps` list, which with `CONTROL_FLOW`
+may hold loops (RFC 0013; see [CONTROL_FLOW Loop Types](#control_flow-loop-types-rfc-0013)):
+`top_level_steps()` yields the top-level `StepTemplate`s in template order, `loops()` the
+`StepLoop`s, `has_loops()` says whether there are any, and `step_templates()` yields every
+`StepTemplate`, top-level or in a body, as a `StepTemplateRef` with its location and its
+error path (`steps[i]` or `steps[i] -> loop -> steps[j]`). The validation passes iterate
+`step_templates()`, so every per-Step rule applies to a body Step at its own path. For a
+template without loops, `top_level_steps()` is every entry, in order, which is what
+`create_job` relies on.
 
 ### EnvironmentTemplate (§1.2)
 
@@ -486,6 +494,95 @@ pub enum OutputCollectMode { #[default] Once, Last, Append }
 
 Defined in `types` because both the template and the job types use it. Serializes as
 `ONCE`, `LAST`, `APPEND`; matching is case-sensitive.
+
+## CONTROL_FLOW Loop Types (RFC 0013)
+
+RFC 0013 adds multi-Step loops to `CONTROL_FLOW`. These are template types only:
+`create_job` rejects a template with a loop until loop instantiation is implemented
+([job-creation.md](job-creation.md)).
+
+### StepEntry
+
+```rust
+pub enum StepEntry { Step(StepTemplate), Loop(StepLoop) }
+```
+
+One entry of `steps` (RFC 0013 §Job Template). Its `Deserialize` reads the entry as a
+mapping and chooses `Loop` when it has a `loop` key and `Step` otherwise, then
+deserializes that shape, so a malformed entry gets the errors of the shape it chose:
+`unknown field `script`` for a loop with a script, rather than an untagged-enum error
+that names neither shape. Without `CONTROL_FLOW` a `loop` entry still parses as a
+`StepLoop`, and pass 11 reports it at `steps[i] -> loop`. The accessors `name()`,
+`dependencies()` (empty when absent), and `enable_if()` read either shape, and
+`as_step()` and `as_loop()` select one.
+
+### StepLoop and LoopDefinition
+
+```rust
+pub struct StepLoop {
+    pub name: String,
+    pub description: Option<Description>,
+    pub enable_if: Option<BoolOrFormatString>,
+    pub dependencies: Option<Vec<StepDependency>>,
+    pub loop_definition: LoopDefinition,                       // `loop`
+    pub output_variables: Option<Vec<LoopOutputVariableDefinition>>,
+}
+
+pub struct LoopDefinition {
+    pub variables: Option<Vec<LoopVariableDefinition>>,
+    pub while_condition: Option<BoolOrFormatString>,           // `while`
+    pub until_condition: Option<BoolOrFormatString>,           // `until`
+    pub max_iterations: IntOrFormatString,
+    pub steps: Vec<StepTemplate>,
+}
+```
+
+Both use `deny_unknown_fields`, so a loop with `script`, `parameterSpace`,
+`hostRequirements`, `stepEnvironments`, or `let` fails as an unknown field of a loop, and
+a missing `maxIterations` as `missing field `maxIterations``. `while` and `until` are
+both optional here so that pass 11 can report "exactly one" at `steps[i] -> loop`. The
+body is deserialized element by element: an element with a `loop` key fails with
+`loop body entry <j> '<name>' has a 'loop' field, but loops do not nest: a loop's body
+may contain only Steps (RFC 0013).`, and every other element is a `StepTemplate`.
+`StepLoop::variables()`, `output_variables_list()`, and `body()` return slices, empty
+when a list is absent.
+
+### LoopVariableDefinition
+
+One `<LoopVariableDefinition>`. It wraps the `JobParameterDefinition` of the declared
+type, as `OutputVariableDefinition` does, and is deserialized the same way after
+`initial` and `next` (format strings, both required) are removed. A missing one reads
+`missing 'initial' field in loop variable definition` (or `'next'`). `collect` and `unit`
+are recorded with `default`, `userInterface`, and `dataFlow`, so pass 11 reports each at
+its own path (`is not allowed in a loop variable definition.`), and an unknown field lists
+`initial` and `next` as the extra fields. The accessors are `name`, `job_param_type`,
+`initial`, `next`, `description`, `definition`, `constraints`, and `to_output_variable`,
+whose `check_constraints` checks every value the variable takes.
+
+### LoopOutputVariableDefinition
+
+One `<LoopOutputVariableDefinition>`: as a `JobOutputDefinition` (`value` required:
+`missing 'value' field in loop output definition`), plus `collect` and `unit`. `collect`
+is kept as written, `None` when omitted, because it is required and `ONCE` is not allowed:
+pass 11 reports both at `steps[i] -> outputVariables[k] -> collect`. An unknown field
+lists `collect`, `value`, and `unit`. The accessors are `name`, `job_param_type`,
+`collect`, `value`, `unit`, `description`, `definition`, `constraints`, and
+`to_output_variable` (with `collect` defaulted to `ONCE` when it was omitted), whose
+`check_constraints`, `check_element`, and `check_length` apply the constraint properties
+as RFC 0013 §`<LoopOutputVariableDefinition>` item 6 says.
+
+### StepTemplateRef
+
+```rust
+pub struct StepTemplateRef<'a> {
+    pub step: &'a StepTemplate,
+    pub entry_index: usize,          // its own entry, or its loop's
+    pub body_index: Option<usize>,   // None for a top-level Step
+    pub step_loop: Option<&'a StepLoop>,
+}
+```
+
+What `JobTemplate::step_templates()` yields. `path()` is the Step's validation-error path.
 
 ## Flexible Deserialization Types
 

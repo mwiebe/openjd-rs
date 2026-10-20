@@ -333,7 +333,7 @@ fn environment_template_without_control_flow_is_unchanged() {
 fn enable_if_accepts_a_bool_or_a_format_string() {
     let jt = decode_ok(&job("[EXPR, CONTROL_FLOW]", &["enableIf: false"]));
     assert!(matches!(
-        jt.steps[0].enable_if,
+        jt.steps[0].as_step().unwrap().enable_if,
         Some(BoolOrFormatString::Bool(false))
     ));
 
@@ -341,7 +341,7 @@ fn enable_if_accepts_a_bool_or_a_format_string() {
         "[EXPR, CONTROL_FLOW]",
         &["enableIf: '{{Job.Name == \"J\"}}'"],
     ));
-    match &jt.steps[0].enable_if {
+    match &jt.steps[0].as_step().unwrap().enable_if {
         Some(BoolOrFormatString::FormatString(fs)) => {
             assert_eq!(fs.raw(), "{{Job.Name == \"J\"}}")
         }
@@ -388,7 +388,13 @@ steps:
         Some(BoolOrFormatString::Bool(true))
     ));
     assert!(matches!(
-        jt.steps[0].step_environments.as_ref().unwrap()[0].enable_if,
+        jt.steps[0]
+            .as_step()
+            .unwrap()
+            .step_environments
+            .as_ref()
+            .unwrap()[0]
+            .enable_if,
         Some(BoolOrFormatString::Bool(false))
     ));
 }
@@ -414,7 +420,12 @@ fn every_output_variable_type_is_accepted() {
         ("LIST[LIST[INT]]", JobParameterType::ListListInt),
     ] {
         let jt = decode_ok(&with_outputs(&format!("[{{name: V, type: '{ty}'}}]")));
-        let ov = &jt.steps[0].output_variables.as_ref().unwrap()[0];
+        let ov = &jt.steps[0]
+            .as_step()
+            .unwrap()
+            .output_variables
+            .as_ref()
+            .unwrap()[0];
         assert_eq!(ov.name(), "V");
         assert_eq!(ov.job_param_type(), expected, "type {ty}");
         assert_eq!(ov.collect(), OutputCollectMode::Once);
@@ -427,7 +438,12 @@ fn output_variable_type_names_are_case_insensitive() {
     let jt = decode_ok(&with_outputs(
         "[{name: A, type: 'list[int]'}, {name: B, type: Float}]",
     ));
-    let ovs = jt.steps[0].output_variables.as_ref().unwrap();
+    let ovs = jt.steps[0]
+        .as_step()
+        .unwrap()
+        .output_variables
+        .as_ref()
+        .unwrap();
     assert_eq!(ovs[0].job_param_type(), JobParameterType::ListInt);
     assert_eq!(ovs[1].job_param_type(), JobParameterType::Float);
 }
@@ -495,7 +511,12 @@ fn output_variable_description_is_kept() {
     let jt = decode_ok(&with_outputs(
         "[{name: T, type: FLOAT, description: Render time, unit: s}]",
     ));
-    let ov = &jt.steps[0].output_variables.as_ref().unwrap()[0];
+    let ov = &jt.steps[0]
+        .as_step()
+        .unwrap()
+        .output_variables
+        .as_ref()
+        .unwrap()[0];
     assert_eq!(ov.description(), Some("Render time"));
     assert_eq!(ov.unit(), Some("s"));
     assert!(matches!(ov.definition(), JobParameterDefinition::FLOAT(_)));
@@ -515,7 +536,16 @@ fn n_outputs(n: usize) -> String {
 #[test]
 fn thirty_two_outputs_are_accepted() {
     let jt = decode_ok(&with_outputs(&n_outputs(32)));
-    assert_eq!(jt.steps[0].output_variables.as_ref().unwrap().len(), 32);
+    assert_eq!(
+        jt.steps[0]
+            .as_step()
+            .unwrap()
+            .output_variables
+            .as_ref()
+            .unwrap()
+            .len(),
+        32
+    );
 }
 
 #[test]
@@ -683,7 +713,12 @@ fn object_type_is_accepted_on_paths() {
     let jt = decode_ok(&with_outputs(
         "[{name: P, type: PATH, objectType: FILE}, {name: L, type: 'LIST[PATH]', objectType: DIRECTORY}]",
     ));
-    let ovs = jt.steps[0].output_variables.as_ref().unwrap();
+    let ovs = jt.steps[0]
+        .as_step()
+        .unwrap()
+        .output_variables
+        .as_ref()
+        .unwrap();
     assert_eq!(
         ovs[0].definition().path_properties(),
         (Some(openjd_model::ObjectType::File), None)
@@ -780,6 +815,8 @@ fn collect_modes_are_parsed() {
         "[{name: A, type: INT}, {name: B, type: INT, collect: ONCE}, {name: C, type: INT, collect: LAST}, {name: D, type: 'LIST[INT]', collect: APPEND}]",
     ));
     let modes: Vec<_> = jt.steps[0]
+        .as_step()
+        .unwrap()
         .output_variables
         .as_ref()
         .unwrap()
@@ -859,7 +896,13 @@ fn unit_of_32_characters_is_accepted() {
         "[{{name: 'N', type: INT, unit: '{unit}'}}]"
     )));
     assert_eq!(
-        jt.steps[0].output_variables.as_ref().unwrap()[0].unit(),
+        jt.steps[0]
+            .as_step()
+            .unwrap()
+            .output_variables
+            .as_ref()
+            .unwrap()[0]
+            .unit(),
         Some(unit.as_str())
     );
 }
@@ -1034,7 +1077,12 @@ fn explicit_null_properties_are_omitted() {
     let jt = decode_ok(&with_outputs(
         "[{name: P, type: PATH, collect: null, unit: null, default: null, userInterface: null, dataFlow: null}]",
     ));
-    let ov = &jt.steps[0].output_variables.as_ref().unwrap()[0];
+    let ov = &jt.steps[0]
+        .as_step()
+        .unwrap()
+        .output_variables
+        .as_ref()
+        .unwrap()[0];
     assert_eq!(ov.collect(), OutputCollectMode::Once);
     assert_eq!(ov.unit(), None);
 }

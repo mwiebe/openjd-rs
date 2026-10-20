@@ -203,8 +203,8 @@ fn prepare_selection(
         // Whether the Step has a parameterSpace is fixed by the template,
         // even for a Step pending inputs, whose space is not materialized.
         let has_space = job_template
-            .steps
-            .get(selected_idx)
+            .top_level_steps()
+            .nth(selected_idx)
             .map_or(selected.parameter_space.is_some(), |t| {
                 t.parameter_space.is_some()
             });

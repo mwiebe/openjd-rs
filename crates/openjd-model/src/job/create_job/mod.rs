@@ -133,6 +133,10 @@ impl EvalBudgets {
 /// [`evaluate_job_output`]. A job output that fails to evaluate, convert, or
 /// meet its constraints fails `create_job`, every such failure reported
 /// together.
+///
+/// A template with a loop (`CONTROL_FLOW`, RFC 0013) is not supported yet:
+/// it passes template validation, and `create_job` returns a
+/// `Compatibility` error that names the first loop.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -173,6 +177,19 @@ pub fn create_job(
              missing {}. An application that does not support an extension should reject \
              the template at decode via its supported-extensions list.",
             missing.join(", "),
+        )));
+    }
+
+    // Loops (RFC 0013) are validated, but not yet instantiated.
+    if let Some((i, l)) = job_template
+        .steps
+        .iter()
+        .enumerate()
+        .find_map(|(i, e)| e.as_loop().map(|l| (i, l)))
+    {
+        return Err(ModelError::Compatibility(format!(
+            "create_job does not support loops (RFC 0013) yet: steps[{i}] is loop '{}'.",
+            l.name
         )));
     }
 
@@ -330,7 +347,8 @@ pub fn create_job(
         )?
     } else {
         let mut steps = Vec::with_capacity(job_template.steps.len());
-        for (step_index, st) in job_template.steps.iter().enumerate() {
+        // No loops (rejected above), so these are all the entries.
+        for (step_index, st) in job_template.top_level_steps().enumerate() {
             steps.push(instantiate::instantiate_step(
                 st,
                 &symtab,
