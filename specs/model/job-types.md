@@ -136,7 +136,8 @@ that runs the job. The worker evaluates the format strings that remain unresolve
 creation, so `resolved_symtab` is filtered to contain exactly the symbols referenced by
 those format strings. For a Step, these are: the step script's actions (command, args,
 timeout, cancelation), embedded files, script-level let bindings, step-level let bindings,
-and any step-scoped environments' variables, actions, and embedded files. Most of these are
+and any step-scoped environments' variables, actions, embedded files, and script-level let
+bindings. Most of these are
 host-context (SESSION and TASK scope); timeout and notifyPeriodInSeconds are template scope
 (validation rejects `Session.*`/`Task.*`/`Env.File.*` in them) but still resolve on the
 worker, referencing only the job-creation-stage symbols carried in `resolved_symtab`.

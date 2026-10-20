@@ -404,11 +404,15 @@ impl fmt::Display for LoopError {
             None => "after zero iterations".to_string(),
         };
         if self.is_caller_error() {
-            write!(
-                f,
-                "Evaluating loop '{}' {at} was refused, in {}:",
-                self.loop_name, self.field
-            )?;
+            // A refused call says nothing about the loop's iterations.
+            let call = match self.iteration {
+                Some(n) => format!(
+                    "Evaluating the boundary of iteration {n} of loop '{}'",
+                    self.loop_name
+                ),
+                None => format!("Ending loop '{}' without iterations", self.loop_name),
+            };
+            write!(f, "{call} was refused, in {}:", self.field)?;
         } else {
             write!(
                 f,

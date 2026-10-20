@@ -1206,6 +1206,138 @@ async fn task_script_reads_loop_path_variables() {
     );
 }
 
+/// The body Step instance `W` of iteration `n` of a loop built by the model
+/// (`create_job`, then the loop functions), whose `PATH` variable `D` starts
+/// at `/src/base` and gets `/x` appended each iteration, and whose `INT`
+/// variable `K` is 7. `W`'s script and its Step Environment `E` (variables,
+/// script `let`, and `onEnter`) read `Loop.*` and `RawLoop.*`; `E` appends
+/// what it reads to `trace`.
+fn model_loop_instance(trace: &std::path::Path, n: u32) -> openjd_model::job::Step {
+    let template = format!(
+        r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+- name: L
+  loop:
+    variables:
+    - {{name: D, type: PATH, initial: /src/base, next: "{{{{RawLoop.D + '/x'}}}}"}}
+    - {{name: K, type: INT, initial: "{{{{7}}}}", next: "{{{{Loop.K}}}}"}}
+    until: "{{{{false}}}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      stepEnvironments:
+      - name: E
+        variables:
+          EV: "{{{{Loop.D}}}}"
+        script:
+          let: ["d = Loop.D", "r = RawLoop.D", "k = Loop.K + Loop.Iteration"]
+          actions:
+            onEnter:
+              command: sh
+              args: ["-c", 'echo "env=$EV d={{{{d}}}} r={{{{r}}}} k={{{{k}}}}" >> {}']
+      script:
+        actions:
+          onRun:
+            command: sh
+            args: ["-c", "echo D={{{{Loop.D}}}} R={{{{RawLoop.D}}}} N={{{{Loop.D.name}}}} I={{{{Loop.Iteration}}}}"]
+"#,
+        trace.display()
+    );
+    let value: serde_json::Value = serde_saphyr::from_str(&template).unwrap();
+    let jt = openjd_model::decode_job_template(
+        value,
+        Some(&["EXPR", "CONTROL_FLOW"]),
+        &openjd_model::CallerLimits::default(),
+    )
+    .unwrap();
+    let params = openjd_model::preprocess_job_parameters(
+        &jt,
+        &Default::default(),
+        &[],
+        &openjd_model::PathParameterOptions::new("/t", "/t"),
+    )
+    .unwrap();
+    let ctx = jt.default_validation_context();
+    let job = openjd_model::create_job(&jt, &params, &ctx).unwrap();
+    let inputs = openjd_model::job::StepInputs::new();
+    let mut progress = openjd_model::job::LoopProgress::new(&job.loops[0]).unwrap();
+    for _ in 0..n {
+        match openjd_model::evaluate_iteration_boundary(
+            &jt, &params, &ctx, &job, 0, &progress, &inputs,
+        )
+        .unwrap()
+        {
+            openjd_model::job::BoundaryOutcome::Continue(next) => progress = next,
+            other => panic!("{other:?}"),
+        }
+    }
+    let it =
+        openjd_model::start_iteration(&jt, &params, &ctx, &job, 0, &progress, &inputs, 0).unwrap();
+    it.steps.into_iter().next().unwrap()
+}
+
+#[tokio::test]
+async fn a_model_built_loop_instance_runs_with_its_loop_values_mapped() {
+    for n in [0, 1] {
+        let mut f = fixture_with(
+            true,
+            true,
+            Some(vec![rule("/src", "/mnt/dst")]),
+            Default::default(),
+        );
+        let trace = f.wd().join("trace");
+        let w = model_loop_instance(&trace, n);
+        let base = w.resolved_symtab.as_ref();
+        let env = &w.step_environments.as_ref().unwrap()[0];
+        let options = EnvironmentOptions {
+            origin: EnvironmentOrigin::JobTemplate,
+            path_inputs: &w.path_inputs,
+        };
+        let id = f
+            .session
+            .enter_environment(env, base, None, None, &options)
+            .await
+            .unwrap();
+        let r = f
+            .session
+            .run_task(
+                "W",
+                &w.script,
+                None,
+                base,
+                None,
+                &RunTaskOptions {
+                    output_variables: None,
+                    path_inputs: &w.path_inputs,
+                },
+            )
+            .await
+            .unwrap();
+        f.session
+            .exit_environment(&id, base, true, None, &options)
+            .await
+            .unwrap();
+        assert_eq!(r.state, ActionState::Success, "{}", f.fail_message());
+        let (mapped, raw, name) = if n == 0 {
+            ("/mnt/dst/base", "/src/base", "base")
+        } else {
+            ("/mnt/dst/base/x", "/src/base/x", "x")
+        };
+        assert!(
+            r.stdout
+                .contains(&format!("D={mapped} R={raw} N={name} I={n}")),
+            "{}",
+            r.stdout
+        );
+        assert_eq!(
+            std::fs::read_to_string(&trace).unwrap(),
+            format!("env={mapped} d={mapped} r={raw} k={}\n", 7 + n)
+        );
+    }
+}
+
 #[tokio::test]
 async fn task_script_reads_a_uri_path_input() {
     // A URI output is stored unchanged; with no rule for it both forms are

@@ -6416,13 +6416,13 @@ steps:
         assert_eq!(code, 0, "{stdout}");
         for command in ["run", "summary"] {
             let (code, stdout, stderr) = run_cli(&[command, path]);
-            assert_ne!(code, 0, "{stdout}");
-            let expected = format!(
-                "openjd {command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop 'L'."
-            );
-            assert!(
-                stdout.contains(&expected) || stderr.contains(&expected),
-                "stdout: {stdout}\nstderr: {stderr}"
+            assert_eq!(code, 1, "{stdout}");
+            assert_eq!(stdout, "");
+            assert_eq!(
+                stderr.trim_end(),
+                format!(
+                    "ERROR: openjd {command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop 'L'."
+                )
             );
         }
     }
