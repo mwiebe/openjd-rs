@@ -1424,7 +1424,7 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   L2 asserting path and message, including each `Loop.*` and `Steps.*` message; the seeded types of a loop's
   symbols for `until`, `while`, and `enableIf` loops, checked as `ExprType`; a template without loops whose errors
   and serialized `job::Job` are unchanged; and the step-count limit counting body Steps (A18).
-* Loop binding and iterations (`tests/integration/test_control_flow_loops.rs`), one test per case:
+* Loop binding and iterations (`tests/integration/test_control_flow_loops_running.rs`), one test per case:
   * `create_job`: a loop bound at creation; one pending on a dependency's output; a static skip that evaluates
     nothing else; `maxIterations` from a parameter, and 0 and 1,001 from a parameter failing `create_job`; an
     `initial` constraint violation and a first `while` that is `null`, each failing `create_job`; a body Step whose

@@ -366,7 +366,9 @@ impl fmt::Display for LoopErrorField {
 }
 
 /// A loop that failed at an iteration boundary or when it ended (RFC 0013
-/// §Failure). Every such failure is final.
+/// §Failure), which is final; or, when
+/// [`is_caller_error`](Self::is_caller_error) is `true`, a call the loop
+/// functions refused, which says nothing about the loop.
 #[derive(Debug)]
 pub struct LoopError {
     /// The loop's name.
