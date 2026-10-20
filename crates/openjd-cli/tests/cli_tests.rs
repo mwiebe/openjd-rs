@@ -7002,12 +7002,30 @@ steps:
             "range: \"{{[1, 2] if Loop.Iteration == 0 else fail('no frames in ' + string(Loop.Iteration))}}\"",
         );
         let job = write(&template);
-        let (code, stdout, stderr) = run_cli(&["run", job.path().to_str().unwrap()]);
+        let (code, stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--output", "json"]);
         assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
         assert!(has(
             &stdout,
             "Loop 'L' failed: Step 'L[1].P' failed in its Task enumeration group"
         ));
+        // Iteration 1 started, though start_iteration returned no instances.
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        assert_eq!(steps[0]["iterations"], 2);
+        assert_eq!(
+            steps[0]["iteration_values"][1]["variables"],
+            serde_json::json!({"X": 10})
+        );
+        let failed = steps.iter().find(|s| s["name"] == "L[1].P").unwrap();
+        assert_eq!(failed["state"], "FAILED");
+        assert_eq!(failed["iteration"], 1);
+        assert!(
+            failed["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("Step 'L[1].P' failed in its Task enumeration group:"),
+            "{failed}"
+        );
         assert!(
             stderr.starts_with("ERROR: Step 'L[1].P' failed in its Task enumeration group:\n"),
             "{stderr}"
@@ -7215,6 +7233,67 @@ steps:
         ]);
         assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
         assert!(has(&stdout, "Q_3"), "{stdout}");
+    }
+
+    /// As above, with `A` pending inputs at Job creation (its `enableIf`
+    /// reads `Z`), which `--step-inputs` cannot give, so the hint is only to
+    /// use `--run-dependencies`, and the instance that needed it is failed.
+    #[test]
+    fn a_later_iteration_reading_a_pending_dependency_suggests_run_dependencies() {
+        let template = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Later
+steps:
+- name: Z
+  outputVariables:
+  - {name: N, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: N=1')"]
+- name: A
+  dependencies: [{dependsOn: Z}]
+  enableIf: "{{Steps.Z.Output.N > 0}}"
+  outputVariables:
+  - {name: Base, type: INT}
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ['-c', "print('openjd_output_var: Base=7')"]
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: Q
+      enableIf: "{{Loop.Iteration >= 1}}"
+      script:
+        actions:
+          onRun:
+            command: python
+            args: ['-c', "print('Q_{{Steps.A.Output.Base}}')"]
+"#;
+        let job = write(template);
+        let path = job.path().to_str().unwrap();
+        let (code, stdout, stderr) = run_cli(&["run", path, "--step", "L", "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values of 'A', which this run does not run.\nRun Loop 'L' with --run-dependencies."
+        );
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        let q = steps.iter().find(|s| s["name"] == "L[1].Q").unwrap();
+        assert_eq!(q["state"], "FAILED");
+        assert_eq!(
+            q["reason"],
+            "Loop 'L' reads, in iteration 1, Steps.* values of 'A', which this run does not run.\nRun Loop 'L' with --run-dependencies."
+        );
+        let (code, stdout, stderr) = run_cli(&["run", path, "--step", "L", "--run-dependencies"]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(has(&stdout, "Q_7"), "{stdout}");
     }
 
     #[test]

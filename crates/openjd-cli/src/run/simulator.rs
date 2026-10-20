@@ -177,6 +177,10 @@ pub(super) struct IterationRecord {
     /// Each loop output's value for this iteration, once its boundary
     /// evaluated them: the `LAST` value, or the element `APPEND` added.
     pub(super) outputs: Option<IndexMap<String, ExprValue>>,
+    /// The instance whose group failed as the iteration started, with why;
+    /// `iteration.steps` is then empty, since `start_iteration` returned no
+    /// instances.
+    pub(super) failed_instance: Option<(String, String)>,
 }
 
 /// What the simulator knows of one loop.
@@ -1964,59 +1968,79 @@ impl Simulator {
         Ok(producers)
     }
 
-    /// Explain a caller error from a loop function for running loop `li`
-    /// as what the run did, when a `Steps.*` value it needs is missing for a
+    /// Explain a caller error `e` from a loop function for iteration
+    /// `iteration` of running loop `li` as what the run did, when it names a
+    /// `Steps.*` value of one of the loop's dependencies that is missing for a
     /// reason the run knows: a dependency that did not run all of its Tasks
     /// blocks the loop, and one this run does not run, with no
     /// `--step-inputs` values, fails it with a message that says how to give
-    /// them. Any other caller error is a bug in the simulator.
+    /// them (or, for a dependency not bound at Job creation, which
+    /// `--step-inputs` cannot give, to use `--run-dependencies`). Any other
+    /// caller error is a bug in the simulator.
     fn missing_loop_input(
         &mut self,
         li: usize,
+        iteration: u32,
         e: impl std::fmt::Display,
     ) -> Result<IterationEnd, RunError> {
         let name = self.job.loops[li].name.clone();
-        let deps: Vec<String> = self.job.loops[li]
+        let text = e.to_string();
+        // The dependencies whose symbols the error names.
+        let named: Vec<String> = self.job.loops[li]
             .dependencies
             .iter()
             .flatten()
             .map(|d| d.depends_on.clone())
+            .filter(|p| text.contains(&format!("Steps.{p}.")))
             .collect();
-        if let Some(p) = deps.iter().find(|p| self.is_incomplete_top(p)) {
+        if let Some(p) = named.iter().find(|p| self.is_incomplete_top(p)) {
             let reason = incomplete(p);
             self.block(Node::Loop(li), reason);
             self.running = None;
             return Ok(IterationEnd::Blocked);
         }
-        let not_run: Vec<String> = deps
+        let not_run: Vec<(String, bool)> = named
             .iter()
-            .filter(|p| {
-                self.node_of(p).is_some_and(|n| {
-                    !self.in_run.contains(&n)
-                        && !match n {
-                            Node::Step(j) => self.records[j].supplied,
-                            Node::Loop(j) => self.loop_records[j].supplied,
-                        }
-                        && self.state_of(n) != SimStepState::Skipped
-                })
+            .filter_map(|p| {
+                let n = self.node_of(p)?;
+                let supplied = match n {
+                    Node::Step(j) => self.records[j].supplied,
+                    Node::Loop(j) => self.loop_records[j].supplied,
+                };
+                let suppliable = match n {
+                    Node::Step(j) => self.job.steps[j].binding.is_bound(),
+                    Node::Loop(j) => matches!(self.job.loops[j].binding, LoopBinding::Bound(_)),
+                };
+                (!self.in_run.contains(&n)
+                    && !supplied
+                    && self.state_of(n) != SimStepState::Skipped)
+                    .then(|| (format!("'{p}'"), suppliable))
             })
-            .map(|p| format!("'{p}'"))
             .collect();
         if not_run.is_empty() {
-            return Err(internal(e));
+            return Err(internal(text));
         }
-        let n = self.loop_records[li]
-            .iterations
-            .last()
-            .map_or(0, |it| it.iteration.index);
+        let hint = if not_run.iter().any(|(_, suppliable)| *suppliable) {
+            format!("Give them with --step-inputs, or run Loop '{name}' with --run-dependencies.")
+        } else {
+            format!("Run Loop '{name}' with --run-dependencies.")
+        };
+        let producers: Vec<&str> = not_run.iter().map(|(p, _)| p.as_str()).collect();
         let message = format!(
-            "Loop '{name}' reads, in iteration {n}, Steps.* values of {}, which this run does not run.\n\
-             Give them with --step-inputs, or run Loop '{name}' with --run-dependencies.",
-            not_run.join(", ")
+            "Loop '{name}' reads, in iteration {iteration}, Steps.* values of {}, which this run does not run.\n{hint}",
+            producers.join(", ")
         );
         eprintln!("ERROR: {message}");
         self.fail_loop(li, message);
         Ok(IterationEnd::Failed)
+    }
+
+    /// The index of the iteration in progress of loop `li`.
+    fn current_iteration(&self, li: usize) -> u32 {
+        self.loop_records[li]
+            .iterations
+            .last()
+            .map_or(0, |it| it.iteration.index)
     }
 
     /// Record that loop `li` succeeded with `result`, print it, and give its
@@ -2128,8 +2152,24 @@ impl Simulator {
             committed,
         ) {
             Ok(iteration) => iteration,
-            Err(e) if e.is_caller_error() => return self.missing_loop_input(li, e).map(Some),
             Err(e) => {
+                // The iteration started, though it has no instances.
+                let failed_instance =
+                    (!e.is_caller_error()).then(|| (e.step.clone(), e.to_string()));
+                self.loop_records[li].iterations.push(IterationRecord {
+                    iteration: LoopIteration {
+                        loop_name: name.clone(),
+                        index: n,
+                        steps: Vec::new(),
+                    },
+                    values: progress.values.clone(),
+                    records: Vec::new(),
+                    outputs: None,
+                    failed_instance,
+                });
+                if e.is_caller_error() {
+                    return self.missing_loop_input(li, n, e).map(Some);
+                }
                 eprintln!("ERROR: {e}");
                 self.fail_loop(li, e.to_string());
                 return Ok(Some(IterationEnd::Failed));
@@ -2175,6 +2215,7 @@ impl Simulator {
             iteration,
             records,
             outputs: None,
+            failed_instance: None,
         });
         Ok(None)
     }
@@ -2235,7 +2276,10 @@ impl Simulator {
             committed,
         ) {
             Ok(step) => step,
-            Err(e) if e.is_caller_error() => return self.missing_loop_input(li, e).map(Err),
+            Err(e) if e.is_caller_error() => {
+                let n = self.current_iteration(li);
+                return self.missing_loop_input(li, n, e).map(Err);
+            }
             Err(e) => {
                 eprintln!("ERROR: {e}");
                 let it = self.loop_records[li]
@@ -2313,7 +2357,7 @@ impl Simulator {
                     "Step '{name}' is still pending inputs after its dependencies finished: {}",
                     crate::common::binding_lines(&it.iteration.steps[j]).join("; ")
                 );
-                self.missing_loop_input(li, e).map(Begin::from)
+                self.instance_without_input(li, j, e)
             }
             SimStepState::Bound => {
                 match prepare_bound(&it.iteration.steps[j], &self.iteration_inputs, false) {
@@ -2333,7 +2377,7 @@ impl Simulator {
                             self.block_instance(j, incomplete(&p));
                             return Ok(Begin::NotRun);
                         }
-                        self.missing_loop_input(li, e).map(Begin::from)
+                        self.instance_without_input(li, j, e)
                     }
                 }
             }
@@ -2342,6 +2386,31 @@ impl Simulator {
                 other.as_str()
             ))),
         }
+    }
+
+    /// Body Step instance `j` of loop `li`'s iteration in progress cannot
+    /// start because an input, named in `e`, is missing (see
+    /// [`missing_loop_input`](Self::missing_loop_input)): record the
+    /// instance as failed or blocked with its loop's reason.
+    fn instance_without_input(
+        &mut self,
+        li: usize,
+        j: usize,
+        e: impl std::fmt::Display,
+    ) -> Result<Begin, RunError> {
+        let n = self.current_iteration(li);
+        let end = self.missing_loop_input(li, n, e)?;
+        let reason = self.loop_records[li].reason.clone();
+        let it = self.loop_records[li]
+            .iterations
+            .last_mut()
+            .expect("an iteration");
+        it.records[j].state = match end {
+            IterationEnd::Failed => SimStepState::Failed,
+            _ => SimStepState::Blocked,
+        };
+        it.records[j].reason = reason;
+        Ok(Begin::from(end))
     }
 
     /// Why body Step instance `j` of the iteration in progress can never
@@ -2472,7 +2541,7 @@ impl Simulator {
                 self.succeed_loop(li, result)?;
                 Ok(IterationEnd::Succeeded)
             }
-            Err(e) if e.is_caller_error() => self.missing_loop_input(li, e),
+            Err(e) if e.is_caller_error() => self.missing_loop_input(li, n, e),
             Err(e) => {
                 eprintln!("ERROR: {e}");
                 self.fail_loop(li, e.to_string());
@@ -2622,6 +2691,16 @@ impl Simulator {
                             m.insert("loop".into(), l.name.clone().into());
                             m.insert("iteration".into(), it.iteration.index.into());
                             out.push(m.into());
+                        }
+                        if let Some((name, reason)) = &it.failed_instance {
+                            out.push(serde_json::json!({
+                                "name": name,
+                                "state": SimStepState::Failed.as_str(),
+                                "task_count": null,
+                                "reason": reason,
+                                "loop": l.name,
+                                "iteration": it.iteration.index,
+                            }));
                         }
                     }
                 }
@@ -3424,5 +3503,25 @@ steps:
         assert_eq!(sim.start_next_iteration(0).unwrap(), None);
         assert_eq!(sim.iteration_read, BTreeSet::from(["B".to_string()]));
         assert!(sim.iteration_inputs.is_concrete("Steps.B.TaskParam.J"));
+    }
+
+    /// A caller error that names no missing input of the loop is a bug in
+    /// the simulator, reported as internal even when a dependency is not
+    /// run (a simulated fault: an iteration past `maxIterations`).
+    #[test]
+    fn a_caller_error_that_names_no_missing_input_is_internal() {
+        let sim = simulator(COUNTED, None);
+        let mut sim =
+            Simulator::new(sim.jt, sim.params, sim.vctx, sim.job, &[Node::Loop(0)]).unwrap();
+        let LoopBegin::Run = sim.begin_loop(0).unwrap() else {
+            panic!("L runs")
+        };
+        sim.loop_records[0].progress.as_mut().unwrap().iteration = 7;
+        let err = sim.start_next_iteration(0).unwrap_err().to_string();
+        assert!(
+            err.starts_with("internal error in the openjd run scheduler simulator: "),
+            "{err}"
+        );
+        assert!(err.contains("so it has no iteration 7"), "{err}");
     }
 }
