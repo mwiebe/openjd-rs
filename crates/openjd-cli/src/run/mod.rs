@@ -254,7 +254,8 @@ pub struct RunArgs {
     /// Path to the job template file
     pub path: PathBuf,
 
-    /// The name of the Step to run (if omitted, runs all steps; auto-selects if only one step)
+    /// The name of the Step or loop to run (if omitted, runs all steps; auto-selects if the
+    /// Job has only one Step or loop). A loop runs as a whole; its body Steps cannot be named.
     #[arg(long)]
     pub step: Option<String>,
 
@@ -280,10 +281,10 @@ pub struct RunArgs {
     #[arg(long = "path-mapping-rules")]
     pub path_mapping_rules: Option<String>,
 
-    /// CONTROL_FLOW: the Steps.* output values that the Step given with --step reads, for
-    /// running it without --run-dependencies (file://path, or inline JSON
+    /// CONTROL_FLOW: the Steps.* output values that the Step or loop given with --step reads,
+    /// for running it without --run-dependencies (file://path, or inline JSON
     /// '{"Steps.P.Output.V": value}'; a list with one value per Task for a Step with a
-    /// parameterSpace).
+    /// parameterSpace, and one value of the declared type for a loop output).
     #[arg(long = "step-inputs")]
     pub step_inputs: Option<String>,
 

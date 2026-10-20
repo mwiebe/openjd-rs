@@ -202,8 +202,20 @@ pub(super) enum Begin {
     /// It is skipped, failed, or blocked, so nothing runs.
     NotRun,
     /// The run must stop: Tasks were given with `--tasks` or `--task-param`
-    /// for a Step skipped at run time.
+    /// for a Step skipped at run time, or a body Step instance's loop failed
+    /// as it started.
     Failed,
+}
+
+impl From<IterationEnd> for Begin {
+    /// An instance that cannot start because the loop ended: a failed loop
+    /// stops the run, a blocked one does not.
+    fn from(end: IterationEnd) -> Self {
+        match end {
+            IterationEnd::Failed => Begin::Failed,
+            _ => Begin::NotRun,
+        }
+    }
 }
 
 /// What starting a loop comes to (see [`Simulator::begin_loop`]).
@@ -219,6 +231,7 @@ pub(super) enum LoopBegin {
 }
 
 /// What the end of an iteration comes to (see [`Simulator::end_iteration`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum IterationEnd {
     /// The boundary continues the loop with the next iteration.
     Continue,
@@ -250,6 +263,11 @@ pub(super) struct Simulator {
     /// instance of the iteration as it is skipped, its Tasks become known,
     /// or it succeeds with all of its Tasks.
     iteration_inputs: StepInputs,
+    /// The body Steps whose `Steps.*` symbols another instance of the
+    /// iteration in progress or its boundary reads: only these get their
+    /// `TaskParam` lists and outputs built into `iteration_inputs`, so a
+    /// large parameter space nothing reads is not enumerated.
+    iteration_read: BTreeSet<String>,
     /// Every concrete `Steps.*` value so far, of the Steps and loops
     /// something reads, except the `TaskParam` lists of the Steps in
     /// `tasks_known_pending`.
@@ -740,6 +758,7 @@ impl Simulator {
             loop_records,
             running: None,
             iteration_inputs: StepInputs::new(),
+            iteration_read: BTreeSet::new(),
             inputs,
             tasks_known_pending,
             read,
@@ -859,6 +878,12 @@ impl Simulator {
                 )
                 .into());
             }
+            if *p == target_name {
+                return Err(format!(
+                    "--step-inputs: '{key}' names {target_kind} '{target_name}' itself; give the outputs of the Steps it reads."
+                )
+                .into());
+            }
             let Some(node) = self.node_of(p) else {
                 if let Some(l) = self.loop_of_body_step(p) {
                     return Err(format!(
@@ -903,7 +928,8 @@ impl Simulator {
                     self.records[pi].supplied = true;
                 }
                 Node::Loop(li) => {
-                    let outputs = supplied_loop_outputs(&self.job.loops[li], &given)
+                    let nullable = self.loop_last_is_nullable(li)?;
+                    let outputs = supplied_loop_outputs(&self.job.loops[li], nullable, &given)
                         .map_err(|e| format!("--step-inputs: Loop '{p}': {e}"))?;
                     self.inputs
                         .add_loop_producer(
@@ -1370,6 +1396,7 @@ impl Simulator {
             Err(e) if e.is_caller_error() => return Err(internal(e)),
             Err(e) => {
                 eprintln!("ERROR: {e}");
+                say(&format!("Loop '{name}' failed in its {} group", e.group));
                 let record = &mut self.loop_records[li];
                 record.state = SimStepState::Failed;
                 record.reason = Some(e.to_string());
@@ -1793,6 +1820,9 @@ impl Simulator {
                     .iterations
                     .last()
                     .expect("an iteration");
+                if !self.iteration_read.contains(&it.iteration.steps[j].name) {
+                    return Ok(());
+                }
                 self.iteration_inputs
                     .add_producer(
                         &it.iteration.steps[j],
@@ -1875,6 +1905,15 @@ impl Simulator {
                         }
                     };
                 }
+                // The boundary may read a dependency that the loop's own
+                // groups do not, so one that did not run all of its Tasks
+                // blocks the loop before its first iteration, as it blocks
+                // a Step whose script reads it.
+                let boundary = self.boundary_producers(li)?;
+                if let Some(p) = boundary.iter().find(|p| self.is_incomplete_top(p)) {
+                    self.block(node, incomplete(p));
+                    return Ok(LoopBegin::NotRun);
+                }
                 // The body and the boundary read the loop's dependencies'
                 // TaskParam lists from `inputs`.
                 let deps: Vec<String> = self.job.loops[li]
@@ -1895,6 +1934,89 @@ impl Simulator {
                 other.as_str()
             ))),
         }
+    }
+
+    /// The producers whose `Steps.*` symbols loop `li`'s boundary
+    /// expressions (`until`, `while`, each `next`, and each loop output
+    /// `value`) reference, found by symbol collection: its dependencies and
+    /// its body Steps.
+    fn boundary_producers(&self, li: usize) -> Result<BTreeSet<String>, RunError> {
+        let l = &self.job.loops[li];
+        let mut expressions = vec![LoopExpression::Until, LoopExpression::While];
+        expressions.extend(
+            l.variables
+                .iter()
+                .map(|v| LoopExpression::Next(v.name.clone())),
+        );
+        expressions.extend(
+            l.output_variables
+                .iter()
+                .map(|o| LoopExpression::OutputValue(o.name.clone())),
+        );
+        let mut producers = BTreeSet::new();
+        for e in &expressions {
+            for s in l.expression_inputs(&self.jt, e).map_err(internal)? {
+                if let Some(p) = crate::common::step_of_symbol(&s) {
+                    producers.insert(p.to_string());
+                }
+            }
+        }
+        Ok(producers)
+    }
+
+    /// Explain a caller error from a loop function for running loop `li`
+    /// as what the run did, when a `Steps.*` value it needs is missing for a
+    /// reason the run knows: a dependency that did not run all of its Tasks
+    /// blocks the loop, and one this run does not run, with no
+    /// `--step-inputs` values, fails it with a message that says how to give
+    /// them. Any other caller error is a bug in the simulator.
+    fn missing_loop_input(
+        &mut self,
+        li: usize,
+        e: impl std::fmt::Display,
+    ) -> Result<IterationEnd, RunError> {
+        let name = self.job.loops[li].name.clone();
+        let deps: Vec<String> = self.job.loops[li]
+            .dependencies
+            .iter()
+            .flatten()
+            .map(|d| d.depends_on.clone())
+            .collect();
+        if let Some(p) = deps.iter().find(|p| self.is_incomplete_top(p)) {
+            let reason = incomplete(p);
+            self.block(Node::Loop(li), reason);
+            self.running = None;
+            return Ok(IterationEnd::Blocked);
+        }
+        let not_run: Vec<String> = deps
+            .iter()
+            .filter(|p| {
+                self.node_of(p).is_some_and(|n| {
+                    !self.in_run.contains(&n)
+                        && !match n {
+                            Node::Step(j) => self.records[j].supplied,
+                            Node::Loop(j) => self.loop_records[j].supplied,
+                        }
+                        && self.state_of(n) != SimStepState::Skipped
+                })
+            })
+            .map(|p| format!("'{p}'"))
+            .collect();
+        if not_run.is_empty() {
+            return Err(internal(e));
+        }
+        let n = self.loop_records[li]
+            .iterations
+            .last()
+            .map_or(0, |it| it.iteration.index);
+        let message = format!(
+            "Loop '{name}' reads, in iteration {n}, Steps.* values of {}, which this run does not run.\n\
+             Give them with --step-inputs, or run Loop '{name}' with --run-dependencies.",
+            not_run.join(", ")
+        );
+        eprintln!("ERROR: {message}");
+        self.fail_loop(li, message);
+        Ok(IterationEnd::Failed)
     }
 
     /// Record that loop `li` succeeded with `result`, print it, and give its
@@ -1935,6 +2057,16 @@ impl Simulator {
             .and_then(|o| o.unit.clone())
     }
 
+    /// Whether loop `li`'s `LAST` outputs are `T?` (RFC 0013 §`Steps.*` in
+    /// and around a loop): a `while` loop's (`null` after zero iterations),
+    /// or any loop's with an `enableIf`.
+    fn loop_last_is_nullable(&self, li: usize) -> Result<bool, RunError> {
+        Ok(
+            self.job.loops[li].condition == openjd_model::job::LoopCondition::While
+                || self.step_loop(li)?.enable_if.is_some(),
+        )
+    }
+
     /// The template of loop `li`.
     fn step_loop(&self, li: usize) -> Result<&StepLoop, RunError> {
         let job_loop = &self.job.loops[li];
@@ -1950,6 +2082,11 @@ impl Simulator {
         Ok(body_order(self.step_loop(li)?))
     }
 
+    /// Whether loop `li` is running an iteration.
+    pub(super) fn is_running(&self, li: usize) -> bool {
+        self.running == Some(li)
+    }
+
     /// `<Loop>[<N>].<Step>` for body Step instance `j` of the iteration in
     /// progress.
     pub(super) fn instance_name(&self, j: usize) -> String {
@@ -1962,8 +2099,13 @@ impl Simulator {
     /// Start the next iteration of running loop `li` (RFC 0013 §Iterations):
     /// print its index and loop variable values, create its body Step
     /// instances with `start_iteration`, and record what each is. Returns
-    /// `false` when an instance's group fails, which fails the loop.
-    pub(super) fn start_next_iteration(&mut self, li: usize) -> Result<bool, RunError> {
+    /// `None` when it started, and otherwise how the loop ended: failed, when
+    /// an instance's group fails, or blocked (see
+    /// [`missing_loop_input`](Self::missing_loop_input)).
+    pub(super) fn start_next_iteration(
+        &mut self,
+        li: usize,
+    ) -> Result<Option<IterationEnd>, RunError> {
         let progress = self.loop_records[li]
             .progress
             .clone()
@@ -1986,14 +2128,19 @@ impl Simulator {
             committed,
         ) {
             Ok(iteration) => iteration,
-            Err(e) if e.is_caller_error() => return Err(internal(e)),
+            Err(e) if e.is_caller_error() => return self.missing_loop_input(li, e).map(Some),
             Err(e) => {
                 eprintln!("ERROR: {e}");
                 self.fail_loop(li, e.to_string());
-                return Ok(false);
+                return Ok(Some(IterationEnd::Failed));
             }
         };
         self.iteration_inputs = self.inputs.clone();
+        let mut read = self.boundary_producers(li)?;
+        for step in &iteration.steps {
+            read.extend(step.input_producers());
+        }
+        self.iteration_read = read;
         for (j, step) in iteration.steps.iter().enumerate() {
             let instance = iteration.instance_name(j).unwrap_or_default();
             match step.binding {
@@ -2008,17 +2155,18 @@ impl Simulator {
                     for line in crate::common::binding_lines(step) {
                         say(&format!("  {line}"));
                     }
-                    if step.tasks_known().is_some() {
+                    if step.tasks_known().is_some() && self.iteration_read.contains(&step.name) {
                         self.iteration_inputs
                             .add_producer(step, ProducerState::TasksKnown)
                             .map_err(internal)?;
                     }
                 }
-                StepBinding::Bound => {
+                StepBinding::Bound if self.iteration_read.contains(&step.name) => {
                     self.iteration_inputs
                         .add_producer(step, ProducerState::TasksKnown)
                         .map_err(internal)?;
                 }
+                StepBinding::Bound => {}
             }
         }
         let records = iteration.steps.iter().map(StepRecord::new).collect();
@@ -2028,14 +2176,14 @@ impl Simulator {
             records,
             outputs: None,
         });
-        Ok(true)
+        Ok(None)
     }
 
     /// Advance every pending body Step instance of the iteration in
     /// progress, in body order, until a pass changes nothing (C1 item 6
-    /// within the iteration). Returns `true` when an instance's group
-    /// failed, which fails the loop.
-    pub(super) fn settle_iteration(&mut self) -> Result<bool, RunError> {
+    /// within the iteration). Returns `None`, or how the loop ended: failed
+    /// when an instance's group failed, or blocked.
+    pub(super) fn settle_iteration(&mut self) -> Result<Option<IterationEnd>, RunError> {
         let li = self.running.ok_or_else(|| internal("no loop is running"))?;
         let order = self.body_order(li)?;
         loop {
@@ -2049,20 +2197,26 @@ impl Simulator {
                     continue;
                 }
                 match self.advance_instance(li, j)? {
-                    Advanced::Failed => return Ok(true),
-                    Advanced::Opened => opened = true,
-                    Advanced::Quiet => {}
+                    Ok(Advanced::Failed) => return Ok(Some(IterationEnd::Failed)),
+                    Ok(Advanced::Opened) => opened = true,
+                    Ok(Advanced::Quiet) => {}
+                    Err(end) => return Ok(Some(end)),
                 }
             }
             if !opened {
-                return Ok(false);
+                return Ok(None);
             }
         }
     }
 
     /// Advance pending body Step instance `j` of the iteration in progress
-    /// of loop `li`, print each fact it gains, and record the result.
-    fn advance_instance(&mut self, li: usize, j: usize) -> Result<Advanced, RunError> {
+    /// of loop `li`, print each fact it gains, and record the result; or
+    /// `Err` with how the loop ended when an input it needs is missing.
+    fn advance_instance(
+        &mut self,
+        li: usize,
+        j: usize,
+    ) -> Result<Result<Advanced, IterationEnd>, RunError> {
         let committed = self.committed_task_count(Some(Slot::Body(j)));
         let record = &self.loop_records[li];
         let it = record.iterations.last().expect("an iteration");
@@ -2081,7 +2235,7 @@ impl Simulator {
             committed,
         ) {
             Ok(step) => step,
-            Err(e) if e.is_caller_error() => return Err(internal(e)),
+            Err(e) if e.is_caller_error() => return self.missing_loop_input(li, e).map(Err),
             Err(e) => {
                 eprintln!("ERROR: {e}");
                 let it = self.loop_records[li]
@@ -2091,7 +2245,7 @@ impl Simulator {
                 it.records[j].state = SimStepState::Failed;
                 it.records[j].reason = Some(e.to_string());
                 self.fail_loop(li, format!("its body Step instance '{name}' failed"));
-                return Ok(Advanced::Failed);
+                return Ok(Ok(Advanced::Failed));
             }
         };
         let fact = report_step_advance(&name, &it.iteration.steps[j], &step);
@@ -2102,9 +2256,11 @@ impl Simulator {
                 .map_err(internal)?;
             opened = true;
         } else if fact.tasks_known {
-            self.iteration_inputs
-                .add_producer(&step, ProducerState::TasksKnown)
-                .map_err(internal)?;
+            if self.iteration_read.contains(&step.name) {
+                self.iteration_inputs
+                    .add_producer(&step, ProducerState::TasksKnown)
+                    .map_err(internal)?;
+            }
             opened = true;
         }
         let it = self.loop_records[li]
@@ -2113,11 +2269,11 @@ impl Simulator {
             .expect("an iteration");
         it.records[j].state = SimStepState::of_step(&step);
         it.iteration.steps[j] = step;
-        Ok(if opened {
+        Ok(Ok(if opened {
             Advanced::Opened
         } else {
             Advanced::Quiet
-        })
+        }))
     }
 
     /// Start body Step instance `j` of the iteration in progress, as
@@ -2153,10 +2309,11 @@ impl Simulator {
                     self.block_instance(j, incomplete(&p));
                     return Ok(Begin::NotRun);
                 }
-                Err(internal(format!(
+                let e = format!(
                     "Step '{name}' is still pending inputs after its dependencies finished: {}",
                     crate::common::binding_lines(&it.iteration.steps[j]).join("; ")
-                )))
+                );
+                self.missing_loop_input(li, e).map(Begin::from)
             }
             SimStepState::Bound => {
                 match prepare_bound(&it.iteration.steps[j], &self.iteration_inputs, false) {
@@ -2176,7 +2333,7 @@ impl Simulator {
                             self.block_instance(j, incomplete(&p));
                             return Ok(Begin::NotRun);
                         }
-                        Err(e)
+                        self.missing_loop_input(li, e).map(Begin::from)
                     }
                 }
             }
@@ -2315,7 +2472,7 @@ impl Simulator {
                 self.succeed_loop(li, result)?;
                 Ok(IterationEnd::Succeeded)
             }
-            Err(e) if e.is_caller_error() => Err(internal(e)),
+            Err(e) if e.is_caller_error() => self.missing_loop_input(li, e),
             Err(e) => {
                 eprintln!("ERROR: {e}");
                 self.fail_loop(li, e.to_string());
@@ -2570,11 +2727,13 @@ fn job_output_line(output: &openjd_model::job::JobOutput, value: &JobOutputValue
 }
 
 /// Loop `producer`'s outputs from `--step-inputs` values: each given in its
-/// declared type, a single value under `LAST` (or `null`) and the whole list
-/// under `APPEND`, checked as reported values are, each element of an
-/// `APPEND` output separately. Every output of the loop must be given.
+/// declared type, a single value under `LAST` and the whole list under
+/// `APPEND`, checked as reported values are, each element of an `APPEND`
+/// output separately. A `LAST` output may be `null` only when `nullable`
+/// (its type is `T?`). Every output of the loop must be given.
 fn supplied_loop_outputs(
     producer: &Loop,
+    nullable: bool,
     given: &[(String, &serde_json::Value)],
 ) -> Result<IndexMap<String, ExprValue>, String> {
     let declared = &producer.output_variables;
@@ -2585,7 +2744,7 @@ fn supplied_loop_outputs(
         .collect();
     if !missing.is_empty() {
         return Err(format!(
-            "every output of the loop must be given; missing {}",
+            "--step-inputs gives a loop's outputs together, so every output of the loop must be given; missing {}",
             missing
                 .iter()
                 .map(|n| format!("Steps.{}.Output.{n}", producer.name))
@@ -2593,12 +2752,14 @@ fn supplied_loop_outputs(
                 .join(", ")
         ));
     }
-    // A LAST output given as null (after zero iterations of a while loop)
-    // is not reported to the collector, which requires a LAST value.
+    // A LAST output given as null (after zero iterations of a while loop, or
+    // when the loop is skipped) is not reported to the collector, which
+    // requires a LAST value.
     let nulls: Vec<&str> = given
         .iter()
         .filter(|(name, value)| {
-            value.is_null()
+            nullable
+                && value.is_null()
                 && producer
                     .output_variable(name)
                     .is_some_and(|o| o.collect != OutputCollectMode::Append)
@@ -2737,6 +2898,14 @@ mod tests {
     use super::*;
 
     fn simulator(template: &str, steps_to_run: Option<&[usize]>) -> Simulator {
+        simulator_with(template, steps_to_run, Default::default())
+    }
+
+    fn simulator_with(
+        template: &str,
+        steps_to_run: Option<&[usize]>,
+        limits: openjd_model::CallerLimits,
+    ) -> Simulator {
         let value = openjd_model::template::parse::document_string_to_object(
             template,
             openjd_model::template::parse::DocumentType::Yaml,
@@ -2762,7 +2931,7 @@ mod tests {
             },
         )
         .unwrap();
-        let vctx = jt.default_validation_context();
+        let vctx = jt.default_validation_context().with_caller_limits(limits);
         let job = openjd_model::create_job(&jt, &params, &vctx).unwrap();
         let to_run: Vec<Node> = match steps_to_run {
             Some(steps) => steps.iter().map(|&i| Node::Step(i)).collect(),
@@ -3066,7 +3235,7 @@ steps:
             panic!("L runs")
         };
         assert_eq!(sim.loop_records[0].state, SimStepState::Running);
-        assert!(sim.start_next_iteration(0).unwrap());
+        assert_eq!(sim.start_next_iteration(0).unwrap(), None);
         assert_eq!(
             (0..3).map(|j| sim.instance_name(j)).collect::<Vec<_>>(),
             ["L[0].C", "L[0].A", "L[0].B"]
@@ -3082,7 +3251,7 @@ steps:
                 serde_json::from_str(json).unwrap();
             let pairs: Vec<(String, &serde_json::Value)> =
                 map.iter().map(|(k, v)| (k.clone(), v)).collect();
-            supplied_loop_outputs(l, &pairs)
+            supplied_loop_outputs(l, true, &pairs)
         };
         // A LAST output may be null, after zero iterations of a while loop.
         let outputs = given(r#"{"Last": null, "All": []}"#).unwrap();
@@ -3094,7 +3263,7 @@ steps:
         for (json, want) in [
             (
                 r#"{"Last": 3}"#,
-                "every output of the loop must be given; missing Steps.L.Output.All",
+                "--step-inputs gives a loop's outputs together, so every output of the loop must be given; missing Steps.L.Output.All",
             ),
             (
                 r#"{"Last": 0, "All": []}"#,
@@ -3147,5 +3316,113 @@ steps:
         );
         assert!(sim.read.contains("P"));
         assert!(sim.read.contains("L"));
+    }
+
+    /// `A` has 2 Tasks, and each iteration's `B` has 3.
+    const COUNTED: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: J
+steps:
+- name: A
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    until: "{{Loop.Iteration >= 4}}"
+    maxIterations: 5
+    steps:
+    - name: B
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: J, type: INT, range: [1, 2, 3]}
+      script: {actions: {onRun: {command: x}}}
+    - name: R
+      dependencies: [{dependsOn: B}]
+      script: {actions: {onRun: {command: x}}}
+"#;
+
+    /// Run the iteration in progress of loop 0: every instance succeeds with
+    /// all of its Tasks and no outputs.
+    fn run_iteration(sim: &mut Simulator) {
+        for j in sim.body_order(0).unwrap() {
+            let Begin::Run(_) = sim.begin_instance(j).unwrap() else {
+                panic!("instance {j} runs")
+            };
+            sim.finish_step(Slot::Body(j), false, true).unwrap();
+            assert_eq!(sim.settle_iteration().unwrap(), None);
+        }
+    }
+
+    /// Plan A19: `max_task_count` counts the Tasks of every Step and of every
+    /// earlier iteration's instances. With a limit of 12, iterations 0 (2 +
+    /// 3 + 1 Tasks) and 1 (10 in all) fit, and iteration 2's `B` would bring
+    /// the total to 13.
+    #[test]
+    fn the_task_count_limit_counts_every_iteration() {
+        let limits = openjd_model::CallerLimits {
+            max_task_count: Some(12),
+            ..Default::default()
+        };
+        let mut sim = simulator_with(COUNTED, None, limits);
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
+            panic!("A runs")
+        };
+        sim.finish_step(Slot::Top(0), false, true).unwrap();
+        let LoopBegin::Run = sim.begin_loop(0).unwrap() else {
+            panic!("L runs")
+        };
+        for n in 0..2 {
+            assert_eq!(sim.start_next_iteration(0).unwrap(), None, "iteration {n}");
+            run_iteration(&mut sim);
+            assert_eq!(sim.end_iteration(0).unwrap(), IterationEnd::Continue);
+        }
+        assert_eq!(sim.committed_task_count(None), 2 + 2 * 4);
+        assert_eq!(
+            sim.start_next_iteration(0).unwrap(),
+            Some(IterationEnd::Failed)
+        );
+        assert_eq!(sim.loop_records[0].state, SimStepState::Failed);
+        let reason = sim.loop_records[0].reason.clone().unwrap();
+        assert!(
+            reason.starts_with("Step 'L[2].B' failed in its Task enumeration group:"),
+            "{reason}"
+        );
+    }
+
+    /// Only the instances another instance or the boundary reads get their
+    /// `TaskParam` lists built into the iteration's inputs.
+    #[test]
+    fn only_read_instances_are_built_into_the_iteration_inputs() {
+        let mut sim = simulator(COUNTED, None);
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
+            panic!("A runs")
+        };
+        sim.finish_step(Slot::Top(0), false, true).unwrap();
+        let LoopBegin::Run = sim.begin_loop(0).unwrap() else {
+            panic!("L runs")
+        };
+        assert_eq!(sim.start_next_iteration(0).unwrap(), None);
+        assert!(sim.iteration_read.is_empty());
+        assert!(!sim.iteration_inputs.is_concrete("Steps.B.TaskParam.J"));
+
+        let read = COUNTED.replace(
+            "      dependencies: [{dependsOn: B}]\n      script: {actions: {onRun: {command: x}}}",
+            "      dependencies: [{dependsOn: B}]\n      script: {actions: {onRun: {command: \"{{Steps.B.TaskParam.J}}\"}}}",
+        );
+        let mut sim = simulator(&read, None);
+        let Begin::Run(_) = sim.begin_step(0, false).unwrap() else {
+            panic!("A runs")
+        };
+        sim.finish_step(Slot::Top(0), false, true).unwrap();
+        let LoopBegin::Run = sim.begin_loop(0).unwrap() else {
+            panic!("L runs")
+        };
+        assert_eq!(sim.start_next_iteration(0).unwrap(), None);
+        assert_eq!(sim.iteration_read, BTreeSet::from(["B".to_string()]));
+        assert!(sim.iteration_inputs.is_concrete("Steps.B.TaskParam.J"));
     }
 }

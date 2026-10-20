@@ -726,7 +726,7 @@ impl fmt::Display for JobSummaryResult {
         for (i, s) in self.step_summaries.iter().enumerate() {
             if let Some(info) = &s.loop_info {
                 writeln!(f, "{}. '{}' ({})", i + 1, s.name, info.heading())?;
-                info.write_details(f, "  ")?;
+                info.write_details(f, "  ", true)?;
                 writeln!(f)?;
                 continue;
             }
@@ -956,8 +956,14 @@ impl LoopInfo {
         }
     }
 
-    /// The loop's lines under its heading, each after `indent`.
-    fn write_details(&self, f: &mut fmt::Formatter<'_>, indent: &str) -> fmt::Result {
+    /// The loop's lines under its heading, each after `indent`, ending with
+    /// its dependency count when `count_deps`.
+    fn write_details(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        indent: &str,
+        count_deps: bool,
+    ) -> fmt::Result {
         for line in &self.binding_lines {
             writeln!(f, "{indent}{line}")?;
         }
@@ -1013,7 +1019,7 @@ impl LoopInfo {
                 writeln!(f, "{indent}    {} dependencies", b.deps.len())?;
             }
         }
-        if !self.deps.is_empty() {
+        if count_deps && !self.deps.is_empty() {
             writeln!(f, "{indent}{} dependencies", self.deps.len())?;
         }
         Ok(())
@@ -1150,7 +1156,8 @@ impl fmt::Display for LoopSummaryResult {
         )?;
         writeln!(f)?;
         writeln!(f, "State: {} ({})", self.info.state, self.info.heading())?;
-        self.info.write_details(f, "")?;
+        // The dependencies are listed by name below.
+        self.info.write_details(f, "", false)?;
         if !self.info.deps.is_empty() {
             writeln!(f)?;
             writeln!(f, "Dependencies ({}):", self.info.deps.len())?;
