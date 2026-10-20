@@ -136,11 +136,13 @@ chunks_run: 100
 ```
 
 **CONTROL_FLOW.** For a template that lists `CONTROL_FLOW`, the run's JSON and YAML also
-have `steps` (each Step's state, Task count, and per-Task outputs), `job_outputs` (each
-evaluated job output's value), and `job_outputs_not_evaluated`, and its human-readable
-result ends with a `Job outputs:` list; `summary` adds each Step's `state`, a pending
-Step's `binding`, and `job_outputs`. See [run.md](run.md) § Result Output and
-[summary.md](summary.md) § CONTROL_FLOW. Other templates' output is unchanged, matching
+have `steps` (each Step's state, Task count, and per-Task outputs; for a loop, its own
+entry with its iterations and outputs, then one entry per body Step instance named
+`<Loop>[<N>].<Step>`), `job_outputs` (each evaluated job output's value), and
+`job_outputs_not_evaluated`, and its human-readable result ends with a `Job outputs:` list;
+`summary` adds each Step's `state`, a pending Step's `binding`, `job_outputs`, and for a
+loop its condition, bound, variables, outputs, and body. See [run.md](run.md) § Result
+Output and [summary.md](summary.md) § CONTROL_FLOW and § Loops. Other templates' output is unchanged, matching
 the Python CLI's.
 
 ## Implementation Pattern

@@ -4,7 +4,7 @@
 
 //! Execution phases for the `openjd run` command.
 
-use super::simulator::{Begin, Simulator};
+use super::simulator::{Begin, IterationEnd, LoopBegin, Node, Simulator, Slot};
 use super::*;
 
 pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
@@ -19,10 +19,10 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     let prepared = prepare_run(&args)?;
     let selection = prepare_selection(&args, &prepared.job, &prepared.job_template)?;
     let mut sim = prepare_simulator(&args, &prepared, &selection)?;
-    validate_wrap_environment_stacks(
+    let base_wrap_envs = validate_wrap_environment_stacks(
         &prepared.job,
         &prepared.env_templates,
-        &selection.steps_to_run,
+        &selection.to_run,
     )?;
     let env_template_symtab = openjd_model::build_symbol_table(&prepared.param_values)
         .map_err(|e| format!("Failed to build environment template symbol table: {e}"))?;
@@ -49,6 +49,7 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         &prepared.env_templates,
         &env_template_symtab,
         &selection,
+        &base_wrap_envs,
     )
     .await;
 
@@ -133,7 +134,6 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         .with_caller_limits(crate::common::caller_limits());
     let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
         .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
-    crate::common::reject_loops(&job, "openjd run")?;
 
     Ok(PreparedRun {
         job_template,
@@ -151,31 +151,89 @@ fn prepare_selection(
     job: &Job,
     job_template: &openjd_model::template::JobTemplate,
 ) -> Result<RunSelection, RunError> {
-    let selected_step_idx = if let Some(step_name) = &args.step {
-        Some(
-            job.steps
-                .iter()
-                .position(|step| step.name == *step_name)
-                .ok_or_else(|| {
-                    format!(
-                        "No Step with name '{}' is defined in the given Job Template.",
-                        step_name
+    // The top-level entries, Steps and loops, by name.
+    let entry = |name: &str| {
+        job.steps
+            .iter()
+            .position(|step| step.name == name)
+            .map(Node::Step)
+            .or_else(|| {
+                job.loops
+                    .iter()
+                    .position(|l| l.name == name)
+                    .map(Node::Loop)
+            })
+    };
+    let entry_names: Vec<&String> = job
+        .steps
+        .iter()
+        .map(|step| &step.name)
+        .chain(job.loops.iter().map(|l| &l.name))
+        .collect();
+    let selected = if let Some(step_name) = &args.step {
+        match entry(step_name) {
+            Some(node) => Some(node),
+            None => {
+                // RFC 0013 §Implementation Impact: a body Step runs only
+                // within its loop's iterations.
+                if let Some(l) = job
+                    .loops
+                    .iter()
+                    .find(|l| l.body.iter().any(|b| b == step_name))
+                {
+                    return Err(format!(
+                        "Step '{step_name}' is a body Step of loop '{}', so it runs only within the loop's iterations. Use --step {} to run the whole loop.",
+                        l.name, l.name
                     )
-                })?,
-        )
-    } else if job.steps.len() == 1 {
-        Some(0)
+                    .into());
+                }
+                return Err(format!(
+                    "No Step with name '{}' is defined in the given Job Template.",
+                    step_name
+                )
+                .into());
+            }
+        }
+    } else if entry_names.len() == 1 {
+        Some(if job.steps.len() == 1 {
+            Node::Step(0)
+        } else {
+            Node::Loop(0)
+        })
     } else {
         if !args.task_params.is_empty() || args.tasks.is_some() {
             return Err(format!(
                 "Providing task parameters requires a specified step or a job with a single step.\n{} steps: {:?}.",
-                job.steps.len(),
-                job.steps.iter().map(|step| &step.name).collect::<Vec<_>>()
+                entry_names.len(),
+                entry_names
             )
             .into());
         }
         None
     };
+
+    let option = if args.task_params.is_empty() {
+        "--tasks"
+    } else {
+        "--task-param"
+    };
+    if let Some(Node::Loop(li)) = selected {
+        // RFC 0013 §Implementation Impact: a loop has no Task parameters or
+        // Tasks of its own.
+        let name = &job.loops[li].name;
+        if !args.task_params.is_empty() || args.tasks.is_some() {
+            return Err(format!(
+                "Loop '{name}' has no Task parameters or Tasks of its own; {option} cannot be used."
+            )
+            .into());
+        }
+        if args.step.is_some() && args.maximum_tasks.is_some() {
+            return Err(format!(
+                "Loop '{name}' has no Tasks of its own; --maximum-tasks cannot be used with --step naming a loop. Without --step, --maximum-tasks applies to each body Step instance."
+            )
+            .into());
+        }
+    }
 
     let explicit_task_params = if !args.task_params.is_empty() {
         Some(vec![parse_task_params(&args.task_params)?])
@@ -185,15 +243,13 @@ fn prepare_selection(
         None
     };
     if explicit_task_params.is_some() {
-        let selected_idx = selected_step_idx.ok_or(
-            "Providing task parameters requires a specified step or a job with a single step.",
-        )?;
-        let selected = &job.steps[selected_idx];
-        let option = if args.task_params.is_empty() {
-            "--tasks"
-        } else {
-            "--task-param"
+        let Some(Node::Step(selected_idx)) = selected else {
+            return Err(
+                "Providing task parameters requires a specified step or a job with a single step."
+                    .into(),
+            );
         };
+        let selected = &job.steps[selected_idx];
         if matches!(selected.binding, openjd_model::job::StepBinding::Skipped) {
             return Err(format!(
                 "Step '{}' is skipped by its enableIf; {option} cannot be used.",
@@ -213,20 +269,33 @@ fn prepare_selection(
             return Err(no_parameter_space(&selected.name, option).into());
         }
     }
-    let steps_to_run = if let Some(selected_idx) = selected_step_idx {
-        if args.run_dependencies {
-            resolve_step_dependencies(job, selected_idx)
-        } else {
-            vec![selected_idx]
+    let to_run = match selected {
+        Some(node) if args.run_dependencies => resolve_step_dependencies(job, node),
+        Some(node) => vec![node],
+        None => {
+            let graph = StepDependencyGraph::new(job)?;
+            graph
+                .topo_sorted()?
+                .into_iter()
+                .map(|i| {
+                    let n = graph.node(i).expect("a node of the graph");
+                    match n.kind {
+                        openjd_model::step_dependency_graph::StepNodeKind::Step => {
+                            Node::Step(n.step_index)
+                        }
+                        openjd_model::step_dependency_graph::StepNodeKind::Loop => {
+                            Node::Loop(n.step_index)
+                        }
+                    }
+                })
+                .collect()
         }
-    } else {
-        StepDependencyGraph::new(job)?.topo_sorted()?
     };
 
     Ok(RunSelection {
-        selected_step_idx,
+        selected,
         explicit_task_params,
-        steps_to_run,
+        to_run,
     })
 }
 
@@ -242,14 +311,12 @@ fn prepare_simulator(
     prepared: &PreparedRun,
     selection: &RunSelection,
 ) -> Result<Simulator, RunError> {
-    let alone = selection
-        .selected_step_idx
-        .filter(|_| !args.run_dependencies);
+    let alone = selection.selected.filter(|_| !args.run_dependencies);
     let step_inputs = match (&args.step_inputs, alone) {
         (None, _) => None,
         (Some(arg), Some(_)) => Some(parse_step_inputs(arg)?),
         (Some(_), None) => return Err(
-            "--step-inputs requires --step (or a Job with one Step) without --run-dependencies."
+            "--step-inputs requires --step (or a Job with one Step or loop) without --run-dependencies."
                 .into(),
         ),
     };
@@ -258,7 +325,7 @@ fn prepare_simulator(
         prepared.param_values.clone(),
         prepared.validation_ctx.clone(),
         prepared.job.clone(),
-        &selection.steps_to_run,
+        &selection.to_run,
     )?;
     if let Some(target) = alone {
         sim.give_step_inputs(target, step_inputs.as_ref())?;
@@ -266,20 +333,17 @@ fn prepare_simulator(
     Ok(sim)
 }
 
+/// Check RFC 0008's single-wrap-layer rule for every selected stack, and
+/// return the wrap-hook Environments every stack has (the Environment
+/// Templates' and the enabled Job Environments'). A loop's body Step
+/// instances are checked as they start ([`check_wrap_environment_stack`]),
+/// since their Step Environments are not known before then.
 fn validate_wrap_environment_stacks(
     job: &Job,
     env_templates: &[EnvironmentTemplate],
-    steps_to_run: &[usize],
-) -> Result<(), RunError> {
-    // A disabled Environment is not entered, so its hooks do not count.
-    let has_wrap_hook = |env: &Environment| {
-        env.enabled
-            && env
-                .script
-                .as_ref()
-                .is_some_and(|script| script.actions.has_any_wrap_hook())
-    };
-    let mut base_wrap_envs: Vec<&str> = env_templates
+    to_run: &[Node],
+) -> Result<Vec<String>, RunError> {
+    let mut base_wrap_envs: Vec<String> = env_templates
         .iter()
         .filter(|template| {
             template
@@ -288,34 +352,52 @@ fn validate_wrap_environment_stacks(
                 .as_ref()
                 .is_some_and(|script| script.actions.has_any_wrap_hook())
         })
-        .map(|template| template.environment.name.as_str())
+        .map(|template| template.environment.name.clone())
         .collect();
     if let Some(job_envs) = &job.job_environments {
         base_wrap_envs.extend(
             job_envs
                 .iter()
                 .filter(|env| has_wrap_hook(env))
-                .map(|env| env.name.as_str()),
+                .map(|env| env.name.clone()),
         );
     }
     reject_multiple_wrap_environments(&base_wrap_envs)?;
 
-    for &step_idx in steps_to_run {
-        let mut stack_wrap_envs = base_wrap_envs.clone();
-        if let Some(step_envs) = &job.steps[step_idx].step_environments {
-            stack_wrap_envs.extend(
-                step_envs
-                    .iter()
-                    .filter(|env| has_wrap_hook(env))
-                    .map(|env| env.name.as_str()),
-            );
+    for node in to_run {
+        if let Node::Step(step_idx) = node {
+            check_wrap_environment_stack(&base_wrap_envs, &job.steps[*step_idx])?;
         }
-        reject_multiple_wrap_environments(&stack_wrap_envs)?;
     }
-    Ok(())
+    Ok(base_wrap_envs)
 }
 
-fn reject_multiple_wrap_environments(names: &[&str]) -> Result<(), RunError> {
+/// Whether `env` is entered and defines a wrap hook. A disabled Environment
+/// is not entered, so its hooks do not count.
+fn has_wrap_hook(env: &Environment) -> bool {
+    env.enabled
+        && env
+            .script
+            .as_ref()
+            .is_some_and(|script| script.actions.has_any_wrap_hook())
+}
+
+/// Check RFC 0008's single-wrap-layer rule for the stack of `step`, over
+/// `base_wrap_envs`.
+fn check_wrap_environment_stack(base_wrap_envs: &[String], step: &Step) -> Result<(), RunError> {
+    let mut stack_wrap_envs = base_wrap_envs.to_vec();
+    if let Some(step_envs) = &step.step_environments {
+        stack_wrap_envs.extend(
+            step_envs
+                .iter()
+                .filter(|env| has_wrap_hook(env))
+                .map(|env| env.name.clone()),
+        );
+    }
+    reject_multiple_wrap_environments(&stack_wrap_envs)
+}
+
+fn reject_multiple_wrap_environments(names: &[String]) -> Result<(), RunError> {
     if names.len() <= 1 {
         return Ok(());
     }
@@ -411,6 +493,7 @@ async fn run_workload(
     env_templates: &[EnvironmentTemplate],
     env_template_symtab: &openjd_expr::SymbolTable,
     selection: &RunSelection,
+    base_wrap_envs: &[String],
 ) -> Result<(), RunError> {
     sim.report_initial();
     // `--step-inputs` values can bind the Step run alone, and a job output
@@ -459,25 +542,41 @@ async fn run_workload(
         }
     }
 
-    for &step_idx in &selection.steps_to_run {
+    for &node in &selection.to_run {
         if ctx.is_stopping() {
             break;
         }
-        let explicit_tasks = selection.explicit_task_params.is_some()
-            && selection.selected_step_idx == Some(step_idx);
-        match sim.begin_step(step_idx, explicit_tasks)? {
-            Begin::Failed => {
-                ctx.session_failed = true;
-                break;
-            }
-            Begin::NotRun => {}
-            Begin::Run(step) => {
-                let ran_all = execute_step(ctx, args, &step, step_idx, selection, sim).await?;
-                if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
-                    sim.set_reason(step_idx, "the run was interrupted");
+        match node {
+            Node::Step(step_idx) => {
+                let explicit = selection
+                    .explicit_task_params
+                    .as_deref()
+                    .filter(|_| selection.selected == Some(node));
+                match sim.begin_step(step_idx, explicit.is_some())? {
+                    Begin::Failed => {
+                        ctx.session_failed = true;
+                        break;
+                    }
+                    Begin::NotRun => {}
+                    Begin::Run(step) => {
+                        let slot = Slot::Top(step_idx);
+                        let ran_all =
+                            execute_step(ctx, args, &step, &step.name, slot, explicit, sim).await?;
+                        if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
+                            sim.set_reason(slot, "the run was interrupted");
+                        }
+                        sim.finish_step(slot, ctx.session_failed, ran_all)?;
+                    }
                 }
-                sim.finish_step(step_idx, ctx.session_failed, ran_all)?;
             }
+            Node::Loop(li) => match sim.begin_loop(li)? {
+                LoopBegin::Failed => {
+                    ctx.session_failed = true;
+                    break;
+                }
+                LoopBegin::NotRun => {}
+                LoopBegin::Run => run_loop(ctx, args, sim, li, base_wrap_envs).await?,
+            },
         }
         if !ctx.is_stopping() && sim.settle()? {
             ctx.session_failed = true;
@@ -487,15 +586,87 @@ async fn run_workload(
     Ok(())
 }
 
+/// Run the iterations of loop `li`, one after another (RFC 0013
+/// §Iterations, plan L8): start each, run its body Step instances in body
+/// dependency order through the same path as a top-level Step, and evaluate
+/// its boundary, until the loop succeeds, fails, or is blocked by an
+/// incomplete instance.
+async fn run_loop(
+    ctx: &mut RunContext,
+    args: &RunArgs,
+    sim: &mut Simulator,
+    li: usize,
+    base_wrap_envs: &[String],
+) -> Result<(), RunError> {
+    println!(
+        "{}\tRunning loop '{}'",
+        ctx.timestamp(),
+        sim.job.loops[li].name
+    );
+    let order = sim.body_order(li)?;
+    loop {
+        if ctx.is_stopping() {
+            sim.stop_loop(li, "the run stopped before its iteration completed");
+            return Ok(());
+        }
+        if !sim.start_next_iteration(li)? || sim.settle_iteration()? {
+            ctx.session_failed = true;
+            return Ok(());
+        }
+        for &j in &order {
+            if ctx.is_stopping() {
+                break;
+            }
+            match sim.begin_instance(j)? {
+                Begin::NotRun | Begin::Failed => {}
+                Begin::Run(step) => {
+                    check_wrap_environment_stack(base_wrap_envs, &step)?;
+                    let slot = Slot::Body(j);
+                    let name = sim.instance_name(j);
+                    let ran_all = execute_step(ctx, args, &step, &name, slot, None, sim).await?;
+                    if ctx.session_failed && ctx.interrupted.load(Ordering::SeqCst) {
+                        sim.set_reason(slot, "the run was interrupted");
+                    }
+                    sim.finish_step(slot, ctx.session_failed, ran_all)?;
+                    if ctx.session_failed {
+                        return Ok(());
+                    }
+                    if sim.settle_iteration()? {
+                        ctx.session_failed = true;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        if ctx.is_stopping() {
+            sim.stop_loop(li, "the run stopped before its iteration completed");
+            return Ok(());
+        }
+        match sim.end_iteration(li)? {
+            IterationEnd::Continue => {}
+            IterationEnd::Succeeded | IterationEnd::Blocked => return Ok(()),
+            IterationEnd::Failed => {
+                ctx.session_failed = true;
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Run `step` (`name` in the log: `<Loop>[<N>].<Step>` for a body Step
+/// instance): enter its enabled Step Environments, run its Tasks (those of
+/// `explicit` when given), and exit them. Returns whether every one of its
+/// Tasks ran.
 async fn execute_step(
     ctx: &mut RunContext,
     args: &RunArgs,
     step: &Step,
-    step_idx: usize,
-    selection: &RunSelection,
+    name: &str,
+    slot: Slot,
+    explicit: Option<&[HashMap<String, String>]>,
     sim: &mut Simulator,
 ) -> Result<bool, RunError> {
-    println!("{}\tRunning step '{}'", ctx.timestamp(), step.name);
+    println!("{}\tRunning step '{name}'", ctx.timestamp());
     let environment_baseline = ctx.entered_envs.len();
     if let Some(step_envs) = &step.step_environments {
         for env in step_envs {
@@ -524,7 +695,7 @@ async fn execute_step(
     let result = if ctx.session_failed {
         Ok(false)
     } else {
-        execute_step_tasks(ctx, args, step, step_idx, selection, sim).await
+        execute_step_tasks(ctx, args, step, name, slot, explicit, sim).await
     };
     // This unwind happens before propagating task setup/runtime errors.
     ctx.exit_environments_down_to(environment_baseline).await;
@@ -538,14 +709,11 @@ async fn execute_step_tasks(
     ctx: &mut RunContext,
     args: &RunArgs,
     step: &Step,
-    step_idx: usize,
-    selection: &RunSelection,
+    name: &str,
+    slot: Slot,
+    explicit: Option<&[HashMap<String, String>]>,
     sim: &mut Simulator,
 ) -> Result<bool, RunError> {
-    let explicit = selection
-        .explicit_task_params
-        .as_deref()
-        .filter(|_| selection.selected_step_idx == Some(step_idx));
     let Some(parameter_space) = &step.parameter_space else {
         if explicit.is_some() {
             let option = if args.task_params.is_empty() {
@@ -558,7 +726,7 @@ async fn execute_step_tasks(
         ctx.print_banner("Running Task");
         let run = ctx.run_task(step, None).await?;
         if run.succeeded {
-            sim.record_action(step_idx, None, run.outputs);
+            sim.record_action(slot, None, run.outputs);
         }
         return Ok(true);
     };
@@ -568,7 +736,7 @@ async fn execute_step_tasks(
         return execute_explicit_tasks(
             ctx,
             step,
-            step_idx,
+            slot,
             parameter_space,
             task_param_sets,
             &iter,
@@ -581,11 +749,12 @@ async fn execute_step_tasks(
         // Printed only for CONTROL_FLOW, so other templates' output is
         // unchanged.
         if sim.control_flow() {
-            println!("{}\tStep '{}' has 0 tasks", ctx.timestamp(), step.name);
+            println!("{}\tStep '{name}' has 0 tasks", ctx.timestamp());
         }
         return Ok(true);
     }
-    execute_parameter_space_tasks(ctx, args.maximum_tasks, step, step_idx, &mut iter, sim).await
+    let maximum_tasks = args.maximum_tasks.unwrap_or(-1);
+    execute_parameter_space_tasks(ctx, maximum_tasks, step, slot, &mut iter, sim).await
 }
 
 /// Run the Tasks given with `--tasks` or `--task-param`, returning whether
@@ -594,7 +763,7 @@ async fn execute_step_tasks(
 async fn execute_explicit_tasks(
     ctx: &mut RunContext,
     step: &Step,
-    step_idx: usize,
+    slot: Slot,
     parameter_space: &openjd_model::job::StepParameterSpace,
     task_param_sets: &[HashMap<String, String>],
     iter: &openjd_model::StepParameterSpaceIterator,
@@ -651,7 +820,7 @@ async fn execute_explicit_tasks(
         }
         let run = ctx.run_task(step, Some(values)).await?;
         if run.succeeded {
-            sim.record_action(step_idx, Some(values), run.outputs);
+            sim.record_action(slot, Some(values), run.outputs);
         }
     }
     let all_given = ran == typed_sets.len();
@@ -662,7 +831,7 @@ async fn execute_parameter_space_tasks(
     ctx: &mut RunContext,
     maximum_tasks: i64,
     step: &Step,
-    step_idx: usize,
+    slot: Slot,
     iter: &mut openjd_model::StepParameterSpaceIterator,
     sim: &mut Simulator,
 ) -> Result<bool, RunError> {
@@ -700,7 +869,7 @@ async fn execute_parameter_space_tasks(
             .collect();
         let run = ctx.run_task(step, Some(&task_values)).await?;
         if run.succeeded {
-            sim.record_action(step_idx, Some(&task_values), run.outputs);
+            sim.record_action(slot, Some(&task_values), run.outputs);
         }
         let task_duration = run.duration;
         remaining_tasks -= 1;
