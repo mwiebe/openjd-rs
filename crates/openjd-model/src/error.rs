@@ -268,6 +268,13 @@ impl ValidationErrors {
     }
 }
 
+/// `path` as `field[index] -> nested -> leaf`, as validation errors print it.
+pub(crate) fn path_to_string(path: &[PathElement]) -> String {
+    let mut out = String::new();
+    format_path(path, &mut out);
+    out
+}
+
 /// Format a path as `field[index] -> nested -> leaf`.
 fn format_path(path: &[PathElement], out: &mut String) {
     let mut first = true;

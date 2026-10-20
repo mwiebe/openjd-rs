@@ -100,6 +100,14 @@ Core template library. Depends on openjd-expr. Provides:
 - `CONTROL_FLOW` job outputs: `create_job` evaluates each `jobOutputDefinitions` entry whose
   `Steps.*` inputs are concrete at creation (failing Job creation on an error), and a caller
   evaluates the rest with `evaluate_job_output` as the Steps they read finish
+- `CONTROL_FLOW` loops (RFC 0013), with two evaluation stages of their own: `create_job`
+  and `advance_loop_binding` bind a loop (its `enableIf`, `maxIterations`, `initial`
+  values, and first `while`); at **iteration start**, `start_iteration` creates an instance
+  of every body Step with the iteration's `Loop.*` values, bound by the Step binding core,
+  and `advance_body_step_binding` advances them; at the **iteration boundary**,
+  `evaluate_iteration_boundary` evaluates the loop outputs, `until`, `next`, `while`, and
+  the bound, and decides whether the loop continues. Every loop failure the model returns
+  is final; the caller keeps each loop's progress
 
 ### openjd-sessions
 Runtime library. Depends on openjd-model and openjd-expr. Provides:
@@ -109,7 +117,8 @@ Runtime library. Depends on openjd-model and openjd-expr. Provides:
   output, reading `@` files (as the job user, through the cross-user helper, when the
   Session runs as another user), collecting each Task's values with the model's
   `OutputCollector`, and returning them in `ActionResult::outputs`; and forward-mapping a
-  consumer's path-typed `Steps.*` inputs
+  consumer's path-typed `Steps.*` inputs and a loop body Step instance's path-typed
+  `RawLoop.*` values (RFC 0013)
 - Re-exports path mapping from openjd-expr
 
 ### openjd-cli
@@ -119,6 +128,7 @@ For a `CONTROL_FLOW` Job, `run` simulates a scheduler: it advances pending Steps
 `advance_step_binding` as their producers finish, attaches `Steps.*` inputs, records each
 Task's outputs, and evaluates job outputs as their inputs become concrete; `summary` reports
 what is known of each pending Step and job output (see `cli/run.md`, `cli/summary.md`).
+Both refuse a Job with a loop (RFC 0013) until the simulator runs loops.
 
 ## Key Design Decisions
 

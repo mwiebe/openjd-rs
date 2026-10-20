@@ -987,7 +987,8 @@ A `job::Job` represents a loop as its own entry, beside its Steps:
   `PendingLoopBinding` has a `GroupState` (M4) for each of the loop's groups: enablement, bound, and start.
   `BoundLoop` holds `max_iterations: u32`, each variable's `initial` value, and, for a `while` loop, whether the
   first `while` is `true`. A bound loop whose first `while` is `false` has zero iterations.
-* `StepDependencyGraph` (`job/step_dependency_graph.rs`) includes loops as nodes. `step_dependency_order` (M4.1)
+* `StepDependencyGraph` (`job/step_dependency_graph.rs`) includes loops as nodes, in template order, each node
+  with a `StepNodeKind` and its index into `job.steps` or `job.loops`. `step_dependency_order` (M4.1)
   orders the top-level entries, so `create_job` instantiates Steps and loops in dependency order.
 * `create_job` binds a loop through the same core as a Step, with RFC 0013 §Loop binding's groups in order:
   enablement (`enableIf`), bound (`maxIterations`, which must be 1 to 1,000), and start (each `initial` in
@@ -1033,7 +1034,7 @@ simulator keeps a `StepRecord`:
 pub struct LoopProgress {
     pub iteration: u32,                                  // the iteration about to start or in progress
     pub values: IndexMap<String, ExprValue>,             // Loop.<V> for `iteration`, in the stored form
-    pub outputs: IndexMap<String, LoopOutputSoFar>,      // per loop output: the LAST value or the APPEND list
+    pub outputs: IndexMap<String, ExprValue>,            // per loop output: the LAST value (null) or the APPEND list
 }
 impl LoopProgress { pub fn new(job_loop: &job::Loop) -> Option<Self>; }   // None unless the loop is Bound
 
@@ -1090,7 +1091,7 @@ pub enum BoundaryOutcome {
     Continue(LoopProgress),        // iteration + 1, its variable values, the outputs so far
     Succeeded(LoopResult),
 }
-pub struct LoopResult { pub iterations: u32, pub outputs: IndexMap<String, ExprValue> }
+pub struct LoopResult { pub iterations: u32, pub ended_by: LoopEnd, pub outputs: IndexMap<String, ExprValue> }
 
 /// For a bound loop whose first `while` is false, once its dependencies are satisfied.
 pub fn end_without_iterations(job: &job::Job, loop_index: usize) -> Result<LoopResult, LoopError>;
@@ -1114,7 +1115,9 @@ The caller calls `evaluate_iteration_boundary` when every instance of the iterat
 The first error stops the evaluation and fails the loop, with a message that names the field, the expression, the
 iteration, and the problem. That covers a `fail(...)` call, a `null` result, a value that doesn't convert, and a
 violated constraint. `LoopError` carries the loop's name, the iteration, the field (`value` of an output, `until`,
-`next` of a variable, `while`, `maxIterations`, or `minLength` of an output), and the `ModelError`s.
+`next` of a variable, `while`, `maxIterations`, `minLength` of an output, the size limit (`ValueSize`), or, for a
+caller error, `Inputs`), and the `ModelError`s. The iteration appears in `LoopError`'s message, not in the
+`ModelError`, whose path names the field.
 
 `end_without_iterations` checks each `APPEND` output's `minLength` against `[]`, and gives `null` for each `LAST`
 output and `[]` for each `APPEND` output (RFC 0013 §Loop outputs). This check is not a materialization group and is
@@ -1148,7 +1151,8 @@ A re-run of a body Task that has already succeeded leaves its instance `SUCCEEDE
 state, variables, or outputs (RFC 0013 §Retries and re-runs, RFC 0012 §Retries and re-runs). The model keeps no
 Task state, so this needs nothing from it (M5). For consumption, RFC 0013 §Retries and re-runs counts the loop's
 `while`, `until`, `next`, `initial`, and loop output `value`s as consumers of every `Steps.*` output they reference,
-once evaluated. `job::Loop::expression_inputs(job_template, field)` returns the `Steps.*` symbols that one of those
+once evaluated. `job::Loop::expression_inputs(job_template, &LoopExpression) -> Result<Vec<String>, ModelError>`
+returns the `Steps.*` symbols that one of those
 fields references, found by symbol collection, so that a scheduler that allows re-runs can mark them consumed when
 it evaluates the field. The CLI doesn't call it.
 

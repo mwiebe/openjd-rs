@@ -303,6 +303,9 @@ impl JsCallerLimits {
             // Output values are a run-time limit; the JS bindings do no
             // execution.
             max_task_output_bytes: None,
+            // Loop values are checked as a loop runs (CONTROL_FLOW), which
+            // the JS bindings do not expose.
+            max_loop_value_bytes: None,
         }
     }
 

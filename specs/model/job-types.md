@@ -36,11 +36,20 @@ pub struct Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<String>>,
     pub parameters: IndexMap<String, JobParameter>,      // Insertion-ordered
-    pub steps: Vec<Step>,
+    pub steps: Vec<Step>,                                // top-level Steps only
+    pub loops: Vec<Loop>,                                // CONTROL_FLOW loops (RFC 0013)
     pub job_environments: Option<Vec<Environment>>,
     pub outputs: Option<Vec<JobOutput>>,                 // CONTROL_FLOW job outputs
 }
 ```
+
+`steps` holds one `Step` per top-level Step of the template, in template order. `loops`
+holds one [`Loop`](#loop-control_flow-rfc-0013) per loop, in template order, and each
+records its index among the template's `steps` entries, so a Job alone can list its
+entries in template order. A loop's body Steps are in neither: an instance of each is
+created per iteration (see [job-creation.md](job-creation.md) § Loops). `loops` has
+`#[serde(default)]` and is skipped when empty, so a Job without loops serializes as
+before. Code that knows only Steps reads `steps` unchanged.
 
 `parameters` uses `IndexMap` (not `HashMap`) to preserve insertion order for deterministic
 output.
@@ -494,6 +503,56 @@ pub struct AttributeRequirement {
 }
 ```
 
+### Loop (CONTROL_FLOW, RFC 0013)
+
+```rust
+pub struct Loop {
+    pub name: String,
+    pub description: Option<String>,
+    pub entry_index: usize,                    // its index in the template's `steps`
+    pub dependencies: Option<Vec<StepDependency>>,
+    pub condition: LoopCondition,              // While or Until
+    pub variables: Vec<OutputVariable>,        // name, type, constraints
+    pub output_variables: Vec<OutputVariable>, // name, type, collect, unit, constraints
+    pub body: Vec<String>,                     // body Step names, in body order
+    pub binding: LoopBinding,
+}
+
+pub enum LoopBinding {
+    Bound(BoundLoop),                  // { max_iterations: u32, start: LoopStart }
+    PendingInputs(PendingLoopBinding), // { enablement, bound, start: GroupState<..>, producers }
+    Skipped,
+}
+
+pub struct LoopStart {
+    pub initial: IndexMap<String, ExprValue>, // each `initial`, converted
+    pub first_while: Option<bool>,            // None for an `until` loop
+}
+```
+
+`LoopBinding` mirrors [`StepBinding`](#control_flow-fields-rfc-0011-rfc-0012), with the
+groups of RFC 0013 §Loop binding: enablement (`enableIf`), bound (`maxIterations`), and
+start (each `initial`, then the first `while`). A bound loop whose `first_while` is
+`Some(false)` has zero iterations (`BoundLoop::has_iterations`). The body Step templates
+and the loop's format strings stay in the `JobTemplate`, which the loop functions take.
+Each loop output's declaration is an `OutputVariable` whose `collect` is `LAST` or
+`APPEND`; a loop variable's has the default `collect`, which means nothing for it.
+
+`Loop`, `LoopBinding`, `BoundLoop`, `LoopStart`, and `PendingLoopBinding` derive `Debug`,
+`Clone`, `PartialEq`, `Hash`, and `Serialize`, but not `Deserialize`, because the bound
+values are `ExprValue`s (as for `JobOutput`). `LoopBinding` is internally tagged on
+`state`, as `StepBinding` is:
+
+```json
+{"name": "L", "entryIndex": 0, "condition": "UNTIL", "body": ["W"],
+ "binding": {"state": "BOUND", "maxIterations": 4,
+             "start": {"initial": {"N": {"Int": 2}}}}}
+```
+
+Loop values take the `ExprValue` serde form that `JobParameter.value` uses. The working values a caller
+keeps while a loop runs (`LoopProgress`, `LoopIteration`, `BoundaryOutcome`,
+`LoopResult`, `LoopError`) are not parts of a Job.
+
 ### StepDependency
 
 ```rust
@@ -507,6 +566,7 @@ pub struct StepDependency {
 | Template Type | Job Type | Key Differences |
 |--------------|----------|----------------|
 | `template::JobTemplate` | `job::Job` | `name` is `String` not `FormatString`; parameters carry resolved values; `parameters` is `IndexMap`; `jobOutputDefinitions` become `outputs` |
+| `template::StepLoop` | `job::Loop` | Its groups decided into `binding`; variable and output declarations as `OutputVariable`s; body Steps named, not instantiated |
 | `template::StepTemplate` | `job::Step` | `name` resolved; `host_requirements` values resolved; carries `resolved_symtab: Option<SerializedSymbolTable>`; `outputVariables` become `Vec<job::OutputVariable>`; `enableIf` is decided into `binding` (`Skipped` when `false`) |
 | `template::OutputVariableDefinition` | `job::OutputVariable` | Declared constraints as `OutputConstraints`; no `description` or `objectType` |
 | `template::JobOutputDefinition` | `job::JobOutput` | Declaration as an `OutputVariable` (`collect` always `ONCE`); keeps `objectType` and `description`; `value` stays a `FormatString`; `evaluated` filled at creation or by the caller |

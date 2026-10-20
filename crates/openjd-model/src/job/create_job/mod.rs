@@ -9,6 +9,7 @@
 mod binding;
 mod instantiate;
 mod job_outputs;
+mod loops;
 pub mod parameters;
 mod ranges;
 
@@ -25,6 +26,10 @@ use crate::types::{JobParameterValues, ValidationContext};
 pub(crate) use binding::host_scope_symbols;
 pub use binding::{advance_step_binding, attach_step_inputs};
 pub use job_outputs::{evaluate_job_output, job_output_inputs};
+pub use loops::{
+    advance_body_step_binding, advance_loop_binding, end_without_iterations,
+    evaluate_iteration_boundary, start_iteration,
+};
 // Re-exports — preserve the existing public API
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -134,9 +139,15 @@ impl EvalBudgets {
 /// meet its constraints fails `create_job`, every such failure reported
 /// together.
 ///
-/// A template with a loop (`CONTROL_FLOW`, RFC 0013) is not supported yet:
-/// it passes template validation, and `create_job` returns a
-/// `Compatibility` error that names the first loop.
+/// Each loop (`CONTROL_FLOW`, RFC 0013) becomes a [`job::Loop`] in
+/// [`job::Job::loops`], bound as a Step is (RFC 0013 §Loop binding): its
+/// `enableIf` is decided if its inputs are concrete, then its `maxIterations`
+/// is evaluated, then its start group (each `initial`, the size limit, and
+/// the first `while`) if its inputs are concrete. A failure in any of them
+/// aborts `create_job`. Nothing of a loop's body Steps is evaluated, and the
+/// `minLength` of its `APPEND` outputs is never checked here. Steps and loops
+/// are bound in dependency order, so a loop skipped here makes its `null`s
+/// concrete for the Steps and job outputs that read it.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -177,19 +188,6 @@ pub fn create_job(
              missing {}. An application that does not support an extension should reject \
              the template at decode via its supported-extensions list.",
             missing.join(", "),
-        )));
-    }
-
-    // Loops (RFC 0013) are validated, but not yet instantiated.
-    if let Some((i, l)) = job_template
-        .steps
-        .iter()
-        .enumerate()
-        .find_map(|(i, e)| e.as_loop().map(|l| (i, l)))
-    {
-        return Err(ModelError::Compatibility(format!(
-            "create_job does not support loops (RFC 0013) yet: steps[{i}] is loop '{}'.",
-            l.name
         )));
     }
 
@@ -335,7 +333,7 @@ pub fn create_job(
         }
     }
 
-    let steps: Vec<job::Step> = if control_flow {
+    let (steps, loops): (Vec<job::Step>, Vec<job::Loop>) = if control_flow {
         instantiate_steps_with_binding(
             job_template,
             &symtab,
@@ -347,7 +345,8 @@ pub fn create_job(
         )?
     } else {
         let mut steps = Vec::with_capacity(job_template.steps.len());
-        // No loops (rejected above), so these are all the entries.
+        // Without CONTROL_FLOW a template has no loops (validation), so these
+        // are all the entries.
         for (step_index, st) in job_template.top_level_steps().enumerate() {
             steps.push(instantiate::instantiate_step(
                 st,
@@ -388,13 +387,14 @@ pub fn create_job(
                 }
             }
         }
-        steps
+        (steps, Vec::new())
     };
 
     // CONTROL_FLOW (RFC 0011 §Job outputs item 1): every job output whose
     // inputs are concrete now is evaluated, and a failure fails Job
     // creation, as an invalid job parameter value does.
-    let outputs = job_outputs::evaluate_at_creation(job_template, &symtab, &steps, budgets)?;
+    let outputs =
+        job_outputs::evaluate_at_creation(job_template, &symtab, &steps, &loops, budgets)?;
 
     let job_environments = job_template.job_environments.as_ref().map(|envs| {
         envs.iter()
@@ -461,20 +461,24 @@ pub fn create_job(
         extensions,
         parameters,
         steps,
+        loops,
         job_environments,
         outputs,
     })
 }
 
-/// `create_job`'s Steps under `CONTROL_FLOW` (RFC 0011 §When groups are
-/// evaluated): every Step is bound as far as the values concrete at job
-/// creation allow, in dependency order so that a producer skipped or with
-/// known Tasks makes its symbols concrete for the Steps that read them.
+/// `create_job`'s Steps and loops under `CONTROL_FLOW` (RFC 0011 §When groups
+/// are evaluated, RFC 0013 §Loop binding): every Step and loop is bound as far
+/// as the values concrete at job creation allow, in dependency order so that
+/// a producer skipped or with known Tasks makes its symbols concrete for the
+/// entries that read them. Returns the top-level Steps and the loops, each in
+/// template order.
 ///
-/// A group failure that is a step `let` error or a remaining-group check
+/// A Step group failure that is a step `let` error or a remaining-group check
 /// error is collected into `check_errors` with the other Steps' errors, in
-/// template order; any other group failure aborts at once. The Task-count
-/// limits are checked as each Step's Tasks become known.
+/// template order; any other Step group failure, and every loop group
+/// failure, aborts at once. The Task-count limits are checked as each Step's
+/// Tasks become known.
 #[allow(clippy::too_many_arguments)]
 fn instantiate_steps_with_binding(
     job_template: &JobTemplate,
@@ -484,7 +488,8 @@ fn instantiate_steps_with_binding(
     ctx: &ValidationContext,
     budgets: EvalBudgets,
     check_errors: &mut crate::error::ValidationErrors,
-) -> Result<Vec<job::Step>, ModelError> {
+) -> Result<(Vec<job::Step>, Vec<job::Loop>), ModelError> {
+    use crate::template::StepEntry;
     let n = job_template.steps.len();
     // Validation rejects a cycle; template order is a safe fallback.
     let order = crate::template::validate_v2023_09::step_dependency_order(&job_template.steps)
@@ -497,36 +502,64 @@ fn instantiate_steps_with_binding(
         limits,
         budgets,
     };
-    let mut built: Vec<Option<job::Step>> = vec![None; n];
+    let mut built: Vec<Option<binding::Built>> = vec![None; n];
     let mut step_errors: Vec<crate::error::ValidationErrors> =
         (0..n).map(|_| Default::default()).collect();
     let mut committed: u64 = 0;
     for i in order {
-        let inputs = binding::creation_inputs(job_template, i, &built)?;
-        match binding::bind_step(&cx, i, None, &inputs, committed) {
-            Ok(step) => {
-                if let Some(tasks) = step.tasks_known() {
-                    committed = committed.saturating_add(tasks);
+        match &job_template.steps[i] {
+            StepEntry::Step(st) => {
+                let site = binding::StepSite::top(job_template, i)?;
+                let inputs = binding::step_creation_inputs(job_template, st, &built)?;
+                match binding::bind_step(&cx, &site, None, &inputs, committed) {
+                    Ok(step) => {
+                        if let Some(tasks) = step.tasks_known() {
+                            committed = committed.saturating_add(tasks);
+                        }
+                        built[i] = Some(binding::Built::Step(step));
+                    }
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Collected(errors),
+                        ..
+                    }) => step_errors[i] = errors,
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Abort(e),
+                        ..
+                    }) => return Err(e),
                 }
-                built[i] = Some(step);
             }
-            Err(binding::GroupFailure {
-                failure: binding::Failure::Collected(errors),
-                ..
-            }) => step_errors[i] = errors,
-            Err(binding::GroupFailure {
-                failure: binding::Failure::Abort(e),
-                ..
-            }) => return Err(e),
+            StepEntry::Loop(l) => {
+                let inputs = loops::loop_creation_inputs(job_template, l, &built)?;
+                match loops::bind_loop(&cx, i, l, None, &inputs) {
+                    Ok(job_loop) => built[i] = Some(binding::Built::Loop(job_loop)),
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Abort(e),
+                        ..
+                    }) => return Err(e),
+                    Err(binding::GroupFailure {
+                        failure: binding::Failure::Collected(errors),
+                        ..
+                    }) => step_errors[i] = errors,
+                }
+            }
         }
     }
     for errors in step_errors {
         check_errors.errors.extend(errors.errors);
     }
     std::mem::take(check_errors).into_result("JobTemplate")?;
-    built.into_iter().collect::<Option<_>>().ok_or_else(|| {
-        ModelError::DecodeValidation(
-            "internal error: a step was skipped without a recorded error".to_string(),
-        )
-    })
+    let mut steps = Vec::new();
+    let mut loops = Vec::new();
+    for entry in built {
+        match entry {
+            Some(binding::Built::Step(step)) => steps.push(step),
+            Some(binding::Built::Loop(job_loop)) => loops.push(job_loop),
+            None => {
+                return Err(ModelError::DecodeValidation(
+                    "internal error: a step was skipped without a recorded error".to_string(),
+                ))
+            }
+        }
+    }
+    Ok((steps, loops))
 }

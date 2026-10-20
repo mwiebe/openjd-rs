@@ -399,12 +399,17 @@ in template scope because their concrete values depend on session-time path mapp
 session populates these from `self.job_parameter_values` with the session's path mapping
 rules applied.
 
-### Path-typed `Steps.*` inputs (`CONTROL_FLOW`)
+### Path-typed `Steps.*` and `Loop.*` inputs (`CONTROL_FLOW`)
 
 A consumer Step's path-typed `Steps.*` values arrive in `base` only in their `Raw` forms
 (`Steps.P.RawOutput.V`, `Steps.P.TaskRawParam.N`), stored by `attach_step_inputs` as
 `string`, `list[string]`, or `list[list[string]]` in the submission path context, and
-listed in `path_inputs` (`job::Step::path_inputs`). They are stored as strings for the
+listed in `path_inputs` (`job::Step::path_inputs`). A loop body Step instance's
+path-typed loop variable (RFC 0013 §`<LoopVariableDefinition>`) arrives the same way, as
+`RawLoop.V` (`string` or `list[string]`), stored by the model when the instance is bound;
+its twin is `Loop.V`. A body Step instance is otherwise a Step for the Session: its Step
+Environments are entered and exited around its Tasks as any Step's are (RFC 0013
+§Sessions). They are stored as strings for the
 same reason `RawParam.*` is: `to_symtab(PathFormat::host())` rewrites `/` to `\` in every
 `path`-typed entry on a Windows worker, so a POSIX submission path would no longer match a
 POSIX rule. For each entry, after the `Param.*` loop:
@@ -415,11 +420,13 @@ POSIX rule. For each entry, after the `Param.*` loop:
   its value whatever its format, and the evaluator reads only `path` values in the host's
   format; `ExprValue::new_path` normalizes separators within
   that format, so `C:/x` reads back as `C:\x`;
-- its twin (`Steps.P.Output.V`, `Steps.P.TaskParam.N`) is set to the forward-mapped
+- its twin (`Steps.P.Output.V`, `Steps.P.TaskParam.N`, `Loop.V`) is set to the forward-mapped
   `path` values in the host format, element by element, with the Session's rules;
 - a `null` (from a skipped producer) is left as `null` and gets no twin.
 
-Each is a `SessionError::Runtime` naming the symbol: a symbol of another form, one
+Each is a `SessionError::Runtime` naming the symbol: a symbol of another form (`not a
+Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name>
+symbol`), one
 missing from `base`, a type that is not `path`, `list[path]`, or `list[list[path]]`, a
 stored value whose shape does not match that type, and any `path_inputs` at all when
 `base` is `None`. Step Environments receive the same inputs through

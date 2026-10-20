@@ -27,9 +27,11 @@ use crate::job::{
     self, binding::steps_key, BindingError, GroupState, MaterializationGroup, PendingBinding,
     StepBinding, StepInputs,
 };
-use crate::template::validate_v2023_09::steps_scope::{add_steps_scope, StepsFieldScope};
+use crate::template::validate_v2023_09::steps_scope::{
+    add_control_flow_scope, StepLocation, StepsFieldScope, StepsReader,
+};
 use crate::template::validate_v2023_09::EffectiveLimits;
-use crate::template::{self, BoolOrFormatString, JobTemplate, StepTemplate};
+use crate::template::{self, BoolOrFormatString, JobTemplate, StepEntry, StepTemplate};
 use crate::types::{JobParameterValues, ValidationContext};
 
 /// Everything a binding needs from the Job besides the Step and its inputs.
@@ -42,6 +44,34 @@ pub(super) struct BindContext<'a> {
     pub(super) has_expr: bool,
     pub(super) limits: &'a EffectiveLimits,
     pub(super) budgets: EvalBudgets,
+}
+
+/// The Step a binding is for: its template, where it is, and for a body Step
+/// instance the values of its iteration's loop.
+pub(super) struct StepSite<'a> {
+    pub(super) st: &'a StepTemplate,
+    pub(super) loc: StepLocation,
+    /// `steps[i]`, or `steps[i] -> loop -> steps[j]` for a body Step.
+    pub(super) path: Vec<PathElement>,
+    /// The `Loop.*` and `RawLoop.*` values of a body Step instance's
+    /// iteration (RFC 0013 §Iterations item 1); `None` for a top-level Step.
+    pub(super) loop_layer: Option<super::loops::LoopLayer<'a>>,
+}
+
+impl<'a> StepSite<'a> {
+    /// Top-level Step `entry` of `jt`'s `steps`, or the caller error for an
+    /// entry that is not a Step.
+    pub(super) fn top(jt: &'a JobTemplate, entry: usize) -> Result<Self, ModelError> {
+        let st = jt
+            .top_level_step(entry)
+            .ok_or_else(|| no_top_level_step(entry))?;
+        Ok(Self {
+            st,
+            loc: StepLocation::top(entry),
+            path: step_path(entry).to_vec(),
+            loop_layer: None,
+        })
+    }
 }
 
 /// How a group failure reaches the caller of `create_job`.
@@ -63,7 +93,7 @@ pub(super) struct GroupFailure {
 }
 
 impl GroupFailure {
-    fn abort(group: MaterializationGroup, e: ModelError) -> Self {
+    pub(super) fn abort(group: MaterializationGroup, e: ModelError) -> Self {
         Self {
             group,
             failure: Failure::Abort(e),
@@ -77,7 +107,7 @@ impl GroupFailure {
         }
     }
 
-    fn into_binding_error(self, step: &str) -> BindingError {
+    pub(super) fn into_binding_error(self, step: &str) -> BindingError {
         let error = match self.failure {
             Failure::Abort(e) => e,
             Failure::Collected(errors) => match errors.into_result("JobTemplate") {
@@ -161,7 +191,7 @@ impl StepGroups {
     }
 
     /// The producers whose symbols a group of the Step reads, sorted.
-    fn producers(&self) -> Vec<String> {
+    pub(super) fn producers(&self) -> Vec<String> {
         let set: BTreeSet<String> = self
             .all()
             .filter_map(|s| s.split('.').nth(1).map(str::to_string))
@@ -170,7 +200,7 @@ impl StepGroups {
     }
 
     /// Every `Steps.*` symbol a group of the Step reads.
-    fn all(&self) -> impl Iterator<Item = &String> {
+    pub(super) fn all(&self) -> impl Iterator<Item = &String> {
         self.enablement
             .iter()
             .chain(&self.tasks)
@@ -228,7 +258,7 @@ impl LetRefs {
     }
 }
 
-fn steps_symbols(symbols: impl IntoIterator<Item = String>) -> BTreeSet<String> {
+pub(super) fn steps_symbols(symbols: impl IntoIterator<Item = String>) -> BTreeSet<String> {
     symbols.into_iter().filter_map(|s| steps_key(&s)).collect()
 }
 
@@ -275,7 +305,7 @@ fn template_scope_action_symbols(action: &template::Action, out: &mut Vec<String
 }
 
 /// The symbols of `inputs` that are not concrete, in sorted order.
-fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<String> {
+pub(super) fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<String> {
     symbols
         .iter()
         .filter(|s| !inputs.is_concrete(s))
@@ -296,18 +326,15 @@ fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<String> {
 /// Job-total Task-count limit.
 pub(super) fn bind_step(
     cx: &BindContext<'_>,
-    step_index: usize,
+    site: &StepSite<'_>,
     prior: Option<&job::Step>,
     inputs: &StepInputs,
     committed_task_count: u64,
 ) -> Result<job::Step, GroupFailure> {
     use MaterializationGroup::*;
-    let st = cx
-        .jt
-        .top_level_step(step_index)
-        .ok_or_else(|| GroupFailure::abort(Enablement, no_top_level_step(cx.jt, step_index)))?;
+    let st = site.st;
     let groups = StepGroups::of(st);
-    let path = step_path(step_index);
+    let path = site.path.as_slice();
     let prior_pending = match prior.map(|s| &s.binding) {
         Some(StepBinding::PendingInputs(p)) => Some(p),
         _ => None,
@@ -359,6 +386,9 @@ pub(super) fn bind_step(
             .set("Step.Name", ExprValue::String(st.name.clone()))
             .map_err(internal)?;
     }
+    if let Some(layer) = &site.loop_layer {
+        layer.set_symbols(&mut step_symtab).map_err(internal)?;
+    }
     for sym in groups.all() {
         if let Some(v) = inputs.get(sym) {
             step_symtab.set(sym, v.clone()).map_err(internal)?;
@@ -389,7 +419,7 @@ pub(super) fn bind_step(
             st.enable_if.as_ref(),
             &step_symtab,
             cx.budgets,
-            &path_field(&path, "enableIf"),
+            &path_field(path, "enableIf"),
         )
         .map_err(|e| GroupFailure::abort(Enablement, e))?;
         if !enabled {
@@ -398,7 +428,7 @@ pub(super) fn bind_step(
         }
     }
 
-    let mut lets = LetEvaluator::new(cx, st, &path);
+    let mut lets = LetEvaluator::new(cx, st, path);
 
     // ── Task enumeration ──
     let tasks = match prior_pending.map(|p| &p.tasks) {
@@ -408,7 +438,7 @@ pub(super) fn bind_step(
             if waiting.is_empty() {
                 lets.evaluate(&groups.tasks_lets, &mut step_symtab)
                     .map_err(|e| GroupFailure::collected(TaskEnumeration, e))?;
-                let space = enumerate_tasks(cx, st, step_index, &step_symtab, committed_task_count)
+                let space = enumerate_tasks(cx, site, &step_symtab, committed_task_count)
                     .map_err(|e| GroupFailure::abort(TaskEnumeration, e))?;
                 GroupState::Known(space)
             } else {
@@ -433,7 +463,7 @@ pub(super) fn bind_step(
                             hr,
                             &step_symtab,
                             cx.ctx,
-                            step_index,
+                            path,
                             cx.budgets,
                         )
                     })
@@ -443,7 +473,7 @@ pub(super) fn bind_step(
                         // give it the Step's path too.
                         let e = match e {
                             e @ ModelError::ModelValidation(_) => e,
-                            e => located(&path_field(&path, "hostRequirements"), &e),
+                            e => located(&path_field(path, "hostRequirements"), &e),
                         };
                         GroupFailure::abort(HostSelection, e)
                     })?;
@@ -462,7 +492,7 @@ pub(super) fn bind_step(
             if waiting.is_empty() {
                 lets.evaluate_all(&mut step_symtab)
                     .map_err(|e| GroupFailure::collected(Remaining, e))?;
-                let errors = evaluate_remaining(cx, st, step_index, &step_symtab, &mut step)
+                let errors = evaluate_remaining(cx, site, &step_symtab, &mut step)
                     .map_err(|e| GroupFailure::abort(Remaining, e))?;
                 if !errors.is_empty() {
                     return Err(GroupFailure::collected(Remaining, errors));
@@ -484,6 +514,11 @@ pub(super) fn bind_step(
             step.parameter_space = space;
             step.host_requirements = hr;
             step.resolved_symtab = Some(instantiate::resolved_step_symtab(&step, st, &step_symtab));
+            if let Some(layer) = &site.loop_layer {
+                layer
+                    .store_path_values(&mut step, st)
+                    .map_err(|e| GroupFailure::abort(Remaining, e))?;
+            }
             step.binding = StepBinding::Bound;
             Ok(step)
         }
@@ -551,13 +586,13 @@ pub(super) fn evaluate_enable_if(
 /// Task-count limit at `steps[i]`.
 fn enumerate_tasks(
     cx: &BindContext<'_>,
-    st: &StepTemplate,
-    step_index: usize,
+    site: &StepSite<'_>,
     step_symtab: &SymbolTable,
     committed_task_count: u64,
 ) -> Result<Option<job::StepParameterSpace>, ModelError> {
-    let step_path = step_path(step_index);
-    let ps_path = path_field(&step_path, "parameterSpace");
+    let st = site.st;
+    let step_path = &site.path;
+    let ps_path = path_field(step_path, "parameterSpace");
     let tpd_path = path_field(&ps_path, "taskParameterDefinitions");
     let space = st
         .parameter_space
@@ -587,13 +622,13 @@ fn enumerate_tasks(
     }
     let task_count = job::binding::task_count(space.as_ref())?;
     check_task_count(cx.ctx, &st.name, task_count, committed_task_count)
-        .map_err(|e| located(&step_path, &e))?;
+        .map_err(|e| located(step_path, &e))?;
     Ok(space)
 }
 
 /// `error` as a one-error `ModelValidation` at `path`, its message without
 /// the `ModelError` variant's prefix.
-fn located(path: &[PathElement], error: &ModelError) -> ModelError {
+pub(super) fn located(path: &[PathElement], error: &ModelError) -> ModelError {
     let message = match error {
         ModelError::DecodeValidation(m) => m.clone(),
         ModelError::Expression(e) => e.to_string(),
@@ -700,24 +735,24 @@ pub(super) fn check_step_task_count(
 /// collects; `Err` only for an internal symbol-table failure.
 fn evaluate_remaining(
     cx: &BindContext<'_>,
-    st: &StepTemplate,
-    step_index: usize,
+    site: &StepSite<'_>,
     step_symtab: &SymbolTable,
     step: &mut job::Step,
 ) -> Result<ValidationErrors, ModelError> {
-    let path = step_path(step_index);
-    let steps_scope = Some((cx.jt, step_index));
+    let st = site.st;
+    let path = site.path.as_slice();
+    let steps_scope = Some((cx.jt, site.loc));
     let mut template_check_symtab = step_symtab.clone();
-    add_steps_scope(
+    add_control_flow_scope(
         &mut template_check_symtab,
         cx.jt,
-        step_index,
+        StepsReader::Step(site.loc),
         StepsFieldScope::Template,
     )?;
     let mut errors = ValidationErrors::default();
     instantiate::check_step_script(
         st,
-        &path,
+        path,
         step_symtab,
         &template_check_symtab,
         steps_scope,
@@ -726,7 +761,7 @@ fn evaluate_remaining(
         &mut errors,
     )?;
     for (j, env) in st.step_environments.iter().flatten().enumerate() {
-        let env_path = path_index(&path_field(&path, "stepEnvironments"), j);
+        let env_path = path_index(&path_field(path, "stepEnvironments"), j);
         let enabled = match evaluate_enable_if(
             env.enable_if.as_ref(),
             step_symtab,
@@ -754,7 +789,7 @@ fn evaluate_remaining(
         }
         instantiate::check_step_environment(
             env,
-            &path,
+            path,
             j,
             step_symtab,
             &template_check_symtab,
@@ -827,50 +862,65 @@ impl<'a> LetEvaluator<'a> {
     }
 }
 
-/// The caller error for a `step_index` that names no top-level Step of `jt`.
-/// `create_job` rejects a template with loops, so for a template it accepts,
-/// every index into its Job's Steps names one.
-fn no_top_level_step(jt: &JobTemplate, step_index: usize) -> ModelError {
+/// The caller error for an entry of the template's `steps` that is not a
+/// Step.
+fn no_top_level_step(entry: usize) -> ModelError {
     ModelError::Compatibility(format!(
-        "entry {step_index} of the template's steps is not a Step{}; pass the template the Job was created from.",
-        if jt.has_loops() {
-            " (the template has loops, which job creation does not support yet)"
-        } else {
-            ""
-        }
+        "entry {entry} of the template's steps is not a Step; pass the template the Job was created from."
     ))
+}
+
+/// The index in the template's `steps` of the `k`-th top-level Step, which
+/// is `job.steps[k]` of a Job created from it.
+pub(super) fn step_entry_index(jt: &JobTemplate, k: usize) -> Option<usize> {
+    jt.steps
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| matches!(e, StepEntry::Step(_)))
+        .nth(k)
+        .map(|(i, _)| i)
 }
 
 // ── create_job's inputs ───────────────────────────────────────────
 
-/// The `Steps.*` values that are concrete at job creation for Step
-/// `step_index`, from the Steps already instantiated (`built`, by template
-/// index): the `null`s of a skipped producer, and the `TaskParam`s of a
-/// producer whose Tasks are known.
-pub(super) fn creation_inputs(
+/// An entry of the template's `steps` that `create_job` has instantiated.
+// Nearly every entry is a Step, and these live only while `create_job` runs.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, Clone)]
+pub(super) enum Built {
+    Step(job::Step),
+    Loop(job::Loop),
+}
+
+/// The `Steps.*` values that are concrete at job creation for an entry that
+/// depends on `deps` and whose groups read `symbols`
+/// (`Steps.<Step>.<Member>.<Name>`), from the entries already instantiated
+/// (`built`, by template index): the `null`s of a skipped producer, and the
+/// `TaskParam`s of a producer Step whose Tasks are known.
+pub(super) fn creation_inputs<'s>(
     jt: &JobTemplate,
-    step_index: usize,
-    built: &[Option<job::Step>],
+    deps: &[template::StepDependency],
+    symbols: impl Iterator<Item = &'s String>,
+    built: &[Option<Built>],
 ) -> Result<StepInputs, ModelError> {
-    // Only the producers the Step's groups read, and a producer's TaskParam
-    // lists only when they read its TaskParam or TaskRawParam: building
-    // them walks the producer's whole parameter space, and its Output is
-    // never concrete here except as a skipped producer's `null`.
-    let st = jt
-        .top_level_step(step_index)
-        .ok_or_else(|| no_top_level_step(jt, step_index))?;
-    let groups = StepGroups::of(st);
-    let read: BTreeSet<String> = groups.producers().into_iter().collect();
-    let reads_task_params: BTreeSet<String> = groups
-        .all()
-        .filter_map(|s| {
-            let mut parts = s.split('.').skip(1);
-            let p = parts.next()?;
-            matches!(parts.next()?, "TaskParam" | "TaskRawParam").then(|| p.to_string())
-        })
-        .collect();
+    // Only the producers the groups read, and a producer's TaskParam lists
+    // only when they read its TaskParam or TaskRawParam: building them walks
+    // the producer's whole parameter space, and its Output is never concrete
+    // here except as a skipped producer's `null`.
+    let mut read = BTreeSet::new();
+    let mut reads_task_params = BTreeSet::new();
+    for s in symbols {
+        let mut parts = s.split('.').skip(1);
+        let (Some(p), Some(member)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        if matches!(member, "TaskParam" | "TaskRawParam") {
+            reads_task_params.insert(p.to_string());
+        }
+        read.insert(p.to_string());
+    }
     let mut inputs = StepInputs::new();
-    for dep in st.dependencies.iter().flatten() {
+    for dep in deps {
         if !read.contains(&dep.depends_on) {
             continue;
         }
@@ -882,15 +932,58 @@ pub(super) fn creation_inputs(
         else {
             continue;
         };
-        match &producer.binding {
-            StepBinding::Skipped => inputs.add_producer(producer, job::ProducerState::Skipped)?,
-            _ if producer.tasks_known().is_some() && reads_task_params.contains(&producer.name) => {
-                inputs.add_producer(producer, job::ProducerState::TasksKnown)?
+        match producer {
+            Built::Step(producer) => match &producer.binding {
+                StepBinding::Skipped => {
+                    inputs.add_producer(producer, job::ProducerState::Skipped)?
+                }
+                _ if producer.tasks_known().is_some()
+                    && reads_task_params.contains(&producer.name) =>
+                {
+                    inputs.add_producer(producer, job::ProducerState::TasksKnown)?
+                }
+                _ => {}
+            },
+            Built::Loop(producer) => {
+                if matches!(producer.binding, job::LoopBinding::Skipped) {
+                    inputs.add_loop_producer(producer, job::LoopProducerState::Skipped)?;
+                }
             }
-            _ => {}
         }
     }
     Ok(inputs)
+}
+
+/// [`creation_inputs`] for top-level Step `st`.
+pub(super) fn step_creation_inputs(
+    jt: &JobTemplate,
+    st: &StepTemplate,
+    built: &[Option<Built>],
+) -> Result<StepInputs, ModelError> {
+    let groups = StepGroups::of(st);
+    creation_inputs(
+        jt,
+        st.dependencies.as_deref().unwrap_or(&[]),
+        groups.all(),
+        built,
+    )
+}
+
+/// The job symbol table a Job was created with (`Param.*`, `RawParam.*`, and
+/// with `EXPR` `Job.Name`), and whether `EXPR` is enabled.
+pub(super) fn job_symbol_table(
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job_name: &str,
+) -> Result<(SymbolTable, bool), ModelError> {
+    let has_expr = ctx
+        .profile
+        .has_extension(crate::types::ModelExtension::Expr);
+    let mut symtab = super::build_symbol_table(job_parameter_values)?;
+    if has_expr {
+        symtab.set("Job.Name", ExprValue::String(job_name.to_string()))?;
+    }
+    Ok((symtab, has_expr))
 }
 
 // ── Public API ────────────────────────────────────────────────────
@@ -965,29 +1058,26 @@ pub fn advance_step_binding(
     if !matches!(step.binding, StepBinding::PendingInputs(_)) {
         return Ok(step.clone());
     }
-    if job_template.top_level_step(step_index).map(|s| &s.name) != Some(&step.name) {
-        return Err(misuse(
-            &step.name,
-            format!(
-                "Step {step_index} of the Job is '{}', but the template's is not; pass the template the Job was created from.",
-                step.name
-            ),
-        ));
-    }
+    let entry = step_entry_index(job_template, step_index);
+    let site = match entry.map(|e| StepSite::top(job_template, e)) {
+        Some(Ok(site)) if site.st.name == step.name => site,
+        _ => {
+            return Err(misuse(
+                &step.name,
+                format!(
+                    "Step {step_index} of the Job is '{}', but the template's is not; pass the template the Job was created from.",
+                    step.name
+                ),
+            ))
+        }
+    };
     let to_err = |e: ModelError| BindingError {
         step: step.name.clone(),
         group: MaterializationGroup::Enablement,
         errors: vec![e],
     };
-    let has_expr = ctx
-        .profile
-        .has_extension(crate::types::ModelExtension::Expr);
-    let mut symtab = super::build_symbol_table(job_parameter_values).map_err(to_err)?;
-    if has_expr {
-        symtab
-            .set("Job.Name", ExprValue::String(job.name.clone()))
-            .map_err(|e| to_err(e.into()))?;
-    }
+    let (symtab, has_expr) =
+        job_symbol_table(job_parameter_values, ctx, &job.name).map_err(to_err)?;
     let limits = EffectiveLimits::from_context(ctx);
     let cx = BindContext {
         jt: job_template,
@@ -997,7 +1087,7 @@ pub fn advance_step_binding(
         limits: &limits,
         budgets: EvalBudgets::from_ctx(ctx),
     };
-    bind_step(&cx, step_index, Some(step), inputs, committed_task_count)
+    bind_step(&cx, &site, Some(step), inputs, committed_task_count)
         .map_err(|f| f.into_binding_error(&step.name))
 }
 
@@ -1014,8 +1104,9 @@ pub fn advance_step_binding(
 /// [`job::Step::path_inputs`], so that the session builds the `path` values
 /// and maps `Output` and `TaskParam` forward on the worker host. A skipped
 /// producer's `null`s are stored as they are. Every `Steps.*` value and
-/// `path_inputs` record comes from `inputs`: attaching again replaces those
-/// of an earlier call.
+/// `Steps.*` `path_inputs` record comes from `inputs`: attaching again
+/// replaces those of an earlier call. A body Step instance's `RawLoop.*`
+/// records, made when it was bound, are kept.
 ///
 /// Errors, each a [`ModelError::Compatibility`] (a caller error), when the
 /// Step is not bound, or when a symbol it reads is not concrete in `inputs`
@@ -1031,7 +1122,10 @@ pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::
         .iter()
         .filter_map(|s| steps_key(s))
         .collect();
-    if symbols.is_empty() && step.path_inputs.is_empty() {
+    // A body Step instance's path-typed `RawLoop.*` values are recorded when
+    // it is bound, and kept: only the `Steps.*` ones come from `inputs`.
+    let is_steps_input = |p: &&job::PathInput| p.symbol.starts_with("Steps.");
+    if symbols.is_empty() && !step.path_inputs.iter().any(|p| is_steps_input(&p)) {
         return Ok(step.clone());
     }
     // Start from the table without any `Steps.*` value: every one, and every
@@ -1051,8 +1145,12 @@ pub fn attach_step_inputs(step: &job::Step, inputs: &StepInputs) -> Result<job::
             }
         }
     }
-    let mut path_inputs: std::collections::BTreeMap<String, job::PathInput> =
-        std::collections::BTreeMap::new();
+    let mut path_inputs: std::collections::BTreeMap<String, job::PathInput> = step
+        .path_inputs
+        .iter()
+        .filter(|p| !is_steps_input(p))
+        .map(|p| (p.symbol.clone(), p.clone()))
+        .collect();
     for sym in &symbols {
         let (stored, value) = match inputs.get(sym) {
             Some(v) => (sym.clone(), v.clone()),
@@ -1112,7 +1210,7 @@ fn raw_twin(sym: &str) -> String {
 
 /// A value that is or contains `path`, as the same shape of strings; `None`
 /// for any other value.
-fn path_as_strings(value: &ExprValue) -> Option<ExprValue> {
+pub(super) fn path_as_strings(value: &ExprValue) -> Option<ExprValue> {
     match value {
         ExprValue::Path { value, .. } => Some(ExprValue::String(value.clone())),
         ExprValue::ListPath(v, _, _) => ExprValue::make_list(

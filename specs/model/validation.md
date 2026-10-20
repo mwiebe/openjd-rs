@@ -328,8 +328,8 @@ creation also uses (see `specs/model/job-creation.md`).
 
 **Seeding.** `add_control_flow_scope(symtab, jt, reader, scope)` seeds the symbols a field
 read by `reader` may see (`StepsReader`: a Step at a `StepLocation`, one of a loop's own
-fields, a job output, or nothing); `add_steps_scope` is its form for a top-level Step,
-which job creation uses. For a top-level Step `S` it adds, for each Step or loop `P` that
+fields, a job output, or nothing); job creation calls it with the Step's `StepLocation`,
+for a top-level Step or a body Step instance. For a top-level Step `S` it adds, for each Step or loop `P` that
 `S` lists in its `dependencies`, that is not `S`, and whose name is an
 `<Identifier>`, the symbols `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of
 `P`'s output variables and, when `P` has a `parameterSpace`, `Steps.P.TaskParam.<N>` and

@@ -1096,6 +1096,116 @@ async fn task_script_reads_path_inputs() {
     );
 }
 
+/// A body Step instance's resolved_symtab, as the model writes it for a
+/// `PATH` and a `LIST[PATH]` loop variable (RFC 0013): `RawLoop.<V>` stored as
+/// strings and listed in `path_inputs`.
+fn loop_instance_symtab() -> (openjd_expr::SerializedSymbolTable, Vec<PathInput>) {
+    let mut st = SymbolTable::new();
+    st.set("RawLoop.Dir", ExprValue::String("/src/iter/0".into()))
+        .unwrap();
+    st.set(
+        "RawLoop.Files",
+        ExprValue::make_list(
+            vec![
+                ExprValue::String("/src/a.exr".into()),
+                ExprValue::String("/elsewhere/b.exr".into()),
+            ],
+            ExprType::STRING,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    st.set("Loop.Iteration", ExprValue::Int(0)).unwrap();
+    let inputs = vec![
+        PathInput {
+            symbol: "RawLoop.Dir".into(),
+            ty: ExprType::PATH,
+        },
+        PathInput {
+            symbol: "RawLoop.Files".into(),
+            ty: ExprType::list(ExprType::PATH),
+        },
+    ];
+    (openjd_expr::SerializedSymbolTable::from_symtab(&st), inputs)
+}
+
+#[tokio::test]
+async fn loop_path_variables_are_mapped_forward_and_raw_forms_kept() {
+    let f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let (base, inputs) = loop_instance_symtab();
+    let st = f
+        .session
+        .build_symbol_table(None, Some(&base), &inputs)
+        .unwrap();
+    let get = |k: &str| st.get_value(k).cloned().unwrap();
+    assert_eq!(
+        get("RawLoop.Dir"),
+        ExprValue::new_path("/src/iter/0", PathFormat::Posix)
+    );
+    assert_eq!(
+        get("Loop.Dir"),
+        ExprValue::new_path("/mnt/dst/iter/0", PathFormat::host())
+    );
+    assert_eq!(
+        get("Loop.Files").to_display_string(),
+        r#"["/mnt/dst/a.exr", "/elsewhere/b.exr"]"#
+    );
+    assert_eq!(
+        get("Loop.Files").expr_type(),
+        ExprType::list(ExprType::PATH)
+    );
+    assert_eq!(
+        get("RawLoop.Files").to_display_string(),
+        r#"["/src/a.exr", "/elsewhere/b.exr"]"#
+    );
+    assert_eq!(
+        get("RawLoop.Files").expr_type(),
+        ExprType::list(ExprType::PATH)
+    );
+    assert_eq!(get("Loop.Iteration"), ExprValue::Int(0));
+}
+
+#[tokio::test]
+async fn task_script_reads_loop_path_variables() {
+    let mut f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let (base, inputs) = loop_instance_symtab();
+    let r = f
+        .session
+        .run_task(
+            "S",
+            &step(
+                "echo D={{Loop.Dir}} R={{RawLoop.Dir}} N={{Loop.Dir.name}} \
+                 F={{Loop.Files[0]}} I={{Loop.Iteration}}",
+            ),
+            None,
+            Some(&base),
+            None,
+            &RunTaskOptions {
+                output_variables: None,
+                path_inputs: &inputs,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.state, ActionState::Success, "{}", f.fail_message());
+    assert!(
+        r.stdout
+            .contains("D=/mnt/dst/iter/0 R=/src/iter/0 N=0 F=/mnt/dst/a.exr I=0"),
+        "{}",
+        r.stdout
+    );
+}
+
 #[tokio::test]
 async fn task_script_reads_a_uri_path_input() {
     // A URI output is stored unchanged; with no rule for it both forms are
@@ -1500,8 +1610,17 @@ async fn path_input_errors_name_the_symbol() {
     assert_eq!(
         err(vec![input("Steps.P.Output.X", ExprType::PATH)], Some(&base)),
         "Path input 'Steps.P.Output.X' in resolved_symtab: not a \
-         Steps.<Step>.RawOutput.<Name> or Steps.<Step>.TaskRawParam.<Name> symbol"
+         Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name> symbol"
     );
+    for symbol in ["Loop.V", "RawLoop.V.name", "RawLoop."] {
+        assert_eq!(
+            err(vec![input(symbol, ExprType::PATH)], Some(&base)),
+            format!(
+                "Path input '{symbol}' in resolved_symtab: not a \
+                 Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name> symbol"
+            )
+        );
+    }
     assert_eq!(
         err(
             vec![input("Steps.P.RawOutput.N", ExprType::PATH)],

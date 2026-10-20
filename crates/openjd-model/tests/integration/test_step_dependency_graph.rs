@@ -53,6 +53,7 @@ fn make_job(steps: Vec<(&str, Vec<&str>)>) -> Job {
                 path_inputs: Vec::new(),
             })
             .collect(),
+        loops: Vec::new(),
         job_environments: None,
         outputs: None,
     }
