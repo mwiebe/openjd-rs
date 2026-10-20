@@ -8171,7 +8171,7 @@ steps:
             // A body Step that only the boundary reads.
             LoopCase {
                 file: "bout.yaml", args: &[], code: 0,
-                lines: &["Loop 'L' iteration 0 outputs: H = 4", "Loop 'L' succeeded after 2 iterations (until is true)", "Loop 'L' outputs: H = 4"],
+                lines: &["Loop 'L' iteration 0 outputs: H = 4 frames", "Loop 'L' succeeded after 2 iterations (until is true)", "Loop 'L' outputs: H = 4 frames"],
                 absent: &[],
             },
             LoopCase {
@@ -8220,6 +8220,23 @@ steps:
             LoopCase {
                 file: "zero_tasks.yaml", args: &[], code: 0,
                 lines: &["Running step 'L[0].P'", "Step 'L[0].P' has 0 tasks", "Running step 'L[1].P'", "P ran 7"],
+                absent: &[],
+            },
+            // A pending loop whose bound is known at Job creation reports it
+            // then, and not again when it is bound.
+            LoopCase {
+                file: "known_bound.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' is pending inputs:", "  maxIterations: 3", "Loop 'L' is ready", "P ran 1"],
+                absent: &["Loop 'L': maxIterations 3"],
+            },
+            // A reader of a complete and an incomplete instance names the
+            // incomplete one.
+            LoopCase {
+                file: "two_producers.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &[
+                    "Step 'L[0].Q' is blocked: inputs from Step 'L[0].P2' are incomplete because not all of its Tasks ran",
+                    "Loop 'L' is blocked: its body Step instance 'L[0].P2' did not run all of its Tasks, so iteration 0 never completes",
+                ],
                 absent: &[],
             },
             // A job output reads a skipped loop's null.
@@ -8352,6 +8369,7 @@ steps:
         assert_eq!(result["step_name"], "L");
         assert!(result.get("name").is_none(), "{result}");
         assert_eq!(result["kind"], "loop");
+        assert_eq!(result["body"], serde_json::json!([{"name": "P"}]));
     }
 
     #[test]
@@ -8386,6 +8404,30 @@ steps:
         assert_eq!(result["status"], "success");
         assert_eq!(result["message"], "Summary for loop 'L' in Job 'Dep'");
         assert_eq!(result["job_name"], "Dep");
+    }
+
+    /// A blocked loop whose bound was known at Job creation reports it.
+    #[test]
+    fn a_blocked_loop_reports_its_known_bound() {
+        let path = templates_dir()
+            .join("control_flow_loops")
+            .join("known_bound.yaml");
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            path.to_str().unwrap(),
+            "-p",
+            "Fail=1",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert_eq!(
+            json(&stdout)["steps"][1],
+            serde_json::json!({
+                "name": "L", "kind": "loop", "state": "BLOCKED", "max_iterations": 3,
+                "iterations": 0, "reason": "its dependency 'A' failed",
+            })
+        );
     }
 
     /// RFC 0008: a top-level Step's stack is still checked before any

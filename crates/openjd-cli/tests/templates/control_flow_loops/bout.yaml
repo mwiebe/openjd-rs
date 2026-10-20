@@ -15,4 +15,4 @@ steps:
         actions:
           onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
   outputVariables:
-  - {name: H, type: INT, collect: LAST, value: "{{Steps.P.Output.V}}"}
+  - {name: H, type: INT, collect: LAST, unit: frames, value: "{{Steps.P.Output.V}}"}
