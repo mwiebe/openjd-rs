@@ -149,7 +149,7 @@ struct ProducerInputs {
 /// `Output`, `RawOutput`, `TaskParam`, or `TaskRawParam`. Values are in the
 /// submission path context: a `PATH` or `LIST[PATH]` value is held only in
 /// its `Raw` form, and the `Output` or `TaskParam` form is derived from it on
-/// the worker host (RFC 0011 §Path values).
+/// the worker host (RFC 0012 §Path values).
 #[derive(Debug, Clone, Default)]
 pub struct StepInputs {
     producers: BTreeMap<String, ProducerInputs>,
@@ -161,7 +161,7 @@ impl StepInputs {
         Self::default()
     }
 
-    /// Add (or replace) producer `producer`'s values, typed as the RFC's §The
+    /// Add (or replace) producer `producer`'s values, typed as RFC 0011 §The
     /// `Steps.*` scope table types them.
     ///
     /// * [`ProducerState::Succeeded`]: `Output.<V>` and `RawOutput.<V>` for

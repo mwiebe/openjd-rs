@@ -1438,7 +1438,7 @@ fn check_string_converts(
 }
 
 /// Validate each `<JobOutputDefinition>` `value` (RFC 0011 §Validation item
-/// 10) against the job output scope: `Param.*` (minus `PATH` types),
+/// 9) against the job output scope: `Param.*` (minus `PATH` types),
 /// `RawParam.*`, `Job.Name`, and the TEMPLATE-scope `Steps.*` symbols of
 /// every Step with an `<Identifier>` name, with no dependency required. No
 /// `Step.Name`, `Task.*`, `Session.*`, or `let` names. The target type is

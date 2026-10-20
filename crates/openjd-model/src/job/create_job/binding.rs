@@ -617,7 +617,7 @@ fn located(path: &[PathElement], error: &ModelError) -> ModelError {
 }
 
 /// In a Step that declares `outputVariables`, a `CHUNK[INT]` range must
-/// have distinct values, so that a task selector names one Task (RFC 0011
+/// have distinct values, so that a task selector names one Task (RFC 0012
 /// §Chunked Steps). A range expression's values are distinct by
 /// construction. The error names the parameter's index.
 fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (usize, ModelError)> {
@@ -656,7 +656,7 @@ fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (u
 }
 
 /// The caller's Task-count limits, checked when a Step's Tasks become known
-/// (RFC 0011 §Limits item 4).
+/// (RFC 0011 §Limits item 1).
 pub(super) fn check_task_count(
     ctx: &ValidationContext,
     step: &str,
@@ -983,8 +983,8 @@ pub fn advance_step_binding(
 
 /// Merge the concrete `Steps.*` values that bound Step `step`'s script and
 /// Step Environments read into its `resolved_symtab`, so its Tasks can run
-/// (RFC 0011 §Concreteness: they are concrete once its dependencies have
-/// finished).
+/// (RFC 0011 §The `Steps.*` scope, Concreteness: they are concrete once its
+/// dependencies have finished).
 ///
 /// A path-typed `Steps.P.Output.X` or `Steps.P.TaskParam.N` is not in
 /// `inputs` (only its `Raw` twin is), so the twin is stored instead, as a
