@@ -543,8 +543,9 @@ the API leaves room for one:
   those of a job output. The model doesn't expose the full input set of a group it has already evaluated (M4.1
   computes it internally), which a scheduler that allows re-runs would also need. RFC 0013 adds a loop's own
   expressions as consumers, and L6 exposes their inputs.
-* RFC 0011 §Job outputs item 5 re-evaluates a job output after a re-run commits; `evaluate_job_output` can be called
-  again with the new inputs, and marking the old value stale is the caller's job.
+* RFC 0011 §Job outputs item 5 re-evaluates a job output after a re-run commits, and the new value replaces the
+  old one. `evaluate_job_output` can be called again with the new inputs. If that re-evaluation fails, the output
+  keeps its earlier value and is marked stale, which is the caller's job.
 
 ### Model specs to update
 
@@ -1011,8 +1012,10 @@ A `job::Job` represents a loop as its own entry, beside its Steps:
   ```
 
 * Nothing of a body Step is evaluated at Job creation (RFC 0013 §Template processing stages), including the
-  carried-forward checks that `create_job` runs over every other Step (A20). A body Step's Tasks are not counted in
-  `max_task_count` at creation.
+  carried-forward checks that `create_job` runs over every other Step. Those checks evaluate the script and
+  Environments with concrete `Param.*` values (`job/create_job/instantiate.rs:272`, `:318`), so they are evaluation,
+  and RFC 0013 Open Question 6 confirms that such an error is found when iteration 0 starts. A body Step's Tasks are
+  not counted in `max_task_count` at creation.
 * `job::Loop::tasks_known()` is `None` until the loop ends (RFC 0011 §Implementation strategy), and `Some(0)` for a
   skipped loop. `job::Loop::binding_report()` reports enablement, the bound, and the start group as M4.3's report
   does for a Step's groups.
@@ -1054,9 +1057,9 @@ pub fn advance_body_step_binding(
 * `start_iteration` creates an instance of every body Step for `progress.iteration`, as `create_job` creates a
   top-level Step: each instance's groups whose inputs are concrete at the start of the iteration are evaluated then
   (RFC 0013 §Iterations item 3, a MUST), with every `Loop.*` symbol concrete. That includes the instance's
-  carried-forward checks (A20). An instance whose groups all evaluate is `Bound`; one whose `enableIf` is false is
-  `Skipped`; any other is `PendingInputs`, waiting for body Steps it depends on. An error fails the instance and so
-  the loop, finally (RFC 0013 §Failure).
+  carried-forward checks, which `create_job` skipped (L3). An instance whose groups all evaluate is `Bound`; one whose
+  `enableIf` is false is `Skipped`; any other is `PendingInputs`, waiting for body Steps it depends on. An error fails
+  the instance and so the loop, finally (RFC 0013 §Failure).
 * `advance_body_step_binding` is `advance_step_binding` for an instance, and the caller swaps the result into
   `iteration.steps`. Both are wrappers over the core of M4.3, which is generalized to take the `StepTemplate` and an
   extra symbol layer instead of a top-level index. An instance is named by its body Step's name, which is unique in
@@ -1066,7 +1069,7 @@ pub fn advance_body_step_binding(
   `resolved_symtab` carries the ones its script and Step Environments read, as M4.5 does for `Steps.*`. A path-typed
   variable is stored once, as `RawLoop.<V>`, as a `string` (or list of strings) in the stored form, and recorded in
   `job::Step::path_inputs` with symbol `RawLoop.<V>`; the Session derives `Loop.<V>` from it (L7). `Step.Name` in an
-  instance is the body Step's name (A21).
+  instance is the body Step's name (A20).
 * Task-count limits apply per instance as each instance's Tasks become known: `max_step_task_count` on its own Tasks,
   and `max_task_count` with `committed_task_count`, which counts the Tasks of every Step and earlier instance whose
   Tasks are known (A19). An instance that exceeds one fails, which fails the loop finally (RFC 0013 §Limits item 2).
@@ -1100,7 +1103,7 @@ The caller calls `evaluate_iteration_boundary` when every instance of the iterat
 2. `until`, if present. If it is `true`, the loop ends: check each `APPEND` output's `minLength` and return
    `Succeeded` with `N + 1` iterations. No `next` is evaluated.
 3. Every variable's `next`, each reading iteration `N`'s values, never another variable's new value. Each result is
-   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values (A22).
+   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values (A21).
 4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`. If it is `false`, the loop ends as in
    step 2.
 5. The bound: if `N + 1` equals `maxIterations`, the loop fails with a message that names `maxIterations` and its
@@ -1118,7 +1121,7 @@ check.
 
 The 1 MiB total of RFC 0013 §Limits item 4 is checked at three points: after the `initial` values (at loop binding,
 or at Job creation if the start group is evaluated then, where exceeding it fails `create_job`), after boundary step
-1, and after step 3. It counts the JSON serialization of each current value in its stored form (A22). The limit is
+1, and after step 3. It counts the JSON serialization of each current value in its stored form (A21). The limit is
 `CallerLimits::max_loop_value_bytes: Option<usize>`, where `None` means no limit. The CLI sets none, as it sets no
 limit on job outputs, and the model's unit tests exercise all three points with a small limit.
 
@@ -1418,7 +1421,7 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   * `create_job`: a loop bound at creation; one pending on a dependency's output; a static skip that evaluates
     nothing else; `maxIterations` from a parameter, and 0 and 1,001 from a parameter failing `create_job`; an
     `initial` constraint violation and a first `while` that is `null`, each failing `create_job`; a body Step whose
-    script would fail its carried-forward check, which `create_job` doesn't report (A20).
+    script would fail its carried-forward check, which `create_job` doesn't report (L3).
   * `start_iteration`: `Loop.*` concrete in every instance; an instance's range from a loop variable evaluated at
     iteration start; a group error failing the iteration; an instance pending on a body dependency and then bound by
     `advance_body_step_binding`; a path-typed variable recorded in `path_inputs` as `RawLoop.<V>`; a Task-count limit
@@ -1558,24 +1561,16 @@ through, so the numbering stays stable.
   loop, whose Tasks are not known at Job creation. Prototype: each instance's Tasks are added to the committed count
   when its Tasks become known, and an instance that would cross the limit fails, which fails the loop finally, as RFC
   0013 §Limits item 2 says of a loop-total limit.
-* **A20. Job creation's checks of a body Step.** RFC 0013 §Template processing stages says that at Job creation
-  "nothing of a body Step is evaluated", and RFC 0013 Open Question 6 asks whether fields that read only `Param.*`
-  should be. openjd-rs's `create_job` also runs carried-forward checks over every Step's script and Environments
-  with concrete `Param.*` values (`build_task_check_symtab` and `build_env_check_symtab`,
-  `job/create_job/instantiate.rs:272`, `:318`), which report errors that template validation can't, such as a
-  `Param.*` value that doesn't convert. RFC 0013 doesn't say whether those checks count as evaluating the body Step.
-  Prototype: they do, so `create_job` skips them for body Steps, and each instance runs them when its iteration
-  starts (L4).
-* **A21. `Step.Name` in a body Step instance.** RFC 0013 says what `Step.Name` is in a loop's `enableIf` (the loop's
+* **A20. `Step.Name` in a body Step instance.** RFC 0013 says what `Step.Name` is in a loop's `enableIf` (the loop's
   name), and names a body Step instance `<Loop>[<N>].<Step>` only "in this RFC". It doesn't say what `Step.Name` is
   in a body Step's fields: the body Step's name, or something that includes the iteration. Prototype: the body Step's
   own name, the same in every iteration, as `Steps.<Name>` uses; a script that needs the iteration reads
   `Loop.Iteration`.
-* **A22. What the 1 MiB loop total counts.** RFC 0013 §Limits item 4 counts "loop variable and loop output values
+* **A21. What the 1 MiB loop total counts.** RFC 0013 §Limits item 4 counts "loop variable and loop output values
   ... at any moment" and checks the total after boundary step 3 (`next`). It doesn't say whether the values of
-  iteration `N`, which `next` replaces, still count then, or whether `Loop.Iteration` counts. Prototype: after step 3
-  the total is the new variable values plus every loop output value so far (the current `LAST` value and every
-  `APPEND` element), without `Loop.Iteration`, each measured as the JSON serialization of its stored form.
+  iteration `N`, which `next` replaces, still count then. (`Loop.Iteration` is not a declared loop variable, so it
+  doesn't count.) Prototype: after step 3 the total is the new variable values plus every loop output value so far
+  (the current `LAST` value and every `APPEND` element), each measured as the JSON serialization of its stored form.
 
 ## Citation map from the single RFC
 
@@ -1591,13 +1586,14 @@ check each citation against the RFC text rather than replacing blindly.
 | Basic Examples: Video frame count, S3 prefix fan-out, Parameter sweep, Scene-graph DAG, Render and quality check | RFC 0011 §Basic Examples |
 | Basic Examples: Task metrics from a parameter sweep | RFC 0012 §Basic Examples |
 | Motivation, Use cases, Backward compatibility, Technical Requirements | RFC 0011 (RFC 0012 and RFC 0013 add their own) |
-| Extension name and dependencies, Terminology | RFC 0011 (RFC 0012 and RFC 0013 add terms) |
+| Extension name and dependencies | RFC 0011 |
+| Terminology | RFC 0011, except *output directive*, *collect mode*, and *submission path context*, which moved to RFC 0012 §Terminology; RFC 0013 adds loop terms |
 | Schema: Job Template, `<StepTemplate>` (`enableIf`), `<JobOutputDefinition>`, `<StepDependency>`, Task parameter ranges, Empty parameter spaces, Range length, `<Environment>` | RFC 0011, same names |
 | Schema: `<StepTemplate>` (`outputVariables`), `<OutputVariableDefinition>` | RFC 0012 §`<StepTemplate>`, §`<OutputVariableDefinition>` |
 | Format strings, The `Steps.*` scope, Template processing stages | RFC 0011 (RFC 0013 §`Steps.*` in and around a loop modifies the scope) |
 | Output emission: The `openjd_output_var` directive, File values, Collect modes, Chunked Steps, Processing a directive (with Type conversion), Path values, Committing values | RFC 0012, same names |
 | Limits | items 1–3: RFC 0012 §Limits items 1–3; item 4: RFC 0011 §Limits item 1; item 5: RFC 0011 §Limits item 2 |
-| Retries and re-runs | RFC 0012 §Retries and re-runs, which gained a general rule and rule 4 (M5) |
+| Retries and re-runs | RFC 0012 §Retries and re-runs, which gained a general rule, extended rule 4 (a rejected re-run, and the Task keeps its state and values), and added a note on chunks that mix succeeded and new Tasks (M5) |
 | Modifications to the Expression Language, Step input binding (Materialization expressions, Materialization groups, How a Step is bound, When groups are evaluated, Implementation strategy), Conditional execution: `enableIf`, Reductions, Job outputs | RFC 0011, same names |
 | Modifications to How Jobs Are Run: Step states, Job output evaluation | RFC 0011 (Step states gained a re-run line, M5) |
 | Modifications to How Jobs Are Run: Path mapping of output values, Stdout messages | RFC 0012, same names |
