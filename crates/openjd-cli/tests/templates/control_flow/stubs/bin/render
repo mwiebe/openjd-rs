@@ -2,12 +2,15 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # Copyright by contributors to this project.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
-"""Deterministic render stub for the render/QC and chunked render samples.
+"""Deterministic render stub for the render/QC, chunked render and RFC 0013
+render-until-clean samples.
 
-Accepts `--scene S --frame F [--safe-mode] [--out O]`. With `--out`, writes
-the frame file with a `noise: X` line, where X comes from the scene file, a
-JSON object with a `noise` map from frame number to noise and a
-`default_noise`. `--safe-mode` renders with noise 0.
+Accepts `--scene S --frame F [--samples N] [--safe-mode] [--out O]`. With
+`--out`, writes the frame file with a `noise: X` line, where X comes from the
+scene file, a JSON object with a `noise` map from frame number to noise and a
+`default_noise`. `--samples N` divides that noise by N / 64, as more samples
+give a cleaner frame (the RFC 0013 render-until-clean sample). `--safe-mode`
+renders with noise 0.
 """
 import json
 import os
@@ -20,10 +23,14 @@ if safe:
 args = dict(zip(argv[::2], argv[1::2]))
 frame = args["--frame"]
 line = f"render stub: frame {frame}"
+if "--samples" in args:
+    line += f" at {args['--samples']} samples"
 if "--out" in args:
     with open(args["--scene"], encoding="utf-8") as f:
         scene = json.load(f)
     noise = 0.0 if safe else scene["noise"].get(frame, scene["default_noise"])
+    if "--samples" in args:
+        noise = round(noise * 64 / int(args["--samples"]), 6)
     os.makedirs(os.path.dirname(args["--out"]), exist_ok=True)
     with open(args["--out"], "w", encoding="utf-8") as f:
         f.write(f"noise: {noise}\n")

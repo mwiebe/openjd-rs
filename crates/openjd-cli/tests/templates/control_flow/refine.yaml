@@ -1,0 +1,109 @@
+# RFC 0013 (openjd-specifications c3f583b), Basic Examples,
+# "Render, check, and re-render until clean", verbatim.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW, FEATURE_BUNDLE_1]
+name: "Render {{path(RawParam.SceneFile).stem}} until clean"
+parameterDefinitions:
+  - name: SceneFile
+    type: PATH
+    objectType: FILE
+    dataFlow: IN
+  - name: Frames
+    type: RANGE_EXPR
+    default: "1-240"
+  - name: OutputPattern
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+    default: "out/beauty_####.exr"
+  - name: OutputVideo
+    type: PATH
+    objectType: FILE
+    dataFlow: OUT
+    default: "out/beauty.mp4"
+  - name: StartSamples
+    type: INT
+    default: 64
+    minValue: 1
+  - name: NoiseThreshold
+    type: FLOAT
+    default: 0.02
+  - name: MaxPasses
+    type: INT
+    default: 6
+    minValue: 1
+    maxValue: 20
+jobOutputDefinitions:
+  - name: Passes
+    type: INT
+    value: "{{len(Steps.Refine.Output.NoisyFrameCounts)}}"
+  - name: FinalSamples
+    type: INT
+    value: "{{Steps.Refine.Output.FinalSamples}}"
+steps:
+  - name: Refine
+    loop:
+      variables:
+        - name: Samples
+          type: INT
+          initial: "{{Param.StartSamples}}"
+          next: "{{Loop.Samples * 2}}"
+        - name: Frames
+          type: LIST[INT]
+          minLength: 1
+          initial: "{{list(Param.Frames)}}"
+          next: "{{Steps.CheckPass.Output.NoisyFrames}}"
+      until: "{{len(Steps.CheckPass.Output.NoisyFrames) == 0}}"
+      maxIterations: "{{Param.MaxPasses}}"
+      steps:
+        - name: RenderPass
+          parameterSpace:
+            taskParameterDefinitions:
+              - name: Frame
+                type: INT
+                range: "{{Loop.Frames}}"
+          bash:
+            script: |
+              render --scene {{repr_sh(Param.SceneFile)}} --frame {{Task.Param.Frame}} \
+                     --samples {{Loop.Samples}} \
+                     --out {{repr_sh(Param.OutputPattern.with_number(Task.Param.Frame))}}
+
+        - name: CheckPass
+          dependencies:
+            - dependsOn: RenderPass
+          outputVariables:
+            - name: NoisyFrames
+              type: LIST[INT]
+            - name: MeanNoise
+              type: FLOAT
+              minValue: 0
+          python:
+            script: |
+              import json
+              from qc import check_frames
+              report = check_frames({{repr_py(Param.OutputPattern)}}, {{repr_py(Loop.Frames)}},
+                                    threshold={{Param.NoiseThreshold}})
+              print("openjd_output_var: NoisyFrames=" + json.dumps(report.noisy_frames))
+              print(f"openjd_output_var: MeanNoise={report.mean_noise}")
+    outputVariables:
+      - name: FinalSamples
+        type: INT
+        collect: LAST
+        value: "{{Loop.Samples}}"
+      - name: NoisyFrameCounts
+        type: LIST[INT]
+        collect: APPEND
+        value: "{{len(Steps.CheckPass.Output.NoisyFrames)}}"
+      - name: MeanNoise
+        type: LIST[FLOAT]
+        collect: APPEND
+        value: "{{Steps.CheckPass.Output.MeanNoise}}"
+
+  - name: EncodeVideo
+    dependencies:
+      - dependsOn: Refine
+    bash:
+      script: |
+        ffmpeg -nostdin -start_number {{min(Param.Frames)}} -i {{repr_sh(Param.OutputPattern)}} \
+               -metadata comment={{repr_sh('max samples ' + string(Steps.Refine.Output.FinalSamples))}} \
+               {{repr_sh(Param.OutputVideo)}}

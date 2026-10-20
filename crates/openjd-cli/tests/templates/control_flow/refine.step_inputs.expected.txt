@@ -1,0 +1,30 @@
+$ openjd run {T}/refine.yaml --step EncodeVideo -p Frames=1-4 --step-inputs '{"Steps.Refine.Output.FinalSamples": 256, "Steps.Refine.Output.NoisyFrameCounts": [2, 1, 0], "Steps.Refine.Output.MeanNoise": [0.0275, 0.0225, 0.015]}' -p SceneFile={T}/fixtures/refine.scene -p OutputPattern={W}/out/beauty_####.exr -p OutputVideo={W}/beauty.mp4
+exit code: 0
+--- stdout
+Session start
+Running job 'Render refine until clean'
+Job output Passes = 3
+Job output FinalSamples = 256
+Running step 'EncodeVideo'
+==============================================
+--------- Running Task
+==============================================
+Output:
+ffmpeg stub: beauty_####.exr -> beauty.mp4 (0 frames)
+Process exited with code: 0
+
+All actions completed successfully!
+Local session ended.
+
+--- Results of local session ---
+
+Session ended successfully
+
+Job: Render refine until clean
+Step: EncodeVideo
+Duration: {DURATION}
+Chunks run: 1
+Job outputs:
+  Passes = 3
+  FinalSamples = 256
+--- stderr

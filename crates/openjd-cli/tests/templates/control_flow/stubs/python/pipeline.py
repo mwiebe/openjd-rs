@@ -1,7 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # Copyright by contributors to this project.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
-"""Deterministic hand-tracking pipeline stub for the task metrics sample.
+"""Deterministic hand-tracking pipeline stub for the task metrics sample, with
+the per-key `process_key` of the RFC 0013 paginated listing sample.
 
 The scores are a fixed function of the Task parameters.
 
@@ -49,3 +50,8 @@ def extract_hand_actions(video, window, overlap, det_conf, on_progress):
 
 def score_against_hot3d(trajectory):
     return _Score(trajectory.video, trajectory.frames)
+
+
+def process_key(bucket, key):
+    """The RFC 0013 paginated listing sample's per-key work."""
+    print(f"pipeline stub: processed s3://{bucket}/{key}")
