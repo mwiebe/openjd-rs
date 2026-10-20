@@ -128,7 +128,10 @@ For a `CONTROL_FLOW` Job, `run` simulates a scheduler: it advances pending Steps
 `advance_step_binding` as their producers finish, attaches `Steps.*` inputs, records each
 Task's outputs, and evaluates job outputs as their inputs become concrete; `summary` reports
 what is known of each pending Step and job output (see `cli/run.md`, `cli/summary.md`).
-Both refuse a Job with a loop (RFC 0013) until the simulator runs loops.
+`run` runs a loop's iterations one after another with `start_iteration`,
+`advance_body_step_binding`, and `evaluate_iteration_boundary`, naming each body Step
+instance `<Loop>[<N>].<Step>`; `summary` shows a loop's condition, bound, and body
+(RFC 0013).
 
 ## Key Design Decisions
 

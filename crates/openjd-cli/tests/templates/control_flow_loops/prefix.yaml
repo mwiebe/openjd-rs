@@ -1,0 +1,26 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Body Step Q runs from iteration 1 and reads AB; L also depends on A.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Prefix
+steps:
+- name: A
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('A')"]}
+- name: AB
+  outputVariables:
+  - {name: Base, type: INT}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: Base=7')"]}
+- name: L
+  dependencies: [{dependsOn: A}, {dependsOn: AB}]
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: Q
+      enableIf: "{{Loop.Iteration >= 1}}"
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q_{{Steps.AB.Output.Base}}')"]}

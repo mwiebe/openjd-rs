@@ -1,0 +1,29 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Body Step Q runs from iteration 1 and reads loop K, a dependency of L.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: LoopDep
+steps:
+- name: K
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 1
+    steps:
+    - name: S
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V=3')"]}
+  outputVariables:
+  - {name: H, type: INT, collect: LAST, value: "{{Steps.S.Output.V}}"}
+- name: L
+  dependencies: [{dependsOn: K}]
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: Q
+      enableIf: "{{Loop.Iteration >= 1}}"
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q_{{Steps.K.Output.H}}')"]}

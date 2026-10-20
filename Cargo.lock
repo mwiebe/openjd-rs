@@ -2233,6 +2233,7 @@ version = "0.5.0"
 dependencies = [
  "chrono",
  "clap",
+ "indexmap",
  "log",
  "openjd-expr",
  "openjd-model",

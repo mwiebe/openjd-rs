@@ -10,9 +10,8 @@ object) to produce accurate task counts that reflect parameter space expansion.
 For a `CONTROL_FLOW` Job, `create_job` may leave a Step skipped or pending inputs, and
 `summary` reports what it knows of each (plan C2, RFC 0011 §Implementation strategy), as
 described in [CONTROL_FLOW](#control_flow) below. A job output that fails at creation
-fails `create_job`, so `summary` reports that error. A Job with a loop (RFC 0013) is
-refused after `create_job` with `openjd summary does not support loops (CONTROL_FLOW, RFC
-0013) yet: the Job has loop '<name>'.`, until the summary can show loops.
+fails `create_job`, so `summary` reports that error. A loop (RFC 0013) is shown with its
+bound and body, as described in [Loops](#loops) below.
 
 ## Interface
 
@@ -25,7 +24,7 @@ openjd summary <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [--extensions <EXT>] [
 | Argument | Type | Required | Description |
 |----------|------|----------|-------------|
 | `path` | `PathBuf` | Yes | Path to the job template file |
-| `--step` | `Option<String>` | No | Print summary for this step only |
+| `--step` | `Option<String>` | No | Print summary for this Step or loop only (not a loop's body Step) |
 | `-p`, `--parameter` | `Vec<String>` | No | Job parameters (`Key=Value`, `file://path`, or inline JSON) |
 | `--extensions` | `Option<String>` | No | Comma-separated extension names |
 | `--output` | `String` | No | Output format: `human-readable` (default), `json`, `yaml` |
@@ -95,7 +94,9 @@ fn step_total_tasks(step: &job::Step) -> Option<usize> {
 }
 ```
 
-The total sums the Steps whose Tasks are known.
+The total sums the Steps whose Tasks are known. A loop's Tasks are known only once it ends
+(RFC 0013 §Iterations), so a loop counts as determined at run time, unless it is skipped
+or its first `while` is false at Job creation (0 Tasks).
 
 ## Job Summary Output
 
@@ -161,8 +162,9 @@ code, so they are always in sync.
 - Parameter definitions (name and type)
 - Environments (name, parent step, description)
 
-The step is looked up by name in `job.steps`. If the step name doesn't match any step,
-an error is returned with the job name for context.
+The step is looked up by name in `job.steps`, and then in `job.loops` (see
+[Loops](#loops)). If the step name doesn't match any step, an error is returned with the
+job name for context.
 
 ## CONTROL_FLOW
 
@@ -212,9 +214,56 @@ For a template that lists `CONTROL_FLOW`:
 `--step` reports the same for one Step: `Total tasks: determined at run time` (or `N
 (SKIPPED)`), then the group lines, and `state` and `binding` in JSON.
 
+### Loops
+
+A loop (RFC 0013, plan L8) is listed in template order among the Steps, as `N. 'Refine'
+(loop; Tasks determined at run time)` (`loop; pending inputs; Tasks determined at run
+time`, `loop; SKIPPED, 0 total Tasks`, or `loop; 0 iterations, 0 total Tasks` when its
+first `while` is false), followed by:
+
+```
+1. 'Refine' (loop; Tasks determined at run time)
+  Condition: until
+  maxIterations: 6
+  Loop variables:
+    - Samples (INT)
+    - Frames (LIST[INT])
+  Loop outputs:
+    - FinalSamples (INT, LAST)
+    - NoisyFrameCounts (LIST[INT], APPEND)
+  Body Steps (Tasks determined at run time in each iteration):
+    - 'RenderPass'
+      Task parameters:
+        - Frame (INT)
+    - 'CheckPass'
+      1 dependencies
+```
+
+A pending loop shows its group lines (`common::loop_binding_lines`, as in the run log)
+before `Condition:`, in place of the `maxIterations:` line; a skipped loop shows
+`maxIterations: not evaluated (the loop is skipped)`. Each loop output shows its type,
+`collect`, and unit. A body Step shows its Task parameters, Step Environment count, and
+dependency count, from its template, since no instance exists before the loop runs. Its
+Step Environments are listed under Environments as `Name (from body Step 'S' of loop
+'L')`.
+
+`Total steps` counts each top-level Step and each body Step once (RFC 0013 §Limits item
+3), and `Total loops: N` follows it when the Job has loops (`total_loops` in JSON). In
+JSON, a loop's entry in `steps` is `{name, kind: "loop", description?, total_tasks, state,
+binding?, condition, max_iterations?, variables?, outputs?, body, dependencies?}`, where
+`total_tasks` is `null` unless the loop has 0 Tasks, `binding` has `enablement`, `bound`,
+and `start` as a Step's groups are reported, `outputs` is a list of `{name, type, collect,
+unit?}`, and `body` a list of `{name, parameter_definitions?, environments?,
+dependencies?}`.
+
+`--step L` naming a loop prints `--- Summary for loop 'L' in Job 'J' ---`, `State: READY
+(loop; Tasks determined at run time)`, the same lines, and its dependencies. `--step`
+naming a body Step fails with `Step 'Q' is a body Step of loop 'L'; summarize the loop
+with --step L.`
+
 ## Internal Types
 
-Four private structs organize the collected summary data:
+These private structs organize the collected summary data:
 
 ```rust
 struct StepInfo {
@@ -226,6 +275,22 @@ struct StepInfo {
     deps: Vec<String>,
     state: Option<&'static str>,         // CONTROL_FLOW only
     binding_lines: Vec<String>,          // a pending Step's group lines
+    binding_json: Option<serde_json::Value>,
+    loop_info: Option<LoopInfo>,         // for a loop's entry
+}
+
+struct LoopInfo {                        // see Loops
+    name: String,
+    description: Option<String>,
+    state: &'static str,
+    condition: &'static str,             // "while" or "until"
+    max_iterations: Option<u32>,         // once known
+    zero_iterations: bool,               // the first while is false at Job creation
+    variables: Vec<(String, String)>,    // (name, type)
+    outputs: Vec<LoopOutputInfo>,        // name, type, collect, unit
+    body: Vec<BodyStepInfo>,             // name, task params, Step Environments, deps
+    deps: Vec<String>,
+    binding_lines: Vec<String>,          // a pending loop's group lines
     binding_json: Option<serde_json::Value>,
 }
 
@@ -239,6 +304,7 @@ struct EnvInfo {
     name: String,
     description: Option<String>,
     parent: String,
+    parent_loop: Option<String>,         // a body Step's Step Environment
     enabled: bool,
 }
 

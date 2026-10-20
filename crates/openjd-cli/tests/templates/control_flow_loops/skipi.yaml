@@ -1,0 +1,22 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Body Step P is skipped by Loop.Iteration as the iteration starts; Q reads its output.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: SkipI
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      enableIf: "{{Loop.Iteration >= 1}}"
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
+    - name: Q
+      dependencies: [{dependsOn: P}]
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q got', repr('{{Steps.P.Output.V}}'))"]}

@@ -1,0 +1,25 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: a job output reads skipped loop L, whose output is null at Job creation, and Step A.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: JobOutputWaits
+jobOutputDefinitions:
+- {name: Out, type: INT, value: "{{(Steps.L.Output.H or 0) + Steps.A.Output.V}}"}
+steps:
+- name: A
+  outputVariables:
+  - {name: V, type: INT}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
+- name: L
+  enableIf: "{{False}}"
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P')"]}
+  outputVariables:
+  - {name: H, type: INT, collect: LAST, value: "{{1}}"}

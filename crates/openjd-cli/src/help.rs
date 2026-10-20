@@ -130,6 +130,19 @@ pub fn format_help(template: &JobTemplate, path: &Path) -> String {
         out.push('\n');
     }
 
+    // CONTROL_FLOW loops (RFC 0013): what --step can name.
+    let loops: Vec<_> = template.loops().collect();
+    if !loops.is_empty() {
+        out.push_str(
+            "Loops (--step <Loop> runs the whole loop; its body Steps run only within it):\n",
+        );
+        for l in loops {
+            let body: Vec<&str> = l.body().iter().map(|s| s.name.as_str()).collect();
+            out.push_str(&format!("  {}: body Steps {}\n", l.name, body.join(", ")));
+        }
+        out.push('\n');
+    }
+
     // Standard options
     out.push_str("Standard Options:\n");
     out.push_str(
@@ -141,7 +154,7 @@ pub fn format_help(template: &JobTemplate, path: &Path) -> String {
         .has_extension(openjd_model::types::ModelExtension::ControlFlow)
     {
         out.push_str(
-            "  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step reads\n",
+            "  --step-inputs <JSON|file://path>  With --step: the Steps.* values that Step or loop reads\n",
         );
     }
     out.push_str("  --verbose                  Enable verbose logging\n");

@@ -1,0 +1,30 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: As chain.yaml, with Q's enableIf reading P's outputs.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Chain
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: I, type: INT, range: [1, 2]}
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V={{Task.Param.I}}')"]}
+    - name: Q
+      dependencies: [{dependsOn: P}]
+      enableIf: "{{len(Steps.P.Output.V) > 0}}"
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q ran {{Steps.P.Output.V}}')"]}
+    - name: R
+      dependencies: [{dependsOn: Q}]
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('R ran')"]}

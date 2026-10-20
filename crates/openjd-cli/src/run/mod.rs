@@ -44,9 +44,11 @@ struct PreparedRun {
 }
 
 struct RunSelection {
-    selected_step_idx: Option<usize>,
+    /// The Step or loop `--step` names, or the Job's only top-level entry.
+    selected: Option<simulator::Node>,
     explicit_task_params: Option<Vec<HashMap<String, String>>>,
-    steps_to_run: Vec<usize>,
+    /// The top-level Steps and loops to run, in dependency order.
+    to_run: Vec<simulator::Node>,
 }
 
 struct EnteredEnvironment {
@@ -252,7 +254,8 @@ pub struct RunArgs {
     /// Path to the job template file
     pub path: PathBuf,
 
-    /// The name of the Step to run (if omitted, runs all steps; auto-selects if only one step)
+    /// The name of the Step or loop to run (if omitted, runs all steps; auto-selects if the
+    /// Job has only one Step or loop). A loop runs as a whole; its body Steps cannot be named.
     #[arg(long)]
     pub step: Option<String>,
 
@@ -278,10 +281,10 @@ pub struct RunArgs {
     #[arg(long = "path-mapping-rules")]
     pub path_mapping_rules: Option<String>,
 
-    /// CONTROL_FLOW: the Steps.* output values that the Step given with --step reads, for
-    /// running it without --run-dependencies (file://path, or inline JSON
+    /// CONTROL_FLOW: the Steps.* output values that the Step or loop given with --step reads,
+    /// for running it without --run-dependencies (file://path, or inline JSON
     /// '{"Steps.P.Output.V": value}'; a list with one value per Task for a Step with a
-    /// parameterSpace).
+    /// parameterSpace, and one value of the declared type for a loop output).
     #[arg(long = "step-inputs")]
     pub step_inputs: Option<String>,
 
@@ -293,10 +296,11 @@ pub struct RunArgs {
     #[arg(long = "no-run-dependencies")]
     pub no_run_dependencies: bool,
 
-    /// Maximum number of tasks to run (-1 for all).
+    /// Maximum number of tasks to run per Step (-1 for all; the default). For a loop,
+    /// applies to each body Step instance; an error with --step naming a loop.
     /// Mutually exclusive with --task-param and --tasks.
-    #[arg(long = "maximum-tasks", default_value = "-1")]
-    pub maximum_tasks: i64,
+    #[arg(long = "maximum-tasks", allow_negative_numbers = true)]
+    pub maximum_tasks: Option<i64>,
 
     /// Extensions to support (comma-separated or repeated). Empty string disables all.
     #[arg(long = "extensions")]
@@ -327,36 +331,49 @@ pub async fn execute(args: RunArgs) -> Result<(), RunError> {
     execution::execute(args).await
 }
 
-/// Resolve step dependencies transitively, returning indices in execution order.
-fn resolve_step_dependencies(job: &openjd_model::job::Job, target_idx: usize) -> Vec<usize> {
-    let step_name_to_idx: HashMap<String, usize> = job
+/// Resolve the dependencies of top-level entry `target` (a Step or loop)
+/// transitively, returning them and `target` in execution order.
+fn resolve_step_dependencies(
+    job: &openjd_model::job::Job,
+    target: simulator::Node,
+) -> Vec<simulator::Node> {
+    use simulator::Node;
+    let mut name_to_node: HashMap<&str, Node> = job
         .steps
         .iter()
         .enumerate()
-        .map(|(i, s)| (s.name.clone(), i))
+        .map(|(i, s)| (s.name.as_str(), Node::Step(i)))
         .collect();
+    name_to_node.extend(
+        job.loops
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (l.name.as_str(), Node::Loop(i))),
+    );
+    let deps_of = |node: Node| match node {
+        Node::Step(i) => job.steps[i].dependencies.as_ref(),
+        Node::Loop(i) => job.loops[i].dependencies.as_ref(),
+    };
     let mut visited = std::collections::HashSet::new();
     let mut order = Vec::new();
-    fn visit(
-        job: &openjd_model::job::Job,
-        idx: usize,
-        name_to_idx: &HashMap<String, usize>,
-        visited: &mut std::collections::HashSet<usize>,
-        order: &mut Vec<usize>,
+    fn visit<'a>(
+        node: Node,
+        deps_of: &dyn Fn(Node) -> Option<&'a Vec<openjd_model::job::StepDependency>>,
+        name_to_node: &HashMap<&str, Node>,
+        visited: &mut std::collections::HashSet<Node>,
+        order: &mut Vec<Node>,
     ) {
-        if !visited.insert(idx) {
+        if !visited.insert(node) {
             return;
         }
-        if let Some(deps) = &job.steps[idx].dependencies {
-            for dep in deps {
-                if let Some(&dep_idx) = name_to_idx.get(&dep.depends_on) {
-                    visit(job, dep_idx, name_to_idx, visited, order);
-                }
+        for dep in deps_of(node).into_iter().flatten() {
+            if let Some(&dep_node) = name_to_node.get(dep.depends_on.as_str()) {
+                visit(dep_node, deps_of, name_to_node, visited, order);
             }
         }
-        order.push(idx);
+        order.push(node);
     }
-    visit(job, target_idx, &step_name_to_idx, &mut visited, &mut order);
+    visit(target, &deps_of, &name_to_node, &mut visited, &mut order);
     order
 }
 

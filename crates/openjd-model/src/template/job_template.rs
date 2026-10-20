@@ -71,9 +71,9 @@ impl JobTemplate {
         self.steps.iter().filter_map(StepEntry::as_step)
     }
 
-    /// Entry `index` of `steps` when it is a Step. `create_job` rejects a
-    /// template with loops, so for the templates it accepts this is index
-    /// `index` of the Job's Steps.
+    /// Entry `index` of `steps` when it is a Step; `None` for a loop or an
+    /// index past the end. `index` is an entry index, which is an index of
+    /// the Job's Steps only for a template without loops.
     pub(crate) fn top_level_step(&self, index: usize) -> Option<&StepTemplate> {
         self.steps.get(index).and_then(StepEntry::as_step)
     }
