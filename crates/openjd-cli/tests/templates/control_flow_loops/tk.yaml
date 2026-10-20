@@ -1,0 +1,34 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Body Step Q's range reads P's TaskParam, known once O reports N.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: SkipI
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: O
+      outputVariables:
+      - {name: N, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: N=2')"]}
+    - name: P
+      dependencies: [{dependsOn: O}]
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: I, type: INT, range: "{{[1, Steps.O.Output.N]}}"}
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
+    - name: Q
+      dependencies: [{dependsOn: P}]
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: J, type: INT, range: "{{Steps.P.TaskParam.I}}"}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q ran {{Task.Param.J}}')"]}

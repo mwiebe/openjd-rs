@@ -1,0 +1,23 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Loop L's first while reads A, which reports 0, so it has zero iterations.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Zero
+steps:
+- name: A
+  outputVariables:
+  - {name: N, type: INT}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: N=0')"]}
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    variables:
+    - {name: X, type: INT, initial: "{{Steps.A.Output.N}}", next: "{{Loop.X + 1}}"}
+    while: "{{Loop.X > 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P')"]}

@@ -8035,6 +8035,281 @@ steps:
         );
     }
 
+    /// One `openjd` run of a template in `tests/templates/control_flow_loops/`:
+    /// its exit code, the log lines it must print, in order, and lines it
+    /// must not print.
+    struct LoopCase {
+        file: &'static str,
+        args: &'static [&'static str],
+        code: i32,
+        lines: &'static [&'static str],
+        absent: &'static [&'static str],
+    }
+
+    fn check_loop_case(case: &LoopCase) {
+        let path = templates_dir().join("control_flow_loops").join(case.file);
+        let mut args = vec!["run", path.to_str().unwrap()];
+        args.extend(case.args);
+        let (code, stdout, stderr) = run_cli(&args);
+        assert_eq!(
+            code, case.code,
+            "{args:?}\nstdout: {stdout}\nstderr: {stderr}"
+        );
+        let all = lines(&stdout);
+        let mut from = 0;
+        for line in case.lines {
+            match all[from..].iter().position(|l| l == line) {
+                Some(i) => from += i + 1,
+                None => panic!(
+                    "{}: no line {line:?} after line {from} in:\n{stdout}\nstderr: {stderr}",
+                    case.file
+                ),
+            }
+        }
+        for line in case.absent {
+            assert!(
+                !all.contains(line),
+                "{}: line {line:?} in:\n{stdout}",
+                case.file
+            );
+        }
+    }
+
+    /// The simulator's paths for skipped loops, blocked loops and instances,
+    /// instances read only by the boundary or skipped within an iteration, and
+    /// the loop binding log lines.
+    #[test]
+    fn loop_paths() {
+        for case in [
+            // A loop skipped at Job creation gives its null outputs to a
+            // script that reads them.
+            LoopCase {
+                file: "skipped.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' skipped (enableIf is false)", "Loop 'L' is skipped; it runs no iterations", "Running step 'C'", "C got ''"],
+                absent: &[],
+            },
+            // ... and one skipped at run time, to a script and to an enableIf.
+            LoopCase {
+                file: "dynskip.yaml", args: &[], code: 0,
+                lines: &["Output On = false", "Loop 'L' skipped (enableIf is false)", "Loop 'L' is skipped; it runs no iterations", "C got ''"],
+                absent: &[],
+            },
+            LoopCase {
+                file: "dynskip2.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' skipped (enableIf is false)", "Step 'C': enabled (enableIf is true)", "Step 'C' is ready", "C got ''"],
+                absent: &[],
+            },
+            // The loop binding lines.
+            LoopCase {
+                file: "dynon.yaml", args: &[], code: 0,
+                lines: &[
+                    "Loop 'L' is pending inputs:",
+                    "  Enabled: determined at run time from Steps.A.Output.On",
+                    "  maxIterations: determined at run time (waiting for enableIf)",
+                    "  Start (initial values and first while): determined at run time (waiting for enableIf)",
+                    "Output On = true", "Loop 'L': enabled (enableIf is true)", "Loop 'L': maxIterations 2",
+                    "Loop 'L' is ready", "Running loop 'L'", "C got '5'",
+                ],
+                absent: &[],
+            },
+            LoopCase {
+                file: "zero.yaml", args: &[], code: 0,
+                lines: &["Output N = 0", "Loop 'L': the first while is false, so it has 0 iterations", "Loop 'L' is ready", "Loop 'L' succeeded after 0 iterations (the first while is false)"],
+                absent: &["Running loop 'L'"],
+            },
+            // A loop behind a blocked dependency, and behind an incomplete one
+            // that its own group reads.
+            LoopCase {
+                file: "blk.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &["Step 'B' is blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran", "Loop 'L' is blocked: its dependency 'B' is blocked"],
+                absent: &["Running loop 'L'", "P ran"],
+            },
+            LoopCase {
+                file: "pend.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &["Loop 'L' is blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran"],
+                absent: &["Running loop 'L'"],
+            },
+            // An incomplete instance blocks its readers (by script or by
+            // enableIf), and their dependents, then the loop.
+            LoopCase {
+                file: "chain.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &[
+                    "Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran",
+                    "Step 'L[0].R' is blocked: its dependency 'L[0].Q' is blocked",
+                    "Loop 'L' is blocked: its body Step instance 'L[0].P' did not run all of its Tasks, so iteration 0 never completes",
+                ],
+                absent: &["R ran"],
+            },
+            LoopCase {
+                file: "chain2.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &[
+                    "Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran",
+                    "Step 'L[0].R' is blocked: its dependency 'L[0].Q' is blocked",
+                ],
+                absent: &["R ran"],
+            },
+            // An instance whose group reads an incomplete dependency of the
+            // loop is blocked, and blocks the loop.
+            LoopCase {
+                file: "instgrp.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &[
+                    "Step 'L[0].P' is blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran",
+                    "Loop 'L' is blocked: its body Step instance 'L[0].P' is blocked, so iteration 0 never completes",
+                ],
+                absent: &["P ran"],
+            },
+            // A body Step that only the boundary reads.
+            LoopCase {
+                file: "bout.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' iteration 0 outputs: H = 4", "Loop 'L' succeeded after 2 iterations (until is true)", "Loop 'L' outputs: H = 4"],
+                absent: &[],
+            },
+            LoopCase {
+                file: "bnext.yaml", args: &[], code: 0,
+                lines: &["Loop 'L' iteration 1: X = 4", "Loop 'L' succeeded after 2 iterations (until is true)"],
+                absent: &[],
+            },
+            // An instance skipped as the iteration starts, and at run time,
+            // gives its nulls to the instance that reads it.
+            LoopCase {
+                file: "skipi.yaml", args: &[], code: 0,
+                lines: &["Step 'L[0].P' skipped (enableIf is false)", "Step 'L[0].P' is skipped; it runs no Tasks", "Running step 'L[0].Q'", "Q got ''"],
+                absent: &[],
+            },
+            LoopCase {
+                file: "skipd.yaml", args: &[], code: 0,
+                lines: &["Output B = false", "Step 'L[0].P' skipped (enableIf is false)", "Q got ''"],
+                absent: &[],
+            },
+            // An instance whose Tasks become known makes a reader's range
+            // concrete, even when the instance does not run all of its Tasks.
+            LoopCase {
+                file: "tk.yaml", args: &["--maximum-tasks", "1"], code: 0,
+                lines: &["Step 'L[0].P': Tasks known (2 tasks)", "Step 'L[0].Q': Tasks known (2 tasks)", "Step 'L[0].Q' is ready", "Q ran 1"],
+                absent: &["Step 'L[0].Q' is blocked: inputs from Step 'L[0].P' are incomplete because not all of its Tasks ran"],
+            },
+        ] {
+            check_loop_case(&case);
+        }
+    }
+
+    /// `--step L` checks what the boundary reads before the Session starts.
+    #[test]
+    fn step_naming_a_loop_checks_its_boundary_reads_first() {
+        let path = templates_dir().join("control_flow_loops").join("bnd.yaml");
+        let (code, stdout, stderr) = run_cli(&["run", path.to_str().unwrap(), "--step", "L"]);
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.A.Output.V.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+        );
+    }
+
+    /// A body Step instance whose group fails while it advances is FAILED.
+    #[test]
+    fn an_instance_group_error_while_advancing_fails_the_instance() {
+        let path = templates_dir()
+            .join("control_flow_loops")
+            .join("grpfail.yaml");
+        let (code, stdout, stderr) = run_cli(&["run", path.to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 1, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stderr.starts_with("ERROR: Step 'L[0].P' failed in its Task enumeration group:\n"),
+            "{stderr}"
+        );
+        assert!(has(
+            &stdout,
+            "Loop 'L' failed: its body Step instance 'L[0].P' failed"
+        ));
+        let steps = json(&stdout)["steps"].as_array().unwrap().clone();
+        let p = steps.iter().find(|s| s["name"] == "L[0].P").unwrap();
+        assert_eq!(p["state"], "FAILED");
+        assert!(
+            p["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("Step 'L[0].P' failed in its Task enumeration group:"),
+            "{p}"
+        );
+    }
+
+    /// The runtime missing-input message names exactly the dependency the
+    /// model's error names (AB, not A), and suggests --step-inputs for a
+    /// producer bound at Job creation, Step or loop.
+    #[test]
+    fn a_missing_input_names_its_dependency() {
+        for (file, producer) in [("prefix.yaml", "AB"), ("loopdep.yaml", "K")] {
+            let path = templates_dir().join("control_flow_loops").join(file);
+            let (code, _, stderr) = run_cli(&["run", path.to_str().unwrap(), "--step", "L"]);
+            assert_eq!(code, 1, "{file}");
+            assert_eq!(
+                stderr.trim_end(),
+                format!(
+                    "ERROR: Loop 'L' reads, in iteration 1, Steps.* values of '{producer}', which this run does not run.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+                ),
+                "{file}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_shows_loop_outputs_units_body_task_parameters_and_waiting_job_outputs() {
+        let template = two_iterations()
+            .replace("    collect: APPEND\n", "    collect: APPEND\n    unit: px\n")
+            .replace(
+                "    - name: R\n",
+                "    - name: R\n      stepEnvironments:\n      - name: REnv\n        script: {actions: {onEnter: {command: python, args: ['-c', 'pass']}}}\n",
+            );
+        let job = write(&template);
+        let (code, stdout, stderr) = run_cli(&["summary", job.path().to_str().unwrap()]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "1. 'L' (loop; Tasks determined at run time)\n  Condition: until\n  maxIterations: 5\n  Loop variables:\n    - X (INT)\n  Loop outputs:\n    - H (LIST[INT], APPEND, px)\n  Body Steps (Tasks determined at run time in each iteration):\n    - 'P'\n      Task parameters:\n        - I (INT)\n    - 'Q'\n      1 dependencies\n"
+            ),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("  - Sum (INT): pending; waits for Steps.L.Output.H\n"),
+            "{stdout}"
+        );
+        let (code, stdout, _) =
+            run_cli(&["summary", job.path().to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let l = &result["steps"][0];
+        assert_eq!(
+            l["outputs"],
+            serde_json::json!([{"name": "H", "type": "LIST[INT]", "collect": "APPEND", "unit": "px"}])
+        );
+        assert_eq!(
+            l["body"][2],
+            serde_json::json!({"name": "R", "environments": 1, "dependencies": 1})
+        );
+        // A pending loop with a known bound reports it.
+        let path = templates_dir().join("control_flow_loops").join("zero.yaml");
+        let (code, stdout, _) = run_cli(&["summary", path.to_str().unwrap(), "--output", "json"]);
+        assert_eq!(code, 0);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["steps"][1]["state"], "PENDING_INPUTS");
+        assert_eq!(result["steps"][1]["max_iterations"], 2);
+        // --step L names the loop as step_name only.
+        let (code, stdout, _) = run_cli(&[
+            "summary",
+            path.to_str().unwrap(),
+            "--step",
+            "L",
+            "--output",
+            "json",
+        ]);
+        assert_eq!(code, 0);
+        let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(result["step_name"], "L");
+        assert!(result.get("name").is_none(), "{result}");
+        assert_eq!(result["kind"], "loop");
+    }
+
     #[test]
     fn summary_reports_a_loops_bound_and_body() {
         let job = write(&two_iterations());

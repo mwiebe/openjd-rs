@@ -505,7 +505,8 @@ For each task:
    `path_inputs`; the sessions crate builds symbols and materializes the script
 4. Check the result and stop on failure
 
-`--maximum-tasks` limits the iteration count. A value of -1 (default) means no limit.
+`--maximum-tasks` limits the iteration count. Without it, or with a value of 0 or less
+(such as -1), there is no limit.
 
 ## Adaptive Chunking
 

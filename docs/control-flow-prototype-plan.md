@@ -1210,8 +1210,8 @@ Flags, from RFC 0013 §Implementation Impact:
 * In every other run that includes a loop, `--maximum-tasks` applies to each body Step instance, as to any Step. An
   instance that didn't run all its Tasks is incomplete. Only the instances of its iteration that read its outputs
   are blocked, with C1's message. A failure of another instance still fails the loop. The iteration never completes,
-  so the boundary is not evaluated, the loop is `BLOCKED` "by incomplete body Step instance 'Refine[0].RenderPass'",
-  and its dependents are blocked behind it.
+  so the boundary is not evaluated, the loop is `BLOCKED` ("its body Step instance 'Refine[0].RenderPass' did not run
+  all of its Tasks, so iteration 0 never completes"), and its dependents are blocked behind it.
 * `--step-inputs` with `--step L` supplies the outputs of `L`'s dependencies that the loop and its body read. For a
   Step that depends on a loop, it supplies each loop output it reads as one value of the output's declared type (the
   whole list under `APPEND`), not one value per Task.
