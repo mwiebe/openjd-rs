@@ -4,7 +4,7 @@
 """Deterministic boto3 stub for the CONTROL_FLOW golden tests.
 
 `client("s3")` is backed by a directory: object `s3://B/K` is the file
-`$OPENJD_GOLDEN_S3/B/K`. Only the calls the RFC samples make are provided.
+`$OPENJD_GOLDEN_S3/B/K`. Only the calls the RFC 0011 samples make are provided.
 `download_file`, `upload_file` and `put_object` print a marker line, and
 `put_object` prints the object's body, so the test output shows what a sample
 stored. Listing and `head_object` print nothing, since a sample's own output

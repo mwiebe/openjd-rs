@@ -544,7 +544,8 @@ creation), and a `StepInputs`:
 
 Step `let` bindings are re-evaluated in each call rather than cached in
 `PendingBinding`; a binding whose inputs are concrete always gives the same
-value, so this is observably the RFC's "evaluated once".
+value, so this is observably RFC 0011's "evaluated once"
+(§Materialization groups).
 
 **At job creation** (`instantiate_steps_with_binding`), Steps are bound in
 dependency order (`validate_v2023_09::step_dependency_order`: Kahn's algorithm

@@ -1204,7 +1204,7 @@ fn file_conversion_failure_does_not_quote_the_value() {
 #[test]
 fn file_value_path_and_constraint_errors_name_the_converted_value() {
     // The file's text is never quoted, but the invalid value after conversion
-    // is, as for an inline value (the RFC asks for the offending text).
+    // is, as for an inline value (RFC 0012 asks for the offending text).
     let rules = [rule(PathFormat::Posix, "/proj", "/mnt/proj")];
     let mut c = with_rules(
         &["{name: P, type: 'LIST[PATH]'}"],

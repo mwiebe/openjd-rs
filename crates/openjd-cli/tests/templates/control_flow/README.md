@@ -30,8 +30,8 @@ The tests run on Linux only, because the samples' `bash` scripts rely on GNU cor
 | `chunked_render_omit_frame.yaml` | as `chunked_render.yaml` | frame 5 reports no `RenderTimeS` |
 | `progressive.yaml`, `progressive_enable_if.yaml`, `progressive_let.yaml` | not RFC samples: the plan's progressive binding tests | — |
 
-The RFC YAML is from openjd-specifications commit `c3f583b`; it has not changed since
-`619d910`. Each template's first comment names its source.
+The RFC 0011 and RFC 0012 YAML is from openjd-specifications commit `c3f583b`; it has
+not changed since `619d910`. Each template's first comment names its source.
 
 ## Stubs and fixtures
 

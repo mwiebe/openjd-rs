@@ -120,7 +120,7 @@ lines. An inline value's bytes are its JSON text; non-UTF-8 bytes there are a `G
 error (`Invalid openjd_output_var directive: the value of 'N' is not valid UTF-8`), and
 surrounding spaces and tabs are removed. The text must be exactly one JSON value
 (`Json`); `serde_json` rejects `NaN`, `Infinity`, `-Infinity`, and trailing text. A number
-too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as the RFC's
+too large to represent as a float (`1e400`) is valid JSON under RFC 8259 but, as RFC 0012's
 type conversion rules say, does not convert. So validity is checked first without
 converting numbers (`serde::de::IgnoredAny`), so `1e400 garbage` is a `Json` error for
 its trailing text. Valid JSON can still fail to become a `serde_json::Value` in three
