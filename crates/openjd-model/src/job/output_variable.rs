@@ -247,6 +247,15 @@ impl OutputVariable {
             })
     }
 
+    /// `result` with its message naming its subject as `label` (such as
+    /// `Loop output`) instead of `Output variable`.
+    pub(crate) fn relabel(result: Result<(), String>, label: &str) -> Result<(), String> {
+        result.map_err(|m| match m.strip_prefix(OUTPUT_VARIABLE_LABEL) {
+            Some(rest) => format!("{label}{rest}"),
+            None => m,
+        })
+    }
+
     fn type_mismatch(&self, expected: &ExprType, value: &ExprValue, subject: Subject) -> String {
         self.msg(format_args!(
             "{subject} has type {}, expected {expected}",

@@ -58,6 +58,7 @@ src/
     ├── output_variable.rs    # OutputVariable, OutputConstraints, StepBinding, PendingBinding, GroupState, PathInput
     ├── binding.rs            # CONTROL_FLOW StepInputs, ProducerState, BindingError, BindingReport, Step::tasks_known
     ├── job_output.rs         # CONTROL_FLOW JobOutput, JobOutputValue
+    ├── step_loop.rs          # CONTROL_FLOW (RFC 0013) Loop, LoopBinding, LoopProgress, LoopIteration, BoundaryOutcome, LoopError
     ├── chunk_task_index.rs   # CONTROL_FLOW ChunkTaskIndex: per-Task indices of an Action's Tasks
     ├── create_job/           # Job creation pipeline
     │   ├── mod.rs            # create_job() entry point
@@ -65,6 +66,7 @@ src/
     │   ├── instantiate.rs    # Template → job type conversion
     │   ├── binding.rs        # CONTROL_FLOW progressive step input binding: group inputs, the core, advance_step_binding, attach_step_inputs
     │   ├── job_outputs.rs    # CONTROL_FLOW job output evaluation: at creation, job_output_inputs, evaluate_job_output
+    │   ├── loops.rs          # CONTROL_FLOW (RFC 0013) loop binding, iterations, the iteration boundary
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph

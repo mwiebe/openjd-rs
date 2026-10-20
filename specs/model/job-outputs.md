@@ -116,12 +116,12 @@ outputs read them), and evaluates each output whose `Steps.*` symbols are all co
 then, given the Steps it built:
 
 - one that reads no `Steps.*` symbol;
-- a symbol of a Step that `create_job` skipped (`null`);
+- a symbol of a Step or loop (RFC 0013) that `create_job` skipped (`null`);
 - a `TaskParam` or `TaskRawParam` symbol of a Step whose Tasks are known
   (`job::Step::tasks_known()` is `Some`), whether it is bound or still pending.
 
-Any `Output` or `RawOutput` symbol of a Step that is not skipped is not concrete at
-creation, so an output that reads one stays pending with `evaluated: None`. An evaluated
+Any `Output` or `RawOutput` symbol of a Step or loop that is not skipped is not concrete
+at creation, so an output that reads one stays pending with `evaluated: None`. An evaluated
 output's `evaluated` is `Some(JobOutputValue::Value(v))` or `Some(JobOutputValue::Null)`.
 
 Every job output that fails at creation fails `create_job`, as an invalid job parameter
@@ -152,7 +152,11 @@ concrete in its `StepInputs` (`StepInputs::is_concrete`):
 - an `Output` or `RawOutput` symbol once its Step has succeeded
   (`ProducerState::Succeeded`) or been skipped (`ProducerState::Skipped`);
 - a `TaskParam` or `TaskRawParam` symbol once its Step's Tasks are known
-  (`ProducerState::TasksKnown`) or it has been skipped.
+  (`ProducerState::TasksKnown`) or it has been skipped;
+- a loop's `Output` or `RawOutput` symbol (RFC 0013) once the loop has succeeded
+  (`StepInputs::add_loop_producer` with `LoopProducerState::Succeeded` and the
+  `LoopResult::outputs`) or been skipped (`LoopProducerState::Skipped`). A job output
+  never reads a body Step (validation).
 
 `StepInputs::add_producer` does not require the producer to be a dependency of anything,
 so a caller adds every Step the output reads. `evaluate_job_output` copies each symbol's

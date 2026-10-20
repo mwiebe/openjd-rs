@@ -2980,12 +2980,13 @@ impl Session {
     /// If `base` is None, builds from scratch using self.job_parameter_values.
     ///
     /// `path_inputs` lists the path-typed `Steps.*` values in `base`
-    /// (`job::Step::path_inputs`, RFC 0012 §Path values). Each is stored
+    /// (`job::Step::path_inputs`, RFC 0012 §Path values), and for a body Step
+    /// instance its path-typed `RawLoop.*` values (RFC 0013). Each is stored
     /// there as a string, or a list of them, in the submission path context. The table
-    /// gets its `RawOutput.<V>` or `TaskRawParam.<N>` symbol as `path` values
+    /// gets its `RawOutput.<V>`, `TaskRawParam.<N>`, or `RawLoop.<V>` symbol as `path` values
     /// in that stored form, each with the stored value's own path format
     /// (Windows for a drive path or one starting with `\\`, the host's for a URI,
-    /// POSIX otherwise), and its `Output.<V>` or `TaskParam.<N>` twin as
+    /// POSIX otherwise), and its `Output.<V>`, `TaskParam.<N>`, or `Loop.<V>` twin as
     /// `path` values mapped forward with the Session's rules, element by
     /// element. A `null` (from a skipped producer) is left as it is.
     pub fn build_symbol_table(
@@ -3182,7 +3183,7 @@ impl Session {
         };
         let Some(twin) = forward_twin(&input.symbol) else {
             return Err(err(
-                "not a Steps.<Step>.RawOutput.<Name> or Steps.<Step>.TaskRawParam.<Name> symbol"
+                "not a Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name> symbol"
                     .to_string(),
             ));
         };
@@ -3509,8 +3510,13 @@ fn chunk_values(
 }
 
 /// `Steps.P.Output.X` for `Steps.P.RawOutput.X`, `Steps.P.TaskParam.N` for
-/// `Steps.P.TaskRawParam.N`; `None` for any other symbol.
+/// `Steps.P.TaskRawParam.N`, and `Loop.V` for `RawLoop.V` (a body Step
+/// instance's path-typed loop variable, RFC 0013); `None` for any other
+/// symbol.
 fn forward_twin(symbol: &str) -> Option<String> {
+    if let Some(name) = symbol.strip_prefix("RawLoop.") {
+        return (!name.is_empty() && !name.contains('.')).then(|| format!("Loop.{name}"));
+    }
     let mut parts = symbol.splitn(4, '.');
     let (root, step, member, name) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     let twin = match (root, member) {

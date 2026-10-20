@@ -195,7 +195,7 @@ fn evaluate(
 /// is `s`; `int(s)` repeats `s`), which may be one a Task reported, so it
 /// is treated as Step output values are. The expression and caret lines
 /// EXPR renders after it come from the template and are kept as they are.
-fn evaluation_message(e: &openjd_expr::ExpressionError) -> String {
+pub(super) fn evaluation_message(e: &openjd_expr::ExpressionError) -> String {
     let message = e.message();
     let text = e.to_string();
     match text.strip_prefix(message.as_str()) {
@@ -217,9 +217,9 @@ fn located(index: usize, message: String) -> ModelError {
 /// `create_job`'s job outputs: each output of `job_template`, evaluated if
 /// every `Steps.*` symbol it reads is concrete at Job creation, given the
 /// Steps `create_job` built (`steps`, in template order) and the job symbol
-/// table `symtab`. A symbol is concrete then when its Step is skipped (all
-/// its symbols are `null`), or when it is a `TaskParam` or `TaskRawParam`
-/// of a Step whose Tasks are known. `None` when the template declares no
+/// table `symtab`. A symbol is concrete then when its Step or loop is skipped
+/// (all its symbols are `null`), or when it is a `TaskParam` or
+/// `TaskRawParam` of a Step whose Tasks are known. `None` when the template declares no
 /// job outputs.
 ///
 /// Every output that fails is reported, together, in template order.
@@ -227,13 +227,14 @@ pub(super) fn evaluate_at_creation(
     job_template: &JobTemplate,
     symtab: &SymbolTable,
     steps: &[job::Step],
+    loops: &[job::Loop],
     budgets: EvalBudgets,
 ) -> Result<Option<Vec<JobOutput>>, ModelError> {
     let Some(defs) = &job_template.job_output_definitions else {
         return Ok(None);
     };
     let mut outputs: Vec<JobOutput> = defs.iter().map(|d| d.to_job_output()).collect();
-    let inputs = creation_inputs(&outputs, steps)?;
+    let inputs = creation_inputs(&outputs, steps, loops)?;
     let mut errors = ValidationErrors::default();
     for (index, output) in outputs.iter_mut().enumerate() {
         let symbols = steps_inputs(output);
@@ -264,7 +265,11 @@ pub(super) fn evaluate_at_creation(
 /// for a Step whose Tasks are known, its `TaskParam` lists when some output
 /// reads its `TaskParam` or `TaskRawParam` (building them walks the Step's
 /// whole parameter space, so once per Step, not once per output).
-fn creation_inputs(outputs: &[JobOutput], steps: &[job::Step]) -> Result<StepInputs, ModelError> {
+fn creation_inputs(
+    outputs: &[JobOutput],
+    steps: &[job::Step],
+    loops: &[job::Loop],
+) -> Result<StepInputs, ModelError> {
     let mut read: BTreeSet<String> = BTreeSet::new();
     let mut reads_task_params: BTreeSet<String> = BTreeSet::new();
     for output in outputs {
@@ -281,6 +286,13 @@ fn creation_inputs(outputs: &[JobOutput], steps: &[job::Step]) -> Result<StepInp
     }
     let mut inputs = StepInputs::new();
     for p in &read {
+        // A loop's outputs are concrete at creation only when it is skipped.
+        if let Some(job_loop) = loops.iter().find(|l| &l.name == p) {
+            if matches!(job_loop.binding, job::LoopBinding::Skipped) {
+                inputs.add_loop_producer(job_loop, job::LoopProducerState::Skipped)?;
+            }
+            continue;
+        }
         // Validation rejects a reference to a Step that does not exist.
         let Some(step) = steps.iter().find(|s| &s.name == p) else {
             continue;

@@ -30,6 +30,7 @@ pub mod create_job;
 mod job_output;
 mod output_variable;
 pub mod step_dependency_graph;
+mod step_loop;
 pub mod step_param_space;
 
 pub use binding::{
@@ -40,6 +41,14 @@ pub use job_output::{JobOutput, JobOutputValue};
 pub use output_variable::{
     GroupState, OutputAllowedValues, OutputBound, OutputConstraints, OutputVariable, PathInput,
     PendingBinding, StepBinding,
+};
+pub(crate) use step_loop::{
+    empty_outputs as step_loop_empty_outputs, instance_name as step_loop_instance_name,
+};
+pub use step_loop::{
+    BoundLoop, BoundaryOutcome, Loop, LoopBinding, LoopBindingReport, LoopCondition, LoopEnd,
+    LoopError, LoopErrorField, LoopExpression, LoopIteration, LoopProducerState, LoopProgress,
+    LoopResult, LoopStart, PendingLoopBinding,
 };
 
 use std::collections::HashMap;
@@ -93,7 +102,13 @@ pub struct Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<crate::types::ModelExtension>>,
     pub parameters: IndexMap<String, JobParameter>,
+    /// The top-level Steps, in template order. A loop's body Steps are not
+    /// here: their instances are created per iteration (RFC 0013).
     pub steps: Vec<Step>,
+    /// The loops (`CONTROL_FLOW`, RFC 0013), in template order. Empty, and
+    /// not serialized, for a Job without loops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<Loop>,
     pub job_environments: Option<Vec<Environment>>,
     /// The Job's outputs (`CONTROL_FLOW`, RFC 0011 `jobOutputDefinitions`),
     /// in template order, or `None` when the template declares none.
@@ -110,6 +125,7 @@ impl Hash for Job {
         self.extensions.hash(state);
         hash_map_entries(self.parameters.iter(), state);
         self.steps.hash(state);
+        self.loops.hash(state);
         self.job_environments.hash(state);
         self.outputs.hash(state);
     }

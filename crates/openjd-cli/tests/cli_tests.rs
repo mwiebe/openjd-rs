@@ -6749,3 +6749,47 @@ steps:
 
 #[cfg(target_os = "linux")]
 mod control_flow_golden;
+
+/// `openjd run` and `openjd summary` refuse a template with a loop (RFC
+/// 0013), which `openjd check` accepts, until they can run loops.
+mod control_flow_loops {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    const LOOP: &str = r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Loops
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 3
+    steps:
+    - name: W
+      script:
+        actions:
+          onRun:
+            command: echo
+"#;
+
+    #[test]
+    fn run_and_summary_refuse_loops_that_check_accepts() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(LOOP.as_bytes()).unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, stdout, _) = run_cli(&["check", path]);
+        assert_eq!(code, 0, "{stdout}");
+        for command in ["run", "summary"] {
+            let (code, stdout, stderr) = run_cli(&[command, path]);
+            assert_ne!(code, 0, "{stdout}");
+            let expected = format!(
+                "openjd {command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop 'L'."
+            );
+            assert!(
+                stdout.contains(&expected) || stderr.contains(&expected),
+                "stdout: {stdout}\nstderr: {stderr}"
+            );
+        }
+    }
+}

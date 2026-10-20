@@ -18,7 +18,10 @@ use std::fmt;
 use openjd_expr::path_mapping::PathFormat;
 use openjd_expr::{ExprType, ExprValue};
 
-use super::{GroupState, Step, StepBinding, StepParameterSpace, TaskParameter};
+use super::{
+    GroupState, Loop, LoopBinding, LoopProducerState, Step, StepBinding, StepParameterSpace,
+    TaskParameter,
+};
 use crate::error::ModelError;
 use crate::outputs::TaskOutputs;
 use crate::step_param_space::StepParameterSpaceIterator;
@@ -41,6 +44,11 @@ pub enum MaterializationGroup {
     /// `enableIf` and TEMPLATE-scope fields, and the script's TEMPLATE-scope
     /// fields (an action's `timeout` and `cancelation`).
     Remaining,
+    /// A loop's `maxIterations` (RFC 0013 §Loop binding item 2).
+    LoopBound,
+    /// A loop's `initial` values, then its first `while` (RFC 0013 §Loop
+    /// binding item 3).
+    LoopStart,
 }
 
 impl fmt::Display for MaterializationGroup {
@@ -50,6 +58,8 @@ impl fmt::Display for MaterializationGroup {
             Self::TaskEnumeration => "Task enumeration",
             Self::HostSelection => "host selection",
             Self::Remaining => "remaining",
+            Self::LoopBound => "bound",
+            Self::LoopStart => "start",
         })
     }
 }
@@ -266,6 +276,87 @@ impl StepInputs {
                     insert(&mut entry, "Output", "RawOutput", &ov.name, value, is_path);
                 }
                 add_task_params(&mut entry, space)?;
+            }
+        }
+        self.producers.insert(p.clone(), entry);
+        Ok(())
+    }
+
+    /// Add (or replace) loop `producer`'s outputs (RFC 0013 §`Steps.*` in and
+    /// around a loop): `Output.<V>` and `RawOutput.<V>` for each declared
+    /// loop output, set to the value itself, since a loop has no Tasks and
+    /// its outputs are never wrapped in a per-Task list.
+    ///
+    /// * [`LoopProducerState::Succeeded`]: each value of `outputs`, converted
+    ///   to its output's declared type. A `LAST` output may be `null` (a
+    ///   `while` loop after zero iterations). For a type that is or contains
+    ///   `path`, only `RawOutput` gets the value, and `Output` is derived on
+    ///   the worker host, as for a Step's output; a `null` sets both.
+    /// * [`LoopProducerState::Skipped`]: every symbol of the loop is `null`.
+    ///
+    /// Errors, each a [`ModelError::Compatibility`] (a caller error), when the
+    /// state does not match the loop's binding (`Succeeded` needs a bound
+    /// loop, `Skipped` a skipped one), or when `outputs` lacks a declared
+    /// output or holds a value that does not convert to its type.
+    pub fn add_loop_producer(
+        &mut self,
+        producer: &Loop,
+        state: LoopProducerState<'_>,
+    ) -> Result<(), ModelError> {
+        let p = &producer.name;
+        let mut entry = ProducerInputs::default();
+        match state {
+            LoopProducerState::Skipped => {
+                if !matches!(producer.binding, LoopBinding::Skipped) {
+                    return Err(misuse(format!(
+                        "loop '{p}' is not skipped, so it cannot be added as a skipped producer."
+                    )));
+                }
+                entry.skipped = true;
+            }
+            LoopProducerState::Succeeded { outputs } => {
+                if !matches!(producer.binding, LoopBinding::Bound(_)) {
+                    return Err(misuse(format!(
+                        "loop '{p}' is not bound, so it cannot have succeeded."
+                    )));
+                }
+                for ov in &producer.output_variables {
+                    let Some(v) = outputs.get(&ov.name) else {
+                        return Err(misuse(format!(
+                            "loop '{p}' has no value for output '{}'.",
+                            ov.name
+                        )));
+                    };
+                    let is_path = matches!(
+                        ov.param_type,
+                        JobParameterType::Path | JobParameterType::ListPath
+                    );
+                    if matches!(v, ExprValue::Null) {
+                        if ov.collect == crate::types::OutputCollectMode::Append {
+                            return Err(misuse(format!(
+                                "loop '{p}': APPEND output '{}' is null; a loop that succeeded has a list.",
+                                ov.name
+                            )));
+                        }
+                        insert(
+                            &mut entry,
+                            "Output",
+                            "RawOutput",
+                            &ov.name,
+                            ExprValue::Null,
+                            false,
+                        );
+                        continue;
+                    }
+                    let value = conform(v.clone(), &ov.param_type.expr_type()).map_err(|e| {
+                        misuse(format!(
+                            "loop '{p}': output '{}' does not convert to {}: {e}",
+                            ov.name,
+                            ov.param_type.as_spec_str()
+                        ))
+                    })?;
+                    insert(&mut entry, "Output", "RawOutput", &ov.name, value, is_path);
+                }
             }
         }
         self.producers.insert(p.clone(), entry);

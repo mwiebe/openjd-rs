@@ -12,10 +12,7 @@
 
 use openjd_model::template::{BoolOrFormatString, IntOrFormatString, StepEntry};
 use openjd_model::types::OutputCollectMode;
-use openjd_model::{
-    create_job, decode_job_template, preprocess_job_parameters, CallerLimits, JobParameterValues,
-    PathParameterOptions,
-};
+use openjd_model::{decode_job_template, CallerLimits};
 
 const SUPPORTED: &[&str] = &["EXPR", "CONTROL_FLOW", "TASK_CHUNKING", "FEATURE_BUNDLE_1"];
 
@@ -1799,27 +1796,4 @@ fn the_step_count_limit_counts_loops_and_body_steps() {
         ..Default::default()
     };
     decode_with(&tpl, &limits).expect("at the limit");
-}
-
-#[test]
-fn create_job_does_not_support_loops_yet() {
-    let jt = decode_ok(&template(&format!(
-        "- name: S
-  {SCRIPT}
-{}",
-        single_loop(UNTIL, "").split_once("steps:\n").unwrap().1
-    )));
-    let ctx = jt.default_validation_context();
-    let values: JobParameterValues = preprocess_job_parameters(
-        &jt,
-        &Default::default(),
-        &[],
-        &PathParameterOptions::new("/t", "/t"),
-    )
-    .unwrap();
-    let err = create_job(&jt, &values, &ctx).expect_err("loops are not instantiated");
-    assert_eq!(
-        err.to_string(),
-        "Compatibility error: create_job does not support loops (RFC 0013) yet: steps[1] is loop 'L'."
-    );
 }
