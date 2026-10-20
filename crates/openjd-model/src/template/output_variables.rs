@@ -2,9 +2,10 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Template types the `CONTROL_FLOW` extension adds (RFC 0011, RFC 0012):
-//! `<OutputVariableDefinition>`, `<JobOutputDefinition>`, and the `enableIf`
-//! field value.
+//! Template types the `CONTROL_FLOW` extension adds (RFC 0011, RFC 0012,
+//! RFC 0013): `<OutputVariableDefinition>`, `<JobOutputDefinition>`,
+//! `<LoopVariableDefinition>`, `<LoopOutputVariableDefinition>`, and the
+//! `enableIf` field value.
 //!
 //! An output variable reuses the job-parameter machinery instead of a
 //! parallel set of structs. Its mapping is the `<JobParameterDefinition>` of
@@ -16,7 +17,10 @@
 //! records them so validation can report each one at its own path.
 //!
 //! A [`JobOutputDefinition`] is the same mapping with `value` in place of
-//! `collect`, and takes the same route.
+//! `collect`, and takes the same route. So do the loop definitions of RFC
+//! 0013: a [`LoopVariableDefinition`] takes `initial` and `next` out of the
+//! mapping, and a [`LoopOutputVariableDefinition`] takes `collect`, `value`,
+//! and `unit`.
 
 use openjd_expr::value::Float64;
 use serde::Deserialize;
@@ -85,13 +89,16 @@ pub struct OutputVariableDefinition {
 /// job-parameter definition already rejects it as an unknown field.
 const UNAVAILABLE_PROPERTIES: [&str; 3] = ["default", "userInterface", "dataFlow"];
 
-/// What both definition kinds share, parsed from one mapping: the wrapped
-/// job parameter definition, the job-side declaration, and the job-parameter
-/// properties the author wrote that the definition may not have.
+/// What every definition kind shares, parsed from one mapping: the wrapped
+/// job parameter definition, the job-side declaration, the job-parameter
+/// properties the author wrote that the definition may not have, and the
+/// `collect` mode as written (only a loop output keeps it; it is `None`
+/// for the other kinds).
 struct ParsedDefinition {
     definition: JobParameterDefinition,
     job: OutputVariable,
     unavailable: Vec<&'static str>,
+    written_collect: Option<OutputCollectMode>,
 }
 
 /// Which definition a mapping is, for the keys it takes out before the rest
@@ -102,6 +109,12 @@ enum DefinitionKind {
     OutputVariable,
     /// `<JobOutputDefinition>`: takes `unit`; `collect` is not available.
     JobOutput,
+    /// `<LoopVariableDefinition>` (RFC 0013): `collect` and `unit` are not
+    /// available.
+    LoopVariable,
+    /// `<LoopOutputVariableDefinition>` (RFC 0013): takes `collect`, as
+    /// written, and `unit`.
+    LoopOutput,
 }
 
 impl DefinitionKind {
@@ -109,6 +122,18 @@ impl DefinitionKind {
         match self {
             Self::OutputVariable => "output variable",
             Self::JobOutput => "job output",
+            Self::LoopVariable => "loop variable",
+            Self::LoopOutput => "loop output",
+        }
+    }
+
+    /// `an output variable definition`, `a job output definition`, and so on.
+    fn definition_phrase(self) -> &'static str {
+        match self {
+            Self::OutputVariable => "an output variable definition",
+            Self::JobOutput => "a job output definition",
+            Self::LoopVariable => "a loop variable definition",
+            Self::LoopOutput => "a loop output definition",
         }
     }
 
@@ -117,6 +142,8 @@ impl DefinitionKind {
         match self {
             Self::OutputVariable => &["collect", "unit"],
             Self::JobOutput => &["value", "unit"],
+            Self::LoopVariable => &["initial", "next"],
+            Self::LoopOutput => &["collect", "value", "unit"],
         }
     }
 }
@@ -139,23 +166,35 @@ fn parse_definition(
 
     let mut unavailable = Vec::new();
     // An explicit `null` means omitted, as for the other optional fields.
-    let collect = match kind {
-        DefinitionKind::OutputVariable => match map.remove("collect") {
-            None | Some(serde_json::Value::Null) => OutputCollectMode::default(),
-            Some(v) => serde_json::from_value(v).map_err(|e| format!("collect: {e}"))?,
-        },
+    let parse_collect = |v: serde_json::Value| -> Result<OutputCollectMode, String> {
+        serde_json::from_value(v).map_err(|e| format!("collect: {e}"))
+    };
+    let written_collect = match kind {
+        DefinitionKind::OutputVariable | DefinitionKind::LoopOutput => {
+            match map.remove("collect") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(v) => Some(parse_collect(v)?),
+            }
+        }
         // A job output is evaluated, not reported, so it has no collect
-        // mode (RFC 0011 `<JobOutputDefinition>`). Reported by validation
-        // at its own path.
-        DefinitionKind::JobOutput => {
+        // mode (RFC 0011 `<JobOutputDefinition>`), and neither has a loop
+        // variable (RFC 0013 `<LoopVariableDefinition>`). Reported by
+        // validation at its own path.
+        DefinitionKind::JobOutput | DefinitionKind::LoopVariable => {
             if map.remove("collect").is_some_and(|v| !v.is_null()) {
                 unavailable.push("collect");
             }
-            OutputCollectMode::default()
+            None
         }
     };
+    let collect = written_collect.unwrap_or_default();
     let unit = match map.remove("unit") {
         None | Some(serde_json::Value::Null) => None,
+        // A loop variable has no `unit` (RFC 0013 `<LoopVariableDefinition>`).
+        Some(_) if kind == DefinitionKind::LoopVariable => {
+            unavailable.push("unit");
+            None
+        }
         Some(serde_json::Value::String(s)) => Some(s),
         Some(other) => {
             return Err(format!(
@@ -192,6 +231,11 @@ fn parse_definition(
         definition,
         job,
         unavailable,
+        // Only a loop output keeps the mode as written: its `collect` is
+        // required, and `ONCE` is not allowed (validation reports both).
+        written_collect: (kind == DefinitionKind::LoopOutput)
+            .then_some(written_collect)
+            .flatten(),
     })
 }
 
@@ -202,11 +246,8 @@ fn into_map<E: serde::de::Error>(
     match value {
         serde_json::Value::Object(map) => Ok(map),
         other => Err(E::custom(format!(
-            "expected {} definition mapping, got {}",
-            match kind {
-                DefinitionKind::OutputVariable => "an output variable",
-                DefinitionKind::JobOutput => "a job output",
-            },
+            "expected {} mapping, got {}",
+            kind.definition_phrase(),
             json_kind(&other)
         ))),
     }
@@ -324,16 +365,8 @@ impl<'de> Deserialize<'de> for JobOutputDefinition {
             serde_json::Value::deserialize(deserializer)?,
             DefinitionKind::JobOutput,
         )?;
-        let value = match map.remove("value") {
-            None | Some(serde_json::Value::Null) => {
-                return Err(D::Error::custom(
-                    "missing 'value' field in job output definition",
-                ))
-            }
-            Some(v) => {
-                FormatString::deserialize(v).map_err(|e| D::Error::custom(format!("value: {e}")))?
-            }
-        };
+        let value = take_format_string(&mut map, "value", DefinitionKind::JobOutput)
+            .map_err(D::Error::custom)?;
         let parsed = parse_definition(map, DefinitionKind::JobOutput).map_err(D::Error::custom)?;
         Ok(Self {
             definition: parsed.definition,
@@ -396,6 +429,208 @@ impl JobOutputDefinition {
 
     /// The properties the author wrote that a job output may not have
     /// (`collect`, `default`, `userInterface`, `dataFlow`).
+    pub(crate) fn unavailable_properties(&self) -> &[&'static str] {
+        &self.unavailable
+    }
+}
+
+/// Take the required format-string field `key` out of a definition mapping.
+/// An explicit `null` is missing, as for the other fields.
+fn take_format_string(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    kind: DefinitionKind,
+) -> Result<FormatString, String> {
+    match map.remove(key) {
+        None | Some(serde_json::Value::Null) => Err(format!(
+            "missing '{key}' field in {} definition",
+            kind.noun()
+        )),
+        Some(v) => FormatString::deserialize(v).map_err(|e| format!("{key}: {e}")),
+    }
+}
+
+/// RFC 0013 `<LoopVariableDefinition>`: one variable of a loop, read as
+/// `Loop.<name>` and `RawLoop.<name>`, set by `initial` before the first
+/// iteration and by `next` at each iteration boundary.
+///
+/// Wraps the [`JobParameterDefinition`] of the declared type, which holds
+/// `name`, `description`, and the constraint properties, together with
+/// `initial` and `next`. A loop variable has no `collect` or `unit`.
+#[derive(Debug, Clone)]
+pub struct LoopVariableDefinition {
+    definition: JobParameterDefinition,
+    /// The declaration as an output variable: name, type, and the declared
+    /// constraints (`collect` is always the default, `unit` always unset).
+    job: OutputVariable,
+    initial: FormatString,
+    next: FormatString,
+    /// Properties the author wrote that a loop variable may not have, in the
+    /// order `collect`, `unit`, then [`UNAVAILABLE_PROPERTIES`].
+    unavailable: Vec<&'static str>,
+}
+
+impl<'de> Deserialize<'de> for LoopVariableDefinition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let kind = DefinitionKind::LoopVariable;
+        let mut map = into_map(serde_json::Value::deserialize(deserializer)?, kind)?;
+        let initial = take_format_string(&mut map, "initial", kind).map_err(D::Error::custom)?;
+        let next = take_format_string(&mut map, "next", kind).map_err(D::Error::custom)?;
+        let parsed = parse_definition(map, kind).map_err(D::Error::custom)?;
+        Ok(Self {
+            definition: parsed.definition,
+            job: parsed.job,
+            initial,
+            next,
+            unavailable: parsed.unavailable,
+        })
+    }
+}
+
+impl LoopVariableDefinition {
+    /// The variable's `<Identifier>` name.
+    pub fn name(&self) -> &str {
+        self.definition.name()
+    }
+
+    /// The declared `<OutputVariableType>`.
+    pub fn job_param_type(&self) -> JobParameterType {
+        self.definition.job_param_type()
+    }
+
+    /// The `initial` format string: the value for iteration 0.
+    pub fn initial(&self) -> &FormatString {
+        &self.initial
+    }
+
+    /// The `next` format string: the value for the following iteration.
+    pub fn next(&self) -> &FormatString {
+        &self.next
+    }
+
+    /// The `description`, if declared.
+    pub fn description(&self) -> Option<&str> {
+        self.definition.description()
+    }
+
+    /// The job-parameter definition of the declared type, which holds the
+    /// name, description, constraint properties, and (for `PATH` and
+    /// `LIST[PATH]`) `objectType`.
+    pub fn definition(&self) -> &JobParameterDefinition {
+        &self.definition
+    }
+
+    /// The declared constraint properties.
+    pub fn constraints(&self) -> &OutputConstraints {
+        &self.job.constraints
+    }
+
+    /// The declaration as an [`OutputVariable`] (name, type, and
+    /// constraints), whose `check_constraints` checks every value the
+    /// variable takes.
+    pub fn to_output_variable(&self) -> OutputVariable {
+        self.job.clone()
+    }
+
+    /// The properties the author wrote that a loop variable may not have
+    /// (`collect`, `unit`, `default`, `userInterface`, `dataFlow`).
+    pub(crate) fn unavailable_properties(&self) -> &[&'static str] {
+        &self.unavailable
+    }
+}
+
+/// RFC 0013 `<LoopOutputVariableDefinition>`: one output of a loop, read
+/// after the loop as `Steps.<LoopName>.Output.<name>`.
+///
+/// Wraps the [`JobParameterDefinition`] of the declared type, which holds
+/// `name`, `description`, and the constraint properties, together with
+/// `collect`, `value`, and `unit`. `collect` is kept as written: it is
+/// required, and only `LAST` and `APPEND` are allowed, which validation
+/// checks at its own path.
+#[derive(Debug, Clone)]
+pub struct LoopOutputVariableDefinition {
+    definition: JobParameterDefinition,
+    /// The declaration as an output variable: name, type, `collect` (the
+    /// default when not written), `unit`, and the declared constraints.
+    job: OutputVariable,
+    collect: Option<OutputCollectMode>,
+    value: FormatString,
+    /// Properties the author wrote that a loop output may not have, in the
+    /// order of [`UNAVAILABLE_PROPERTIES`].
+    unavailable: Vec<&'static str>,
+}
+
+impl<'de> Deserialize<'de> for LoopOutputVariableDefinition {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let kind = DefinitionKind::LoopOutput;
+        let mut map = into_map(serde_json::Value::deserialize(deserializer)?, kind)?;
+        let value = take_format_string(&mut map, "value", kind).map_err(D::Error::custom)?;
+        let parsed = parse_definition(map, kind).map_err(D::Error::custom)?;
+        Ok(Self {
+            definition: parsed.definition,
+            job: parsed.job,
+            collect: parsed.written_collect,
+            value,
+            unavailable: parsed.unavailable,
+        })
+    }
+}
+
+impl LoopOutputVariableDefinition {
+    /// The output's `<Identifier>` name.
+    pub fn name(&self) -> &str {
+        self.definition.name()
+    }
+
+    /// The declared `<OutputVariableType>`.
+    pub fn job_param_type(&self) -> JobParameterType {
+        self.definition.job_param_type()
+    }
+
+    /// The `collect` mode as written, `None` when it was omitted. A valid
+    /// template has `LAST` or `APPEND`.
+    pub fn collect(&self) -> Option<OutputCollectMode> {
+        self.collect
+    }
+
+    /// The `value` format string, evaluated at each iteration boundary.
+    pub fn value(&self) -> &FormatString {
+        &self.value
+    }
+
+    /// The display `unit`, if declared.
+    pub fn unit(&self) -> Option<&str> {
+        self.job.unit.as_deref()
+    }
+
+    /// The `description`, if declared.
+    pub fn description(&self) -> Option<&str> {
+        self.definition.description()
+    }
+
+    /// The job-parameter definition of the declared type, which holds the
+    /// name, description, constraint properties, and (for `PATH` and
+    /// `LIST[PATH]`) `objectType`.
+    pub fn definition(&self) -> &JobParameterDefinition {
+        &self.definition
+    }
+
+    /// The declared constraint properties.
+    pub fn constraints(&self) -> &OutputConstraints {
+        &self.job.constraints
+    }
+
+    /// The declaration as an [`OutputVariable`], whose `check_constraints`,
+    /// `check_element`, and `check_length` apply the constraint properties
+    /// as RFC 0013 §`<LoopOutputVariableDefinition>` item 6 says.
+    pub fn to_output_variable(&self) -> OutputVariable {
+        self.job.clone()
+    }
+
+    /// The properties the author wrote that a loop output may not have
+    /// (`default`, `userInterface`, `dataFlow`).
     pub(crate) fn unavailable_properties(&self) -> &[&'static str] {
         &self.unavailable
     }

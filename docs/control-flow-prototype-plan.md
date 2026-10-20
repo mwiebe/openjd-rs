@@ -891,13 +891,15 @@ and RFC 0012's chunked-Step rules apply to each instance unchanged.
 * About 50 places iterate `jt.steps`: the validation passes, `create_job`, and the binding core
   (`job/create_job/binding.rs:305` indexes `cx.jt.steps[step_index]`). So that each doesn't re-derive the shape,
   `JobTemplate` gets helpers. `step_templates()` yields every `StepTemplate`, top-level or in a body, with its error
-  path (`steps[i]` or `steps[i] -> loop -> steps[j]`) and its loop, if any. `top_level_steps()` yields the
-  top-level `StepTemplate`s alone, in template order. A template without loops behaves exactly as today. This is a
-  public API change, recorded in `public-api.md`.
+  path (`steps[i]` or `steps[i] -> loop -> steps[j]`) and its loop, if any, as a `StepTemplateRef`.
+  `top_level_steps()` yields the top-level `StepTemplate`s alone, in template order, and `loops()` and `has_loops()`
+  the loops. A template without loops behaves exactly as today. This is a public API change, recorded in
+  `public-api.md`. As implemented in PR 8, `create_job` rejects a template with a loop (a `Compatibility` error) until
+  PR 9 instantiates loops.
 * `StepLoop` has `name`, `description`, `enable_if: Option<BoolOrFormatString>`, `dependencies`, the
   `<LoopDefinition>` (serde name `loop`), and `output_variables: Option<Vec<LoopOutputVariableDefinition>>`.
-  `LoopDefinition` has `variables: Option<Vec<LoopVariableDefinition>>`, `while_` and `until`
-  (`Option<BoolOrFormatString>`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
+  `LoopDefinition` has `variables: Option<Vec<LoopVariableDefinition>>`, `while_condition` and
+  `until_condition` (`Option<BoolOrFormatString>`, serde names `while` and `until`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
   body, `steps`. The body is parsed so that an entry with a `loop` key fails with a message that says loops do not
   nest (`3.8.1--nested-loop`), not as an unknown field of a `<StepTemplate>`.
 * `LoopVariableDefinition` and `LoopOutputVariableDefinition` reuse the job-parameter machinery as

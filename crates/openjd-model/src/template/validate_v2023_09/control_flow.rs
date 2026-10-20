@@ -2,13 +2,15 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0011, RFC 0012).
+//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0011, RFC 0012,
+//! RFC 0013).
 //!
-//! Four fields are gated by the `CONTROL_FLOW` extension:
+//! Five fields are gated by the `CONTROL_FLOW` extension:
 //! - `jobOutputDefinitions` on the Job Template
 //! - `enableIf` on `<StepTemplate>`
 //! - `outputVariables` on `<StepTemplate>`
 //! - `enableIf` on `<Environment>` (Job and Step Environments)
+//! - `loop` on a `steps` entry, which makes it a `<StepLoop>` (RFC 0013)
 //!
 //! Without the extension, each of them is an error at its own path. With it,
 //! this pass enforces the RFCs' static rules: RFC 0011 §Validation, "At
@@ -30,6 +32,15 @@
 //!   variable. `LIST[LIST[INT]]` is allowed.
 //! - **Environment Templates.** `CONTROL_FLOW` applies to Job Templates only:
 //!   an Environment Template may neither list it nor use `enableIf`.
+//! - **Loops** (RFC 0013 §Validation items 1, 5, 6, and 7's literal form).
+//!   Exactly one of `while` and `until`; a literal `maxIterations` from 1 to
+//!   1,000; `variables` of 1 to 32 elements with unique names other than
+//!   `Iteration`, no `collect`, `unit`, `default`, `userInterface`, or
+//!   `dataFlow`, and constraint properties valid for the type; and loop
+//!   `outputVariables` of 1 to 32 elements with unique names, `collect`
+//!   present and `LAST` or `APPEND` (`APPEND` only with a `LIST[...]` type),
+//!   and a `unit` as for an output variable. Pass 6 checks loop names,
+//!   dependencies, the body's shape, and cycles; pass 8 the expressions.
 //!
 //! The `Steps.*` scope rules, the typing of `enableIf`, and the scope and
 //! typing of a job output's `value` belong to pass 8.
@@ -40,8 +51,9 @@ use super::helpers::check_expr_prerequisite;
 use super::EffectiveLimits;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::{
-    Environment, EnvironmentTemplate, IntRange, JobOutputDefinition, JobParameterDefinition,
-    JobTemplate, OutputVariableDefinition, StepTemplate, TaskParameterDefinition,
+    Environment, EnvironmentTemplate, IntOrFormatString, IntRange, JobOutputDefinition,
+    JobParameterDefinition, JobTemplate, LoopOutputVariableDefinition, LoopVariableDefinition,
+    OutputVariableDefinition, StepEntry, StepLoop, StepTemplate, TaskParameterDefinition,
 };
 use crate::types::{JobParameterType, ModelExtension, OutputCollectMode, ValidationContext};
 
@@ -51,6 +63,12 @@ const MAX_OUTPUT_VARIABLES: usize = 32;
 const MAX_UNIT_LEN: usize = 32;
 /// RFC 0011 `jobOutputDefinitions` constraint 2: at most 50 elements.
 const MAX_JOB_OUTPUTS: usize = 50;
+/// RFC 0013 `<LoopDefinition>` `variables` and `<StepLoop>`
+/// `outputVariables` constraint 2: at most 32 elements.
+const MAX_LOOP_DECLARATIONS: usize = 32;
+/// RFC 0013 `<LoopDefinition>` item 4 and §Limits item 1: `maxIterations`
+/// is from 1 to 1,000.
+pub(super) const MAX_ITERATIONS: i64 = 1000;
 
 /// Validate RFC 0011 and RFC 0012 constraints for a job template.
 ///
@@ -86,8 +104,23 @@ pub fn validate_control_flow_job_template(
         }
     }
 
-    for (i, step) in jt.steps.iter().enumerate() {
-        let step_path = path_index(&path_field(&[], "steps"), i);
+    for (i, entry) in jt.steps.iter().enumerate() {
+        if let StepEntry::Loop(l) = entry {
+            let entry_path = path_index(&path_field(&[], "steps"), i);
+            if active {
+                check_loop(l, &entry_path, limits, errors);
+            } else {
+                errors.add(
+                    &path_field(&entry_path, "loop"),
+                    "loop requires the CONTROL_FLOW extension (RFC 0013).",
+                );
+            }
+        }
+    }
+
+    for st in jt.step_templates() {
+        let step = st.step;
+        let step_path = st.path();
         if !active && step.enable_if.is_some() {
             errors.add(
                 &path_field(&step_path, "enableIf"),
@@ -238,19 +271,146 @@ fn check_job_output_definitions(
     }
 }
 
+/// The structural rules on a loop (RFC 0013 §Validation, "At template
+/// validation", items 1, 5, 6, and the literal form of 7). The names, the
+/// dependencies, the body's shape, and the body's cycles are checked by
+/// structure (pass 6), and the expressions by pass 8.
+fn check_loop(
+    l: &StepLoop,
+    entry_path: &[PathElement],
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    let loop_path = path_field(entry_path, "loop");
+    let def = &l.loop_definition;
+    // Item 1: exactly one of `while` and `until`.
+    match (&def.while_condition, &def.until_condition) {
+        (Some(_), Some(_)) => errors.add(
+            &loop_path,
+            "must have exactly one of 'while' and 'until', not both.",
+        ),
+        (None, None) => errors.add(&loop_path, "must have exactly one of 'while' and 'until'."),
+        _ => {}
+    }
+    // Item 7, literal form; a format string is checked by pass 8.
+    if let IntOrFormatString::Int(n) = def.max_iterations {
+        if !(1..=MAX_ITERATIONS).contains(&n) {
+            errors.add(
+                &path_field(&loop_path, "maxIterations"),
+                format!("must be from 1 to {MAX_ITERATIONS}; got {n}."),
+            );
+        }
+    }
+    if let Some(vars) = &def.variables {
+        check_loop_variables(vars, &path_field(&loop_path, "variables"), limits, errors);
+    }
+    if let Some(outputs) = &l.output_variables {
+        check_loop_outputs(
+            outputs,
+            &path_field(entry_path, "outputVariables"),
+            limits,
+            errors,
+        );
+    }
+}
+
+/// Item 5: 1 to 32 elements with unique `<Identifier>` names other than
+/// `Iteration`, an `<OutputVariableType>` each, and constraint properties
+/// valid for the type. `LIST[LIST[INT]]` is allowed.
+fn check_loop_variables(
+    vars: &[LoopVariableDefinition],
+    list_path: &[PathElement],
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    check_list_length(vars.len(), MAX_LOOP_DECLARATIONS, list_path, errors);
+    let mut names = HashSet::new();
+    for (k, var) in vars.iter().enumerate() {
+        let path = path_index(list_path, k);
+        if var.name() == "Iteration" {
+            errors.add(
+                &path_field(&path, "name"),
+                "'Iteration' is reserved: Loop.Iteration is the index of the current iteration.",
+            );
+        }
+        check_definition(
+            &Declared {
+                kind: Kind::LoopVariable,
+                definition: var.definition(),
+                unavailable: var.unavailable_properties(),
+            },
+            &path,
+            &mut names,
+            limits,
+            errors,
+        );
+    }
+}
+
+/// Item 6: 1 to 32 elements with unique `<Identifier>` names; `collect`
+/// present and `LAST` or `APPEND`, and `APPEND` only with a `LIST[...]`
+/// type; types, constraint properties, and `unit` as for RFC 0012's
+/// `outputVariables`. `LIST[LIST[INT]]` is allowed: a loop has no
+/// `parameterSpace`. (A missing `value` fails to parse.)
+fn check_loop_outputs(
+    outputs: &[LoopOutputVariableDefinition],
+    list_path: &[PathElement],
+    limits: &EffectiveLimits,
+    errors: &mut ValidationErrors,
+) {
+    check_list_length(outputs.len(), MAX_LOOP_DECLARATIONS, list_path, errors);
+    let mut names = HashSet::new();
+    for (k, ov) in outputs.iter().enumerate() {
+        let path = path_index(list_path, k);
+        check_definition(
+            &Declared {
+                kind: Kind::LoopOutput,
+                definition: ov.definition(),
+                unavailable: ov.unavailable_properties(),
+            },
+            &path,
+            &mut names,
+            limits,
+            errors,
+        );
+        let collect_path = path_field(&path, "collect");
+        let ty = ov.job_param_type();
+        match ov.collect() {
+            None => errors.add(
+                &collect_path,
+                "is required in a loop output definition: LAST or APPEND.",
+            ),
+            Some(OutputCollectMode::Once) => errors.add(
+                &collect_path,
+                "ONCE is not allowed for a loop output, whose value is evaluated at every iteration boundary; use LAST or APPEND.",
+            ),
+            Some(OutputCollectMode::Append) if !is_list_type(ty) => errors.add(
+                &collect_path,
+                format!("APPEND requires a LIST[...] type; '{ty}' is not a list type."),
+            ),
+            Some(_) => {}
+        }
+        check_unit(ov.unit(), &path, errors);
+    }
+}
+
 /// Which definition [`check_definition`] is checking, for its messages.
 #[derive(Clone, Copy)]
 enum Kind {
     OutputVariable,
     JobOutput,
+    LoopVariable,
+    LoopOutput,
 }
 
 impl Kind {
-    /// The lowercase noun: `output variable` or `job output`.
+    /// The lowercase noun: `output variable`, `job output`, and so on.
     fn noun(self) -> &'static str {
         match self {
             Self::OutputVariable => "output variable",
             Self::JobOutput => "job output",
+            Self::LoopVariable => "loop variable",
+            Self::LoopOutput => "loop output",
         }
     }
 
@@ -259,14 +419,18 @@ impl Kind {
         match self {
             Self::OutputVariable => "Output variable",
             Self::JobOutput => "Job output",
+            Self::LoopVariable => "Loop variable",
+            Self::LoopOutput => "Loop output",
         }
     }
 
-    /// `an output variable definition` or `a job output definition`.
+    /// `an output variable definition`, `a job output definition`, and so on.
     fn definition_phrase(self) -> &'static str {
         match self {
             Self::OutputVariable => "an output variable definition",
             Self::JobOutput => "a job output definition",
+            Self::LoopVariable => "a loop variable definition",
+            Self::LoopOutput => "a loop output definition",
         }
     }
 }

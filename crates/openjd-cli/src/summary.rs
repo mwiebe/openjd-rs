@@ -117,8 +117,7 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     // Task parameter names and types come from the template, so a pending
     // Step, whose parameter space is not materialized, still lists them.
     let task_params: std::collections::HashMap<String, Vec<(String, String)>> = job_template
-        .steps
-        .iter()
+        .top_level_steps()
         .map(|step| {
             let mut v: Vec<(String, String)> = step
                 .parameter_space

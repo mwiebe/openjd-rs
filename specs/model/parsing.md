@@ -106,6 +106,16 @@ Custom deserializers handle:
   format string (`IntRange::List`, `FloatRange::List`, and the CHUNK[INT] chunks counts)
 - **`FlexInt`/`FlexFloat`** — Accepts multiple YAML value representations
 - **`BoolValue`** — Accepts boolean, numeric, and string representations
+- **`StepEntry`** (`CONTROL_FLOW`, RFC 0013) — A `steps` entry with a `loop` key is a
+  `StepLoop`, any other a `StepTemplate`; a loop body entry with a `loop` key fails because
+  loops do not nest (see [template-types.md](template-types.md) § CONTROL_FLOW Loop Types)
+- **`OutputVariableDefinition`, `JobOutputDefinition`, `LoopVariableDefinition`,
+  `LoopOutputVariableDefinition`** (`CONTROL_FLOW`) — Take their own keys out of the
+  mapping and deserialize the rest as a `JobParameterDefinition`
+
+Before deserialization, the decoder records each job and task parameter `type` as written,
+including the task parameters of loop body Steps, for the case-sensitivity check that runs
+once the extensions are known.
 
 ### Pass 4: Extension Resolution
 

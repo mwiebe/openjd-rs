@@ -166,6 +166,11 @@ whose template lists it, `run` acts as a scheduler would, in a small in-memory s
 (`run/simulator.rs`, plan C1). A Job without it has only bound Steps and no job outputs,
 so the simulator only records what ran, and the run's output is unchanged.
 
+Loops (RFC 0013) are not simulated yet: `openjd check` validates a template with a
+loop, and `run` (like `summary`) fails at `create_job` with `create_job does not support
+loops (RFC 0013) yet: steps[<i>] is loop '<name>'.` (see
+[../model/job-creation.md](../model/job-creation.md) § create_job).
+
 **State.** The simulator keeps its own copy of the `job::Job`, a `StepRecord` per Step
 (`SimStepState`: `Pending`, `Bound`, `Skipped`, `Succeeded`, `Failed`, `Blocked`; each
 Task's outputs; why it failed or is blocked), and one `StepInputs` holding the

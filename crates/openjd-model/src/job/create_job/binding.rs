@@ -302,7 +302,10 @@ pub(super) fn bind_step(
     committed_task_count: u64,
 ) -> Result<job::Step, GroupFailure> {
     use MaterializationGroup::*;
-    let st = &cx.jt.steps[step_index];
+    let st = cx
+        .jt
+        .top_level_step(step_index)
+        .ok_or_else(|| GroupFailure::abort(Enablement, no_top_level_step(cx.jt, step_index)))?;
     let groups = StepGroups::of(st);
     let path = step_path(step_index);
     let prior_pending = match prior.map(|s| &s.binding) {
@@ -824,6 +827,20 @@ impl<'a> LetEvaluator<'a> {
     }
 }
 
+/// The caller error for a `step_index` that names no top-level Step of `jt`.
+/// `create_job` rejects a template with loops, so for a template it accepts,
+/// every index into its Job's Steps names one.
+fn no_top_level_step(jt: &JobTemplate, step_index: usize) -> ModelError {
+    ModelError::Compatibility(format!(
+        "entry {step_index} of the template's steps is not a Step{}; pass the template the Job was created from.",
+        if jt.has_loops() {
+            " (the template has loops, which job creation does not support yet)"
+        } else {
+            ""
+        }
+    ))
+}
+
 // ── create_job's inputs ───────────────────────────────────────────
 
 /// The `Steps.*` values that are concrete at job creation for Step
@@ -839,7 +856,10 @@ pub(super) fn creation_inputs(
     // lists only when they read its TaskParam or TaskRawParam: building
     // them walks the producer's whole parameter space, and its Output is
     // never concrete here except as a skipped producer's `null`.
-    let groups = StepGroups::of(&jt.steps[step_index]);
+    let st = jt
+        .top_level_step(step_index)
+        .ok_or_else(|| no_top_level_step(jt, step_index))?;
+    let groups = StepGroups::of(st);
     let read: BTreeSet<String> = groups.producers().into_iter().collect();
     let reads_task_params: BTreeSet<String> = groups
         .all()
@@ -850,14 +870,14 @@ pub(super) fn creation_inputs(
         })
         .collect();
     let mut inputs = StepInputs::new();
-    for dep in jt.steps[step_index].dependencies.iter().flatten() {
+    for dep in st.dependencies.iter().flatten() {
         if !read.contains(&dep.depends_on) {
             continue;
         }
         let Some(producer) = jt
             .steps
             .iter()
-            .position(|s| s.name == dep.depends_on)
+            .position(|s| s.name() == dep.depends_on)
             .and_then(|i| built[i].as_ref())
         else {
             continue;
@@ -945,7 +965,7 @@ pub fn advance_step_binding(
     if !matches!(step.binding, StepBinding::PendingInputs(_)) {
         return Ok(step.clone());
     }
-    if job_template.steps.get(step_index).map(|s| &s.name) != Some(&step.name) {
+    if job_template.top_level_step(step_index).map(|s| &s.name) != Some(&step.name) {
         return Err(misuse(
             &step.name,
             format!(
