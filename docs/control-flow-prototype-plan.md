@@ -5,14 +5,14 @@ Status: plan, not yet implemented. Target branch: `control-flow-prototype`.
 This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its inputs are on branch
 `rfc-control-flow` of openjd-specifications:
 
-* `rfcs/0010-control-flow.md`, the draft RFC (called "the RFC" below; `§` references are to its sections);
+* `rfcs/0011-control-flow.md`, the draft RFC (called "the RFC" below; `§` references are to its sections);
 * `docs/control-flow-investigation/04-design-space.md`, the v1 scope;
 * `docs/control-flow-investigation/03-runtime-semantics.md`, the runtime notes. Its §8 maps emission onto the
   `action_filter.rs` stdout pipeline. An earlier RFC draft replaced that with a session-supplied output file (04 T1),
   and the current draft returns to a stdout directive, `openjd_output_var:`, with an `@<file>` form, `collect` modes,
   and metrics as output variables (04 §8, RFC Design Choices 2–4). This plan follows the current RFC, at
-  openjd-specifications commit `619d910`, which makes step input binding progressive (RFC §Step input binding,
-  Design Choice 15; 04 §10).
+  openjd-specifications commit `d19cd9f`. That commit renumbers the RFC to 0011, and the earlier `619d910` makes step
+  input binding progressive (RFC §Step input binding, Design Choice 15; 04 §10).
 
 The goal is a prototype that runs the six RFC sample templates end to end with `openjd run`. The prototype also
 tests whether the RFC can be implemented as written, and the questions it raises are listed in

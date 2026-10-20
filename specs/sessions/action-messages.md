@@ -50,7 +50,7 @@ in turn (last write wins, as in the Python reference).
 
 An invalid `openjd_output_var` directive sends `InvalidOutputVar` instead, with its own
 message (from the output collector, or for a Forbidden, cut, non-UTF-8, or
-helper-disagreement line from the recognizer in `output_vars.rs`), because RFC 0010
+helper-disagreement line from the recognizer in `output_vars.rs`), because RFC 0011
 requires the failure to name the output, the problem, and the offending text. The session
 applies it as `CancelMarkFailed`, and its message is also final: a later `Fail` (such as an
 `openjd_fail` a cancel handler prints) or `CancelMarkFailed` does not replace it. Only this
@@ -58,7 +58,7 @@ variant is final, so Jobs without `CONTROL_FLOW` keep the last-write-wins behavi
 
 ### Why OutputVar is a message and not an ActionStatus field
 
-RFC 0010 §Committing values lets a runtime forward each value as soon as it is accepted.
+RFC 0011 §Committing values lets a runtime forward each value as soon as it is accepted.
 `OutputVar` carries one accepted value (under `collect: APPEND`, the new element) with the
 Task's `CHUNK[INT]` value in a chunked Step. The Session passes it to
 `SessionConfig::output_callback` and changes no `ActionStatus` field, so the status

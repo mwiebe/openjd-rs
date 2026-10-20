@@ -113,7 +113,7 @@ pub(crate) struct ScriptRunnerBase {
     #[cfg(windows)]
     pub helper: Option<crate::cross_user_helper::CrossUserHelperWin>,
     pub cancel_writer: Option<std::fs::File>,
-    /// How the action treats `openjd_output_var` lines (RFC 0010), with its
+    /// How the action treats `openjd_output_var` lines (RFC 0011), with its
     /// collector. Moved into the action's filter while it runs and back out
     /// afterwards, so the caller can take the collector.
     pub output_vars: crate::output_vars::OutputVars,
@@ -216,7 +216,7 @@ impl ScriptRunnerBase {
         self.output_vars = filter.take_output_vars();
         let mut result = result?;
 
-        // RFC 0010: at a successful exit, check the Tasks' outputs are
+        // RFC 0011: at a successful exit, check the Tasks' outputs are
         // complete. Done here, before the session computes the action's
         // final state, so a missing output fails the action without a
         // Success status first.

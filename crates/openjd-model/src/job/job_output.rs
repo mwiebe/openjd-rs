@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Job outputs (`CONTROL_FLOW`, RFC 0010 §Job outputs): the job-side form of
+//! Job outputs (`CONTROL_FLOW`, RFC 0011 §Job outputs): the job-side form of
 //! a `<JobOutputDefinition>`, with its value once it has been evaluated.
 //!
 //! The functions that evaluate one are
@@ -18,7 +18,7 @@ use serde::{Serialize, Serializer};
 use super::OutputVariable;
 use crate::types::ObjectType;
 
-/// One of the Job's outputs (RFC 0010 `<JobOutputDefinition>`), in the form
+/// One of the Job's outputs (RFC 0011 `<JobOutputDefinition>`), in the form
 /// `create_job` stores in [`Job::outputs`](super::Job::outputs).
 ///
 /// Serialized as one struct with the declaration's fields (`name`, `type`,

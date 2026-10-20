@@ -255,13 +255,13 @@ For an Action that may report output values (`outputFiles` set), a line that sta
 64 KiB can escape to six times that) is sent whole instead of cut: an `outLong` header
 with its byte length and flags, then `data` frames that carry the text. The parent
 processes it as an `out` line, so a valid directive of up to 64 KiB is accepted as on the
-direct path (RFC 0010 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
+direct path (RFC 0011 §Limits item 1). Each flag is serialized only when set, so an ordinary line is
 `{"out": "..."}` as before. The parent rejects an `openjd_output_var` directive on a
 flagged line.
 
 ### Output variable files
 
-RFC 0010 §File values item 3 requires an `@<FilePath>` value to be read with no more
+RFC 0011 §File values item 3 requires an `@<FilePath>` value to be read with no more
 access than the action's user. The parent must not read the file itself, even with an
 ownership or link-count check, so the helper, which runs as the job user, resolves `@`
 directives as it reads the action's output, and the RFC's ordering (the file is read

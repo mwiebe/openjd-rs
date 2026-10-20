@@ -91,7 +91,7 @@ pub struct Job {
     pub parameters: IndexMap<String, JobParameter>,
     pub steps: Vec<Step>,
     pub job_environments: Option<Vec<Environment>>,
-    /// The Job's outputs (`CONTROL_FLOW`, RFC 0010 `jobOutputDefinitions`),
+    /// The Job's outputs (`CONTROL_FLOW`, RFC 0011 `jobOutputDefinitions`),
     /// in template order, or `None` when the template declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outputs: Option<Vec<JobOutput>>,

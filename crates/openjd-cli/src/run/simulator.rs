@@ -7,7 +7,7 @@
 //! runs.
 //!
 //! `create_job` returns each Step bound, skipped, or pending inputs
-//! (RFC 0010 §Step input binding). The simulator keeps its own copy of the
+//! (RFC 0011 §Step input binding). The simulator keeps its own copy of the
 //! Job and, whenever a Step's Tasks become known or it succeeds or is
 //! skipped, advances every pending Step with `advance_step_binding` until
 //! nothing changes, then evaluates every job output whose inputs have become
@@ -705,7 +705,7 @@ impl Simulator {
                     return Some(format!("its dependency '{}' is blocked", dep.depends_on))
                 }
                 // A skipped Step behind a failure never satisfies dependsOn
-                // (RFC 0010 §Conditional execution, Failure is not skipping).
+                // (RFC 0011 §Conditional execution, Failure is not skipping).
                 SimStepState::Skipped if self.records[j].reason.is_some() => {
                     return Some(format!(
                         "its dependency '{}' is skipped but never satisfies dependsOn",
@@ -732,7 +732,7 @@ impl Simulator {
 
     /// At the end of a run that stopped early, mark every Step of the run
     /// that can never run because a dependency failed or is blocked, so its
-    /// state and the job outputs waiting on it say so (RFC 0010 §Job outputs
+    /// state and the job outputs waiting on it say so (RFC 0011 §Job outputs
     /// item 4). A Step the run did not reach for another reason (an
     /// interruption, a failed job output) keeps its state.
     pub(super) fn block_unreachable(&mut self, interrupted: bool) {
@@ -758,7 +758,7 @@ impl Simulator {
     }
 
     /// Record that Step `idx` can never run, for `reason`. A skipped Step
-    /// stays `SKIPPED`, which is terminal (RFC 0010 §Step states), but its
+    /// stays `SKIPPED`, which is terminal (RFC 0011 §Step states), but its
     /// dependents are blocked behind it.
     fn block(&mut self, idx: usize, reason: String) {
         let name = &self.job.steps[idx].name;

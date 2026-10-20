@@ -22,7 +22,7 @@ type Key = (Vec<String>, Option<i64>);
 /// Maps each Task that an Action ran to its index in the Step's per-Task
 /// iteration order (the order of
 /// [`StepParameterSpaceIterator::new_with_chunk_override`] with
-/// `Some(1)`), which is the order of a producer's `Steps.*` lists (RFC 0010
+/// `Some(1)`), which is the order of a producer's `Steps.*` lists (RFC 0011
 /// §Reductions items 1 and 2) and of
 /// [`ProducerState::Succeeded`](crate::job::ProducerState::Succeeded).
 ///

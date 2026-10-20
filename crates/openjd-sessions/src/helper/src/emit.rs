@@ -6,7 +6,7 @@
 //! `Response::Out` line; for an Action that may report output values, a
 //! directive line too long for one response as `Response::OutLong` and `Data`
 //! frames; and an `@` directive as `Response::OutputFile` and `Data` frames
-//! that carry the file the helper read as the job user (RFC 0010 §File values
+//! that carry the file the helper read as the job user (RFC 0011 §File values
 //! item 3).
 //!
 //! Shared by the Unix and Windows runners.
@@ -33,7 +33,7 @@ const DATA_ENVELOPE: usize = r#"{"data":""}"#.len() + 1;
 ///   with its flags, and the parent rejects it.
 /// * any other directive line that does not fit one `Out` response once
 ///   escaped is sent whole, as `OutLong` and `Data` frames, so a valid line of
-///   up to 64 KiB is never cut (RFC 0010 §Limits item 1).
+///   up to 64 KiB is never cut (RFC 0011 §Limits item 1).
 ///
 /// Any other line that does not fit is cut and flagged `truncated`.
 pub fn emit_line(

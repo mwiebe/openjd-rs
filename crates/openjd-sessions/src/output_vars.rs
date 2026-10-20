@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `openjd_output_var` directives (RFC 0010 §Output emission) in an Action's
+//! `openjd_output_var` directives (RFC 0011 §Output emission) in an Action's
 //! output: recognizing a directive line, deciding how the Action treats it,
 //! reading `@` files, and feeding each value to the model's
 //! [`OutputCollector`].
@@ -11,7 +11,7 @@
 //! on the helper path) call into an [`OutputVars`] for every line, before the
 //! [`ActionFilter`](crate::action_filter::ActionFilter) sees it, and process
 //! each line to completion before the next, so an `@` file is read before any
-//! later line is processed (RFC 0010 §File values item 5).
+//! later line is processed (RFC 0011 §File values item 5).
 
 use std::path::PathBuf;
 
@@ -20,7 +20,7 @@ use openjd_model::outputs::{parse_output_directive, OutputCollector, OutputDirec
 
 use crate::output_file::DIRECTIVE_PREFIX;
 
-/// How the running Action treats `openjd_output_var:` lines (RFC 0010 §The
+/// How the running Action treats `openjd_output_var:` lines (RFC 0011 §The
 /// `openjd_output_var` directive, "Which Actions may print it").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputTreatment {
@@ -161,7 +161,7 @@ impl OutputVars {
     /// Start processing `line` (without its line terminator). `truncated`
     /// says the line was cut to the line limit, `lossy` that it was not valid
     /// UTF-8 and was decoded with escapes; a directive on such a line is
-    /// invalid (RFC 0010 §Limits item 1, §Processing a directive item 9).
+    /// invalid (RFC 0011 §Limits item 1, §Processing a directive item 9).
     pub fn begin(&mut self, line: &str, truncated: bool, lossy: bool) -> Begin {
         if self.treatment == OutputTreatment::Ignored || self.invalid {
             return Begin::NotDirective;
@@ -223,7 +223,7 @@ impl OutputVars {
 
     /// Finish an `@` directive with what reading its file gave: the content
     /// (at most `request.max_bytes + 1` bytes), or a phrase that completes
-    /// "the @ file '<path>' ..." (RFC 0010 §Processing a directive step 3).
+    /// "the @ file '<path>' ..." (RFC 0011 §Processing a directive step 3).
     pub fn finish_file(
         &mut self,
         request: &FileRequest,
@@ -381,7 +381,7 @@ fn quote(text: &str) -> String {
 
 /// The collector's message for a directive on `line`, with the line quoted
 /// after it unless the message always quotes the offending text itself (a
-/// grammar, JSON, or path error), because RFC 0010 §Processing a directive
+/// grammar, JSON, or path error), because RFC 0011 §Processing a directive
 /// requires the failure to name it. Other kinds may not: an undeclared name,
 /// a second `ONCE` value, a task selector problem, the size limit, a
 /// constraint such as an `APPEND` list's `maxLength`, or a conversion of a

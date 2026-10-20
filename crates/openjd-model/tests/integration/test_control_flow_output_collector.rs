@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! The `CONTROL_FLOW` output collector (RFC 0010 §Processing a directive,
+//! The `CONTROL_FLOW` output collector (RFC 0011 §Processing a directive,
 //! §Collect modes, §Chunked Steps, §Path values, §Limits):
 //! `outputs::OutputCollector`. See `specs/model/outputs.md`.
 
@@ -489,7 +489,7 @@ fn strings_keep_their_exact_text() {
 
 #[test]
 fn inline_values_have_no_bom_and_nul_is_a_json_error() {
-    // A BOM is allowed only at the start of an @ file (RFC 0010 §File
+    // A BOM is allowed only at the start of an @ file (RFC 0011 §File
     // values item 4), and a NUL is a file-content problem only for files.
     let mut c = collector(&["{name: 'N', type: INT}"]);
     let e = c.accept("N", None, b"\xEF\xBB\xBF1", false).unwrap_err();
@@ -554,7 +554,7 @@ fn non_finite_numbers_are_invalid() {
 
 #[test]
 fn numbers_too_large_for_a_float_do_not_convert() {
-    // Valid JSON (RFC 8259), but RFC 0010 makes it a conversion error.
+    // Valid JSON (RFC 8259), but RFC 0011 makes it a conversion error.
     let mut c = collector(&["{name: X, type: FLOAT}"]);
     assert_eq!(
         err(&mut c, "X=1e400", OutputErrorKind::Conversion),

@@ -824,7 +824,7 @@ async fn test_cross_user_eof_partial_line_preserved() {
 
 // === CONTROL_FLOW: openjd_output_var through the helper ===
 //
-// The helper resolves `@` directives as the job user (RFC 0010 §File values
+// The helper resolves `@` directives as the job user (RFC 0011 §File values
 // item 3) and frames lines with truncation and lossy-decode flags. These run
 // the same directives as the same-user tests in `test_control_flow.rs`.
 
@@ -1023,7 +1023,7 @@ async fn test_cross_user_output_var_form_feed() {
 
 /// A file the job user can't read, hard-linked into the working directory
 /// by another user, fails the Task: the file is read as the job user, never
-/// by the Session's own user (RFC 0010 §File values item 3).
+/// by the Session's own user (RFC 0011 §File values item 3).
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn test_cross_user_output_var_unreadable_hard_link() {
@@ -1118,7 +1118,7 @@ async fn test_cross_user_output_var_environment_actions() {
 }
 
 /// Directive lines of up to 64 KiB are accepted through the helper as on
-/// the direct path (RFC 0010 §Limits item 1): with a CRLF line end at the
+/// the direct path (RFC 0011 §Limits item 1): with a CRLF line end at the
 /// cap, and when JSON escaping makes the line too long for one response.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]

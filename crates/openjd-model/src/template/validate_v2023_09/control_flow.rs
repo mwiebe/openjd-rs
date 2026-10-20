@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0010).
+//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0011).
 //!
 //! Four fields are gated by the `CONTROL_FLOW` extension:
 //! - `jobOutputDefinitions` on the Job Template
@@ -45,14 +45,14 @@ use crate::template::{
 };
 use crate::types::{JobParameterType, ModelExtension, OutputCollectMode, ValidationContext};
 
-/// RFC 0010 `outputVariables` constraint 2: at most 32 elements.
+/// RFC 0011 `outputVariables` constraint 2: at most 32 elements.
 const MAX_OUTPUT_VARIABLES: usize = 32;
-/// RFC 0010 `<OutputVariableDefinition>` item 5: a `unit` of 1 to 32 characters.
+/// RFC 0011 `<OutputVariableDefinition>` item 5: a `unit` of 1 to 32 characters.
 const MAX_UNIT_LEN: usize = 32;
-/// RFC 0010 `jobOutputDefinitions` constraint 2: at most 50 elements.
+/// RFC 0011 `jobOutputDefinitions` constraint 2: at most 50 elements.
 const MAX_JOB_OUTPUTS: usize = 50;
 
-/// Validate RFC 0010 constraints for a job template.
+/// Validate RFC 0011 constraints for a job template.
 ///
 /// Runs whether or not `CONTROL_FLOW` is enabled: without it, it rejects
 /// the fields the extension adds; with it, it enforces the EXPR
@@ -65,7 +65,7 @@ pub fn validate_control_flow_job_template(
 ) {
     let active = ctx.profile.has_extension(ModelExtension::ControlFlow);
     let chunking = ctx.profile.has_extension(ModelExtension::TaskChunking);
-    check_expr_prerequisite(ctx, ModelExtension::ControlFlow, "RFC 0010", errors);
+    check_expr_prerequisite(ctx, ModelExtension::ControlFlow, "RFC 0011", errors);
 
     if let Some(outputs) = &jt.job_output_definitions {
         let path = path_field(&[], "jobOutputDefinitions");
@@ -119,7 +119,7 @@ pub fn validate_control_flow_job_template(
     }
 }
 
-/// Validate RFC 0010 constraints for an environment template: `CONTROL_FLOW`
+/// Validate RFC 0011 constraints for an environment template: `CONTROL_FLOW`
 /// applies to Job Templates only, and `enableIf` is permitted only in a Job
 /// Template, so both are rejected whatever the template's extensions.
 pub fn validate_control_flow_environment_template(
@@ -130,13 +130,13 @@ pub fn validate_control_flow_environment_template(
     if ctx.profile.has_extension(ModelExtension::ControlFlow) {
         errors.add(
             &path_field(&[], "extensions"),
-            "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0010).",
+            "CONTROL_FLOW is not allowed in an Environment Template; it applies to Job Templates only (RFC 0011).",
         );
     }
     if et.environment.enable_if.is_some() {
         errors.add(
             &path_field(&path_field(&[], "environment"), "enableIf"),
-            "enableIf is not allowed in an Environment Template (RFC 0010).",
+            "enableIf is not allowed in an Environment Template (RFC 0011).",
         );
     }
 }
@@ -208,7 +208,7 @@ fn check_output_variables(
     }
 }
 
-/// The structural rules on `jobOutputDefinitions` (RFC 0010 §Validation item
+/// The structural rules on `jobOutputDefinitions` (RFC 0011 §Validation item
 /// 10, except the `value` scope and typing, which pass 8 checks). A job
 /// output may be `LIST[LIST[INT]]`: there is no `parameterSpace` to nest it
 /// in.
@@ -345,7 +345,7 @@ fn check_unit(unit: Option<&str>, path: &[PathElement], errors: &mut ValidationE
     }
 }
 
-/// RFC 0010 §Chunked Steps item 1: in a Step that declares `outputVariables`,
+/// RFC 0011 §Chunked Steps item 1: in a Step that declares `outputVariables`,
 /// the `CHUNK[INT]` parameter's values must be distinct, so that a value
 /// names exactly one Task. A literal-list `range` is checked here; a
 /// computed one when it is materialized. A range string cannot repeat a

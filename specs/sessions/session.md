@@ -721,7 +721,7 @@ keep the log readable.
 
 ## Output variables (`CONTROL_FLOW`)
 
-RFC 0010 lets a Task report output values by printing `openjd_output_var:` directives
+RFC 0011 lets a Task report output values by printing `openjd_output_var:` directives
 (see [action-filter.md](action-filter.md#openjd_output_var) for recognition and logging,
 and `specs/model/outputs.md` for the grammar, conversion, and collect modes). The Session
 decides, per action, how such lines are treated, owns the collector, and returns the
@@ -803,7 +803,7 @@ log; a valid one follows `echo_openjd_directives` and the log level like other o
 ### Size limit
 
 `SessionLimits::max_task_output_bytes` (mirrored from `CallerLimits::max_task_output_bytes`)
-sets the per-Task limit of RFC 0010 §Limits item 2. `None` and any value below
+sets the per-Task limit of RFC 0011 §Limits item 2. `None` and any value below
 `openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT` (1 MiB) give 1 MiB, because a runtime must
 accept at least that much. The 64 KiB line limit (`LOG_LINE_MAX_LENGTH`) is unchanged and
 meets the RFC's line floor.

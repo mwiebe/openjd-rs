@@ -1,7 +1,7 @@
 # Job Outputs (`CONTROL_FLOW`)
 
 A Job's outputs are the typed values it reports back to its submitter and other callers
-(RFC 0010 §Job outputs, Template Schemas §2.17). Each is declared in the Job Template's
+(RFC 0011 §Job outputs, Template Schemas §2.17). Each is declared in the Job Template's
 `jobOutputDefinitions` with a `value` expression over the Job's parameters and its Steps'
 outputs, and is evaluated as soon as every `Steps.*` symbol it reads is concrete. A Task
 never writes a job output. Job outputs are not symbols in any format string of the
@@ -72,7 +72,7 @@ A job output is evaluated in three steps, at Job creation or through
 2. **Convert.** A result whose type is not the declared type is converted with EXPR's
    implicit coercion (§1.2.3), as a Step's output values are
    ([outputs.md](outputs.md)). A string converted to `path` keeps its text as written
-   (RFC 0010 §Job outputs item 6). It is labelled with the POSIX path format whatever the
+   (RFC 0011 §Job outputs item 6). It is labelled with the POSIX path format whatever the
    submission path context, because the model holds `RawParam.*` of a `PATH` parameter
    as a string, so a `PATH` output built from it (`{{RawParam.Out}}`) goes through this
    conversion too: a caller should read the text, not the `path` value's format.
@@ -90,7 +90,7 @@ A failure at any step is a `ModelError::ModelValidation` with one error at
 | A constraint violation | the output variable check's message with `Job output` for `Output variable`, such as `value 4 exceeds maximum 3` |
 
 The conversion and constraint messages have no caret, so they end with a line holding the
-`value` (`\n  {{Param.N}}`), which names the expression as RFC 0010 §Job outputs item 3
+`value` (`\n  {{Param.N}}`), which names the expression as RFC 0011 §Job outputs item 3
 asks.
 
 A message can repeat a value, which may be a job parameter's or one a Task reported:
@@ -104,7 +104,7 @@ a reported value cannot drive the terminal, though an escaped part can be longer
 characters. The expression and caret lines EXPR renders after its message come from the
 template and are kept as written.
 
-The size limit of RFC 0010 §Job outputs item 7 (at least 1 MiB of job output values per
+The size limit of RFC 0011 §Job outputs item 7 (at least 1 MiB of job output values per
 Job) is not enforced by the model: a scheduler applies its own.
 
 ### At Job creation
@@ -169,7 +169,7 @@ An output evaluated at creation can be evaluated again with the same inputs and 
 same value.
 
 An evaluated output stays committed even if a Step it reads later fails, because the
-model does not revisit it. Re-evaluating after a re-run (RFC 0010 §Job outputs item 5)
+model does not revisit it. Re-evaluating after a re-run (RFC 0011 §Job outputs item 5)
 is calling `evaluate_job_output` again with the new inputs; keeping the earlier value
 and marking it stale when that fails is the caller's job.
 

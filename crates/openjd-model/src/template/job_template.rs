@@ -23,7 +23,7 @@ pub struct JobTemplate {
     pub name: FormatString,
     pub description: Option<Description>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
-    /// The Job's outputs (`CONTROL_FLOW`, RFC 0010 `jobOutputDefinitions`).
+    /// The Job's outputs (`CONTROL_FLOW`, RFC 0011 `jobOutputDefinitions`).
     pub job_output_definitions: Option<Vec<JobOutputDefinition>>,
     pub job_environments: Option<Vec<Environment>>,
     pub steps: Vec<StepTemplate>,

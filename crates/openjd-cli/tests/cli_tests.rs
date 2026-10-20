@@ -4027,7 +4027,7 @@ steps:
         );
     }
 
-    /// RFC 0010 §How a Step is bound item 3: C's range fails as soon as P,
+    /// RFC 0011 §How a Step is bound item 3: C's range fails as soon as P,
     /// which it reads, finishes, before Q, which only its script reads, runs.
     #[test]
     fn early_group_failure_stops_the_run() {
@@ -4184,7 +4184,7 @@ steps:
         assert_eq!(result["steps"][0]["state"], "FAILED");
     }
 
-    /// RFC 0010 §Job outputs item 3: a job output that fails fails the run
+    /// RFC 0011 §Job outputs item 3: a job output that fails fails the run
     /// at once, so no further Tasks run.
     #[test]
     fn job_output_error_fails_the_run() {
@@ -6119,7 +6119,7 @@ steps:
 }
 
 // ============================================================
-// CONTROL_FLOW: golden-file tests of the RFC 0010 sample templates
+// CONTROL_FLOW: golden-file tests of the RFC 0011 sample templates
 // ============================================================
 
 #[cfg(target_os = "linux")]

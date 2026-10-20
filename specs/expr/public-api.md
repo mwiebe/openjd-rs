@@ -1376,7 +1376,7 @@ pub fn path_mapping::apply_rules_with_format(
 ) -> String;
 
 /// Map a path reported on the worker back to the submission path context:
-/// the reference inverse of RFC 0010 §Path values. A URI is returned
+/// the reference inverse of RFC 0011 §Path values. A URI is returned
 /// unchanged; a path that is not absolute under `worker_format` is
 /// `Relative`; with no rules an absolute path is returned unchanged;
 /// otherwise the first candidate (by decreasing normalized

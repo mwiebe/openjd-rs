@@ -98,7 +98,7 @@ pub fn concrete_at_creation(job: &openjd_model::job::Job, symbol: &str) -> bool 
         || (matches!(member, "TaskParam" | "TaskRawParam") && step.tasks_known().is_some())
 }
 
-/// What is known of a pending Step, one line per group, as RFC 0010
+/// What is known of a pending Step, one line per group, as RFC 0011
 /// §Implementation strategy asks a tool to report it (plan C2):
 ///
 /// * `Enabled: yes` or `Enabled: determined at run time from <symbols>`;
