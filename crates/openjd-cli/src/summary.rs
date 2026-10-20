@@ -14,7 +14,7 @@ pub struct SummaryArgs {
     /// Path to the job template file
     pub path: PathBuf,
 
-    /// Print information about this Step only
+    /// Print information about this Step or loop only (not a loop's body Step)
     #[arg(long)]
     pub step: Option<String>,
 
@@ -1249,10 +1249,9 @@ impl EnvInfo {
     }
 
     fn to_json(&self) -> serde_json::Value {
+        // Only root Environments are listed in JSON, so `parent_loop` is
+        // never set here.
         let mut value = serde_json::json!({"name": self.name, "parent": self.parent});
-        if let Some(l) = &self.parent_loop {
-            value["loop"] = l.clone().into();
-        }
         if !self.enabled {
             value["enabled"] = false.into();
         }

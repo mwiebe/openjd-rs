@@ -1,0 +1,17 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: body Step P has 0 Tasks in iteration 0 and 1 in iteration 1.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: ZeroTasks
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 1}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: I, type: INT, range: "{{[7][:Loop.Iteration]}}"}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P ran {{Task.Param.I}}')"]}

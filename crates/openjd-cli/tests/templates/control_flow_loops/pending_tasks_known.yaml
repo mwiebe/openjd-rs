@@ -1,0 +1,39 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: body Step P's Tasks are known as the iteration starts, but it is pending on its Step Environment's enableIf; Q, pending on its own enableIf, reads P's TaskParam.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: PendingTasksKnown
+steps:
+- name: L
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 1
+    steps:
+    - name: O
+      outputVariables:
+      - {name: N, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: N=2')"]}
+    - name: P
+      dependencies: [{dependsOn: O}]
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: I, type: INT, range: [1, 2]}
+      stepEnvironments:
+      - name: PEnv
+        enableIf: "{{Steps.O.Output.N > 0}}"
+        script:
+          actions:
+            onEnter: {command: python, args: ['-c', "print('PEnv')"]}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P ran {{Task.Param.I}}')"]}
+    - name: Q
+      dependencies: [{dependsOn: O}, {dependsOn: P}]
+      enableIf: "{{Steps.O.Output.N > 0}}"
+      parameterSpace:
+        taskParameterDefinitions:
+        - {name: J, type: INT, range: "{{Steps.P.TaskParam.I}}"}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('Q ran {{Task.Param.J}}')"]}
