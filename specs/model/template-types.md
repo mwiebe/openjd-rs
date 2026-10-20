@@ -511,7 +511,7 @@ One entry of `steps` (RFC 0013 §Job Template). Its `Deserialize` reads the entr
 mapping and chooses `Loop` when it has a `loop` key and `Step` otherwise, then
 deserializes that shape, so a malformed entry gets the errors of the shape it chose,
 rather than an untagged-enum error that names neither shape. A loop's error is prefixed
-`loop '<name>': `, except an unknown field of the `<StepLoop>` itself, which names the
+`loop '<name>': ` (`loop: ` when the entry has no string `name`), except an unknown field of the `<StepLoop>` itself, which names the
 field that decided the shape: `steps entry 'L' has a 'loop' field, so it is a loop
 (CONTROL_FLOW, RFC 0013), which has no such field: unknown field `script`, expected one
 of ...`. That holds with or without `CONTROL_FLOW`. Without the extension a well-formed
@@ -547,7 +547,8 @@ a missing `maxIterations` as `loop 'L': missing field `maxIterations``. `while` 
 `steps[i] -> loop`. The body is deserialized element by element: an element with a
 `loop` key fails with `loop body entry <j> '<name>' has a 'loop' field, but loops do not
 nest: a loop's body may contain only Steps (RFC 0013).`, and every other element is a
-`StepTemplate`, whose errors are prefixed `loop body entry <j> '<name>': `.
+`StepTemplate`, whose errors are prefixed `loop body entry <j> '<name>': ` (`loop body
+entry <j>: ` without a string `name`).
 `StepLoop::variables()`, `output_variables_list()`, and `body()` return slices, empty
 when a list is absent.
 

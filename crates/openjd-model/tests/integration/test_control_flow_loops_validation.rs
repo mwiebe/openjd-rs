@@ -617,8 +617,69 @@ fn assert_errs_and_root(template: &str, errors: &[(&str, &str)], root: Option<&s
     assert_eq!(err.to_string(), want, "\n{template}");
 }
 
+/// With a name repeated between a top-level Step and a body Step (already
+/// an error), a dependency on it resolves to the Step its reader may
+/// depend on, so only the duplicate name is reported.
 #[test]
-fn a_loop_dependency_is_checked_as_a_steps() {
+fn a_repeated_name_resolves_a_dependency_to_the_readers_scope() {
+    // A top-level Step depends on the top-level `A`.
+    assert_errs(
+        &template(&format!(
+            "- name: A
+  {SCRIPT}
+- name: L
+  loop:
+    until: true
+    maxIterations: 2
+    steps:
+      - name: A
+        {SCRIPT}
+- name: C
+  dependencies: [{{dependsOn: A}}, {{dependsOn: L}}]
+  {SCRIPT}
+"
+        )),
+        &[(
+            "steps[1] -> loop -> steps[0] -> name",
+            "duplicate step name: 'A'",
+        )],
+    );
+    // A body Step of `L` names `X`, both a top-level Step and a body Step
+    // of loop `M`: the other loop's body Step is reported.
+    assert_errs(
+        &template(&format!(
+            "- name: X
+  {SCRIPT}
+- name: M
+  loop:
+    until: true
+    maxIterations: 2
+    steps:
+      - name: X
+        {SCRIPT}
+- name: L
+  dependencies: [{{dependsOn: M}}]
+  loop:
+    until: true
+    maxIterations: 2
+    steps:
+      - name: B
+        dependencies: [{{dependsOn: X}}]
+        {SCRIPT}
+"
+        )),
+        &[
+            ("steps[1] -> loop -> steps[0] -> name", "duplicate step name: 'X'"),
+            (
+                "steps[2] -> loop -> steps[0] -> dependencies[0]",
+                "dependency 'X' is a body Step of loop 'M'; a body Step may depend only on Steps of the same body.",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_loops_dependencies_get_the_step_checks() {
     assert_errs_and_root(
         &single_loop(
             UNTIL,
@@ -1470,6 +1531,18 @@ fn a_body_step_error_names_its_loop_and_entry() {
             "        bogus: 1\n",
         ),
         "loop 'L': loop body entry 0 'W': unknown field `bogus`, expected one of `name`, `description`, `enableIf`, `let`, `dependencies`, `stepEnvironments`, `hostRequirements`, `parameterSpace`, `outputVariables`, `script`, `bash`, `python`, `cmd`, `powershell`, `node`",
+    );
+}
+
+#[test]
+fn a_nameless_loop_or_body_entry_is_reported_without_a_name() {
+    assert_decode_err(
+        &single_loop(UNTIL, "").replace("- name: L\n", "- description: d\n"),
+        "loop: missing field `name`",
+    );
+    assert_decode_err(
+        &single_loop(UNTIL, "").replace("      - name: W\n", "      - description: d\n"),
+        "loop 'L': loop body entry 0: missing field `name`",
     );
 }
 
