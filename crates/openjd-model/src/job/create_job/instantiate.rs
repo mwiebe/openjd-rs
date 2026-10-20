@@ -12,7 +12,9 @@ use crate::error::{path_field, path_index, ModelError, PathElement, ValidationEr
 use crate::job;
 use crate::template;
 use crate::template::validate_v2023_09::helpers::{check_capability_name, CapabilityKind};
-use crate::template::validate_v2023_09::steps_scope::{add_steps_scope, StepsFieldScope};
+use crate::template::validate_v2023_09::steps_scope::{
+    add_control_flow_scope, StepLocation, StepsFieldScope, StepsReader,
+};
 use crate::template::validate_v2023_09::EffectiveLimits;
 use openjd_expr::ExpressionError;
 
@@ -109,7 +111,7 @@ pub(super) fn instantiate_step(
     let host_requirements = st
         .host_requirements
         .as_ref()
-        .map(|hr| resolve_host_requirements(hr, &step_symtab, ctx, step_index, budgets))
+        .map(|hr| resolve_host_requirements(hr, &step_symtab, ctx, &step_path, budgets))
         .transpose()?;
 
     let parameter_space = st
@@ -242,7 +244,7 @@ pub(super) fn check_step_script(
     step_path: &[PathElement],
     step_symtab: &SymbolTable,
     template_check_symtab: &SymbolTable,
-    steps_scope: Option<(&template::JobTemplate, usize)>,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     check_errors: &mut ValidationErrors,
@@ -308,7 +310,7 @@ pub(super) fn check_step_environment(
     j: usize,
     step_symtab: &SymbolTable,
     template_check_symtab: &SymbolTable,
-    steps_scope: Option<(&template::JobTemplate, usize)>,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     limits: &EffectiveLimits,
     ctx: &crate::types::ValidationContext,
@@ -391,7 +393,8 @@ fn add_unresolved_session_symbols(symtab: &mut SymbolTable) -> Result<(), ModelE
 /// the same scope the session runtime binds when it resolves these
 /// format strings at run time. With `steps_scope` set (`CONTROL_FLOW`),
 /// also `Unresolved` placeholders for the `Steps.*` symbols of that Step's
-/// direct dependencies, in host scope (see `add_steps_scope`).
+/// direct dependencies, and for a body Step its loop's dependencies and
+/// `Loop.*`, in host scope (see `add_control_flow_scope`).
 ///
 /// Script-level `let` bindings are evaluated into the table with
 /// unresolved host context through pass 8's own evaluation helper
@@ -407,7 +410,7 @@ pub(super) fn build_task_check_symtab(
     st: &template::StepTemplate,
     script: &template::StepScript,
     step_symtab: &SymbolTable,
-    steps_scope: Option<(&template::JobTemplate, usize)>,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     script_path: &[PathElement],
@@ -415,8 +418,13 @@ pub(super) fn build_task_check_symtab(
 ) -> Result<SymbolTable, ModelError> {
     let mut check_symtab = step_symtab.clone();
     add_unresolved_session_symbols(&mut check_symtab)?;
-    if let Some((jt, step_index)) = steps_scope {
-        add_steps_scope(&mut check_symtab, jt, step_index, StepsFieldScope::Host)?;
+    if let Some((jt, loc)) = steps_scope {
+        add_control_flow_scope(
+            &mut check_symtab,
+            jt,
+            StepsReader::Step(loc),
+            StepsFieldScope::Host,
+        )?;
     }
 
     if let Some(ps) = &st.parameter_space {
@@ -495,7 +503,7 @@ pub(super) fn build_task_check_symtab(
 pub(super) fn build_env_check_symtab(
     env: &template::Environment,
     base: &SymbolTable,
-    steps_scope: Option<(&template::JobTemplate, usize)>,
+    steps_scope: Option<(&template::JobTemplate, StepLocation)>,
     has_expr: bool,
     ctx: &crate::types::ValidationContext,
     env_path: &[PathElement],
@@ -503,8 +511,13 @@ pub(super) fn build_env_check_symtab(
 ) -> Result<SymbolTable, ModelError> {
     let mut symtab = base.clone();
     add_unresolved_session_symbols(&mut symtab)?;
-    if let Some((jt, step_index)) = steps_scope {
-        add_steps_scope(&mut symtab, jt, step_index, StepsFieldScope::Host)?;
+    if let Some((jt, loc)) = steps_scope {
+        add_control_flow_scope(
+            &mut symtab,
+            jt,
+            StepsReader::Step(loc),
+            StepsFieldScope::Host,
+        )?;
     }
     if let Some(script) = &env.script {
         if let Some(files) = &script.embedded_files {
@@ -677,9 +690,10 @@ pub(super) fn resolve_host_requirements(
     hr: &template::HostRequirements,
     symtab: &SymbolTable,
     ctx: &crate::types::ValidationContext,
-    step_index: usize,
+    step_path: &[PathElement],
     budgets: super::EvalBudgets,
 ) -> Result<job::HostRequirements, ModelError> {
+    let at = crate::error::path_to_string(step_path);
     let amounts = hr
         .amounts
         .as_ref()
@@ -698,12 +712,12 @@ pub(super) fn resolve_host_requirements(
                         standard,
                         symtab,
                         budgets,
-                        step_index,
+                        step_path,
                         amount_index,
                     )
                 })
                 .collect::<Result<Vec<_>, ModelError>>()?;
-            check_resolved_names_unique(&names, CapabilityKind::Amount, step_index)?;
+            check_resolved_names_unique(&names, CapabilityKind::Amount, step_path)?;
             amts.iter()
                 .zip(names)
                 .enumerate()
@@ -734,7 +748,7 @@ pub(super) fn resolve_host_requirements(
                         })
                         .transpose()?
                         .flatten();
-                    check_resolved_amount_bounds(min, max, step_index, amount_index)?;
+                    check_resolved_amount_bounds(min, max, step_path, amount_index)?;
                     Ok(job::AmountRequirement { name, min, max })
                 })
                 .collect::<Result<Vec<_>, ModelError>>()
@@ -760,12 +774,12 @@ pub(super) fn resolve_host_requirements(
                         &standard_names,
                         symtab,
                         budgets,
-                        step_index,
+                        step_path,
                         attr_index,
                     )
                 })
                 .collect::<Result<Vec<_>, ModelError>>()?;
-            check_resolved_names_unique(&names, CapabilityKind::Attribute, step_index)?;
+            check_resolved_names_unique(&names, CapabilityKind::Attribute, step_path)?;
             attrs
                 .iter()
                 .zip(names)
@@ -796,21 +810,21 @@ pub(super) fn resolve_host_requirements(
                             // resolve_string_range.
                             if values.is_empty() {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: has no elements after resolution"
+                                    "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: has no elements after resolution"
                                 )));
                             }
                             if values.len() > 50 {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: exceeds 50 elements after resolution"
+                                    "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: exceeds 50 elements after resolution"
                                 )));
                             }
                             if is_single_valued && field == "allOf" && values.len() > 1 {
                                 return Err(ModelError::DecodeValidation(format!(
-                                    "steps[{step_index}] -> hostRequirements -> attributes[{attr_index}] -> {field}: single-valued attribute cannot have more than 1 element after resolution"
+                                    "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: single-valued attribute cannot have more than 1 element after resolution"
                                 )));
                             }
                             check_resolved_attribute_values(
-                                &name, field, values, standard, step_index, attr_index,
+                                &name, field, values, standard, step_path, attr_index,
                             )?;
                         }
                     }
@@ -844,7 +858,7 @@ fn resolve_capability_name(
     standard: &[&str],
     symtab: &SymbolTable,
     budgets: super::EvalBudgets,
-    step_index: usize,
+    step_path: &[PathElement],
     index: usize,
 ) -> Result<String, ModelError> {
     // Required string field: a single whole-field expression resolves with
@@ -866,13 +880,12 @@ fn resolve_capability_name(
             start: None,
             end: None,
         })?;
-    let path = vec![
-        PathElement::Field("steps".to_string()),
-        PathElement::Index(step_index),
+    let mut path = step_path.to_vec();
+    path.extend([
         PathElement::Field("hostRequirements".to_string()),
         PathElement::Field(kind.field().to_string()),
         PathElement::Index(index),
-    ];
+    ]);
     let mut errors = ValidationErrors::default();
     check_capability_name(&resolved, kind, standard, &path, &mut errors);
     errors.into_result("JobTemplate")?;
@@ -889,20 +902,17 @@ fn resolve_capability_name(
 fn check_resolved_names_unique(
     names: &[String],
     kind: CapabilityKind,
-    step_index: usize,
+    step_path: &[PathElement],
 ) -> Result<(), ModelError> {
     let mut seen = std::collections::HashSet::new();
     let mut errors = ValidationErrors::default();
     for (index, name) in names.iter().enumerate() {
         if !seen.insert(name.to_lowercase()) {
             errors.add(
-                &[
-                    PathElement::Field("steps".to_string()),
-                    PathElement::Index(step_index),
-                    PathElement::Field("hostRequirements".to_string()),
-                    PathElement::Field(kind.field().to_string()),
-                    PathElement::Index(index),
-                ],
+                &path_index(
+                    &path_field(&path_field(step_path, "hostRequirements"), kind.field()),
+                    index,
+                ),
                 format!("duplicate {} name '{name}'.", kind.noun()),
             );
         }
@@ -925,16 +935,13 @@ fn check_resolved_names_unique(
 fn check_resolved_amount_bounds(
     min: Option<f64>,
     max: Option<f64>,
-    step_index: usize,
+    step_path: &[PathElement],
     amount_index: usize,
 ) -> Result<(), ModelError> {
-    let amount_path = vec![
-        PathElement::Field("steps".to_string()),
-        PathElement::Index(step_index),
-        PathElement::Field("hostRequirements".to_string()),
-        PathElement::Field("amounts".to_string()),
-        PathElement::Index(amount_index),
-    ];
+    let amount_path = path_index(
+        &path_field(&path_field(step_path, "hostRequirements"), "amounts"),
+        amount_index,
+    );
     let mut errors = ValidationErrors::default();
     // Decode enforces "at least one of min or max" on field *presence*,
     // but a whole-field expression resolving to null under the `float?`
@@ -991,7 +998,7 @@ fn check_resolved_attribute_values(
     field: &str,
     values: &[String],
     standard: &[(&str, &[&str])],
-    step_index: usize,
+    step_path: &[PathElement],
     attr_index: usize,
 ) -> Result<(), ModelError> {
     let mut errors = ValidationErrors::default();
@@ -1002,15 +1009,16 @@ fn check_resolved_attribute_values(
             standard,
         ) {
             errors.add(
-                &[
-                    PathElement::Field("steps".to_string()),
-                    PathElement::Index(step_index),
-                    PathElement::Field("hostRequirements".to_string()),
-                    PathElement::Field("attributes".to_string()),
-                    PathElement::Index(attr_index),
-                    PathElement::Field(field.to_string()),
-                    PathElement::Index(value_index),
-                ],
+                &path_index(
+                    &path_field(
+                        &path_index(
+                            &path_field(&path_field(step_path, "hostRequirements"), "attributes"),
+                            attr_index,
+                        ),
+                        field,
+                    ),
+                    value_index,
+                ),
                 message,
             );
         }
@@ -1087,7 +1095,7 @@ pub fn evaluate_let_bindings(
 // Step and Environment have different sets of these format strings:
 //   Step  — step-level let bindings, script (actions, embedded files,
 //           script-level let bindings), and step-scoped environments
-//           (variables, actions, embedded files).
+//           (variables, actions, embedded files, script-level let bindings).
 //   Env   — variables, script (actions, embedded files, script-level
 //           let bindings).
 //
@@ -1164,6 +1172,12 @@ fn filter_symtab_for_step(
                         }
                     }
                 }
+                // The Session evaluates a Step Environment's script `let`
+                // bindings with the Step's table, so the symbols they read
+                // must be in it, as for a Job Environment.
+                if let Some(bindings) = &es.let_bindings {
+                    collect_let_binding_refs(bindings, full, &mut filtered);
+                }
             }
         }
     }
@@ -1200,7 +1214,8 @@ fn include_raw_param_fallbacks(
 }
 
 /// Collect all symbol names accessed by format strings in a step's script,
-/// step environments, and let bindings.
+/// step environments (including their script `let` bindings), and let
+/// bindings.
 pub(crate) fn collect_all_accessed_symbols(
     script: Option<&job::StepScript>,
     step_environments: &Option<Vec<job::Environment>>,
@@ -1242,15 +1257,19 @@ pub(crate) fn collect_all_accessed_symbols(
         }
     }
 
-    if let Some(bindings) = step_let_bindings {
+    fn collect_from_lets(bindings: &[String], out: &mut std::collections::HashSet<String>) {
         for binding in bindings {
             if let Some(eq_pos) = binding.find('=') {
                 let expr = binding[eq_pos + 1..].trim();
                 if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                    symbols.extend(parsed.accessed_symbols().iter().cloned());
+                    out.extend(parsed.accessed_symbols().iter().cloned());
                 }
             }
         }
+    }
+
+    if let Some(bindings) = step_let_bindings {
+        collect_from_lets(bindings, &mut symbols);
     }
 
     if let Some(s) = script {
@@ -1263,14 +1282,7 @@ pub(crate) fn collect_all_accessed_symbols(
             }
         }
         if let Some(bindings) = &s.let_bindings {
-            for binding in bindings {
-                if let Some(eq_pos) = binding.find('=') {
-                    let expr = binding[eq_pos + 1..].trim();
-                    if let Ok(parsed) = openjd_expr::eval::ParsedExpression::new(expr) {
-                        symbols.extend(parsed.accessed_symbols().iter().cloned());
-                    }
-                }
-            }
+            collect_from_lets(bindings, &mut symbols);
         }
     }
 
@@ -1291,6 +1303,9 @@ pub(crate) fn collect_all_accessed_symbols(
                             collect_from_fs(d, &mut symbols);
                         }
                     }
+                }
+                if let Some(bindings) = &es.let_bindings {
+                    collect_from_lets(bindings, &mut symbols);
                 }
             }
         }

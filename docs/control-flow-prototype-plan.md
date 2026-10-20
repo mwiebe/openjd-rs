@@ -987,14 +987,16 @@ A `job::Job` represents a loop as its own entry, beside its Steps:
   `PendingLoopBinding` has a `GroupState` (M4) for each of the loop's groups: enablement, bound, and start.
   `BoundLoop` holds `max_iterations: u32`, each variable's `initial` value, and, for a `while` loop, whether the
   first `while` is `true`. A bound loop whose first `while` is `false` has zero iterations.
-* `StepDependencyGraph` (`job/step_dependency_graph.rs`) includes loops as nodes. `step_dependency_order` (M4.1)
+* `StepDependencyGraph` (`job/step_dependency_graph.rs`) includes loops as nodes, in template order, each node
+  with a `StepNodeKind` and its index into `job.steps` or `job.loops`. `step_dependency_order` (M4.1)
   orders the top-level entries, so `create_job` instantiates Steps and loops in dependency order.
 * `create_job` binds a loop through the same core as a Step, with RFC 0013 §Loop binding's groups in order:
   enablement (`enableIf`), bound (`maxIterations`, which must be 1 to 1,000), and start (each `initial` in
   declaration order, then the first `while` with `Loop.Iteration` 0 and the initial values). `MaterializationGroup`
   (`job/binding.rs:32`) gains `LoopBound` and `LoopStart` so that a `BindingError` names the group. Each `initial`
-  value is converted and checked as a job output's value is (RFC 0013 §`<LoopVariableDefinition>`), through the
-  conversion `evaluate_job_output` uses (`job/create_job/job_outputs.rs:145`, made shared). The 1 MiB total of RFC
+  value is converted and checked as a job output's value is (RFC 0013 §`<LoopVariableDefinition>`), with the
+  conversion rules and message forms `evaluate_job_output` uses (`job/create_job/job_outputs.rs:145`), except that
+  the target type is not optional, so `null` is an error; the loop code shares its message helper. The 1 MiB total of RFC
   0013 §Limits item 4 is checked after the `initial` values (L5).
 * Group inputs come from symbol collection, as in M4.1: the enablement group reads `enableIf`, the bound group reads
   no `Steps.*` (validation guarantees it), and the start group reads the `initial` expressions and `while`. A group
@@ -1032,8 +1034,8 @@ simulator keeps a `StepRecord`:
 /// A running loop's state between iterations, kept by the caller.
 pub struct LoopProgress {
     pub iteration: u32,                                  // the iteration about to start or in progress
-    pub values: IndexMap<String, ExprValue>,             // Loop.<V> for `iteration`, in the stored form
-    pub outputs: IndexMap<String, LoopOutputSoFar>,      // per loop output: the LAST value or the APPEND list
+    pub values: IndexMap<String, ExprValue>,             // Loop.<V> for `iteration`, converted to each type
+    pub outputs: IndexMap<String, ExprValue>,            // per loop output: the LAST value (null) or the APPEND list
 }
 impl LoopProgress { pub fn new(job_loop: &job::Loop) -> Option<Self>; }   // None unless the loop is Bound
 
@@ -1090,7 +1092,7 @@ pub enum BoundaryOutcome {
     Continue(LoopProgress),        // iteration + 1, its variable values, the outputs so far
     Succeeded(LoopResult),
 }
-pub struct LoopResult { pub iterations: u32, pub outputs: IndexMap<String, ExprValue> }
+pub struct LoopResult { pub iterations: u32, pub ended_by: LoopEnd, pub outputs: IndexMap<String, ExprValue> }
 
 /// For a bound loop whose first `while` is false, once its dependencies are satisfied.
 pub fn end_without_iterations(job: &job::Job, loop_index: usize) -> Result<LoopResult, LoopError>;
@@ -1105,7 +1107,8 @@ The caller calls `evaluate_iteration_boundary` when every instance of the iterat
 2. `until`, if present. If it is `true`, the loop ends: check each `APPEND` output's `minLength` and return
    `Succeeded` with `N + 1` iterations. No `next` is evaluated.
 3. Every variable's `next`, each reading iteration `N`'s values, never another variable's new value. Each result is
-   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values (A21).
+   converted and checked against its variable's constraints. Then the 1 MiB check, on the new values and the loop
+   outputs so far (A21).
 4. `while`, if present, with the new values and `Loop.Iteration` `N + 1`. If it is `false`, the loop ends as in
    step 2.
 5. The bound: if `N + 1` equals `maxIterations`, the loop fails with a message that names `maxIterations` and its
@@ -1114,7 +1117,9 @@ The caller calls `evaluate_iteration_boundary` when every instance of the iterat
 The first error stops the evaluation and fails the loop, with a message that names the field, the expression, the
 iteration, and the problem. That covers a `fail(...)` call, a `null` result, a value that doesn't convert, and a
 violated constraint. `LoopError` carries the loop's name, the iteration, the field (`value` of an output, `until`,
-`next` of a variable, `while`, `maxIterations`, or `minLength` of an output), and the `ModelError`s.
+`next` of a variable, `while`, `maxIterations`, `minLength` of an output, the size limit (`ValueSize`), or, for a
+caller error, `Inputs`), and the `ModelError`s. The iteration appears in `LoopError`'s message, not in the
+`ModelError`, whose path names the field.
 
 `end_without_iterations` checks each `APPEND` output's `minLength` against `[]`, and gives `null` for each `LAST`
 output and `[]` for each `APPEND` output (RFC 0013 §Loop outputs). This check is not a materialization group and is
@@ -1148,7 +1153,8 @@ A re-run of a body Task that has already succeeded leaves its instance `SUCCEEDE
 state, variables, or outputs (RFC 0013 §Retries and re-runs, RFC 0012 §Retries and re-runs). The model keeps no
 Task state, so this needs nothing from it (M5). For consumption, RFC 0013 §Retries and re-runs counts the loop's
 `while`, `until`, `next`, `initial`, and loop output `value`s as consumers of every `Steps.*` output they reference,
-once evaluated. `job::Loop::expression_inputs(job_template, field)` returns the `Steps.*` symbols that one of those
+once evaluated. `job::Loop::expression_inputs(job_template, &LoopExpression) -> Result<Vec<String>, ModelError>`
+returns the `Steps.*` symbols that one of those
 fields references, found by symbol collection, so that a scheduler that allows re-runs can mark them consumed when
 it evaluates the field. The CLI doesn't call it.
 
@@ -1252,7 +1258,7 @@ Each PR is one `implement-change` loop on a topic branch from `control-flow-prot
 | 7 | `test(cli): golden tests for the RFC sample templates` | 6 | the sample tests below |
 | 7a | `docs: re-cite CONTROL_FLOW references to RFCs 0011, 0012, and 0013` | 7 | every RFC citation in code, doc comments, messages, help text, `specs/`, golden templates, and `DEVELOPMENT.md`, re-cited with the [citation map](#citation-map-from-the-single-rfc); any non-loop behavior change from the split-era spec edits (M5); the non-loop conformance slice |
 | 8 | `feat(model): loop schema and template validation` | 7a | L1, L2: `StepEntry`, `StepLoop`, `LoopDefinition`, `LoopVariableDefinition`, `LoopOutputVariableDefinition`, the `JobTemplate` helpers, every template-validation rule of RFC 0013 §Validation, and job outputs that read loop outputs. No `job::` instantiation beyond what the types need. The loop `job_templates` conformance tests |
-| 9 | `feat(model): loop instantiation, iterations, and the iteration boundary` | 8 | L3–L6 and the L7 sessions change: `job::Loop`, `LoopBinding`, loop binding in `create_job` and `advance_loop_binding`, `LoopProgress`, `start_iteration`, `advance_body_step_binding`, `evaluate_iteration_boundary`, `end_without_iterations`, `LoopError`, `add_loop_producer`, `expression_inputs`, `max_loop_value_bytes`, and `forward_twin` for `RawLoop.<V>` |
+| 9 | `feat(model): loop instantiation, iterations, and the iteration boundary` | 8 | L3–L6 and the L7 sessions change: `job::Loop`, `LoopBinding`, loop binding in `create_job` and `advance_loop_binding`, `LoopProgress`, `start_iteration`, `advance_body_step_binding`, `evaluate_iteration_boundary`, `end_without_iterations`, `LoopError`, `add_loop_producer`, `expression_inputs`, `max_loop_value_bytes`, and `forward_twin` for `RawLoop.<V>`. Also fixes a pre-existing gap: a Step Environment's script `let` bindings are now among the symbols a Step's `resolved_symtab` carries, so one that reads `Param.*`, `Steps.*`, or `Loop.*` works on the worker |
 | 10 | `feat(cli): run loops in the openjd run simulator` | 9 | L8: iterations, `<Loop>[<N>].<Step>` naming, the flag rules, `--step-inputs` for loops, `--output json\|yaml`, `openjd summary`; the whole conformance set |
 | 11 | `test(cli): golden tests for the RFC 0013 examples` | 10 | the loop golden tests below, a check that each RFC 0011 and RFC 0012 golden template still matches its RFC text, and the final conformance run |
 
@@ -1419,10 +1425,11 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
   L2 asserting path and message, including each `Loop.*` and `Steps.*` message; the seeded types of a loop's
   symbols for `until`, `while`, and `enableIf` loops, checked as `ExprType`; a template without loops whose errors
   and serialized `job::Job` are unchanged; and the step-count limit counting body Steps (A18).
-* Loop binding and iterations (`tests/integration/test_control_flow_loops.rs`), one test per case:
+* Loop binding and iterations (`tests/integration/test_control_flow_loops_running.rs`), one test per case:
   * `create_job`: a loop bound at creation; one pending on a dependency's output; a static skip that evaluates
     nothing else; `maxIterations` from a parameter, and 0 and 1,001 from a parameter failing `create_job`; an
-    `initial` constraint violation and a first `while` that is `null`, each failing `create_job`; a body Step whose
+    `initial` that is `null` or doesn't convert, a first `while` that fails, and an `enableIf` that fails, each failing
+    `create_job`, and an `initial` constraint violation failing `advance_loop_binding`; a body Step whose
     script would fail its carried-forward check, which `create_job` doesn't report (L3).
   * `start_iteration`: `Loop.*` concrete in every instance; an instance's range from a loop variable evaluated at
     iteration start; a group error failing the iteration; an instance pending on a body dependency and then bound by
@@ -1572,7 +1579,9 @@ through, so the numbering stays stable.
   ... at any moment" and checks the total after boundary step 3 (`next`). It doesn't say whether the values of
   iteration `N`, which `next` replaces, still count then. (`Loop.Iteration` is not a declared loop variable, so it
   doesn't count.) Prototype: after step 3 the total is the new variable values plus every loop output value so far
-  (the current `LAST` value and every `APPEND` element), each measured as the JSON serialization of its stored form.
+  (the current `LAST` value and every `APPEND` element), each measured as the JSON serialization of its stored form;
+  an `APPEND` output counts the sum of its elements, not its brackets and commas, and a `LAST` output with no value
+  yet counts nothing.
 
 ## Citation map from the single RFC
 

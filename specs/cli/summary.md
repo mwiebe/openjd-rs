@@ -10,9 +10,9 @@ object) to produce accurate task counts that reflect parameter space expansion.
 For a `CONTROL_FLOW` Job, `create_job` may leave a Step skipped or pending inputs, and
 `summary` reports what it knows of each (plan C2, RFC 0011 §Implementation strategy), as
 described in [CONTROL_FLOW](#control_flow) below. A job output that fails at creation
-fails `create_job`, so `summary` reports that error. So does a template with a loop (RFC
-0013), which `create_job` does not instantiate yet (see
-[../model/job-creation.md](../model/job-creation.md) § create_job).
+fails `create_job`, so `summary` reports that error. A Job with a loop (RFC 0013) is
+refused after `create_job` with `openjd summary does not support loops (CONTROL_FLOW, RFC
+0013) yet: the Job has loop '<name>'.`, until the summary can show loops.
 
 ## Interface
 

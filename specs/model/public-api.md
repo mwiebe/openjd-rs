@@ -252,6 +252,73 @@ pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
 ) -> job::Environment;
+
+/// CONTROL_FLOW (RFC 0013): advance pending loop `loop_index` of `job` (its
+/// enablement, bound, and start groups) with its dependencies in `inputs`.
+/// A caller error is a BindingError holding a ModelError::Compatibility.
+pub fn advance_loop_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    inputs: &job::StepInputs,
+) -> Result<job::Loop, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): create iteration `progress.iteration`'s body
+/// Step instances of bound loop `loop_index`, each bound as far as the
+/// values concrete then allow. `inputs` holds the loop's dependencies. An
+/// error fails the loop finally; its BindingError::step is
+/// `<Loop>[<N>].<Step>`.
+pub fn start_iteration(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::LoopIteration, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): advance_step_binding for pending body Step
+/// instance `body_index` of `iteration`. `inputs` holds the loop's
+/// dependencies and the iteration's instances the instance reads.
+pub fn advance_body_step_binding(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    iteration: &job::LoopIteration,
+    body_index: usize,
+    inputs: &job::StepInputs,
+    committed_task_count: u64,
+) -> Result<job::Step, job::BindingError>;
+
+/// CONTROL_FLOW (RFC 0013): evaluate the boundary of iteration
+/// `progress.iteration` (loop outputs, until, next, while, the bound, in
+/// that order). `inputs` holds the loop's dependencies and every instance
+/// of the iteration. A LoopError fails the loop finally, unless it is a
+/// caller error (LoopError::is_caller_error).
+pub fn evaluate_iteration_boundary(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+    job: &job::Job,
+    loop_index: usize,
+    progress: &job::LoopProgress,
+    inputs: &job::StepInputs,
+) -> Result<job::BoundaryOutcome, job::LoopError>;
+
+/// CONTROL_FLOW (RFC 0013): end a bound loop whose first `while` is false,
+/// once its dependencies are satisfied: the APPEND outputs' `minLength`
+/// against `[]`, then zero iterations with LAST `null` and APPEND `[]`.
+pub fn end_without_iterations(
+    job: &job::Job,
+    loop_index: usize,
+) -> Result<job::LoopResult, job::LoopError>;
 ```
 
 [`create_job`] is the high-level entry point: it resolves the job name
@@ -283,10 +350,11 @@ at job creation allow, in dependency order: a Step may come back `Bound`,
 unresolved. It also stores each `jobOutputDefinitions` entry in
 `job::Job::outputs`, and evaluates each one whose `Steps.*` inputs are
 concrete at creation; a job output that fails there fails `create_job` (see
-[job-outputs.md](job-outputs.md)). A template with a loop (RFC 0013) is not
-instantiated yet: `create_job` returns
-`Compatibility("create_job does not support loops (RFC 0013) yet: steps[<i>] is loop '<name>'.")`
-for the first one.
+[job-outputs.md](job-outputs.md)). Each loop (RFC 0013) becomes a
+[`job::Loop`] in `job::Job::loops`, bound like a Step through its
+enablement, bound, and start groups; a loop group that fails at creation
+fails `create_job`. Nothing of a loop's body Steps is evaluated at creation
+(see [job-creation.md](job-creation.md) § Loops).
 
 [`advance_step_binding`] moves a pending Step on as upstream values arrive:
 it evaluates each group of the Step whose inputs are now concrete, `enableIf`
@@ -296,6 +364,15 @@ merges the concrete `Steps.*` values a bound Step's script and Step
 Environments read into its `resolved_symtab`, recording the path-typed ones
 in `job::Step::path_inputs`. Both take a [`job::StepInputs`] assembled with
 `StepInputs::add_producer`.
+
+[`advance_loop_binding`], [`start_iteration`], [`advance_body_step_binding`],
+[`evaluate_iteration_boundary`], and [`end_without_iterations`] run a loop
+(RFC 0013 §Running a loop): the caller keeps a [`job::LoopProgress`] between
+iterations, binds each iteration's body Step instances as it binds Steps,
+and adds a succeeded or skipped loop to its consumers' inputs with
+`StepInputs::add_loop_producer`. Every loop failure these return is final;
+whether a body Task's failure is recoverable is the caller's decision. See
+[job-creation.md](job-creation.md) § Loops.
 
 [`job_output_inputs`] names the `Steps.*` symbols a job output waits on, and
 [`evaluate_job_output`] evaluates it once they are concrete in a
@@ -838,7 +915,9 @@ not `Eq`, and so do the CONTROL_FLOW types that hold an
 but not `Eq`): `OutputVariable`, `OutputConstraints`,
 `OutputAllowedValues`, `OutputBound`, and `JobOutput`, as do `StepBinding`,
 `PendingBinding`, and `GroupState`, which can hold a `StepParameterSpace` and
-`HostRequirements`.
+`HostRequirements`, and the RFC 0013 loop types `Loop`, `LoopBinding`,
+`BoundLoop`, `LoopStart`, and `PendingLoopBinding`, which hold an
+`OutputVariable` or an `ExprValue`.
 The rest also implement `Eq`.
 
 ```rust
@@ -847,7 +926,12 @@ pub struct job::Job {
     pub description: Option<String>,
     pub extensions: Option<Vec<ModelExtension>>,
     pub parameters: IndexMap<String, JobParameter>,
+    /// The top-level Steps, in template order (a loop's body Steps are not
+    /// here).
     pub steps: Vec<Step>,
+    /// CONTROL_FLOW loops (RFC 0013), in template order. `#[serde(default)]`,
+    /// skipped when empty.
+    pub loops: Vec<Loop>,
     pub job_environments: Option<Vec<Environment>>,
     /// CONTROL_FLOW job outputs, in template order. `#[serde(default)]`,
     /// skipped when `None`.
@@ -1080,8 +1164,13 @@ pub enum job::MaterializationGroup {
     TaskEnumeration,
     HostSelection,
     Remaining,
+    /// A loop's `maxIterations` (RFC 0013).
+    LoopBound,
+    /// A loop's `initial` values and first `while` (RFC 0013).
+    LoopStart,
 }
-/// "enablement", "Task enumeration", "host selection", "remaining".
+/// "enablement", "Task enumeration", "host selection", "remaining",
+/// "bound", "start".
 impl Display for job::MaterializationGroup;
 
 /// A group that failed, which fails its Step at once.
@@ -1123,6 +1212,13 @@ impl job::StepInputs {
     /// evaluates in (text unchanged). TasksKnown on a skipped producer is
     /// Skipped. A caller error is a ModelError::Compatibility.
     pub fn add_producer(&mut self, producer: &Step, state: ProducerState<'_>)
+        -> Result<(), ModelError>;
+    /// Add or replace a loop's (RFC 0013) `Output` and `RawOutput` symbols:
+    /// each value itself (no per-Task list), converted to its type; a LAST
+    /// output may be null; a path-typed one only in its Raw form unless
+    /// null. Skipped: every symbol null. A caller error is a
+    /// ModelError::Compatibility.
+    pub fn add_loop_producer(&mut self, producer: &Loop, state: LoopProducerState<'_>)
         -> Result<(), ModelError>;
     /// The concrete value of `Steps.<Step>.<Member>.<Name>`; `null` for any
     /// symbol of a skipped producer; `None` when not concrete and for a
@@ -1197,6 +1293,186 @@ impl From<Option<ExprValue>> for job::JobOutputValue;
 
 See [job-types.md](job-types.md) § CONTROL_FLOW fields, which has an example of the
 serialized form, and [job-outputs.md](job-outputs.md).
+
+### CONTROL_FLOW Loop Job Types (RFC 0013)
+
+Re-exported from `job`. A loop is `Serialize` but not `Deserialize`, like `job::Job`,
+because its bound values are `openjd_expr::ExprValue`s. The working values a caller
+keeps while a loop runs (`LoopProgress`, `LoopIteration`, `BoundaryOutcome`,
+`LoopResult`, `LoopError`) are not parts of a job and are not serialized. See
+[job-types.md](job-types.md) § Loops and [job-creation.md](job-creation.md) § Loops.
+
+```rust
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::Loop {
+    pub name: String,
+    pub description: Option<String>,          // skipped when None
+    /// Its index in the template's `steps` list.
+    pub entry_index: usize,
+    pub dependencies: Option<Vec<StepDependency>>,   // skipped when None
+    pub condition: LoopCondition,
+    /// Declarations: name, type, constraints. Skipped when empty.
+    pub variables: Vec<OutputVariable>,
+    /// Declarations: name, type, collect (LAST or APPEND), unit,
+    /// constraints. Skipped when empty.
+    pub output_variables: Vec<OutputVariable>,
+    /// The body Steps' names, in body order.
+    pub body: Vec<String>,
+    pub binding: LoopBinding,
+}
+
+impl job::Loop {
+    /// Some(0) when skipped; None otherwise (not known until it ends).
+    pub fn tasks_known(&self) -> Option<u64>;
+    /// Per group, for a pending loop; None otherwise.
+    pub fn binding_report(&self) -> Option<LoopBindingReport>;
+    /// The producers its own groups read, sorted; empty unless pending.
+    pub fn input_producers(&self) -> Vec<String>;
+    pub fn output_variable(&self, name: &str) -> Option<&OutputVariable>;
+    /// The `Steps.<Step>.<Member>.<Name>` symbols `expression` references,
+    /// sorted, by symbol collection (RFC 0013 §Retries and re-runs). A
+    /// caller error (no such loop in the template, variable, or output) is
+    /// a ModelError::Compatibility.
+    pub fn expression_inputs(&self, job_template: &JobTemplate,
+        expression: &LoopExpression) -> Result<Vec<String>, ModelError>;
+}
+
+/// Serialized "WHILE" or "UNTIL".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum job::LoopCondition { While, Until }
+
+/// Internally tagged on "state": BOUND, PENDING_INPUTS, SKIPPED.
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub enum job::LoopBinding {
+    Bound(BoundLoop),
+    PendingInputs(PendingLoopBinding),
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub struct job::BoundLoop {
+    /// 1 to 1,000.
+    pub max_iterations: u32,
+    pub start: LoopStart,
+}
+impl job::BoundLoop {
+    /// false when the first `while` is false (zero iterations).
+    pub fn has_iterations(&self) -> bool;
+}
+
+/// Hash by hand: `initial` entries sorted by name.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct job::LoopStart {
+    /// Each `initial`, converted, in declaration order.
+    pub initial: IndexMap<String, ExprValue>,
+    /// The first `while`; None for an `until` loop. Skipped when None.
+    pub first_while: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Hash, Serialize)]
+pub struct job::PendingLoopBinding {
+    pub enablement: GroupState<()>,
+    pub bound: GroupState<u32>,
+    pub start: GroupState<LoopStart>,
+    pub producers: Vec<String>,               // skipped when empty
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct job::LoopBindingReport {
+    pub enablement: GroupReport,
+    pub bound: GroupReport,
+    pub start: GroupReport,
+}
+
+/// A running loop's state between iterations, kept by the caller.
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopProgress {
+    pub iteration: u32,
+    /// `Loop.<V>` for `iteration`.
+    pub values: IndexMap<String, ExprValue>,
+    /// Each loop output so far: LAST the last value (null before the
+    /// first), APPEND the list (`[]` before the first). Not committed.
+    pub outputs: IndexMap<String, ExprValue>,
+}
+impl job::LoopProgress {
+    /// Iteration 0 with the `initial` values; None unless the loop is bound.
+    pub fn new(job_loop: &Loop) -> Option<Self>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopIteration {
+    pub loop_name: String,
+    pub index: u32,
+    /// One instance per body Step, in body order.
+    pub steps: Vec<Step>,
+}
+impl job::LoopIteration {
+    /// `<Loop>[<N>].<Step>`; None past the body.
+    pub fn instance_name(&self, body_index: usize) -> Option<String>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum job::BoundaryOutcome {
+    Continue(LoopProgress),
+    Succeeded(LoopResult),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct job::LoopResult {
+    pub iterations: u32,
+    pub ended_by: LoopEnd,
+    /// Each loop output's committed value, in declaration order.
+    pub outputs: IndexMap<String, ExprValue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum job::LoopEnd { Until, While, ZeroIterations }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum job::LoopErrorField {
+    OutputValue(String), Until, Next(String), While, MaxIterations,
+    MinLength(String), ValueSize,
+    /// The caller's arguments (a caller error).
+    Inputs,
+}
+impl Display for job::LoopErrorField;
+
+/// A loop failed at an iteration boundary or when it ended, which is final;
+/// or, when is_caller_error(), a refused call that says nothing about the loop.
+#[derive(Debug)]
+pub struct job::LoopError {
+    pub loop_name: String,
+    /// None after zero iterations.
+    pub iteration: Option<u32>,
+    pub field: LoopErrorField,
+    pub errors: Vec<ModelError>,
+}
+impl job::LoopError {
+    /// `errors` is not empty and every error is a ModelError::Compatibility
+    /// (a caller error).
+    pub fn is_caller_error(&self) -> bool;
+}
+/// "Loop '<L>' failed at the boundary of iteration <N>, in <field>:" (or
+/// "after zero iterations"; for a caller error "Evaluating the boundary of
+/// iteration <N> of loop '<L>' was refused, in <field>:", or "Ending loop
+/// '<L>' without iterations was refused, ..."), then each error on its own
+/// line.
+impl Display for job::LoopError;
+impl std::error::Error for job::LoopError;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum job::LoopExpression {
+    EnableIf, Initial(String), While, Until, Next(String), OutputValue(String),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum job::LoopProducerState<'a> {
+    Succeeded { outputs: &'a IndexMap<String, ExprValue> },
+    Skipped,
+}
+```
 
 ### Parameter Space (Resolved)
 
@@ -1454,6 +1730,11 @@ pub struct CallerLimits {
     /// `SessionLimits`. `None` = `outputs::MIN_OUTPUT_BYTES_LIMIT`
     /// (1 MiB); the runtime raises a smaller value to it.
     pub max_task_output_bytes: Option<usize>,
+    /// Total bytes of one loop's variable and output values, as JSON
+    /// (CONTROL_FLOW, RFC 0013 §Limits item 4), checked after `initial` and
+    /// at each boundary after the outputs and after `next`. `None` = no
+    /// limit.
+    pub max_loop_value_bytes: Option<usize>,
 }
 
 /// The thing every validation and instantiation function takes — a
@@ -1648,9 +1929,11 @@ pub enum ModelError {
     /// Incompatible env-template parameter merges (§1.2.1); a create_job
     /// context that does not cover the template; with CONTROL_FLOW, a caller
     /// error in step input binding (advance_step_binding,
-    /// StepInputs::add_producer, attach_step_inputs); a template with a
-    /// loop (RFC 0013) passed to create_job, which does not instantiate
-    /// loops yet.
+    /// StepInputs::add_producer, attach_step_inputs) and in running a loop
+    /// (RFC 0013: advance_loop_binding, start_iteration,
+    /// advance_body_step_binding, evaluate_iteration_boundary,
+    /// end_without_iterations, StepInputs::add_loop_producer,
+    /// Loop::expression_inputs).
     Compatibility(String),
 
     /// The `specificationVersion` field named a revision this library
@@ -1953,20 +2236,27 @@ the same key have identical parameters, so which gets which index is not observa
 ```rust
 #[derive(Debug)]
 pub struct StepDependencyEdge {
-    pub origin: usize,     // index of the depended-upon step
-    pub dependent: usize,  // index of the depending step
+    pub origin: usize,     // node index of the depended-upon Step or loop
+    pub dependent: usize,  // node index of the depending Step or loop
 }
+
+/// Whether a node is a top-level Step or a loop (CONTROL_FLOW, RFC 0013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepNodeKind { Step, Loop }
 
 #[derive(Debug)]
 pub struct StepDependencyNode {
+    /// Into `job.steps` for a Step, into `job.loops` for a loop.
     pub step_index: usize,
+    pub kind: StepNodeKind,
     pub name: String,
     pub in_edges: Vec<usize>,   // indices into the edges vector
     pub out_edges: Vec<usize>,
 }
 
-/// Directed acyclic graph over an instantiated job's steps. Built from
-/// `job::Job.steps[].dependencies`.
+/// Directed acyclic graph over an instantiated job's top-level Steps and
+/// loops, nodes in template order (node `i` is `job.steps[i]` for a Job
+/// without loops). Built from their `dependencies`.
 #[derive(Debug)]
 pub struct StepDependencyGraph { /* private fields */ }
 
@@ -1981,7 +2271,7 @@ impl StepDependencyGraph {
 
     /// Stable topological sort matching the Python reference
     /// implementation: DFS-based, template order is the tiebreaker.
-    /// Returns step indices. Fails with a descriptive cycle path if
+    /// Returns node indices. Fails with a descriptive cycle path if
     /// the graph is cyclic.
     pub fn topo_sorted(&self) -> Result<Vec<usize>, ModelError>;
 

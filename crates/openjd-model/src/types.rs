@@ -595,6 +595,14 @@ pub struct CallerLimits {
     /// (1 MiB); the runtime raises a smaller value to it, because it must
     /// accept at least that much.
     pub max_task_output_bytes: Option<usize>,
+    /// Maximum total bytes of one loop's loop variable and loop output values
+    /// at any moment, measured as their JSON serialization (RFC 0013
+    /// §Limits item 4, `CONTROL_FLOW`). Checked after a loop's `initial`
+    /// values (at loop binding, or at job creation), and at each iteration
+    /// boundary after the loop outputs and after `next`; exceeding it fails
+    /// the loop, or job creation. `None` (default) imposes no limit. A
+    /// scheduler must accept at least 1 MiB.
+    pub max_loop_value_bytes: Option<usize>,
 }
 
 /// Model-side profile: the specification revision plus the set of

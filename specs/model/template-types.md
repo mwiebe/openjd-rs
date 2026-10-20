@@ -497,9 +497,9 @@ Defined in `types` because both the template and the job types use it. Serialize
 
 ## CONTROL_FLOW Loop Types (RFC 0013)
 
-RFC 0013 adds multi-Step loops to `CONTROL_FLOW`. These are template types only:
-`create_job` rejects a template with a loop until loop instantiation is implemented
-([job-creation.md](job-creation.md)).
+RFC 0013 adds multi-Step loops to `CONTROL_FLOW`. `create_job` turns each loop into a
+`job::Loop` ([job-types.md](job-types.md) § Loop), and the loop functions run it
+([job-creation.md](job-creation.md) § Loops).
 
 ### StepEntry
 

@@ -77,8 +77,10 @@ Currently implements `2023-09` with extensions:
 - `CONTROL_FLOW` (RFC 0011, RFC 0012, RFC 0013) — prototype, in progress. RFC 0013 loops are
   parsed (`template::StepEntry`, `StepLoop`, [template-types.md](template-types.md)) and
   validated by every template-validation rule of RFC 0013 ([validation.md](validation.md)
-  § Loops), and `create_job` rejects a template with a loop until loop instantiation is
-  implemented. The `outputVariables` and
+  § Loops). `create_job` binds each loop into `job::Job::loops`, and
+  `advance_loop_binding`, `start_iteration`, `advance_body_step_binding`,
+  `evaluate_iteration_boundary`, and `end_without_iterations` run one
+  ([job-creation.md](job-creation.md) § Loops). The `outputVariables` and
   `enableIf` schema, the extension gate, and the structural rules (validation pass 11);
   `job::Step` carries the output declarations. Validation pass 8 seeds and checks the
   `Steps.*` scope and types `enableIf` as `bool`. The `outputs` module parses

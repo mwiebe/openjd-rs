@@ -385,6 +385,18 @@ pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
     }
 }
 
+/// Refuse a Job with a loop (`CONTROL_FLOW`, RFC 0013): `command` cannot run
+/// or summarize loops yet, though `openjd check` validates them.
+pub(crate) fn reject_loops(job: &openjd_model::job::Job, command: &str) -> Result<(), String> {
+    match job.loops.first() {
+        None => Ok(()),
+        Some(l) => Err(format!(
+            "{command} does not support loops (CONTROL_FLOW, RFC 0013) yet: the Job has loop '{}'.",
+            l.name
+        )),
+    }
+}
+
 #[cfg(test)]
 mod limits_tests {
     use super::*;
