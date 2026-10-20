@@ -1,7 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # Copyright by contributors to this project.
 # SPDX-License-Identifier: (Apache-2.0 OR MIT)
-"""Deterministic quality-check stub for the render/QC sample.
+"""Deterministic quality-check stub for the render/QC and RFC 0013
+render-until-clean samples.
 
 Reads each rendered frame's `noise: X` line. A frame is bad when its noise is
 over `threshold` (default 0.1), and the mean noise is over all frames. The

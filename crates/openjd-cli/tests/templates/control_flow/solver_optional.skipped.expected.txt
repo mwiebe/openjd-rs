@@ -1,4 +1,4 @@
-$ openjd run {T}/solver_optional.yaml -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p Tolerance=2
+$ openjd run {T}/solver_optional.yaml -p Mesh={T}/fixtures/mesh.txt -p WorkDir={W}/work -p Tolerance=2 --output json
 exit code: 0
 --- stdout
 Session start
@@ -23,15 +23,39 @@ Loop 'Relax' is skipped; it runs no iterations
 
 All actions completed successfully!
 Local session ended.
-
---- Results of local session ---
-
-Session ended successfully
-
-Job: Relax mesh
-Duration: {DURATION}
-Chunks run: 1
-Job outputs:
-  Iterations = 0
-  FinalResidual = 1.0
+{
+  "chunks_run": 1,
+  "duration": {DURATION},
+  "job_name": "Relax mesh",
+  "job_outputs": {
+    "FinalResidual": 1.0,
+    "Iterations": 0
+  },
+  "job_outputs_not_evaluated": [],
+  "message": "Session ended successfully",
+  "status": "success",
+  "step_name": null,
+  "steps": [
+    {
+      "name": "Prepare",
+      "outputs": [
+        {
+          "Residual": 1.0
+        }
+      ],
+      "state": "SUCCEEDED",
+      "task_count": 1
+    },
+    {
+      "iterations": 0,
+      "kind": "loop",
+      "name": "Relax",
+      "outputs": {
+        "FinalResidual": null,
+        "ResidualHistory": null
+      },
+      "state": "SKIPPED"
+    }
+  ]
+}
 --- stderr
