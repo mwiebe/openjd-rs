@@ -123,7 +123,7 @@ fn visible_producers(jt: &JobTemplate, step_index: usize) -> Vec<&StepTemplate> 
 
 /// Seed `symtab` with the `Steps.*` symbols that Step `step_index` may read
 /// in a field resolved in `scope`, each an `unresolved` value of the type
-/// the RFC's §The `Steps.*` scope table gives it.
+/// RFC 0011 §The `Steps.*` scope table gives it.
 ///
 /// For each visible producer `P` (see [`visible_producers`]):
 /// `Steps.P.Output.<V>` and `Steps.P.RawOutput.<V>` for each of its output

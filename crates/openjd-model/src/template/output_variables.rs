@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Template types the `CONTROL_FLOW` extension adds (RFC 0011):
+//! Template types the `CONTROL_FLOW` extension adds (RFC 0011, RFC 0012):
 //! `<OutputVariableDefinition>`, `<JobOutputDefinition>`, and the `enableIf`
 //! field value.
 //!
@@ -63,7 +63,7 @@ fn json_kind(v: &serde_json::Value) -> &'static str {
     }
 }
 
-/// RFC 0011 `<OutputVariableDefinition>`: one output variable a Step's
+/// RFC 0012 `<OutputVariableDefinition>`: one output variable a Step's
 /// Tasks report.
 ///
 /// Wraps the [`JobParameterDefinition`] of the declared type, which holds

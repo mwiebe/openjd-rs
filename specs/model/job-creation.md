@@ -247,7 +247,7 @@ budgets template validation and the session runtime apply.
 6. Convert environments from template to job types
 7. Build step dependency list
 8. Attach resolved symbol table to each step
-9. With `CONTROL_FLOW` (RFC 0011): copy each Step's `outputVariables` onto
+9. With `CONTROL_FLOW` (RFC 0011, RFC 0012): copy each Step's `outputVariables` onto
    `job::Step::output_variables` as `job::OutputVariable` values, decide each
    Job Environment's `enableIf` (setting `job::Environment::enabled`; a disabled
    one's fields are not checked), and bind each Step as far as the values
@@ -583,7 +583,7 @@ template order; a failed step `let` still lets that Step's carried-forward
 checks run; host requirements resolve before the parameter space; and the
 job-total Task-count limit is checked once, after every Step.
 
-**Task-count limits** (RFC 0011 §Limits item 4) are checked in the Task
+**Task-count limits** (RFC 0011 §Limits item 1) are checked in the Task
 enumeration group, when a Step's Tasks become known: `max_step_task_count`
 against the Step's Tasks (`Step 'S' has 5 Tasks, which exceeds the caller
 limit of 4 Tasks per Step.`), and `max_task_count` against the Step's Tasks
@@ -636,7 +636,7 @@ not hold; on each call, pass every producer in the Step's input_producers() whos
 #### StepInputs and add_producer
 
 `StepInputs` holds the concrete `Steps.*` values a binding reads, per
-producer. `add_producer(producer, state)` fills them, typed as the RFC's §The
+producer. `add_producer(producer, state)` fills them, typed as RFC 0011 §The
 `Steps.*` scope table types them:
 
 * `ProducerState::Succeeded { task_outputs }` (a bound producer):

@@ -1246,7 +1246,7 @@ pub async fn run_subprocess(
 /// such a line does not go through the filter's other directives. A valid one
 /// is logged as the other directives are (hidden when `echo_openjd_directives`
 /// is off); an invalid one is always logged, with ` -- ERROR: <message>`, and
-/// cancels and fails the Action with that message (RFC 0011 §Processing a
+/// cancels and fails the Action with that message (RFC 0012 §Processing a
 /// directive). `saw_fail` is set too, so the Action fails even if it exits
 /// before the cancel reaches it.
 pub(crate) fn process_line(
@@ -1273,7 +1273,7 @@ pub(crate) fn process_line(
                 fail_message: message,
             });
             // Whatever `openjd_session_runtime_loglevel` set: an invalid
-            // directive always stays in the log (RFC 0011).
+            // directive always stays in the log (RFC 0012 §Stdout messages).
             return (display, true);
         }
     }

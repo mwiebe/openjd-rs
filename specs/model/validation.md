@@ -41,7 +41,7 @@ short-circuiting), so users see all problems at once.
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` scope and types `enableIf` as `bool` |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
-| 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0011) |
+| 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`) and enforce their structural rules (RFC 0011, RFC 0012) |
 
 ### Environment template pipeline
 
@@ -299,8 +299,8 @@ creation.
 
 ### The `Steps.*` Scope and `enableIf` (CONTROL_FLOW, RFC 0011)
 
-With `CONTROL_FLOW`, pass 8 implements items 3 to 7 of the RFC's §Validation, "At
-template validation", and the scope and typing part of item 10 (see § Job output values
+With `CONTROL_FLOW`, pass 8 implements items 2 to 6 of RFC 0011 §Validation, "At
+template validation", and the scope and typing part of item 9 (see § Job output values
 below). The shared code is `validate_v2023_09/steps_scope.rs`, which job
 creation also uses (see `specs/model/job-creation.md`).
 
@@ -654,10 +654,11 @@ separately-validated env templates are composed into a session at assembly time
 
 ## Pass 11: CONTROL_FLOW Gating and Structure
 
-Validates or rejects the fields `CONTROL_FLOW` (RFC 0011) adds. It implements items 1, 2,
-the Environment Template part of item 6, and the structural part of item 10 of the RFC's
-§Validation, "At template validation". Items 3 to 7 (the `Steps.*` scope and `enableIf`)
-and the scope and typing of a job output's `value` (the rest of item 10) are in pass 8.
+Validates or rejects the fields `CONTROL_FLOW` (RFC 0011, RFC 0012) adds. It implements
+item 1, the Environment Template part of item 5, and the structural part of item 9 of
+RFC 0011 §Validation, "At template validation", and item 1 of RFC 0012 §Validation.
+RFC 0011 items 2 to 6 (the `Steps.*` scope and `enableIf`) and the scope and typing of a
+job output's `value` (the rest of RFC 0011 item 9) are in pass 8.
 
 **Without the extension**, each field is an error at its own path, with the message
 `<field> requires the CONTROL_FLOW extension.`:
@@ -715,7 +716,7 @@ Outputs on a Step with a `CHUNK[INT]` Task parameter are allowed. Pass 11 checks
 distinct-values rule on the integer items of a `range` written as a YAML list. A range
 string such as `"1-10"` cannot repeat a value, because its sub-ranges may not overlap. A
 computed range, and a YAML list with format-string items, is checked when it is
-materialized (RFC 0011 §Chunked Steps item 1), in the Task enumeration group at job
+materialized (RFC 0012 §Chunked Steps item 1), in the Task enumeration group at job
 creation or at step input binding (see [job-creation.md](job-creation.md) § Step input
 binding).
 
@@ -765,7 +766,7 @@ passes. Fixing that belongs in `expr_parameters.rs`, for both.
 These RFC rules belong to later changes in the prototype plan
 (`docs/control-flow-prototype-plan.md`):
 
-- The warning for a conditional Step's `null` in a discarding position (item 8).
+- The warning for a conditional Step's `null` in a discarding position (RFC 0011 §Validation item 7).
   openjd-rs has no validation-warning channel; adding one is a public API decision (see
   ambiguity A1 in the plan).
 

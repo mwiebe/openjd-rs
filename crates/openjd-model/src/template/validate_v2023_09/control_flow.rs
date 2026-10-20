@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0011).
+//! Pass 11: validate or reject `CONTROL_FLOW` features (RFC 0011, RFC 0012).
 //!
 //! Four fields are gated by the `CONTROL_FLOW` extension:
 //! - `jobOutputDefinitions` on the Job Template
@@ -11,9 +11,9 @@
 //! - `enableIf` on `<Environment>` (Job and Step Environments)
 //!
 //! Without the extension, each of them is an error at its own path. With it,
-//! this pass enforces the RFC's static rules (§Validation, "At template
-//! validation", items 1, 2, 6's Environment Template part, and the structural
-//! part of 10):
+//! this pass enforces the RFCs' static rules: RFC 0011 §Validation, "At
+//! template validation", items 1, 5's Environment Template part, and the
+//! structural part of 9, and RFC 0012 §Validation item 1:
 //!
 //! - **EXPR prerequisite.** A template that lists `CONTROL_FLOW` must also
 //!   list `EXPR`.
@@ -45,14 +45,14 @@ use crate::template::{
 };
 use crate::types::{JobParameterType, ModelExtension, OutputCollectMode, ValidationContext};
 
-/// RFC 0011 `outputVariables` constraint 2: at most 32 elements.
+/// RFC 0012 `outputVariables` constraint 2: at most 32 elements.
 const MAX_OUTPUT_VARIABLES: usize = 32;
-/// RFC 0011 `<OutputVariableDefinition>` item 5: a `unit` of 1 to 32 characters.
+/// RFC 0012 `<OutputVariableDefinition>` item 5: a `unit` of 1 to 32 characters.
 const MAX_UNIT_LEN: usize = 32;
 /// RFC 0011 `jobOutputDefinitions` constraint 2: at most 50 elements.
 const MAX_JOB_OUTPUTS: usize = 50;
 
-/// Validate RFC 0011 constraints for a job template.
+/// Validate RFC 0011 and RFC 0012 constraints for a job template.
 ///
 /// Runs whether or not `CONTROL_FLOW` is enabled: without it, it rejects
 /// the fields the extension adds; with it, it enforces the EXPR
@@ -209,7 +209,7 @@ fn check_output_variables(
 }
 
 /// The structural rules on `jobOutputDefinitions` (RFC 0011 §Validation item
-/// 10, except the `value` scope and typing, which pass 8 checks). A job
+/// 9, except the `value` scope and typing, which pass 8 checks). A job
 /// output may be `LIST[LIST[INT]]`: there is no `parameterSpace` to nest it
 /// in.
 fn check_job_output_definitions(
@@ -345,7 +345,7 @@ fn check_unit(unit: Option<&str>, path: &[PathElement], errors: &mut ValidationE
     }
 }
 
-/// RFC 0011 §Chunked Steps item 1: in a Step that declares `outputVariables`,
+/// RFC 0012 §Chunked Steps item 1: in a Step that declares `outputVariables`,
 /// the `CHUNK[INT]` parameter's values must be distinct, so that a value
 /// names exactly one Task. A literal-list `range` is checked here; a
 /// computed one when it is materialized. A range string cannot repeat a
