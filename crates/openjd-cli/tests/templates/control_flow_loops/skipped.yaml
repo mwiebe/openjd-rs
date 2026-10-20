@@ -1,0 +1,26 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: Loop L is skipped at Job creation (Param.On is false); C reads its output in its script.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Skipped
+parameterDefinitions:
+- {name: On, type: BOOL, default: false}
+steps:
+- name: L
+  enableIf: "{{Param.On}}"
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      outputVariables:
+      - {name: V, type: INT}
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('openjd_output_var: V=5')"]}
+  outputVariables:
+  - {name: H, type: INT, collect: LAST, value: "{{Steps.P.Output.V}}"}
+- name: C
+  dependencies: [{dependsOn: L}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('C got', repr('{{Steps.L.Output.H}}'))"]}

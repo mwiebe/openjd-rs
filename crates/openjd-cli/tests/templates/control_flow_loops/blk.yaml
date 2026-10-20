@@ -1,0 +1,29 @@
+# CONTROL_FLOW loops (RFC 0013) CLI test: B reads the outputs of A, which has two Tasks; loop L depends on B.
+specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Blk
+steps:
+- name: A
+  parameterSpace:
+    taskParameterDefinitions:
+    - {name: I, type: INT, range: [1, 2]}
+  outputVariables:
+  - {name: V, type: INT}
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('openjd_output_var: V={{Task.Param.I}}')"]}
+- name: B
+  dependencies: [{dependsOn: A}]
+  script:
+    actions:
+      onRun: {command: python, args: ['-c', "print('B {{Steps.A.Output.V}}')"]}
+- name: L
+  dependencies: [{dependsOn: B}]
+  loop:
+    until: "{{Loop.Iteration >= 0}}"
+    maxIterations: 2
+    steps:
+    - name: P
+      script:
+        actions:
+          onRun: {command: python, args: ['-c', "print('P ran')"]}
