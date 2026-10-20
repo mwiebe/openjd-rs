@@ -385,8 +385,9 @@ for an incomplete producer: one that reads its outputs is blocked with `inputs f
 'L[0].P' are incomplete because not all of its Tasks ran`, and one that does not read them
 runs. The iteration never completes, so the boundary is not evaluated, and the loop is
 blocked: `Loop 'L' is blocked: its body Step instance 'L[0].P' did not run all of its
-Tasks, so iteration 0 never completes`. Its dependents are blocked behind it, and the run
-does not fail. A dependency of the loop that did not run all of its Tasks blocks the loop
+Tasks, so iteration 0 never completes` (or `... 'L[1].Q' is blocked, so iteration 1 never
+completes` for an instance blocked behind one). Its dependents are blocked behind it, and
+the run does not fail. A dependency of the loop that did not run all of its Tasks blocks the loop
 before its first iteration when the loop's boundary expressions read it (`Loop 'L' is
 blocked: inputs from Step 'A' are incomplete because not all of its Tasks ran`), and blocks
 the instances that read it as for any producer.
@@ -416,8 +417,12 @@ the instances that read it as for any producer.
   hint. An instance that iteration 0 skips is not checked. If a later iteration then reads
   a dependency this run does not run, the loop fails there with `Loop 'L' reads, in
   iteration 1, Steps.* values of 'A', which this run does not run.` followed by `Give them
-  with --step-inputs, or run Loop 'L' with --run-dependencies.`, and the run reports its
-  result.
+  with --step-inputs, or run Loop 'L' with --run-dependencies.` (or only `Run Loop 'L'
+  with --run-dependencies.` when no such dependency was bound at Job creation, since
+  `--step-inputs` cannot give it), the instance that needed it is `FAILED` with that
+  reason, and the run reports its result. The simulator classifies a caller error from a
+  loop function this way only when the error names a `Steps.*` symbol of such a
+  dependency; any other is an internal error.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
   type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
   reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a
@@ -708,6 +713,11 @@ output matches the Python CLI's):
   its loop variable values and the loop output values its boundary evaluated. `reason` and
   `inputs_supplied` are as for a Step. One entry per body Step instance follows it, in run
   order, with `name` `<Loop>[<N>].<Step>`, `loop`, `iteration`, and the fields of a Step.
+  When an instance's group fails as its iteration starts, `start_iteration` returns no
+  instances, so that iteration has one entry, `{name, state: "FAILED", task_count: null,
+  reason, loop, iteration}`, for the instance that failed. A boundary that fails after
+  evaluating the loop outputs does not report them, since `evaluate_iteration_boundary`
+  returns only the error.
 * `job_outputs`: a map from each evaluated job output's name to its value (`null` for no
   value).
 * `job_outputs_not_evaluated`: a list of `{name, waits_on}`, as printed at the end, or
@@ -728,11 +738,15 @@ chunks_run: 100
 
 - Exit code 0: All actions completed successfully
 - Exit code 1: Any action failed, setup failed, interruption was observed, or (for
-  `CONTROL_FLOW`) a Step's materialization group or a job output failed
+  `CONTROL_FLOW`) a Step's materialization group, a job output, or a loop failed (a loop
+  group, an instance group, an iteration boundary, `maxIterations`, `minLength`, a missing
+  input, or an RFC 0008 conflict in a body Step instance; see
+  [Loops](#control_flow-loops))
 
-On failure, the session continues to exit environments (cleanup) but skips remaining
-tasks. The `session_failed` flag tracks whether any action returned a non-`Success`
-state, or a group or job output failed.
+A Step or loop that is only blocked, by a failed dependency or by incomplete inputs, does not
+by itself make the run fail. On failure, the session continues to exit environments
+(cleanup) but skips remaining tasks. The `session_failed` flag tracks whether any action
+returned a non-`Success` state, or a group, job output, or loop failed.
 
 An interruption signal cancels the active session action. On Unix the handled
 signals are SIGINT and SIGTERM; on Windows they are Ctrl+C and Ctrl+Break
