@@ -20,6 +20,7 @@ shlex = { workspace = true }
 thiserror = { workspace = true }
 regex = { workspace = true }
 regex-syntax = { workspace = true }
+regex-automata = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

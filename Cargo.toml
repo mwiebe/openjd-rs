@@ -46,5 +46,8 @@ serde-saphyr = "2"
 thiserror = "2"
 regex = "1"
 regex-syntax = "0.8"
+# The engine `regex` is built on. Used directly for the one search `regex`
+# does not expose: an anchored longest-match search at an offset.
+regex-automata = { version = "0.4.16", default-features = false, features = ["std", "syntax", "meta", "nfa-pikevm"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

@@ -4,6 +4,7 @@
 
 //! Regex function implementations.
 
+use crate::budgeted_vec::BudgetedVec;
 use crate::error::ExpressionError;
 use crate::function_library::EvalContext;
 use crate::types::ExprType;
@@ -523,6 +524,105 @@ fn check_hir_portability(hir: &regex_syntax::hir::Hir) -> Result<(), ExpressionE
     }
 }
 
+/// Compile limit for the longest-match regex built by [`has_non_empty_match_at`],
+/// the same NFA size limit the default [`EvalContext::get_or_compile_regex`]
+/// uses.
+const LONGEST_MATCH_SIZE_LIMIT: usize = 1 << 20;
+
+/// Call `f` on each match of `re` in `s`, at most `limit` times, stepping
+/// through matches the way CPython's `re.split`, `re.findall` and `re.sub`
+/// do. `func` and `pattern` are the calling function's name and the
+/// pattern `re` was compiled from, for the divergence check and its error.
+///
+/// Each search resumes where the previous match ended. An empty match is
+/// allowed anywhere except where the previous match was also empty and
+/// ended, so an empty match right after a non-empty match counts:
+/// `re_split('a,b', ',?')` is `["", "a", "", "b", ""]`. The `regex` crate's
+/// own iterators skip that empty match, and that is why they cannot be used.
+///
+/// Where an empty match would repeat, CPython backtracks into the pattern
+/// for a non-empty match at the same position, and if there is none,
+/// searches again one character on. The `regex` crate reports only the
+/// pattern's preferred match at a position, so it cannot find that
+/// non-empty match. Instead, this checks whether one exists, and returns an
+/// error if it does (`a??`, `|a`), because the result would differ from
+/// CPython's. Otherwise it searches again one character on, as CPython does.
+fn for_each_python_match<'h>(
+    func: &str,
+    re: &regex::Regex,
+    pattern: &str,
+    s: &'h str,
+    limit: usize,
+    mut f: impl FnMut(&regex::Captures<'h>) -> Result<(), ExpressionError>,
+) -> Result<(), ExpressionError> {
+    let mut pos = 0;
+    // Where the previous match ended, if it was empty.
+    let mut empty_end = None;
+    let mut found = 0;
+    let mut longest = None;
+    while found < limit {
+        let Some(caps) = re.captures_at(s, pos) else {
+            break;
+        };
+        let m = caps.get(0).expect("group 0 always takes part in a match");
+        if m.is_empty() && empty_end == Some(m.start()) {
+            if has_non_empty_match_at(&mut longest, pattern, s, pos)? {
+                return Err(ExpressionError::new(format!(
+                    "{func}(): at index {} the pattern prefers an empty match where a \
+                     non-empty match is also possible, and Python's re would take the \
+                     non-empty one. Make the empty match the pattern's last choice, for \
+                     example 'a?' instead of 'a??', or 'a|' instead of '|a'",
+                    s[..pos].chars().count()
+                )));
+            }
+            let Some(c) = s[pos..].chars().next() else {
+                break;
+            };
+            pos += c.len_utf8();
+            empty_end = None;
+            continue;
+        }
+        f(&caps)?;
+        found += 1;
+        empty_end = m.is_empty().then_some(m.end());
+        pos = m.end();
+    }
+    Ok(())
+}
+
+/// Whether `pattern` has a non-empty match that starts at byte offset
+/// `pos` of `s`, whatever its priority.
+///
+/// The `regex` crate has no anchored search at an offset and no
+/// longest-match mode, so this uses `regex_automata`, the engine `regex` is
+/// built on. With [`MatchKind::All`](regex_automata::MatchKind::All), a
+/// search reports the last possible match end, so an anchored search finds
+/// the longest match starting at `pos`. `longest` caches the compiled regex
+/// for the rest of one call.
+fn has_non_empty_match_at(
+    longest: &mut Option<regex_automata::meta::Regex>,
+    pattern: &str,
+    s: &str,
+    pos: usize,
+) -> Result<bool, ExpressionError> {
+    use regex_automata::{meta, Anchored, Input, MatchKind};
+    let re = match longest {
+        Some(re) => re,
+        None => longest.insert(
+            meta::Regex::builder()
+                .configure(
+                    meta::Config::new()
+                        .match_kind(MatchKind::All)
+                        .nfa_size_limit(Some(LONGEST_MATCH_SIZE_LIMIT)),
+                )
+                .build(pattern)
+                .map_err(|e| ExpressionError::new(format!("Invalid regex: {e}")))?,
+        ),
+    };
+    let input = Input::new(s).range(pos..).anchored(Anchored::Yes);
+    Ok(re.search(&input).is_some_and(|m| m.end() > pos))
+}
+
 #[allow(
     missing_docs,
     reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
@@ -598,52 +698,34 @@ pub fn re_findall_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     validate_regex_pattern(&pat)?;
     let re = ctx.get_or_compile_regex(&pat)?;
     let num_groups = re.captures_len() - 1;
-    if num_groups == 0 {
-        let matches: Vec<ExprValue> = re
-            .find_iter(&s)
-            .map(|m| ExprValue::String(m.as_str().to_string()))
-            .collect();
-        Ok(ExprValue::make_list_checked(
-            ctx,
-            matches,
-            ExprType::STRING,
-        )?)
-    } else if num_groups == 1 {
-        let matches: Vec<ExprValue> = re
-            .captures_iter(&s)
-            .map(|c| {
-                ExprValue::String(c.get(1).map(|m| m.as_str().to_string()).unwrap_or_default())
-            })
-            .collect();
-        Ok(ExprValue::make_list_checked(
-            ctx,
-            matches,
-            ExprType::STRING,
-        )?)
+    // A group that does not take part in a match is "", as in CPython's
+    // re.findall.
+    let group = |c: &regex::Captures<'_>, i: usize| {
+        ExprValue::String(c.get(i).map(|m| m.as_str().to_string()).unwrap_or_default())
+    };
+    let mut matches = BudgetedVec::new();
+    for_each_python_match("re_findall", &re, &pat, &s, usize::MAX, |c| {
+        let value = match num_groups {
+            0 => group(c, 0),
+            1 => group(c, 1),
+            // Build inner lists without per-element ctx-checking: each
+            // row has a bounded number of groups (num_groups, fixed by
+            // the pattern), so the inner allocations are small. The outer
+            // list is the one that scales with the input; it is checked
+            // as it grows.
+            _ => ExprValue::make_list(
+                (1..=num_groups).map(|i| group(c, i)).collect(),
+                ExprType::STRING,
+            )?,
+        };
+        matches.push(ctx, value)
+    })?;
+    let elem_type = if num_groups > 1 {
+        ExprType::list(ExprType::STRING)
     } else {
-        // Build inner lists without per-element ctx-checking: each captures
-        // row has a bounded number of groups (num_groups, fixed by the
-        // pattern), so the inner allocations are small. The outer list is
-        // the one that scales with the input; check memory on it.
-        let matches: Result<Vec<ExprValue>, _> = re
-            .captures_iter(&s)
-            .map(|c| {
-                let groups: Vec<ExprValue> = (1..=num_groups)
-                    .map(|i| {
-                        ExprValue::String(
-                            c.get(i).map(|m| m.as_str().to_string()).unwrap_or_default(),
-                        )
-                    })
-                    .collect();
-                ExprValue::make_list(groups, ExprType::STRING)
-            })
-            .collect();
-        Ok(ExprValue::make_list_checked(
-            ctx,
-            matches?,
-            ExprType::list(ExprType::STRING),
-        )?)
-    }
+        ExprType::STRING
+    };
+    ExprValue::make_list_checked(ctx, matches.into_vec(), elem_type)
 }
 
 #[allow(
@@ -670,8 +752,21 @@ pub fn re_replace_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     validate_regex_pattern(&pat)?;
     validate_regex_replacement(&repl)?;
     let re = ctx.get_or_compile_regex(&pat)?;
-    let result = re.replace_all(&s, regex::NoExpand(&repl));
-    Ok(ExprValue::String(result.into_owned()))
+    // The replacement is literal text (group references were rejected
+    // above). Check the growing result against the memory limit, since an
+    // empty match at every character inserts `repl` len(s) + 1 times.
+    let mut result = String::new();
+    let mut last = 0;
+    for_each_python_match("re_sub", &re, &pat, &s, usize::MAX, |c| {
+        let m = c.get(0).expect("group 0 always takes part in a match");
+        ctx.check_memory(result.len() + (m.start() - last) + repl.len())?;
+        result.push_str(&s[last..m.start()]);
+        result.push_str(&repl);
+        last = m.end();
+        Ok(())
+    })?;
+    result.push_str(&s[last..]);
+    Ok(ExprValue::String(result))
 }
 
 fn validate_regex_replacement(repl: &str) -> Result<(), ExpressionError> {
@@ -725,19 +820,24 @@ pub fn re_split_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     // targets a plain `as` cast would wrap a large maxsplit down to a small one
     // (or to 0) and silently split too few times. See `maxsplit_arg` in
     // `functions/string.rs`.
-    let parts: Vec<ExprValue> = match maxsplit {
-        Some(n) if n < 0 => vec![ExprValue::String(s.clone())],
-        Some(n) if n > 0 => re
-            .splitn(
-                &s,
-                usize::try_from(n).unwrap_or(usize::MAX).saturating_add(1),
-            )
-            .map(|p| ExprValue::String(p.to_string()))
-            .collect(),
-        _ => re
-            .split(&s)
-            .map(|p| ExprValue::String(p.to_string()))
-            .collect(),
+    let limit = match maxsplit {
+        Some(n) if n < 0 => 0,
+        Some(n) if n > 0 => usize::try_from(n).unwrap_or(usize::MAX),
+        _ => usize::MAX,
     };
-    ExprValue::make_list_checked(ctx, parts, ExprType::STRING)
+    let mut parts = BudgetedVec::new();
+    let mut last = 0;
+    for_each_python_match("re_split", &re, &pat, &s, limit, |c| {
+        let m = c.get(0).expect("group 0 always takes part in a match");
+        parts.push(ctx, ExprValue::String(s[last..m.start()].to_string()))?;
+        // Capture groups go between the pieces, as in CPython. A group
+        // that did not take part in the match (CPython's None) is left out.
+        for g in c.iter().skip(1).flatten() {
+            parts.push(ctx, ExprValue::String(g.as_str().to_string()))?;
+        }
+        last = m.end();
+        Ok(())
+    })?;
+    parts.push(ctx, ExprValue::String(s[last..].to_string()))?;
+    ExprValue::make_list_checked(ctx, parts.into_vec(), ExprType::STRING)
 }
