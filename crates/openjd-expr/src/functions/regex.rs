@@ -529,8 +529,8 @@ fn check_hir_portability(hir: &regex_syntax::hir::Hir) -> Result<(), ExpressionE
 /// do.
 ///
 /// Each search resumes where the previous match ended. An empty match is
-/// allowed anywhere except where the previous match was also empty and
-/// ended, so an empty match right after a non-empty match counts:
+/// allowed anywhere except at the end of a previous empty match, so an
+/// empty match right after a non-empty match counts:
 /// `re_split('a,b', ',?')` is `["", "a", "", "b", ""]`. The `regex` crate's
 /// own iterators skip that empty match, and that is why they cannot be used.
 ///
@@ -701,7 +701,8 @@ pub fn re_replace_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     let re = ctx.get_or_compile_regex(&pat)?;
     // The replacement is literal text (group references were rejected
     // above). Check the growing result against the memory limit, since an
-    // empty match at every character inserts `repl` len(s) + 1 times.
+    // empty match at every character inserts `repl` once per character of
+    // `s`, plus once.
     let mut result = String::new();
     let mut last = 0;
     for_each_python_match(&re, &s, usize::MAX, |c| {

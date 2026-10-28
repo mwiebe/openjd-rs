@@ -213,12 +213,12 @@ fn re_split_drops_groups_that_did_not_take_part() {
         display("re_split('a,b;c', '(,)|(;)')"),
         r#"["a", ",", "b", ";", "c"]"#
     );
-    // CPython: ['a', None, 'b', '-', 'c']. A group that always takes part
-    // keeps one entry per match.
+    // CPython: ['a', None, 'b', '-', 'c'].
     assert_eq!(
         display("re_split('a,b-,c', '(-)?,')"),
         r#"["a", "b", "-", "c"]"#
     );
+    // A group that always takes part keeps one entry per match.
     assert_eq!(
         display("re_split('a,b-,c', '(-?),')"),
         r#"["a", "", "b", "-", "c"]"#
@@ -368,7 +368,10 @@ fn empty_matches_charge_the_same_operations() {
         "re_findall(Param.Text, Param.P)",
         "re_sub(Param.Text, Param.P, '-')",
     ] {
+        // An empty match at every character, a non-empty match at every
+        // character, and no match at all cost the same.
         assert_eq!(ops(expr, "x*"), ops(expr, ","), "{expr}");
+        assert_eq!(ops(expr, "a"), ops(expr, ","), "{expr}");
     }
 }
 
