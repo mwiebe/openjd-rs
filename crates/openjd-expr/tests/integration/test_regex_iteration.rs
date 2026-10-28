@@ -252,6 +252,26 @@ fn re_sub_replaces_empty_match_after_non_empty_match() {
     assert_eq!(display("re_sub('a,b', ',?', '-')"), "-a--b-");
 }
 
+#[test]
+fn re_findall_empty_result_keeps_its_element_type() {
+    assert_eq!(display("re_findall('', 'a') + ['x']"), r#"["x"]"#);
+    assert_eq!(display("re_findall('', '(a)') + ['x']"), r#"["x"]"#);
+    assert_eq!(display("re_findall('', '(a)(b)') + [['x']]"), r#"[["x"]]"#);
+}
+
+// === Known divergence: repeated capture groups ===
+
+#[test]
+fn re_split_repeated_group_keeps_last_non_empty_iteration() {
+    // The regex crate keeps a repeated group's last non-empty iteration;
+    // CPython keeps the last iteration even when it is empty, and gives
+    // ['', '', '', '', '']. Documented in function-library.md.
+    assert_eq!(
+        display("re_split('a', '(a?)*')"),
+        r#"["", "a", "", "", ""]"#
+    );
+}
+
 // === Patterns whose preferred match is empty where a non-empty one exists ===
 
 #[test]
@@ -291,6 +311,7 @@ fn re_sub_lazy_empty_match_is_an_error() {
             DIVERGENCE,
             "\n",
             "  re_sub('日a', 'a*?', '-')\n",
+            "  ^~~~~~~~~~~~~~~~~~~~~~~",
         ],
     );
 }
@@ -306,21 +327,49 @@ fn lazy_pattern_without_a_non_empty_alternative_is_fine() {
 
 // === Bounds ===
 
-#[test]
-fn re_split_empty_match_at_every_character_respects_memory_limit() {
+/// Evaluate `expr` over 2,000 `a`s under a 10,000-byte memory limit, and
+/// return the error.
+fn memory_error(expr: &str) -> String {
     let mut st = SymbolTable::new();
-    st.set("Param.Text", "a".repeat(10_000)).unwrap();
-    let e = ParsedExpression::new("re_split(Param.Text, 'x*')")
+    st.set("Param.Text", "a".repeat(2_000)).unwrap();
+    ParsedExpression::new(expr)
         .and_then(|p| {
             p.with_memory_limit(10_000)
                 .with_operation_limit(DEFAULT_OPERATION_LIMIT)
                 .evaluate_with_metrics(&[&st])
         })
         .unwrap_err()
-        .to_string();
-    assert!(
-        e.contains("exceeded limit"),
-        "expected a bound-exceeded error, got:\n{e}"
+        .to_string()
+}
+
+#[test]
+fn re_split_empty_match_at_every_character_respects_memory_limit() {
+    assert_eq!(
+        memory_error("re_split(Param.Text, 'x*')"),
+        "Expression memory usage (16512 bytes) exceeded limit (10000 bytes)\n\
+         \x20 re_split(Param.Text, 'x*')\n\
+         \x20 ^~~~~~~~~~~~~~~~~~~~~~~~~~"
+    );
+}
+
+#[test]
+fn re_findall_empty_match_at_every_character_respects_memory_limit() {
+    assert_eq!(
+        memory_error("re_findall(Param.Text, 'x*')"),
+        "Expression memory usage (16384 bytes) exceeded limit (10000 bytes)\n\
+         \x20 re_findall(Param.Text, 'x*')\n\
+         \x20 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    );
+}
+
+#[test]
+fn re_sub_empty_match_at_every_character_respects_memory_limit() {
+    // The result string is checked before it grows past the limit.
+    assert_eq!(
+        memory_error("re_sub(Param.Text, 'x*', '----------')"),
+        "Expression memory usage (10009 bytes) exceeded limit (10000 bytes)\n\
+         \x20 re_sub(Param.Text, 'x*', '----------')\n\
+         \x20 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
     );
 }
 
@@ -417,12 +466,18 @@ fn re_findall_matches_cpython() {
             continue;
         }
         let ok = match (&got, &c.expected) {
+            (Ok(v), _) if v.list_len() == Some(0) => {
+                let elem = match c.expected {
+                    FindAll::Flat(want) => want.is_empty().then_some("list[string]"),
+                    FindAll::Groups(want) => want.is_empty().then_some("list[list[string]]"),
+                };
+                elem == Some(v.expr_type().to_string().as_str())
+            }
             (Ok(v), FindAll::Flat(want)) => strings(v) == *want,
             (Ok(ExprValue::ListList(rows, _, _)), FindAll::Groups(want)) => {
                 rows.len() == want.len()
                     && rows.iter().zip(want.iter()).all(|(r, w)| strings(r) == *w)
             }
-            (Ok(v), FindAll::Groups(want)) => want.is_empty() && v.list_len() == Some(0),
             _ => false,
         };
         if !ok {
