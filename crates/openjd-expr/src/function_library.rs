@@ -67,6 +67,14 @@ pub trait EvalContext {
     /// Pre-check that an allocation of `bytes` would not exceed the memory limit.
     /// Call before large allocations to avoid temporarily exceeding the limit.
     fn check_memory(&self, bytes: usize) -> Result<(), ExpressionError>;
+    /// Compile `pattern`, or return a cached compilation of it.
+    ///
+    /// The default implementation compiles each regex from scratch with a
+    /// 1 MiB size limit. Custom `EvalContext` impls (including the built-in
+    /// evaluator) cache compiled regexes to amortize cost across reused
+    /// patterns. `re_split`, `re_findall` and `re_sub` may also compile a
+    /// pattern a second time, outside this method and with the default
+    /// 1 MiB size limit, to check its empty matches against Python's `re`.
     fn get_or_compile_regex(&mut self, pattern: &str) -> Result<regex::Regex, ExpressionError> {
         regex::RegexBuilder::new(pattern)
             .size_limit(1 << 20)

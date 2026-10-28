@@ -820,7 +820,7 @@ expressions must be simple dotted name lookups.
 
 The evaluator maintains a `HashMap<String, regex::Regex>` that caches compiled regex
 patterns across function calls within a single evaluation. When a regex function
-(`re_match`, `re_search`, `re_sub`) is called, the evaluator checks the cache
+(`re_match`, `re_search`, `re_findall`, `re_sub`, `re_split`) is called, the evaluator checks the cache
 before compiling. This avoids recompiling the same pattern when used multiple times,
 e.g., in a list comprehension like `[x for x in items if re_search(x, "shot") != null]`.
 

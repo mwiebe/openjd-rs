@@ -395,9 +395,9 @@ fn re_split_empty_matches_charge_the_same_operations() {
 #[test]
 fn fixtures_come_from_cpython() {
     assert!(fixtures::PYTHON_VERSION.starts_with("CPython 3."));
-    assert_eq!(fixtures::SPLIT_CASES.len(), 5888);
-    assert_eq!(fixtures::FINDALL_CASES.len(), 736);
-    assert_eq!(fixtures::SUB_CASES.len(), 736);
+    assert_eq!(fixtures::SPLIT_CASES.len(), 6040);
+    assert_eq!(fixtures::FINDALL_CASES.len(), 755);
+    assert_eq!(fixtures::SUB_CASES.len(), 755);
 }
 
 fn check_error(what: &str, got: Result<ExprValue, String>) -> Option<String> {

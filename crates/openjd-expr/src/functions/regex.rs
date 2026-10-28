@@ -1006,6 +1006,10 @@ mod tests {
             (r"\b|a", true),
             ("(?:(?:|a)b)", true),
             ("x(|a)", true),
+            // Either rule inside a later branch or a repetition.
+            ("b|a??", true),
+            ("b|(?:|a)", true),
+            ("(?:b|a*?)+", true),
             // A lazy repetition that can match empty.
             ("a??", true),
             ("a*?", true),

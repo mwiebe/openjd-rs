@@ -366,13 +366,15 @@ pub trait EvalContext {
     /// memory-bounded evaluator fails cleanly rather than temporarily
     /// exceeding the limit.
     fn check_memory(&self, bytes: usize) -> Result<(), ExpressionError>;
-    /// Default implementation compiles each regex from scratch. Custom
-    /// `EvalContext` impls (including the built-in evaluator) cache
-    /// compiled regexes to amortize cost across reused patterns.
-    /// `re_split`, `re_findall` and `re_sub` may also compile a pattern a
-    /// second time, outside this method and with the default 1 MiB size
-    /// limit, to check its empty matches against Python's `re` (see
-    /// "Regex match iteration" in function-library.md).
+    /// Compile `pattern`, or return a cached compilation of it.
+    ///
+    /// The default implementation compiles each regex from scratch with a
+    /// 1 MiB size limit. Custom `EvalContext` impls (including the built-in
+    /// evaluator) cache compiled regexes to amortize cost across reused
+    /// patterns. `re_split`, `re_findall` and `re_sub` may also compile a
+    /// pattern a second time, outside this method and with the default
+    /// 1 MiB size limit, to check its empty matches against Python's `re`
+    /// (see "Regex match iteration" in function-library.md).
     fn get_or_compile_regex(&mut self, pattern: &str) -> Result<regex::Regex, ExpressionError>;
 }
 
