@@ -524,15 +524,9 @@ fn check_hir_portability(hir: &regex_syntax::hir::Hir) -> Result<(), ExpressionE
     }
 }
 
-/// Compile limit for the longest-match regex built by
-/// [`EmptyMatchCheck::non_empty_match_at`], the same NFA size limit the
-/// default [`EvalContext::get_or_compile_regex`] uses.
-const LONGEST_MATCH_SIZE_LIMIT: usize = 1 << 20;
-
 /// Call `f` on each match of `re` in `s`, at most `limit` times, stepping
 /// through matches the way CPython's `re.split`, `re.findall` and `re.sub`
-/// do. `func` and `pattern` are the calling function's name and the
-/// pattern `re` was compiled from, for the divergence check and its error.
+/// do.
 ///
 /// Each search resumes where the previous match ended. An empty match is
 /// allowed anywhere except where the previous match was also empty and
@@ -540,18 +534,14 @@ const LONGEST_MATCH_SIZE_LIMIT: usize = 1 << 20;
 /// `re_split('a,b', ',?')` is `["", "a", "", "b", ""]`. The `regex` crate's
 /// own iterators skip that empty match, and that is why they cannot be used.
 ///
-/// Where an empty match would repeat, CPython backtracks into the pattern
-/// for a non-empty match at the same position, and if there is none,
-/// searches again one character on. The `regex` crate reports only the
-/// pattern's preferred match at a position, so it cannot find that
-/// non-empty match. Instead, [`EmptyMatchCheck`] checks whether one exists,
-/// and this returns an error if it does (`a??`, `|a`), because the result
-/// would differ from CPython's. Otherwise it searches again one character
-/// on, as CPython does.
+/// Where an empty match would repeat, this searches again one character
+/// on. CPython first backtracks into the pattern for a non-empty match at
+/// the same position, which the `regex` crate cannot report, so a pattern
+/// that prefers an empty match where a non-empty one is possible (`a??`,
+/// `|a`) gives a different result from CPython. That divergence is
+/// documented in `specs/expr/function-library.md`.
 fn for_each_python_match<'h>(
-    func: &str,
     re: &regex::Regex,
-    pattern: &str,
     s: &'h str,
     limit: usize,
     mut f: impl FnMut(&regex::Captures<'h>) -> Result<(), ExpressionError>,
@@ -560,22 +550,12 @@ fn for_each_python_match<'h>(
     // Where the previous match ended, if it was empty.
     let mut empty_end = None;
     let mut found = 0;
-    let mut check = EmptyMatchCheck::Unknown;
     while found < limit {
         let Some(caps) = re.captures_at(s, pos) else {
             break;
         };
         let m = caps.get(0).expect("group 0 always takes part in a match");
         if m.is_empty() && empty_end == Some(m.start()) {
-            if check.non_empty_match_at(func, pattern, s, pos)? {
-                return Err(ExpressionError::new(format!(
-                    "{func}(): at index {} the pattern prefers an empty match where a \
-                     non-empty match is also possible, and Python's re would take the \
-                     non-empty one. Make the empty match the pattern's last choice, for \
-                     example 'a?' instead of 'a??', or 'a|' instead of '|a'",
-                    s[..pos].chars().count()
-                )));
-            }
             let Some(c) = s[pos..].chars().next() else {
                 break;
             };
@@ -589,126 +569,6 @@ fn for_each_python_match<'h>(
         pos = m.end();
     }
     Ok(())
-}
-
-/// Answers, for one call of [`for_each_python_match`], whether the pattern
-/// has a non-empty match at a position where its preferred match is empty.
-enum EmptyMatchCheck {
-    /// Not asked yet.
-    Unknown,
-    /// The pattern cannot prefer an empty match where a non-empty one is
-    /// possible (see [`can_prefer_empty_match`]), so the answer is always
-    /// no.
-    NotNeeded,
-    /// The pattern compiled for an anchored longest-match search.
-    Longest(regex_automata::meta::Regex),
-}
-
-impl EmptyMatchCheck {
-    /// Whether `pattern` has a non-empty match that starts at byte offset
-    /// `pos` of `s`, whatever its priority.
-    ///
-    /// The first call decides from the pattern's structure whether the
-    /// question can have a yes answer at all, and if it can, compiles the
-    /// pattern for the search. The `regex` crate has no anchored search at
-    /// an offset and no longest-match mode, so the search uses
-    /// `regex_automata`, the engine `regex` is built on. With
-    /// [`MatchKind::All`](regex_automata::MatchKind::All), a search reports
-    /// the last possible match end, so an anchored search finds the longest
-    /// match that starts at `pos`.
-    fn non_empty_match_at(
-        &mut self,
-        func: &str,
-        pattern: &str,
-        s: &str,
-        pos: usize,
-    ) -> Result<bool, ExpressionError> {
-        use regex_automata::{meta, Anchored, Input, MatchKind};
-        if let EmptyMatchCheck::Unknown = self {
-            let compile_error = |e: &dyn std::fmt::Display| {
-                ExpressionError::new(format!(
-                    "{func}(): could not compile the pattern to check its empty matches \
-                     against Python's re: {e}"
-                ))
-            };
-            let hir = regex_syntax::Parser::new()
-                .parse(pattern)
-                .map_err(|e| compile_error(&e))?;
-            *self = if can_prefer_empty_match(&hir) {
-                #[cfg(test)]
-                tests::LONGEST_COMPILES.with(|n| n.set(n.get() + 1));
-                EmptyMatchCheck::Longest(
-                    meta::Regex::builder()
-                        .configure(
-                            meta::Config::new()
-                                .match_kind(MatchKind::All)
-                                .nfa_size_limit(Some(LONGEST_MATCH_SIZE_LIMIT)),
-                        )
-                        .build_from_hir(&hir)
-                        .map_err(|e| match e.size_limit() {
-                            Some(limit) => compile_error(&format_args!(
-                                "the compiled pattern exceeds the size limit of {limit} bytes"
-                            )),
-                            None => compile_error(&e),
-                        })?,
-                )
-            } else {
-                EmptyMatchCheck::NotNeeded
-            };
-        }
-        match self {
-            EmptyMatchCheck::Longest(re) => {
-                let input = Input::new(s).range(pos..).anchored(Anchored::Yes);
-                Ok(re.search(&input).is_some_and(|m| m.end() > pos))
-            }
-            _ => Ok(false),
-        }
-    }
-}
-
-/// Whether a regex can have an empty preferred match at a position where a
-/// non-empty match is also possible. If this is `false`, the preferred match
-/// at a position is non-empty whenever any non-empty match exists there.
-///
-/// Leftmost-first matching takes the first path in priority order that
-/// succeeds. Take a preferred path that matches empty and a path that
-/// matches non-empty, and look at the first choice where they part:
-///
-/// - Alternation: the preferred path took an earlier branch, which matched
-///   empty. If the other path's later branch can only match empty too, both
-///   paths are in the same place after the alternation, so compare them
-///   again from there.
-/// - Greedy repetition: the preferred path took one more iteration, which
-///   matched empty, so again both paths are in the same place afterwards.
-/// - Lazy repetition: the preferred path took fewer iterations. If the
-///   body can only match empty, the extra iterations leave both paths in
-///   the same place.
-///
-/// So the answer can be `true` only for an alternation with a branch that
-/// can match empty before a branch that can match non-empty (`|a`, `a*|b`,
-/// `\b|a`), or a lazy repetition that can match empty and whose body can
-/// match non-empty (`a??`, `a*?`). The check is conservative: `(?:\b|a)`
-/// counts, though at most positions the two engines agree on it.
-fn can_prefer_empty_match(hir: &regex_syntax::hir::Hir) -> bool {
-    use regex_syntax::hir::HirKind;
-    let can_be_empty = |h: &regex_syntax::hir::Hir| h.properties().minimum_len() == Some(0);
-    let can_be_non_empty = |h: &regex_syntax::hir::Hir| h.properties().maximum_len() != Some(0);
-    match hir.kind() {
-        HirKind::Repetition(r) => {
-            (!r.greedy && can_be_empty(hir) && can_be_non_empty(&r.sub))
-                || can_prefer_empty_match(&r.sub)
-        }
-        HirKind::Alternation(branches) => {
-            let empty_then_non_empty = branches
-                .iter()
-                .enumerate()
-                .any(|(i, b)| can_be_empty(b) && branches[i + 1..].iter().any(can_be_non_empty));
-            empty_then_non_empty || branches.iter().any(can_prefer_empty_match)
-        }
-        HirKind::Capture(c) => can_prefer_empty_match(&c.sub),
-        HirKind::Concat(parts) => parts.iter().any(can_prefer_empty_match),
-        HirKind::Empty | HirKind::Literal(_) | HirKind::Class(_) | HirKind::Look(_) => false,
-    }
 }
 
 #[allow(
@@ -792,7 +652,7 @@ pub fn re_findall_fn(ctx: Ctx, a: &[ExprValue]) -> R {
         ExprValue::String(c.get(i).map(|m| m.as_str().to_string()).unwrap_or_default())
     };
     let mut matches = BudgetedVec::new();
-    for_each_python_match("re_findall", &re, &pat, &s, usize::MAX, |c| {
+    for_each_python_match(&re, &s, usize::MAX, |c| {
         let value = match num_groups {
             0 => group(c, 0),
             1 => group(c, 1),
@@ -845,7 +705,7 @@ pub fn re_replace_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     // empty match at every character inserts `repl` len(s) + 1 times.
     let mut result = String::new();
     let mut last = 0;
-    for_each_python_match("re_sub", &re, &pat, &s, usize::MAX, |c| {
+    for_each_python_match(&re, &s, usize::MAX, |c| {
         let m = c.get(0).expect("group 0 always takes part in a match");
         ctx.check_memory(result.len() + (m.start() - last) + repl.len())?;
         result.push_str(&s[last..m.start()]);
@@ -915,7 +775,7 @@ pub fn re_split_fn(ctx: Ctx, a: &[ExprValue]) -> R {
     };
     let mut parts = BudgetedVec::new();
     let mut last = 0;
-    for_each_python_match("re_split", &re, &pat, &s, limit, |c| {
+    for_each_python_match(&re, &s, limit, |c| {
         let m = c.get(0).expect("group 0 always takes part in a match");
         parts.push(ctx, ExprValue::String(s[last..m.start()].to_string()))?;
         // Capture groups go between the pieces, as in CPython. A group
@@ -934,24 +794,12 @@ pub fn re_split_fn(ctx: Ctx, a: &[ExprValue]) -> R {
 mod tests {
     use super::*;
     use crate::path_mapping::PathFormat;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
 
-    thread_local! {
-        /// How many times this thread compiled a longest-match regex.
-        pub(super) static LONGEST_COMPILES: Cell<usize> = const { Cell::new(0) };
-    }
-
-    fn longest_compiles() -> usize {
-        LONGEST_COMPILES.with(Cell::get)
-    }
-
-    /// Records every memory check. `regex_size_limit` stands in for a host
-    /// whose `get_or_compile_regex` compiles with a larger limit than the
-    /// default.
+    /// Records every memory check.
     #[derive(Default)]
     struct TestContext {
         checks: RefCell<Vec<usize>>,
-        regex_size_limit: Option<usize>,
     }
 
     impl EvalContext for TestContext {
@@ -973,7 +821,7 @@ mod tests {
         }
         fn get_or_compile_regex(&mut self, pattern: &str) -> Result<regex::Regex, ExpressionError> {
             regex::RegexBuilder::new(pattern)
-                .size_limit(self.regex_size_limit.unwrap_or(1 << 20))
+                .size_limit(1 << 20)
                 .build()
                 .map_err(|e| ExpressionError::new(format!("Invalid regex: {e}")))
         }
@@ -983,64 +831,6 @@ mod tests {
         args.iter()
             .map(|s| ExprValue::String(s.to_string()))
             .collect()
-    }
-
-    #[test]
-    fn can_prefer_empty_match_cases() {
-        let cases = [
-            // Never prefers an empty match over a non-empty one.
-            (",", false),
-            (",?", false),
-            ("x*", false),
-            ("a|", false),
-            ("(?:a|)", false),
-            ("a+?", false),
-            ("(?:a?)*", false),
-            (r"\b", false),
-            (r"(?:\w{0,12}|)x?", false),
-            ("(?:|)a", false),
-            (r"(?:\b)??", false),
-            // An empty-capable branch before a non-empty-capable one.
-            ("|a", true),
-            ("a*|b", true),
-            (r"\b|a", true),
-            ("(?:(?:|a)b)", true),
-            ("x(|a)", true),
-            // Either rule inside a later branch or a repetition.
-            ("b|a??", true),
-            ("b|(?:|a)", true),
-            ("(?:b|a*?)+", true),
-            // A lazy repetition that can match empty.
-            ("a??", true),
-            ("a*?", true),
-            ("(?:a?)+?", true),
-            ("(?:b*?)+", true),
-        ];
-        for (pattern, want) in cases {
-            let hir = regex_syntax::Parser::new().parse(pattern).unwrap();
-            assert_eq!(can_prefer_empty_match(&hir), want, "pattern {pattern:?}");
-        }
-    }
-
-    #[test]
-    fn only_flagged_patterns_run_the_longest_match_search() {
-        let mut ctx = TestContext::default();
-        let before = longest_compiles();
-        // Each of these repeats an empty match at every position.
-        for pattern in ["x*", ",?", "(?:a|)", r"\b", r"(?:\w{0,12}|)x?"] {
-            re_split_fn(&mut ctx, &strs(&["a,b c", pattern])).unwrap();
-            re_findall_fn(&mut ctx, &strs(&["a,b c", pattern])).unwrap();
-            re_replace_fn(&mut ctx, &strs(&["a,b c", pattern, "-"])).unwrap();
-        }
-        assert_eq!(longest_compiles(), before);
-        // A flagged pattern compiles it once per call, on the first repeat.
-        let v = re_findall_fn(&mut ctx, &strs(&["bb", "a??"])).unwrap();
-        assert_eq!(v.list_len(), Some(3));
-        assert_eq!(longest_compiles(), before + 1);
-        // A flagged pattern that cannot match empty never asks.
-        re_findall_fn(&mut ctx, &strs(&["abb", "a??b"])).unwrap();
-        re_findall_fn(&mut ctx, &strs(&["abb", "(?:|a)b"])).unwrap();
-        assert_eq!(longest_compiles(), before + 1);
     }
 
     #[test]
@@ -1074,22 +864,5 @@ mod tests {
         let v = re_replace_fn(&mut ctx, &strs(&["ab", "x*", "--"])).unwrap();
         assert_eq!(v.to_display_string(), "--a--b--");
         assert_eq!(*ctx.checks.borrow(), vec![2, 5, 8]);
-    }
-
-    #[test]
-    fn divergence_check_compile_failure_names_the_check() {
-        // A host that compiles with a larger size limit accepts the pattern,
-        // but the divergence check compiles it with the default limit.
-        let mut ctx = TestContext {
-            regex_size_limit: Some(1 << 28),
-            ..TestContext::default()
-        };
-        let err = re_findall_fn(&mut ctx, &strs(&["b", r"x*|\w{100}"])).unwrap_err();
-        let msg = err.to_string();
-        assert_eq!(
-            msg,
-            "re_findall(): could not compile the pattern to check its empty matches \
-             against Python's re: the compiled pattern exceeds the size limit of 1048576 bytes"
-        );
     }
 }

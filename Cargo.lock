@@ -2251,7 +2251,6 @@ name = "openjd-expr"
 version = "0.12.0"
 dependencies = [
  "regex",
- "regex-automata",
  "regex-syntax",
  "rustpython-ruff_python_ast",
  "rustpython-ruff_python_parser",

@@ -18,14 +18,15 @@ Python. Regenerate it with:
 
     python3 scripts/generate_regex_iteration_fixtures.py
 
-Each case also records whether CPython took a non-empty match at the
-position right after an empty match. CPython does that by backtracking past
-the empty match the pattern prefers there (for example `a??`, `|a`); the
-Rust implementation cannot reproduce that and reports an error instead, so
-those cases expect an error. The flag is derived from CPython's own match
-list: consecutive matches m1, m2 with m1 empty and m2.start() == m1.end().
-For re_split only the first maxsplit matches count, because the search stops
-there.
+Where an empty match would repeat, CPython backtracks into the pattern for
+a non-empty match at the same position, and the Rust implementation instead
+searches again one character on (the accepted divergence for lazy and
+empty-first patterns such as `a??` and `|a`, see the spec). For those
+cases the table also records the Rust implementation's documented result,
+computed here by running the same loop on CPython's own preferred matches
+(`pattern.search(s, pos)`), so a change to the divergent results is caught
+too. Every other case must match CPython exactly; for re_split, a group
+that did not take part (CPython's None) is dropped.
 
 Combinations whose results differ between Python's `re` and Rust's `regex`
 for reasons other than match iteration are left out:
@@ -88,6 +89,9 @@ PATTERNS = [
     "a*|b",
     "b*?a?",
     "b|a??",
+    "a|x*",
+    "(a)(b)",
+    r"(,)(\s*)",
 ]
 
 HAYSTACKS = [
@@ -144,11 +148,77 @@ def opt_str(v):
     return "None" if v is None else "Some(%s)" % rust_str(v)
 
 
-def diverges(matches):
-    for m1, m2 in zip(matches, matches[1:]):
-        if m1.start() == m1.end() and m2.start() == m1.end():
-            return True
-    return False
+def our_matches(compiled, haystack, limit):
+    """The Rust implementation's match loop, on CPython's preferred matches."""
+    out = []
+    pos = 0
+    empty_end = None
+    while len(out) < limit:
+        m = compiled.search(haystack, pos)
+        if m is None:
+            break
+        if m.start() == m.end() and empty_end == m.start():
+            if pos >= len(haystack):
+                break
+            pos += 1
+            empty_end = None
+            continue
+        out.append(m)
+        empty_end = m.end() if m.start() == m.end() else None
+        pos = m.end()
+    return out
+
+
+def our_split(compiled, haystack, maxsplit):
+    if maxsplit is None or maxsplit == 0:
+        limit = float("inf")
+    elif maxsplit < 0:
+        limit = 0
+    else:
+        limit = maxsplit
+    out = []
+    last = 0
+    for m in our_matches(compiled, haystack, limit):
+        out.append(haystack[last : m.start()])
+        out.extend(g for g in m.groups() if g is not None)
+        last = m.end()
+    out.append(haystack[last:])
+    return out
+
+
+def our_findall(compiled, haystack):
+    def group(m, i):
+        g = m.group(i)
+        return "" if g is None else g
+
+    out = []
+    for m in our_matches(compiled, haystack, float("inf")):
+        if compiled.groups == 0:
+            out.append(m.group(0))
+        elif compiled.groups == 1:
+            out.append(group(m, 1))
+        else:
+            out.append(tuple(group(m, i) for i in range(1, compiled.groups + 1)))
+    return out
+
+
+def our_sub(compiled, haystack, repl):
+    out = []
+    last = 0
+    for m in our_matches(compiled, haystack, float("inf")):
+        out.append(haystack[last : m.start()])
+        out.append(repl)
+        last = m.end()
+    out.append(haystack[last:])
+    return "".join(out)
+
+
+def findall_expr(compiled, found):
+    if compiled.groups <= 1:
+        return "FindAll::Flat(&[%s])" % ", ".join(rust_str(x) for x in found)
+    return "FindAll::Groups(&[%s])" % ", ".join(
+        "&[%s]" % ", ".join(rust_str(g) for g in row) for row in found
+    )
 
 
 def main():
@@ -160,52 +230,43 @@ def main():
         for haystack in HAYSTACKS:
             if skip(pattern, haystack):
                 continue
-            matches = list(compiled.finditer(haystack))
             for maxsplit in MAXSPLITS:
                 if maxsplit is None:
                     result = compiled.split(haystack)
-                    counted = matches
                 else:
                     result = compiled.split(haystack, maxsplit=maxsplit)
-                    if maxsplit < 0:
-                        counted = []
-                    elif maxsplit == 0:
-                        counted = matches
-                    else:
-                        counted = matches[:maxsplit]
+                ours = our_split(compiled, haystack, maxsplit)
+                same = ours == [x for x in result if x is not None]
                 split_rows.append(
-                    "    SplitCase { s: %s, pattern: %s, maxsplit: %s, error: %s, expected: &[%s] },"
+                    "    SplitCase { s: %s, pattern: %s, maxsplit: %s, expected: &[%s], divergent: %s },"
                     % (
                         rust_str(haystack),
                         rust_str(pattern),
                         "None" if maxsplit is None else "Some(%d)" % maxsplit,
-                        "true" if diverges(counted) else "false",
                         ", ".join(opt_str(x) for x in result),
+                        "None" if same else "Some(&[%s])" % ", ".join(rust_str(x) for x in ours),
                     )
                 )
             found = compiled.findall(haystack)
-            if compiled.groups <= 1:
-                expected = "FindAll::Flat(&[%s])" % ", ".join(rust_str(x) for x in found)
-            else:
-                expected = "FindAll::Groups(&[%s])" % ", ".join(
-                    "&[%s]" % ", ".join(rust_str(g) for g in row) for row in found
-                )
+            ours = our_findall(compiled, haystack)
             findall_rows.append(
-                "    FindAllCase { s: %s, pattern: %s, error: %s, expected: %s },"
+                "    FindAllCase { s: %s, pattern: %s, expected: %s, divergent: %s },"
                 % (
                     rust_str(haystack),
                     rust_str(pattern),
-                    "true" if diverges(matches) else "false",
-                    expected,
+                    findall_expr(compiled, found),
+                    "None" if ours == found else "Some(%s)" % findall_expr(compiled, ours),
                 )
             )
+            subbed = compiled.sub("-", haystack)
+            ours = our_sub(compiled, haystack, "-")
             sub_rows.append(
-                "    SubCase { s: %s, pattern: %s, error: %s, expected: %s },"
+                "    SubCase { s: %s, pattern: %s, expected: %s, divergent: %s },"
                 % (
                     rust_str(haystack),
                     rust_str(pattern),
-                    "true" if diverges(matches) else "false",
-                    rust_str(compiled.sub("-", haystack)),
+                    rust_str(subbed),
+                    "None" if ours == subbed else "Some(%s)" % rust_str(ours),
                 )
             )
 
@@ -221,9 +282,9 @@ def main():
         "//! CPython results for re.split, re.findall and re.sub (replacement `-`).",
         "//!",
         "//! `expected` is CPython's output verbatim, so a re.split group that did",
-        "//! not take part in a match is `None`. `error` is true where CPython took",
-        "//! a non-empty match right after an empty match at the same position,",
-        "//! which the Rust implementation reports as an error.",
+        "//! not take part in a match is `None`. `divergent` is the Rust",
+        "//! implementation's documented result where it differs from CPython (lazy",
+        "//! and empty-first patterns), and `None` where it must match CPython.",
         "",
         "use super::{FindAll, FindAllCase, SplitCase, SubCase};",
         "",
@@ -244,9 +305,10 @@ def main():
     ]
     with open(OUT_PATH, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(lines))
+    divergent = sum("divergent: Some" in r for r in split_rows + findall_rows + sub_rows)
     print(
-        "wrote %s: %d split, %d findall, %d sub cases (%s)"
-        % (OUT_PATH, len(split_rows), len(findall_rows), len(sub_rows), version),
+        "wrote %s: %d split, %d findall, %d sub cases, %d divergent (%s)"
+        % (OUT_PATH, len(split_rows), len(findall_rows), len(sub_rows), divergent, version),
         file=sys.stderr,
     )
 

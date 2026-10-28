@@ -830,11 +830,6 @@ parent's cache via move-and-return: the parent's cache is moved into the child b
 each iteration and moved back after, so patterns compiled in one iteration are available
 in subsequent iterations without recompilation.
 
-The cache holds `regex::Regex` values only. The longest-match regex that
-`re_split`, `re_findall` and `re_sub` build for some patterns (see "Regex
-match iteration" in function-library.md) is compiled within the one call
-and not cached.
-
 ## Divergence from Python
 
 The Rust evaluator uses the same algorithmic structure as the Python `Evaluator` class.

@@ -20,8 +20,8 @@ pub(crate) struct SplitCase {
     pub s: &'static str,
     pub pattern: &'static str,
     pub maxsplit: Option<i64>,
-    pub error: bool,
     pub expected: &'static [Option<&'static str>],
+    pub divergent: Option<&'static [&'static str]>,
 }
 
 pub(crate) enum FindAll {
@@ -32,21 +32,16 @@ pub(crate) enum FindAll {
 pub(crate) struct FindAllCase {
     pub s: &'static str,
     pub pattern: &'static str,
-    pub error: bool,
     pub expected: FindAll,
+    pub divergent: Option<FindAll>,
 }
 
 pub(crate) struct SubCase {
     pub s: &'static str,
     pub pattern: &'static str,
-    pub error: bool,
     pub expected: &'static str,
+    pub divergent: Option<&'static str>,
 }
-
-const DIVERGENCE: &str = "the pattern prefers an empty match where a non-empty match is also \
-                          possible, and Python's re would take the non-empty one. Make the \
-                          empty match the pattern's last choice, for example 'a?' instead of \
-                          'a??', or 'a|' instead of '|a'";
 
 fn eval(expr: &str) -> ExprValue {
     ParsedExpression::new(expr)
@@ -204,6 +199,14 @@ fn re_split_includes_capture_groups() {
 }
 
 #[test]
+fn re_split_includes_every_participating_group() {
+    assert_eq!(
+        display("re_split('xaby', '(a)(b)')"),
+        r#"["x", "a", "b", "y"]"#
+    );
+}
+
+#[test]
 fn re_split_drops_groups_that_did_not_take_part() {
     // CPython: ['a', ',', None, 'b', None, ';', 'c']
     assert_eq!(
@@ -272,56 +275,29 @@ fn re_split_repeated_group_keeps_last_non_empty_iteration() {
     );
 }
 
-// === Patterns whose preferred match is empty where a non-empty one exists ===
+// === Known divergence: lazy and empty-first patterns ===
 
 #[test]
-fn re_findall_lazy_empty_match_is_an_error() {
-    assert_err(
-        "re_findall('aa', 'a??')",
-        &[
-            "re_findall(): at index 0 ",
-            DIVERGENCE,
-            "\n",
-            "  re_findall('aa', 'a??')\n",
-            "  ^~~~~~~~~~~~~~~~~~~~~~~",
-        ],
-    );
+fn re_findall_lazy_pattern_moves_on_after_repeated_empty_match() {
+    // CPython: ['', 'a', '', 'a', '']. Documented in function-library.md.
+    assert_eq!(display("re_findall('aa', 'a??')"), r#"["", "", ""]"#);
 }
 
 #[test]
-fn re_split_empty_first_alternative_is_an_error() {
-    assert_err(
-        "re_split('xa', '|a')",
-        &[
-            "re_split(): at index 1 ",
-            DIVERGENCE,
-            "\n",
-            "  re_split('xa', '|a')\n",
-            "  ^~~~~~~~~~~~~~~~~~~~",
-        ],
-    );
+fn re_split_empty_first_alternative_moves_on_after_repeated_empty_match() {
+    // CPython: ['', 'x', '', '', ''].
+    assert_eq!(display("re_split('xa', '|a')"), r#"["", "x", "a", ""]"#);
 }
 
 #[test]
-fn re_sub_lazy_empty_match_is_an_error() {
-    assert_err(
-        "re_sub('日a', 'a*?', '-')",
-        &[
-            "re_sub(): at index 1 ",
-            DIVERGENCE,
-            "\n",
-            "  re_sub('日a', 'a*?', '-')\n",
-            "  ^~~~~~~~~~~~~~~~~~~~~~~",
-        ],
-    );
+fn re_sub_lazy_pattern_moves_on_by_one_character() {
+    // CPython: '-日---'. The step is one character, not one byte.
+    assert_eq!(display("re_sub('日a', 'a*?', '-')"), "-日-a-");
 }
 
 #[test]
-fn lazy_pattern_without_a_non_empty_alternative_is_fine() {
-    // After each empty match there is no non-empty match at the same
-    // position, so CPython and this implementation agree.
+fn lazy_pattern_agrees_with_cpython_without_a_non_empty_alternative() {
     assert_eq!(display("re_findall('bb', 'a??')"), r#"["", "", ""]"#);
-    // maxsplit stops the search before the divergent position.
     assert_eq!(display("re_split('aa', 'a??', 1)"), r#"["", "aa"]"#);
 }
 
@@ -395,24 +371,28 @@ fn re_split_empty_matches_charge_the_same_operations() {
 #[test]
 fn fixtures_come_from_cpython() {
     assert!(fixtures::PYTHON_VERSION.starts_with("CPython 3."));
-    assert_eq!(fixtures::SPLIT_CASES.len(), 6040);
-    assert_eq!(fixtures::FINDALL_CASES.len(), 755);
-    assert_eq!(fixtures::SUB_CASES.len(), 755);
-}
-
-fn check_error(what: &str, got: Result<ExprValue, String>) -> Option<String> {
-    match got {
-        Err(e) if e.contains(DIVERGENCE) => None,
-        other => Some(format!(
-            "{what}: expected the divergence error, got {other:?}"
-        )),
-    }
+    assert_eq!(fixtures::SPLIT_CASES.len(), 6496);
+    assert_eq!(fixtures::FINDALL_CASES.len(), 812);
+    assert_eq!(fixtures::SUB_CASES.len(), 812);
+    let divergent = fixtures::SPLIT_CASES
+        .iter()
+        .filter(|c| c.divergent.is_some())
+        .count()
+        + fixtures::FINDALL_CASES
+            .iter()
+            .filter(|c| c.divergent.is_some())
+            .count()
+        + fixtures::SUB_CASES
+            .iter()
+            .filter(|c| c.divergent.is_some())
+            .count();
+    assert_eq!(divergent, 450);
 }
 
 fn report(failures: Vec<String>) {
     assert!(
         failures.is_empty(),
-        "{} mismatches with CPython, first 20:\n{}",
+        "{} mismatches, first 20:\n{}",
         failures.len(),
         failures
             .iter()
@@ -423,10 +403,11 @@ fn report(failures: Vec<String>) {
     );
 }
 
+/// Matches CPython's re.split, with None (a group that did not take part)
+/// dropped, except where the fixture records the documented divergence.
 #[test]
 fn re_split_matches_cpython() {
     let mut failures = Vec::new();
-    let mut errors = 0;
     for c in fixtures::SPLIT_CASES {
         let (expr, what) = match c.maxsplit {
             None => (
@@ -438,21 +419,33 @@ fn re_split_matches_cpython() {
                 format!("re_split({:?}, {:?}, {n})", c.s, c.pattern),
             ),
         };
-        let got = eval_with(expr, c.s, c.pattern, c.maxsplit);
-        if c.error {
-            errors += 1;
-            failures.extend(check_error(&what, got));
-            continue;
-        }
-        // CPython's None (a group that did not take part) is dropped.
-        let want: Vec<String> = c.expected.iter().flatten().map(|s| s.to_string()).collect();
-        match got {
+        let want: Vec<String> = match c.divergent {
+            Some(ours) => ours.iter().map(|s| s.to_string()).collect(),
+            None => c.expected.iter().flatten().map(|s| s.to_string()).collect(),
+        };
+        match eval_with(expr, c.s, c.pattern, c.maxsplit) {
             Ok(v) if strings(&v) == want => {}
             other => failures.push(format!("{what}: expected {want:?}, got {other:?}")),
         }
     }
-    assert!(errors > 0 && errors < fixtures::SPLIT_CASES.len());
     report(failures);
+}
+
+fn findall_ok(v: &ExprValue, want: &FindAll) -> bool {
+    if v.list_len() == Some(0) {
+        let elem = match want {
+            FindAll::Flat(w) => w.is_empty().then_some("list[string]"),
+            FindAll::Groups(w) => w.is_empty().then_some("list[list[string]]"),
+        };
+        return elem == Some(v.expr_type().to_string().as_str());
+    }
+    match (v, want) {
+        (v, FindAll::Flat(w)) => strings(v) == *w,
+        (ExprValue::ListList(rows, _, _), FindAll::Groups(w)) => {
+            rows.len() == w.len() && rows.iter().zip(w.iter()).all(|(r, w)| strings(r) == *w)
+        }
+        _ => false,
+    }
 }
 
 #[test]
@@ -460,28 +453,10 @@ fn re_findall_matches_cpython() {
     let mut failures = Vec::new();
     for c in fixtures::FINDALL_CASES {
         let what = format!("re_findall({:?}, {:?})", c.s, c.pattern);
-        let got = eval_with("re_findall(Param.S, Param.P)", c.s, c.pattern, None);
-        if c.error {
-            failures.extend(check_error(&what, got));
-            continue;
-        }
-        let ok = match (&got, &c.expected) {
-            (Ok(v), _) if v.list_len() == Some(0) => {
-                let elem = match c.expected {
-                    FindAll::Flat(want) => want.is_empty().then_some("list[string]"),
-                    FindAll::Groups(want) => want.is_empty().then_some("list[list[string]]"),
-                };
-                elem == Some(v.expr_type().to_string().as_str())
-            }
-            (Ok(v), FindAll::Flat(want)) => strings(v) == *want,
-            (Ok(ExprValue::ListList(rows, _, _)), FindAll::Groups(want)) => {
-                rows.len() == want.len()
-                    && rows.iter().zip(want.iter()).all(|(r, w)| strings(r) == *w)
-            }
-            _ => false,
-        };
-        if !ok {
-            failures.push(format!("{what}: got {got:?}"));
+        let want = c.divergent.as_ref().unwrap_or(&c.expected);
+        match eval_with("re_findall(Param.S, Param.P)", c.s, c.pattern, None) {
+            Ok(v) if findall_ok(&v, want) => {}
+            other => failures.push(format!("{what}: got {other:?}")),
         }
     }
     report(failures);
@@ -492,14 +467,10 @@ fn re_sub_matches_cpython() {
     let mut failures = Vec::new();
     for c in fixtures::SUB_CASES {
         let what = format!("re_sub({:?}, {:?}, '-')", c.s, c.pattern);
-        let got = eval_with("re_sub(Param.S, Param.P, '-')", c.s, c.pattern, None);
-        if c.error {
-            failures.extend(check_error(&what, got));
-            continue;
-        }
-        match got {
-            Ok(ExprValue::String(s)) if s == c.expected => {}
-            other => failures.push(format!("{what}: expected {:?}, got {other:?}", c.expected)),
+        let want = c.divergent.unwrap_or(c.expected);
+        match eval_with("re_sub(Param.S, Param.P, '-')", c.s, c.pattern, None) {
+            Ok(ExprValue::String(s)) if s == want => {}
+            other => failures.push(format!("{what}: expected {want:?}, got {other:?}")),
         }
     }
     report(failures);
