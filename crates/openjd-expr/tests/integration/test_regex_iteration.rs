@@ -291,7 +291,7 @@ fn re_split_empty_first_alternative_moves_on_after_repeated_empty_match() {
 
 #[test]
 fn re_sub_lazy_pattern_moves_on_by_one_character() {
-    // CPython: '-日---'. The step is one character, not one byte.
+    // CPython: '-日---'.
     assert_eq!(display("re_sub('日a', 'a*?', '-')"), "-日-a-");
 }
 
@@ -350,20 +350,26 @@ fn re_sub_empty_match_at_every_character_respects_memory_limit() {
 }
 
 #[test]
-fn re_split_empty_matches_charge_the_same_operations() {
+fn empty_matches_charge_the_same_operations() {
     // The operation charge depends on the input length only, as it did
-    // before empty matches split: one empty match per character costs no
+    // before empty matches counted: one empty match per character costs no
     // more than a pattern that never matches.
-    let ops = |pattern: &str| {
+    let ops = |expr: &str, pattern: &str| {
         let mut st = SymbolTable::new();
         st.set("Param.Text", "a".repeat(10_000)).unwrap();
         st.set("Param.P", pattern).unwrap();
-        ParsedExpression::new("re_split(Param.Text, Param.P)")
+        ParsedExpression::new(expr)
             .and_then(|p| p.evaluate_with_metrics(&[&st]))
             .unwrap()
             .operation_count
     };
-    assert_eq!(ops("x*"), ops(","));
+    for expr in [
+        "re_split(Param.Text, Param.P)",
+        "re_findall(Param.Text, Param.P)",
+        "re_sub(Param.Text, Param.P, '-')",
+    ] {
+        assert_eq!(ops(expr, "x*"), ops(expr, ","), "{expr}");
+    }
 }
 
 // === Differential check against CPython ===

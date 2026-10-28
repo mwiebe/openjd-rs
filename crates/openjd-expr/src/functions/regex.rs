@@ -560,7 +560,6 @@ fn for_each_python_match<'h>(
                 break;
             };
             pos += c.len_utf8();
-            empty_end = None;
             continue;
         }
         f(&caps)?;
