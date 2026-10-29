@@ -147,12 +147,15 @@ impl RunContext {
         }
     }
 
-    /// Make the Session's entered Job Environments exactly `targets`, in
-    /// order (Template Schemas §3.2.2): exit entered Environments, from the
-    /// most recently entered, until what remains is a prefix of `targets`
-    /// whose every entry [`matches`](EnteredJobEnvironment::matches), then
-    /// enter the rest of `targets` in order. Called between Steps, when no
-    /// Step Environment is entered. Exits go through
+    /// Move the Session's entered Job Environments to `targets`, in order
+    /// (Template Schemas §3.2.2): exit entered Environments, from the most
+    /// recently entered, until what remains is a prefix of `targets` whose
+    /// every entry [`matches`](EnteredJobEnvironment::matches), then enter
+    /// the rest of `targets` in order. Entering stops at the first failure
+    /// or an interruption ([`is_stopping`](Self::is_stopping)), so the
+    /// entered set then falls short of `targets` and the caller must not
+    /// run the Step. Called between Steps, when no Step Environment is
+    /// entered. Exits go through
     /// [`exit_environments_down_to`](Self::exit_environments_down_to), so
     /// an Environment entered under a wrapper is exited through its
     /// `onWrapEnvExit` while the wrapper is still entered.

@@ -2169,3 +2169,110 @@ fn a_failed_reentry_stops_the_run_and_exits_every_environment() {
     );
     assert!(stdout.contains("Session ended with errors."), "{stdout}");
 }
+
+#[test]
+fn an_environment_is_kept_by_its_identity_not_its_position_in_the_step() {
+    // No Environment has parameters, so only identity can tell the entries
+    // apart. A enters First, the ON_REQUEST Middle, and Last; B enters First
+    // and Last. Last is at position 2 of A's set and 1 of B's, and Middle is
+    // at B's position 1, so the Session must exit Last and Middle and enter
+    // Last again, and B must run without Middle's variables.
+    let dir = tempfile::tempdir().unwrap();
+    let echo = |what: &str| format!("{{command: python, args: [\"-c\", \"print('{what}')\"]}}");
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        &format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             jobEnvironments:\n\
+             - name: First\n  script: {{actions: {{onEnter: {fe}, onExit: {fx}}}}}\n\
+             - name: Middle\n  activation: ON_REQUEST\n  variables: {{MIDDLE: set}}\n  \
+             script: {{actions: {{onEnter: {me}, onExit: {mx}}}}}\n\
+             - name: Last\n  script: {{actions: {{onEnter: {le}, onExit: {lx}}}}}\n\
+             steps:\n\
+             - name: A\n  dependencies: [{{environment: Middle}}]\n  \
+             script: {{actions: {{onRun: {ta}}}}}\n\
+             - name: B\n  dependencies: [{{dependsOn: A}}]\n  script: {{actions: {{onRun: \
+             {{command: python, args: [\"-c\", \"import os; print('TASK B MIDDLE=' + \
+             os.environ.get('MIDDLE', 'unset'))\"]}}}}}}\n",
+            fe = echo("ENTER First"),
+            fx = echo("EXIT First"),
+            me = echo("ENTER Middle"),
+            mx = echo("EXIT Middle"),
+            le = echo("ENTER Last"),
+            lx = echo("EXIT Last"),
+            ta = echo("TASK A"),
+        ),
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        lifecycle_markers(&stdout),
+        [
+            "ENTER First",
+            "ENTER Middle",
+            "ENTER Last",
+            "Running step 'A'",
+            "TASK A",
+            "EXIT Last",
+            "EXIT Middle",
+            "ENTER Last",
+            "Running step 'B'",
+            "TASK B MIDDLE=unset",
+            "EXIT Last",
+            "EXIT First",
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn float_values_that_compare_equal_keep_the_environment_entered() {
+    // §3.2.2: FLOAT values compare by numeric value, so A's 1.0 and B's
+    // 1.00 are equal and the Session keeps Scale entered with A's value,
+    // as written by A; C's 2.5 differs.
+    let dir = tempfile::tempdir().unwrap();
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        r#"specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: Scale
+  envParameterDefinitions: [{name: F, type: FLOAT, default: 9}]
+  script:
+    actions:
+      onEnter: {command: python, args: ["-c", "import sys; print('ENTER Scale ' + sys.argv[1])", "{{Env.Param.F}}"]}
+      onExit: {command: python, args: ["-c", "import sys; print('EXIT Scale ' + sys.argv[1])", "{{Env.Param.F}}"]}
+steps:
+- name: A
+  dependencies: [{environment: Scale, parameters: {F: "1.0"}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "print('TASK A')"]}}}
+- name: B
+  dependencies: [{dependsOn: A}, {environment: Scale, parameters: {F: "1.00"}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "print('TASK B')"]}}}
+- name: C
+  dependencies: [{dependsOn: B}, {environment: Scale, parameters: {F: 2.5}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "print('TASK C')"]}}}
+"#,
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        lifecycle_markers(&stdout),
+        [
+            "ENTER Scale 1.0",
+            "Running step 'A'",
+            "TASK A",
+            "Running step 'B'",
+            "TASK B",
+            "EXIT Scale 1.0",
+            "ENTER Scale 2.5",
+            "Running step 'C'",
+            "TASK C",
+            "EXIT Scale 2.5",
+        ],
+        "{stdout}"
+    );
+}

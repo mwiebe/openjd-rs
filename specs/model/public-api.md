@@ -913,8 +913,9 @@ impl job::Step {
     /// Whether the Step's Sessions enter the Job Environment `name` of
     /// `document`.
     #[must_use] pub fn enters_environment(&self, document: &Document, name: &str) -> bool;
-    /// `self.environments == other.environments`: the first condition of
-    /// the §3.2.2 Session-sharing rule.
+    /// `self.environments == other.environments`: whether a Session can run
+    /// both Steps' Tasks without exiting and entering Job Environments
+    /// between them (§3.2.2).
     #[must_use] pub fn same_environments(&self, other: &job::Step) -> bool;
     /// Template Schemas §3.2.2 equality of the two Steps' effective
     /// values: matched by (document, environment); FLOAT compared by value;

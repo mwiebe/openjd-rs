@@ -3,7 +3,9 @@
 This plan brings the `ENV_PARAMS` prototype on `env-params-prototype` (at `82507ee`, which matches spec `d335619`) up to
 the specification at `2491d6e`, in one change made through the `implement-change` skill at the cross-crate tier.
 [Plan 5](env-params-prototype-plan-5.md) and [plan 4](env-params-prototype-plan-4.md) are the context; their decisions
-and ambiguities hold except where this plan says otherwise.
+and ambiguities hold except where this plan says otherwise. (Later superseded: the Session grouping of `openjd run` in
+the earlier plans, `session_groups` and a new Session per group, is replaced by one Session that exits and re-enters
+Environments between Steps; see `specs/cli/run.md`.)
 
 ## Sources
 

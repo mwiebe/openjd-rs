@@ -118,7 +118,8 @@ fn a_step_enters_every_all_environment_and_the_on_request_ones_it_requests() {
     assert!(job.steps[0].enters_environment(&Document::JobTemplate, "Only"));
     // An attached Environment of the same name is another Environment.
     assert!(!job.steps[1].enters_environment(&Document::environment_template(0, None), "All"));
-    // The sharing rule's first condition (§3.2.2 ¶4).
+    // Equal Job Environment sets (§3.2.2 ¶4): a Session can go from one
+    // Step to the other without exiting or entering a Job Environment.
     assert!(job.steps[0].same_environments(&job.steps[2]));
     assert!(!job.steps[0].same_environments(&job.steps[1]));
 }

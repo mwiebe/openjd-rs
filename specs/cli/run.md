@@ -388,7 +388,9 @@ one working directory. Exits use the same `exit_environments_down_to` as the end
 so an Environment entered under an RFC 0008 wrapper is exited through the wrapper's
 `onWrapEnvExit` while the wrapper is still entered, and entered again through its
 `onWrapEnvEnter`. A failed action or an interruption stops the run before the next Step's
-move; the Session then exits every entered environment and ends. An `--environment` file that
+move. A failed `onExit` or `onEnter` during a move stops it too: the Session enters no
+further environment, does not run the Step, then exits every entered environment (including
+one whose enter failed) and ends, and the run fails. An `--environment` file that
 does not parse or validate is named in the error (`Environment Template '<path>': ...`).
 
 Each combined job environment is entered with the values of the Step it is entered for,
