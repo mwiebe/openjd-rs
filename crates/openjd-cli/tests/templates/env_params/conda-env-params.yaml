@@ -7,7 +7,7 @@
 # unchanged: a Step whose Packages is empty does not enter it. The
 # onEnter script is a Python stub that prints the values it was given
 # instead of running conda, and exports CONDA_STUB_PACKAGES so a Task can
-# show which Session it ran in. An onExit stub, not in the sample, shows the
+# show which values the Session entered Conda with. An onExit stub, not in the sample, shows the
 # Session keeps the values until it exits the Environment.
 
 specificationVersion: environment-2023-09

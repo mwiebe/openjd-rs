@@ -268,7 +268,7 @@ fn a_step_with_other_values_reenters_the_environment_in_the_same_session() {
     assert_eq!(count(&stdout, "\tRunning job 'Grouping'"), 1, "{stdout}");
     assert_eq!(count(&stdout, "Seats onEnter"), 2, "{stdout}");
     assert_eq!(count(&stdout, "Seats onExit"), 2, "{stdout}");
-    // Each Session runs only its own group's Steps, each once.
+    // The Session runs every Step once.
     for step in ["A", "B", "C", "D"] {
         assert_eq!(count(&stdout, &format!("Step {step} ran")), 1, "{stdout}");
     }
@@ -1845,7 +1845,7 @@ fn a_disabled_environment_needs_no_values() {
 }
 
 #[test]
-fn range_expr_values_that_denote_the_same_integers_share_a_session() {
+fn range_expr_values_that_denote_the_same_integers_keep_the_environment_entered() {
     // §3.2.2: two RANGE_EXPR values are equal when they have the same
     // canonical form, so A and B (`1-3`), C (`1,2,3`), and E (` 1-3 `) run
     // with Cache entered once, and D, which takes the default `1-10`, only
@@ -1981,7 +1981,8 @@ fn an_environment_reentered_under_a_wrapper_exits_through_the_wrap_hooks() {
     // RFC 0008: Wrap wraps the actions of every Environment entered after
     // it. The Session keeps Wrap entered and exits and enters Seats again
     // between B and C, each time through Wrap's onWrapEnvExit and
-    // onWrapEnvEnter, with the values Seats was entered with.
+    // onWrapEnvEnter. The hooks run the wrapped action, so Seats' own
+    // onEnter and onExit show the values each entry used.
     let dir = tempfile::tempdir().unwrap();
     let job = write_file(
         &dir,
@@ -1994,16 +1995,20 @@ jobEnvironments:
   script:
     actions:
       onEnter: {command: python, args: ["-c", "print('Wrap own onEnter')"]}
-      onWrapEnvEnter: {command: python, args: ["-c", "print('WrapEnvEnter {{WrappedEnv.Name}}')"]}
+      onWrapEnvEnter:
+        command: python
+        args: ["-c", "import subprocess, sys; print('WrapEnvEnter ' + sys.argv[1], flush=True); sys.exit(subprocess.run(sys.argv[2:]).returncode)", "{{WrappedEnv.Name}}", "{{WrappedAction.Command}}", "{{WrappedAction.Args}}"]
       onWrapTaskRun: {command: python, args: ["-c", "print('WrapTaskRun')"]}
-      onWrapEnvExit: {command: python, args: ["-c", "print('WrapEnvExit {{WrappedEnv.Name}}')"]}
+      onWrapEnvExit:
+        command: python
+        args: ["-c", "import subprocess, sys; print('WrapEnvExit ' + sys.argv[1], flush=True); sys.exit(subprocess.run(sys.argv[2:]).returncode)", "{{WrappedEnv.Name}}", "{{WrappedAction.Command}}", "{{WrappedAction.Args}}"]
       onExit: {command: python, args: ["-c", "print('Wrap own onExit')"]}
 - name: Seats
   envParameterDefinitions: [{name: Count, type: INT, default: 1}]
   script:
     actions:
-      onEnter: {command: python, args: ["-c", "print('Seats onEnter')"]}
-      onExit: {command: python, args: ["-c", "print('Seats onExit')"]}
+      onEnter: {command: python, args: ["-c", "import sys; print('Seats onEnter Count=' + sys.argv[1])", "{{Env.Param.Count}}"]}
+      onExit: {command: python, args: ["-c", "import sys; print('Seats onExit Count=' + sys.argv[1])", "{{Env.Param.Count}}"]}
 steps:
 - name: B
   dependencies: [{environment: Seats, parameters: {Count: 2}}]
@@ -2019,9 +2024,6 @@ steps:
     assert_eq!(count(&stdout, "Wrap own onEnter"), 1, "{stdout}");
     assert_eq!(count(&stdout, "WrapEnvEnter Seats"), 2, "{stdout}");
     assert_eq!(count(&stdout, "WrapEnvExit Seats"), 2, "{stdout}");
-    // The wrapper substitutes its hooks for Seats' own actions.
-    assert!(!stdout.contains("Seats onEnter"), "{stdout}");
-    assert!(!stdout.contains("Seats onExit"), "{stdout}");
     assert_in_order(
         &stdout,
         &[
@@ -2029,20 +2031,141 @@ steps:
             "Entering Environment: Seats",
             "\tCount(INT) = 2",
             "WrapEnvEnter Seats",
+            "Seats onEnter Count=2",
             "Running step 'B'",
             "WrapTaskRun",
             "Exiting Environment: Seats",
             "WrapEnvExit Seats",
+            "Seats onExit Count=2",
             "Entering Environment: Seats",
             "\tCount(INT) = 1",
             "WrapEnvEnter Seats",
+            "Seats onEnter Count=1",
             "Running step 'C'",
             "WrapTaskRun",
             "Exiting Environment: Seats",
             "WrapEnvExit Seats",
+            "Seats onExit Count=1",
             "Exiting Environment: Wrap",
             "Wrap own onExit",
             "All actions completed successfully!",
         ],
     );
+}
+
+/// The `ENTER ...`, `EXIT ...`, `TASK ...`, and `Running step ...` lines of
+/// a run's output, from the marker on, in order.
+fn lifecycle_markers(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            ["ENTER ", "EXIT ", "TASK ", "Running step "]
+                .iter()
+                .find_map(|m| line.find(m).map(|at| &line[at..]))
+        })
+        .collect()
+}
+
+/// A Job Template with Job Environments `First`, `Seats` (INT `Count`,
+/// default 1), and `Third`, each of whose actions print a marker, and Steps
+/// A (`Count: 2`) and B (the default). `seats_on_enter` is the Python body of
+/// Seats' `onEnter`, with `sys.argv[1]` its Count.
+fn three_environment_job(dir: &tempfile::TempDir, seats_on_enter: &str) -> String {
+    let echo = |what: &str| format!("{{command: python, args: [\"-c\", \"print('{what}')\"]}}");
+    write_file(
+        dir,
+        "job.yaml",
+        &format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             jobEnvironments:\n\
+             - name: First\n  script: {{actions: {{onEnter: {fe}, onExit: {fx}}}}}\n\
+             - name: Seats\n  envParameterDefinitions: [{{name: Count, type: INT, default: 1}}]\n  \
+             script: {{actions: {{onEnter: {{command: python, args: [\"-c\", \"import sys; \
+             {seats_on_enter}\", \"{{{{Env.Param.Count}}}}\"]}}, \
+             onExit: {{command: python, args: [\"-c\", \"import sys; print('EXIT Seats ' + \
+             sys.argv[1])\", \"{{{{Env.Param.Count}}}}\"]}}}}}}\n\
+             - name: Third\n  script: {{actions: {{onEnter: {te}, onExit: {tx}}}}}\n\
+             steps:\n\
+             - name: A\n  dependencies: [{{environment: Seats, parameters: {{Count: 2}}}}]\n  \
+             script: {{actions: {{onRun: {ta}}}}}\n\
+             - name: B\n  dependencies: [{{dependsOn: A}}]\n  script: {{actions: {{onRun: {tb}}}}}\n",
+            fe = echo("ENTER First"),
+            fx = echo("EXIT First"),
+            te = echo("ENTER Third"),
+            tx = echo("EXIT Third"),
+            ta = echo("TASK A"),
+            tb = echo("TASK B"),
+        ),
+    )
+}
+
+#[test]
+fn an_unchanged_environment_above_a_changed_one_is_exited_and_entered_again() {
+    // Seats' value differs between A and B, and Third, entered after it, is
+    // unchanged. Exits follow the reverse of entry order (Template Schemas
+    // §3.2.2), so the Session exits Third to reach Seats, and enters both
+    // again in Job order; First, below the difference, stays entered.
+    let dir = tempfile::tempdir().unwrap();
+    let job = three_environment_job(&dir, "print('ENTER Seats ' + sys.argv[1])");
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(
+        lifecycle_markers(&stdout),
+        [
+            "ENTER First",
+            "ENTER Seats 2",
+            "ENTER Third",
+            "Running step 'A'",
+            "TASK A",
+            "EXIT Third",
+            "EXIT Seats 2",
+            "ENTER Seats 1",
+            "ENTER Third",
+            "Running step 'B'",
+            "TASK B",
+            "EXIT Third",
+            "EXIT Seats 1",
+            "EXIT First",
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_failed_reentry_stops_the_run_and_exits_every_environment() {
+    // Seats' onEnter fails for B's value. The Session does not enter Third
+    // or run B, exits Seats (whose enter was attempted) and First, and the
+    // run fails.
+    let dir = tempfile::tempdir().unwrap();
+    let job = three_environment_job(
+        &dir,
+        "print('ENTER Seats ' + sys.argv[1]); sys.exit(0 if sys.argv[1] == '2' else 5)",
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(
+        lifecycle_markers(&stdout),
+        [
+            "ENTER First",
+            "ENTER Seats 2",
+            "ENTER Third",
+            "Running step 'A'",
+            "TASK A",
+            "EXIT Third",
+            "EXIT Seats 2",
+            "ENTER Seats 1",
+            "EXIT Seats 1",
+            "EXIT First",
+        ],
+        "{stdout}"
+    );
+    assert_eq!(count(&stdout, "Entering Environment: Third"), 1, "{stdout}");
+    assert!(stdout.contains("Process exited with code: 5"), "{stdout}");
+    assert!(
+        stderr.contains("ERROR: Environment setup failed: "),
+        "{stderr}"
+    );
+    assert!(stdout.contains("Session ended with errors."), "{stdout}");
 }

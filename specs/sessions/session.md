@@ -207,9 +207,12 @@ this crate takes "the Job's Environments". With `ENV_PARAMS` the caller passes a
 `step_environments`. An `ON_REQUEST` Environment the Step does not request, and an
 Environment whose own `enableIf` (§4 item 6) is `false` for the Step, are not in the set
 (job creation leaves them out of `environments` and `step_environments`), so they are not
-entered and their `variables`, actions, and wrap hooks never apply to that Session. Steps share
-a Session only when their sets and values are equal (`job::Step::same_environments` and
-`job::Step::environment_values_equal`). Each Environment's `hostRequirements` were combined into
+entered and their `variables`, actions, and wrap hooks never apply to that Session. A Session may
+run a Step's Tasks only when the Environments it has entered and not exited are the Step's set,
+each entered with values equal to the Step's (§3.2.2); between Steps it may exit Environments,
+in the reverse of the order it entered them, and enter others or enter one again with another
+Step's values. Two Steps can run in turn without such a move only when their sets and values
+are equal (`job::Step::same_environments` and `job::Step::environment_values_equal`). Each Environment's `hostRequirements` were combined into
 `job::Step::host_requirements` at job creation (§3.3.3); the Session does not read them.
 
 ### Enter with Environment parameter values (ENV_PARAMS)

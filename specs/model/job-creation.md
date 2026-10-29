@@ -791,8 +791,9 @@ decide it, by what the expression can read:
 
 `Job.EnvNames` lists every Job Environment whatever its `enableIf` (§7.3.1). A disabled
 Environment is not held to constraint 7 for the Step, and the Step's values for it are not
-checked (§3.2.2), which replaces plan 3's A33. Session grouping
-(`Step::same_environments`) compares the final sets. `CreatedJob::disabled_environments`
+checked (§3.2.2), which replaces plan 3's A33. `Step::same_environments`,
+which decides whether a Session can go from one Step to the next without exiting and
+entering Job Environments, compares the final sets. `CreatedJob::disabled_environments`
 records, per Step, the Environments an `enableIf` disabled (Job Environments by document and
 name, attached ones first, Step Environments by name), for display; an Environment the Step
 would not have entered anyway (an `ON_REQUEST` one it does not request) is not listed, since

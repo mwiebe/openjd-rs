@@ -11,7 +11,7 @@
 //! Job creation (§7.4): resolution once per Step with its effective
 //! values, and every effect of a disabled Environment (not entered, no
 //! values, no host requirements, `Job.EnvNames` unchanged, no constraint
-//! 7 and no value checks, Session grouping, the single-layer rule over the
+//! 7 and no value checks, the Environment-set comparison, the single-layer rule over the
 //! final set), the `enableIf` evaluated with the values that are known
 //! (§3.2.2), and `check_environment_templates` treating only certainly
 //! entered Environments as entered.
@@ -695,8 +695,8 @@ fn a_job_environment_is_decided_per_step_with_its_effective_values() {
             },
         ]
     );
-    // Session grouping compares the final sets: B and C can share a
-    // Session, A cannot share one with either.
+    // `same_environments` compares the final sets: B and C enter the same
+    // Job Environments, and A's differ from both.
     assert!(job.steps[1].same_environments(&job.steps[2]));
     assert!(!job.steps[0].same_environments(&job.steps[1]));
     // Job.EnvNames still lists Conda (§7.3.1).

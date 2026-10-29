@@ -192,9 +192,11 @@ impl Step {
 
     /// Whether this Step's Sessions enter the same Job Environments as
     /// `other`'s (Template Schemas §3.2.2, fourth paragraph): one Session
-    /// may run Tasks of both Steps only when this holds and
-    /// [`environment_values_equal`](Self::environment_values_equal) does,
-    /// and both have equal `step_environments`. Compares
+    /// may run Tasks of both Steps without exiting and entering Job
+    /// Environments between them only when this holds and
+    /// [`environment_values_equal`](Self::environment_values_equal) does.
+    /// (Each Step's own `step_environments` are entered and exited around
+    /// its Tasks.) Compares
     /// [`environments`](Self::environments), whose `None` is the full list.
     #[must_use]
     pub fn same_environments(&self, other: &Step) -> bool {
@@ -207,7 +209,8 @@ impl Step {
     /// the same type and the same value as resolved at job creation.
     ///
     /// This is the comparison a scheduler uses to decide whether one Session
-    /// may run Tasks of both Steps. It differs from `==` on the
+    /// may run Tasks of both Steps without exiting and entering Environments
+    /// between them. It differs from `==` on the
     /// [`environment_parameters`](Self::environment_parameters) field in two
     /// ways: a FLOAT (or an element of a `LIST[FLOAT]`) compares by numeric
     /// value, so `1.0` and `1.00` are equal here although their transport
