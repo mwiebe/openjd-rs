@@ -280,6 +280,14 @@ fn format_path(path: &[PathElement], out: &mut String) {
     }
 }
 
+/// Format a path as `field[index] -> nested -> leaf`, as error messages
+/// write it.
+pub(crate) fn path_to_string(path: &[PathElement]) -> String {
+    let mut out = String::new();
+    format_path(path, &mut out);
+    out
+}
+
 /// Helper: extend a path with a field name.
 #[must_use]
 pub fn path_field(base: &[PathElement], field: &str) -> Vec<PathElement> {

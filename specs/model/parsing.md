@@ -47,8 +47,8 @@ pub enum DecodedTemplate {
 
 ## Decode Pipeline
 
-The `decode_*` functions run passes 1–9 of the template processing pipeline. Passes 1–4
-live in the `parse` module; passes 5–9 live in the `validate_v2023_09` module (see
+The `decode_*` functions run passes 1–11 of the template processing pipeline. Passes 1–4
+live in the `parse` module; passes 5–11 live in the `validate_v2023_09` module (see
 [validation.md](validation.md)).
 
 ### Pass 1: Raw Parsing
@@ -88,6 +88,13 @@ Custom deserializers handle:
 - **`IntRange`/`StringRange`/`FloatRange`** — Distinguishes list vs expression string
 - **`FlexInt`/`FlexFloat`** — Accepts multiple YAML value representations
 - **`BoolValue`** — Accepts boolean, numeric, and string representations
+- **`EnvironmentParameterDefinition`** (ENV_PARAMS) — Removes `default`, decodes the rest
+  as a `JobParameterDefinition`, and keeps `default` as an `EnvironmentParameterValue`,
+  since a format-string `default` (`"{{Param.Seats}}"` on an INT) does not fit the Job
+  Parameter type's typed `default` field
+- **`EnvironmentParameterValue`** (ENV_PARAMS) — A string containing `{{` is parsed as a
+  `FormatString` (a brace mismatch fails decode); anything else is kept as the written JSON
+  value, which pass 11 checks against the parameter's type
 
 ### Pass 4: Extension Resolution
 
@@ -98,11 +105,24 @@ defaults to an empty set — no extensions are supported.
 
 The resulting extension set is stored in a `ValidationContext`.
 
+Once the extension set is known, pass 4 also applies §2's casing rule: without EXPR,
+parameter type names are case-sensitive, so `string` is not a spelling of `STRING`.
+Deserialization matches the `type` tag case-blind, so the names as written are collected
+from the raw document before pass 3 (`collect_written_type_names`) and checked here
+(`check_type_name_canonical_case`). The collected names are the top-level
+`parameterDefinitions` and each Step's `taskParameterDefinitions`. An Environment's
+`envParameterDefinitions` (ENV_PARAMS) are not collected: a document that lists ENV_PARAMS
+lists EXPR too (Template Schemas §1.1 item 3), under which names are case-insensitive, and
+template validation rejects any other document that has them (see
+[validation.md](validation.md#entry-points)). A name that matches no type is left to the
+deserializer's "unknown parameter type" error. These errors are returned before passes
+5–11 run.
+
 An empty `extensions: []` list is rejected for both job and environment templates during
 pass 4 with a `DecodeValidation` error. If a template does not use any extensions, the
 `extensions` field should be omitted entirely.
 
-### Passes 5–9: Validation
+### Passes 5–11: Validation
 
 The deserialized template is passed through the multi-pass validation pipeline
 (see [validation.md](validation.md)). Validation errors are accumulated and returned

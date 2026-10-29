@@ -1,0 +1,15 @@
+# A Step with a required `environment:` dependency (`required` absent
+# means true) on an Environment no Job Environment defines, and one with an
+# undeclared key for the Conda Environment.
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: RequiresLicenses
+steps:
+- name: Render
+  dependencies:
+  - environment: Licenses
+    parameters: {Seats: "4"}
+  - environment: Conda
+    required: false
+    parameters: {Packages: "blender", Bogus: "x"}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Render ran')"]}}}

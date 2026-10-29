@@ -202,7 +202,8 @@ pub fn print_cli_result(result: &dyn CliResult, format: &str) {
 }
 
 /// Parse and validate the `--extensions` argument.
-/// Returns an error if any extension name is not recognized.
+/// Returns an error if any extension name is not in
+/// [`openjd_model::ModelExtension::ALL`].
 pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
     let supported = supported_extensions();
     match arg {
@@ -228,6 +229,115 @@ pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
         }
         None => Ok(supported.iter().map(|s| s.to_string()).collect()),
     }
+}
+
+/// The validation context for creating a Job from `job_template` and
+/// applying Environment Templates to it: the template's own profile, the
+/// CLI's caller limits, and the CLI's submission path policy, which is the
+/// one it applies to Job Parameters (`PathParameterOptions` in `run` and
+/// `summary`): the host path format, with URI path values allowed.
+pub fn submission_context(
+    job_template: &openjd_model::template::JobTemplate,
+) -> openjd_model::ValidationContext {
+    job_template
+        .default_validation_context()
+        .with_caller_limits(caller_limits())
+        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::host())
+        .with_allow_uri_path_values(true)
+}
+
+/// Read and decode each `--environment` Environment Template, in order.
+pub fn read_environment_templates(
+    paths: &[std::path::PathBuf],
+    supported_exts: &[&str],
+) -> Result<Vec<openjd_model::template::EnvironmentTemplate>, Box<dyn std::error::Error>> {
+    let mut templates = Vec::with_capacity(paths.len());
+    for env_path in paths {
+        let env_content = read_input_file(env_path)?;
+        // A parse or validation error names the file, since several
+        // `--environment` files may be given.
+        let named = |e: openjd_model::ModelError| {
+            format!("Environment Template '{}': {e}", env_path.display())
+        };
+        let env_value = openjd_model::template::parse::document_string_to_object(
+            &env_content,
+            document_type(env_path),
+            &caller_limits(),
+        )
+        .map_err(named)?;
+        templates.push(
+            openjd_model::template::parse::decode_environment_template(
+                env_value,
+                Some(supported_exts),
+                &caller_limits(),
+            )
+            .map_err(named)?,
+        );
+    }
+    Ok(templates)
+}
+
+/// How messages name each `--environment` document: its path as given.
+pub fn environment_labels(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths.iter().map(|p| p.display().to_string()).collect()
+}
+
+/// The Environment Templates as attached to a submission, in order, each
+/// labeled with its path.
+pub fn attach<'a>(
+    templates: &'a [openjd_model::template::EnvironmentTemplate],
+    labels: &'a [String],
+) -> Vec<openjd_model::AttachedEnvironmentTemplate<'a>> {
+    templates
+        .iter()
+        .zip(labels)
+        .map(|(t, label)| openjd_model::AttachedEnvironmentTemplate::new(t).with_label(label))
+        .collect()
+}
+
+/// Print each submission warning to stderr, as `WARNING: <path>: <message>`.
+pub fn print_submission_warnings(warnings: &[openjd_model::SubmissionWarning]) {
+    for warning in warnings {
+        eprintln!("WARNING: {warning}");
+    }
+}
+
+/// One Environment's parameter values for display, in parameter-name
+/// order (the order of the stored table, not the declaration order): the
+/// name, the parameter type as the spec writes it (`STRING`,
+/// `LIST[PATH]`, ...), and the value before path mapping, in the display
+/// form `Param.*` values use (`ExprValue::to_display_string`: a list is
+/// `[1, 2]` or `["a", "b"]`; a RANGE_EXPR value in canonical form). A table
+/// that does not decode (one the model did not produce) falls back to each
+/// entry's transport JSON.
+pub fn environment_parameter_entries(
+    values: &openjd_model::job::EnvironmentParameterValues,
+) -> Vec<(String, String, String)> {
+    let decoded = values
+        .values
+        .to_symtab(openjd_expr::path_mapping::PathFormat::host())
+        .ok();
+    values
+        .values
+        .as_value()
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| {
+            let name = entry["name"].as_str().unwrap_or_default().to_string();
+            let ty = entry["type"].as_str().unwrap_or_default();
+            let ty = openjd_model::JobParameterType::from_spec_str(ty)
+                .map_or_else(|| ty.to_string(), |t| t.as_spec_str().to_string());
+            let value = match decoded.as_ref().and_then(|t| t.get_value(&name)) {
+                Some(v) => v.to_display_string(),
+                _ => match &entry["value"] {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                },
+            };
+            (name, ty, value)
+        })
+        .collect()
 }
 
 #[cfg(test)]

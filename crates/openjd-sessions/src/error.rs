@@ -124,6 +124,15 @@ pub enum SessionError {
          already defines wrap hooks; cannot also enter '{entering}'."
     )]
     MultipleWrapEnvironments { existing: String, entering: String },
+
+    /// `ENV_PARAMS`: the Environment parameter values passed to
+    /// [`Session::enter_environment_with_parameters`](crate::session::Session::enter_environment_with_parameters)
+    /// cannot be bound for the Environment being entered: they name another
+    /// Environment, or their symbol table is not one parameter per bare
+    /// name in transport form. Raised before any state for the Environment
+    /// is recorded, so the Session stays `Ready`.
+    #[error("Environment '{environment}': invalid Environment parameter values: {reason}")]
+    InvalidEnvironmentParameters { environment: String, reason: String },
 }
 
 fn format_expected(states: &[SessionState]) -> String {

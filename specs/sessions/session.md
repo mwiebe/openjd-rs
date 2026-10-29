@@ -169,27 +169,103 @@ set to `true`. Production code should always use `Session::with_config`.
 `enter_environment(env, resolved_symtab, identifier, os_env_vars) -> Result<String, SessionError>`,
 where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
 
-1. Validates state is `Ready`
-2. Sets state to `Running`
-3. Resolves environment `variables` format strings against the current symbol table,
-   with target type `string` for whole-field expressions (Expression Language §1.3.2),
-   and rejects a resolved value that contains a NUL byte or exceeds 2048 characters
-   (Template Schemas §4.4.2 — the session is the enforcement stage for values that
-   are unknown at template validation; the limit is kept in sync with the model's
-   `EffectiveLimits::max_env_var_value_len`)
-4. Stores the environment, folding the `resolved_symtab` argument onto the stored copy's
+1. Validates state is `Ready`, and (RFC 0008) that at most one entered environment
+   defines wrap hooks
+2. (ENV_PARAMS, `enter_environment_with_parameters` only) checks the Environment
+   parameter values and builds this environment's `Env.Param.*` / `Env.RawParam.*`
+   symbols (see below); a rejection leaves the session `Ready`
+3. Stores the environment, folding the `resolved_symtab` argument onto the stored copy's
    `Environment::resolved_symtab` field. A caller may supply an environment's resolved
    symbol table either way, and the two are equivalent: readers that run after this call
    returns — notably the RFC 0008 wrap hooks, which resolve a wrap environment's own
    scope off the stored `Environment` — see the same table whichever route was used.
    When a caller supplies both, the argument wins, being the more specific input for
-   this entry.
-5. Pushes the environment onto `environments_entered` (LIFO stack)
-6. Creates an `EnvironmentScriptRunner` and calls `enter()` (runs `onEnter` action)
+   this entry. The environment's Environment parameter values, if any, are stored
+   with it (ENV_PARAMS).
+4. Pushes the environment onto `environments_entered` (LIFO stack)
+5. Resolves environment `variables` format strings against the current symbol table
+   plus this environment's `Env.Param.*` / `Env.RawParam.*` (ENV_PARAMS),
+   with target type `string` for whole-field expressions (Expression Language §1.3.2),
+   and rejects a resolved value that contains a NUL byte or exceeds 2048 characters
+   (Template Schemas §4.4.2 — the session is the enforcement stage for values that
+   are unknown at template validation; the limit is kept in sync with the model's
+   `EffectiveLimits::max_env_var_value_len`). A failure here returns the error with the environment already entered, its values
+   stored, and the session `Ready`, so the caller must still exit it
+6. Sets state to `Running`, creates an `EnvironmentScriptRunner` and calls `enter()` (runs `onEnter` action)
 7. Processes `ActionMessage` values via `drive_action()` — env var changes from
    `openjd_env`/`openjd_unset_env` are applied to the environment's change set
 8. On success: state → `Ready` (or `ReadyEnding` if `ending_only`)
-9. On failure: state → `ReadyEnding`
+9. On `onEnter` failure: state → `ReadyEnding`
+
+### Which Environments a Session enters (ENV_PARAMS)
+
+The Session enters exactly the Environments its caller passes, in the order passed; no API of
+this crate takes "the Job's Environments". With `ENV_PARAMS` the caller passes a Step's
+**Environment set** (Template Schemas §4 item 4, §3.2.2 ¶4; How Jobs Are Run): the combined
+`job::Job::job_environments` entries the Step enters (`job::Step::enters_environment`, from
+`job::Step::environments`; `None` means every one), in Job order, then the Step's
+`step_environments`. An `ON_REQUEST` Environment the Step does not request, and an
+Environment whose own `enableIf` (§4 item 6) is `false` for the Step, are not in the set
+(job creation leaves them out of `environments` and `step_environments`), so they are not
+entered and their `variables`, actions, and wrap hooks never apply to that Session. Steps share
+a Session only when their sets and values are equal (`job::Step::same_environments` and
+`job::Step::environment_values_equal`). Each Environment's `hostRequirements` were combined into
+`job::Step::host_requirements` at job creation (§3.3.3); the Session does not read them.
+
+### Enter with Environment parameter values (ENV_PARAMS)
+
+`enter_environment_with_parameters(env, resolved_symtab, parameters, identifier, os_env_vars)
+-> Result<(String, String), SessionError>` is the general form:
+`enter_environment_with_output` (and so `enter_environment`) calls it with
+`parameters: None`, which behaves exactly as before ENV_PARAMS.
+
+`parameters` is an `openjd_model::job::EnvironmentParameterValues`: the entry of the
+Step's `environment_parameters` for this Environment (Template Schemas §3.2.2). Job
+creation (`create_job_with_environment_templates`) has already
+resolved each value from the Step's `environment:` entry or the definition's `default`,
+matched each entry for an external Environment to an attached Environment Template by
+name, rejected a missing `required` Environment, and checked every value against its
+definition. So the Session does no resolution and no type or constraint check: the
+`job::Environment` it receives carries no parameter definitions to check against, and
+§4.5 says path mapping does not re-check constraints. The caller picks the entry by
+`(document, environment)`, not by name alone, because an attached Environment can share
+a Job Environment's name; an Environment that a `required: false` entry named but that
+was not attached is not in the combined Job, so the caller never enters it.
+
+Before any state for the Environment is recorded, the Session checks that
+`parameters.environment == env.name` and that `parameters.values` decodes as one
+transport entry per bare parameter name (an `<Identifier>`, no repeats). Otherwise it
+returns `SessionError::InvalidEnvironmentParameters` and stays `Ready`.
+
+Each entry `{name, type, value}` is bound twice (§4.5; HJAR Environment Parameters):
+
+| Type | `Env.Param.<name>` | `Env.RawParam.<name>` |
+|------|--------------------|-----------------------|
+| `path` | the string path-mapped with the Session's rules, as a host-format `path` | the string as given, as a `string` |
+| `list[path]` | each element mapped, as a `list[path]` | the elements as given, as a `list[string]` |
+| any other | the decoded value | the same value |
+
+The PATH strings are in the submission path format (model plan A22), so a rule whose
+`source_path_format` matches the submission maps them, as for `Param.*`.
+
+**Scope.** The symbols are layered onto this Environment's own scope only: its
+`variables`, its script `let` bindings, its `onEnter` and `onExit` actions, its embedded
+files, and, when it defines RFC 0008 wrap hooks, those hooks. They are never in a
+Task's scope or another Environment's. When an outer wrap hook replaces this
+Environment's `onEnter` or `onExit`, the wrapped action (`WrappedAction.*`) resolves in
+this Environment's scope, with its values, and the hook resolves in the wrapping
+Environment's scope, with the wrapping Environment's values and not this one's.
+
+**Stored values.** The Session keeps `parameters` with the entered Environment until it
+is exited. `exit_environment` binds the stored values for `onExit`, and every wrap hook
+of the Environment binds them, so `onEnter`, every Task, and `onExit` see the same values
+(§3.2.2 ¶4). "The same values" means the same unmapped values: path mapping is applied
+at each use with the Session's current rules, as for `Param.*`, so after
+`extend_path_mapping_rules` an `onExit` sees a PATH value mapped by the new rules while
+`Env.RawParam.*` is unchanged. `environment_parameters(identifier)` returns the stored values so a
+scheduler can check, with `EnvironmentParameterValues::values_equal`, that a Step's
+values equal them before running its Tasks in this Session; the Session does not
+enforce that rule itself, since it does not know which Step a Task belongs to.
 
 ### Exit
 
@@ -198,8 +274,12 @@ where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
 1. Validates state is `Ready` or `ReadyEnding`
 2. Validates the identifier matches the most recently entered environment (LIFO order)
 3. Sets `ending_only = true` unless `keep_session_running` is true
-4. Runs `onExit` action via `EnvironmentScriptRunner::exit()`
-5. Pops the environment from `environments_entered`
+4. Pops the environment from `environments_entered` and drops its stored
+   Environment parameter values, before running `onExit`, so a failed `onExit` is
+   still an exit
+5. Runs `onExit` action via `EnvironmentScriptRunner::exit()`, with the
+   `Env.Param.*` / `Env.RawParam.*` values the environment was entered with
+   (ENV_PARAMS; see above), built before step 4
 6. Removes the environment's variable changes from the cumulative set
 
 ### Why LIFO enforcement
@@ -221,7 +301,11 @@ in an inconsistent state. The Python library enforces this, and the Rust crate m
 
 When a wrap hook is dispatched, the borrow of the active environment stack is
 released by copying only the wrapper data needed for symbol seeding: its name,
-frozen resolved symbol table, script `let` bindings, and selected hook action.
+frozen resolved symbol table, script `let` bindings, its `Env.Param.*` /
+`Env.RawParam.*` symbols built from its stored values (ENV_PARAMS), and selected hook
+action. The hook's table starts from the wrapped entity's scope without that entity's
+own `Env.Param.*`, then layers the wrapper's frozen table, its Environment parameter
+symbols, and its `let` bindings, so the hook sees the wrapper's values only.
 The frozen table is read off the *stored* `Environment`, which is why §Enter
 folds the `resolved_symtab` argument onto it — a wrapper's own `Param.*` reaches
 its hooks regardless of which route the caller used to supply the table.
@@ -322,6 +406,10 @@ Populates a `SymbolTable` with:
 | `RawParam.<name>` | Job parameter value (no path mapping) | `SessionConfig.job_parameter_values` |
 | `Task.Param.<name>` | Task parameter value (path-mapped) | `run_task()` call |
 | `Task.RawParam.<name>` | Task parameter value (no path mapping) | `run_task()` call |
+
+`Env.Param.<name>` and `Env.RawParam.<name>` (ENV_PARAMS) are not built here. They are
+layered onto one environment's own scopes from the values it was entered with; see
+[Enter with Environment parameter values](#enter-with-environment-parameter-values-env_params).
 
 PATH-type parameters have path mapping rules applied. LIST_PATH parameters have rules
 applied to each element. All other parameter values are coerced to their declared
@@ -550,6 +638,7 @@ Read-only accessors on `Session`:
 | `working_directory()` | `&Path` | Path to the session's working directory |
 | `files_directory()` | `&Path` | Path to the embedded files subdirectory |
 | `environments_entered()` | `&[EnvironmentIdentifier]` | Stack of entered environment IDs (entry order) |
+| `environment_parameters(identifier)` | `Option<&EnvironmentParameterValues>` | ENV_PARAMS: the values the entered environment was entered with; `None` if not entered or entered without values |
 | `path_mapping_rules()` | `&[PathMappingRule]` | Current path mapping rules (sorted by source path length, longest first) |
 | `action_status()` | `Option<ActionStatus>` | Snapshot of the current/most-recent action status. `None` if no action has run. |
 | `clone_cancel_writer()` | `Option<std::fs::File>` | Clone the cancel-info file writer for the cross-user helper. Used by PyO3 bindings to send cancel commands from a background thread. |
@@ -569,7 +658,8 @@ pub async fn enter_environment_with_output(
 
 Variant of `enter_environment` that returns both the environment identifier and the
 captured stdout from the `onEnter` script as `(identifier, stdout)`. The regular
-`enter_environment` wraps this and discards the stdout.
+`enter_environment` wraps this and discards the stdout. It is itself
+`enter_environment_with_parameters` with no Environment parameter values (ENV_PARAMS).
 
 Used by the CLI's `run` command to display a unified output stream showing what each
 environment and task printed. The worker agent uses the regular `enter_environment`

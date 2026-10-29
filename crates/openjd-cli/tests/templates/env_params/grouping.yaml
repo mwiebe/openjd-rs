@@ -1,0 +1,38 @@
+# A Job Environment with one INT parameter, and four Steps that run in
+# this order. A and B supply equal values (INT 2 written as 2 and as "2"),
+# C and D take the default, so `openjd run` runs A and B in one Session and
+# C and D in a second.
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: Grouping
+jobEnvironments:
+- name: Seats
+  envParameterDefinitions:
+  - {name: Count, type: INT, default: 1}
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ["-c", "import sys; print('Seats onEnter Count=' + sys.argv[1])", "{{Env.Param.Count}}"]
+      onExit:
+        command: python
+        args: ["-c", "import sys; print('Seats onExit Count=' + sys.argv[1])", "{{Env.Param.Count}}"]
+steps:
+- name: A
+  dependencies:
+  - {environment: Seats, parameters: {Count: 2}}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step A ran')"]}}}
+- name: B
+  dependencies:
+  - {dependsOn: A}
+  - {environment: Seats, parameters: {Count: "2"}}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step B ran')"]}}}
+- name: C
+  dependencies:
+  - {dependsOn: B}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step C ran')"]}}}
+- name: D
+  dependencies:
+  - {dependsOn: C}
+  - {environment: Seats}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step D ran')"]}}}

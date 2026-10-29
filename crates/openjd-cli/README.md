@@ -30,9 +30,9 @@ This places an `openjd` binary on your `PATH`.
 
 | Command | Purpose |
 |---------|---------|
-| `openjd check FILE [--extensions EXT...]` | Validate a job or environment template. Exit code 0 on success, non-zero on validation error, with per-field error paths. |
-| `openjd summary FILE [-p NAME=VALUE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count. |
-| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...]` | Instantiate and run a job template locally, streaming action output with timestamps. |
+| `openjd check FILE [--extensions EXT...] [--environment ENV_FILE...]` | Validate a job or environment template. Exit code 0 on success, non-zero on validation error, with per-field error paths. With `ENV_PARAMS`, a job template's success output is preceded by a line per Step naming the Environments a scalar `enableIf: false` disables. With `--environment`, also check a job template's `environment:` dependencies (`ENV_PARAMS`), the single-wrap-layer rule, and literal host requirements against those environment templates. |
+| `openjd summary FILE [-p NAME=VALUE...] [--environment ENV_FILE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count, and, with `ENV_PARAMS`, each step's environments, environment parameter values, and combined host requirements. |
+| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...] [--environment ENV_FILE...]` | Instantiate and run a job template locally, streaming action output with timestamps. Environment templates are entered before the job's own environments. |
 
 Run `openjd --help` for the full flag list, or `openjd COMMAND --help`
 for a specific command.
@@ -51,6 +51,10 @@ openjd summary my-template.yaml -p Frames=1-100
 
 # Run a job locally, one task at a time
 openjd run my-template.yaml -p Frames=1-10
+
+# Run a job with a queue environment template attached (ENV_PARAMS Steps
+# that supply different values run in separate Sessions)
+openjd run my-template.yaml --environment conda-env.yaml
 ```
 
 ## Conformance

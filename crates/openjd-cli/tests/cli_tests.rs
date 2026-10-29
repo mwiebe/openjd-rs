@@ -3577,10 +3577,10 @@ mod wrap_actions {
     }
 
     /// RFC 0008 review finding F8: the single-layer rule must hold across
-    /// separately-supplied environment templates. The model validator can
-    /// only see one template at a time, so the session rejects the second
-    /// wrap-defining environment at enter time, before running anything
-    /// under it.
+    /// separately-supplied environment templates. Template validation sees
+    /// one template at a time, so job creation rejects the second
+    /// wrap-defining environment over each Step's Environment set, before
+    /// any Session starts.
     #[test]
     fn test_run_two_wrap_env_templates_rejected() {
         let tdir = templates_dir();
@@ -3701,3 +3701,7 @@ steps:
         );
     }
 }
+
+/// `ENV_PARAMS` end to end; see the module.
+#[path = "cli_tests/env_params.rs"]
+mod env_params;

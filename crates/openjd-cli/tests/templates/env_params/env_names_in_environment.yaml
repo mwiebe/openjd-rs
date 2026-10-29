@@ -1,0 +1,16 @@
+# Job Environments whose onEnter reads `Job.Name` and `Job.EnvNames`, which
+# job creation freezes into each Environment's resolved symbol table.
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: EnvNamesInEnvironment
+jobEnvironments:
+- name: First
+  script:
+    actions:
+      onEnter: {command: python, args: ["-c", "import sys; print('First onEnter ' + ' '.join(sys.argv[1:]))", "{{ Job.Name }}", "{{ Job.EnvNames }}"]}
+- name: Second
+  activation: ON_REQUEST
+  variables: {V: v}
+steps:
+- name: S
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step S ran')"]}}}

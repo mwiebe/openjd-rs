@@ -1,0 +1,59 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# A test copy of the ENV_PARAMS RFC sample
+# samples/v2023-09/environment_templates/conda-env-params.yaml from
+# openjd-specifications. The schema parts (extensions, parameterDefinitions,
+# the Environment's envParameterDefinitions, its enableIf, and its argv) are
+# unchanged: a Step whose Packages is empty does not enter it. The
+# onEnter script is a Python stub that prints the values it was given
+# instead of running conda, and exports CONDA_STUB_PACKAGES so a Task can
+# show which Session it ran in. An onExit stub, not in the sample, shows the
+# Session keeps the values until it exits the Environment.
+
+specificationVersion: environment-2023-09
+extensions:
+- ENV_PARAMS
+- EXPR
+parameterDefinitions:
+- name: CondaPackages
+  type: STRING
+  description: >
+    Space-separated conda package specs to install in every Session, for Steps
+    that do not supply their own. Empty means use the host's software.
+  default: ""
+- name: CondaChannels
+  type: STRING
+  description: Space-separated conda channels to search.
+  default: "conda-forge"
+environment:
+  name: Conda
+  description: >
+    Creates a conda environment in the Session Working Directory with the
+    packages the Session's Step asked for, and activates it for the rest of
+    the Session.
+  envParameterDefinitions:
+  - name: Packages
+    type: STRING
+    default: "{{Param.CondaPackages}}"
+  - name: Channels
+    type: STRING
+    default: "{{Param.CondaChannels}}"
+  enableIf: "Env.Param.Packages != ''"
+  script:
+    actions:
+      onEnter:
+        command: python
+        # The values travel as argv, never as script text.
+        args: ["{{Env.File.Enter}}", "{{Env.Param.Packages}}", "{{Env.Param.Channels}}"]
+      onExit:
+        command: python
+        args: ["-c", "import sys; print('Conda onExit: Packages=' + repr(sys.argv[1]))", "{{Env.Param.Packages}}"]
+    embeddedFiles:
+    - name: Enter
+      type: TEXT
+      data: |
+        import sys
+        # argv: <packages> <channels>
+        packages, channels = sys.argv[1], sys.argv[2]
+        print(f"Conda onEnter: Packages={packages!r} Channels={channels!r}")
+        print(f"openjd_env: CONDA_STUB_PACKAGES={packages}")

@@ -183,5 +183,5 @@ fn latest_profile_enables_all_extensions() {
     for ext in ModelExtension::ALL {
         assert!(profile.has_extension(*ext), "latest() must enable {ext:?}");
     }
-    assert_eq!(ModelExtension::ALL.len(), 5);
+    assert_eq!(ModelExtension::ALL.len(), 6);
 }

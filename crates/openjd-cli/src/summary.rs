@@ -26,7 +26,8 @@ pub struct SummaryArgs {
     #[arg(long = "extensions")]
     pub extensions: Option<String>,
 
-    /// Environment template files
+    /// Environment Template files, attached in the order given, as for
+    /// `openjd run` (repeatable)
     #[arg(long = "environment", alias = "env")]
     pub environments: Vec<PathBuf>,
 
@@ -65,21 +66,8 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
         .filter_map(|p| p.description().map(|d| (p.name(), d)))
         .collect();
 
-    // Load environment templates
-    let mut env_templates = Vec::new();
-    for env_path in &args.environments {
-        let env_content = std::fs::read_to_string(env_path)?;
-        let env_value = parse::document_string_to_object(
-            &env_content,
-            crate::common::document_type(env_path),
-            &crate::common::caller_limits(),
-        )?;
-        env_templates.push(parse::decode_environment_template(
-            env_value,
-            Some(&supported_exts),
-            &crate::common::caller_limits(),
-        )?);
-    }
+    let env_templates =
+        crate::common::read_environment_templates(&args.environments, &supported_exts)?;
 
     // Parse parameters
     let input_values = crate::run::parse_cli_parameters(&args.parameters)?;
@@ -104,19 +92,153 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Derive the context from the template itself — `create_job`
     // requires the context's revision/extensions to cover the
-    // template's — and carry the CLI's caller limits so job creation
-    // enforces the same caps the decode ran under.
-    let ctx = job_template
-        .default_validation_context()
-        .with_caller_limits(crate::common::caller_limits());
+    // template's — and carry the CLI's caller limits and submission path
+    // policy, as `openjd run` does.
+    let ctx = crate::common::submission_context(&job_template);
 
-    let the_job = openjd_model::create_job(&job_template, &param_values, &ctx)?;
+    // Attach the --environment templates as `openjd run` does, so each
+    // Step shows the effective Environment parameter values it would run
+    // with (`ENV_PARAMS`, Template Schemas §3.2.2). The environment
+    // listings stay those of the Job Template.
+    let labels = crate::common::environment_labels(&args.environments);
+    let attached = crate::common::attach(&env_templates, &labels);
+    let created = openjd_model::create_job_with_environment_templates(
+        &job_template,
+        &attached,
+        &param_values,
+        &ctx,
+    )?;
+    crate::common::print_submission_warnings(&created.warnings);
+    let mut the_job = created.job;
+    // With `ENV_PARAMS`, each Step's Environment set (Template Schemas §4
+    // item 4), from the combined Job before its listing is filtered.
+    // The Environments an `enableIf` disabled for each Step (§4 item 6)
+    // are listed too.
+    let session_envs: Vec<StepEnvSets> = if lists_env_params(&the_job, &env_templates) {
+        the_job
+            .steps
+            .iter()
+            .zip(&created.disabled_environments)
+            .map(|(s, disabled)| StepEnvSets {
+                entered: session_env_infos(&the_job, &created.environment_documents, s),
+                disabled: disabled_env_infos(disabled),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let own: Vec<_> = the_job
+        .job_environments
+        .take()
+        .into_iter()
+        .flatten()
+        .zip(&created.environment_documents)
+        .filter(|(_, doc)| doc.is_job_template())
+        .map(|(env, _)| env)
+        .collect();
+    the_job.job_environments = (!own.is_empty()).then_some(own);
 
     if let Some(step_name) = &args.step {
-        output_step_summary(&the_job, step_name, &args.output)
+        output_step_summary(&the_job, &session_envs, step_name, &args.output)
     } else {
-        output_job_summary(&the_job, &param_order, &param_descriptions, &args.output)
+        output_job_summary(
+            &the_job,
+            &session_envs,
+            &param_order,
+            &param_descriptions,
+            &args.output,
+        )
     }
+}
+
+/// Whether the Job Template or an attached Environment Template lists
+/// `ENV_PARAMS`, which decides whether the summary shows each Step's
+/// Environment set and combined host requirements. An attached
+/// Environment's `activation` and `hostRequirements` apply when its own
+/// document lists the extension, so it is enough for one document to;
+/// without it in any, the summary is unchanged.
+fn lists_env_params(
+    job: &job::Job,
+    env_templates: &[openjd_model::template::EnvironmentTemplate],
+) -> bool {
+    job.extensions
+        .iter()
+        .flatten()
+        .any(|e| *e == openjd_model::ModelExtension::EnvParams)
+        || env_templates.iter().any(|t| {
+            t.profile()
+                .has_extension(openjd_model::ModelExtension::EnvParams)
+        })
+}
+
+/// A Step's Environment set, and the Environments an `enableIf` took out
+/// of it.
+struct StepEnvSets {
+    /// The Environments its Sessions enter, in the order they enter them.
+    entered: Vec<SessionEnvInfo>,
+    /// The Environments its Sessions would otherwise have entered that an
+    /// `enableIf` on the Environment disabled for it (Template Schemas §4
+    /// item 6): Job Environments in Job order, then Step Environments.
+    disabled: Vec<SessionEnvInfo>,
+}
+
+/// The [`SessionEnvInfo`]s of `disabled`, Job Environments first.
+fn disabled_env_infos(disabled: &openjd_model::StepDisabledEnvironments) -> Vec<SessionEnvInfo> {
+    disabled
+        .environments
+        .iter()
+        .map(|r| SessionEnvInfo {
+            name: r.environment.clone(),
+            source: r.document.to_string(),
+        })
+        .chain(
+            disabled
+                .step_environments
+                .iter()
+                .map(|name| SessionEnvInfo {
+                    name: name.clone(),
+                    source: "stepEnvironments".to_string(),
+                }),
+        )
+        .collect()
+}
+
+/// One Environment a Step's Sessions enter, in the order they enter it.
+struct SessionEnvInfo {
+    name: String,
+    /// The declaring document (`JobTemplate` or the `--environment`
+    /// path), or `stepEnvironments` for the Step's own.
+    source: String,
+}
+
+/// The Environments `step`'s Sessions enter, in order: the combined Job
+/// Environments it enters (attached first, then the Job Template's;
+/// `documents` describes `job.job_environments` index for index), then its
+/// Step Environments.
+fn session_env_infos(
+    job: &job::Job,
+    documents: &[job::Document],
+    step: &job::Step,
+) -> Vec<SessionEnvInfo> {
+    job.job_environments
+        .iter()
+        .flatten()
+        .zip(documents)
+        .filter(|(env, doc)| step.enters_environment(doc, &env.name))
+        .map(|(env, doc)| SessionEnvInfo {
+            name: env.name.clone(),
+            source: doc.to_string(),
+        })
+        .chain(
+            step.step_environments
+                .iter()
+                .flatten()
+                .map(|env| SessionEnvInfo {
+                    name: env.name.clone(),
+                    source: "stepEnvironments".to_string(),
+                }),
+        )
+        .collect()
 }
 
 fn task_param_type_name(tp: &job::TaskParameter) -> &'static str {
@@ -143,12 +265,14 @@ fn step_total_tasks(step: &job::Step) -> usize {
 
 fn output_job_summary(
     job: &job::Job,
+    session_envs: &[StepEnvSets],
     param_order: &[String],
     param_descriptions: &std::collections::HashMap<&str, &str>,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Collect step summaries
     let mut step_envs_info: Vec<EnvInfo> = Vec::new();
+    let mut session_envs = session_envs.iter();
     let step_summaries: Vec<StepInfo> = job
         .steps
         .iter()
@@ -193,6 +317,12 @@ fn output_job_summary(
                 task_params,
                 envs,
                 deps,
+                env_params: env_param_infos(s),
+                env_params_details: session_envs.next().map(|envs| EnvParamsDetails {
+                    session_envs: &envs.entered,
+                    disabled_envs: &envs.disabled,
+                    host_requirements: s.host_requirements.as_ref(),
+                }),
             }
         })
         .collect();
@@ -242,14 +372,16 @@ fn output_job_summary(
 
 fn output_step_summary(
     job: &job::Job,
+    session_envs: &[StepEnvSets],
     step_name: &str,
     output_format: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let step = job
+    let step_index = job
         .steps
         .iter()
-        .find(|s| s.name == step_name)
+        .position(|s| s.name == step_name)
         .ok_or_else(|| format!("Step '{step_name}' does not exist in Job '{}'.", job.name))?;
+    let step = &job.steps[step_index];
 
     let total_tasks = step_total_tasks(step);
     let task_params: Vec<(String, String)> = step
@@ -291,6 +423,12 @@ fn output_step_summary(
         task_params,
         envs,
         deps,
+        env_params: env_param_infos(step),
+        env_params_details: session_envs.get(step_index).map(|envs| EnvParamsDetails {
+            session_envs: &envs.entered,
+            disabled_envs: &envs.disabled,
+            host_requirements: step.host_requirements.as_ref(),
+        }),
     };
     crate::common::print_cli_result(&result, output_format);
     Ok(())
@@ -301,17 +439,17 @@ fn output_step_summary(
 use crate::common::CliResult;
 use std::fmt;
 
-struct JobSummaryResult {
+struct JobSummaryResult<'a> {
     name: String,
     params: Vec<ParamInfo>,
-    step_summaries: Vec<StepInfo>,
+    step_summaries: Vec<StepInfo<'a>>,
     root_envs: Vec<EnvInfo>,
     step_envs: Vec<EnvInfo>,
     total_tasks: usize,
     total_envs: usize,
 }
 
-impl CliResult for JobSummaryResult {
+impl CliResult for JobSummaryResult<'_> {
     fn to_json_value(&self) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
         obj.insert("status".into(), "success".into());
@@ -383,6 +521,15 @@ impl CliResult for JobSummaryResult {
                 if !s.deps.is_empty() {
                     m.insert("dependencies".into(), s.deps.len().into());
                 }
+                if !s.env_params.is_empty() {
+                    m.insert(
+                        "environment_parameters".into(),
+                        env_params_json(&s.env_params),
+                    );
+                }
+                if let Some(d) = &s.env_params_details {
+                    d.insert_json(&mut m);
+                }
                 serde_json::Value::Object(m)
             })
             .collect();
@@ -391,7 +538,7 @@ impl CliResult for JobSummaryResult {
     }
 }
 
-impl fmt::Display for JobSummaryResult {
+impl fmt::Display for JobSummaryResult<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f)?;
         writeln!(f, "--- Summary for '{}' ---", self.name)?;
@@ -427,6 +574,10 @@ impl fmt::Display for JobSummaryResult {
             if !s.deps.is_empty() {
                 writeln!(f, "  {} dependencies", s.deps.len())?;
             }
+            if let Some(d) = &s.env_params_details {
+                d.write(f, "  ")?;
+            }
+            write_env_params(f, &s.env_params, "  ")?;
             writeln!(f)?;
         }
         if self.total_envs > 0 {
@@ -451,16 +602,18 @@ impl fmt::Display for JobSummaryResult {
     }
 }
 
-struct StepSummaryResult {
+struct StepSummaryResult<'a> {
     job_name: String,
     step_name: String,
     total_tasks: usize,
     task_params: Vec<(String, String)>,
     envs: Vec<EnvInfo>,
     deps: Vec<String>,
+    env_params: Vec<EnvParamInfo>,
+    env_params_details: Option<EnvParamsDetails<'a>>,
 }
 
-impl CliResult for StepSummaryResult {
+impl CliResult for StepSummaryResult<'_> {
     fn to_json_value(&self) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
         obj.insert("status".into(), "success".into());
@@ -497,11 +650,20 @@ impl CliResult for StepSummaryResult {
                     .collect::<Vec<_>>()),
             );
         }
+        if !self.env_params.is_empty() {
+            obj.insert(
+                "environment_parameters".into(),
+                env_params_json(&self.env_params),
+            );
+        }
+        if let Some(d) = &self.env_params_details {
+            d.insert_json(&mut obj);
+        }
         serde_json::Value::Object(obj)
     }
 }
 
-impl fmt::Display for StepSummaryResult {
+impl fmt::Display for StepSummaryResult<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f)?;
         writeln!(
@@ -538,19 +700,212 @@ impl fmt::Display for StepSummaryResult {
                 writeln!(f)?;
             }
         }
+        if let Some(d) = &self.env_params_details {
+            writeln!(f)?;
+            d.write(f, "")?;
+        }
+        if !self.env_params.is_empty() {
+            writeln!(f)?;
+            write_env_params(f, &self.env_params, "")?;
+        }
         Ok(())
     }
 }
 
 // --- Data types ---
 
-struct StepInfo {
+struct StepInfo<'a> {
     name: String,
     description: Option<String>,
     total_tasks: usize,
     task_params: Vec<(String, String)>,
     envs: Vec<String>,
     deps: Vec<String>,
+    env_params: Vec<EnvParamInfo>,
+    /// `Some` when the Job Template or an attached Environment Template
+    /// lists `ENV_PARAMS`.
+    env_params_details: Option<EnvParamsDetails<'a>>,
+}
+
+/// What the summary adds for a Step when the Job Template or an attached
+/// Environment Template lists `ENV_PARAMS`: the Environments its Sessions
+/// enter, the ones an `enableIf` disabled for it (Template Schemas §4 item
+/// 6), and its combined host requirements (§3.3.3).
+struct EnvParamsDetails<'a> {
+    session_envs: &'a [SessionEnvInfo],
+    disabled_envs: &'a [SessionEnvInfo],
+    host_requirements: Option<&'a job::HostRequirements>,
+}
+
+impl EnvParamsDetails<'_> {
+    /// Add `session_environments` and, when there are any,
+    /// `disabled_environments` and `host_requirements` to `m`.
+    fn insert_json(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
+        let list = |envs: &[SessionEnvInfo]| {
+            serde_json::json!(envs
+                .iter()
+                .map(|e| serde_json::json!({"name": e.name, "source": e.source}))
+                .collect::<Vec<_>>())
+        };
+        m.insert("session_environments".into(), list(self.session_envs));
+        if !self.disabled_envs.is_empty() {
+            m.insert("disabled_environments".into(), list(self.disabled_envs));
+        }
+        if let Some(hr) = self.host_requirements {
+            m.insert("host_requirements".into(), host_requirements_json(hr));
+        }
+    }
+
+    /// `Session environments:` with one `- Name (source)` line each (or
+    /// `(none)`), then, when there are any, `Disabled environments:` in the
+    /// same form, then `Host requirements:` with one line per requirement,
+    /// indented by `indent`.
+    fn write(&self, f: &mut fmt::Formatter<'_>, indent: &str) -> fmt::Result {
+        writeln!(f, "{indent}Session environments:")?;
+        if self.session_envs.is_empty() {
+            writeln!(f, "{indent}  (none)")?;
+        }
+        for e in self.session_envs {
+            writeln!(f, "{indent}  - {} ({})", e.name, e.source)?;
+        }
+        if !self.disabled_envs.is_empty() {
+            writeln!(f, "{indent}Disabled environments:")?;
+            for e in self.disabled_envs {
+                writeln!(f, "{indent}  - {} ({})", e.name, e.source)?;
+            }
+        }
+        if let Some(hr) = self.host_requirements {
+            writeln!(f, "{indent}Host requirements:")?;
+            for line in host_requirement_lines(hr) {
+                writeln!(f, "{indent}  - {line}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One line per requirement of `hr`: `name: min 1, max 2` for an amount,
+/// `name: anyOf a, b` or `name: allOf a, b` for an attribute.
+fn host_requirement_lines(hr: &job::HostRequirements) -> Vec<String> {
+    let mut lines = Vec::new();
+    for a in hr.amounts.iter().flatten() {
+        let bounds: Vec<String> = [("min", a.min), ("max", a.max)]
+            .iter()
+            .filter_map(|(k, v)| v.map(|v| format!("{k} {v}")))
+            .collect();
+        lines.push(format!("{}: {}", a.name, bounds.join(", ")));
+    }
+    for a in hr.attributes.iter().flatten() {
+        for (k, values) in [("anyOf", &a.any_of), ("allOf", &a.all_of)] {
+            if let Some(values) = values {
+                lines.push(format!("{}: {k} {}", a.name, values.join(", ")));
+            }
+        }
+    }
+    lines
+}
+
+/// `hr` as `{"amounts": [{name, min?, max?}], "attributes": [{name,
+/// anyOf?, allOf?}]}`, each list present when non-empty.
+fn host_requirements_json(hr: &job::HostRequirements) -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    if let Some(amounts) = hr.amounts.as_ref().filter(|a| !a.is_empty()) {
+        m.insert(
+            "amounts".into(),
+            amounts
+                .iter()
+                .map(|a| {
+                    let mut o = serde_json::Map::new();
+                    o.insert("name".into(), a.name.clone().into());
+                    if let Some(v) = a.min {
+                        o.insert("min".into(), v.into());
+                    }
+                    if let Some(v) = a.max {
+                        o.insert("max".into(), v.into());
+                    }
+                    serde_json::Value::Object(o)
+                })
+                .collect(),
+        );
+    }
+    if let Some(attributes) = hr.attributes.as_ref().filter(|a| !a.is_empty()) {
+        m.insert(
+            "attributes".into(),
+            attributes
+                .iter()
+                .map(|a| {
+                    let mut o = serde_json::Map::new();
+                    o.insert("name".into(), a.name.clone().into());
+                    if let Some(v) = &a.any_of {
+                        o.insert("anyOf".into(), v.clone().into());
+                    }
+                    if let Some(v) = &a.all_of {
+                        o.insert("allOf".into(), v.clone().into());
+                    }
+                    serde_json::Value::Object(o)
+                })
+                .collect(),
+        );
+    }
+    serde_json::Value::Object(m)
+}
+
+/// One Environment's effective parameter values for a Step (`ENV_PARAMS`).
+struct EnvParamInfo {
+    environment: String,
+    /// The declaring document: `JobTemplate`, or the `--environment` path.
+    document: String,
+    /// `(name, type, value)`, from [`crate::common::environment_parameter_entries`].
+    values: Vec<(String, String, String)>,
+}
+
+/// A Step's effective Environment parameter values, in the order its
+/// Sessions enter the Environments.
+fn env_param_infos(step: &job::Step) -> Vec<EnvParamInfo> {
+    step.environment_parameters
+        .iter()
+        .flatten()
+        .map(|v| EnvParamInfo {
+            environment: v.environment.clone(),
+            document: v.document.to_string(),
+            values: crate::common::environment_parameter_entries(v),
+        })
+        .collect()
+}
+
+fn env_params_json(infos: &[EnvParamInfo]) -> serde_json::Value {
+    serde_json::json!(infos
+        .iter()
+        .map(|e| serde_json::json!({
+            "environment": e.environment,
+            "document": e.document,
+            "values": e
+                .values
+                .iter()
+                .map(|(n, t, v)| serde_json::json!({"name": n, "type": t, "value": v}))
+                .collect::<Vec<_>>(),
+        }))
+        .collect::<Vec<_>>())
+}
+
+/// `Environment parameters:` then, per Environment, `Name (document):` and
+/// one `- name (TYPE): value` line per parameter, indented by `indent`.
+fn write_env_params(
+    f: &mut fmt::Formatter<'_>,
+    infos: &[EnvParamInfo],
+    indent: &str,
+) -> fmt::Result {
+    if infos.is_empty() {
+        return Ok(());
+    }
+    writeln!(f, "{indent}Environment parameters:")?;
+    for e in infos {
+        writeln!(f, "{indent}  {} ({}):", e.environment, e.document)?;
+        for (name, ty, value) in &e.values {
+            writeln!(f, "{indent}    - {name} ({ty}): {value}")?;
+        }
+    }
+    Ok(())
 }
 
 struct ParamInfo {

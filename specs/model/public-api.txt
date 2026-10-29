@@ -37,6 +37,31 @@ pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(
 pub fn openjd_model::create_job::parameters::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::parameters::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::parameters::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
+pub struct openjd_model::create_job::AttachedEnvironmentTemplate<'a>
+pub openjd_model::create_job::AttachedEnvironmentTemplate::label: core::option::Option<&'a str>
+pub openjd_model::create_job::AttachedEnvironmentTemplate::template: &'a openjd_model::template::EnvironmentTemplate
+impl<'a> openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::new(&'a openjd_model::template::EnvironmentTemplate) -> Self
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::with_label(self, &'a str) -> Self
+impl<'a> core::clone::Clone for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::clone(&self) -> openjd_model::AttachedEnvironmentTemplate<'a>
+impl<'a> core::convert::From<&'a openjd_model::template::EnvironmentTemplate> for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::from(&'a openjd_model::template::EnvironmentTemplate) -> Self
+impl<'a> core::fmt::Debug for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_model::AttachedEnvironmentTemplate<'a>
+pub struct openjd_model::create_job::CreatedJob
+pub openjd_model::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
+pub openjd_model::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::create_job::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
+impl core::clone::Clone for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
+impl core::cmp::PartialEq for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::eq(&self, &openjd_model::CreatedJob) -> bool
+impl core::fmt::Debug for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::CreatedJob
 pub struct openjd_model::create_job::MergedParameterDefinition
 pub openjd_model::create_job::MergedParameterDefinition::data_flow: core::option::Option<openjd_model::types::DataFlow>
 pub openjd_model::create_job::MergedParameterDefinition::default: core::option::Option<alloc::string::String>
@@ -59,10 +84,38 @@ pub openjd_model::create_job::PathParameterOptions::job_template_dir: &'a str
 pub openjd_model::create_job::PathParameterOptions::path_format: openjd_expr::path_mapping::PathFormat
 impl<'a> openjd_model::job::create_job::parameters::PathParameterOptions<'a>
 pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(&'a str, &'a str) -> Self
+pub struct openjd_model::create_job::StepDisabledEnvironments
+pub openjd_model::create_job::StepDisabledEnvironments::environments: alloc::vec::Vec<openjd_model::job::EnvironmentRef>
+pub openjd_model::create_job::StepDisabledEnvironments::step_environments: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::clone(&self) -> openjd_model::StepDisabledEnvironments
+impl core::cmp::Eq for openjd_model::StepDisabledEnvironments
+impl core::cmp::PartialEq for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::eq(&self, &openjd_model::StepDisabledEnvironments) -> bool
+impl core::default::Default for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDisabledEnvironments
+impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
+pub struct openjd_model::create_job::SubmissionWarning
+pub openjd_model::create_job::SubmissionWarning::message: alloc::string::String
+pub openjd_model::create_job::SubmissionWarning::path: alloc::vec::Vec<openjd_model::error::PathElement>
+impl core::clone::Clone for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::clone(&self) -> openjd_model::SubmissionWarning
+impl core::cmp::Eq for openjd_model::SubmissionWarning
+impl core::cmp::PartialEq for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::eq(&self, &openjd_model::SubmissionWarning) -> bool
+impl core::fmt::Debug for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
 pub fn openjd_model::create_job::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
+pub fn openjd_model::create_job::check_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::ValidationContext) -> core::result::Result<alloc::vec::Vec<openjd_model::SubmissionWarning>, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::create_job::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::create_job::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::create_job::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::evaluate_let_bindings(&[alloc::string::String], &openjd_expr::symbol_table::SymbolTable, core::option::Option<&openjd_expr::function_library::FunctionLibrary>, openjd_expr::path_mapping::PathFormat, core::option::Option<usize>, core::option::Option<usize>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
@@ -170,6 +223,31 @@ pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(
 pub fn openjd_model::job::create_job::parameters::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::parameters::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::parameters::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
+pub struct openjd_model::job::create_job::AttachedEnvironmentTemplate<'a>
+pub openjd_model::job::create_job::AttachedEnvironmentTemplate::label: core::option::Option<&'a str>
+pub openjd_model::job::create_job::AttachedEnvironmentTemplate::template: &'a openjd_model::template::EnvironmentTemplate
+impl<'a> openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::new(&'a openjd_model::template::EnvironmentTemplate) -> Self
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::with_label(self, &'a str) -> Self
+impl<'a> core::clone::Clone for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::clone(&self) -> openjd_model::AttachedEnvironmentTemplate<'a>
+impl<'a> core::convert::From<&'a openjd_model::template::EnvironmentTemplate> for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::from(&'a openjd_model::template::EnvironmentTemplate) -> Self
+impl<'a> core::fmt::Debug for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_model::AttachedEnvironmentTemplate<'a>
+pub struct openjd_model::job::create_job::CreatedJob
+pub openjd_model::job::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
+pub openjd_model::job::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::job::create_job::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::job::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
+impl core::clone::Clone for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
+impl core::cmp::PartialEq for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::eq(&self, &openjd_model::CreatedJob) -> bool
+impl core::fmt::Debug for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::CreatedJob
 pub struct openjd_model::job::create_job::MergedParameterDefinition
 pub openjd_model::job::create_job::MergedParameterDefinition::data_flow: core::option::Option<openjd_model::types::DataFlow>
 pub openjd_model::job::create_job::MergedParameterDefinition::default: core::option::Option<alloc::string::String>
@@ -192,10 +270,38 @@ pub openjd_model::job::create_job::PathParameterOptions::job_template_dir: &'a s
 pub openjd_model::job::create_job::PathParameterOptions::path_format: openjd_expr::path_mapping::PathFormat
 impl<'a> openjd_model::job::create_job::parameters::PathParameterOptions<'a>
 pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(&'a str, &'a str) -> Self
+pub struct openjd_model::job::create_job::StepDisabledEnvironments
+pub openjd_model::job::create_job::StepDisabledEnvironments::environments: alloc::vec::Vec<openjd_model::job::EnvironmentRef>
+pub openjd_model::job::create_job::StepDisabledEnvironments::step_environments: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::clone(&self) -> openjd_model::StepDisabledEnvironments
+impl core::cmp::Eq for openjd_model::StepDisabledEnvironments
+impl core::cmp::PartialEq for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::eq(&self, &openjd_model::StepDisabledEnvironments) -> bool
+impl core::default::Default for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDisabledEnvironments
+impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
+pub struct openjd_model::job::create_job::SubmissionWarning
+pub openjd_model::job::create_job::SubmissionWarning::message: alloc::string::String
+pub openjd_model::job::create_job::SubmissionWarning::path: alloc::vec::Vec<openjd_model::error::PathElement>
+impl core::clone::Clone for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::clone(&self) -> openjd_model::SubmissionWarning
+impl core::cmp::Eq for openjd_model::SubmissionWarning
+impl core::cmp::PartialEq for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::eq(&self, &openjd_model::SubmissionWarning) -> bool
+impl core::fmt::Debug for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
 pub fn openjd_model::job::create_job::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
+pub fn openjd_model::job::create_job::check_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::ValidationContext) -> core::result::Result<alloc::vec::Vec<openjd_model::SubmissionWarning>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::job::create_job::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::job::create_job::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::job::create_job::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::evaluate_let_bindings(&[alloc::string::String], &openjd_expr::symbol_table::SymbolTable, core::option::Option<&openjd_expr::function_library::FunctionLibrary>, openjd_expr::path_mapping::PathFormat, core::option::Option<usize>, core::option::Option<usize>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
@@ -266,6 +372,36 @@ impl serde_core::ser::Serialize for openjd_model::job::CancelationMode
 pub fn openjd_model::job::CancelationMode::serialize<S: serde_core::ser::Serializer>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::CancelationMode
 pub fn openjd_model::job::CancelationMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::job::Document
+pub openjd_model::job::Document::EnvironmentTemplate
+pub openjd_model::job::Document::EnvironmentTemplate::index: usize
+pub openjd_model::job::Document::EnvironmentTemplate::label: core::option::Option<alloc::string::String>
+pub openjd_model::job::Document::JobTemplate
+impl openjd_model::job::Document
+pub fn openjd_model::job::Document::environment_template(usize, core::option::Option<&str>) -> Self
+pub fn openjd_model::job::Document::is_job_template(&self) -> bool
+impl core::clone::Clone for openjd_model::job::Document
+pub fn openjd_model::job::Document::clone(&self) -> openjd_model::job::Document
+impl core::cmp::Eq for openjd_model::job::Document
+impl core::cmp::Ord for openjd_model::job::Document
+pub fn openjd_model::job::Document::cmp(&self, &openjd_model::job::Document) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openjd_model::job::Document
+pub fn openjd_model::job::Document::eq(&self, &openjd_model::job::Document) -> bool
+impl core::cmp::PartialOrd for openjd_model::job::Document
+pub fn openjd_model::job::Document::partial_cmp(&self, &openjd_model::job::Document) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for openjd_model::job::Document
+pub fn openjd_model::job::Document::default() -> openjd_model::job::Document
+impl core::fmt::Debug for openjd_model::job::Document
+pub fn openjd_model::job::Document::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::job::Document
+pub fn openjd_model::job::Document::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::Document
+pub fn openjd_model::job::Document::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::Document
+impl serde_core::ser::Serialize for openjd_model::job::Document
+pub fn openjd_model::job::Document::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::Document
+pub fn openjd_model::job::Document::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub enum openjd_model::job::TaskParamRange<T: serde_core::ser::Serialize>
 pub openjd_model::job::TaskParamRange::List(alloc::vec::Vec<T>)
 pub openjd_model::job::TaskParamRange::RangeExpr(openjd_expr::range_expr::RangeExpr)
@@ -431,6 +567,43 @@ impl serde_core::ser::Serialize for openjd_model::job::EnvironmentActions
 pub fn openjd_model::job::EnvironmentActions::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::EnvironmentActions
 pub fn openjd_model::job::EnvironmentActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::EnvironmentParameterValues
+pub openjd_model::job::EnvironmentParameterValues::document: openjd_model::job::Document
+pub openjd_model::job::EnvironmentParameterValues::environment: alloc::string::String
+pub openjd_model::job::EnvironmentParameterValues::values: openjd_expr::symbol_table::SerializedSymbolTable
+impl openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::values_equal(&self, &openjd_model::job::EnvironmentParameterValues) -> bool
+impl core::clone::Clone for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::clone(&self) -> openjd_model::job::EnvironmentParameterValues
+impl core::cmp::Eq for openjd_model::job::EnvironmentParameterValues
+impl core::cmp::PartialEq for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::eq(&self, &openjd_model::job::EnvironmentParameterValues) -> bool
+impl core::fmt::Debug for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::EnvironmentParameterValues
+impl serde_core::ser::Serialize for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::EnvironmentParameterValues
+pub fn openjd_model::job::EnvironmentParameterValues::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::job::EnvironmentRef
+pub openjd_model::job::EnvironmentRef::document: openjd_model::job::Document
+pub openjd_model::job::EnvironmentRef::environment: alloc::string::String
+impl core::clone::Clone for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::clone(&self) -> openjd_model::job::EnvironmentRef
+impl core::cmp::Eq for openjd_model::job::EnvironmentRef
+impl core::cmp::PartialEq for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::eq(&self, &openjd_model::job::EnvironmentRef) -> bool
+impl core::fmt::Debug for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::job::EnvironmentRef
+impl serde_core::ser::Serialize for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::job::EnvironmentRef
+pub fn openjd_model::job::EnvironmentRef::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::job::EnvironmentScript
 pub openjd_model::job::EnvironmentScript::actions: openjd_model::job::EnvironmentActions
 pub openjd_model::job::EnvironmentScript::embedded_files: core::option::Option<alloc::vec::Vec<openjd_model::job::EmbeddedFile>>
@@ -520,12 +693,18 @@ pub fn openjd_model::job::ResolvedChunks::deserialize<__D>(__D) -> core::result:
 pub struct openjd_model::job::Step
 pub openjd_model::job::Step::dependencies: core::option::Option<alloc::vec::Vec<openjd_model::job::StepDependency>>
 pub openjd_model::job::Step::description: core::option::Option<alloc::string::String>
+pub openjd_model::job::Step::environment_parameters: core::option::Option<alloc::vec::Vec<openjd_model::job::EnvironmentParameterValues>>
+pub openjd_model::job::Step::environments: core::option::Option<alloc::vec::Vec<openjd_model::job::EnvironmentRef>>
 pub openjd_model::job::Step::host_requirements: core::option::Option<openjd_model::job::HostRequirements>
 pub openjd_model::job::Step::name: alloc::string::String
 pub openjd_model::job::Step::parameter_space: core::option::Option<openjd_model::job::StepParameterSpace>
 pub openjd_model::job::Step::resolved_symtab: core::option::Option<openjd_expr::symbol_table::SerializedSymbolTable>
 pub openjd_model::job::Step::script: openjd_model::job::StepScript
 pub openjd_model::job::Step::step_environments: core::option::Option<alloc::vec::Vec<openjd_model::job::Environment>>
+impl openjd_model::job::Step
+pub fn openjd_model::job::Step::enters_environment(&self, &openjd_model::job::Document, &str) -> bool
+pub fn openjd_model::job::Step::environment_values_equal(&self, &openjd_model::job::Step) -> bool
+pub fn openjd_model::job::Step::same_environments(&self, &openjd_model::job::Step) -> bool
 impl core::clone::Clone for openjd_model::job::Step
 pub fn openjd_model::job::Step::clone(&self) -> openjd_model::job::Step
 impl core::cmp::PartialEq for openjd_model::job::Step
@@ -688,6 +867,79 @@ impl core::fmt::Debug for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::CancelationMode
 pub fn openjd_model::template::CancelationMode::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::template::DependencyTarget<'a>
+pub openjd_model::template::DependencyTarget::Environment(&'a str)
+pub openjd_model::template::DependencyTarget::Step(&'a str, openjd_model::template::StepKey)
+impl<'a> openjd_model::template::DependencyTarget<'a>
+pub fn openjd_model::template::DependencyTarget<'a>::environment(self) -> core::option::Option<&'a str>
+pub fn openjd_model::template::DependencyTarget<'a>::step(self) -> core::option::Option<&'a str>
+impl core::fmt::Display for openjd_model::template::DependencyTarget<'_>
+pub fn openjd_model::template::DependencyTarget<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for openjd_model::template::DependencyTarget<'a>
+pub fn openjd_model::template::DependencyTarget<'a>::clone(&self) -> openjd_model::template::DependencyTarget<'a>
+impl<'a> core::cmp::Eq for openjd_model::template::DependencyTarget<'a>
+impl<'a> core::cmp::PartialEq for openjd_model::template::DependencyTarget<'a>
+pub fn openjd_model::template::DependencyTarget<'a>::eq(&self, &openjd_model::template::DependencyTarget<'a>) -> bool
+impl<'a> core::fmt::Debug for openjd_model::template::DependencyTarget<'a>
+pub fn openjd_model::template::DependencyTarget<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for openjd_model::template::DependencyTarget<'a>
+pub fn openjd_model::template::DependencyTarget<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for openjd_model::template::DependencyTarget<'a>
+impl<'a> core::marker::StructuralPartialEq for openjd_model::template::DependencyTarget<'a>
+pub enum openjd_model::template::EnvironmentActivation
+pub openjd_model::template::EnvironmentActivation::Always
+pub openjd_model::template::EnvironmentActivation::OnRequest
+impl openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::as_str(self) -> &'static str
+impl core::clone::Clone for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::clone(&self) -> openjd_model::template::EnvironmentActivation
+impl core::cmp::Eq for openjd_model::template::EnvironmentActivation
+impl core::cmp::PartialEq for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::eq(&self, &openjd_model::template::EnvironmentActivation) -> bool
+impl core::default::Default for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::default() -> openjd_model::template::EnvironmentActivation
+impl core::fmt::Debug for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::template::EnvironmentActivation
+impl core::marker::StructuralPartialEq for openjd_model::template::EnvironmentActivation
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::EnvironmentActivation::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::template::EnvironmentParameterValue
+pub openjd_model::template::EnvironmentParameterValue::FormatString(openjd_expr::format_string::FormatString)
+pub openjd_model::template::EnvironmentParameterValue::Literal(serde_json::value::Value)
+impl openjd_model::template::EnvironmentParameterValue
+pub fn openjd_model::template::EnvironmentParameterValue::as_format_string(&self) -> core::option::Option<&openjd_expr::format_string::FormatString>
+pub fn openjd_model::template::EnvironmentParameterValue::as_literal(&self) -> core::option::Option<&serde_json::value::Value>
+pub fn openjd_model::template::EnvironmentParameterValue::from_json(serde_json::value::Value) -> core::result::Result<Self, alloc::string::String>
+impl core::clone::Clone for openjd_model::template::EnvironmentParameterValue
+pub fn openjd_model::template::EnvironmentParameterValue::clone(&self) -> openjd_model::template::EnvironmentParameterValue
+impl core::cmp::Eq for openjd_model::template::EnvironmentParameterValue
+impl core::cmp::PartialEq for openjd_model::template::EnvironmentParameterValue
+pub fn openjd_model::template::EnvironmentParameterValue::eq(&self, &openjd_model::template::EnvironmentParameterValue) -> bool
+impl core::fmt::Debug for openjd_model::template::EnvironmentParameterValue
+pub fn openjd_model::template::EnvironmentParameterValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::EnvironmentParameterValue
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentParameterValue
+pub fn openjd_model::template::EnvironmentParameterValue::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub enum openjd_model::template::ExprField
+pub openjd_model::template::ExprField::Bool(bool)
+pub openjd_model::template::ExprField::Expression(alloc::string::String)
+pub openjd_model::template::ExprField::Float(f64)
+pub openjd_model::template::ExprField::Int(i64)
+pub openjd_model::template::ExprField::Null
+impl openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::as_bool(&self) -> core::option::Option<bool>
+impl core::clone::Clone for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::clone(&self) -> openjd_model::template::ExprField
+impl core::cmp::Eq for openjd_model::template::ExprField
+impl core::cmp::PartialEq for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::eq(&self, &Self) -> bool
+impl core::fmt::Debug for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::ExprField
+pub fn openjd_model::template::ExprField::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum openjd_model::template::FloatRange
 pub openjd_model::template::FloatRange::Expression(openjd_expr::format_string::FormatString)
 pub openjd_model::template::FloatRange::List(alloc::vec::Vec<openjd_model::template::FloatRangeItem>)
@@ -817,6 +1069,22 @@ impl core::hash::Hash for openjd_model::template::SimpleActionKind
 pub fn openjd_model::template::SimpleActionKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
 impl core::marker::Copy for openjd_model::template::SimpleActionKind
 impl core::marker::StructuralPartialEq for openjd_model::template::SimpleActionKind
+pub enum openjd_model::template::StepKey
+pub openjd_model::template::StepKey::DependsOn
+pub openjd_model::template::StepKey::Step
+impl openjd_model::template::StepKey
+pub fn openjd_model::template::StepKey::as_str(self) -> &'static str
+impl core::clone::Clone for openjd_model::template::StepKey
+pub fn openjd_model::template::StepKey::clone(&self) -> openjd_model::template::StepKey
+impl core::cmp::Eq for openjd_model::template::StepKey
+impl core::cmp::PartialEq for openjd_model::template::StepKey
+pub fn openjd_model::template::StepKey::eq(&self, &openjd_model::template::StepKey) -> bool
+impl core::fmt::Debug for openjd_model::template::StepKey
+pub fn openjd_model::template::StepKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::StepKey
+pub fn openjd_model::template::StepKey::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::template::StepKey
+impl core::marker::StructuralPartialEq for openjd_model::template::StepKey
 pub enum openjd_model::template::StringRange
 pub openjd_model::template::StringRange::Expression(openjd_expr::format_string::FormatString)
 pub openjd_model::template::StringRange::List(alloc::vec::Vec<openjd_expr::format_string::FormatString>)
@@ -943,10 +1211,17 @@ pub fn openjd_model::template::EmbeddedFile::fmt(&self, &mut core::fmt::Formatte
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EmbeddedFile
 pub fn openjd_model::template::EmbeddedFile::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::Environment
+pub openjd_model::template::Environment::activation: core::option::Option<openjd_model::template::EnvironmentActivation>
 pub openjd_model::template::Environment::description: core::option::Option<openjd_model::template::Description>
+pub openjd_model::template::Environment::enable_if: core::option::Option<openjd_model::template::ExprField>
+pub openjd_model::template::Environment::env_parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::EnvironmentParameterDefinition>>
+pub openjd_model::template::Environment::host_requirements: core::option::Option<openjd_model::template::HostRequirements>
 pub openjd_model::template::Environment::name: alloc::string::String
 pub openjd_model::template::Environment::script: core::option::Option<openjd_model::template::EnvironmentScript>
 pub openjd_model::template::Environment::variables: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, openjd_expr::format_string::FormatString>>
+impl openjd_model::template::Environment
+pub fn openjd_model::template::Environment::activation(&self) -> openjd_model::template::EnvironmentActivation
+pub fn openjd_model::template::Environment::literal_enabled(&self) -> core::option::Option<bool>
 impl core::clone::Clone for openjd_model::template::Environment
 pub fn openjd_model::template::Environment::clone(&self) -> openjd_model::template::Environment
 impl core::fmt::Debug for openjd_model::template::Environment
@@ -972,6 +1247,37 @@ impl core::fmt::Debug for openjd_model::template::EnvironmentActions
 pub fn openjd_model::template::EnvironmentActions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentActions
 pub fn openjd_model::template::EnvironmentActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub struct openjd_model::template::EnvironmentParameterDefinition
+pub openjd_model::template::EnvironmentParameterDefinition::default: core::option::Option<openjd_model::template::EnvironmentParameterValue>
+pub openjd_model::template::EnvironmentParameterDefinition::definition: openjd_model::template::JobParameterDefinition
+impl openjd_model::template::EnvironmentParameterDefinition
+pub fn openjd_model::template::EnvironmentParameterDefinition::job_param_type(&self) -> openjd_model::types::JobParameterType
+pub fn openjd_model::template::EnvironmentParameterDefinition::name(&self) -> &str
+pub fn openjd_model::template::EnvironmentParameterDefinition::type_name(&self) -> &str
+impl core::clone::Clone for openjd_model::template::EnvironmentParameterDefinition
+pub fn openjd_model::template::EnvironmentParameterDefinition::clone(&self) -> openjd_model::template::EnvironmentParameterDefinition
+impl core::fmt::Debug for openjd_model::template::EnvironmentParameterDefinition
+pub fn openjd_model::template::EnvironmentParameterDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentParameterDefinition
+pub fn openjd_model::template::EnvironmentParameterDefinition::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+pub struct openjd_model::template::EnvironmentParameterValueMap(pub alloc::collections::btree::map::BTreeMap<alloc::string::String, openjd_model::template::EnvironmentParameterValue>)
+impl openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::get(&self, &str) -> core::option::Option<&openjd_model::template::EnvironmentParameterValue>
+pub fn openjd_model::template::EnvironmentParameterValueMap::is_empty(&self) -> bool
+pub fn openjd_model::template::EnvironmentParameterValueMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&alloc::string::String, &openjd_model::template::EnvironmentParameterValue)>
+pub fn openjd_model::template::EnvironmentParameterValueMap::len(&self) -> usize
+impl core::clone::Clone for openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::clone(&self) -> openjd_model::template::EnvironmentParameterValueMap
+impl core::cmp::Eq for openjd_model::template::EnvironmentParameterValueMap
+impl core::cmp::PartialEq for openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::eq(&self, &openjd_model::template::EnvironmentParameterValueMap) -> bool
+impl core::default::Default for openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::default() -> openjd_model::template::EnvironmentParameterValueMap
+impl core::fmt::Debug for openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::EnvironmentParameterValueMap
+impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentParameterValueMap
+pub fn openjd_model::template::EnvironmentParameterValueMap::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::EnvironmentScript
 pub openjd_model::template::EnvironmentScript::actions: openjd_model::template::EnvironmentActions
 pub openjd_model::template::EnvironmentScript::embedded_files: core::option::Option<alloc::vec::Vec<openjd_model::template::EmbeddedFile>>
@@ -986,13 +1292,18 @@ pub struct openjd_model::template::EnvironmentTemplate
 pub openjd_model::template::EnvironmentTemplate::environment: openjd_model::template::Environment
 pub openjd_model::template::EnvironmentTemplate::extensions: core::option::Option<alloc::vec::Vec<openjd_model::template::ExtensionName>>
 pub openjd_model::template::EnvironmentTemplate::parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::JobParameterDefinition>>
+pub openjd_model::template::EnvironmentTemplate::schema: core::option::Option<alloc::string::String>
 pub openjd_model::template::EnvironmentTemplate::specification_version: alloc::string::String
 impl openjd_model::template::EnvironmentTemplate
+pub fn openjd_model::template::EnvironmentTemplate::default_validation_context(&self) -> openjd_model::types::ValidationContext
 pub fn openjd_model::template::EnvironmentTemplate::environment(&self) -> &openjd_model::template::Environment
+pub fn openjd_model::template::EnvironmentTemplate::profile(&self) -> openjd_model::types::ModelProfile
 impl core::clone::Clone for openjd_model::template::EnvironmentTemplate
 pub fn openjd_model::template::EnvironmentTemplate::clone(&self) -> openjd_model::template::EnvironmentTemplate
 impl core::fmt::Debug for openjd_model::template::EnvironmentTemplate
 pub fn openjd_model::template::EnvironmentTemplate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::convert::From<&'a openjd_model::template::EnvironmentTemplate> for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::from(&'a openjd_model::template::EnvironmentTemplate) -> Self
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::EnvironmentTemplate
 pub fn openjd_model::template::EnvironmentTemplate::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::ExtensionName(pub alloc::string::String)
@@ -1421,11 +1732,29 @@ pub fn openjd_model::template::StepActions::fmt(&self, &mut core::fmt::Formatter
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::StepActions
 pub fn openjd_model::template::StepActions::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::StepDependency
-pub openjd_model::template::StepDependency::depends_on: alloc::string::String
+pub openjd_model::template::StepDependency::depends_on: core::option::Option<alloc::string::String>
+pub openjd_model::template::StepDependency::enable_if: core::option::Option<openjd_model::template::ExprField>
+pub openjd_model::template::StepDependency::environment: core::option::Option<alloc::string::String>
+pub openjd_model::template::StepDependency::parameters: core::option::Option<openjd_model::template::EnvironmentParameterValueMap>
+pub openjd_model::template::StepDependency::required: core::option::Option<bool>
+pub openjd_model::template::StepDependency::step: core::option::Option<alloc::string::String>
+impl openjd_model::template::StepDependency
+pub fn openjd_model::template::StepDependency::environment(&self) -> core::option::Option<&str>
+pub fn openjd_model::template::StepDependency::is_required(&self) -> bool
+pub fn openjd_model::template::StepDependency::is_well_formed(&self) -> bool
+pub fn openjd_model::template::StepDependency::literal_enabled(&self) -> core::option::Option<bool>
+pub fn openjd_model::template::StepDependency::on_environment(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::template::StepDependency::on_step(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn openjd_model::template::StepDependency::step(&self) -> core::option::Option<&str>
+pub fn openjd_model::template::StepDependency::target(&self) -> core::option::Option<openjd_model::template::DependencyTarget<'_>>
 impl core::clone::Clone for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::clone(&self) -> openjd_model::template::StepDependency
+impl core::cmp::Eq for openjd_model::template::StepDependency
+impl core::cmp::PartialEq for openjd_model::template::StepDependency
+pub fn openjd_model::template::StepDependency::eq(&self, &openjd_model::template::StepDependency) -> bool
 impl core::fmt::Debug for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::template::StepDependency
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::StepDependency
 pub fn openjd_model::template::StepDependency::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
 pub struct openjd_model::template::StepParameterSpaceDefinition
@@ -1584,6 +1913,7 @@ impl core::marker::StructuralPartialEq for openjd_model::types::JobParameterType
 impl serde_core::ser::Serialize for openjd_model::types::JobParameterType
 pub fn openjd_model::types::JobParameterType::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 #[non_exhaustive] pub enum openjd_model::types::ModelExtension
+pub openjd_model::types::ModelExtension::EnvParams
 pub openjd_model::types::ModelExtension::Expr
 pub openjd_model::types::ModelExtension::FeatureBundle1
 pub openjd_model::types::ModelExtension::RedactedEnvVars
@@ -1742,13 +2072,17 @@ pub fn openjd_model::types::TaskParameterValue::clone(&self) -> openjd_model::ty
 impl core::fmt::Debug for openjd_model::types::TaskParameterValue
 pub fn openjd_model::types::TaskParameterValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::types::ValidationContext
+pub openjd_model::types::ValidationContext::allow_uri_path_values: bool
 pub openjd_model::types::ValidationContext::caller_limits: openjd_model::types::CallerLimits
 pub openjd_model::types::ValidationContext::profile: openjd_model::types::ModelProfile
+pub openjd_model::types::ValidationContext::submission_path_format: openjd_expr::path_mapping::PathFormat
 impl openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::from_profile(openjd_model::types::ModelProfile) -> Self
 pub fn openjd_model::types::ValidationContext::new(openjd_model::types::SpecificationRevision) -> Self
+pub fn openjd_model::types::ValidationContext::with_allow_uri_path_values(self, bool) -> Self
 pub fn openjd_model::types::ValidationContext::with_caller_limits(self, openjd_model::types::CallerLimits) -> Self
 pub fn openjd_model::types::ValidationContext::with_extensions(openjd_model::types::SpecificationRevision, openjd_model::types::Extensions) -> Self
+pub fn openjd_model::types::ValidationContext::with_submission_path_format(self, openjd_expr::path_mapping::PathFormat) -> Self
 impl core::clone::Clone for openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::clone(&self) -> openjd_model::types::ValidationContext
 impl core::fmt::Debug for openjd_model::types::ValidationContext
@@ -1888,6 +2222,7 @@ pub fn openjd_model::error::ModelError::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::fmt::Display for openjd_model::error::ModelError
 pub fn openjd_model::error::ModelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum openjd_model::ModelExtension
+pub openjd_model::ModelExtension::EnvParams
 pub openjd_model::ModelExtension::Expr
 pub openjd_model::ModelExtension::FeatureBundle1
 pub openjd_model::ModelExtension::RedactedEnvVars
@@ -2009,6 +2344,19 @@ impl core::marker::StructuralPartialEq for openjd_model::types::TemplateSpecific
 impl core::str::traits::FromStr for openjd_model::types::TemplateSpecificationVersion
 pub type openjd_model::types::TemplateSpecificationVersion::Err = alloc::string::String
 pub fn openjd_model::types::TemplateSpecificationVersion::from_str(&str) -> core::result::Result<Self, Self::Err>
+pub struct openjd_model::AttachedEnvironmentTemplate<'a>
+pub openjd_model::AttachedEnvironmentTemplate::label: core::option::Option<&'a str>
+pub openjd_model::AttachedEnvironmentTemplate::template: &'a openjd_model::template::EnvironmentTemplate
+impl<'a> openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::new(&'a openjd_model::template::EnvironmentTemplate) -> Self
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::with_label(self, &'a str) -> Self
+impl<'a> core::clone::Clone for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::clone(&self) -> openjd_model::AttachedEnvironmentTemplate<'a>
+impl<'a> core::convert::From<&'a openjd_model::template::EnvironmentTemplate> for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::from(&'a openjd_model::template::EnvironmentTemplate) -> Self
+impl<'a> core::fmt::Debug for openjd_model::AttachedEnvironmentTemplate<'a>
+pub fn openjd_model::AttachedEnvironmentTemplate<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_model::AttachedEnvironmentTemplate<'a>
 pub struct openjd_model::CallerLimits
 pub openjd_model::CallerLimits::max_env_count: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_environment_size: core::option::Option<usize>
@@ -2026,6 +2374,18 @@ impl core::default::Default for openjd_model::types::CallerLimits
 pub fn openjd_model::types::CallerLimits::default() -> openjd_model::types::CallerLimits
 impl core::fmt::Debug for openjd_model::types::CallerLimits
 pub fn openjd_model::types::CallerLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::CreatedJob
+pub openjd_model::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
+pub openjd_model::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::CreatedJob::job: openjd_model::job::Job
+pub openjd_model::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
+impl core::clone::Clone for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::clone(&self) -> openjd_model::CreatedJob
+impl core::cmp::PartialEq for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::eq(&self, &openjd_model::CreatedJob) -> bool
+impl core::fmt::Debug for openjd_model::CreatedJob
+pub fn openjd_model::CreatedJob::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::CreatedJob
 pub struct openjd_model::DiagnosticSpan
 pub openjd_model::DiagnosticSpan::caret: usize
 pub openjd_model::DiagnosticSpan::end: usize
@@ -2101,6 +2461,19 @@ pub fn openjd_model::job::step_dependency_graph::StepDependencyGraph::topo_sorte
 pub fn openjd_model::job::step_dependency_graph::StepDependencyGraph::topo_sorted_names(&self) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, openjd_model::error::ModelError>
 impl core::fmt::Debug for openjd_model::job::step_dependency_graph::StepDependencyGraph
 pub fn openjd_model::job::step_dependency_graph::StepDependencyGraph::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::StepDisabledEnvironments
+pub openjd_model::StepDisabledEnvironments::environments: alloc::vec::Vec<openjd_model::job::EnvironmentRef>
+pub openjd_model::StepDisabledEnvironments::step_environments: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::clone(&self) -> openjd_model::StepDisabledEnvironments
+impl core::cmp::Eq for openjd_model::StepDisabledEnvironments
+impl core::cmp::PartialEq for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::eq(&self, &openjd_model::StepDisabledEnvironments) -> bool
+impl core::default::Default for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDisabledEnvironments
+impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
+pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
 pub struct openjd_model::StepParameterSpaceIterator
 impl openjd_model::job::step_param_space::StepParameterSpaceIterator
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::chunks_adaptive(&self) -> bool
@@ -2120,6 +2493,19 @@ impl core::iter::traits::iterator::Iterator for openjd_model::job::step_param_sp
 pub type openjd_model::job::step_param_space::StepParameterSpaceIterator::Item = indexmap::map::IndexMap<alloc::string::String, openjd_model::types::TaskParameterValue>
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::next(&mut self) -> core::option::Option<openjd_model::types::TaskParameterSet>
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::size_hint(&self) -> (usize, core::option::Option<usize>)
+pub struct openjd_model::SubmissionWarning
+pub openjd_model::SubmissionWarning::message: alloc::string::String
+pub openjd_model::SubmissionWarning::path: alloc::vec::Vec<openjd_model::error::PathElement>
+impl core::clone::Clone for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::clone(&self) -> openjd_model::SubmissionWarning
+impl core::cmp::Eq for openjd_model::SubmissionWarning
+impl core::cmp::PartialEq for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::eq(&self, &openjd_model::SubmissionWarning) -> bool
+impl core::fmt::Debug for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_model::SubmissionWarning
+pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
 pub struct openjd_model::TaskParameterValue
 pub openjd_model::TaskParameterValue::param_type: openjd_model::types::TaskParameterType
 pub openjd_model::TaskParameterValue::value: openjd_expr::value::ExprValue
@@ -2128,13 +2514,17 @@ pub fn openjd_model::types::TaskParameterValue::clone(&self) -> openjd_model::ty
 impl core::fmt::Debug for openjd_model::types::TaskParameterValue
 pub fn openjd_model::types::TaskParameterValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::ValidationContext
+pub openjd_model::ValidationContext::allow_uri_path_values: bool
 pub openjd_model::ValidationContext::caller_limits: openjd_model::types::CallerLimits
 pub openjd_model::ValidationContext::profile: openjd_model::types::ModelProfile
+pub openjd_model::ValidationContext::submission_path_format: openjd_expr::path_mapping::PathFormat
 impl openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::from_profile(openjd_model::types::ModelProfile) -> Self
 pub fn openjd_model::types::ValidationContext::new(openjd_model::types::SpecificationRevision) -> Self
+pub fn openjd_model::types::ValidationContext::with_allow_uri_path_values(self, bool) -> Self
 pub fn openjd_model::types::ValidationContext::with_caller_limits(self, openjd_model::types::CallerLimits) -> Self
 pub fn openjd_model::types::ValidationContext::with_extensions(openjd_model::types::SpecificationRevision, openjd_model::types::Extensions) -> Self
+pub fn openjd_model::types::ValidationContext::with_submission_path_format(self, openjd_expr::path_mapping::PathFormat) -> Self
 impl core::clone::Clone for openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::clone(&self) -> openjd_model::types::ValidationContext
 impl core::fmt::Debug for openjd_model::types::ValidationContext
@@ -2164,9 +2554,11 @@ pub fn openjd_model::error::ValidationErrors::fmt(&self, &mut core::fmt::Formatt
 impl core::fmt::Display for openjd_model::error::ValidationErrors
 pub fn openjd_model::error::ValidationErrors::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub fn openjd_model::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
+pub fn openjd_model::check_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::ValidationContext) -> core::result::Result<alloc::vec::Vec<openjd_model::SubmissionWarning>, openjd_model::error::ModelError>
 pub fn openjd_model::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
 pub fn openjd_model::convert_environment_with_symtab(&openjd_model::template::Environment, core::option::Option<&openjd_expr::symbol_table::SymbolTable>) -> openjd_model::job::Environment
 pub fn openjd_model::create_job(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::job::Job, openjd_model::error::ModelError>
+pub fn openjd_model::create_job_with_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::JobParameterValues, &openjd_model::types::ValidationContext) -> core::result::Result<openjd_model::CreatedJob, openjd_model::error::ModelError>
 pub fn openjd_model::decode_environment_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::EnvironmentTemplate, openjd_model::error::ModelError>
 pub fn openjd_model::decode_job_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::JobTemplate, openjd_model::error::ModelError>
 pub fn openjd_model::decode_template(serde_json::value::Value, core::option::Option<&[&str]>, &openjd_model::types::CallerLimits) -> core::result::Result<openjd_model::template::parse::DecodedTemplate, openjd_model::error::ModelError>

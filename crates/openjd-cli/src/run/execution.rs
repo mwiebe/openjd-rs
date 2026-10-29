@@ -16,19 +16,14 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     let _ = crate::TIMESTAMP_FORMAT.set(args.timestamp_format.clone());
 
     let prepared = prepare_run(&args)?;
+    // Job creation has checked the RFC 0008 single-layer rule over every
+    // Step's Environment set, attached Environments included.
     let selection = prepare_selection(&args, &prepared.job)?;
-    validate_wrap_environment_stacks(
-        &prepared.job,
-        &prepared.env_templates,
-        &selection.steps_to_run,
-    )?;
-    let env_template_symtab = openjd_model::build_symbol_table(&prepared.param_values)
-        .map_err(|e| format!("Failed to build environment template symbol table: {e}"))?;
+    let groups = session_groups(&prepared.job, &selection.steps_to_run);
 
     let cancel_token = CancellationToken::new();
-    let session = create_session(&args, &prepared, cancel_token.clone())?;
-    let working_dir = session.working_directory().to_path_buf();
-    let interrupted = install_signal_handler(cancel_token);
+    let session = create_session(&args, &prepared, 0, cancel_token.clone())?;
+    let interrupted = install_signal_handler(cancel_token.clone());
     let mut ctx = RunContext {
         session,
         entered_envs: Vec::new(),
@@ -36,35 +31,84 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         started_at,
         tasks_run: 0,
         session_failed: false,
+        preserved_dirs: Vec::new(),
     };
 
-    println!("{}\tSession start", ctx.timestamp());
-    println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
-    let execution_result = run_workload(
-        &mut ctx,
-        &args,
-        &prepared.job,
-        &prepared.env_templates,
-        &env_template_symtab,
-        &selection,
-    )
-    .await;
-
-    // Once a Session exists, errors must not bypass environment cleanup.
-    ctx.exit_environments_down_to(0).await;
-    ctx.record_interruption();
-    if let Err(e) = execution_result {
-        if !args.preserve {
-            ctx.session.cleanup();
+    for (n, group) in groups.iter().enumerate() {
+        if n > 0 {
+            if ctx.is_stopping() {
+                break;
+            }
+            // A Step whose Environments or Environment parameter values
+            // differ from the previous Step's never shares its Session
+            // (Template Schemas §3.2.2), so the previous Session ends here.
+            ctx.end_session(args.preserve);
+            ctx.session = match create_session(&args, &prepared, n, cancel_token.clone()) {
+                Ok(session) => session,
+                Err(e) => {
+                    ctx.print_preserved_dirs();
+                    return Err(e);
+                }
+            };
+            let first = &prepared.job.steps[group[0]];
+            println!(
+                "{}\tStarting a new Session for Step '{}': its Environments or their parameter \
+                 values differ from the previous Session's.",
+                ctx.timestamp(),
+                first.name
+            );
         }
-        return Err(e);
-    }
+        println!("{}\tSession start", ctx.timestamp());
+        if n == 0 {
+            println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
+        }
+        let execution_result = run_workload(&mut ctx, &args, &prepared, group, &selection).await;
 
-    report_result(&mut ctx, &args, &prepared.job, &working_dir);
+        // Once a Session exists, errors must not bypass environment cleanup.
+        ctx.exit_environments_down_to(0).await;
+        if let Err(e) = execution_result {
+            ctx.record_interruption();
+            ctx.end_session(args.preserve);
+            ctx.print_preserved_dirs();
+            return Err(e);
+        }
+    }
+    ctx.record_interruption();
+
+    report_result(&mut ctx, &args, &prepared.job);
     if ctx.session_failed {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Split the selected Steps, in the order they run, into runs of
+/// consecutive Steps that enter the same Job Environments
+/// ([`Step::same_environments`]) with equal Environment parameter values
+/// ([`Step::environment_values_equal`], Template Schemas §3.2.2). Each run
+/// gets its own Session; Steps are never reordered to merge runs. Without
+/// `activation: ON_REQUEST`, Environment `enableIf`, and Environment
+/// parameter values every Step
+/// compares equal, so there is one run, as before `ENV_PARAMS`. An empty
+/// selection is one empty run. (Each Step enters its own Step Environments
+/// inside the run, as before.)
+fn session_groups(job: &Job, steps_to_run: &[usize]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for &idx in steps_to_run {
+        match groups.last_mut() {
+            Some(group)
+                if job.steps[group[0]].same_environments(&job.steps[idx])
+                    && job.steps[group[0]].environment_values_equal(&job.steps[idx]) =>
+            {
+                group.push(idx)
+            }
+            _ => groups.push(vec![idx]),
+        }
+    }
+    if groups.is_empty() {
+        groups.push(Vec::new());
+    }
+    groups
 }
 
 fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
@@ -83,20 +127,8 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         &crate::common::caller_limits(),
     )?;
 
-    let mut env_templates = Vec::new();
-    for env_path in &args.environments {
-        let env_content = std::fs::read_to_string(env_path)?;
-        let env_value = parse::document_string_to_object(
-            &env_content,
-            crate::common::document_type(env_path),
-            &crate::common::caller_limits(),
-        )?;
-        env_templates.push(parse::decode_environment_template(
-            env_value,
-            Some(&supported_exts),
-            &crate::common::caller_limits(),
-        )?);
-    }
+    let env_templates =
+        crate::common::read_environment_templates(&args.environments, &supported_exts)?;
 
     let input_values = parse_cli_parameters(&args.parameters)?;
     let path_rules = load_path_mapping_rules(&args.path_mapping_rules)?;
@@ -126,15 +158,28 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     // the template's — and carry the CLI's caller limits so job
     // creation enforces the same caps the decode ran under.
     let revision_profile = job_template.profile();
-    let revision_ctx = job_template
-        .default_validation_context()
-        .with_caller_limits(crate::common::caller_limits());
-    let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
-        .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    let revision_ctx = crate::common::submission_context(&job_template);
+
+    // Attach the --environment templates, in the order given (Template
+    // Schemas §3.2.1): job creation resolves `environment:` entries that
+    // name no Job Environment, fixes each Step's Environment set, and
+    // computes every Step's values for the attached Environments it
+    // enters. The combined Job lists the attached Environments first, so a
+    // Session enters them first.
+    let labels = crate::common::environment_labels(&args.environments);
+    let attached = crate::common::attach(&env_templates, &labels);
+    let created = openjd_model::create_job_with_environment_templates(
+        &job_template,
+        &attached,
+        &param_values,
+        &revision_ctx,
+    )
+    .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    crate::common::print_submission_warnings(&created.warnings);
 
     Ok(PreparedRun {
-        job,
-        env_templates,
+        job: created.job,
+        environment_documents: created.environment_documents,
         param_values,
         path_rules,
         revision_profile,
@@ -209,72 +254,21 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
     })
 }
 
-fn validate_wrap_environment_stacks(
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    steps_to_run: &[usize],
-) -> Result<(), RunError> {
-    let has_wrap_hook = |env: &Environment| {
-        env.script
-            .as_ref()
-            .is_some_and(|script| script.actions.has_any_wrap_hook())
-    };
-    let mut base_wrap_envs: Vec<&str> = env_templates
-        .iter()
-        .filter(|template| {
-            template
-                .environment
-                .script
-                .as_ref()
-                .is_some_and(|script| script.actions.has_any_wrap_hook())
-        })
-        .map(|template| template.environment.name.as_str())
-        .collect();
-    if let Some(job_envs) = &job.job_environments {
-        base_wrap_envs.extend(
-            job_envs
-                .iter()
-                .filter(|env| has_wrap_hook(env))
-                .map(|env| env.name.as_str()),
-        );
-    }
-    reject_multiple_wrap_environments(&base_wrap_envs)?;
-
-    for &step_idx in steps_to_run {
-        let mut stack_wrap_envs = base_wrap_envs.clone();
-        if let Some(step_envs) = &job.steps[step_idx].step_environments {
-            stack_wrap_envs.extend(
-                step_envs
-                    .iter()
-                    .filter(|env| has_wrap_hook(env))
-                    .map(|env| env.name.as_str()),
-            );
-        }
-        reject_multiple_wrap_environments(&stack_wrap_envs)?;
-    }
-    Ok(())
-}
-
-fn reject_multiple_wrap_environments(names: &[&str]) -> Result<(), RunError> {
-    if names.len() <= 1 {
-        return Ok(());
-    }
-    Err(format!(
-        "RFC 0008: a session may have at most one Environment defining wrap hooks \
-         (onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit). Found {}: {}.",
-        names.len(),
-        names.join(", ")
-    )
-    .into())
-}
-
+/// Create the Session for run `n` of [`session_groups`]. The first keeps
+/// the session ID `cli-<pid>`; later ones add `-<n>`.
 fn create_session(
     args: &RunArgs,
     prepared: &PreparedRun,
+    n: usize,
     cancel_token: CancellationToken,
 ) -> Result<Session, RunError> {
+    let session_id = if n == 0 {
+        format!("cli-{}", std::process::id())
+    } else {
+        format!("cli-{}-{n}", std::process::id())
+    };
     let session_config = openjd_sessions::session::SessionConfig {
-        session_id: format!("cli-{}", std::process::id()),
+        session_id,
         job_parameter_values: prepared.param_values.clone(),
         path_mapping_rules: (!prepared.path_rules.is_empty()).then(|| prepared.path_rules.clone()),
         retain_working_dir: args.preserve,
@@ -338,35 +332,51 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
     interrupted
 }
 
+/// Run one Session of [`session_groups`]: enter each Environment of the
+/// combined Job (the attached ones, then the Job Template's own) that the
+/// group's Steps enter ([`Step::enters_environment`], Template Schemas §4
+/// item 4 `activation` and item 6 `enableIf`), with the group's Environment
+/// parameter values, then
+/// run each Step of the group. The Steps of a group enter the same
+/// Environments with equal values, so the first Step's are the group's.
 async fn run_workload(
     ctx: &mut RunContext,
     args: &RunArgs,
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    env_template_symtab: &openjd_expr::SymbolTable,
+    prepared: &PreparedRun,
+    group: &[usize],
     selection: &RunSelection,
 ) -> Result<(), RunError> {
-    for template in env_templates {
+    let job = &prepared.job;
+    let first = group.first().map(|&idx| &job.steps[idx]);
+    let group_values = first
+        .and_then(|step| step.environment_parameters.as_deref())
+        .unwrap_or(&[]);
+    for (env, document) in job
+        .job_environments
+        .iter()
+        .flatten()
+        .zip(&prepared.environment_documents)
+    {
         if ctx.is_stopping() {
             break;
         }
-        let env = openjd_model::convert_environment_with_symtab(
-            &template.environment,
-            Some(env_template_symtab),
-        );
-        ctx.enter_environment(&env, &template.environment.name, None)
+        if first.is_some_and(|step| !step.enters_environment(document, &env.name)) {
+            continue;
+        }
+        // Keyed by (document, name): an attached Environment may share its
+        // name with a Job Environment (§3.2.1 item 4).
+        let values = group_values
+            .iter()
+            .find(|v| &v.document == document && v.environment == env.name);
+        // The Environment's own frozen table carries the symbols job
+        // creation resolved for it (`Job.Name`, `Job.EnvNames`, and an
+        // attached Environment's own `Param.*`); a Session builds an
+        // Environment's scope from the table it is given.
+        ctx.enter_environment(env, &env.name, env.resolved_symtab.clone(), values)
             .await;
     }
-    if let Some(job_envs) = &job.job_environments {
-        for env in job_envs {
-            if ctx.is_stopping() {
-                break;
-            }
-            ctx.enter_environment(env, &env.name, None).await;
-        }
-    }
 
-    for &step_idx in &selection.steps_to_run {
+    for &step_idx in group {
         if ctx.is_stopping() {
             break;
         }
@@ -389,7 +399,7 @@ async fn execute_step(
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone())
+            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone(), None)
                 .await;
         }
     }
@@ -586,7 +596,7 @@ fn adjust_adaptive_chunk_size(
     }
 }
 
-fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &std::path::Path) {
+fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
     println!("{}\t", ctx.timestamp());
     if ctx.session_failed {
         println!("{}\tSession ended with errors.", ctx.timestamp());
@@ -596,15 +606,12 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &
     println!("{}\tLocal session ended.", ctx.timestamp());
 
     let duration = ctx.started_at.elapsed().as_secs_f64();
-    let preserved_msg = if args.preserve {
-        format!(
-            "\nWorking directory preserved at: {}",
-            working_dir.display()
-        )
-    } else {
-        ctx.session.cleanup();
-        String::new()
-    };
+    ctx.end_session(args.preserve);
+    let preserved_msg: String = ctx
+        .preserved_dirs
+        .iter()
+        .map(|dir| format!("\nWorking directory preserved at: {}", dir.display()))
+        .collect();
     let (status, message) = if ctx.session_failed {
         (
             "error",

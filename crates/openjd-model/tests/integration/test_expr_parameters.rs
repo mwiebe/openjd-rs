@@ -353,6 +353,27 @@ fn test_range_expr_invalid_default() {
 }
 
 #[test]
+fn test_range_expr_default_length_checks_as_written_and_canonical_form() {
+    // §2.10: "1,2,3" (5) breaks maxLength 3 as written; "1-3:2" (5) meets
+    // minLength 4 as written, but its canonical form "1,3" (3) does not.
+    check_err(
+        &job_with_expr_param(
+            r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3, "default": "1,2,3"}"#,
+        ),
+        &["parameterDefinitions[0]:\n\tParameter 'Foo': value '1,2,3' length 5 exceeds maximum 3 (default)"],
+    );
+    check_err(
+        &job_with_expr_param(
+            r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#,
+        ),
+        &["parameterDefinitions[0]:\n\tParameter 'Foo': canonical form '1,3' length 3 is less than minimum 4 (default)"],
+    );
+    decode_ok(&job_with_expr_param(
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 3, "maxLength": 3, "default": "1-3"}"#,
+    ));
+}
+
+#[test]
 fn test_range_expr_empty_default() {
     check_err(&job_with_expr_param(
         r#"{"name": "Foo", "type": "RANGE_EXPR", "default": ""}"#

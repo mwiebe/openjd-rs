@@ -52,6 +52,9 @@ pub enum SessionError {
 
     #[error("Must exit the most recently entered environment first. Expected {expected}, got {got}")]
     LifoViolation { expected: String, got: String },
+
+    #[error("Environment '{environment}': invalid Environment parameter values: {reason}")]
+    InvalidEnvironmentParameters { environment: String, reason: String },
 }
 ```
 
@@ -140,6 +143,19 @@ Covers protocol errors, unexpected helper exit, and stdin/stdout pipe failures.
 
 Returned when `exit_environment` is called out of LIFO order. The `expected` field is
 the identifier that should be exited next; `got` is the identifier that was requested.
+
+### InvalidEnvironmentParameters
+
+Returned by `enter_environment_with_parameters` (ENV_PARAMS) when its values name
+another Environment, or their table is not one transport entry per bare parameter name:
+the table is not a JSON array or has more than `MAX_SYMBOL_TABLE_ENTRIES` entries, or
+an entry has no string `name`, a name that is not an `<Identifier>` or repeats, no
+string `type` or one that is not an expression type, no `value`, or a value that does
+not decode with its type (a `path` that is not a string, a `list[path]` that is not a
+list of strings). `reason` names the entry or parameter at fault. The check runs before any state for the Environment is
+recorded, so the session stays `Ready`. `environment` is the name of the Environment
+being entered. It is a distinct variant, not `Runtime`, because it reports a caller
+error in the values rather than a failure of the session.
 
 ## Error Propagation Patterns
 

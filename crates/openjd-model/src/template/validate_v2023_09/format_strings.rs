@@ -20,6 +20,7 @@ use openjd_expr::value::ExprValue;
 use openjd_expr::FormatString;
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::template::expr_field::{self, ExprFieldEval};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
@@ -38,7 +39,6 @@ const MAX_LET_IDENTIFIER_LEN: usize = 512;
 /// Takes a parameter slice (not a whole template) so both job templates and
 /// environment templates can use it.
 fn build_param_symtab(params: Option<&[JobParameterDefinition]>) -> SymbolTable {
-    use crate::types::JobParameterType;
     let mut symtab = SymbolTable::new();
     if let Some(params) = params {
         for p in params {
@@ -50,11 +50,7 @@ fn build_param_symtab(params: Option<&[JobParameterDefinition]>) -> SymbolTable 
                     ExprValue::unresolved(expr_type.clone()),
                 )
                 .expect("symtab");
-            let raw_type = match pt {
-                JobParameterType::Path => ExprType::STRING,
-                JobParameterType::ListPath => ExprType::list(ExprType::STRING),
-                _ => expr_type,
-            };
+            let raw_type = pt.raw_expr_type();
             symtab
                 .set(
                     &format!("RawParam.{}", p.name()),
@@ -88,11 +84,7 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
                     )
                     .expect("symtab");
             }
-            let raw_type = match pt {
-                JobParameterType::Path => ExprType::STRING,
-                JobParameterType::ListPath => ExprType::list(ExprType::STRING),
-                _ => expr_type,
-            };
+            let raw_type = pt.raw_expr_type();
             symtab
                 .set(
                     &format!("RawParam.{}", p.name()),
@@ -102,6 +94,27 @@ fn build_template_scope_symtab(params: Option<&[JobParameterDefinition]>) -> Sym
         }
     }
     symtab
+}
+
+/// Add the `Job.*` symbols of the template and session scopes, for a
+/// caller that has checked the `EXPR` extension: `Job.Name`, and with
+/// `env_names_active` (`ENV_PARAMS`, which requires `EXPR`) `Job.EnvNames`,
+/// whose value
+/// is known only when the Job is created (Template Schemas §7.3.1, §7.4).
+/// Neither is in the scope of the Job Template's `name` or of an
+/// Environment parameter `default`, whose tables do not call this.
+fn add_job_symbols(symtab: &mut SymbolTable, env_names_active: bool) {
+    symtab
+        .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
+        .expect("symtab");
+    if env_names_active {
+        symtab
+            .set(
+                "Job.EnvNames",
+                ExprValue::unresolved(ExprType::list(ExprType::STRING)),
+            )
+            .expect("symtab");
+    }
 }
 
 /// Build the session-scope symtab (for environment scripts/variables).
@@ -114,6 +127,7 @@ fn build_session_scope_symtab(
     env: &Environment,
     is_step_env: bool,
     expr_active: bool,
+    env_names_active: bool,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(params);
     symtab
@@ -140,11 +154,9 @@ fn build_session_scope_symtab(
             .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
             .expect("symtab");
     }
-    // Job.Name available in all environments with EXPR
+    // Job.Name (and Job.EnvNames with ENV_PARAMS) in all environments with EXPR
     if expr_active {
-        symtab
-            .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-            .expect("symtab");
+        add_job_symbols(&mut symtab, env_names_active);
     }
     // Env.File.* from this environment's script
     if let Some(script) = &env.script {
@@ -159,7 +171,294 @@ fn build_session_scope_symtab(
             }
         }
     }
+    add_env_param_symbols(&mut symtab, env);
     symtab
+}
+
+/// Add `Env.Param.<name>` and `Env.RawParam.<name>` for each of `env`'s
+/// own `envParameterDefinitions` (`ENV_PARAMS`, §4.5), as unresolved values
+/// of the types §4.5 gives them: `Env.Param.<name>` has the expression type
+/// of the parameter type, and `Env.RawParam.<name>` the same except
+/// `string` for PATH and `list[string]` for LIST[PATH] — the same type map
+/// as `Param.*` / `RawParam.*` (see [`build_param_symtab`]).
+///
+/// Only the Environment's own parameters are added, so a reference to
+/// another Environment's parameter, or from a Step, is an undefined
+/// variable. An Environment without definitions adds nothing.
+pub(crate) fn add_env_param_symbols(symtab: &mut SymbolTable, env: &Environment) {
+    let mut seen = HashSet::new();
+    for def in env.env_parameter_definitions.iter().flatten() {
+        // A duplicated name (reported by pass 11) is typed by its first
+        // definition, as the entry checks type it.
+        if !seen.insert(def.name()) {
+            continue;
+        }
+        let pt = def.job_param_type();
+        let expr_type = pt.expr_type();
+        let raw_type = pt.raw_expr_type();
+        // `set` fails only on a malformed dotted path, and a definition's
+        // name is an `<Identifier>`.
+        let _ = symtab.set(
+            &format!("Env.Param.{}", def.name()),
+            ExprValue::unresolved(expr_type),
+        );
+        let _ = symtab.set(
+            &format!("Env.RawParam.{}", def.name()),
+            ExprValue::unresolved(raw_type),
+        );
+    }
+}
+
+/// The scope of an Environment's `hostRequirements` format strings
+/// (`ENV_PARAMS`, §4 item 5.1), for a document with parameters `params`
+/// that lists `ENV_PARAMS` (and so `EXPR`): the template scope
+/// (`RawParam.*` and non-PATH `Param.*`), `Job.Name` and `Job.EnvNames`,
+/// and the Environment's own `Env.RawParam.*` of any type and `Env.Param.*`
+/// of types other than PATH and LIST[PATH]. No `Step.Name`, `let` binding,
+/// `Session.*`, or `Env.File.*`.
+fn build_env_host_requirements_symtab(
+    params: Option<&[JobParameterDefinition]>,
+    env: &Environment,
+) -> SymbolTable {
+    use crate::types::JobParameterType;
+    let mut symtab = build_template_scope_symtab(params);
+    add_job_symbols(&mut symtab, true);
+    let mut seen = HashSet::new();
+    for def in env.env_parameter_definitions.iter().flatten() {
+        // A duplicated name (reported by pass 11) is typed by its first
+        // definition, as in `add_env_param_symbols`.
+        if !seen.insert(def.name()) {
+            continue;
+        }
+        let pt = def.job_param_type();
+        // A definition's name is an `<Identifier>`, so `set` cannot fail.
+        // `Env.RawParam.*` of every type: a raw path is the unmapped
+        // string. `Env.Param.*` of a path type is path-mapped, which needs a
+        // host, so it is not in this template scope.
+        let _ = symtab.set(
+            &format!("Env.RawParam.{}", def.name()),
+            ExprValue::unresolved(pt.raw_expr_type()),
+        );
+        if matches!(pt, JobParameterType::Path | JobParameterType::ListPath) {
+            continue;
+        }
+        let _ = symtab.set(
+            &format!("Env.Param.{}", def.name()),
+            ExprValue::unresolved(pt.expr_type()),
+        );
+    }
+    symtab
+}
+
+/// Pass-8 check of one format-string Environment parameter value against
+/// `symtab`: the default scope for a `default`, the entry-value scope for
+/// an `environment:` entry value. `target` is the parameter's expression
+/// type, which a single `{{ }}` expression resolves with (§3.2, §4.5 item
+/// 4), or `None` when the parameter is not known here.
+fn validate_env_param_value_fs(
+    fs: &FormatString,
+    target: Option<&ExprType>,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    if fs.is_literal() {
+        return;
+    }
+    if let Err(e) = fs.validate_expressions(symtab, &ev.options(target)) {
+        add_fs_validation_error(&e, path, errors);
+    }
+}
+
+/// The parameter types of each `jobEnvironments` entry, by Environment
+/// name and then parameter name (the first definition of a duplicated
+/// name), built once per template for [`validate_env_entry_values`], with
+/// the Environment and whether its own `enableIf` is absent or `true`. A
+/// Step's values for an Environment are not checked against their types
+/// where it is disabled (§3.2.2), so for one whose `enableIf` is `false` or
+/// an expression they are checked with no target type (§7.5 rule 5), unless
+/// the expression is certainly unresolved for the entry
+/// (`env_params::enable_if_certainly_unresolved`).
+type JobEnvParamTypes<'a> = std::collections::HashMap<
+    &'a str,
+    (
+        &'a Environment,
+        bool,
+        std::collections::HashMap<&'a str, crate::types::JobParameterType>,
+    ),
+>;
+
+fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
+    let mut out: JobEnvParamTypes<'_> = std::collections::HashMap::new();
+    for env in jt.job_environments.iter().flatten() {
+        // A duplicated Environment name (reported by pass 6): keep the
+        // first.
+        let std::collections::hash_map::Entry::Vacant(slot) = out.entry(env.name.as_str()) else {
+            continue;
+        };
+        let mut types = std::collections::HashMap::new();
+        for d in env.env_parameter_definitions.iter().flatten() {
+            types.entry(d.name()).or_insert(d.job_param_type());
+        }
+        slot.insert((env, env.literal_enabled() == Some(true), types));
+    }
+    out
+}
+
+/// Pass-8 checks of a Step's format-string `environment:` entry values
+/// (`ENV_PARAMS`, §3.2) against `symtab`, the Step's template scope.
+///
+/// A value for a parameter of a `jobEnvironments` entry whose own
+/// `enableIf` is absent or `true`, or certainly unresolved for the entry,
+/// is checked with the parameter's type as its target type; for any
+/// other Job Environment the type is checked
+/// when the Job is created, for the Steps it is not disabled for (§3.2.2). A value for an
+/// external Environment has no known type at template validation, so it
+/// is checked with no target type, and its type is checked when the Job is
+/// created.
+#[allow(clippy::too_many_arguments)]
+fn validate_env_entry_values(
+    job_env_types: &JobEnvParamTypes<'_>,
+    step: &StepTemplate,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    ctx: &ValidationContext,
+    step_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let Some(deps) = &step.dependencies else {
+        return;
+    };
+    let deps_path = path_field(step_path, "dependencies");
+    for (j, dep) in deps.iter().enumerate() {
+        let (Some(env_name), Some(params)) = (dep.environment(), &dep.parameters) else {
+            continue;
+        };
+        // The types apply where the Environment is not disabled (§3.2.2):
+        // its `enableIf` is absent or `true`, or certainly unresolved with
+        // the values of this entry, which must then be certainly enabled.
+        let job_env = job_env_types
+            .get(env_name)
+            .filter(|(env, certain, _)| {
+                *certain
+                    || (dep.literal_enabled() == Some(true)
+                        && super::env_params::enable_if_certainly_unresolved(
+                            env,
+                            Some(&params.0),
+                            ctx,
+                        ))
+            })
+            .map(|(_, _, types)| types);
+        let params_path = path_field(&path_index(&deps_path, j), "parameters");
+        for (key, value) in params.iter() {
+            let EnvironmentParameterValue::FormatString(fs) = value else {
+                continue;
+            };
+            let target = job_env
+                .and_then(|types| types.get(key.as_str()))
+                .map(|pt| pt.expr_type());
+            validate_env_param_value_fs(
+                fs,
+                target.as_ref(),
+                symtab,
+                ev,
+                &path_field(&params_path, key),
+                errors,
+            );
+        }
+    }
+}
+
+/// Pass-8 check of each `environment:` entry's `enableIf` (`ENV_PARAMS`,
+/// §3.2 item 5 and constraint 9): an expression field of type
+/// `bool` (§7.5), checked against `symtab`, the Step's template scope,
+/// which is the scope of a `parameters` value. A scalar must be a boolean,
+/// a `null` is an error, and an expression must parse and have a type that
+/// fits `bool` (a `bool?` is accepted, its `null` being an error when the
+/// Job is created). An `enableIf` on an entry that is not a well-formed
+/// `environment:` entry is reported by pass 6 and not checked here.
+fn validate_enable_if(
+    step: &StepTemplate,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
+    step_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let deps_path = path_field(step_path, "dependencies");
+    let field_ev = ev.expr_field_eval(profile);
+    for (j, dep) in step.dependencies.iter().flatten().enumerate() {
+        let (Some(_), Some(enable_if)) = (dep.environment(), &dep.enable_if) else {
+            continue;
+        };
+        if let Err(msg) = expr_field::validate(enable_if, &ExprType::BOOL, symtab, &field_ev) {
+            errors.add(&path_field(&path_index(&deps_path, j), "enableIf"), msg);
+        }
+    }
+}
+
+/// Pass-8 check of an Environment's own `enableIf` (`ENV_PARAMS`, §4 item
+/// 6): an expression field of type `bool` (§7.5), checked
+/// against `symtab`, the scope constraints 1–3 give it. For a
+/// `jobEnvironments` entry or an Environment Template's `environment` that
+/// is its `hostRequirements` scope (§4 item 5.1); for a `stepEnvironments`
+/// entry, the Step's template scope (`RawParam.*`, non-PATH `Param.*`,
+/// `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's `let`). The
+/// caller checks it only in a document that lists `ENV_PARAMS`; pass 11
+/// rejects it otherwise.
+fn validate_env_enable_if(
+    env: &Environment,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
+    env_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let Some(enable_if) = &env.enable_if else {
+        return;
+    };
+    if let Err(msg) = expr_field::validate(
+        enable_if,
+        &ExprType::BOOL,
+        symtab,
+        &ev.expr_field_eval(profile),
+    ) {
+        errors.add(&path_field(env_path, "enableIf"), msg);
+    }
+}
+
+/// Pass-8 checks of the format-string `default`s of an Environment's
+/// `envParameterDefinitions` (`ENV_PARAMS`, §4.5 item 4). A `default` may
+/// reference `RawParam.*` and the non-PATH `Param.*` of the same
+/// document's top-level `parameterDefinitions`, and nothing else, so it is
+/// checked against `default_symtab`, the template-scope table of the
+/// document's own parameters without `Job.Name`, which the caller builds
+/// once per document.
+fn validate_env_param_defaults(
+    env: &Environment,
+    default_symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    env_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let Some(defs) = &env.env_parameter_definitions else {
+        return;
+    };
+    let defs_path = path_field(env_path, "envParameterDefinitions");
+    for (k, def) in defs.iter().enumerate() {
+        let Some(EnvironmentParameterValue::FormatString(fs)) = &def.default else {
+            continue;
+        };
+        validate_env_param_value_fs(
+            fs,
+            Some(&def.job_param_type().expr_type()),
+            default_symtab,
+            ev,
+            &path_field(&path_index(&defs_path, k), "default"),
+            errors,
+        );
+    }
 }
 
 /// Build the task-scope symtab (for step scripts).
@@ -170,6 +469,7 @@ fn build_task_scope_symtab(
     jt: &JobTemplate,
     step: &StepTemplate,
     expr_active: bool,
+    env_names_active: bool,
 ) -> SymbolTable {
     let mut symtab = build_param_symtab(jt.parameter_definitions.as_deref());
 
@@ -195,9 +495,7 @@ fn build_task_scope_symtab(
 
     // EXPR-only built-ins
     if expr_active {
-        symtab
-            .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-            .expect("symtab");
+        add_job_symbols(&mut symtab, env_names_active);
         symtab
             .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
             .expect("symtab");
@@ -863,6 +1161,18 @@ impl<'a> FsEval<'a> {
         opts
     }
 
+    /// The evaluator for an expression field (§7.5) parsed under
+    /// `profile`, with this evaluator's library and budgets and the POSIX
+    /// path format, as [`budgeted`](Self::budgeted) uses.
+    fn expr_field_eval<'b>(&'b self, profile: &'b openjd_expr::ExprProfile) -> ExprFieldEval<'b> {
+        ExprFieldEval {
+            profile,
+            library: self.lib,
+            memory_limit: self.memory_limit,
+            operation_limit: self.operation_limit,
+        }
+    }
+
     /// Apply the caller budgets and the POSIX path format (see the
     /// struct docs) to a raw [`openjd_expr::EvalBuilder`] — for the
     /// evaluation sites (let bindings) that parse expressions
@@ -1038,52 +1348,62 @@ fn validate_fs_with(
             Some(sr)
         }
         Err(e) => {
-            let mut spans = Vec::new();
-            if let Some(ref expr_err) = e.expression_error {
-                if !expr_err.sub_errors().is_empty() {
-                    // Compound error (e.g., if/else both branches fail) — one span per sub-error
-                    for sub in expr_err.sub_errors() {
-                        if let (Some(expr), Some(col), Some(end_col)) =
-                            (sub.expr(), sub.col_offset(), sub.end_col_offset())
-                        {
-                            spans.push(crate::error::DiagnosticSpan {
-                                summary: sub.message(),
-                                source: expr.to_string(),
-                                start: col,
-                                end: end_col,
-                                caret: sub.caret_offset().unwrap_or(0),
-                            });
-                        }
-                    }
-                }
-            }
-            // Fallback: single span covering the whole interpolation
-            if spans.is_empty() {
-                spans.push(crate::error::DiagnosticSpan {
-                    summary: e.message.clone(),
-                    source: e.input.clone(),
-                    start: e.start,
-                    end: e.end,
-                    caret: 0,
-                });
-            }
-            let summary = if let Some(ref expr_err) = e.expression_error {
-                expr_err.message()
-            } else {
-                e.message.clone()
-            };
-            let detail = crate::error::ErrorDetail { summary, spans };
-            errors.add_with_detail(
-                path,
-                format!(
-                    "Failed to parse interpolation expression at [{}, {}]. {}",
-                    e.start, e.end, e.message
-                ),
-                detail,
-            );
+            add_fs_validation_error(&e, path, errors);
             None
         }
     }
+}
+
+/// Report a failed [`FormatString::validate_expressions`] at `path`, with
+/// one diagnostic span per sub-error (or one covering the interpolation).
+fn add_fs_validation_error(
+    e: &openjd_expr::FormatStringValidationError,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let mut spans = Vec::new();
+    if let Some(ref expr_err) = e.expression_error {
+        if !expr_err.sub_errors().is_empty() {
+            // Compound error (e.g., if/else both branches fail) — one span per sub-error
+            for sub in expr_err.sub_errors() {
+                if let (Some(expr), Some(col), Some(end_col)) =
+                    (sub.expr(), sub.col_offset(), sub.end_col_offset())
+                {
+                    spans.push(crate::error::DiagnosticSpan {
+                        summary: sub.message(),
+                        source: expr.to_string(),
+                        start: col,
+                        end: end_col,
+                        caret: sub.caret_offset().unwrap_or(0),
+                    });
+                }
+            }
+        }
+    }
+    // Fallback: single span covering the whole interpolation
+    if spans.is_empty() {
+        spans.push(crate::error::DiagnosticSpan {
+            summary: e.message.clone(),
+            source: e.input.clone(),
+            start: e.start,
+            end: e.end,
+            caret: 0,
+        });
+    }
+    let summary = if let Some(ref expr_err) = e.expression_error {
+        expr_err.message()
+    } else {
+        e.message.clone()
+    };
+    let detail = crate::error::ErrorDetail { summary, spans };
+    errors.add_with_detail(
+        path,
+        format!(
+            "Failed to parse interpolation expression at [{}, {}]. {}",
+            e.start, e.end, e.message
+        ),
+        detail,
+    );
 }
 
 /// Pass-8 checks for one step script (§3.5), rooted at `script_path`:
@@ -1613,6 +1933,152 @@ fn check_embedded_files_data(
     }
 }
 
+/// The standard capability tables a `hostRequirements` check needs
+/// (§3.3.1.1, §3.3.2.1, §3.3.2.2), for the document's profile.
+struct HostRequirementsStandards<'a> {
+    amounts: &'a [&'a str],
+    attribute_names: &'a [&'a str],
+    attributes: &'static [(&'static str, &'static [&'static str])],
+}
+
+/// Pass-8 checks of one `hostRequirements` object (§3.3) at `hr_path`,
+/// against `hr_symtab`, the scope its format strings resolve in: a Step's
+/// (template scope, `Job.*` and `Step.Name` with `EXPR`, and the Step's
+/// `let`), or an Environment's (`ENV_PARAMS` §4 item 5.1).
+fn validate_host_requirements_fs(
+    hr: &HostRequirements,
+    hr_symtab: &SymbolTable,
+    template_ev: &FsEval<'_>,
+    hr_path: &[PathElement],
+    standards: &HostRequirementsStandards<'_>,
+    errors: &mut ValidationErrors,
+) {
+    let standard_amounts = standards.amounts;
+    let standard_attr_names = standards.attribute_names;
+    let standard_attrs = standards.attributes;
+    // §3.3.1.1 / §3.3.2.1: a capability name is `@fmtstring`, and its
+    // constraints apply to the resolved name. The name's
+    // expressions are checked against the symbols available when it
+    // is resolved at job creation, and the `CapabilityName`
+    // constraint runs the full name check when the name is fully
+    // static. Structure checks literal names, and job creation
+    // checks the resolved name.
+    if let Some(amounts) = &hr.amounts {
+        let amounts_path = path_field(hr_path, "amounts");
+        let name_constraint = ResolvedConstraint::CapabilityName {
+            kind: helpers::CapabilityKind::Amount,
+            standard: standard_amounts,
+        };
+        let mut known_names = Vec::with_capacity(amounts.len());
+        for (j, amt) in amounts.iter().enumerate() {
+            let amt_path = path_index(&amounts_path, j);
+            let sr = validate_fs_with(
+                &amt.name,
+                hr_symtab,
+                template_ev,
+                &path_field(&amt_path, "name"),
+                Some(&name_constraint),
+                errors,
+            );
+            known_names.push(known_capability_name(&amt.name, sr.as_ref()));
+            if let Some(min) = &amt.min {
+                validate_fs_with(
+                    min,
+                    hr_symtab,
+                    template_ev,
+                    &path_field(&amt_path, "min"),
+                    Some(&ResolvedConstraint::Float {
+                        positive: false,
+                        msg: "must be non-negative.",
+                    }),
+                    errors,
+                );
+            }
+            if let Some(max) = &amt.max {
+                validate_fs_with(
+                    max,
+                    hr_symtab,
+                    template_ev,
+                    &path_field(&amt_path, "max"),
+                    Some(&ResolvedConstraint::Float {
+                        positive: true,
+                        msg: "must be positive.",
+                    }),
+                    errors,
+                );
+            }
+        }
+        check_known_names_unique(
+            &known_names,
+            helpers::CapabilityKind::Amount,
+            &amounts_path,
+            errors,
+        );
+    }
+    if let Some(attrs) = &hr.attributes {
+        let attrs_path = path_field(hr_path, "attributes");
+        let name_constraint = ResolvedConstraint::CapabilityName {
+            kind: helpers::CapabilityKind::Attribute,
+            standard: standard_attr_names,
+        };
+        let mut known_names = Vec::with_capacity(attrs.len());
+        for (j, attr) in attrs.iter().enumerate() {
+            let attr_path = path_index(&attrs_path, j);
+            let sr = validate_fs_with(
+                &attr.name,
+                hr_symtab,
+                template_ev,
+                &path_field(&attr_path, "name"),
+                Some(&name_constraint),
+                errors,
+            );
+            let known = known_capability_name(&attr.name, sr.as_ref());
+            // The values are checked against the name when it is
+            // known here, and against the resolved name at job
+            // creation otherwise.
+            let capability_name = known.as_ref().map_or("", |k| k.name.as_str());
+            if let Some(k) = known.as_ref().filter(|k| !k.literal) {
+                check_values_for_static_name(&k.name, attr, standard_attrs, &attr_path, errors);
+            }
+            let attr_constraint = ResolvedConstraint::AttributeValue {
+                capability_name,
+                standard: standard_attrs,
+            };
+            if let Some(any_of) = &attr.any_of {
+                for (k, v) in any_of.iter().enumerate() {
+                    validate_fs_with(
+                        v,
+                        hr_symtab,
+                        template_ev,
+                        &path_index(&path_field(&attr_path, "anyOf"), k),
+                        Some(&attr_constraint),
+                        errors,
+                    );
+                }
+            }
+            if let Some(all_of) = &attr.all_of {
+                for (k, v) in all_of.iter().enumerate() {
+                    validate_fs_with(
+                        v,
+                        hr_symtab,
+                        template_ev,
+                        &path_index(&path_field(&attr_path, "allOf"), k),
+                        Some(&attr_constraint),
+                        errors,
+                    );
+                }
+            }
+            known_names.push(known);
+        }
+        check_known_names_unique(
+            &known_names,
+            helpers::CapabilityKind::Attribute,
+            &attrs_path,
+            errors,
+        );
+    }
+}
+
 pub fn validate_format_strings(
     jt: &JobTemplate,
     ctx: &ValidationContext,
@@ -1620,6 +2086,17 @@ pub fn validate_format_strings(
 ) {
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
     let fb1_active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
+    // Without ENV_PARAMS, pass 11 rejects Environment parameter defaults
+    // and `environment:` entries outright, so their values are not checked
+    // here.
+    let env_params_active = ctx.profile.has_extension(ModelExtension::EnvParams);
+    // `Job.EnvNames` (§7.3.1) needs ENV_PARAMS, which requires EXPR.
+    let env_names_active = env_params_active;
+    let job_env_types = if env_params_active {
+        job_env_param_types(jt)
+    } else {
+        JobEnvParamTypes::new()
+    };
     // Template/task-range validation uses HostContext::None (host functions
     // are not available in those scopes). Session/task scopes use
     // HostContext::Unresolved so apply_path_mapping type-checks.
@@ -1670,9 +2147,7 @@ pub fn validate_format_strings(
             // Build a symtab with Param/RawParam + step let bindings
             let mut hr_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
             if expr_active {
-                hr_symtab
-                    .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-                    .expect("symtab");
+                add_job_symbols(&mut hr_symtab, env_names_active);
                 hr_symtab
                     .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                     .expect("symtab");
@@ -1692,133 +2167,18 @@ pub fn validate_format_strings(
                 }
             }
             let hr_path = path_field(&step_path, "hostRequirements");
-            // §3.3.1.1 / §3.3.2.1: a capability name is `@fmtstring`, and its
-            // constraints apply to the resolved name. The name's
-            // expressions are checked against the symbols available when it
-            // is resolved at job creation, and the `CapabilityName`
-            // constraint runs the full name check when the name is fully
-            // static. Structure checks literal names, and job creation
-            // checks the resolved name.
-            if let Some(amounts) = &hr.amounts {
-                let amounts_path = path_field(&hr_path, "amounts");
-                let name_constraint = ResolvedConstraint::CapabilityName {
-                    kind: helpers::CapabilityKind::Amount,
-                    standard: standard_amounts,
-                };
-                let mut known_names = Vec::with_capacity(amounts.len());
-                for (j, amt) in amounts.iter().enumerate() {
-                    let amt_path = path_index(&amounts_path, j);
-                    let sr = validate_fs_with(
-                        &amt.name,
-                        &hr_symtab,
-                        &template_ev,
-                        &path_field(&amt_path, "name"),
-                        Some(&name_constraint),
-                        errors,
-                    );
-                    known_names.push(known_capability_name(&amt.name, sr.as_ref()));
-                    if let Some(min) = &amt.min {
-                        validate_fs_with(
-                            min,
-                            &hr_symtab,
-                            &template_ev,
-                            &path_field(&amt_path, "min"),
-                            Some(&ResolvedConstraint::Float {
-                                positive: false,
-                                msg: "must be non-negative.",
-                            }),
-                            errors,
-                        );
-                    }
-                    if let Some(max) = &amt.max {
-                        validate_fs_with(
-                            max,
-                            &hr_symtab,
-                            &template_ev,
-                            &path_field(&amt_path, "max"),
-                            Some(&ResolvedConstraint::Float {
-                                positive: true,
-                                msg: "must be positive.",
-                            }),
-                            errors,
-                        );
-                    }
-                }
-                check_known_names_unique(
-                    &known_names,
-                    helpers::CapabilityKind::Amount,
-                    &amounts_path,
-                    errors,
-                );
-            }
-            if let Some(attrs) = &hr.attributes {
-                let attrs_path = path_field(&hr_path, "attributes");
-                let name_constraint = ResolvedConstraint::CapabilityName {
-                    kind: helpers::CapabilityKind::Attribute,
-                    standard: &standard_attr_names,
-                };
-                let mut known_names = Vec::with_capacity(attrs.len());
-                for (j, attr) in attrs.iter().enumerate() {
-                    let attr_path = path_index(&attrs_path, j);
-                    let sr = validate_fs_with(
-                        &attr.name,
-                        &hr_symtab,
-                        &template_ev,
-                        &path_field(&attr_path, "name"),
-                        Some(&name_constraint),
-                        errors,
-                    );
-                    let known = known_capability_name(&attr.name, sr.as_ref());
-                    // The values are checked against the name when it is
-                    // known here, and against the resolved name at job
-                    // creation otherwise.
-                    let capability_name = known.as_ref().map_or("", |k| k.name.as_str());
-                    if let Some(k) = known.as_ref().filter(|k| !k.literal) {
-                        check_values_for_static_name(
-                            &k.name,
-                            attr,
-                            standard_attrs,
-                            &attr_path,
-                            errors,
-                        );
-                    }
-                    let attr_constraint = ResolvedConstraint::AttributeValue {
-                        capability_name,
-                        standard: standard_attrs,
-                    };
-                    if let Some(any_of) = &attr.any_of {
-                        for (k, v) in any_of.iter().enumerate() {
-                            validate_fs_with(
-                                v,
-                                &hr_symtab,
-                                &template_ev,
-                                &path_index(&path_field(&attr_path, "anyOf"), k),
-                                Some(&attr_constraint),
-                                errors,
-                            );
-                        }
-                    }
-                    if let Some(all_of) = &attr.all_of {
-                        for (k, v) in all_of.iter().enumerate() {
-                            validate_fs_with(
-                                v,
-                                &hr_symtab,
-                                &template_ev,
-                                &path_index(&path_field(&attr_path, "allOf"), k),
-                                Some(&attr_constraint),
-                                errors,
-                            );
-                        }
-                    }
-                    known_names.push(known);
-                }
-                check_known_names_unique(
-                    &known_names,
-                    helpers::CapabilityKind::Attribute,
-                    &attrs_path,
-                    errors,
-                );
-            }
+            validate_host_requirements_fs(
+                hr,
+                &hr_symtab,
+                &template_ev,
+                &hr_path,
+                &HostRequirementsStandards {
+                    amounts: standard_amounts,
+                    attribute_names: &standard_attr_names,
+                    attributes: standard_attrs,
+                },
+                errors,
+            );
         }
     }
 
@@ -1832,16 +2192,55 @@ pub fn validate_format_strings(
         let mut env_template_symtab =
             build_template_scope_symtab(jt.parameter_definitions.as_deref());
         if expr_active {
-            env_template_symtab
-                .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-                .expect("symtab");
+            add_job_symbols(&mut env_template_symtab, env_names_active);
         }
+        // The scope of an Environment parameter `default`: the Job
+        // Template's own parameters, template scope, no `Job.Name`.
+        let default_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
         for (i, env) in envs.iter().enumerate() {
+            // §4 item 6 constraint 1: `enableIf` has exactly the
+            // `hostRequirements` scope (§4 item 5.1).
+            if env_params_active && env.enable_if.is_some() {
+                validate_env_enable_if(
+                    env,
+                    &build_env_host_requirements_symtab(jt.parameter_definitions.as_deref(), env),
+                    &template_ev,
+                    &template_profile,
+                    &path_index(&envs_path, i),
+                    errors,
+                );
+            }
+            if let Some(hr) = env.host_requirements.as_ref().filter(|_| env_params_active) {
+                let hr_symtab =
+                    build_env_host_requirements_symtab(jt.parameter_definitions.as_deref(), env);
+                validate_host_requirements_fs(
+                    hr,
+                    &hr_symtab,
+                    &template_ev,
+                    &path_field(&path_index(&envs_path, i), "hostRequirements"),
+                    &HostRequirementsStandards {
+                        amounts: standard_amounts,
+                        attribute_names: &standard_attr_names,
+                        attributes: standard_attrs,
+                    },
+                    errors,
+                );
+            }
+            if env_params_active {
+                validate_env_param_defaults(
+                    env,
+                    &default_symtab,
+                    &template_ev,
+                    &path_index(&envs_path, i),
+                    errors,
+                );
+            }
             let mut env_symtab = build_session_scope_symtab(
                 jt.parameter_definitions.as_deref(),
                 env,
                 false,
                 expr_active,
+                env_names_active,
             );
             // Env script let bindings: validate and evaluate into the symtab
             // if EXPR, reject if not.
@@ -1892,9 +2291,7 @@ pub fn validate_format_strings(
             let tpd_path = path_field(&ps_path, "taskParameterDefinitions");
             let mut range_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
             if expr_active {
-                range_symtab
-                    .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-                    .expect("symtab");
+                add_job_symbols(&mut range_symtab, env_names_active);
                 range_symtab
                     .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                     .expect("symtab");
@@ -2049,7 +2446,7 @@ pub fn validate_format_strings(
             }
         }
 
-        let mut task_symtab = build_task_scope_symtab(jt, step, expr_active);
+        let mut task_symtab = build_task_scope_symtab(jt, step, expr_active, env_names_active);
 
         // Template-scope symtab for the step's job-creation-stage fields:
         // Param.* (non-PATH), RawParam.*, and with EXPR Job.Name, Step.Name,
@@ -2060,9 +2457,7 @@ pub fn validate_format_strings(
         let mut step_template_symtab =
             build_template_scope_symtab(jt.parameter_definitions.as_deref());
         if expr_active {
-            step_template_symtab
-                .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-                .expect("symtab");
+            add_job_symbols(&mut step_template_symtab, env_names_active);
             step_template_symtab
                 .set("Step.Name", ExprValue::unresolved(ExprType::STRING))
                 .expect("symtab");
@@ -2094,6 +2489,31 @@ pub fn validate_format_strings(
                     }
                 }
             }
+        }
+
+        // `environment:` entry values (ENV_PARAMS, §3.2): resolved at job
+        // creation in the step's template scope — `RawParam.*`, non-PATH
+        // `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the step's
+        // `let` names — which is exactly `step_template_symtab`.
+        if env_params_active {
+            validate_env_entry_values(
+                &job_env_types,
+                step,
+                &step_template_symtab,
+                &template_ev,
+                ctx,
+                &step_path,
+                errors,
+            );
+            // `enableIf` (§3.2 item 5) has the same scope.
+            validate_enable_if(
+                step,
+                &step_template_symtab,
+                &template_ev,
+                &template_profile,
+                &step_path,
+                errors,
+            );
         }
 
         if let Some(script) = &step.script {
@@ -2155,11 +2575,25 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
+                // §4 item 6 constraint 2: a Step Environment's `enableIf`
+                // has the Step's template scope, the scope of an
+                // `environment:` entry's `enableIf`.
+                if env_params_active {
+                    validate_env_enable_if(
+                        env,
+                        &step_template_symtab,
+                        &template_ev,
+                        &template_profile,
+                        &path_index(&envs_path, j),
+                        errors,
+                    );
+                }
                 let mut env_symtab = build_session_scope_symtab(
                     jt.parameter_definitions.as_deref(),
                     env,
                     true,
                     expr_active,
+                    env_names_active,
                 );
                 // Copy step-level let binding values (already evaluated with inferred types)
                 if expr_active {
@@ -2272,14 +2706,71 @@ pub fn validate_format_strings_environment_template(
 
     let env = &et.environment;
     let env_path = vec![PathElement::Field("environment".into())];
-    let mut env_symtab =
-        build_session_scope_symtab(et.parameter_definitions.as_deref(), env, false, expr_active);
+    // `Job.EnvNames` (§7.3.1) needs ENV_PARAMS, which requires EXPR.
+    let env_names_active = ctx.profile.has_extension(ModelExtension::EnvParams);
+    // §4 item 6 constraint 1: `enableIf` has exactly the `hostRequirements`
+    // scope (§4 item 5.1).
+    if env_names_active {
+        validate_env_enable_if(
+            env,
+            &build_env_host_requirements_symtab(et.parameter_definitions.as_deref(), env),
+            &template_ev,
+            &template_profile,
+            &env_path,
+            errors,
+        );
+    }
+    if let Some(hr) = env
+        .host_requirements
+        .as_ref()
+        .filter(|_| ctx.profile.has_extension(ModelExtension::EnvParams))
+    {
+        let standard_attrs: &'static [(&'static str, &'static [&'static str])] =
+            crate::capabilities::standard_attribute_capabilities(
+                ctx.profile.revision(),
+                ctx.profile.extensions(),
+            )
+            .unwrap_or(&[]);
+        let standard_attr_names: Vec<&str> = standard_attrs.iter().map(|(name, _)| *name).collect();
+        let hr_symtab =
+            build_env_host_requirements_symtab(et.parameter_definitions.as_deref(), env);
+        validate_host_requirements_fs(
+            hr,
+            &hr_symtab,
+            &template_ev,
+            &path_field(&env_path, "hostRequirements"),
+            &HostRequirementsStandards {
+                amounts: crate::capabilities::standard_amount_capability_names(
+                    ctx.profile.revision(),
+                    ctx.profile.extensions(),
+                )
+                .unwrap_or(&[]),
+                attribute_names: &standard_attr_names,
+                attributes: standard_attrs,
+            },
+            errors,
+        );
+    }
+    if ctx.profile.has_extension(ModelExtension::EnvParams) {
+        validate_env_param_defaults(
+            env,
+            &build_template_scope_symtab(et.parameter_definitions.as_deref()),
+            &template_ev,
+            &env_path,
+            errors,
+        );
+    }
+    let mut env_symtab = build_session_scope_symtab(
+        et.parameter_definitions.as_deref(),
+        env,
+        false,
+        expr_active,
+        env_names_active,
+    );
     // Job-creation-scope symtab for `timeout`/`notifyPeriodInSeconds`.
     let mut env_template_symtab = build_template_scope_symtab(et.parameter_definitions.as_deref());
     if expr_active {
-        env_template_symtab
-            .set("Job.Name", ExprValue::unresolved(ExprType::STRING))
-            .expect("symtab");
+        add_job_symbols(&mut env_template_symtab, env_names_active);
     }
 
     // Env script let bindings: validate and evaluate into the symtab if EXPR,

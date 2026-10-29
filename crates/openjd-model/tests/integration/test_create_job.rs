@@ -3111,6 +3111,127 @@ fn test_preprocess_range_expr_invalid_stays_string() {
     assert!(err.to_string().contains("not a valid range"), "got: {err}");
 }
 
+/// Preprocess one RANGE_EXPR Job Parameter `Foo` with definition `def`,
+/// submitting `submitted` when given, else taking the `default`.
+fn preprocess_range_expr(
+    def: &str,
+    submitted: Option<openjd_expr::ExprValue>,
+) -> Result<openjd_expr::ExprValue, String> {
+    let td = TestDirs::new();
+    let jt_val = expr_job_template_with_param(def);
+    let jt = decode_job_template(jt_val, Some(&["EXPR"]), &CallerLimits::default()).unwrap();
+    let mut input = JobParameterInputValues::new();
+    if let Some(v) = submitted {
+        input.insert("Foo".into(), v);
+    }
+    preprocess_job_parameters(
+        &jt,
+        &input,
+        &[],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: td.cwd(),
+            current_working_dir: td.cwd(),
+            allow_template_dir_walk_up: false,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .map(|r| r["Foo"].value.clone())
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn test_preprocess_range_expr_length_checks_value_as_written_and_canonical_form() {
+    // §2.10: a submitted string, or the `default`, must satisfy minLength
+    // and maxLength both as written and in canonical form.
+    let s = |v: &str| Some(openjd_expr::ExprValue::String(v.into()));
+    let max3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3}"#;
+    let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
+    // "1,2,3" (5) is too long as written; its canonical form "1-3" fits.
+    let err = preprocess_range_expr(max3, s("1,2,3")).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': value '1,2,3' length 5 exceeds maximum 3"),
+        "got: {err}"
+    );
+    // "1-3:2" (5) fits minLength 4 as written; its canonical form "1,3" (3)
+    // does not.
+    let err = preprocess_range_expr(min4, s("1-3:2")).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
+        "got: {err}"
+    );
+    // Both forms fit, and the value is stored as its range_expr.
+    let v = preprocess_range_expr(max3, s("1-3")).unwrap();
+    assert!(
+        matches!(&v, openjd_expr::ExprValue::RangeExpr(r) if r.to_string() == "1-3"),
+        "got: {v:?}"
+    );
+    // An invalid string is reported as invalid, whatever its length.
+    let err = preprocess_range_expr(max3, s("abcdef")).unwrap_err();
+    assert!(err.contains("not a valid range expression"), "got: {err}");
+    // minLength is inclusive: "1-3" (3) meets minLength 3 in both forms.
+    let min3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 3}"#;
+    assert!(preprocess_range_expr(min3, s("1-3")).is_ok());
+    // A Job Template's own `default` is checked at template validation
+    // (test_range_expr_default_length_checks_as_written_and_canonical_form);
+    // a merged one is checked here (below).
+    // A submitted range_expr has only its canonical form: "1,2,3" parsed is
+    // "1-3", which fits maxLength 3.
+    let r = "1,2,3".parse::<openjd_expr::RangeExpr>().unwrap();
+    assert!(preprocess_range_expr(max3, Some(openjd_expr::ExprValue::RangeExpr(r))).is_ok());
+}
+
+#[test]
+fn test_preprocess_range_expr_merged_default_length_as_written_and_canonical_form() {
+    // §2.10 and §1.2.1: a RANGE_EXPR `default` that an Environment Template
+    // supplies, constrained by the Job Template's maxLength or minLength, is
+    // checked as written and in canonical form when the Job is created.
+    let td = TestDirs::new();
+    let run = |job_def: &str, env_default: &str| {
+        let jt = decode_job_template(
+            expr_job_template_with_param(job_def),
+            Some(&["EXPR"]),
+            &CallerLimits::default(),
+        )
+        .unwrap();
+        let et = decode_environment_template(
+            expr_env_template(&format!(
+                r#"{{"name": "Foo", "type": "RANGE_EXPR", "default": "{env_default}"}}"#
+            )),
+            Some(&["EXPR"]),
+            &CallerLimits::default(),
+        )
+        .unwrap();
+        preprocess_job_parameters(
+            &jt,
+            &JobParameterInputValues::new(),
+            &[et],
+            &openjd_model::PathParameterOptions {
+                job_template_dir: td.cwd(),
+                current_working_dir: td.cwd(),
+                allow_template_dir_walk_up: false,
+                path_format: PathFormat::host(),
+                allow_uri_path_values: true,
+            },
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    };
+    let max3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3}"#;
+    let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
+    let err = run(max3, "1,2,3").unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': value '1,2,3' length 5 exceeds maximum 3"),
+        "got: {err}"
+    );
+    let err = run(min4, "1-3:2").unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
+        "got: {err}"
+    );
+    assert!(run(max3, "1-3").is_ok());
+}
+
 fn expr_env_template(params: &str) -> serde_json::Value {
     yaml_val(&format!(
         r#"{{
@@ -6391,25 +6512,30 @@ fn test_create_job_single_valued_attr_flatten_past_one_rejected() {
     // Decode's single-valued rule counts template elements, but a
     // flattening expression makes the resolved count unrelated to the
     // decode-time count: allOf with one template element resolving to two
-    // values must be rejected after resolution.
-    let err = parse_and_create_err(
-        r#"{
-        "specificationVersion": "jobtemplate-2023-09",
-        "extensions": ["EXPR"],
-        "name": "Test",
-        "parameterDefinitions": [{"name": "Arches", "type": "LIST[STRING]", "default": ["x86_64", "arm64"]}],
-        "steps": [{
-            "name": "S",
-            "hostRequirements": {"attributes": [{"name": "attr.worker.cpu.arch", "allOf": ["{{ RawParam.Arches }}"]}]},
-            "script": {"actions": {"onRun": {"command": "echo"}}}
-        }]
-    }"#,
-        &[],
-    );
-    assert_eq!(
-        err,
-        "Validation error: steps[0] -> hostRequirements -> attributes[0] -> allOf: single-valued attribute cannot have more than 1 element after resolution"
-    );
+    // values must be rejected after resolution. The attribute name is
+    // compared ignoring case (§3.3.2.1).
+    for name in ["attr.worker.cpu.arch", "Attr.Worker.CPU.Arch"] {
+        let err = parse_and_create_err(
+            &r#"{
+            "specificationVersion": "jobtemplate-2023-09",
+            "extensions": ["EXPR"],
+            "name": "Test",
+            "parameterDefinitions": [{"name": "Arches", "type": "LIST[STRING]", "default": ["x86_64", "arm64"]}],
+            "steps": [{
+                "name": "S",
+                "hostRequirements": {"attributes": [{"name": "NAME", "allOf": ["{{ RawParam.Arches }}"]}]},
+                "script": {"actions": {"onRun": {"command": "echo"}}}
+            }]
+        }"#
+            .replace("NAME", name),
+            &[],
+        );
+        assert_eq!(
+            err,
+            "Validation error: steps[0] -> hostRequirements -> attributes[0] -> allOf: single-valued attribute cannot have more than 1 element after resolution",
+            "{name}"
+        );
+    }
 }
 
 #[test]

@@ -8,8 +8,10 @@ pub mod parse;
 
 mod actions;
 mod constrained_strings;
+mod env_parameters;
 mod environment;
 mod environment_template;
+pub(crate) mod expr_field;
 mod expr_parameters;
 mod host_requirements;
 mod job_template;
@@ -44,9 +46,18 @@ pub use expr_parameters::{
     ListStringItemConstraints,
 };
 // step
-pub use step::{SimpleAction, SimpleActionKind, StepDependency, StepScript, StepTemplate};
+pub use step::{
+    DependencyTarget, SimpleAction, SimpleActionKind, StepDependency, StepKey, StepScript,
+    StepTemplate,
+};
+// env_parameters (ENV_PARAMS extension)
+pub use env_parameters::{
+    EnvironmentParameterDefinition, EnvironmentParameterValue, EnvironmentParameterValueMap,
+};
+// expr_field (Template Schemas §7.5)
+pub use expr_field::ExprField;
 // environment
-pub use environment::{EmbeddedFile, Environment, EnvironmentScript};
+pub use environment::{EmbeddedFile, Environment, EnvironmentActivation, EnvironmentScript};
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;
 pub use actions::{Action, CancelationMode, EnvironmentActions, StepActions, WrapHookScope};

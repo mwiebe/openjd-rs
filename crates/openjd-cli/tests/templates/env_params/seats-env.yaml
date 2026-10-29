@@ -1,0 +1,15 @@
+# An Environment Template whose Environment has the same name, Seats, as
+# the Job Environment of grouping.yaml and fail_first_group.yaml, with its
+# own parameter. No `environment:` entry of those Job Templates can reach
+# it (Template Schemas §3.2.1 item 4), so it is entered with its default.
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: Seats
+  envParameterDefinitions:
+  - {name: Count, type: INT, default: 99}
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ["-c", "import sys; print('Attached Seats onEnter Count=' + sys.argv[1])", "{{Env.Param.Count}}"]

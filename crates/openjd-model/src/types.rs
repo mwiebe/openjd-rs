@@ -272,6 +272,18 @@ impl JobParameterType {
         }
     }
 
+    /// The `ExprType` of `RawParam.<name>` (and `Env.RawParam.<name>`) for
+    /// this type: [`expr_type`](Self::expr_type), except `string` for PATH
+    /// and `list[string]` for LIST[PATH], since a raw path is unmapped and
+    /// may be in another operating system's format.
+    pub(crate) fn raw_expr_type(&self) -> ExprType {
+        match self {
+            Self::Path => ExprType::STRING,
+            Self::ListPath => ExprType::list(ExprType::STRING),
+            _ => self.expr_type(),
+        }
+    }
+
     /// Returns the `ExprType` this parameter produces in the symbol table.
     pub fn expr_type(&self) -> ExprType {
         match self {
@@ -421,17 +433,26 @@ pub enum ModelExtension {
     /// `WRAP_ACTIONS` — enables `onWrapEnvEnter`, `onWrapTaskRun`, and
     /// `onWrapEnvExit` on `<EnvironmentActions>`. See RFC 0008.
     WrapActions,
+    /// `ENV_PARAMS` — enables `envParameterDefinitions`, `activation`,
+    /// `hostRequirements`, and `enableIf` on `<Environment>`, the `step:`
+    /// and `environment:` forms of `<StepDependency>`, `Job.EnvNames`, and
+    /// the `Env.Param.*` / `Env.RawParam.*` value references. A document
+    /// that lists it must also list [`Expr`](Self::Expr) (Template Schemas
+    /// §1.1 item 3). See the Environment Parameters RFC (RFC 0010, draft).
+    EnvParams,
 }
 
 impl ModelExtension {
-    /// All extension variants, in a stable order for iteration and
-    /// for building default "enable all" allowlists.
+    /// All extension variants that the library fully supports, in a
+    /// stable order for iteration and for building default "enable all"
+    /// allowlists.
     pub const ALL: &'static [ModelExtension] = &[
         Self::TaskChunking,
         Self::RedactedEnvVars,
         Self::FeatureBundle1,
         Self::Expr,
         Self::WrapActions,
+        Self::EnvParams,
     ];
 
     #[allow(
@@ -445,6 +466,7 @@ impl ModelExtension {
             Self::FeatureBundle1 => "FEATURE_BUNDLE_1",
             Self::Expr => "EXPR",
             Self::WrapActions => "WRAP_ACTIONS",
+            Self::EnvParams => "ENV_PARAMS",
         }
     }
 }
@@ -458,6 +480,7 @@ impl std::str::FromStr for ModelExtension {
             "FEATURE_BUNDLE_1" => Ok(Self::FeatureBundle1),
             "EXPR" => Ok(Self::Expr),
             "WRAP_ACTIONS" => Ok(Self::WrapActions),
+            "ENV_PARAMS" => Ok(Self::EnvParams),
             _ => Err(format!("Unknown extension: {s}")),
         }
     }
@@ -583,8 +606,8 @@ impl ModelProfile {
         Self::new(SpecificationRevision::CURRENT)
     }
 
-    /// Build a profile at the current revision *with every known extension
-    /// enabled*.
+    /// Build a profile at the current revision *with every extension in
+    /// [`ModelExtension::ALL`] enabled*.
     ///
     /// **This profile is intentionally unstable across crate versions.** As
     /// new variants are added to [`ModelExtension::ALL`] and new revisions
@@ -667,12 +690,21 @@ impl Default for ModelProfile {
     }
 }
 
-/// Context for validation, carrying a [`ModelProfile`] and caller-policy
-/// [`CallerLimits`] as a single bundle.
+/// Context for validation, carrying a [`ModelProfile`], caller-policy
+/// [`CallerLimits`], and the submission's path policy as a single bundle.
 ///
 /// Use this type when a function needs both the profile (revision +
 /// extensions) and the caller's policy overrides. When only the
 /// profile is needed, take `&ModelProfile` directly.
+///
+/// The two path fields apply to `ENV_PARAMS` Environment parameter values
+/// (Template Schemas §4.5). Job creation evaluates every such value, of
+/// any type, and the Step `let` bindings it reads, in
+/// `submission_path_format`; a PATH value must be absolute in it or, with
+/// `allow_uri_path_values` set, a URI. The same context applies to the
+/// Environment Templates
+/// [`create_job_with_environment_templates`](crate::create_job_with_environment_templates)
+/// attaches. Template validation does not read them.
 #[derive(Debug, Clone)]
 #[allow(
     missing_docs,
@@ -681,33 +713,40 @@ impl Default for ModelProfile {
 pub struct ValidationContext {
     pub profile: ModelProfile,
     pub caller_limits: CallerLimits,
+    /// The path format of the Job's PATH values, which path mapping rules
+    /// for the Job are keyed on (`source_path_format`). Default:
+    /// [`PathFormat::host()`](openjd_expr::path_mapping::PathFormat::host),
+    /// what `openjd run` passes to
+    /// [`preprocess_job_parameters`](crate::preprocess_job_parameters).
+    pub submission_path_format: openjd_expr::path_mapping::PathFormat,
+    /// Whether a URI (`scheme://...`) is accepted as a PATH value, with the
+    /// same meaning as
+    /// [`PathParameterOptions::allow_uri_path_values`](crate::PathParameterOptions::allow_uri_path_values).
+    /// Default: `false`.
+    pub allow_uri_path_values: bool,
 }
 
 impl ValidationContext {
     /// Build a context for the given revision with no extensions and
-    /// default caller limits.
+    /// default caller limits and path policy.
     pub fn new(revision: SpecificationRevision) -> Self {
-        Self {
-            profile: ModelProfile::new(revision),
-            caller_limits: CallerLimits::default(),
-        }
+        Self::from_profile(ModelProfile::new(revision))
     }
 
     /// Build a context with the given revision + extensions and
-    /// default caller limits.
+    /// default caller limits and path policy.
     pub fn with_extensions(revision: SpecificationRevision, extensions: Extensions) -> Self {
-        Self {
-            profile: ModelProfile::new(revision).with_extensions(extensions),
-            caller_limits: CallerLimits::default(),
-        }
+        Self::from_profile(ModelProfile::new(revision).with_extensions(extensions))
     }
 
     /// Build a context from an existing [`ModelProfile`], with default
-    /// caller limits.
+    /// caller limits and path policy.
     pub fn from_profile(profile: ModelProfile) -> Self {
         Self {
             profile,
             caller_limits: CallerLimits::default(),
+            submission_path_format: openjd_expr::path_mapping::PathFormat::host(),
+            allow_uri_path_values: false,
         }
     }
 
@@ -715,6 +754,25 @@ impl ValidationContext {
     #[must_use]
     pub fn with_caller_limits(mut self, caller_limits: CallerLimits) -> Self {
         self.caller_limits = caller_limits;
+        self
+    }
+
+    /// Set [`submission_path_format`](Self::submission_path_format),
+    /// consuming and returning `self`.
+    #[must_use]
+    pub fn with_submission_path_format(
+        mut self,
+        format: openjd_expr::path_mapping::PathFormat,
+    ) -> Self {
+        self.submission_path_format = format;
+        self
+    }
+
+    /// Set [`allow_uri_path_values`](Self::allow_uri_path_values),
+    /// consuming and returning `self`.
+    #[must_use]
+    pub fn with_allow_uri_path_values(mut self, allow: bool) -> Self {
+        self.allow_uri_path_values = allow;
         self
     }
 }

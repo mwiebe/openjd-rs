@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use openjd_expr::function_library::FunctionLibrary;
 use openjd_expr::path_mapping::PathMappingRule;
-use openjd_model::job::{Environment, StepScript};
+use openjd_model::job::{Environment, EnvironmentParameterValues, StepScript};
 use openjd_model::symbol_table::SymbolTable;
 use openjd_model::types::JobParameterValues;
 use tokio_util::sync::CancellationToken;
@@ -518,6 +518,12 @@ pub struct Session {
     /// files do not accumulate on disk; contents are re-written per invocation
     /// so each invocation starts from the authored content.
     wrap_env_file_records: HashMap<EnvironmentIdentifier, EmbeddedFiles>,
+    /// `ENV_PARAMS`: the Environment parameter values each entered
+    /// Environment was entered with, keyed by identifier. Kept until the
+    /// Environment is exited, so its `onEnter`, wrap hooks, and `onExit`
+    /// all bind the same `Env.Param.*` / `Env.RawParam.*` values (Template
+    /// Schemas §3.2.2). An Environment entered without values has no entry.
+    environment_parameters: HashMap<EnvironmentIdentifier, EnvironmentParameterValues>,
     // Env var tracking
     env_vars: HashMap<String, String>,
     process_env: HashMap<String, String>,
@@ -569,6 +575,7 @@ impl Session {
             environments: HashMap::new(),
             environments_entered: Vec::new(),
             wrap_env_file_records: HashMap::new(),
+            environment_parameters: HashMap::new(),
             env_vars: HashMap::new(),
             process_env: HashMap::new(),
             created_env_vars: HashMap::new(),
@@ -798,6 +805,7 @@ impl Session {
             environments: HashMap::new(),
             environments_entered: Vec::new(),
             wrap_env_file_records: HashMap::new(),
+            environment_parameters: HashMap::new(),
             env_vars: HashMap::new(),
             process_env,
             created_env_vars: HashMap::new(),
@@ -1184,10 +1192,63 @@ impl Session {
     }
 
     /// Enter an environment, returning both the identifier and the stdout from the onEnter script.
+    ///
+    /// Equivalent to [`enter_environment_with_parameters`](Self::enter_environment_with_parameters)
+    /// with no Environment parameter values.
     pub async fn enter_environment_with_output(
         &mut self,
         env: &Environment,
         resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<(String, String), SessionError> {
+        self.enter_environment_with_parameters(env, resolved_symtab, None, identifier, os_env_vars)
+            .await
+    }
+
+    /// Enter an environment with its Environment parameter values
+    /// (`ENV_PARAMS`, Template Schemas §3.2.2), returning the identifier and
+    /// the stdout from the onEnter script.
+    ///
+    /// `parameters` is the entry of the Step's
+    /// [`environment_parameters`](openjd_model::job::Step::environment_parameters)
+    /// for this Environment, or `None` for an Environment that declares no
+    /// parameters (which behaves exactly as
+    /// [`enter_environment_with_output`](Self::enter_environment_with_output)).
+    /// Its `environment` must equal `env.name`; its `document` is not checked,
+    /// since a `job::Environment` does not record its document, so the caller
+    /// picks the entry by `(document, environment)`. Each entry of its `values`
+    /// table is bound as `Env.Param.<name>` and `Env.RawParam.<name>` for
+    /// this Environment's `variables`, its script `let` bindings, `onEnter`,
+    /// `onExit`, embedded files, and (when it defines RFC 0008 wrap hooks)
+    /// its wrap hooks, and for nothing else: not for Tasks, other
+    /// Environments, or a wrap hook of another Environment that wraps this
+    /// one's actions. A PATH value, and each element of a `LIST[PATH]` value,
+    /// is path-mapped in `Env.Param.<name>` with the Session's rules and left
+    /// as given in `Env.RawParam.<name>`. Values are not checked against the
+    /// parameter definitions: job creation already did, and path mapping does
+    /// not re-check them (§4.5).
+    ///
+    /// The Session keeps the values until the Environment is exited; read
+    /// them back with [`environment_parameters`](Self::environment_parameters).
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::InvalidState`] unless the Session is `Ready`;
+    /// [`SessionError::MultipleWrapEnvironments`] for a second wrap
+    /// environment; [`SessionError::InvalidEnvironmentParameters`] when
+    /// `parameters` names another Environment or its table cannot be bound;
+    /// [`SessionError::DuplicateEnvironment`] for an identifier in use. These
+    /// are raised before any state for the Environment is recorded. After
+    /// that, [`SessionError::FormatString`] for a `variables` value or an
+    /// action that does not resolve, and
+    /// [`SessionError::EnvironmentScriptFailed`] when `onEnter` fails; see
+    /// `specs/sessions/error-handling.md`.
+    pub async fn enter_environment_with_parameters(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&openjd_expr::SerializedSymbolTable>,
+        parameters: Option<&EnvironmentParameterValues>,
         identifier: Option<&str>,
         os_env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(String, String), SessionError> {
@@ -1221,6 +1282,29 @@ impl Session {
 
         let symtab = self.build_symbol_table(None, resolved_symtab)?;
 
+        // ENV_PARAMS: bind this Environment's own parameter values. Checked
+        // here, before any state for the Environment is recorded, so a
+        // rejected entry leaves the Session Ready with nothing to clean up.
+        let env_param_symbols = match parameters {
+            Some(p) => {
+                if p.environment != env.name {
+                    return Err(SessionError::InvalidEnvironmentParameters {
+                        environment: env.name.clone(),
+                        reason: format!("the values are for Environment '{}'.", p.environment),
+                    });
+                }
+                Some(self.environment_parameter_symbols(&env.name, p)?)
+            }
+            None => None,
+        };
+        // The Environment's own scope: the base table plus its `Env.Param.*`
+        // and `Env.RawParam.*`. `symtab` stays without them, because a wrap
+        // hook of another Environment must not see them (V6).
+        let mut env_symtab = symtab.clone();
+        if let Some(layer) = env_param_symbols.as_ref() {
+            env_symtab.merge_from(layer);
+        }
+
         let identifier = match identifier {
             Some(id) => {
                 if self.environments.contains_key(id) {
@@ -1243,6 +1327,10 @@ impl Session {
             stored_env.resolved_symtab = Some(st.clone());
         }
         self.environments.insert(identifier.clone(), stored_env);
+        if let Some(p) = parameters {
+            self.environment_parameters
+                .insert(identifier.clone(), p.clone());
+        }
         self.environments_entered.push(identifier.clone());
         self.created_env_vars
             .insert(identifier.clone(), HashMap::new());
@@ -1256,7 +1344,7 @@ impl Session {
                 // are errors rather than display renderings.
                 let value = fmt_str
                     .resolve_with(
-                        &symtab,
+                        &env_symtab,
                         &crate::limits::fs_options(self.lib(), &self.limits)
                             .with_target_type(&openjd_expr::ExprType::STRING),
                     )
@@ -1325,6 +1413,14 @@ impl Session {
             let mut action_symtab = symtab.clone();
             self.materialize_path_mapping(&mut action_symtab)
                 .map_err(|e| self.fail_action_setup(e))?;
+            // This Environment's own action scope adds its Env.Param.* /
+            // Env.RawParam.*; `action_symtab` stays without them so that, when
+            // an outer wrap hook replaces this onEnter, the hook's scope does
+            // not see them.
+            let mut own_action_symtab = action_symtab.clone();
+            if let Some(layer) = env_param_symbols.as_ref() {
+                own_action_symtab.merge_from(layer);
+            }
 
             // RFC 0008: if an outer active wrap env (not including this
             // one — which isn't on the stack yet but the helper guards
@@ -1336,7 +1432,7 @@ impl Session {
                 .as_ref()
                 .and_then(|s| s.actions.on_enter.as_ref())
                 .expect("outer branch guard");
-            let wrap_action = self.wrap_env_excluding(&identifier).and_then(|outer| {
+            let mut wrap_action = self.wrap_env_excluding(&identifier).and_then(|outer| {
                 outer
                     .script
                     .as_ref()
@@ -1344,12 +1440,20 @@ impl Session {
                     .cloned()
                     .map(|action| (WrapEnvironmentScope::from(outer), action))
             });
+            if let Some((wrap_env, _)) = wrap_action.as_mut() {
+                let wid = self.wrap_env_id_excluding(&identifier).cloned();
+                wrap_env.env_param_symbols = self
+                    .stored_environment_parameter_symbols(wid.as_ref())
+                    .map_err(|e| self.fail_action_setup(e))?;
+            }
 
             let lib = self.library.clone();
             if let Some((wrap_env, _)) = wrap_action.as_ref() {
                 // Build inner_symtab BEFORE registering wrap env files so the
                 // inner scope is derived from a symtab that does NOT contain
                 // the wrapper's Env.File.* entries — preventing scope leak.
+                // The inner scope is this Environment's own, so it has its
+                // Env.Param.* (the wrapped onEnter resolves against it).
                 let inner_symtab = self
                     .build_wrapped_inner_scope(
                         EmbeddedFilesScope::Env,
@@ -1357,7 +1461,7 @@ impl Session {
                         env.script
                             .as_ref()
                             .and_then(|s| s.embedded_files.as_deref()),
-                        &action_symtab,
+                        &own_action_symtab,
                         Some(&lib),
                     )
                     .map_err(|e| self.fail_action_setup(e))?;
@@ -1394,6 +1498,13 @@ impl Session {
                         .map_err(|e| self.fail_action_setup(e))?;
                 }
             }
+
+            // Unwrapped, the onEnter runs in this Environment's own scope.
+            let action_symtab = if wrap_action.is_some() {
+                action_symtab
+            } else {
+                own_action_symtab
+            };
 
             // The effective action is now resolved (wrap hook or the env's
             // own onEnter); record its declared cancel grace so helper-pipe
@@ -1550,6 +1661,9 @@ impl Session {
         }
 
         let symtab = self.build_symbol_table(None, resolved_symtab)?;
+        // ENV_PARAMS: the onExit binds the values the Environment was
+        // entered with (§3.2.2), not anything the caller passes now.
+        let env_param_symbols = self.stored_environment_parameter_symbols(Some(identifier))?;
 
         // Evaluate env vars BEFORE removing from tracking (matching Python)
         // Box to keep off the async state machine — see run_task for rationale.
@@ -1570,6 +1684,7 @@ impl Session {
             }
         })?;
         self.environments_entered.pop();
+        self.environment_parameters.remove(identifier);
 
         // Evict the wrap-env file cache unconditionally alongside other
         // environment teardown. This runs before the exit script so the
@@ -1601,6 +1716,12 @@ impl Session {
             let mut action_symtab = symtab.clone();
             self.materialize_path_mapping(&mut action_symtab)
                 .map_err(|e| self.fail_action_setup(e))?;
+            // As on the onEnter path: the Environment's own scope adds its
+            // Env.Param.* / Env.RawParam.*, and an outer wrap hook's does not.
+            let mut own_action_symtab = action_symtab.clone();
+            if let Some(layer) = env_param_symbols.as_ref() {
+                own_action_symtab.merge_from(layer);
+            }
 
             // RFC 0008: does an outer active wrap env wrap this onExit?
             // The env being exited has already been popped from the stack
@@ -1611,7 +1732,7 @@ impl Session {
                 .as_ref()
                 .and_then(|s| s.actions.on_exit.as_ref())
                 .expect("outer branch guard");
-            let wrap_action = self.active_wrap_env().and_then(|outer| {
+            let mut wrap_action = self.active_wrap_env().and_then(|outer| {
                 outer
                     .script
                     .as_ref()
@@ -1619,12 +1740,20 @@ impl Session {
                     .cloned()
                     .map(|action| (WrapEnvironmentScope::from(outer), action))
             });
+            if let Some((wrap_env, _)) = wrap_action.as_mut() {
+                let wid = self.active_wrap_env_id().cloned();
+                wrap_env.env_param_symbols = self
+                    .stored_environment_parameter_symbols(wid.as_ref())
+                    .map_err(|e| self.fail_action_setup(e))?;
+            }
 
             let lib = self.library.clone();
             if let Some((wrap_env, _)) = wrap_action.as_ref() {
                 // Build inner_symtab BEFORE registering wrap env files so the
                 // inner scope is derived from a symtab that does NOT contain
                 // the wrapper's Env.File.* entries — preventing scope leak.
+                // The inner scope is the exiting Environment's own, with its
+                // Env.Param.*.
                 let inner_symtab = self
                     .build_wrapped_inner_scope(
                         EmbeddedFilesScope::Env,
@@ -1632,7 +1761,7 @@ impl Session {
                         env.script
                             .as_ref()
                             .and_then(|s| s.embedded_files.as_deref()),
-                        &action_symtab,
+                        &own_action_symtab,
                         Some(&lib),
                     )
                     .map_err(|e| self.fail_action_setup(e))?;
@@ -1669,6 +1798,13 @@ impl Session {
                         .map_err(|e| self.fail_action_setup(e))?;
                 }
             }
+
+            // Unwrapped, the onExit runs in this Environment's own scope.
+            let action_symtab = if wrap_action.is_some() {
+                action_symtab
+            } else {
+                own_action_symtab
+            };
 
             // See the onEnter path: record the effective action's declared
             // cancel grace once the wrap decision is made.
@@ -1878,6 +2014,12 @@ impl Session {
                 .map_err(|e| self.fail_action_setup(e))?;
         }
 
+        // ENV_PARAMS: the hook binds the wrap environment's own stored
+        // Env.Param.* values (the Task itself never sees any).
+        let wrap_env_param_symbols = self
+            .stored_environment_parameter_symbols(wrap_env_id_and_files.as_ref().map(|(id, _)| id))
+            .map_err(|e| self.fail_action_setup(e))?;
+
         let wrap_action: Option<openjd_model::job::Action> = self
             .active_wrap_env()
             .and_then(|wrap_env| {
@@ -1887,7 +2029,8 @@ impl Session {
                     .and_then(|s| s.actions.on_wrap_task_run.clone())
                     .map(|action| (WrapEnvironmentScope::from(wrap_env), action))
             })
-            .map(|(wrap_env, action)| {
+            .map(|(mut wrap_env, action)| {
+                wrap_env.env_param_symbols = wrap_env_param_symbols;
                 // Seed WrappedAction.* / WrappedStep.Name from the step's own
                 // onRun. The wrapped onRun resolves against the STEP's own
                 // scope — its embedded files and script-level lets, the same
@@ -2491,6 +2634,159 @@ impl Session {
         &self.job_parameter_values
     }
 
+    /// The Environment parameter values (`ENV_PARAMS`) that the entered
+    /// Environment `identifier` was entered with through
+    /// [`enter_environment_with_parameters`](Self::enter_environment_with_parameters).
+    ///
+    /// `None` when no such Environment is entered, or when it was entered
+    /// without values. A scheduler compares these with a Step's
+    /// [`environment_parameters`](openjd_model::job::Step::environment_parameters)
+    /// (using [`EnvironmentParameterValues::values_equal`]) to decide whether
+    /// this Session may run the Step's Tasks (Template Schemas §3.2.2).
+    pub fn environment_parameters(&self, identifier: &str) -> Option<&EnvironmentParameterValues> {
+        self.environment_parameters.get(identifier)
+    }
+
+    /// The `Env.Param.*` / `Env.RawParam.*` symbols of the entered
+    /// Environment `identifier`, from the values it was entered with, mapped
+    /// with the Session's current path-mapping rules. `Ok(None)` when
+    /// `identifier` is `None` or the Environment was entered without values.
+    fn stored_environment_parameter_symbols(
+        &self,
+        identifier: Option<&EnvironmentIdentifier>,
+    ) -> Result<Option<SymbolTable>, SessionError> {
+        let Some(id) = identifier else {
+            return Ok(None);
+        };
+        match self.environment_parameters.get(id) {
+            Some(p) => Ok(Some(self.environment_parameter_symbols(&p.environment, p)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Build the `Env.Param.<name>` and `Env.RawParam.<name>` symbols for
+    /// one Environment's parameter values (`ENV_PARAMS`, Template Schemas
+    /// §4.5).
+    ///
+    /// Each transport entry is `{name, type, value}` with a bare parameter
+    /// name, and each is decoded on its own so an error names its
+    /// parameter. A `path` value is the unmapped string in the submission
+    /// path format: `Env.RawParam` gets it unchanged as a `string`, and
+    /// `Env.Param` gets it path-mapped with the Session's rules as a `path`
+    /// in the host format, as `Param.*` does for a PATH Job Parameter. A
+    /// `list[path]` value is handled the same way element by element
+    /// (`list[string]` raw, `list[path]` mapped). Every other value decodes
+    /// with its type and is bound unchanged under both names. Nothing is
+    /// checked against the parameter definitions (§4.5: path mapping does
+    /// not re-check constraints).
+    fn environment_parameter_symbols(
+        &self,
+        environment: &str,
+        params: &EnvironmentParameterValues,
+    ) -> Result<SymbolTable, SessionError> {
+        use openjd_expr::{ExprType, ExprValue};
+        let host = openjd_expr::path_mapping::PathFormat::host();
+        let invalid = |reason: String| SessionError::InvalidEnvironmentParameters {
+            environment: environment.to_string(),
+            reason,
+        };
+        let entries = params.values.as_value().as_array().ok_or_else(|| {
+            invalid("the values table is not a JSON array of entries.".to_string())
+        })?;
+        if entries.len() > openjd_expr::MAX_SYMBOL_TABLE_ENTRIES {
+            return Err(invalid(format!(
+                "the values table has {} entries; the maximum is {}.",
+                entries.len(),
+                openjd_expr::MAX_SYMBOL_TABLE_ENTRIES
+            )));
+        }
+        let mut layer = SymbolTable::new();
+        let mut seen = HashSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let name = entry
+                .get("name")
+                .and_then(|n| n.as_str())
+                .ok_or_else(|| invalid(format!("entry {index} has no string 'name'.")))?;
+            if !is_parameter_name(name) {
+                // A dotted name is most likely a full symbol such as
+                // `Env.Param.X`; say what the key should be.
+                return Err(invalid(if name.contains('.') {
+                    format!(
+                        "'{name}' is not a parameter name; each entry must be keyed by the bare name."
+                    )
+                } else {
+                    format!(
+                        "'{name}' is not a parameter name; a name is a letter or '_' followed by \
+                         letters, digits, or '_'."
+                    )
+                }));
+            }
+            if !seen.insert(name) {
+                return Err(invalid(format!(
+                    "parameter '{name}' appears more than once."
+                )));
+            }
+            let type_str = entry
+                .get("type")
+                .and_then(|t| t.as_str())
+                .ok_or_else(|| invalid(format!("parameter '{name}' has no string 'type'.")))?;
+            let ty = ExprType::parse(type_str).map_err(|e| {
+                invalid(format!(
+                    "parameter '{name}': type '{type_str}' is not an expression type ({e})."
+                ))
+            })?;
+            let value = entry
+                .get("value")
+                .ok_or_else(|| invalid(format!("parameter '{name}' has no 'value'.")))?;
+            let in_parameter = |e: String| invalid(format!("parameter '{name}': {e}"));
+            let (raw, mapped) = if ty == ExprType::PATH {
+                let raw = value
+                    .as_str()
+                    .ok_or_else(|| in_parameter("a path value must be a string.".to_string()))?;
+                let mapped = self.apply_path_mapping_to_string(raw);
+                (
+                    ExprValue::String(raw.to_string()),
+                    ExprValue::new_path(mapped, host),
+                )
+            } else if ty == ExprType::list(ExprType::PATH) {
+                let elements = value
+                    .as_array()
+                    .and_then(|a| a.iter().map(|v| v.as_str()).collect::<Option<Vec<_>>>())
+                    .ok_or_else(|| {
+                        in_parameter("a list[path] value must be a list of strings.".to_string())
+                    })?;
+                let raw = ExprValue::make_list(
+                    elements
+                        .iter()
+                        .map(|e| ExprValue::String((*e).to_string()))
+                        .collect(),
+                    ExprType::STRING,
+                )
+                .map_err(|e| in_parameter(e.to_string()))?;
+                let mapped = ExprValue::make_list(
+                    elements
+                        .iter()
+                        .map(|e| ExprValue::new_path(self.apply_path_mapping_to_string(e), host))
+                        .collect(),
+                    ExprType::PATH,
+                )
+                .map_err(|e| in_parameter(e.to_string()))?;
+                (raw, mapped)
+            } else {
+                let v = ExprValue::from_transport_value(value, &ty, host)
+                    .map_err(|e| in_parameter(format!("{e}.")))?;
+                (v.clone(), v)
+            };
+            for (prefix, v) in [("Env.RawParam", raw), ("Env.Param", mapped)] {
+                let key = format!("{prefix}.{name}");
+                layer
+                    .set(&key, v)
+                    .map_err(|e| invalid(format!("cannot bind '{key}': {e}")))?;
+            }
+        }
+        Ok(layer)
+    }
+
     /// Build a SymbolTable for running actions, mirroring Python's Session._symbol_table().
     /// Populates job parameters (Param.* and RawParam.*), task parameters (Task.Param.* and Task.RawParam.*),
     /// and Session.WorkingDirectory.
@@ -2921,6 +3217,17 @@ impl Session {
     }
 }
 
+/// Whether `name` is an `<Identifier>` (Template Schemas §7.1): a letter or
+/// `_`, then letters, digits, or `_`. Environment parameter names are
+/// identifiers, so a name with a `.` would bind a nested symbol instead.
+fn is_parameter_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Returns true iff the environment defines any of the three wrap hooks
 /// from RFC 0008. The model-level validator enforces that this is either
 /// zero or one environment per session; this check gates runtime dispatch.
@@ -2938,6 +3245,11 @@ struct WrapEnvironmentScope {
     name: String,
     resolved_symtab: Option<openjd_expr::SerializedSymbolTable>,
     let_bindings: Option<Vec<String>>,
+    /// `ENV_PARAMS`: the wrap environment's own `Env.Param.*` /
+    /// `Env.RawParam.*`, built from the values it was entered with. `From`
+    /// leaves it `None`; each wrap call site fills it from the Session's
+    /// stored values, since building it needs the path-mapping rules.
+    env_param_symbols: Option<SymbolTable>,
 }
 
 impl From<&Environment> for WrapEnvironmentScope {
@@ -2949,6 +3261,7 @@ impl From<&Environment> for WrapEnvironmentScope {
                 .script
                 .as_ref()
                 .and_then(|script| script.let_bindings.clone()),
+            env_param_symbols: None,
         }
     }
 }
@@ -2976,8 +3289,9 @@ pub(crate) enum WrappedContext<'a> {
 ///   resolved against this table, so a wrapper-defined name can never
 ///   leak into the wrapped action's resolved values.
 /// - **Hook scope** (`action_symtab`, mutated in place) — the wrap
-///   environment's own scope: its frozen `resolved_symtab` (its `Param.*`)
-///   and its script-level `let` bindings (Template Schemas §4.2: an
+///   environment's own scope: its frozen `resolved_symtab` (its `Param.*`),
+///   its own `Env.Param.*` / `Env.RawParam.*` from the values it was
+///   entered with (`ENV_PARAMS`), and its script-level `let` bindings (Template Schemas §4.2: an
 ///   environment script's `let` names "are available in actions" — the
 ///   wrap hooks are actions of the wrap environment's script), plus the
 ///   `WrappedAction.*` overlay. The hook action resolves against this
@@ -3024,13 +3338,20 @@ fn seed_wrapped_action_symbols(
             }
         }
     }
+    // ENV_PARAMS: the wrap environment's own Env.Param.* / Env.RawParam.*,
+    // layered before its `let` bindings so they can read them. The caller
+    // built `action_symtab` without the wrapped Environment's own values, so
+    // only the wrapper's are visible to the hook.
+    if let Some(layer) = wrap_env.env_param_symbols.as_ref() {
+        action_symtab.merge_from(layer);
+    }
 
     // The wrap env's own script-level `let` bindings are part of the scope
     // its hooks resolve against. They are evaluated here — against the wrap
     // env's frozen symtab merged above — rather than carried from enter
     // time, because the session does not persist per-environment evaluated
     // let scopes. The bindings only reference environment-scope symbols
-    // (Param.*, Session.*), so re-evaluation is deterministic.
+    // (Param.*, Env.Param.*, Session.*), so re-evaluation is deterministic.
     if let Some(bindings) = wrap_env.let_bindings.as_deref() {
         let with_lets = crate::let_bindings::evaluate_let_bindings(
             bindings,

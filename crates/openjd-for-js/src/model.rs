@@ -680,6 +680,12 @@ pub fn decode_environment_template_from_object(
 /// `params` is a JS object mapping parameter names to string values.
 /// `pathOptions` controls how `PATH` parameters are resolved. Construct
 /// with `new PathParameterOptions(jobTemplateDir, currentWorkingDir)`.
+/// Its `pathFormat` and `allowUriPathValues` are also the submission path
+/// policy for `ENV_PARAMS` Environment parameter PATH values.
+///
+/// `createJob` takes no Environment Templates, so with `ENV_PARAMS` an
+/// `environment:` dependency that names no Job Environment makes it throw
+/// unless the entry has `required: false`, in which case it is dropped.
 ///
 /// `limits` lets the host cap task count and other resource limits.
 /// `maxTaskCount` is checked after parameter space expansion.
@@ -722,12 +728,20 @@ pub fn create_job_with_map(
 
     // Derive the context from the template itself — `create_job`
     // requires the context's revision/extensions to cover the
-    // template's — layering on the caller-supplied limits.
+    // template's — layering on the caller-supplied limits and the same
+    // path policy the Job Parameters were resolved with, so Environment
+    // parameter PATH values (ENV_PARAMS) are checked against the
+    // caller's path format rather than wasm32's POSIX host default.
     let ctx = template
         .inner
         .default_validation_context()
-        .with_caller_limits(rust_limits);
+        .with_caller_limits(rust_limits)
+        .with_submission_path_format(rust_opts.path_format)
+        .with_allow_uri_path_values(rust_opts.allow_uri_path_values);
 
+    // createJob takes no Environment Templates, so `create_job` resolves
+    // the Job against none: an enabled `environment:` entry naming no Job
+    // Environment is an error unless it has `required: false`.
     let job = openjd_model::create_job(&template.inner, &param_values, &ctx)
         .map_err(|e| e.to_string())?;
     Ok(JsJob { inner: job })

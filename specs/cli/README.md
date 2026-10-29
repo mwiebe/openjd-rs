@@ -13,9 +13,9 @@ Rust's clap derive API, async runtime (tokio), and the structured logging facade
 | Document | Description |
 |----------|-------------|
 | [architecture.md](architecture.md) | Crate structure, module layout, dependency graph, public API surface, key design decisions |
-| [check.md](check.md) | `check` command: template validation pipeline, extension handling, error reporting |
-| [summary.md](summary.md) | `summary` command: job/step summarization, output formatting, parameter display |
-| [run.md](run.md) | `run` command: full session lifecycle, task iteration, adaptive chunking, environment management |
+| [check.md](check.md) | `check` command: template validation pipeline, extension handling, error reporting, checking a Job Template against Environment Templates (`ENV_PARAMS`) |
+| [summary.md](summary.md) | `summary` command: job/step summarization, output formatting, parameter display, effective Environment parameter values, each Step's Environment set and combined host requirements |
+| [run.md](run.md) | `run` command: full session lifecycle, task iteration, adaptive chunking, environment management, Environment Templates and one Session per run of Steps that enter the same Environments with equal Environment parameter values (`ENV_PARAMS`) |
 | [help.md](help.md) | Context-aware help: template-driven `--help` output for the `run` command |
 | [logging.md](logging.md) | Session logger: timestamp formatting, `openjd_log_content` filtering, log level control |
 | [output-formatting.md](output-formatting.md) | Structured output: human-readable, JSON, and YAML output modes across all commands |

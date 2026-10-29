@@ -95,7 +95,7 @@ This mirrors the PyO3 pattern used in the Python bindings where `PyJobTemplate` 
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decodeJobTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate a job template from a string. `format` defaults to `DocumentType.Yaml` (YAML is a superset of JSON, so this accepts either). `limits` lets the host impose additional caps on top of the spec-defined limits; omit for spec-only behavior. `supportedExtensions` restricts which OpenJD extensions the template may declare; omit to allow all known extensions (see `getSupportedExtensions()`), or pass `[]` to disable every extension. Mirrors the Python binding `decode_job_template_str`. Throws on failure. |
+| `decodeJobTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate a job template from a string. `format` defaults to `DocumentType.Yaml` (YAML is a superset of JSON, so this accepts either). `limits` lets the host impose additional caps on top of the spec-defined limits; omit for spec-only behavior. `supportedExtensions` restricts which OpenJD extensions the template may declare; omit to allow every extension `getSupportedExtensions()` lists (`openjd_model::ModelExtension::ALL`, which includes the draft `ENV_PARAMS`), or pass `[]` to disable every extension. Mirrors the Python binding `decode_job_template_str`. Throws on failure. |
 | `decodeJobTemplateFromObject` | `(obj: object, limits?: CallerLimits, supportedExtensions?: string[]) → JobTemplate` | Parse + validate from a pre-parsed JS object, skipping string parsing. Mirrors the Python binding `decode_job_template_dict`. |
 | `decodeEnvironmentTemplate` | `(document: string, format?: DocumentType, limits?: CallerLimits, supportedExtensions?: string[]) → EnvironmentTemplate` | As above, for environment templates. Mirrors `decode_environment_template_str`. |
 | `decodeEnvironmentTemplateFromObject` | `(obj: object, limits?: CallerLimits, supportedExtensions?: string[]) → EnvironmentTemplate` | As above, for environment templates. Mirrors `decode_environment_template_dict`. |
@@ -125,13 +125,13 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `getSupportedExtensions` | `() → string[]` | Return the full default extension allowlist, sourced from `openjd_model::KnownExtension::ALL`. The same set used when `supportedExtensions` is omitted. Useful for callers that want to start from the default and remove a specific extension. |
+| `getSupportedExtensions` | `() → string[]` | Return the full default extension allowlist, sourced from `openjd_model::ModelExtension::ALL`. The same set used when `supportedExtensions` is omitted. Useful for callers that want to start from the default and remove a specific extension. |
 
 #### Job Creation
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. |
+| `createJob` | `(template: JobTemplate, params: Record<string, string>, pathOptions: PathParameterOptions, limits?: CallerLimits) → Job` | Create a fully resolved Job from a template and parameter values. Resolves all format strings, expands parameter spaces. `limits.maxTaskCount` is checked after expansion. `pathOptions.pathFormat` and `pathOptions.allowUriPathValues` also set the submission path policy for `ENV_PARAMS` Environment parameter PATH values. `createJob` takes no Environment Templates: it calls the Rust `create_job`, which resolves the Job against none, so an enabled `environment:` dependency naming no Job Environment is an error unless it has `required: false`, in which case it is dropped. |
 | `preprocessJobParameters` | `(template: JobTemplate, rawValues: Record<string, string>, pathOptions: PathParameterOptions) → Map<string, ExprValue>` | Coerce raw string parameter values to typed ExprValues per the parameter definitions. |
 | `mergeJobParameterDefinitions` | `(templates: (JobTemplate \| EnvironmentTemplate)[]) → JobParameterDefinition[]` | Merge parameter definitions from multiple templates per the spec's merging rules. |
 | `evaluateLetBindings` | `(bindings: string[], symbols: SymbolTable) → SymbolTable` | Evaluate `let` bindings and add results to the symbol table. |
@@ -200,6 +200,46 @@ Returned by `createJob`. All format strings are resolved.
 | `jobEnvironments` | `Environment[]` |
 | `parameters` | `Map<string, ExprValue>` |
 
+`Job.toJSON()` serializes the Rust `job::Job` with serde. With `ENV_PARAMS`, each serialized
+Step that has effective Environment parameter values carries `environmentParameters`: a list of
+`{document, environment, values}`, where `document` is `{kind: "JobTemplate"}` and `values` is
+the transport symbol table, one entry per parameter. As for `resolvedSymTab`, each `values`
+entry reaches JS as a `Map` with keys `name`, `type`, and `value`, since serde-wasm-bindgen
+delivers a JSON object held as `serde_json::Value` as a `Map`. A Step without values has no
+`environmentParameters` key. A Step whose Sessions do not enter every Job Environment
+(`activation: ON_REQUEST`, or an Environment whose own `enableIf` is `false` for it) carries
+`environments`: a list of `{document, environment}`, the Job Environments it enters; a Step
+that enters every one has no `environments` key. A Step Environment whose `enableIf` is
+`false` for its Step is left out of `stepEnvironments`, and a disabled Environment has no
+`environmentParameters` entry. So a Job without Environment parameters, `ON_REQUEST`
+Environments, or Environment `enableIf`s serializes exactly as before.
+A Step's `hostRequirements` is its combined host requirements (Template Schemas §3.3.3): its
+own and those of every Job Environment its Sessions enter, resolved with its values and
+normalized per capability, in the same `{amounts, attributes}` shape, except that an
+attribute name other than `attr.worker.os.family` and `attr.worker.cpu.arch` may appear more
+than once (an `allOf`, then `anyOf`s of two or more values; §3.3.3 item 2.2); a conflict makes
+`createJob` throw. `Job.EnvNames` is in each `resolvedSymTab` that references it, as a
+`list[string]` entry. The template-side fields (`activation`, `hostRequirements`, and
+`enableIf` on an Environment, `enableIf` on an `environment:` dependency) are decoded and
+validated by
+`decodeJobTemplate` and `decodeEnvironmentTemplate` with `ENV_PARAMS` in the supported
+extensions (the default); a document that lists `ENV_PARAMS` must also list `EXPR`, so both
+must be supported (Template Schemas §1.1 item 3). The `JobTemplate` wrapper exposes no getter
+for them. An entry's
+`enableIf` is an expression field of type `bool` (Template Schemas §7.5): a JSON boolean is
+used as written, and a string holds one expression written without `{{ }}`, so `"false"` is
+an expression evaluated by `createJob`. A number, a `null`, a `{{ }}` value, or an
+expression whose type is not `bool` is rejected by `decodeJobTemplate` with the field's path;
+a list, a map, or an integer above `i64::MAX` that fits `u64` is a decode error that names
+`enableIf` but has no path.
+An Environment's own `enableIf` (§4 item 6) is an expression field of type `bool` with the
+same rules, permitted on every Environment, and `createJob` resolves it per Step with that
+Step's effective values that are known (Template Schemas §3.2.2); a Step's values for an
+Environment it disables are not checked against their type and constraints (constraint 5
+still applies), and the Step is not held to constraint 7 for it.
+`createJob` returns only the Job, so the Environments an `enableIf` disabled are visible
+only as the ones missing from a Step's sets.
+
 #### `Step`
 
 | Property | Type |
@@ -208,7 +248,9 @@ Returned by `createJob`. All format strings are resolved.
 | `script` | `StepScript` |
 | `taskCount` | `number` |
 | `dependencies` | `string[]` |
-| `environments` | `Environment[]` |
+| `stepEnvironments` | `Environment[]` |
+| `environments` | `{document, environment}[]`, absent unless `ENV_PARAMS` (`activation: ON_REQUEST` or an Environment's `enableIf`) leaves out a Job Environment (see above) |
+| `hostRequirements` | `{amounts, attributes} \| undefined`, the combined host requirements with `ENV_PARAMS` (see above) |
 
 #### `Environment`
 

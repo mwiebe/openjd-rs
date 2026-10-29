@@ -73,6 +73,12 @@ Common methods on all variants:
 > byte length. For example, the string "aéb" has length 3 (three characters), not 4
 > (its UTF-8 byte length). This applies to both `check_constraints` (runtime) and
 > `validate_definition` (template-time) checks for STRING and PATH parameters.
+>
+> A RANGE_EXPR's `minLength` and `maxLength` check two strings, and both must satisfy them
+> (Template Schemas §2.10): the value as written (a submitted string or the `default`) and its
+> canonical form. A `range_expr` value, which has no other spelling, is checked only in
+> canonical form. `check_constraints` on a string checks both; `preprocess_job_parameters`
+> checks the written string before parsing it and the canonical form after.
 
 These are two distinct operations:
 
@@ -168,13 +174,34 @@ two input modes:
 
 ```rust
 pub struct ValidationContext {
-    pub revision: SpecificationRevision,
-    pub extensions: Extensions,
+    pub profile: ModelProfile,               // revision + enabled extensions
+    pub caller_limits: CallerLimits,
+    pub submission_path_format: PathFormat,  // default PathFormat::host()
+    pub allow_uri_path_values: bool,         // default false
 }
 ```
 
 Constructed during template decoding from the intersection of template-requested extensions
-and caller-supported extensions.
+and caller-supported extensions, and by callers of `create_job` from
+`JobTemplate::default_validation_context()` plus `with_caller_limits`.
+
+The two path fields apply to `ENV_PARAMS` Environment parameter values (Template Schemas
+§4.5), of every type: job creation evaluates them in `submission_path_format` (see below), a
+PATH value of an Environment that is not disabled for the Step (§3.2.2) must be a non-empty
+path absolute in it, or, with `allow_uri_path_values` set, a URI, and the same context applies to the attached
+Environment Templates in `create_job_with_environment_templates`. They mean the same as the
+`PathParameterOptions` fields `path_format` and `allow_uri_path_values`, and a caller that
+creates `ENV_PARAMS` Jobs should pass the same two values to both. openjd-for-js's `createJob`
+does, from its `PathParameterOptions`, and so do `openjd run`, `openjd summary`, and
+`openjd check --environment`, with the host format and `true`. Job creation evaluates Environment parameter format strings in
+`submission_path_format`, so path operations in them use that format's rules, and evaluates the
+Step `let` bindings those values read again in that format for them; every other job-creation
+evaluation stays in `PathFormat::Posix`. Template validation does not read the
+path fields.
+
+Environment parameters are never merged with Job Parameters (§1.2.1 last paragraph):
+`merge_job_parameter_definitions` reads only each document's top-level `parameterDefinitions`.
+An Environment parameter `default` reads the merged Job Parameter values instead.
 
 ### EffectiveLimits
 

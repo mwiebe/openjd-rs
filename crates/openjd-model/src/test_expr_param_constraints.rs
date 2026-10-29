@@ -79,7 +79,10 @@ fn test_range_expr_rejects_too_long() {
     let err = p
         .check_value_constraints(&ExprValue::RangeExpr(r))
         .unwrap_err();
-    assert_eq!(err, "Parameter 'Frames': value length 6 exceeds maximum 5");
+    assert_eq!(
+        err,
+        "Parameter 'Frames': canonical form '1-1000' length 6 exceeds maximum 5"
+    );
 }
 
 // ============================================================
@@ -656,7 +659,7 @@ fn test_range_expr_min_length_one_below() {
         .unwrap_err();
     assert_eq!(
         err,
-        "Parameter 'Frames': value length 3 is less than minimum 4"
+        "Parameter 'Frames': canonical form '1-5' length 3 is less than minimum 4"
     );
 }
 
@@ -689,7 +692,10 @@ fn test_range_expr_max_length_one_above() {
     let err = p
         .check_value_constraints(&ExprValue::RangeExpr(r))
         .unwrap_err();
-    assert_eq!(err, "Parameter 'Frames': value length 3 exceeds maximum 2");
+    assert_eq!(
+        err,
+        "Parameter 'Frames': canonical form '1-5' length 3 exceeds maximum 2"
+    );
 }
 
 // String input also checks length constraints
@@ -708,7 +714,7 @@ fn test_range_expr_string_min_length_check() {
         .unwrap_err();
     assert_eq!(
         err,
-        "Parameter 'Frames': value length 3 is less than minimum 10"
+        "Parameter 'Frames': value '1-5' length 3 is less than minimum 10"
     );
 }
 
@@ -725,7 +731,60 @@ fn test_range_expr_string_max_length_check() {
     let err = p
         .check_value_constraints(&ExprValue::String("1-5".into()))
         .unwrap_err();
-    assert_eq!(err, "Parameter 'Frames': value length 3 exceeds maximum 2");
+    assert_eq!(
+        err,
+        "Parameter 'Frames': value '1-5' length 3 exceeds maximum 2"
+    );
+}
+
+// §2.10: a value as written and its canonical form must both satisfy the
+// length constraints.
+fn range_expr_def(
+    min_length: Option<usize>,
+    max_length: Option<usize>,
+) -> JobRangeExprParameterDefinition {
+    JobRangeExprParameterDefinition {
+        name: id("Frames"),
+        description: None,
+        default: None,
+        min_length,
+        max_length,
+        user_interface: None,
+    }
+}
+
+#[test]
+fn test_range_expr_written_form_too_long_although_canonical_fits() {
+    // "1,2,3" is 5 characters; its canonical form "1-3" is 3.
+    let err = range_expr_def(None, Some(3))
+        .check_value_constraints(&ExprValue::String("1,2,3".into()))
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "Parameter 'Frames': value '1,2,3' length 5 exceeds maximum 3"
+    );
+}
+
+#[test]
+fn test_range_expr_canonical_form_too_short_although_written_fits() {
+    // "1-3:2" is 5 characters; its canonical form "1,3" is 3.
+    let err = range_expr_def(Some(4), None)
+        .check_value_constraints(&ExprValue::String("1-3:2".into()))
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "Parameter 'Frames': canonical form '1,3' length 3 is less than minimum 4"
+    );
+}
+
+#[test]
+fn test_range_expr_range_expr_value_checks_only_canonical_form() {
+    // A range_expr has no other spelling: "1,2,3" parses to the range_expr
+    // whose canonical form "1-3" fits maxLength 3.
+    let r = "1,2,3".parse::<openjd_expr::RangeExpr>().unwrap();
+    assert!(range_expr_def(None, Some(3))
+        .check_value_constraints(&ExprValue::RangeExpr(r))
+        .is_ok());
 }
 
 // ============================================================

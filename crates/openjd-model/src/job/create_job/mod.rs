@@ -6,6 +6,9 @@
 //!
 //! Mirrors Python `_create_job.py` and `_merge_job_parameter.py`.
 
+mod env_params;
+mod external;
+mod host_requirements;
 mod instantiate;
 pub mod parameters;
 mod ranges;
@@ -21,6 +24,10 @@ use crate::template::JobTemplate;
 use crate::types::{JobParameterValues, ValidationContext};
 
 // Re-exports — preserve the existing public API
+pub use external::{
+    check_environment_templates, AttachedEnvironmentTemplate, CreatedJob, StepDisabledEnvironments,
+    SubmissionWarning,
+};
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
 };
@@ -66,13 +73,38 @@ impl EvalBudgets {
     }
 }
 
-/// Create an instantiated Job from a validated JobTemplate and preprocessed parameter values.
+/// Create an instantiated Job from a validated JobTemplate and preprocessed
+/// parameter values, with no Environment Templates attached.
+///
+/// This is [`create_job_with_environment_templates`] with no attachments,
+/// returning only the Job; see it for every rule. In particular, with
+/// `ENV_PARAMS` an enabled `environment:` entry that names no
+/// `jobEnvironments` entry is an error unless it has `required: false`,
+/// and the error is reported for `Submission`, as when Environment
+/// Templates are attached.
+pub fn create_job(
+    job_template: &JobTemplate,
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+) -> Result<job::Job, ModelError> {
+    create_job_with_environment_templates(job_template, &[], job_parameter_values, ctx)
+        .map(|created| created.job)
+}
+
+/// Create an instantiated Job from a validated JobTemplate, the
+/// Environment Templates the scheduler attaches to its submission, in the
+/// scheduler's order, and preprocessed parameter values (Template Schemas
+/// §7.4 "Job creation").
 ///
 /// Environment template parameters should already be merged into `job_parameter_values`
-/// via [`preprocess_job_parameters`] before calling this function.
+/// via [`preprocess_job_parameters`] before calling this function, with
+/// the same Environment Templates.
 ///
 /// The `ctx` parameter carries the specification revision, enabled
-/// extensions, and caller limits that apply to this job instance. Its
+/// extensions, caller limits, and submission path policy
+/// ([`submission_path_format`](ValidationContext::submission_path_format),
+/// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
+/// that apply to this job instance. Its
 /// revision must match the template's, and it must enable every
 /// extension the template declares (enabling more is allowed — extra
 /// extensions only add symbols and functions the template never
@@ -85,23 +117,115 @@ impl EvalBudgets {
 /// says" context is [`JobTemplate::default_validation_context`], with
 /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits)
 /// layered on for caller policy (e.g. "enforce stricter caller limits
-/// on this queue").
+/// on this queue"). The caller limits and path policy also apply to every
+/// attached document, each evaluated under its own profile.
 ///
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
 /// across all steps is checked after parameter spaces are resolved.
 ///
+/// With `ENV_PARAMS` the stages run in the §7.4 order:
+///
+/// 1. `Job.Name` is resolved and, with `EXPR`, `Job.EnvNames` is bound to
+///    the names of the attached Environments, in attachment order,
+///    followed by the Job Template's `jobEnvironments`, whatever their
+///    `activation` (§7.3.1; plan P2), before any TEMPLATE-scope expression;
+/// 2. each Step's `let` bindings are evaluated, then each `environment:`
+///    entry's `enableIf`; a disabled entry is as if absent; and each Step
+///    Environment's own `enableIf` (§4 item 6), in the same scope; a
+///    disabled one is left out of [`job::Step::step_environments`];
+/// 3. the Step's Sessions would enter every Job Environment with
+///    `activation: ALWAYS` and every `ON_REQUEST` one an enabled entry
+///    requests; the Step gets its effective values for each of the Job
+///    Template's own, each Environment's own `enableIf` (§4 item 6) is
+///    decided with the values that are known (a missing or unconvertible
+///    value is `unresolved[T]`; Template Schemas §3.2.2), one that is
+///    `false` is left out of the Step's set and values, and for the others
+///    each value is checked against its definition and constraint 7 is
+///    checked;
+/// 4. the enabled entries that name no Job Environment are resolved
+///    against `attached` (§3.2.1), the Step's attached Environments are
+///    fixed in the same way, its effective values for them are computed,
+///    each one's own `enableIf` is decided as in stage 3, and the values
+///    of the ones not disabled are checked; then the `WRAP_ACTIONS`
+///    single-layer rule is checked over the final set;
+/// 5. each Environment's `hostRequirements` (`ENV_PARAMS`, §4 item 5) are
+///    resolved for each Step whose Sessions enter it, with that Step's
+///    effective values, and combined with the Step's own into the Step's
+///    combined host requirements (§3.3.3), which replace
+///    [`job::Step::host_requirements`].
+///
+/// The combined Job lists the attached Environments before the Job
+/// Template's own (a Session enters them first), and records on each Step
+/// the Job Environments its Sessions enter ([`job::Step::environments`]);
+/// [`CreatedJob::disabled_environments`] lists, per Step, the ones an
+/// `enableIf` disabled.
+/// `job.extensions` is left as the Job Template declared it: an extension
+/// applies to the document that lists it (§1.2 item 3). Every document
+/// that holds an Environment parameter value lists `ENV_PARAMS` and so
+/// `EXPR` (§1.1 item 3), so a single `{{ }}` expression value is typed and
+/// a URI is a PATH value (with
+/// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
+/// whatever `ctx` enables.
+///
 /// The resolved-value re-checks on carried-forward fields (and the
-/// `let` bindings feeding them) are reported together: every such
-/// failure across job environments, steps, and step environments
-/// becomes one `ModelError::ModelValidation`, in template-validation
-/// order. Failures that make a step uninstantiable (resolving its host
-/// requirements or parameter space) abort immediately and are reported
-/// alone.
-pub fn create_job(
+/// `let` bindings feeding them), and the Job Template's Environment
+/// parameter value checks, are reported together: every such failure
+/// across job environments, steps, and step environments becomes one
+/// `ModelError::ModelValidation` for `JobTemplate`, in template-validation
+/// order (the Job Environments' literal `default`s after their other
+/// checks, each Step's values after its other checks, and the Job
+/// Environments' failed `enableIf` evaluations last). Failures that
+/// make a step uninstantiable (resolving its own host requirements or
+/// parameter space) abort immediately and are reported alone. Stages 4
+/// and 5 run only when those succeed, and their checks (including an
+/// Environment's resolved `hostRequirements` and a combined set's
+/// conflicts) are reported together as one
+/// `ModelError::ModelValidation` for `Submission`, whose paths start with
+/// the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
+/// attachment's label).
+pub fn create_job_with_environment_templates(
+    job_template: &JobTemplate,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+) -> Result<CreatedJob, ModelError> {
+    // §7.4: the attached Environments are known first, so `Job.EnvNames`
+    // is concrete before any TEMPLATE-scope expression.
+    let env_names: Vec<String> = attached
+        .iter()
+        .map(|a| a.template.environment().name.clone())
+        .chain(
+            job_template
+                .job_environments
+                .iter()
+                .flatten()
+                .map(|e| e.name.clone()),
+        )
+        .collect();
+    let (job, selections) =
+        create_job_from_template(job_template, job_parameter_values, ctx, &env_names)?;
+    external::apply_environment_templates(
+        job_template,
+        job,
+        selections,
+        &env_names,
+        attached,
+        job_parameter_values,
+        ctx,
+    )
+}
+
+/// Job creation from the Job Template alone (stages 1–3 of
+/// [`create_job_with_environment_templates`]): the Job, without the
+/// attached Environments and with no Step's `environments` set, and for
+/// each Step what the submission stage needs. `env_names` is the value of
+/// `Job.EnvNames`.
+fn create_job_from_template(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
-) -> Result<job::Job, ModelError> {
+    env_names: &[String],
+) -> Result<(job::Job, Vec<env_params::StepSelection>), ModelError> {
     // The context must be compatible with what the template declares:
     // same revision, and at least the template's extensions enabled.
     // Anything less makes the evaluation passes below ambiguous (an
@@ -149,6 +273,10 @@ pub fn create_job(
     }
 
     let mut symtab = build_symbol_table(job_parameter_values)?;
+    // ENV_PARAMS `default`s resolve in the Job Parameters alone, without
+    // `Job.Name` or `Job.EnvNames` (§4.5 item 4), so keep the table before
+    // they are added.
+    let default_symtab = symtab.clone();
 
     let has_expr = ctx
         .profile
@@ -205,6 +333,12 @@ pub fn create_job(
 
     if has_expr {
         symtab.set("Job.Name", openjd_expr::ExprValue::String(job_name.clone()))?;
+        // §7.3.1, §7.4: concrete before any TEMPLATE-scope expression,
+        // including a Step's `let` bindings. Template validation rejects a
+        // reference without ENV_PARAMS, and `resolved_symtab`s keep only
+        // the symbols a field references, so binding it with EXPR alone
+        // adds nothing to a Job that does not use it.
+        symtab.set("Job.EnvNames", external::env_names_value(env_names))?;
     }
 
     let parameters: IndexMap<String, job::JobParameter> = job_parameter_values
@@ -261,6 +395,19 @@ pub fn create_job(
         }
     }
 
+    // ENV_PARAMS (§3.2.2): each Step's effective values for the Job
+    // Environments that declare parameters. Literal `default`s are checked
+    // here, before any Step, since one that fails is an error even when no
+    // Step takes it (§4.5 point 1).
+    let env_policy = env_params::ResolvePolicy::new(ctx);
+    let job_envs = env_params::JobEnvironments::new(
+        job_template,
+        default_symtab,
+        symtab.clone(),
+        env_policy,
+        &mut check_errors,
+    );
+
     let mut steps = Vec::with_capacity(job_template.steps.len());
     for (step_index, st) in job_template.steps.iter().enumerate() {
         steps.push(instantiate::instantiate_step(
@@ -271,17 +418,26 @@ pub fn create_job(
             ctx,
             step_index,
             budgets,
+            &job_envs,
             &mut check_errors,
         )?);
     }
+    // A Job Environment's `enableIf` that failed is reported once for all
+    // the Steps it was resolved for.
+    job_envs.report_enable_if_errors(&mut check_errors);
     check_errors.into_result("JobTemplate")?;
     // `instantiate_step` only declines to build a step after recording
     // the failure in `check_errors`, so every step is present here.
-    let steps: Vec<job::Step> = steps.into_iter().collect::<Option<_>>().ok_or_else(|| {
-        ModelError::DecodeValidation(
-            "internal error: a step was skipped without a recorded error".to_string(),
-        )
-    })?;
+    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection>) = steps
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| {
+            ModelError::DecodeValidation(
+                "internal error: a step was skipped without a recorded error".to_string(),
+            )
+        })?
+        .into_iter()
+        .unzip();
 
     // Caller-imposed total task count limit across all steps
     if let Some(max_task_count) = ctx.caller_limits.max_task_count {
@@ -362,12 +518,15 @@ pub fn create_job(
         }
     }
 
-    Ok(job::Job {
-        name: job_name,
-        description: job_template.description.as_ref().map(|d| d.0.clone()),
-        extensions,
-        parameters,
-        steps,
-        job_environments,
-    })
+    Ok((
+        job::Job {
+            name: job_name,
+            description: job_template.description.as_ref().map(|d| d.0.clone()),
+            extensions,
+            parameters,
+            steps,
+            job_environments,
+        },
+        selections,
+    ))
 }

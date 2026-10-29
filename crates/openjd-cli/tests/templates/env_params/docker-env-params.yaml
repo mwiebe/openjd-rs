@@ -1,0 +1,116 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# A test copy of the ENV_PARAMS RFC sample
+# samples/v2023-09/environment_templates/docker-env-params.yaml from
+# openjd-specifications, which combines ENV_PARAMS with WRAP_ACTIONS. The
+# schema parts (extensions, parameterDefinitions, the Environment's
+# activation, envParameterDefinitions, and hostRequirements, the wrap hooks'
+# argv) are unchanged. The scripts are
+# Python stubs: onEnter prints the values instead of starting a container
+# (Env.Param.Mounts path-mapped, Env.RawParam.Mounts as given), and the wrap
+# script prints the image and then runs the wrapped action directly with
+# its environment, instead of through `docker container exec`.
+
+specificationVersion: environment-2023-09
+extensions:
+- ENV_PARAMS
+- WRAP_ACTIONS
+- EXPR
+- FEATURE_BUNDLE_1
+parameterDefinitions:
+- name: DockerImage
+  type: STRING
+  description: The container image for Steps that do not choose their own.
+  default: "docker.io/library/ubuntu:24.04"
+environment:
+  name: Docker
+  description: >
+    Runs the Session's actions inside a container started from the image the
+    Session's Step asked for.
+  activation: ON_REQUEST
+  envParameterDefinitions:
+  - name: Image
+    type: STRING
+    minLength: 1
+    default: "{{Param.DockerImage}}"
+  - name: Mounts
+    type: LIST[PATH]
+    default: []
+  - name: Gpus
+    type: STRING
+    default: ""
+  hostRequirements:
+    attributes:
+    - name: attr.worker.os.family
+      anyOf: [linux]
+    amounts:
+    # Resolved per Step with that Step's Gpus value: a GPU is required only
+    # for Steps that ask to use one.
+    - name: amount.worker.gpu
+      min: "{{ 1 if Env.Param.Gpus != '' else 0 }}"
+  script:
+    actions:
+      onEnter:
+        command: python
+        # Values travel as argv, never as script text. Mounts expands to one
+        # argument per path, with path mapping applied.
+        args:
+        - "{{Env.File.Enter}}"
+        - "{{Env.Param.Image}}"
+        - "{{Env.Param.Gpus}}"
+        - "{{ repr_json(Env.RawParam.Mounts) }}"
+        - "{{Env.Param.Mounts}}"
+      # The wrapped action arrives as argv after "--", so it needs no quoting.
+      onWrapEnvEnter:
+        command: python
+        args:
+        - "{{Env.File.Wrap}}"
+        - "{{ flatten([['-e', e] for e in WrappedAction.Environment]) }}"
+        - "--"
+        - "{{WrappedAction.Command}}"
+        - "{{WrappedAction.Args}}"
+      onWrapTaskRun:
+        command: python
+        args:
+        - "{{Env.File.Wrap}}"
+        - "{{ flatten([['-e', e] for e in WrappedAction.Environment]) }}"
+        - "--"
+        - "{{WrappedAction.Command}}"
+        - "{{WrappedAction.Args}}"
+      onWrapEnvExit:
+        command: python
+        args:
+        - "{{Env.File.Wrap}}"
+        - "{{ flatten([['-e', e] for e in WrappedAction.Environment]) }}"
+        - "--"
+        - "{{WrappedAction.Command}}"
+        - "{{WrappedAction.Args}}"
+      onExit:
+        command: python
+        args: ["-c", "import os; print('Docker onExit: stopping ' + os.environ['DOCKER_STUB_IMAGE'])"]
+    embeddedFiles:
+    - name: Enter
+      type: TEXT
+      data: |
+        import json, sys
+        # argv: <image> <gpus> <raw mounts as JSON> [<mapped path> ...]
+        image, gpus, raw = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
+        mounts = sys.argv[4:]
+        print(f"Docker onEnter: Image={image!r} Gpus={gpus!r}")
+        print(f"Docker onEnter: Mounts={mounts!r}")
+        print(f"Docker onEnter: RawMounts={raw!r}")
+        print(f"openjd_env: DOCKER_STUB_IMAGE={image}")
+    - name: Wrap
+      type: TEXT
+      data: |
+        import os, subprocess, sys
+        # argv: [-e KEY=value ...] -- <command> [args ...]
+        args = sys.argv[1:]
+        env = dict(os.environ)
+        while args and args[0] != "--":
+            key, _, value = args[1].partition("=")
+            env[key] = value
+            args = args[2:]
+        args = args[1:]
+        print(f"Docker wrap in {os.environ['DOCKER_STUB_IMAGE']}: {os.path.basename(args[0])}", flush=True)
+        sys.exit(subprocess.call(args, env=env))

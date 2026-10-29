@@ -6,7 +6,9 @@
 
 use super::actions::{Action, CancelationMode, StepActions};
 use super::constrained_strings::Description;
+use super::env_parameters::EnvironmentParameterValueMap;
 use super::environment::{EmbeddedFile, Environment};
+use super::expr_field::ExprField;
 use super::host_requirements::HostRequirements;
 use super::task_parameters::StepParameterSpaceDefinition;
 use crate::error::PathElement;
@@ -290,15 +292,203 @@ impl StepTemplate {
     }
 }
 
-/// §3.2 StepDependency
-#[derive(Debug, Clone, Deserialize)]
+/// What a `<StepDependency>` names (§3.2): a Step of the same Job Template
+/// (the `dependsOn` key or, with the `ENV_PARAMS` extension, its synonym
+/// `step`) or, with `ENV_PARAMS`, an Environment that the Step's Sessions
+/// enter (the `environment` key).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DependencyTarget<'a> {
+    /// A Step, by name, and the key the entry wrote it under; satisfied
+    /// when the Step has completed. The two keys mean the same thing
+    /// (§3.2 item 1): the key is kept only so that messages can name what
+    /// was written.
+    Step(&'a str, StepKey),
+    /// An Environment, by name: a `jobEnvironments` entry of the same Job
+    /// Template or an external Environment. It does not delay scheduling.
+    Environment(&'a str),
+}
+
+/// The key a Step-naming `<StepDependency>` entry is written with (§3.2
+/// item 1). `step` is a synonym of `dependsOn`, available with the
+/// `ENV_PARAMS` extension: every rule treats the two alike, and a `step`
+/// entry and a `dependsOn` entry naming one Step are duplicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StepKey {
+    /// `dependsOn: <StepName>`.
+    DependsOn,
+    /// `step: <StepName>` (`ENV_PARAMS`).
+    Step,
+}
+
+impl StepKey {
+    /// The key as a template writes it: `dependsOn` or `step`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DependsOn => "dependsOn",
+            Self::Step => "step",
+        }
+    }
+}
+
+impl<'a> DependencyTarget<'a> {
+    /// The Step name, for a Step target, whichever key named it.
+    #[must_use]
+    pub fn step(self) -> Option<&'a str> {
+        match self {
+            Self::Step(name, _) => Some(name),
+            Self::Environment(_) => None,
+        }
+    }
+
+    /// The Environment name, for an Environment target.
+    #[must_use]
+    pub fn environment(self) -> Option<&'a str> {
+        match self {
+            Self::Step(..) => None,
+            Self::Environment(name) => Some(name),
+        }
+    }
+}
+
+/// `dependsOn: X`, `step: X`, or `environment: X`, the entry as a template
+/// writes it.
+impl std::fmt::Display for DependencyTarget<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Step(name, key) => write!(f, "{}: {name}", key.as_str()),
+            Self::Environment(name) => write!(f, "environment: {name}"),
+        }
+    }
+}
+
+/// §3.2 StepDependency: one entry of a Step's `dependencies`.
+///
+/// It is one of `dependsOn: <StepName>` or, with the `ENV_PARAMS`
+/// extension, its synonym `step: <StepName>`, or `environment:
+/// <EnvironmentName>` with optional `required`, `enableIf`, and
+/// `parameters`. Every key is optional here so that an entry with more
+/// than one form, or none, decodes and template validation reports it at
+/// the entry's path (§3.2 constraint 1). Use [`target`](Self::target) to
+/// read which form an entry has.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(
     missing_docs,
     reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
 )]
 pub struct StepDependency {
-    pub depends_on: String,
+    /// The name of a Step of the same Job Template.
+    #[serde(default)]
+    pub depends_on: Option<String>,
+    /// The name of a Step of the same Job Template: the `ENV_PARAMS`
+    /// synonym of [`depends_on`](Self::depends_on) (§3.2 item 1).
+    #[serde(default)]
+    pub step: Option<String>,
+    /// The name of an Environment (`ENV_PARAMS`).
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Whether the Environment must be present; absent means `true`
+    /// (`ENV_PARAMS`). See [`is_required`](Self::is_required).
+    #[serde(default)]
+    pub required: Option<bool>,
+    /// Whether the entry is in effect (`ENV_PARAMS`, §3.2 item 5): an
+    /// expression field of type `bool` (§7.5), resolved when the Job is
+    /// created. Absent means enabled; a disabled entry is as if
+    /// absent. A present `null` decodes as [`ExprField::Null`], which
+    /// template validation rejects.
+    #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
+    pub enable_if: Option<ExprField>,
+    /// The parameter values this Step supplies (`ENV_PARAMS`).
+    #[serde(default)]
+    pub parameters: Option<EnvironmentParameterValueMap>,
+}
+
+impl StepDependency {
+    /// An entry naming the Step `name`, written `dependsOn: <name>`.
+    #[must_use]
+    pub fn on_step(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: Some(name.into()),
+            step: None,
+            environment: None,
+            required: None,
+            enable_if: None,
+            parameters: None,
+        }
+    }
+
+    /// An entry naming the Environment `name`, with no `required` and no
+    /// `parameters`.
+    #[must_use]
+    pub fn on_environment(name: impl Into<String>) -> Self {
+        Self {
+            depends_on: None,
+            step: None,
+            environment: Some(name.into()),
+            required: None,
+            enable_if: None,
+            parameters: None,
+        }
+    }
+
+    /// What this entry names, or `None` for an entry with more than one of
+    /// `dependsOn`, `step`, and `environment` or with none, which template
+    /// validation rejects (§3.2 constraint 1).
+    #[must_use]
+    pub fn target(&self) -> Option<DependencyTarget<'_>> {
+        match (&self.depends_on, &self.step, &self.environment) {
+            (Some(name), None, None) => Some(DependencyTarget::Step(name, StepKey::DependsOn)),
+            (None, Some(name), None) => Some(DependencyTarget::Step(name, StepKey::Step)),
+            (None, None, Some(env)) => Some(DependencyTarget::Environment(env)),
+            _ => None,
+        }
+    }
+
+    /// The Step this entry names, if it is a well-formed `dependsOn` or
+    /// `step` entry. (The `step` field holds only a `step:` key as
+    /// written, whether or not the entry is well-formed; this method reads
+    /// either key.)
+    #[must_use]
+    pub fn step(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::step)
+    }
+
+    /// The Environment this entry names, if it is a well-formed
+    /// `environment` entry. (The `environment` field holds the name as
+    /// written, whether or not the entry is well-formed.)
+    #[must_use]
+    pub fn environment(&self) -> Option<&str> {
+        self.target().and_then(DependencyTarget::environment)
+    }
+
+    /// True when the entry is well-formed: exactly one of `dependsOn`,
+    /// `step`, and `environment`.
+    #[must_use]
+    pub fn is_well_formed(&self) -> bool {
+        self.target().is_some()
+    }
+
+    /// Whether the entry is enabled, when that is known before the Job is
+    /// created: `Some(true)` when `enableIf` is absent or the boolean
+    /// scalar `true`, `Some(false)` for the scalar `false`, and `None` for
+    /// any other value, an expression included, even a constant one such
+    /// as `"true"`, whose value is known only when the Job is created
+    /// (§3.2, checked-at paragraph; §7.5 item 1).
+    #[must_use]
+    pub fn literal_enabled(&self) -> Option<bool> {
+        match &self.enable_if {
+            None => Some(true),
+            Some(e) => e.as_bool(),
+        }
+    }
+
+    /// `required` with its default applied (§3.2 item 3: absent means
+    /// `true`).
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.required.unwrap_or(true)
+    }
 }
 
 /// §3.5 StepScript

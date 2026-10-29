@@ -4,14 +4,16 @@
 
 //! Template validation pipeline.
 //!
-//! Validates templates through multiple passes (passes 5–9 of the decode pipeline):
+//! Validates templates through multiple passes (passes 5–11 of the decode pipeline):
 //! - Pass 5: Enforce limits (EffectiveLimits)
 //! - Pass 6: Structural validation (EffectiveRules)
 //! - Pass 7: FEATURE_BUNDLE_1 (validate or reject)
 //! - Pass 8: Format strings (base or EXPR profile)
 //! - Pass 9: TASK_CHUNKING (validate or reject)
 //! - Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
+//! - Pass 11: ENV_PARAMS (validate or reject, Environment Parameters RFC)
 
+pub(crate) mod env_params;
 mod feature_bundle_1;
 pub(crate) mod format_strings;
 pub(crate) mod helpers;
@@ -185,6 +187,15 @@ pub(crate) fn validate_job_template(
     let rules = EffectiveRules::from_context(ctx);
     let mut errors = ValidationErrors::default();
 
+    // ENV_PARAMS requires EXPR (Template Schemas §1.1 item 3). Every
+    // ENV_PARAMS rule assumes EXPR, so a document that breaks it is
+    // rejected with this error alone (and WRAP_ACTIONS' own prerequisite
+    // error, which is about the same list), before any pass runs.
+    if !env_params::check_expr_prerequisite(ctx, "§1.1 item 3", &mut errors) {
+        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        return errors.into_result("JobTemplate");
+    }
+
     // Pass 5: Enforce limits
     limits::enforce_limits(jt, &limits, &mut errors);
 
@@ -203,6 +214,9 @@ pub(crate) fn validate_job_template(
     // Pass 10: WRAP_ACTIONS (validate or reject, RFC 0008)
     wrap_actions::validate_wrap_actions_job_template(jt, ctx, &mut errors);
 
+    // Pass 11: ENV_PARAMS (validate or reject)
+    env_params::validate_env_params_job_template(jt, ctx, &mut errors);
+
     errors.into_result("JobTemplate")
 }
 
@@ -214,6 +228,14 @@ pub fn validate_environment_template(
     let limits = EffectiveLimits::from_context(ctx);
     let rules = EffectiveRules::from_context(ctx);
     let mut errors = ValidationErrors::default();
+
+    // An Environment Template has the Job Template's extension
+    // prerequisites (Template Schemas §1.2 item 3), so ENV_PARAMS requires
+    // EXPR here too; checked first, as for a Job Template.
+    if !env_params::check_expr_prerequisite(ctx, "§1.2 item 3", &mut errors) {
+        wrap_actions::check_expr_prerequisite(ctx, &mut errors);
+        return errors.into_result("EnvironmentTemplate");
+    }
 
     // Parameter definitions — environment templates have their own cap,
     // held in `limits.max_env_template_param_count` so the rule is
@@ -252,6 +274,16 @@ pub fn validate_environment_template(
         );
     }
     structure::validate_single_environment(env, &limits, &rules, &env_path, &mut errors);
+    // ENV_PARAMS §4 item 5: checked on their own (§3.3.3). The
+    // ENV_PARAMS pass below rejects them without the extension.
+    if let Some(hr) = env
+        .host_requirements
+        .as_ref()
+        .filter(|_| ctx.profile.has_extension(ModelExtension::EnvParams))
+    {
+        let hr_path = crate::error::path_field(&env_path, "hostRequirements");
+        structure::validate_host_requirements_in_profile(hr, &hr_path, &rules, ctx, &mut errors);
+    }
 
     // Pass 7: FEATURE_BUNDLE_1 (validate or reject)
     feature_bundle_1::validate_feature_bundle_1_environment_template(et, ctx, &mut errors);
@@ -261,6 +293,9 @@ pub fn validate_environment_template(
 
     // WRAP_ACTIONS gating (RFC 0008)
     wrap_actions::validate_wrap_actions_environment_template(et, ctx, &mut errors);
+
+    // ENV_PARAMS gating and Environment parameter definitions
+    env_params::validate_env_params_environment_template(et, ctx, &mut errors);
 
     errors.into_result("EnvironmentTemplate")
 }

@@ -93,7 +93,8 @@ impl JobTemplate {
 
     /// Convenience: wrap [`profile`](Self::profile) in a
     /// [`ValidationContext`](crate::types::ValidationContext) with
-    /// default caller limits. Equivalent to
+    /// default caller limits and the default submission path policy (the
+    /// host path format, no URI path values). Equivalent to
     /// `ValidationContext::from_profile(self.profile())`.
     ///
     /// This is the "do what the template says" context for `create_job`,
@@ -101,8 +102,13 @@ impl JobTemplate {
     /// and whose extensions cover everything the template declares.
     /// Callers imposing policy (caller limits, extra extensions) should
     /// layer it on with
-    /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits)
-    /// or build a `ValidationContext` explicitly; note that this
+    /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits),
+    /// [`with_submission_path_format`](crate::types::ValidationContext::with_submission_path_format),
+    /// and [`with_allow_uri_path_values`](crate::types::ValidationContext::with_allow_uri_path_values)
+    /// (the last two matter for `ENV_PARAMS` PATH values, and should match
+    /// the [`PathParameterOptions`](crate::PathParameterOptions) given to
+    /// `preprocess_job_parameters`), or build a `ValidationContext`
+    /// explicitly; note that this
     /// convenience uses **default** caller limits, so a caller that set
     /// limits at decode must carry them here too.
     pub fn default_validation_context(&self) -> crate::types::ValidationContext {

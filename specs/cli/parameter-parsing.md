@@ -174,24 +174,22 @@ JSON for path mapping rules.
 
 ## Extension Parsing
 
-Extension parsing is duplicated across all three commands that accept `--extensions`. The
-logic is identical:
-
-```rust
-let default_exts = vec!["TASK_CHUNKING", "REDACTED_ENV_VARS", "FEATURE_BUNDLE_1", "EXPR"];
-let supported: Vec<&str> = match &args.extensions {
-    Some(ext_str) if ext_str.is_empty() => vec![],
-    Some(ext_str) => ext_str.split(',').map(|s| s.trim()).collect(),
-    None => default_exts,
-};
-```
+The three commands that accept `--extensions` (`check`, `summary`, `run`) share one parser,
+`common::parse_extensions(&Option<String>) -> Result<Vec<String>, String>`. It trims and
+uppercases each comma-separated name, drops empty ones, and rejects any name not in
+`ModelExtension::ALL` with `Unsupported Open Job Description extension(s): <names>`.
 
 Three cases:
 - `--extensions ""` → No extensions (strict base spec)
 - `--extensions "A,B"` → Only the listed extensions
 - (not provided) → All supported extensions
 
-The CLI validates extension names against `ModelExtension::ALL` before template decoding.
+`ModelExtension::ALL` is `TASK_CHUNKING`, `REDACTED_ENV_VARS`, `FEATURE_BUNDLE_1`, `EXPR`,
+`WRAP_ACTIONS`, and the draft `ENV_PARAMS`. One path does not use `parse_extensions`:
+`openjd run <template> --help` (`help.rs`) defaults to the same list but passes explicit
+`--extensions` names to the decoder unchanged (trimmed, not uppercased). The decoder checks
+only the template's own `extensions` against that list, so a name on the command line that is
+unknown is ignored there and help prints normally.
 
 ## Cross-Module Dependency
 

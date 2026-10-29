@@ -1,0 +1,191 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+#
+# A test copy of the ENV_PARAMS RFC sample
+# samples/v2023-09/job_templates/video-sfm-composite.yaml from
+# openjd-specifications. The schema parts (extensions, parameterDefinitions,
+# every Step's dependencies with their `step:` and `environment:` entries,
+# values, and enableIf, hostRequirements, parameterSpace, and the argv of
+# each onRun) are unchanged. Each Step's script is a Python stub that prints its name and
+# arguments and the environment variables the attached Conda or Docker
+# stub exported, instead of running ffmpeg, COLMAP, or Maya.
+
+specificationVersion: 'jobtemplate-2023-09'
+extensions:
+- ENV_PARAMS
+- EXPR
+name: "{{Param.JobName}}"
+description: >
+  Decode a video to frames, solve camera motion with COLMAP, composite 3D
+  objects into the solved scene with Maya, and encode the result.
+parameterDefinitions:
+- name: JobName
+  type: STRING
+  default: Video SfM Composite
+- name: InputVideo
+  type: PATH
+  objectType: FILE
+  dataFlow: IN
+  default: ./input/plate.mp4
+  description: The source video plate.
+- name: MayaScene
+  type: PATH
+  objectType: FILE
+  dataFlow: IN
+  default: ./input/objects.ma
+  description: A Maya scene containing the 3D objects to place in the shot.
+- name: WorkDir
+  type: PATH
+  objectType: DIRECTORY
+  dataFlow: INOUT
+  default: ./work
+  description: Intermediate frames, the COLMAP model, and rendered frames.
+- name: OutputVideo
+  type: PATH
+  objectType: FILE
+  dataFlow: OUT
+  default: ./output/composite.mp4
+- name: FrameRate
+  type: INT
+  default: 24
+  minValue: 1
+- name: FrameCount
+  type: INT
+  description: The number of frames to composite (frames 1 through FrameCount).
+  default: 240
+  minValue: 1
+- name: FramesPerTask
+  type: INT
+  default: 10
+  minValue: 1
+
+steps:
+- name: DecodeFrames
+  dependencies:
+  - environment: Conda
+    required: false
+    enableIf: &prefer_docker "'Docker' not in Job.EnvNames"
+    parameters:
+      Packages: "ffmpeg=7"
+  - environment: Docker
+    required: false
+    parameters:
+      Image: "docker.io/linuxserver/ffmpeg:latest"
+      Mounts: &mounts "{{ [RawParam.InputVideo, RawParam.MayaScene, RawParam.WorkDir, RawParam.OutputVideo] }}"
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ["{{Task.File.Run}}", "{{Param.WorkDir}}", "{{Param.InputVideo}}", "{{Param.FrameRate}}"]
+    embeddedFiles:
+    - name: Run
+      type: TEXT
+      data: |
+        import os, sys
+        print(f"DecodeFrames task: argc={len(sys.argv) - 1} fps={sys.argv[3]}")
+        print(f"DecodeFrames task: conda={os.environ.get('CONDA_STUB_PACKAGES')!r} docker={os.environ.get('DOCKER_STUB_IMAGE')!r}")
+
+- name: SolveSfM
+  dependencies:
+  - step: DecodeFrames
+  - environment: Conda
+    required: false
+    enableIf: *prefer_docker
+    parameters:
+      Packages: "colmap=3.11"
+  - environment: Docker
+    required: false
+    parameters:
+      Image: "docker.io/colmap/colmap:latest"
+      Mounts: *mounts
+      Gpus: "all"
+  hostRequirements:
+    amounts:
+    - name: amount.worker.gpu
+      min: 1
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ["{{Task.File.Run}}", "{{Param.WorkDir}}"]
+    embeddedFiles:
+    - name: Run
+      type: TEXT
+      data: |
+        import os, sys
+        print(f"SolveSfM task: argc={len(sys.argv) - 1}")
+        print(f"SolveSfM task: conda={os.environ.get('CONDA_STUB_PACKAGES')!r} docker={os.environ.get('DOCKER_STUB_IMAGE')!r}")
+
+- name: Composite
+  dependencies:
+  - step: SolveSfM
+  - environment: Conda
+    required: false
+    enableIf: *prefer_docker
+    parameters:
+      Packages: "maya=2025 mtoa"
+      Channels: "studio-internal conda-forge"
+  - environment: Docker
+    required: false
+    parameters:
+      Image: "registry.example.com/studio/maya:2025"
+      Mounts: *mounts
+  parameterSpace:
+    taskParameterDefinitions:
+    - name: StartFrame
+      type: INT
+      range: "1-{{Param.FrameCount}}:{{Param.FramesPerTask}}"
+  script:
+    actions:
+      onRun:
+        command: python
+        args:
+        - "{{Task.File.Run}}"
+        - "{{Task.File.Composite}}"
+        - "{{Param.MayaScene}}"
+        - "{{Param.WorkDir}}"
+        - "{{Task.Param.StartFrame}}"
+        - "{{Param.FramesPerTask}}"
+        - "{{Param.FrameCount}}"
+    embeddedFiles:
+    - name: Run
+      type: TEXT
+      data: |
+        import os, sys
+        start, per_task, count = int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6])
+        end = min(start + per_task - 1, count)
+        print(f"Composite task: frames {start}-{end}")
+        print(f"Composite task: conda={os.environ.get('CONDA_STUB_PACKAGES')!r} docker={os.environ.get('DOCKER_STUB_IMAGE')!r}")
+    - name: Composite
+      type: TEXT
+      filename: composite.py
+      data: |
+        # The sample's Maya compositing script is not needed by the stub.
+
+- name: EncodeVideo
+  dependencies:
+  - step: Composite
+  # Same values as DecodeFrames, so a scheduler may run this Step in the
+  # Session that ran DecodeFrames, or reuse a host that already created this
+  # conda environment or pulled this image.
+  - environment: Conda
+    required: false
+    enableIf: *prefer_docker
+    parameters:
+      Packages: "ffmpeg=7"
+  - environment: Docker
+    required: false
+    parameters:
+      Image: "docker.io/linuxserver/ffmpeg:latest"
+      Mounts: *mounts
+  script:
+    actions:
+      onRun:
+        command: python
+        args: ["{{Task.File.Run}}", "{{Param.WorkDir}}", "{{Param.OutputVideo}}", "{{Param.FrameRate}}"]
+    embeddedFiles:
+    - name: Run
+      type: TEXT
+      data: |
+        import os, sys
+        print(f"EncodeVideo task: argc={len(sys.argv) - 1} fps={sys.argv[3]}")
+        print(f"EncodeVideo task: conda={os.environ.get('CONDA_STUB_PACKAGES')!r} docker={os.environ.get('DOCKER_STUB_IMAGE')!r}")

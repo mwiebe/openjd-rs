@@ -7,6 +7,8 @@
 //! Each `tests/integration/test_*.rs` file is included as a module here so
 //! cargo links one test executable for this crate instead of one per file.
 
+#[path = "integration/env_params_common.rs"]
+mod env_params_common;
 #[path = "integration/test_actions_and_steps.rs"]
 mod test_actions_and_steps;
 #[path = "integration/test_caller_limits.rs"]
@@ -21,6 +23,26 @@ mod test_combination_expr;
 mod test_create_job;
 #[path = "integration/test_embedded.rs"]
 mod test_embedded;
+#[path = "integration/test_env_params_check.rs"]
+mod test_env_params_check;
+#[path = "integration/test_env_params_disabled.rs"]
+mod test_env_params_disabled;
+#[path = "integration/test_env_params_env_enable_if.rs"]
+mod test_env_params_env_enable_if;
+#[path = "integration/test_env_params_external.rs"]
+mod test_env_params_external;
+#[path = "integration/test_env_params_host_requirements.rs"]
+mod test_env_params_host_requirements;
+#[path = "integration/test_env_params_job_creation.rs"]
+mod test_env_params_job_creation;
+#[path = "integration/test_env_params_schema.rs"]
+mod test_env_params_schema;
+#[path = "integration/test_env_params_scope.rs"]
+mod test_env_params_scope;
+#[path = "integration/test_env_params_selection.rs"]
+mod test_env_params_selection;
+#[path = "integration/test_env_params_selection_job.rs"]
+mod test_env_params_selection_job;
 #[path = "integration/test_environment_template.rs"]
 mod test_environment_template;
 #[path = "integration/test_error_messages.rs"]

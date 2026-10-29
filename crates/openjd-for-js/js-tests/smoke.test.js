@@ -349,6 +349,46 @@ describe("getDefaultMemoryLimit / getDefaultOperationLimit", () => {
 
 // ── Job Creation ───────────────────────────────────────────────────
 
+// A Job Template with an ALWAYS and an ON_REQUEST Job Environment, the
+// second with hostRequirements read from its parameter, one Step that
+// requests it (entry enableIf), and one that does not.
+const ENV_PARAMS_JOB = {
+  specificationVersion: "jobtemplate-2023-09",
+  extensions: ["ENV_PARAMS", "EXPR", "FEATURE_BUNDLE_1"],
+  name: "J",
+  jobEnvironments: [
+    { name: "Always", variables: { A: "a" } },
+    {
+      name: "Gpu",
+      activation: "ON_REQUEST",
+      envParameterDefinitions: [{ name: "Count", type: "INT", default: 1 }],
+      hostRequirements: {
+        amounts: [{ name: "amount.worker.gpu", min: "{{ Env.Param.Count }}" }],
+      },
+      variables: { G: "{{ Env.Param.Count }}" },
+    },
+  ],
+  steps: [
+    {
+      name: "Requester",
+      hostRequirements: { amounts: [{ name: "amount.worker.gpu", max: 4 }] },
+      dependencies: [
+        {
+          environment: "Gpu",
+          enableIf: "'Gpu' in Job.EnvNames",
+          parameters: { Count: "2" },
+        },
+      ],
+      script: { actions: { onRun: { command: "x", args: ["{{ Job.EnvNames }}"] } } },
+    },
+    {
+      name: "Other",
+      hostRequirements: { amounts: [{ name: "amount.worker.gpu", max: 4 }] },
+      script: { actions: { onRun: { command: "x" } } },
+    },
+  ],
+};
+
 describe("createJob", () => {
   const TEMPLATE_WITH_PARAMS = JSON.stringify({
     specificationVersion: "jobtemplate-2023-09",
@@ -386,6 +426,312 @@ describe("createJob", () => {
     const job = mod.createJob(template, { JobName: "MyJob" }, opts);
     expect(job.name).toBe("MyJob");
     job.free();
+    opts.free();
+    template.free();
+  });
+
+  it("a Job without Environment parameters has no new Step keys", () => {
+    const template = mod.decodeJobTemplate(TEMPLATE_WITH_PARAMS);
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    const step = job.toJSON().steps[0];
+    expect("environmentParameters" in step).toBe(false);
+    expect("environments" in step).toBe(false);
+    job.free();
+    opts.free();
+    template.free();
+  });
+
+  it("stores a RANGE_EXPR effective value in canonical form", () => {
+    // Template Schemas §3.2.2: RANGE_EXPR values are equal when they have the
+    // same canonical form, so `1-9:2` and `1,3,5,7,9`, which denote the same
+    // integers, are both stored as `1-9:2`.
+    const doc = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["ENV_PARAMS", "EXPR"],
+      name: "J",
+      jobEnvironments: [
+        {
+          name: "E",
+          envParameterDefinitions: [{ name: "R", type: "RANGE_EXPR", default: "1-3" }],
+          variables: { V: "{{Env.Param.R}}" },
+        },
+      ],
+      steps: [
+        {
+          name: "Run",
+          dependencies: [{ environment: "E", parameters: { R: "1-9:2" } }],
+          script: { actions: { onRun: { command: "x" } } },
+        },
+        {
+          name: "Odd",
+          dependencies: [{ environment: "E", parameters: { R: "1,3,5,7,9" } }],
+          script: { actions: { onRun: { command: "x" } } },
+        },
+      ],
+    });
+    const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
+      "ENV_PARAMS",
+      "EXPR",
+    ]);
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    const values = job
+      .toJSON()
+      .steps.map((s) => Object.fromEntries(s.environmentParameters[0].values[0]).value);
+    expect(values).toEqual(["1-9:2", "1-9:2"]);
+    job.free();
+    opts.free();
+    template.free();
+  });
+
+  it("carries ENV_PARAMS effective values on each Step", () => {
+    const doc = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["ENV_PARAMS", "EXPR"],
+      name: "J",
+      jobEnvironments: [
+        {
+          name: "E",
+          envParameterDefinitions: [{ name: "N", type: "INT", default: 1 }],
+          variables: { V: "{{Env.Param.N}}" },
+        },
+      ],
+      steps: [
+        {
+          name: "S",
+          dependencies: [
+            { environment: "E", parameters: { N: "2" } },
+            { environment: "Absent", required: false },
+          ],
+          script: { actions: { onRun: { command: "x" } } },
+        },
+      ],
+    });
+    const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
+      "ENV_PARAMS",
+      "EXPR",
+    ]);
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    const step = job.toJSON().steps[0];
+    expect(step.environmentParameters).toHaveLength(1);
+    const [entry] = step.environmentParameters;
+    expect(entry.document).toEqual({ kind: "JobTemplate" });
+    expect(entry.environment).toBe("E");
+    // A symbol-table entry is a serde_json object, which serde-wasm-bindgen
+    // delivers as a Map, as it does for `resolvedSymTab`.
+    expect(entry.values.map((e) => Object.fromEntries(e))).toEqual([
+      { name: "N", type: "int", value: "2" },
+    ]);
+    // createJob resolves against no Environment Templates, so the
+    // optional external entry is dropped, and the Step enters every Job
+    // Environment, so it lists none.
+    expect("environments" in step).toBe(false);
+    job.free();
+    opts.free();
+    template.free();
+  });
+
+  it("decodes ENV_PARAMS activation, hostRequirements, and enableIf", () => {
+    const doc = JSON.stringify(ENV_PARAMS_JOB);
+    const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json);
+    expect(template.stepCount).toBe(2);
+    template.free();
+    // ENV_PARAMS is in the default supported extensions; without it the
+    // template is rejected.
+    expect(mod.getSupportedExtensions()).toContain("ENV_PARAMS");
+    expect(() =>
+      mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
+        "EXPR",
+        "FEATURE_BUNDLE_1",
+      ]),
+    ).toThrow(
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "extensions:\n\tUnsupported extension names: ENV_PARAMS",
+    );
+  });
+
+  it("rejects ENV_PARAMS without EXPR", () => {
+    // Template Schemas §1.1 item 3 (§1.2 item 3 for an Environment
+    // Template): a document that lists ENV_PARAMS must also list EXPR.
+    const job = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["ENV_PARAMS"],
+      name: "J",
+      steps: [{ name: "S", script: { actions: { onRun: { command: "x" } } } }],
+    });
+    expect(() => mod.decodeJobTemplate(job, mod.DocumentType.Json)).toThrow(
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "extensions:\n\tENV_PARAMS requires EXPR; both must be listed in the template's " +
+        "`extensions` (Template Schemas §1.1 item 3).",
+    );
+    const env = JSON.stringify({
+      specificationVersion: "environment-2023-09",
+      extensions: ["ENV_PARAMS"],
+      environment: { name: "E", variables: { V: "v" } },
+    });
+    expect(() => mod.decodeEnvironmentTemplate(env, mod.DocumentType.Json)).toThrow(
+      "Model validation error: 1 validation error for EnvironmentTemplate\n" +
+        "extensions:\n\tENV_PARAMS requires EXPR; both must be listed in the template's " +
+        "`extensions` (Template Schemas §1.2 item 3).",
+    );
+  });
+
+  it("rejects the Environment field names before the ENV_PARAMS renames", () => {
+    for (const [field, value] of [
+      ["runScope", "ALL"],
+      ["parameterDefinitions", [{ name: "N", type: "INT", default: 1 }]],
+    ]) {
+      const doc = structuredClone(ENV_PARAMS_JOB);
+      doc.jobEnvironments[0][field] = value;
+      expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
+        `Validation error: 'jobtemplate-2023-09' failed checks: unknown field \`${field}\`, ` +
+          "expected one of `name`, `description`, `envParameterDefinitions`, `activation`, " +
+          "`hostRequirements`, `enableIf`, `script`, `variables`",
+      );
+    }
+    // The renamed value is case-sensitive, and the old values are unknown.
+    for (const value of ["ALL", "ONLY_REQUESTED", "always"]) {
+      const doc = structuredClone(ENV_PARAMS_JOB);
+      doc.jobEnvironments[0].activation = value;
+      expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
+        `Validation error: 'jobtemplate-2023-09' failed checks: unknown variant \`${value}\`, ` +
+          "expected `ALWAYS` or `ON_REQUEST`",
+      );
+    }
+  });
+
+  it("decodes enableIf as an expression field of type bool", () => {
+    // A JSON boolean is a scalar used as written; a string is one
+    // expression, never a scalar, so "false" is evaluated at job creation.
+    for (const [enableIf, entersGpu] of [
+      [false, false],
+      ["false", false],
+      ["'Gpu' in Job.EnvNames", true],
+    ]) {
+      const doc = structuredClone(ENV_PARAMS_JOB);
+      doc.steps[0].dependencies[0].enableIf = enableIf;
+      const template = mod.decodeJobTemplate(JSON.stringify(doc));
+      const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+      const requester = mod.createJob(template, {}, opts).toJSON().steps[0];
+      // A Step that enters every Job Environment lists none.
+      expect("environments" in requester).toBe(!entersGpu);
+      opts.free();
+      template.free();
+    }
+    // Template Schemas §7.5: no {{ }}, no conversion to bool, no null.
+    for (const [enableIf, message] of [
+      [
+        "{{ true }}",
+        "\tInvalid expression: Set literals are not supported. An expression field takes an " +
+          "expression without '{{ }}' (Template Schemas §7.5).\n  {{ true }}\n  ^~~~~~~~~~",
+      ],
+      [
+        "Job.Name",
+        "\thas type string, which does not fit type bool; an expression field converts no " +
+          "type except int to float (Template Schemas §7.5).",
+      ],
+      [
+        1,
+        "\tthe integer scalar 1 does not fit type bool: an expression field of type bool " +
+          "takes a boolean scalar or a string holding one expression (Template Schemas §7.5).",
+      ],
+      [
+        null,
+        "\tmust not be null: an expression field of type bool takes a boolean scalar or a " +
+          "string holding one expression (Template Schemas §7.5).",
+      ],
+    ]) {
+      const doc = structuredClone(ENV_PARAMS_JOB);
+      doc.steps[0].dependencies[0].enableIf = enableIf;
+      expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
+        "Model validation error: 1 validation error for JobTemplate\n" +
+          "steps[0] -> dependencies[0] -> enableIf:\n" +
+          message,
+      );
+    }
+  });
+
+  it("applies an Environment's own enableIf per Step", () => {
+    // Template Schemas §4 item 6: an expression field of type bool on the
+    // Environment, decided per Step with its effective values. Gpu becomes
+    // ALWAYS, enabled only for a Count other than its default 1.
+    const doc = structuredClone(ENV_PARAMS_JOB);
+    delete doc.jobEnvironments[1].activation;
+    doc.jobEnvironments[1].enableIf = "Env.Param.Count != 1";
+    const template = mod.decodeJobTemplate(JSON.stringify(doc));
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const [requester, other] = mod.createJob(template, {}, opts).toJSON().steps;
+    // Requester supplies Count 2 and enters both, so it lists none; Other
+    // takes the default, for which Gpu is disabled: it enters Always only,
+    // has no values for Gpu, and none of its host requirements.
+    expect("environments" in requester).toBe(false);
+    expect(other.environments.map((r) => r.environment)).toEqual(["Always"]);
+    expect("environmentParameters" in other).toBe(false);
+    expect(other.hostRequirements.amounts).toEqual([
+      { name: "amount.worker.gpu", max: 4 },
+    ]);
+    opts.free();
+    template.free();
+    // The §7.5 rules apply to it, with its path.
+    doc.jobEnvironments[1].enableIf = 1;
+    expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "jobEnvironments[1] -> enableIf:\n" +
+        "\tthe integer scalar 1 does not fit type bool: an expression field of type bool " +
+        "takes a boolean scalar or a string holding one expression (Template Schemas §7.5).",
+    );
+  });
+
+  it("gives each Step its Environment set and combined host requirements", () => {
+    const template = mod.decodeJobTemplate(JSON.stringify(ENV_PARAMS_JOB));
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const json = mod.createJob(template, {}, opts).toJSON();
+    const [requester, other] = json.steps;
+    // Requester enters both Job Environments, so it lists none; Other does
+    // not request the ON_REQUEST one.
+    expect("environments" in requester).toBe(false);
+    expect(other.environments).toEqual([
+      { document: { kind: "JobTemplate" }, environment: "Always" },
+    ]);
+    // Combined host requirements (Template Schemas §3.3.3): the Step's own
+    // max with the Environment's min, resolved with the Step's value.
+    expect(requester.hostRequirements).toEqual({
+      amounts: [{ name: "amount.worker.gpu", min: 2, max: 4 }],
+      attributes: undefined,
+    });
+    // Other does not enter Gpu, so it keeps its own requirements.
+    expect(other.hostRequirements).toEqual({
+      amounts: [{ name: "amount.worker.gpu", min: undefined, max: 4 }],
+      attributes: undefined,
+    });
+    // Job.EnvNames lists every Job Environment, whatever its activation.
+    const envNames = requester.resolvedSymTab
+      .map((e) => Object.fromEntries(e))
+      .find((e) => e.name === "Job.EnvNames");
+    expect(envNames).toEqual({
+      name: "Job.EnvNames",
+      type: "list[string]",
+      value: ["Always", "Gpu"],
+    });
+    opts.free();
+    template.free();
+  });
+
+  it("rejects conflicting combined host requirements", () => {
+    const doc = structuredClone(ENV_PARAMS_JOB);
+    doc.steps[0].hostRequirements.amounts[0].max = 1;
+    const template = mod.decodeJobTemplate(JSON.stringify(doc));
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    expect(() => mod.createJob(template, {}, opts)).toThrow(
+      "Model validation error: 1 validation error for Submission\n" +
+        "JobTemplate -> steps[0]:\n" +
+        "\tStep 'Requester': no host can satisfy the combined host requirements for " +
+        "amount 'amount.worker.gpu': JobTemplate -> jobEnvironments[1] -> " +
+        "hostRequirements (Environment 'Gpu') requires min 2, and JobTemplate -> " +
+        "steps[0] -> hostRequirements requires max 1. Template Schemas §3.3.3.",
+    );
     opts.free();
     template.free();
   });
@@ -434,6 +780,34 @@ describe("StepDependencyGraph", () => {
     job.free();
     opts.free();
     template.free();
+  });
+
+  it("orders a step: entry (ENV_PARAMS) as a dependsOn entry", () => {
+    const doc = JSON.parse(MULTI_STEP);
+    doc.extensions = ["ENV_PARAMS", "EXPR"];
+    doc.steps[0].dependencies = [{ step: "Render" }];
+    const template = mod.decodeJobTemplate(JSON.stringify(doc));
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    // The Job has no `step` key: the entry is a `dependsOn` there.
+    expect(job.toJSON().steps[0].dependencies).toEqual([{ dependsOn: "Render" }]);
+    const graph = new mod.StepDependencyGraph(job);
+    const order = graph.topologicalOrder();
+    expect(order.indexOf("Render")).toBeLessThan(order.indexOf("Composite"));
+    graph.free();
+    job.free();
+    opts.free();
+    template.free();
+  });
+
+  it("rejects a step: entry without ENV_PARAMS", () => {
+    const doc = JSON.parse(MULTI_STEP);
+    doc.steps[0].dependencies = [{ step: "Render" }];
+    expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "steps[0] -> dependencies[0]:\n" +
+        "\tthe 'step' form of a dependency requires the ENV_PARAMS extension.",
+    );
   });
 });
 
@@ -899,12 +1273,13 @@ describe("SymbolTable dotted-key surface (F6)", () => {
 describe("getSupportedExtensions (F8)", () => {
   it("returns the full default allowlist", () => {
     const exts = mod.getSupportedExtensions();
-    expect(exts.length).toBe(5);
+    expect(exts.length).toBe(6);
     expect(exts).toContain("TASK_CHUNKING");
     expect(exts).toContain("REDACTED_ENV_VARS");
     expect(exts).toContain("FEATURE_BUNDLE_1");
     expect(exts).toContain("EXPR");
     expect(exts).toContain("WRAP_ACTIONS");
+    expect(exts).toContain("ENV_PARAMS");
   });
 });
 

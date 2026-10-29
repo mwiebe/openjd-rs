@@ -72,3 +72,43 @@ Currently implements `2023-09` with extensions:
   Re-materialization of the wrap environment's embedded files on each task
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
+- `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
+  `2491d6e`. A document that lists `ENV_PARAMS` must also list `EXPR` (Template Schemas §1.1
+  item 3, §1.2 item 3; see [validation.md](validation.md#entry-points)). Decode and
+  template validation are implemented: Environment `envParameterDefinitions`, `activation`,
+  `hostRequirements`, and `enableIf` (an expression field, §4 item 6),
+  the `step:` and `environment:` forms of `<StepDependency>`, the latter with `enableIf` (an
+  expression field, Template Schemas §7.5; see
+  [template-types.md](template-types.md#expression-fields-75)), `Job.EnvNames`, and the
+  `Env.Param.*` / `Env.RawParam.*` scopes (see [validation.md](validation.md) § Pass 11 and
+  § Environment parameter scopes), and so are, at job creation in the Template Schemas §7.4
+  order, entry `enableIf`, each Step's Environment set, effective values, and external
+  Environment resolution against the attached Environment Templates
+  (`create_job_with_environment_templates`; see
+  [job-creation.md](job-creation.md#environment-parameter-values-env_params)), each
+  Environment's own `enableIf` per Step with the values that are known, before the checks
+  of the values and constraint 7, which a disabled Environment escapes (see
+  [job-creation.md](job-creation.md#environment-enableif-env_params)), and last each
+  Environment's `hostRequirements` resolved per entering Step and combined with the Step's
+  own (see [job-creation.md](job-creation.md#combined-host-requirements-env_params)). The
+  openjd-sessions runtime binds the values (see
+  [session.md](../sessions/session.md#enter-with-environment-parameter-values-env_params)), and
+  the CLI runs, checks, and summarizes such Jobs (see [../cli/run.md](../cli/run.md)), so
+  `ModelExtension::EnvParams` is in `ModelExtension::ALL`. `check_environment_templates` runs
+  the submission checks that need no Job Parameter values. Plans:
+  [`docs/env-params-prototype-plan.md`](../../docs/env-params-prototype-plan.md),
+  [`docs/env-params-prototype-plan-2.md`](../../docs/env-params-prototype-plan-2.md), and
+  [`docs/env-params-prototype-plan-3.md`](../../docs/env-params-prototype-plan-3.md) for the
+  update to the spec at `2a5a930` (renames, `step:`, expression fields, and an
+  Environment's own `enableIf`), and
+  [`docs/env-params-prototype-plan-4.md`](../../docs/env-params-prototype-plan-4.md) for the
+  update to `bf81141` (disabled Environments, RANGE_EXPR parameters, and the full
+  `<JobParameterDefinition>` shape), and
+  [`docs/env-params-prototype-plan-5.md`](../../docs/env-params-prototype-plan-5.md) for the
+  update to `d335619` (the exact attribute conjunction, and RANGE_EXPR equality by spelling,
+  since replaced by equality by canonical form and length checks of both the written value and
+  its canonical form, spec `80a2018`),
+  and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
+  the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). Not yet implemented
+  in the Python reference (`openjd-model-for-python`), so there is no Python behavior to
+  match.

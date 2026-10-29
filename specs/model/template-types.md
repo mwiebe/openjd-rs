@@ -46,6 +46,7 @@ an empty slice when `parameter_definitions` is `None`.
 ```rust
 pub struct EnvironmentTemplate {
     pub specification_version: String,
+    pub schema: Option<String>,                              // $schema, ignored (§1.2 item 2)
     pub extensions: Option<Vec<ExtensionName>>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub environment: Environment,
@@ -134,9 +135,168 @@ desugared form and report through this remap.
 
 ```rust
 pub struct StepDependency {
-    pub depends_on: String,
+    pub depends_on: Option<String>,                          // dependsOn
+    pub step: Option<String>,                                // ENV_PARAMS; synonym of dependsOn
+    pub environment: Option<String>,                         // ENV_PARAMS
+    pub required: Option<bool>,                              // ENV_PARAMS; absent = true
+    pub enable_if: Option<ExprField>,                        // ENV_PARAMS; @expr bool; absent = enabled
+    pub parameters: Option<EnvironmentParameterValueMap>,    // ENV_PARAMS
+}
+
+pub enum DependencyTarget<'a> {
+    Step(&'a str, StepKey),   // the key as written, for messages
+    Environment(&'a str),
+}
+
+pub enum StepKey {
+    DependsOn,  // dependsOn
+    Step,       // step (ENV_PARAMS)
 }
 ```
+
+An entry is `dependsOn: <StepName>`, or with ENV_PARAMS its synonym `step: <StepName>` (§3.2
+item 1), or with ENV_PARAMS `environment: <EnvironmentName>`
+with optional `required`, `enableIf` (§3.2 item 5), and `parameters`. Every key is optional in
+the struct, so an entry
+with more than one form or none decodes and pass 6 reports it at the entry's path (§3.2
+constraint 1). `target()` returns the form, or `None` for such an entry (`is_well_formed()`
+is `target().is_some()`). A `step` and a `dependsOn` entry are both `DependencyTarget::Step`,
+differing only in the `StepKey`, which no rule reads: `step()` returns the Step name for
+either, so self-dependency, unknown-Step, duplicate, cycle, and job-creation checks treat them
+alike. `environment()` reads the other form; `is_required()` applies
+the default; `literal_enabled()` is `Some(true)` for an absent `enableIf` or the boolean
+scalar `true`, `Some(false)` for `false`, and `None` for any other value, an expression
+included, even a constant one such as `"true"`, whose value job creation decides (§3.2
+checked-at paragraph). `enableIf` is an expression field of type `bool`; see
+[Expression fields](#expression-fields-75). `on_step(name)` and `on_environment(name)` build an entry, and
+`DependencyTarget`'s `Display` writes it as a template does (`dependsOn: X`, `step: X`,
+`environment: X`); `StepKey::as_str()` is `dependsOn` or `step`. These names follow the `service:` form on the `service-extension`
+branch (`step()`, `service()`, `on_service()`, `is_well_formed()`), so adding that key later
+is one field, one constructor, and one `DependencyTarget` variant.
+
+The differences from that branch, for a later merge to reconcile:
+
+- The struct derives `PartialEq` and `Eq` but not `Hash`, because a literal value is kept as
+  a `serde_json::Value`, which has no `Hash` (nor has `ExprField`, which holds an `f64`). `service-extension` puts entries in a
+  `HashSet<&StepDependency>`; that set must be keyed on `target()` instead.
+- `service-extension` also has `StepDependency::describe()` (the entry as written, for
+  messages, including a malformed one) and free functions over a dependency list
+  (`listed_step_names`, `listed_service_names`, `lists_service`). This branch's messages do
+  not need them, so they are not added here.
+
+Job creation converts only the Step entries (`dependsOn` and `step`) to
+`job::StepDependency`, whose one key is `dependsOn`, so a `step: X` entry is `dependsOn: X` in
+the Job; an `environment:` entry does not delay scheduling (§3.2 item 2), so
+it is not part of the Step dependency graph, and a list left empty by the filter becomes
+`None`.
+
+### Expression fields (§7.5)
+
+```rust
+pub enum ExprField {
+    Bool(bool),          // a boolean scalar, used as written
+    Int(i64),            // an integer scalar
+    Float(f64),          // a number with a fraction or exponent
+    Expression(String),  // a string: one expression, without {{ }}
+    Null,                // a present null (`null`, `~`, or an empty key)
+}
+```
+
+An expression field (`@expr <type>`) holds one Expression Language expression written
+without `{{ }}`, or a boolean, integer, or float scalar used as written. `ExprField` is the
+value as written; it knows nothing of the field's target type, which each field that uses it
+supplies to the checker, so a later field (a Step `enableIf`, RFC 0011's loop fields) reuses
+both unchanged. The fields that use it today are an `environment:` entry's `enableIf` and an
+Environment's own `enableIf` (below), both of type `bool`.
+
+Decoding is by hand and accepts every scalar, so that template validation, which knows the
+target type, reports a scalar that does not fit (`enableIf: 1`) at the field's path with the
+§7.5 rule, rather than serde reporting it without one. A string is always `Expression`, never
+read as a scalar: `"true"` is the expression `true`. A list or a map is a decode error that
+names the field ("enableIf must be a boolean, integer, float, or string (an expression field,
+Template Schemas §7.5)"), as is an integer above `i64::MAX` that fits `u64` ("enableIf: the
+integer N is out of range for an expression field …"). A larger integer, or one below
+`i64::MIN`, arrives from JSON number parsing as a float and decodes as `Float`. Decode errors
+carry no path, which is why the message names the field. A present `null` is an error, not an
+omitted field (§7.5), so an optional `enableIf` is declared `#[serde(default, deserialize_with =
+"expr_field::deserialize_enable_if")]`: an absent key is `None`, a present `null` is
+`Some(ExprField::Null)`, and template validation rejects it at the field's path. (A later
+expression field adds a `deserialize_with` that names it; `ExprField`'s own `Deserialize`,
+which names no field, says "an expression field must be …" and, for a `u64`, "the integer N is
+out of range for an expression field …". A plain `Option<ExprField>` reads a present `null` as
+`None`, so every optional expression field needs such a `deserialize_with`.) `PartialEq` and
+`Eq` are written by hand, comparing a float's bits (a decoded value is never NaN; `-0.0` and
+`0.0` are unequal); `as_bool()` returns the boolean scalar, `None` otherwise.
+
+The crate-private checker in `template/expr_field.rs` applies §7.5 for a target type `G`,
+given the field's scope (a symbol table) and an `ExprFieldEval` (profile, library, budgets;
+paths are always POSIX, since an expression field is evaluated in template scope, not a host
+context: Template Schemas §3.2 item 5 and §4 item 6, spec `5535230`):
+
+- `validate` (template validation, rules 1, 2, 4): a scalar must fit `G` (only `int` widens to
+  `float`), a `null` is an error, and an expression must parse under the document's profile,
+  evaluate against the scope (unknown names are errors), and have a static type that fits
+  `G`. A parse error of a value that contains `{{` adds "An expression field takes an
+  expression without '{{ }}' (Template Schemas §7.5)." after the message, before the
+  expression and caret lines (". " before it, or " " after a summary that ends in `.`, `?`,
+  or `!`). A float scalar is quoted in Rust's shortest round-trip form, which keeps a whole
+  number's fraction (`3.0`; `1e3` is quoted `1000.0`), and a non-finite one (only a template
+  built in code can hold one) is an error.
+- `check_static_type` is the fit rule: `unresolved[U]` is read as `U`; where `G` admits
+  `nulltype` (`nulltype`, `any`, or a choice with one) the type must satisfy `G`; otherwise
+  `nulltype` is an error and `nulltype` members of a union are dropped (`U?` is accepted
+  when `U` fits). Fitting is `ExprType::satisfies` (Expression Language §1.2.3 step 1), or
+  `satisfies` after every `int` becomes `float`, element-wise.
+- `resolve` (the field's stage) evaluates and returns the value: a `null` result is an error
+  unless `G` admits `nulltype`, even on an optional field; an `int` result is widened to
+  `float` where only that fits; any other result that does not fit is an error.
+- `resolve_progressive` is `resolve` with a scope in which some symbols are bound to
+  `unresolved[T]` (Expression Language progressive evaluation): a result that depends on one
+  is `Ok(None)`, not checked further (template validation has checked its static type), and a
+  known result is checked as `resolve` checks it. An Environment's own `enableIf` uses it at
+  job creation, with the Step's missing or unconvertible values unknown (Template Schemas
+  §3.2.2).
+
+The checker lives in openjd-model because it is template-field policy built on
+openjd-expr's public type API (`satisfies`, `code`, `params`, `ExprValue::coerce`);
+openjd-expr is unchanged.
+
+### Environment parameters (§4.5, ENV_PARAMS)
+
+```rust
+pub struct EnvironmentParameterDefinition {
+    pub definition: JobParameterDefinition,      // its `default` is always None
+    pub default: Option<EnvironmentParameterValue>,
+}
+
+pub enum EnvironmentParameterValue {
+    FormatString(FormatString),                  // a string containing `{{`
+    Literal(serde_json::Value),                  // anything else, as written
+}
+
+pub struct EnvironmentParameterValueMap(pub BTreeMap<String, EnvironmentParameterValue>);
+```
+
+An `<EnvironmentParameterDefinition>` has the shape of a `<JobParameterDefinition>` of the
+same type, but its `default` is a format string resolved at job creation, which the Job
+Parameter types' typed `default` fields cannot hold. The deserializer removes `default`,
+decodes the rest as a `JobParameterDefinition`, and keeps `default` as an
+`EnvironmentParameterValue`. An explicit `default: null` is no default, as it is for a Job
+Parameter. Reusing the Job Parameter definition keeps `allowedValues`,
+`minLength`, `item`, and the other constraints, their decoders, and `check_constraints`
+in one place, and with them every field of that shape, which §4.5 permits: any type the
+document allows, `RANGE_EXPR` included, and `userInterface`, `objectType`, and `dataFlow`,
+with their decoders and the definition checks of `validate_definition`. Those three are
+informational; nothing reads them after validation.
+
+The same `EnvironmentParameterValue` holds a `default` and an `environment:` entry value,
+since both are `@fmtstring` and the spec splits them the same way. A literal's validity
+depends on the parameter's type, which is not known at decode, so it is kept as written and
+checked in pass 11 (or, for an external Environment, at job creation against the attached
+Environment Templates). The `parameters` map
+is a `BTreeMap` keyed by plain strings: the workspace's `serde_json` has no
+`preserve_order` feature, so a template map reaches the decoder sorted by key anyway, and a
+plain string key lets pass 11 report a key that is not an `<Identifier>` at its own path.
 
 ## Environment (§4)
 
@@ -144,10 +304,45 @@ pub struct StepDependency {
 pub struct Environment {
     pub name: String,
     pub description: Option<Description>,
+    pub env_parameter_definitions: Option<Vec<EnvironmentParameterDefinition>>,  // ENV_PARAMS; envParameterDefinitions
+    pub activation: Option<EnvironmentActivation>,                              // ENV_PARAMS
+    pub host_requirements: Option<HostRequirements>,                            // ENV_PARAMS
+    pub enable_if: Option<ExprField>,                                           // ENV_PARAMS; @expr bool; absent = enabled
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
+
+pub enum EnvironmentActivation {  // serde: SCREAMING_SNAKE_CASE
+    Always,     // ALWAYS, the default
+    OnRequest,  // ON_REQUEST
+}
 ```
+
+`activation()` applies the default (§4 item 4: absent means `ALWAYS`). An unrecognized value,
+including one in another case (`always`) or a value from before the rename (`ALL`,
+`ONLY_REQUESTED`), is a decode error. Pass 11 rejects the field without
+ENV_PARAMS and on a `stepEnvironments` entry. `EnvironmentActivation::as_str` gives the value as written.
+
+`host_requirements` (§4 item 5) is the Step's [`HostRequirements`](#host-requirements-33)
+type, with the same per-source checks (pass 6) and its own format-string scope (pass 8; see
+[validation.md](validation.md#environment-hostrequirements-env_params)). Pass 11 rejects it
+without ENV_PARAMS and on a `stepEnvironments` entry. Job creation resolves it once per
+entering Step and combines it with the Step's own (see
+[job-creation.md](job-creation.md#combined-host-requirements-env_params)).
+
+`enable_if` (§4 item 6) is an [expression field](#expression-fields-75) of type `bool`,
+decoded as an entry's `enableIf` is, with a present `null` kept as `ExprField::Null`. It
+decides whether a Step's Sessions enter the Environment, and unlike `activation`,
+`hostRequirements`, and `envParameterDefinitions` it is permitted on every position, a
+`stepEnvironments` entry included. Pass 11 requires ENV_PARAMS in the document (which
+requires EXPR; see [validation.md](validation.md#entry-points)), and pass 8 checks it in its
+scope (see [validation.md](validation.md#environment-enableif-env_params)). `literal_enabled()` is
+`Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
+scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
+what template validation may count as entered or not (§4 item 6 tail; §7.5 item 1). Job
+creation resolves it once per Step whose Sessions would otherwise enter the Environment (see
+[job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,
+since a disabled Environment is simply left out of the Step's sets.
 
 ### EnvironmentScript (§4.1)
 

@@ -11,9 +11,8 @@ mod result;
 pub use params::parse_cli_parameters;
 
 use clap::Args;
-use openjd_model::job::{Environment, Job, Step};
+use openjd_model::job::{Document, Environment, EnvironmentParameterValues, Job, Step};
 use openjd_model::template::parse;
-use openjd_model::template::EnvironmentTemplate;
 use openjd_model::types::{JobParameterValues, ModelProfile, TaskParameterSet};
 use openjd_model::StepDependencyGraph;
 use openjd_sessions::action::ActionState;
@@ -33,8 +32,13 @@ type RunError = Box<dyn std::error::Error>;
 type EnvSymtab = Option<openjd_expr::SerializedSymbolTable>;
 
 struct PreparedRun {
+    /// The Job combined with the attached Environment Templates: their
+    /// Environments lead `job_environments`, and each Step's
+    /// `environment_parameters` covers them.
     job: Job,
-    env_templates: Vec<EnvironmentTemplate>,
+    /// The document of each entry of `job.job_environments`, index for
+    /// index.
+    environment_documents: Vec<Document>,
     param_values: JobParameterValues,
     path_rules: Vec<PathMappingRule>,
     revision_profile: ModelProfile,
@@ -59,6 +63,9 @@ struct RunContext {
     started_at: Instant,
     tasks_run: usize,
     session_failed: bool,
+    /// The working directories of the Sessions that have ended with
+    /// `--preserve`, in order.
+    preserved_dirs: Vec<PathBuf>,
 }
 
 impl RunContext {
@@ -87,14 +94,49 @@ impl RunContext {
         self.session_failed || self.interrupted.load(Ordering::SeqCst)
     }
 
-    async fn enter_environment(&mut self, env: &Environment, name: &str, symtab: EnvSymtab) {
+    /// End the current Session: keep its working directory when
+    /// `preserve` (recording it for the result), else remove it.
+    fn end_session(&mut self, preserve: bool) {
+        if preserve {
+            self.preserved_dirs
+                .push(self.session.working_directory().to_path_buf());
+        } else {
+            self.session.cleanup();
+        }
+    }
+
+    /// Print each preserved working directory, for a run that ends with an
+    /// error before its result is reported, so the directories of the
+    /// Sessions that already ran are not lost.
+    fn print_preserved_dirs(&self) {
+        for dir in &self.preserved_dirs {
+            println!("Working directory preserved at: {}", dir.display());
+        }
+    }
+
+    /// Enter `env`, with `values` as its Environment parameter values
+    /// (`ENV_PARAMS`) when it declares parameters. The values are printed
+    /// after the banner, as given (before path mapping).
+    async fn enter_environment(
+        &mut self,
+        env: &Environment,
+        name: &str,
+        symtab: EnvSymtab,
+        values: Option<&EnvironmentParameterValues>,
+    ) {
         self.print_action_banner(&format!("Entering Environment: {name}"));
+        if let Some(values) = values {
+            println!("{}\tEnvironment parameter values:", self.timestamp());
+            for (name, ty, value) in crate::common::environment_parameter_entries(values) {
+                println!("{}\t{name}({ty}) = {value}", self.timestamp());
+            }
+        }
         match self
             .session
-            .enter_environment(env, symtab.as_ref(), None, None)
+            .enter_environment_with_parameters(env, symtab.as_ref(), values, None, None)
             .await
         {
-            Ok(identifier) => self.entered_envs.push(EnteredEnvironment {
+            Ok((identifier, _output)) => self.entered_envs.push(EnteredEnvironment {
                 identifier,
                 name: name.to_string(),
                 symtab,
@@ -220,7 +262,8 @@ pub struct RunArgs {
     #[arg(long = "tasks", conflicts_with_all = ["task_params", "maximum_tasks"])]
     pub tasks: Option<String>,
 
-    /// Environment template files
+    /// Environment Template files, attached in the order given; their
+    /// Environments are entered before the Job's own (repeatable)
     #[arg(long = "environment", alias = "env")]
     pub environments: Vec<PathBuf>,
 
@@ -335,6 +378,7 @@ mod tests {
             started_at: Instant::now(),
             tasks_run: 0,
             session_failed: false,
+            preserved_dirs: Vec::new(),
         };
 
         ctx.record_interruption();

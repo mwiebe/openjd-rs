@@ -656,7 +656,43 @@ impl MergedParameterDefinition {
                     }
                 }
             }
-            _ => {} // BOOL, RANGE_EXPR — no cross-template mergeable constraints
+            // A range_expr has only its canonical form; the value as written
+            // is checked by `check_range_expr_written` (§2.10).
+            openjd_expr::ExprValue::RangeExpr(r) => {
+                self.check_range_expr_length("canonical form", &r.to_string())?;
+            }
+            _ => {} // BOOL — no cross-template mergeable constraints
+        }
+        Ok(())
+    }
+
+    /// Check a RANGE_EXPR value as written, a submitted string or a
+    /// `default`, against the merged `minLength` and `maxLength` (§2.10). Its
+    /// canonical form is checked by [`check_constraints`](Self::check_constraints)
+    /// once the value is parsed; both must satisfy them.
+    pub(crate) fn check_range_expr_written(&self, written: &str) -> Result<(), ModelError> {
+        self.check_range_expr_length("value", written)
+    }
+
+    /// One spelling of a RANGE_EXPR value against the merged length
+    /// constraints, counted in characters. `what` names it in the message.
+    fn check_range_expr_length(&self, what: &str, s: &str) -> Result<(), ModelError> {
+        let len = s.chars().count();
+        if let Some(min) = self.min_length {
+            if len < min {
+                return Err(ModelError::DecodeValidation(format!(
+                    "Parameter '{}': {what} '{s}' length {len} is less than minimum {min}",
+                    self.name
+                )));
+            }
+        }
+        if let Some(max) = self.max_length {
+            if len > max {
+                return Err(ModelError::DecodeValidation(format!(
+                    "Parameter '{}': {what} '{s}' length {len} exceeds maximum {max}",
+                    self.name
+                )));
+            }
         }
         Ok(())
     }
@@ -918,6 +954,14 @@ pub fn preprocess_job_parameters(
                     Some(input_val.clone())
                 };
             let Some(coerced) = coerced_opt else { continue };
+            // A RANGE_EXPR submitted as a string is checked as written too
+            // (§2.10), once it has parsed, so an invalid string is reported
+            // as one; its canonical form is checked with the other
+            // constraints below.
+            let written = match (param_type, &coerced) {
+                (JobParameterType::RangeExpr, openjd_expr::ExprValue::String(s)) => Some(s.clone()),
+                _ => None,
+            };
             let coerced = coerce_to_job_parameter_type(&coerced, param_type)
                 .map_err(|e| format!("Parameter '{}': {e}", param.name))
                 .and_then(|v| {
@@ -925,7 +969,11 @@ pub fn preprocess_job_parameters(
                 });
             match coerced {
                 Ok(expr_value) => {
-                    if let Err(e) = param.check_constraints(&expr_value) {
+                    let checked = written
+                        .as_deref()
+                        .map_or(Ok(()), |w| param.check_range_expr_written(w))
+                        .and_then(|()| param.check_constraints(&expr_value));
+                    if let Err(e) = checked {
                         errors.push(model_err_message(e));
                     } else {
                         result.insert(
@@ -964,7 +1012,14 @@ pub fn preprocess_job_parameters(
                 // re-checks job-template parameters, but only this pass sees parameters
                 // contributed by environment templates.
                 Ok(expr_value) => {
-                    if let Err(e) = param.check_constraints(&expr_value) {
+                    // A RANGE_EXPR default is checked as written too (§2.10).
+                    let checked = if param_type == JobParameterType::RangeExpr {
+                        param.check_range_expr_written(&value_str)
+                    } else {
+                        Ok(())
+                    }
+                    .and_then(|()| param.check_constraints(&expr_value));
+                    if let Err(e) = checked {
                         errors.push(model_err_message(e));
                     } else {
                         result.insert(
@@ -1299,7 +1354,7 @@ fn path_is_within(path: &str, base: &str, format: openjd_expr::path_mapping::Pat
 ///
 /// `LIST[LIST[INT]]` yields `LIST[INT]`, so nesting is handled by the same recursion
 /// rather than a special case.
-pub(super) fn list_element_type(param_type: JobParameterType) -> Option<JobParameterType> {
+pub(crate) fn list_element_type(param_type: JobParameterType) -> Option<JobParameterType> {
     Some(match param_type {
         JobParameterType::ListString => JobParameterType::String,
         JobParameterType::ListPath => JobParameterType::Path,
@@ -1326,7 +1381,7 @@ pub(super) fn list_element_type(param_type: JobParameterType) -> Option<JobParam
 ///
 /// A value that is not a list where a list type is declared is an error: the declared type
 /// is the only thing that can say so, and no later stage checks it.
-pub(super) fn coerce_json_to_job_parameter_type(
+pub(crate) fn coerce_json_to_job_parameter_type(
     val: &serde_json::Value,
     param_type: JobParameterType,
 ) -> Result<openjd_expr::ExprValue, String> {

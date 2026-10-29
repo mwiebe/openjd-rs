@@ -28,7 +28,7 @@ openjd run <PATH> [--step <STEP>] [-p <KEY=VALUE>]... [-t <KEY=VALUE>]...
 | `-t`, `--task-param` | `Vec<String>` | No | — | Explicit task parameter values for a single task |
 | `--tasks` | `Option<String>` | No | — | JSON array or file of task parameter sets |
 | `--maximum-tasks` | `i64` | No | `-1` | Max tasks to run (-1 = all) |
-| `--environment` | `Vec<PathBuf>` | No | — | Additional environment template files |
+| `--environment` (alias `--env`) | `Vec<PathBuf>` | No | — | Environment Template files, attached in the order given (see [Environment Templates and Environment Parameters](#environment-templates-and-environment-parameters-env_params)) |
 | `--path-mapping-rules` | `Option<String>` | No | — | Path mapping rules (JSON or file://) |
 | `--run-dependencies` | `bool` | No | `false` | Run transitive dependency steps first |
 | `--no-run-dependencies` | `bool` | No | — | Explicit opt-out (default behavior) |
@@ -89,8 +89,9 @@ pub struct RunArgs {
 ## Execution Pipeline
 
 The async `execute()` entry point delegates to cohesive execution phases. A
-`RunContext` owns the `Session`, entered-environment ledger, failure state,
-interruption flag, task count, and session start time.
+`RunContext` owns the current `Session`, entered-environment ledger, failure state,
+interruption flag, task count, run start time, and the working directories of
+Sessions that ended with `--preserve`.
 
 ```
 execute(args).await
@@ -103,33 +104,40 @@ execute(args).await
   │   ├── Parse CLI parameters → input_values
   │   ├── Load path mapping rules
   │   ├── preprocess_job_parameters() → param_values
-  │   └── create_job() → Job
+  │   └── create_job_with_environment_templates() with the --environment
+  │       templates → Job whose job_environments lead with the attached
+  │       Environments, and their documents; print its warnings to stderr
   │
   ├── 2. SELECTION AND PREFLIGHT
   │   ├── Resolve step selection (explicit / auto-select / all)
   │   ├── Parse explicit task params and require a parameter space
   │   ├── Determine step execution order
-  │   └── Validate RFC 0008's single-wrap-layer rule for every selected stack
+  │   └── session_groups(): split the ordered Steps into runs of consecutive
+  │       Steps that enter the same Job Environments with equal Environment
+  │       parameter values
   │
-  ├── 3. SESSION CREATION
-  │   ├── Create SessionConfig from parameters, path rules, and model profile
-  │   └── Session::with_config()
-  │
-  ├── 4. ENVIRONMENT ENTRY
-  │   ├── Enter environment template environments (--environment files)
-  │   └── Enter job environments (from template's jobEnvironments)
-  │
-  ├── 5. STEP EXECUTION
-  │   └── For each step:
-  │       ├── Enter step environments
-  │       ├── Execute tasks (explicit, lazy iteration, or no-param single task)
-  │       └── Exit step environments (reverse order)
-  │
-  ├── 6. ENVIRONMENT EXIT
-  │   └── Exit every entered environment (LIFO), including any whose
-  │       enter action failed (cleanup guarantee)
-  │
-  └── 7. RESULTS
+  └── For each group, in order (stopping after a failure or an interruption):
+      ├── 3. SESSION CREATION
+      │   ├── End the previous group's Session (cleanup, or record its
+      │   │   working directory with --preserve)
+      │   ├── Create SessionConfig from parameters, path rules, and model profile
+      │   └── Session::with_config()
+      │
+      ├── 4. ENVIRONMENT ENTRY
+      │   └── Enter every combined job environment (attached ones first), each
+      │       with the group's Environment parameter values for it, if any
+      │
+      ├── 5. STEP EXECUTION
+      │   └── For each step of the group:
+      │       ├── Enter step environments
+      │       ├── Execute tasks (explicit, lazy iteration, or no-param single task)
+      │       └── Exit step environments (reverse order)
+      │
+      └── 6. ENVIRONMENT EXIT
+          └── Exit every entered environment (LIFO), including any whose
+              enter action failed (cleanup guarantee)
+
+  7. RESULTS
       ├── Treat any observed interruption as a failed run
       ├── Capture run duration (before filesystem cleanup)
       ├── Print session summary (format depends on --output)
@@ -142,7 +150,8 @@ Each step unwinds to its pre-step baseline before propagating an error, and
 the outer execution phase always unwinds the remaining environments. Thus a
 `Session::run_task()` error cannot bypass environment cleanup.
 
-Selection and RFC 0008 preflight happen before session creation. Invalid runs
+Job creation (with its submission checks and the RFC 0008 single-layer check) and
+selection happen before session creation. Invalid runs
 therefore do not create a working directory or print session-start banners.
 
 ## Step Selection Logic
@@ -159,6 +168,13 @@ The step selection has three modes:
 When `--run-dependencies` is set with an explicit step, `resolve_step_dependencies()`
 computes the transitive closure of dependencies and returns them in topological order
 (dependencies before dependents) via recursive DFS.
+
+Selection does not change which Environments a Step's Sessions enter: each Session enters its
+Steps' Environment set (`ENV_PARAMS`, see below), so `--step C` for a Step that does not
+request an `ON_REQUEST` Environment does not enter it, even if another Step of the Job
+does. `openjd run` does not match host requirements against the local host; job creation
+still combines each Step's (Template Schemas §3.3.3) and rejects a conflict, and
+`openjd summary` shows the combined set.
 
 ## Task Execution Modes
 
@@ -237,34 +253,47 @@ CLI and the entire adaptive adjustment block is skipped. The iterator uses its
 
 Environments are entered and exited in a strict order:
 
+In each Session, with only the `env_templates` and `job_envs` that the Session's group
+enters (every one with `activation: ALWAYS`, and each `ON_REQUEST` one the group's Steps
+request, less any whose own `enableIf` is `false` for them; see [One Session per run of Steps with equal Environments and
+values](#one-session-per-run-of-steps-with-equal-environments-and-values)):
+
 ```
 Enter:  env_templates[0], env_templates[1], ..., job_envs[0], job_envs[1], ...
-  For each step:
+  For each step of the Session's group:
     Enter:  step_envs[0], step_envs[1], ...
     (run tasks)
     Exit:   step_envs[N], ..., step_envs[1], step_envs[0]
 Exit:   job_envs[N], ..., job_envs[0], env_templates[N], ..., env_templates[0]
 ```
 
-Environment template environments (from `--environment` files) are converted from
-`template::Environment` to `job::Environment` via
+Environment template environments (from `--environment` files) are the leading entries of
+the combined Job's `job_environments`. Job creation converts each from
+`template::Environment` to `job::Environment` with
 `openjd_model::convert_environment_with_symtab()`, passing a symbol table built from
-the preprocessed parameter values (`openjd_model::build_symbol_table(&param_values)`).
+the preprocessed parameter values, plus `Job.Name` and `Job.EnvNames` when the Environment
+Template lists `EXPR`.
 This freezes the environment template's own `Param.*`/`RawParam.*` values into its
 `resolved_symtab`, which the session's RFC 0008 wrap-hook dispatch merges into hook
 scope — a wrap hook resolved against a step's symbol table could not otherwise see
-the environment template's own parameters.
+the environment template's own parameters. The Job Template's own environments get the
+same frozen table from job creation (`Param.*`, `RawParam.*`, `Job.Name`, `Job.EnvNames`).
 
 Step environments receive the step's symbol table (`step_symtab`) for format string
-resolution. Job and template environments receive `None` for the step symbol table.
+resolution. Job and template environments receive their own `resolved_symtab`, so their
+`onEnter`, `onExit`, and `variables` see `Job.Name` and `Job.EnvNames` (the Session builds an
+Environment's scope from the table it is passed, not from the `Environment`'s field).
 
-**Single-wrap-layer preflight (RFC 0008).** Before entering any environment,
-the CLI validates every session stack this run will build — external
-environment templates + job environments + each selected step's step
-environments — and rejects the run if more than one environment in any stack
-defines a wrap hook. The RFC requires rejection "before entering any
-Environment", so this happens before the first wrapper's own `onEnter` can
-run. The session's enter-time check (`SessionError::MultipleWrapEnvironments`)
+**Single-wrap-layer check (RFC 0008).** Job creation checks every Step's Environment set
+— the attached and Job Environments it enters, by `activation` and `enableIf`, and its Step
+Environments whose `enableIf` is not `false` —
+and rejects the Job if more than one environment in a set defines a wrap hook (see
+[../model/job-creation.md](../model/job-creation.md#the-submission-stage)). It checks every
+Step of the Job, as a scheduler would for the submission, so `--step` does not exempt the
+Steps a run does not select (the CLI's own preflight, removed, checked only the selected
+Steps). The RFC requires
+rejection "before entering any Environment", so this happens before the first wrapper's own
+`onEnter` can run. The session's enter-time check (`SessionError::MultipleWrapEnvironments`)
 remains as defense in depth for library callers.
 
 Every entered environment — template, job, and step scoped — is tracked in an
@@ -280,6 +309,91 @@ exits by RFC 0008 "Lifecycle and cleanup guarantees"): every environment
 entered or attempted has its `onExit` (or substituted `onWrapEnvExit`) run
 before the session ends. An environment rejected before entry is not recorded
 and not exited.
+
+## Environment Templates and Environment Parameters (ENV_PARAMS)
+
+`openjd run` treats each `--environment` file as an Environment Template the scheduler
+attaches, in the order given (Template Schemas §3.2.1), labeled with its path as given so
+messages name it. It calls `openjd_model::create_job_with_environment_templates` with them,
+the merged Job Parameters, and `common::submission_context` (the template's profile, the
+CLI's caller limits, the host submission path format, and URI path values allowed, as for
+Job Parameters). Its submission stage:
+
+- resolves each `environment:` dependency that names no `jobEnvironments` entry against
+  the attached Environments by name. A missing `required` Environment, an ambiguous name, an
+  undeclared key, a bad value, or a parameter without a `default` that a Step does not
+  supply fails the run with one `Submission` validation error before any Session starts,
+  each error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`),
+  followed, like every job-creation error, by the Job Template's help text. A
+  `required: false` entry that resolves to nothing has no effect, and an entry whose
+  `enableIf` is `false` is not resolved at all;
+- fixes each Step's Environment set (`job::Step::environments`): every Environment with
+  `activation: ALWAYS`, and each `ON_REQUEST` one an enabled entry of the Step requests,
+  less any whose own `enableIf` (Template Schemas §4 item 6) is `false` for the Step, which
+  the Step's Sessions then do not enter or exit and whose `variables` they do not set; a
+  Step Environment whose `enableIf` is `false` is likewise left out of
+  `job::Step::step_environments`, so `execute_step` does not enter it;
+- computes every Step's effective values for every attached Environment it would enter
+  that declares parameters (§3.2.2), decides the Environment's own `enableIf` with the values
+  that are known (a missing or unconvertible value is unresolved, and does not disable it),
+  and checks the values against their type and constraints, and constraint 7, only for the
+  Environments it does not disable (constraint 5 for every one), as
+  job creation does for the Job Template's own;
+- returns warnings, which are printed to stderr as `WARNING: <path>: <message>`: one per
+  `required: false` entry that resolves to nothing, and one per attached Environment named
+  like a `jobEnvironments` entry (§3.2.1 item 4).
+
+`CreatedJob::environment_documents` records which document each `job_environments` entry comes
+from. When neither the Job Template nor any attached Environment Template lists `ENV_PARAMS`,
+this stage only converts the attached Environments, so a run behaves as before. When only an
+Environment Template lists it, its Environment is entered with its `default`s (RFC Backward
+compatibility), and an attachment named like a Job Environment is not warned about, since a
+Job Template without `ENV_PARAMS` has no entries that could name it.
+
+### One Session per run of Steps with equal Environments and values
+
+A Session enters each Environment once, with one set of values, and keeps them until it exits
+the Environment (§3.2.2, How Jobs Are Run). Steps that enter different Job Environments
+(`activation: ON_REQUEST`, §4 item 4, or an Environment `enableIf`, §4 item 6), or whose
+effective values differ, must not share a
+Session. `session_groups` walks the selected Steps in the order they run (the topological
+order, or the `--run-dependencies` order) and starts a new group whenever a Step's
+Environments or values differ from the first Step of the current group, compared with
+`job::Step::same_environments` and `job::Step::environment_values_equal` (so INT `1` and `"1"`
+are equal, and FLOAT compares numerically). Steps are never reordered to merge groups: in the RFC's video sample,
+`DecodeFrames` and `EncodeVideo` have equal values but are not adjacent, so a run with the
+Conda Environment uses four Sessions. A Job without Environment parameter values or
+`ON_REQUEST` Environments is one group, so it runs in one Session as before (prototype
+plan A6).
+
+Each group gets its own `Session`, with its own working directory. The first keeps the
+session ID `cli-<pid>`; group `n` (from 0) uses `cli-<pid>-<n>`. Before a later group's Session
+starts, the run prints `Starting a new Session for Step '<name>': its Environments or their
+parameter values differ from the previous Session's.` and then `Session start`. A failed action or an
+interruption stops the run after the current Session exits its Environments. With
+`--preserve`, every Session's working directory is kept and printed, also when the run ends
+with an error after some Sessions ran. An `--environment` file that does not parse or validate
+is named in the error (`Environment Template '<path>': ...`).
+
+Each Session enters each combined job environment that its group's first Step enters
+(`job::Step::enters_environment`), in Job order, with that Step's values for the Environment, picked by `(document, name)` from the Step's
+`environment_parameters` (an attached Environment may share a name with a Job Environment,
+§3.2.1 item 4), through `Session::enter_environment_with_parameters`. An Environment that
+declares no parameters, and every Step Environment, is entered with none. After the
+`Entering Environment` banner the values are printed, before path mapping, in
+parameter-name order (the order of the stored table, not the declaration order), each in the
+display form `Param.*` values use (`ExprValue::to_display_string`; a RANGE_EXPR value in
+canonical form, so `1,2,3` shows as `1-3`):
+
+```
+Environment parameter values:
+Channels(STRING) = conda-forge
+Packages(STRING) = ffmpeg=7
+```
+
+A list value prints as `[1, 2]` or `["/a", "/b"]`. The Session binds the values as `Env.Param.*`
+(PATH and `LIST[PATH]` path-mapped) and `Env.RawParam.*` for that Environment only, and reuses
+them for its `onExit` and wrap hooks.
 
 ## Script Runtime Delegation
 
@@ -301,7 +415,7 @@ The `SessionConfig` struct is populated with:
 
 | Field | Source |
 |-------|--------|
-| `session_id` | `"cli-{pid}"` where pid is the current process ID |
+| `session_id` | `"cli-{pid}"` where pid is the current process ID, and `"cli-{pid}-{n}"` for the Session of group `n` > 0 |
 | `job_parameter_values` | From `preprocess_job_parameters()` |
 | `path_mapping_rules` | From `--path-mapping-rules` (None if empty) |
 | `retain_working_dir` | From `--preserve` |
@@ -317,9 +431,10 @@ template decode uses `common::caller_limits()` (early failure on the
 lower bound), `create_job` carries the same limits on its
 `ValidationContext` (early failure once parameter values are bound),
 and the session mirrors them via `SessionConfig::limits` (the
-authoritative check on final values). As its `create_job` context the
-CLI passes `job_template.default_validation_context()`, with those
-caller limits layered on.
+authoritative check on final values). As its job-creation context the CLI passes
+`common::submission_context(&job_template)`: `default_validation_context()`
+with those caller limits, the host submission path format, and URI path
+values allowed.
 
 ## Result Output
 
@@ -336,8 +451,10 @@ Working directory preserved at: /tmp/OpenJD/k3x9_q2m
 Job: MyJob
 Step: Render
 Duration: 42.123 seconds
-Tasks run: 100
+Chunks run: 100
 ```
+
+With `--preserve` there is one `Working directory preserved at:` line per Session, in order.
 
 ### JSON
 
@@ -348,7 +465,7 @@ Tasks run: 100
   "job_name": "MyJob",
   "step_name": "Render",
   "duration": 42.123,
-  "tasks_run": 100
+  "chunks_run": 100
 }
 ```
 
@@ -360,7 +477,7 @@ message: Session ended successfully
 job_name: MyJob
 step_name: Render
 duration: 42.123
-tasks_run: 100
+chunks_run: 100
 ```
 
 ## Error Handling and Exit Codes

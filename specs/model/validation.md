@@ -25,13 +25,28 @@ Both functions are crate-private — external callers use `decode_job_template` 
 Both functions compute `EffectiveLimits` and `EffectiveRules` from the context, run all
 applicable passes, and return accumulated errors as `ModelError::ModelValidation`.
 
+Before any pass, both check the `ENV_PARAMS` prerequisite (Template Schemas §1.1 item 3;
+§1.2 item 3 gives an Environment Template the Job Template's prerequisites): a document that
+lists `ENV_PARAMS` must also list `EXPR`. `env_params::check_expr_prerequisite` reports a
+document that does not at `extensions`, "ENV_PARAMS requires EXPR; both must be listed in
+the template's `extensions` (Template Schemas §1.1 item 3)." ("§1.2 item 3" for an
+Environment Template), modeled on the `WRAP_ACTIONS` prerequisite (pass 10), and the
+function returns with that error alone, plus pass 10's `WRAP_ACTIONS` prerequisite error when
+the document also lists `WRAP_ACTIONS`, which concerns the same list. The rule is on listing
+the extension, whether or not any ENV_PARAMS field is used. Every ENV_PARAMS rule in passes 8
+and 11 and at job creation therefore takes `EXPR` as listed wherever `ENV_PARAMS` is: none
+has a case for an ENV_PARAMS document without `EXPR` (prototype plan 6). A document that
+lists only `EXPR` is unaffected, and one that uses an ENV_PARAMS field without listing
+`ENV_PARAMS` is rejected by pass 11's gates as before.
+
 ## Pass Architecture
 
-The validation pipeline is passes 5–10 of the overall decode pipeline (passes 1–4 are in
+The validation pipeline is passes 5–11 of the overall decode pipeline (passes 1–4 are in
 the `parse` module — see [parsing.md](parsing.md)). Passes run sequentially. Each pass
 receives the template and the computed limits/rules, and appends errors to a shared
 `ValidationErrors` collector. All passes run regardless of earlier errors (no
-short-circuiting), so users see all problems at once.
+short-circuiting), so users see all problems at once. The one exception is the
+`ENV_PARAMS` prerequisite (see [Entry Points](#entry-points)), checked before pass 5.
 
 | Pass | File | Purpose |
 |------|------|---------|
@@ -41,6 +56,7 @@ short-circuiting), so users see all problems at once.
 | 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
+| 11 | `env_params.rs` | Gate ENV_PARAMS features (Environment `envParameterDefinitions`, `activation`, `hostRequirements`, and `enableIf`, the `step:` and `environment:` forms of `<StepDependency>`, the latter with its `enableIf`) and check their structural rules (Environment Parameters RFC) |
 
 ### Environment template pipeline
 
@@ -66,7 +82,13 @@ checks have nothing to walk):
   variables, action commands/args, and embedded-file data. Embedded-file
   `filename` is a plain string (not `@fmtstring`) — brace syntax in it is
   literal text and no format-string validation applies.
+- With ENV_PARAMS, the environment's `hostRequirements` get pass 6's structural checks
+  (`validate_host_requirements_in_profile`) and pass 8 checks them against their own table
+  (see [Environment hostRequirements](#environment-hostrequirements-env_params)).
 - **Pass 10** — WRAP_ACTIONS gating (see below).
+- **Pass 11** — ENV_PARAMS gating and the Environment's `envParameterDefinitions` (see
+  below). Pass 8 also checks each format-string `default` against the template's own
+  `envParameterDefinitions` (see [Environment parameter scopes](#environment-parameter-scopes-env_params)).
 
 ## Pass 5: Limits Enforcement
 
@@ -108,8 +130,27 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - No duplicate step names
 - Step name non-empty, no control characters
 - Must have `script` or exactly one simple action field (mutually exclusive)
-- Dependencies: no self-dependency, target must exist, no duplicates
-- Host requirements: amounts/attributes validation, capability name patterns,
+- Dependencies: §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and `environment`;
+  `required`, `enableIf`, and `parameters` only with `environment`). With ENV_PARAMS the
+  messages name all three forms: "must have exactly one of 'dependsOn', 'step', or
+  'environment'." for an entry with none, with ", not both 'X' and 'Y'." or ", not all
+  three." appended for one with more. Without ENV_PARAMS an entry with none of the keys is
+  reported as missing `dependsOn`, an entry with two names only those two ("must have
+  exactly one of 'X' or 'Y', not both."), an entry with all three gets the all-forms
+  message with ", not all three.", and the message for a misplaced `required`,
+  `enableIf`, or `parameters` says that `environment` requires the extension. These
+  located messages replace the serde "unknown field" / "missing field" errors that the
+  old single-field struct produced, so for a malformed `dependsOn` entry they intentionally
+  differ from the Python reference, which has no ENV_PARAMS support and reports Pydantic's
+  field errors. For `dependsOn` entries and their ENV_PARAMS synonym `step` (§3.2 item 1),
+  read through `StepDependency::step()` so the two are one form: no self-dependency, target
+  must exist, no duplicates (a `step` and a `dependsOn` entry naming one Step are
+  duplicates). The `environment:` form, and the `step` form's gate, are checked in pass 11,
+  and cycle detection sees the `dependsOn` and `step` entries as one graph.
+- Host requirements: a Step's, and with ENV_PARAMS a `jobEnvironments` entry's or an
+  Environment Template's `environment`'s (§4 item 5; each checked on its own, §3.3.3,
+  through `validate_host_requirements_in_profile`): amounts/attributes validation,
+  capability name patterns,
   reserved scope checks (reserved scopes: `worker`, `job`, `step`, `task`),
   standard capability value validation. Expression-free amount `min`/`max` values must
   parse as finite numbers; validation of values containing expressions is deferred until
@@ -203,9 +244,12 @@ Four scope levels, each building on the previous:
    Uses param symtab without PATH parameters.
 
 3. **Session scope** — For environment scripts/variables. Adds `Session.WorkingDirectory`,
-   `Session.HasPathMappingRules`, `Session.PathMappingRulesFile`, `Env.File.*`.
+   `Session.HasPathMappingRules`, `Session.PathMappingRulesFile`, `Env.File.*`, and
+   `Env.Param.*` / `Env.RawParam.*` for the environment's own `envParameterDefinitions`
+   (ENV_PARAMS; see [Environment parameter scopes](#environment-parameter-scopes-env_params)).
    With EXPR: adds `Job.Name` in all environments and `Step.Name` in step
-   environments only. Used both for environments inside a job template and for
+   environments only; with ENV_PARAMS (which requires EXPR), also `Job.EnvNames` (see
+   below). Used both for environments inside a job template and for
    standalone environment templates (which never get `Step.Name`).
 
 Scope selection follows the spec's `@fmtstring` stage annotations, not the
@@ -227,6 +271,132 @@ message (see `specs/model/job-creation.md`).
 4. **Task scope** — For step scripts. Adds `Task.Param.*`, `Task.RawParam.*`,
    `Task.File.*`. With EXPR: adds `Job.Name`, `Step.Name`, `Env.File.*` from
    step and job environments.
+
+**`Job.EnvNames`** (ENV_PARAMS, Template Schemas §7.3.1; ExprLang §1.2.2) is
+`unresolved[list[string]]` in every table that has `Job.Name` when the document lists
+ENV_PARAMS (and so EXPR): the template-scope tables of host requirements, parameter-space
+ranges, Step `let` bindings, `environment:` entry values and `enableIf`, and action timing
+fields, and every session and task scope, in Job Templates and Environment Templates alike
+(`add_job_symbols`). It is not in the Job Template `name`'s table or an Environment
+parameter `default`'s, so a reference there is "Undefined variable" (§7.3.1). Without
+ENV_PARAMS it is not defined at all; with EXPR alone the message suggests `Job.Name`.
+
+### Environment parameter scopes (ENV_PARAMS)
+
+Four places involve Environment parameters, each with its own scope. Pass 8 checks the
+format-string `default`s and entry values only when the document lists ENV_PARAMS;
+without it, pass 11 rejects those fields outright. The `Env.Param.*` / `Env.RawParam.*`
+symbols are added either way (see the first item).
+
+- **`Env.Param.<name>` and `Env.RawParam.<name>`** (§4.5, §7.3.1) are added to the
+  session-scope table of an environment, for that environment's own definitions only, by
+  `add_env_param_symbols`. Every field validated with that table sees them: `variables`,
+  the script's `let`, every action's `command`/`args` (wrap hooks validate against a clone
+  of the table, so a wrapping environment's hooks see its own parameters and no other
+  environment's), and embedded-file `data`. They are absent from every other table except
+  the one for the environment's own `hostRequirements` (non-PATH parameters only; see
+  [Environment hostRequirements](#environment-hostrequirements-env_params)), so a
+  reference from a Step, from another environment, from a job-creation field such as
+  `timeout`, or to a name the environment does not declare is the ordinary "Undefined
+  variable" error. `Env.Param.<name>` has the parameter type's expression type
+  and `Env.RawParam.<name>` the same except `string` for PATH and `list[string]` for
+  LIST[PATH], the same map `build_param_symtab` uses for `Param.*` / `RawParam.*`. Step
+  Environments cannot declare parameters (pass 11), so in practice only Job Environments
+  and Environment Templates have these symbols. A duplicated parameter name is typed by its
+  first definition, as the entry checks type it. The symbols are added whether or not the
+  document lists ENV_PARAMS: without it, pass 11's one gate error on `envParameterDefinitions`
+  is the whole report, and the environment's own references to those parameters do not add
+  "Undefined variable" errors.
+- **A format-string `default`** (§4.5 item 4) is checked by `validate_env_param_defaults`
+  against the template-scope table of the *same document's* top-level
+  `parameterDefinitions`: `RawParam.*` for every Job Parameter and `Param.*` for the
+  non-PATH ones, with no `Job.Name`, `Step.Name`, `Session.*`, or `Env.*`. For a Job
+  Environment that is the Job Template's parameters; for an Environment Template, its own.
+- **A format-string `environment:` entry value** (§3.2) is checked by
+  `validate_env_entry_values` against the Step's template-scope table
+  (`step_template_symtab`): `RawParam.*`, non-PATH `Param.*`, `Job.Name`,
+  `Job.EnvNames`, `Step.Name`, and the step-level `let` names. `Task.*`, `Session.*`, and
+  `Env.*` are not in it. A step-level `let` is itself template scope, so it cannot carry a
+  PATH `Param.*` into an entry.
+- **An `environment:` entry's `enableIf`** (§3.2 item 5, constraint 9) is an expression
+  field of type `bool` (§7.5), checked by `validate_enable_if` with the expression-field
+  checker (see [template-types.md](template-types.md#expression-fields-75)) against the same
+  table, for every well-formed `environment:` entry that has one. A scalar other than a boolean
+  gets "the integer scalar 1 does not fit type bool: an
+  expression field of type bool takes a boolean scalar or a string holding one expression
+  (Template Schemas §7.5)."; a present `null` gets "must not be null: …" with the same
+  tail. An expression must parse ("Invalid expression: <error>" with the expression and
+  caret; a value containing `{{` adds "An expression field takes an expression without
+  '{{ }}' (Template Schemas §7.5)." after the error message), its names must be in the table,
+  and its static type must fit `bool`: "has type T, which does not fit type bool; an
+  expression field converts no type except int to float (Template Schemas §7.5).", or for
+  `nulltype` "has type nulltype, which does not fit type bool (Template Schemas §7.5).". A
+  `bool?` is accepted; its `null` is a job-creation error (§7.5 rule 2). No conversion
+  applies: a `string` or `int` expression is an error whatever its value.
+- **An Environment's own `enableIf`** (§4 item 6): see
+  [Environment enableIf](#environment-enableif-env_params).
+
+A value that is a single `{{ }}` expression is checked with
+the parameter's expression type as its target type, so a static type that can never
+convert (`{{ [1] }}` for an INT) is an error at template validation, even when every Step
+supplies the parameter (prototype plan A17). Static evaluation folds constant
+sub-expressions, as it does for every other EXPR-typed field (an action `timeout` of
+`{{ 'abc' }}` fails the same way), so a constant expression whose value cannot convert
+(`{{ 'abc' }}` for an INT) is also an error here. A value check that depends on what an
+expression reads (a `Param.*` string that does not parse as an INT, a constraint, PATH
+absoluteness) is left to job creation. The target type is known for a `default` and for an entry that names a
+`jobEnvironments` entry. An entry for an external Environment is checked with no target
+type, since its definitions are not known until the Job is created; so is an entry for a
+`jobEnvironments` entry whose own `enableIf` is not absent or `true`, since a Step's values
+for an Environment disabled for it are not checked against their type (§3.2.2), and for an
+expression `enableIf` whether it is disabled is not known here (§7.5 rule 5), unless the
+expression is certainly unresolved for an entry whose own `enableIf` is absent or `true` (see
+[Pass 11](#pass-11-env_params-gating)).
+
+### Environment enableIf (ENV_PARAMS)
+
+An Environment's own `enableIf` (§4 item 6) is an expression field of type `bool` (§7.5),
+checked by `validate_env_enable_if` with the expression-field checker and the messages of an
+entry's `enableIf` (above), when the document lists ENV_PARAMS (pass 11 reports it
+otherwise). Its table depends on where the Environment is:
+
+- **A `jobEnvironments` entry or an Environment Template's `environment`** (constraint 1):
+  exactly the table of its `hostRequirements`, `build_env_host_requirements_symtab` (see
+  [Environment hostRequirements](#environment-hostrequirements-env_params)): the
+  document's `RawParam.*` and non-PATH `Param.*`, `Job.Name`, `Job.EnvNames`, and its own
+  `Env.RawParam.*` of any type (PATH as `string`, LIST[PATH] as `list[string]`) and
+  `Env.Param.*` of types other than PATH and LIST[PATH].
+- **A `stepEnvironments` entry** (constraint 2): the Step's template-scope table
+  (`step_template_symtab`), the table of an entry's `enableIf`: `RawParam.*`, non-PATH
+  `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's `let` names.
+
+Anything else (constraint 3: `Task.*`, `Session.*`, `Env.File.*`, another Environment's
+parameters, a PATH `Env.Param.*`, or, for a Job Environment, `Step.Name` or a `let` name) is
+"Undefined variable". An Environment whose `enableIf` is `false` is still validated in full,
+its definitions included. It is disabled for every Step (§3.2.2), so constraint 7 and the
+checks of the Steps' values for it (constraint 6, and the target type of a format-string
+value below) do not apply to it; for an Environment whose `enableIf` is an expression they
+are undetermined at template validation and left to job creation (pass 11, below; §7.5 rule
+5). For the
+single-layer rule an Environment whose `enableIf` is absent or `true` counts as entered, the
+scalar `false` as not entered, and an expression defers to job creation (see
+[Pass 10](#pass-10-wrap_actions-gating)).
+
+### Environment hostRequirements (ENV_PARAMS)
+
+An Environment's `hostRequirements` (§4 item 5.1) get the Step's checks
+(`validate_host_requirements_fs`, shared with a Step's) against their own table,
+`build_env_host_requirements_symtab`: the template scope of the *same document's*
+`parameterDefinitions` (`RawParam.*` for every Job Parameter, PATH ones included as
+`string`, plan A27, and `Param.*` for the non-PATH ones), `Job.Name`, `Job.EnvNames`, and
+the environment's own `Env.RawParam.*` of every type (PATH as `string`, LIST[PATH] as
+`list[string]`, the unmapped value) and `Env.Param.*` of types other than PATH and
+LIST[PATH] (a path-mapped value needs a host). `Step.Name`, `let` names, `Session.*`, `Env.File.*`, and another
+environment's parameters are not in it, so a reference is "Undefined variable". The check
+runs for `jobEnvironments` entries and an Environment Template's `environment` when the
+document lists ENV_PARAMS; pass 11 reports the field otherwise, and on a
+`stepEnvironments` entry. A Step's own `hostRequirements` keep their table, which has no
+`Env.*`.
 
 ### Step Scripts and SimpleActions
 
@@ -508,17 +678,205 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
 - **All-or-nothing rule**: an environment that defines any one wrap hook must define all
   three. Defining a partial set is an error.
 - **Single-wrap-layer rule**: at most one environment reachable in a session may define
-  wrap hooks. A session's environment stack is the job's `jobEnvironments` plus exactly
-  one step's `stepEnvironments`, so this is enforced per step: for every step, the count
-  of wrap-defining envs in `jobEnvironments` plus that step's `stepEnvironments` must be
-  ≤ 1. Multiple wrap envs in `jobEnvironments` alone are reported once at the
-  `jobEnvironments` path (reachable from every session); a step that adds its own wrap env
-  on top is reported at that step's `stepEnvironments` path.
+  wrap hooks. A session's environment stack is its step's Environment set: the
+  `jobEnvironments` entries with `activation: ALWAYS`, the `ON_REQUEST` ones the step
+  requests (ENV_PARAMS, Template Schemas §4 item 4), and the step's own
+  `stepEnvironments`. So this is enforced per step: for every step, the count of
+  wrap-defining envs among those must be ≤ 1. Multiple `ALWAYS` wrap envs in
+  `jobEnvironments` alone are reported once at the `jobEnvironments` path (reachable from
+  every session); a step that adds its own wrap env on top is reported at that step's
+  `stepEnvironments` path; and a step whose own `stepEnvironments` add no wrap env (or that
+  has none) but whose requested `ON_REQUEST` wrap envs make more than one is reported at
+  its `dependencies` path. A step with `stepEnvironments` that add no wrap env and requests
+  none, under two `ALWAYS` wrap envs, is also reported at its `stepEnvironments` path, beside
+  the `jobEnvironments` error, as before ENV_PARAMS. A
+  step requests an Environment here only through an entry whose `enableIf` is absent or
+  the boolean scalar `true`: one whose `enableIf` is an expression, even a constant one, is
+  checked at job creation, over the
+  step's resolved set and the attached Environments (see
+  [job-creation.md](job-creation.md#the-submission-stage), prototype plan R8). In the same
+  way (ENV_PARAMS, §4 item 6 tail) a wrapping Environment counts only when its own
+  `enableIf` is absent or the scalar `true`: one with the scalar `false` is not entered, and
+  one with an expression is decided at job creation, which checks the final set. So a
+  violation is reported here only among Environments certainly entered, and it is one
+  whatever the expressions resolve to. The rule for every set-dependent check made before
+  job creation is to fail only when the failure is certain at that stage; with two certainly
+  entered wrapping Environments and a third whose `enableIf` is an expression, the template is
+  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and §4
+  item 6's tail, spec `5535230`). Two
+  `ON_REQUEST` wrap envs requested by different steps are valid.
 
 The single-layer rule runs only in the job-template path. An environment template defines
-one environment, so the rule is trivially satisfied for an isolated env template; if
-separately-validated env templates are composed into a session at assembly time
-(worker-side), the cross-layer constraint must be enforced there.
+one environment, so the rule is trivially satisfied for an isolated env template;
+`check_environment_templates` checks it for each step whose sessions enter a wrapping
+attached environment, over the environments the step certainly enters; job creation
+checks it again over each step's set with the attached environment templates; and
+the session runtime rejects a second wrap environment at enter time for environments
+composed any other way.
+
+## Pass 11: ENV_PARAMS Gating
+
+Validates or rejects the features of the Environment Parameters RFC (`ENV_PARAMS`, draft,
+`rfcs/0010-environment-parameters.md` in openjd-specifications), in
+`validate_env_params_job_template` and `validate_env_params_environment_template`.
+
+Without the extension:
+
+- `envParameterDefinitions` on any environment is reported at its path:
+  "envParameterDefinitions on an Environment requires the ENV_PARAMS extension."
+- An `environment:` dependency entry is reported at the entry: "the 'environment' form of
+  a dependency requires the ENV_PARAMS extension."
+- A `step:` dependency entry is reported at the entry: "the 'step' form of a dependency
+  requires the ENV_PARAMS extension." Its Step checks (pass 6) still run.
+- `activation` on any environment is reported at its path: "activation on an Environment
+  requires the ENV_PARAMS extension."
+- `hostRequirements` on any environment is reported at its path: "hostRequirements on an
+  Environment requires the ENV_PARAMS extension."
+- `enableIf` on any environment is reported at its path (see below).
+
+With it, `activation` (§4 item 4) is rejected on a `stepEnvironments` entry ("is not permitted
+on a stepEnvironments entry, which only its own Step's Sessions enter."); an unrecognized
+value (constraint 1, case-sensitive: `always` is rejected; plan A24) is a decode error naming
+the two values. `hostRequirements` (§4 item 5.2) is rejected on a `stepEnvironments` entry
+("is not permitted on a stepEnvironments entry, whose Step has hostRequirements of its
+own."); on a `jobEnvironments` entry or an Environment Template's `environment` its §3.3
+checks are passes 6 and 8's.
+
+`enableIf` on any Environment (§4 item 6 constraint 4) needs ENV_PARAMS in the document, in
+every position, a `stepEnvironments` entry included; without it the field is reported at its
+path: "enableIf on an Environment requires the ENV_PARAMS extension.". Its value is checked
+in pass 8
+(see [Environment enableIf](#environment-enableif-env_params)).
+
+With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
+
+- Not permitted on a `stepEnvironments` entry (constraint 4). A `jobEnvironments` entry
+  and an Environment Template's `environment` may declare parameters.
+- 1–50 entries (constraints 1–2; the cap is fixed and FEATURE_BUNDLE_1 does not raise
+  it), names unique within the list (constraint 3), and each name at most
+  `max_identifier_len`. A name may equal a Job Parameter's or another environment's.
+- The type: any Job Parameter type available with EXPR, which the document lists (§4.5 item
+  1), so every type that decodes is allowed and there is no type check here. Type names are
+  case-insensitive, as with EXPR for a Job Parameter; the decode-time case check in
+  `parse.rs` does not walk environment `envParameterDefinitions`, since a document without
+  EXPR that has them is rejected (by the prerequisite, or without ENV_PARAMS by the gate
+  above).
+- `userInterface`, `objectType`, and `dataFlow` are permitted (§4.5 items 2–3), with the
+  shape and constraints of the Job Parameter of the same type, since the definition is
+  decoded as one. They are informational: nothing in job creation or the sessions runtime
+  reads them, and an Environment parameter's `dataFlow` does not add to the Job's.
+- The definition's own checks run through `JobParameterDefinition::validate_definition`
+  (for example `minLength` > `maxLength`, or a `userInterface` control the type does not
+  have).
+- An explicit `default: null` is no default (decode drops it), as for a Job Parameter.
+- A literal `default` is checked against the type and the constraints (§4.5 "checked at
+  two points", point 1), even when every Step supplies the parameter. The check decodes
+  the literal with the decoder of the Job Parameter type's `default` field (so a STRING
+  `default` must be a string and an INT one an integer or `<intstring>`), coerces it with
+  `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
+  `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
+  Job Parameter `default`), and calls `check_constraints`. Absoluteness of a
+  PATH value depends on the submission path format and is left to job creation. An
+  object or `null`, at any depth, is rejected; so is a list element containing `{{`
+  (plan A14: list-literal elements are literals).
+- A format-string `default` of a list type must be a single `{{ }}` expression (§4.5
+  item 4). Its references are checked in pass 8.
+
+For each `environment:` entry of a Step (§3.2), with constraint 1 already checked in
+pass 6:
+
+- The name is an `<EnvironmentName>` (§4.1): non-empty, at most `max_env_name_len`
+  characters, no Cc characters, with the messages used for an Environment's `name`.
+  This is checked for every entry with an `environment` key.
+- Constraint 2: it must not name a `stepEnvironments` entry of the same Step.
+- Constraint 3: no two `environment:` entries of one list name the same Environment.
+- Constraint 4: `parameters`, if given, has 1–50 entries, and each key is an
+  `<Identifier>` of at most `max_identifier_len` characters.
+- Constraint 8: `required: false` is rejected on an entry that names a
+  `jobEnvironments` entry.
+- Constraint 9 (`enableIf`, §3.2 item 5): an expression field of type `bool` (§7.5), whose
+  value pass 8 checks. A boolean, number, string, or `null` decodes, except an integer above
+  `i64::MAX` that fits `u64`; that and a list or a map are decode errors naming `enableIf`.
+  Constraint 1's "only with `environment`" is checked for `enableIf` in pass 6, with
+  `required` and `parameters`.
+- Literal forms no parameter type accepts (plan A4): an object or `null` anywhere; a list
+  that mixes lists and other values; a list nested beyond
+  `LIST[LIST[INT]]`; and a nested list with an element the `LIST[LIST[INT]]` `default`
+  decoder (`FlexInt`) rejects, so an integer, an integer-valued float, and an integer string
+  (trimmed) are accepted.
+- For an entry that names a `jobEnvironments` entry, unless its `enableIf` is the boolean
+  scalar `false` (an expression such as `"false"` is decided at job creation), which
+  has no effect of any kind (§3.2 item 2; plan A28): constraint 5 (every key names a
+  declared parameter; an environment that declares none rejects an entry with any); and,
+  only when the Environment's own `enableIf` is absent or `true`, or is **certainly
+  unresolved** for the entry (below), constraint 6 against literal values, by the same check
+  as a literal `default`, and the rule that a format-string value for a list-typed parameter
+  must be a single `{{ }}` expression (a list type has no string form, so another value cannot
+  convert). For an Environment whose `enableIf` is `false` these value checks do not apply
+  (§3.2.2), and for one whose `enableIf` is any other expression a violation is not certain
+  here (§7.5 rule 5), so job creation makes them for the Steps it does not disable (plan 4
+  A39). Pass 8 likewise checks a format-string value against the parameter's type only for
+  such an Environment. An `enableIf` expression is certainly unresolved for a Step
+  (`enable_if_certainly_unresolved`) when it reads only the Environment's `Env.Param.*` /
+  `Env.RawParam.*`, every value it reads is a literal (the entry's, for an entry whose own
+  `enableIf` is absent or `true`, since one that may be disabled supplies nothing certain; or
+  the `default`) or has none, and progressive evaluation with the literals that convert and
+  `unresolved[T]` for the
+  rest is unresolved: job creation evaluates it with the same values, so the Environment is
+  not disabled whatever the Job Parameters are, and a failure of its checks is certain here,
+  which §7.5 rule 5 prefers to report at the earliest stage (JB-114's shape; plan 4 A45). A
+  known result, as of a constant expression, stays unknown here. The
+  first undeclared key of an entry lists the declared names (once each, at most 50 names
+  and 512 characters, then "and N more"; the first name is always listed, however long);
+  later undeclared keys of the same entry do not
+  repeat the list. Job Environments are indexed by name once per template, and each one's
+  list is built only when a message needs it.
+- Constraint 7 for Job Environments: every Step supplies every parameter without a
+  `default` of every `jobEnvironments` entry its Sessions enter: each one with
+  `activation: ALWAYS`, and each one with `activation: ON_REQUEST` that it requests. Only an
+  Environment whose own `enableIf` is absent or `true`, or certainly unresolved for the Step
+  (above; with the values of its entry, if one requests it), is checked: one whose `enableIf`
+  is `false` is disabled for every Step and is not held to constraint 7, and one whose
+  `enableIf` is any other expression may be disabled, so a violation is not certain and the
+  check is left to job creation (§3.2.2, §7.5 rule 5). For a certainly unresolved one the
+  Environment's group gets the unresolved note below. Whether
+  an entry is enabled is known here only when its `enableIf` is absent or a boolean scalar
+  (§3.2, checked-at paragraph; §7.5 item 1): an entry whose `enableIf` is `false` supplies
+  and requests nothing, so an `ALWAYS` Environment's parameters then all need their
+  `default`s; an entry whose `enableIf` is an expression, even a constant one such as
+  `"true"`, defers the check for its Environment and Step to job creation. Reported once per Step, at the Step, listing the missing parameters by
+  Environment (at most 50 names and 512 characters, counting the quotes, separators, and
+  " of Environment" suffixes, then "and N more"; the first name is always listed, however
+  long), so the report
+  grows with the number of Steps and not with Steps times parameters. When the Step's entry
+  for an Environment in the list is disabled by its `enableIf`, the Environment's group adds
+  "(the Step's 'environment:' dependency for it is disabled by its enableIf, so it supplies
+  nothing; Template Schemas §3.2 item 5)", counted in the 512 characters, since the Step does
+  have an entry for the Environment, which a reader would otherwise take as enabled; job creation and the submission stage add the same note for an
+  entry an `enableIf` expression disabled. A second note, also counted in the 512
+  characters, marks an Environment whose own `enableIf` is unresolved for the Step (it depends
+  on a value that is missing or does not convert): template validation and
+  `check_environment_templates` add it for a certainly unresolved one, and job creation and
+  the submission stage for any whose `enableIf` was unresolved:
+  "(its own enableIf depends
+  on a value that is missing or does not convert, so it does not disable the Environment;
+  Template Schemas §3.2.2)". An entry counts when its `environment` key names
+  that Environment, even if the entry is malformed, so pass 6's constraint 1 error is not
+  followed by a second one. A duplicated definition name, or a duplicated Job Environment
+  name, is reported once. The check counts each Step's missing parameters from its own
+  entries alone (each `ALWAYS` Environment's start missing; an enabled entry supplies some, or
+  adds an `ON_REQUEST` one's), and the list stops after 50 names, so it is linear in
+  the template size.
+
+An entry that names no `jobEnvironments` entry names an external Environment, whose
+definitions are unknown until the Job is created, so only the checks above that do not
+need them apply. Job creation keeps such an entry, when enabled, without checking its
+values (it does re-check constraint 3 and the Step `let` bindings the values read), and its
+submission stage resolves it against the attached Environment Templates and checks
+constraints 5–7, its resolved format-string values, and PATH absoluteness for it.
+For an entry that names a `jobEnvironments` entry, for every literal Job Environment
+`default`, and for every non-literal one a Step takes, `create_job` makes those checks (see
+[job-creation.md](job-creation.md#environment-parameter-values-env_params)).
 
 ## Error Infrastructure
 

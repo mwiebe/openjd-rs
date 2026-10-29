@@ -20,8 +20,9 @@ worker-host-agnostic way. An `openjd-model` caller's typical flow is:
 4. Call [`preprocess_job_parameters`] to coerce inputs against the
    merged parameter definitions.
 5. Call [`create_job`] with the preprocessed values and the
-   [`ValidationContext`]. The result is an owned [`job::Job`] ready for
-   the session runtime.
+   [`ValidationContext`], or, with `ENV_PARAMS` and Environment Templates
+   attached to the submission, [`create_job_with_environment_templates`].
+   The result is an owned [`job::Job`] ready for the session runtime.
 
 Beyond that core flow, the crate exposes low-level building blocks —
 symbol-table construction, step dependency graphs, lazy parameter-space
@@ -39,7 +40,9 @@ openjd_model              — crate root re-exports, the main public surface
 ├── error                 — ModelError + structured validation errors
 ├── format_string         — re-exported from openjd_expr
 ├── job                   — instantiated (resolved) job types
-│   ├── create_job        — pipeline functions + MergedParameterDefinition
+│   ├── create_job        — pipeline functions + MergedParameterDefinition,
+│   │                       create_job_with_environment_templates + its types,
+│   │                       check_environment_templates
 │   ├── step_param_space  — StepParameterSpaceIterator
 │   └── step_dependency_graph — StepDependencyGraph + friends
 ├── symbol_table          — re-exported from openjd_expr
@@ -62,6 +65,10 @@ The structural template types — `template::JobTemplate`,
 `template::StepActions`, `template::CancelationMode`,
 `template::HostRequirements`, `template::AmountRequirement`,
 `template::AttributeRequirement`, `template::StepDependency`,
+`template::DependencyTarget`, `template::StepKey`, `template::ExprField`,
+`template::EnvironmentActivation`,
+`template::EnvironmentParameterDefinition`,
+`template::EnvironmentParameterValue`, `template::EnvironmentParameterValueMap`,
 `template::SimpleAction`, `template::SimpleActionKind`, `template::Description`,
 `template::ExtensionName`, `template::TaskParameterDefinition`
 and its 5 per-variant inner struct types
@@ -205,6 +212,64 @@ pub fn convert_environment_with_symtab(
     env: &template::Environment,
     symtab: Option<&SymbolTable>,
 ) -> job::Environment;
+
+// Job creation with the Environment Templates attached to the submission
+// (ENV_PARAMS, Template Schemas §3.2.1–§3.2.2, §7.4). `create_job` is this
+// with no attachments, returning only the Job.
+pub fn create_job_with_environment_templates(
+    job_template: &JobTemplate,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    job_parameter_values: &JobParameterValues,
+    ctx: &ValidationContext,
+) -> Result<CreatedJob, ModelError>;
+
+#[derive(Debug, Clone, Copy)]
+pub struct AttachedEnvironmentTemplate<'a> {
+    pub template: &'a EnvironmentTemplate,
+    pub label: Option<&'a str>,     // names the document in messages
+}
+impl<'a> AttachedEnvironmentTemplate<'a> {
+    #[must_use] pub fn new(template: &'a EnvironmentTemplate) -> Self;
+    #[must_use] pub fn with_label(self, label: &'a str) -> Self;
+}
+impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatedJob {
+    /// The combined Job: attached Environments first, in attachment order,
+    /// then the Job Template's `jobEnvironments`.
+    pub job: job::Job,
+    /// The document of each `job.job_environments` entry, index for index.
+    pub environment_documents: Vec<job::Document>,
+    pub warnings: Vec<SubmissionWarning>,
+    /// Per Step of `job`, index for index, the Environments an `enableIf`
+    /// on the Environment (§4 item 6) disabled for it, for display.
+    pub disabled_environments: Vec<StepDisabledEnvironments>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepDisabledEnvironments {
+    /// Combined Job Environments, attached first, by (document, name).
+    pub environments: Vec<job::EnvironmentRef>,
+    /// The Step's own `stepEnvironments`, by name, in written order.
+    pub step_environments: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmissionWarning {
+    pub path: Vec<PathElement>,
+    pub message: String,
+}
+impl std::fmt::Display for SubmissionWarning; // "path: message"
+
+// The submission-stage checks of create_job_with_environment_templates that
+// need no Job Parameter values, on the Job Template itself (Template
+// Schemas §3.2 last paragraph).
+pub fn check_environment_templates(
+    job_template: &JobTemplate,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    ctx: &ValidationContext,
+) -> Result<Vec<SubmissionWarning>, ModelError>;
 ```
 
 [`create_job`] is the high-level entry point: it resolves the job name
@@ -218,7 +283,8 @@ template is reported together in one `ModelError::ModelValidation`),
 runs the final task-count
 limit from [`CallerLimits`], and returns the complete [`job::Job`]. The
 `ctx` it takes is a full [`ValidationContext`] — i.e. revision +
-extensions + caller limits — and callers commonly get one from
+extensions + caller limits + the submission path policy that
+`ENV_PARAMS` values use — and callers commonly get one from
 [`JobTemplate::default_validation_context`]. The context's revision
 must match the template's and its extensions must cover every
 extension the template declares (enabling more is allowed);
@@ -227,6 +293,73 @@ that does not support an extension rejects such templates at decode
 via `supported_extensions` instead. Every expression
 evaluation it performs runs under the caller's evaluation budgets
 (`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
+
+With `ENV_PARAMS`, [`create_job_with_environment_templates`] runs the
+Template Schemas §7.4 job-creation order: it binds `Job.Name` and, with
+`EXPR`, `Job.EnvNames` (the attached Environments' names in attachment
+order, then the `jobEnvironments` names, whatever their `activation`)
+before any Step `let`; evaluates each `environment:` entry's `enableIf`
+after the Step's `let`, treating a disabled entry as absent; fixes each
+Step's Environment set from each Environment's `activation` and the Step's
+enabled entries, recording it in `job::Step::environments`; computes each
+Step's effective Environment parameter values for the Environments in
+its set into `job::Step::environment_parameters`; resolves each
+enabled entry naming no Job Environment against `attached` (each
+attachment under its own profile; `ctx`'s profile is not read); resolves
+each Environment's own `enableIf` (§4 item 6) for each Step whose
+Sessions would enter it, with that Step's effective values that are known
+(a missing or unconvertible value is `unresolved[T]`, §3.2.2), taking a
+disabled one out of the Step's `environments`, `step_environments`, and
+`environment_parameters` and listing it in
+`CreatedJob::disabled_environments`; checks each value of an
+Environment that is not disabled for the Step against its definition, and
+PATH values against `ctx.submission_path_format` /
+`ctx.allow_uri_path_values`, and that the Step supplies every parameter
+without a `default` (constraint 7); checks
+the `WRAP_ACTIONS` single-layer rule over each Step's final set; and last
+resolves each Environment's `hostRequirements` for each Step whose
+Sessions enter it, with that Step's effective values, and stores the
+Step's combined host requirements (Template Schemas §3.3.3) in
+`job::Step::host_requirements`. The
+Job Template's own checks are reported in one
+`ModelError::ModelValidation` for `JobTemplate`; the submission-stage
+checks (entry resolution, the attachments' values, constraints 5–7 over
+the combined Job, the wrap layers, the Environments' resolved
+`hostRequirements` and the combination's conflicts), which run only when the Job
+Template's succeed, in one for `Submission`, with paths starting at the
+document. [`create_job`] is the same with no
+attachments, so its Job is complete: an enabled required entry naming no
+Job Environment is a `Submission` error. See
+[job-creation.md](job-creation.md#the-submission-stage).
+
+[`check_environment_templates`] runs, on a decoded Job Template before
+any Job Parameter values exist, the submission-stage checks that need
+none: resolution by name of each entry whose `enableIf` is absent or
+the boolean scalar `true` (an expression, even a constant one, is left to
+job creation), constraint 5; for an attachment whose
+own `enableIf` is absent or `true`, or certainly unresolved for the Step
+(see validation.md, pass 11) (one with `false` is disabled, and one
+with an expression is undetermined, Template Schemas §3.2.2, §7.5 rule 5),
+constraint 6 for literal values (with PATH absoluteness in
+`ctx.submission_path_format`), the single-expression rule, and
+constraint 7 over the attachments each Step enters (every `ALWAYS` one and
+each `ON_REQUEST` one it requests); the attachment-level warnings and
+errors (a warning, when the Job Template lists `ENV_PARAMS`, for an
+attachment named like a Job Environment; an error for an attachment with
+`activation: ALWAYS` that no entry can reach, that has parameters without
+a `default`, and whose own `enableIf` is absent, `true`, or certainly
+unresolved), and the attachments' literal
+`default`s, the `WRAP_ACTIONS` single-layer rule for each Step whose
+Sessions enter a wrapping attachment, and the §3.3.3 combination of
+each Step's literal host requirements with the literal ones of the
+Environments its Sessions certainly enter. It reports with the same
+messages and paths (a single-layer or host-requirement error in the same
+form, naming only the layers a Session certainly enters and the literal
+requirements) and returns the warnings. Format-string values,
+non-literal `default`s and host requirements, and entries whose
+`enableIf` is an expression are left to job creation. `openjd check
+--environment` calls it. See
+[job-creation.md](job-creation.md#check_environment_templates).
 
 [`preprocess_job_parameters`] implements the parameter coercion and
 default-value pipeline from spec §2: type coercion, constraint checks,
@@ -298,6 +431,7 @@ impl JobTemplate {
 ```rust
 pub struct EnvironmentTemplate {
     pub specification_version: String,
+    pub schema: Option<String>,                 // "$schema", accepted and ignored
     pub extensions: Option<Vec<ExtensionName>>,
     pub parameter_definitions: Option<Vec<JobParameterDefinition>>,
     pub environment: template::Environment,
@@ -305,8 +439,185 @@ pub struct EnvironmentTemplate {
 
 impl EnvironmentTemplate {
     pub fn environment(&self) -> &template::Environment;
+    /// The template's revision and declared extensions, as
+    /// `JobTemplate::profile` gives a Job Template's.
+    pub fn profile(&self) -> ModelProfile;
+    /// `ValidationContext::from_profile(self.profile())`.
+    pub fn default_validation_context(&self) -> ValidationContext;
 }
 ```
+
+`template::Environment` has an `env_parameter_definitions:
+Option<Vec<EnvironmentParameterDefinition>>` field (ENV_PARAMS, §4 item 3,
+`envParameterDefinitions`), an `activation: Option<EnvironmentActivation>` field
+(ENV_PARAMS, §4 item 4), a
+`host_requirements: Option<template::HostRequirements>` field (ENV_PARAMS,
+§4 item 5, the Step's type), and an `enable_if: Option<ExprField>` field
+(ENV_PARAMS, §4 item 6; an expression field of type `bool`,
+permitted on every position) between `description` and `script`:
+
+```rust
+impl template::Environment {
+    /// `activation` with its default (`EnvironmentActivation::Always`) applied.
+    #[must_use] pub fn activation(&self) -> EnvironmentActivation;
+    /// `Some(true)` when `enableIf` is absent or the boolean scalar `true`,
+    /// `Some(false)` for the scalar `false`, `None` otherwise (an
+    /// expression, even a constant one, is decided at job creation).
+    #[must_use] pub fn literal_enabled(&self) -> Option<bool>;
+}
+
+/// §4 item 4 `<EnvironmentActivation>`; an unrecognized value is a decode error.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum EnvironmentActivation {
+    #[default]
+    Always,     // ALWAYS
+    OnRequest,  // ON_REQUEST
+}
+impl EnvironmentActivation {
+    /// `ALWAYS` or `ON_REQUEST`.
+    #[must_use] pub fn as_str(self) -> &'static str;
+}
+```
+
+### `<StepDependency>` and Environment parameters (ENV_PARAMS)
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct StepDependency {
+    pub depends_on: Option<String>,
+    pub step: Option<String>,           // ENV_PARAMS synonym of depends_on, §3.2 item 1
+    pub environment: Option<String>,
+    pub required: Option<bool>,
+    pub enable_if: Option<ExprField>,   // ENV_PARAMS, §3.2 item 5; @expr bool
+    pub parameters: Option<EnvironmentParameterValueMap>,
+}
+
+impl StepDependency {
+    /// A `dependsOn: name` entry.
+    pub fn on_step(name: impl Into<String>) -> Self;
+    /// An `environment: name` entry with no `required`, `enableIf`, or
+    /// `parameters`.
+    pub fn on_environment(name: impl Into<String>) -> Self;
+    /// The form of the entry; `None` when it has more than one of
+    /// `dependsOn`, `step`, and `environment`, or none (rejected by
+    /// template validation).
+    pub fn target(&self) -> Option<DependencyTarget<'_>>;
+    /// The Step (of a `dependsOn` or `step` entry) / Environment of a
+    /// well-formed entry of that form. Unlike the `step` and `environment`
+    /// fields, which hold one key as written, `step()` reads either Step
+    /// key.
+    pub fn step(&self) -> Option<&str>;
+    pub fn environment(&self) -> Option<&str>;
+    /// `target().is_some()`.
+    pub fn is_well_formed(&self) -> bool;
+    /// `required` with its default (`true`) applied.
+    pub fn is_required(&self) -> bool;
+    /// `Some(true)` when `enableIf` is absent or the boolean scalar `true`,
+    /// `Some(false)` for `false`, `None` for any other value (an
+    /// expression, even a constant one, is decided at job creation).
+    pub fn literal_enabled(&self) -> Option<bool>;
+}
+
+/// §7.5 expression field (`@expr <type>`), as written. A YAML/JSON
+/// boolean decodes as `Bool`, an integer as `Int`, another number as
+/// `Float`, a string as `Expression`, and a present `null` as `Null`
+/// (rejected by template validation); a list, a map, or an integer above
+/// `i64::MAX` that fits `u64` is a decode error. JSON number parsing gives
+/// a larger or more negative integer as a float, so it decodes as `Float`.
+/// The target type is the field's, not the value's.
+#[derive(Debug, Clone)]
+// + hand-written `impl Deserialize`, `impl PartialEq` (floats by bits), `impl Eq`
+pub enum ExprField {
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Expression(String),
+    Null,
+}
+impl ExprField {
+    /// The boolean scalar, or `None` for any other value.
+    pub fn as_bool(&self) -> Option<bool>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DependencyTarget<'a> {
+    /// A Step, and the key the entry wrote it under.
+    Step(&'a str, StepKey),
+    Environment(&'a str),
+}
+
+impl<'a> DependencyTarget<'a> {
+    /// The Step name, whichever key named it.
+    pub fn step(self) -> Option<&'a str>;
+    pub fn environment(self) -> Option<&'a str>;
+}
+
+/// `dependsOn: X` / `step: X` / `environment: X`, as a template writes it.
+impl std::fmt::Display for DependencyTarget<'_>;
+
+/// The key of a Step entry (§3.2 item 1). No rule reads it: it exists so
+/// messages can name what was written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StepKey {
+    DependsOn,  // `dependsOn`
+    Step,       // `step` (ENV_PARAMS)
+}
+impl StepKey {
+    /// `dependsOn` or `step`.
+    #[must_use] pub fn as_str(self) -> &'static str;
+}
+
+/// §4.5 `<EnvironmentParameterDefinition>`. `definition.default_value()`
+/// is always `None`; the `default` lives in `default`. An explicit
+/// `default: null` decodes as `None`, as for a Job Parameter.
+#[derive(Debug, Clone)]
+// + a hand-written `impl Deserialize`
+pub struct EnvironmentParameterDefinition {
+    pub definition: JobParameterDefinition,
+    pub default: Option<EnvironmentParameterValue>,
+}
+
+impl EnvironmentParameterDefinition {
+    pub fn name(&self) -> &str;
+    pub fn job_param_type(&self) -> JobParameterType;
+    pub fn type_name(&self) -> &str;
+}
+
+/// A `default` or an `environment:` entry value, as written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// + a hand-written `impl Deserialize` (classifies via `from_json`)
+pub enum EnvironmentParameterValue {
+    FormatString(FormatString),      // a string containing `{{`
+    Literal(serde_json::Value),      // anything else
+}
+
+impl EnvironmentParameterValue {
+    /// Classify a value; a string containing `{{` that does not parse
+    /// as a format string is an error.
+    pub fn from_json(value: serde_json::Value) -> Result<Self, String>;
+    pub fn as_literal(&self) -> Option<&serde_json::Value>;
+    pub fn as_format_string(&self) -> Option<&FormatString>;
+}
+
+/// The `parameters` map of an `environment:` entry, in key order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct EnvironmentParameterValueMap(pub BTreeMap<String, EnvironmentParameterValue>);
+
+impl EnvironmentParameterValueMap {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &EnvironmentParameterValue)>;
+    pub fn get(&self, name: &str) -> Option<&EnvironmentParameterValue>;
+}
+```
+
+Job creation keeps only the Step entries (`dependsOn` and `step`) in
+`job::Step::dependencies` (an `environment:` entry does not delay scheduling),
+so `job::StepDependency` is unchanged: a `step: X` entry becomes
+`dependsOn: X` in the Job. The entries become `job::Step::environment_parameters` and
+`job::Step::environments` instead (see Instantiated Job Types).
 
 `ExtensionName` and `Description` are constrained string newtypes
 defined in the `template::constrained_strings` submodule (which is
@@ -373,7 +684,7 @@ impl JobParameterDefinition {
     pub fn min_value_f64(&self) -> Option<f64>;
     pub fn max_value_f64(&self) -> Option<f64>;
 
-    // Length constraints (STRING / LIST_*).
+    // Length constraints (STRING / PATH / RANGE_EXPR / LIST_*).
     pub fn min_length(&self) -> Option<usize>;
     pub fn max_length(&self) -> Option<usize>;
 
@@ -567,15 +878,82 @@ pub struct job::Step {
     pub name: String,
     pub description: Option<String>,
     pub script: StepScript,
+    /// The Step's own Environments; with ENV_PARAMS, less any whose
+    /// `enableIf` is `false` for the Step (`None` when none remain).
     pub step_environments: Option<Vec<Environment>>,
     pub parameter_space: Option<StepParameterSpace>,
+    /// The Step's own resolved `hostRequirements`; with ENV_PARAMS, its
+    /// combined host requirements (§3.3.3): its own and those of every
+    /// Environment its Sessions enter, normalized per capability. A
+    /// name other than `attr.worker.os.family` and `attr.worker.cpu.arch`
+    /// may repeat: at most one `allOf`, then `anyOf`s of two or more
+    /// values.
     pub host_requirements: Option<HostRequirements>,
     pub dependencies: Option<Vec<StepDependency>>,
-    /// Complete symbol table at step scope in JSON transport format.
-    /// Contains Param.*, RawParam.*, Job.Name, Step.Name, and step-level
-    /// let bindings. The session deserializes this with `PathFormat::host()`
-    /// and layers Session.* and Task.* values on top at runtime.
+    /// The step-scope symbols (non-PATH `Param.*`, `RawParam.*`, `Job.Name`,
+    /// `Job.EnvNames`, `Step.Name`, step-level `let` bindings) that the Step's step-level
+    /// `let` bindings and host-side format strings reference, plus `RawParam.X` for each referenced
+    /// PATH `Param.X`, in JSON transport format. The session deserializes
+    /// this with `PathFormat::host()` and layers Session.* and Task.*
+    /// values on top at runtime.
     pub resolved_symtab: Option<SerializedSymbolTable>,
+    /// ENV_PARAMS effective values, one entry per Environment the Step's
+    /// Sessions enter that declares parameters (none for one its
+    /// `enableIf` disabled). Serde: default, skipped when `None`.
+    pub environment_parameters: Option<Vec<EnvironmentParameterValues>>,
+    /// ENV_PARAMS: the Job Environments the Step's Sessions enter, in
+    /// `Job::job_environments` order, by `activation`, enabled entries, and
+    /// each Environment's own `enableIf`; `None` means every one, and a
+    /// created Job never holds `Some` of the full list. Serde: default,
+    /// skipped when `None`.
+    pub environments: Option<Vec<EnvironmentRef>>,
+}
+
+impl job::Step {
+    /// Whether the Step's Sessions enter the Job Environment `name` of
+    /// `document`.
+    #[must_use] pub fn enters_environment(&self, document: &Document, name: &str) -> bool;
+    /// `self.environments == other.environments`: the first condition of
+    /// the §3.2.2 Session-sharing rule.
+    #[must_use] pub fn same_environments(&self, other: &job::Step) -> bool;
+    /// Template Schemas §3.2.2 equality of the two Steps' effective
+    /// values: matched by (document, environment); FLOAT compared by value;
+    /// RANGE_EXPR by the integers it denotes.
+    #[must_use] pub fn environment_values_equal(&self, other: &job::Step) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all_fields = "camelCase")]
+pub enum job::Document {
+    #[default]
+    JobTemplate,
+    EnvironmentTemplate { index: usize, label: Option<String> }, // label skipped when None
+}
+impl job::Document {
+    #[must_use] pub fn environment_template(index: usize, label: Option<&str>) -> Self;
+    #[must_use] pub fn is_job_template(&self) -> bool;
+}
+impl std::fmt::Display for job::Document; // JobTemplate | <label> | EnvironmentTemplate[i]
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::EnvironmentParameterValues {
+    pub document: Document,
+    pub environment: String,
+    /// One entry per parameter, keyed by name, typed with the parameter's
+    /// own expression type (`path`, `list[path]`, ...); PATH unmapped; a
+    /// RANGE_EXPR value in canonical form (§3.2.2).
+    pub values: SerializedSymbolTable,
+}
+impl job::EnvironmentParameterValues {
+    #[must_use] pub fn values_equal(&self, other: &job::EnvironmentParameterValues) -> bool;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct job::EnvironmentRef {
+    pub document: Document,
+    pub environment: String,
 }
 
 pub struct job::StepScript {
@@ -716,9 +1094,12 @@ pub enum ModelExtension {
     FeatureBundle1,    // RFC 0004 — "FEATURE_BUNDLE_1"
     Expr,              // RFC 0005 — "EXPR"
     WrapActions,       // RFC 0008 — "WRAP_ACTIONS"
+    EnvParams,         // RFC 0010 (draft) — "ENV_PARAMS"
 }
 
 impl ModelExtension {
+    /// The fully supported extensions, every variant above, in this order.
+    /// The default allowlist of the CLI and openjd-for-js.
     pub const ALL: &'static [ModelExtension];
     pub fn as_str(&self) -> &'static str;
 }
@@ -799,13 +1180,22 @@ pub struct CallerLimits {
 }
 
 /// The thing every validation and instantiation function takes — a
-/// `ModelProfile` plus `CallerLimits`. Most callers construct one via
+/// `ModelProfile`, `CallerLimits`, and the submission path policy
+/// (`submission_path_format`, `allow_uri_path_values`), which only job
+/// creation of `ENV_PARAMS` values reads (for the attached Environment
+/// Templates, the limits and path policy but not the profile). Most callers construct one via
 /// `JobTemplate::default_validation_context` or
 /// `ValidationContext::new(revision)`.
 #[derive(Debug, Clone)]
 pub struct ValidationContext {
     pub profile: ModelProfile,
     pub caller_limits: CallerLimits,
+    /// Path format of the Job's PATH values; Environment parameter PATH
+    /// values must be absolute in it. Default `PathFormat::host()`.
+    pub submission_path_format: openjd_expr::path_mapping::PathFormat,
+    /// Accept a URI as an Environment parameter PATH value. Default
+    /// `false`.
+    pub allow_uri_path_values: bool,
 }
 
 impl ValidationContext {
@@ -813,6 +1203,8 @@ impl ValidationContext {
     pub fn with_extensions(revision: SpecificationRevision, extensions: Extensions) -> Self;
     pub fn from_profile(profile: ModelProfile) -> Self;
     #[must_use] pub fn with_caller_limits(self, caller_limits: CallerLimits) -> Self;
+    #[must_use] pub fn with_submission_path_format(self, format: openjd_expr::path_mapping::PathFormat) -> Self;
+    #[must_use] pub fn with_allow_uri_path_values(self, allow: bool) -> Self;
 }
 ```
 
@@ -1106,16 +1498,10 @@ impl MergedParameterDefinition {
     /// may narrow another's constraints to the empty set").
     pub fn validate_satisfiable(&self) -> Result<(), ModelError>;
 
+    /// Check a coerced value against the merged constraints. A RANGE_EXPR
+    /// `range_expr` is checked in canonical form; `preprocess_job_parameters`
+    /// also checks its value as written (§2.10).
     pub fn check_constraints(&self, value: &ExprValue) -> Result<(), ModelError>;
-    pub fn min_value_i64(&self) -> Option<i64>;
-    pub fn max_value_i64(&self) -> Option<i64>;
-    pub fn min_value_f64(&self) -> Option<f64>;
-    pub fn max_value_f64(&self) -> Option<f64>;
-    pub fn min_length(&self) -> Option<usize>;
-    pub fn max_length(&self) -> Option<usize>;
-    pub fn allowed_values_int(&self) -> Option<&[i64]>;
-    pub fn allowed_values_float(&self) -> Option<&[f64]>;
-    pub fn allowed_values_str(&self) -> Option<&[String]>;
 }
 ```
 
