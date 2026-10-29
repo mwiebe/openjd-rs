@@ -154,9 +154,10 @@ Environment parameters, `ON_REQUEST` Environments, or Environment `enableIf`s se
 as before. They
 participate in the derived `PartialEq` and `Hash` of `Step`.
 
-**Equality.** A Session may run Tasks of two Steps only when they enter the same Job
-Environments (`Step::same_environments`) and their effective values are equal (§3.2.2,
-fourth paragraph). (Each Step's own `step_environments` are entered and exited around its
+**Equality.** A Session may run Tasks of two Steps without exiting and re-entering Job
+Environments between them only when they enter the same Job Environments
+(`Step::same_environments`) and their effective values are equal (§3.2.2, fourth
+paragraph). (Each Step's own `step_environments` are entered and exited around its
 Tasks, as without the extension.) `Step::environment_values_equal(&other)` implements §3.2.2
 equality of the values: both Steps have values
 for the same `(document, environment)` keys, and for each, the same parameter names with the

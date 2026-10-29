@@ -19,11 +19,10 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     // Job creation has checked the RFC 0008 single-layer rule over every
     // Step's Environment set, attached Environments included.
     let selection = prepare_selection(&args, &prepared.job)?;
-    let groups = session_groups(&prepared.job, &selection.steps_to_run);
 
     let cancel_token = CancellationToken::new();
-    let session = create_session(&args, &prepared, 0, cancel_token.clone())?;
-    let interrupted = install_signal_handler(cancel_token.clone());
+    let session = create_session(&args, &prepared, cancel_token.clone())?;
+    let interrupted = install_signal_handler(cancel_token);
     let mut ctx = RunContext {
         session,
         entered_envs: Vec::new(),
@@ -31,84 +30,27 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         started_at,
         tasks_run: 0,
         session_failed: false,
-        preserved_dirs: Vec::new(),
+        preserved_dir: None,
     };
 
-    for (n, group) in groups.iter().enumerate() {
-        if n > 0 {
-            if ctx.is_stopping() {
-                break;
-            }
-            // A Step whose Environments or Environment parameter values
-            // differ from the previous Step's never shares its Session
-            // (Template Schemas §3.2.2), so the previous Session ends here.
-            ctx.end_session(args.preserve);
-            ctx.session = match create_session(&args, &prepared, n, cancel_token.clone()) {
-                Ok(session) => session,
-                Err(e) => {
-                    ctx.print_preserved_dirs();
-                    return Err(e);
-                }
-            };
-            let first = &prepared.job.steps[group[0]];
-            println!(
-                "{}\tStarting a new Session for Step '{}': its Environments or their parameter \
-                 values differ from the previous Session's.",
-                ctx.timestamp(),
-                first.name
-            );
-        }
-        println!("{}\tSession start", ctx.timestamp());
-        if n == 0 {
-            println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
-        }
-        let execution_result = run_workload(&mut ctx, &args, &prepared, group, &selection).await;
+    println!("{}\tSession start", ctx.timestamp());
+    println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
+    let execution_result = run_workload(&mut ctx, &args, &prepared, &selection).await;
 
-        // Once a Session exists, errors must not bypass environment cleanup.
-        ctx.exit_environments_down_to(0).await;
-        if let Err(e) = execution_result {
-            ctx.record_interruption();
-            ctx.end_session(args.preserve);
-            ctx.print_preserved_dirs();
-            return Err(e);
-        }
-    }
+    // Once a Session exists, errors must not bypass environment cleanup.
+    ctx.exit_environments_down_to(0).await;
     ctx.record_interruption();
+    if let Err(e) = execution_result {
+        ctx.end_session(args.preserve);
+        ctx.print_preserved_dir();
+        return Err(e);
+    }
 
     report_result(&mut ctx, &args, &prepared.job);
     if ctx.session_failed {
         std::process::exit(1);
     }
     Ok(())
-}
-
-/// Split the selected Steps, in the order they run, into runs of
-/// consecutive Steps that enter the same Job Environments
-/// ([`Step::same_environments`]) with equal Environment parameter values
-/// ([`Step::environment_values_equal`], Template Schemas §3.2.2). Each run
-/// gets its own Session; Steps are never reordered to merge runs. Without
-/// `activation: ON_REQUEST`, Environment `enableIf`, and Environment
-/// parameter values every Step
-/// compares equal, so there is one run, as before `ENV_PARAMS`. An empty
-/// selection is one empty run. (Each Step enters its own Step Environments
-/// inside the run, as before.)
-fn session_groups(job: &Job, steps_to_run: &[usize]) -> Vec<Vec<usize>> {
-    let mut groups: Vec<Vec<usize>> = Vec::new();
-    for &idx in steps_to_run {
-        match groups.last_mut() {
-            Some(group)
-                if job.steps[group[0]].same_environments(&job.steps[idx])
-                    && job.steps[group[0]].environment_values_equal(&job.steps[idx]) =>
-            {
-                group.push(idx)
-            }
-            _ => groups.push(vec![idx]),
-        }
-    }
-    if groups.is_empty() {
-        groups.push(Vec::new());
-    }
-    groups
 }
 
 fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
@@ -254,21 +196,13 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
     })
 }
 
-/// Create the Session for run `n` of [`session_groups`]. The first keeps
-/// the session ID `cli-<pid>`; later ones add `-<n>`.
 fn create_session(
     args: &RunArgs,
     prepared: &PreparedRun,
-    n: usize,
     cancel_token: CancellationToken,
 ) -> Result<Session, RunError> {
-    let session_id = if n == 0 {
-        format!("cli-{}", std::process::id())
-    } else {
-        format!("cli-{}-{n}", std::process::id())
-    };
     let session_config = openjd_sessions::session::SessionConfig {
-        session_id,
+        session_id: format!("cli-{}", std::process::id()),
         job_parameter_values: prepared.param_values.clone(),
         path_mapping_rules: (!prepared.path_rules.is_empty()).then(|| prepared.path_rules.clone()),
         retain_working_dir: args.preserve,
@@ -332,57 +266,64 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
     interrupted
 }
 
-/// Run one Session of [`session_groups`]: enter each Environment of the
-/// combined Job (the attached ones, then the Job Template's own) that the
-/// group's Steps enter ([`Step::enters_environment`], Template Schemas §4
-/// item 4 `activation` and item 6 `enableIf`), with the group's Environment
-/// parameter values, then
-/// run each Step of the group. The Steps of a group enter the same
-/// Environments with equal values, so the first Step's are the group's.
+/// Run the selected Steps, in order, in the run's one Session. Before each
+/// Step, move the Session's Job Environments to the ones the Step enters
+/// ([`job_environment_targets`]): exit the entered ones, in the reverse of
+/// the order the Session entered them, down to the longest prefix the Step
+/// also enters with equal values ([`EnteredJobEnvironment::matches`]), then
+/// enter the rest of the Step's in order (Template Schemas §3.2.2). A Job
+/// without `activation: ON_REQUEST`, Environment `enableIf`, or
+/// Environment parameter values gives every Step the same targets, so the
+/// Session enters each Job Environment once, as before `ENV_PARAMS`.
 async fn run_workload(
     ctx: &mut RunContext,
     args: &RunArgs,
     prepared: &PreparedRun,
-    group: &[usize],
     selection: &RunSelection,
 ) -> Result<(), RunError> {
     let job = &prepared.job;
-    let first = group.first().map(|&idx| &job.steps[idx]);
-    let group_values = first
-        .and_then(|step| step.environment_parameters.as_deref())
-        .unwrap_or(&[]);
-    for (env, document) in job
+    for &step_idx in &selection.steps_to_run {
+        if ctx.is_stopping() {
+            break;
+        }
+        let step = &job.steps[step_idx];
+        ctx.move_to_job_environments(&job_environment_targets(prepared, step))
+            .await;
+        if ctx.is_stopping() {
+            break;
+        }
+        execute_step(ctx, args, step, step_idx, selection).await?;
+    }
+    Ok(())
+}
+
+/// The Job Environments of the combined Job (the attached ones, then the
+/// Job Template's own) that `step` enters ([`Step::enters_environment`],
+/// Template Schemas §4 item 4 `activation` and item 6 `enableIf`), in Job
+/// order, each with the Step's Environment parameter values for it, if any.
+fn job_environment_targets<'a>(
+    prepared: &'a PreparedRun,
+    step: &'a Step,
+) -> Vec<JobEnvironmentTarget<'a>> {
+    let step_values = step.environment_parameters.as_deref().unwrap_or(&[]);
+    prepared
+        .job
         .job_environments
         .iter()
         .flatten()
         .zip(&prepared.environment_documents)
-    {
-        if ctx.is_stopping() {
-            break;
-        }
-        if first.is_some_and(|step| !step.enters_environment(document, &env.name)) {
-            continue;
-        }
-        // Keyed by (document, name): an attached Environment may share its
-        // name with a Job Environment (§3.2.1 item 4).
-        let values = group_values
-            .iter()
-            .find(|v| &v.document == document && v.environment == env.name);
-        // The Environment's own frozen table carries the symbols job
-        // creation resolved for it (`Job.Name`, `Job.EnvNames`, and an
-        // attached Environment's own `Param.*`); a Session builds an
-        // Environment's scope from the table it is given.
-        ctx.enter_environment(env, &env.name, env.resolved_symtab.clone(), values)
-            .await;
-    }
-
-    for &step_idx in group {
-        if ctx.is_stopping() {
-            break;
-        }
-        execute_step(ctx, args, &job.steps[step_idx], step_idx, selection).await?;
-    }
-    Ok(())
+        .enumerate()
+        .filter(|(_, (env, document))| step.enters_environment(document, &env.name))
+        .map(|(index, (env, document))| JobEnvironmentTarget {
+            index,
+            env,
+            // Keyed by (document, name): an attached Environment may share
+            // its name with a Job Environment (§3.2.1 item 4).
+            values: step_values
+                .iter()
+                .find(|v| &v.document == document && v.environment == env.name),
+        })
+        .collect()
 }
 
 async fn execute_step(
@@ -399,7 +340,7 @@ async fn execute_step(
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone(), None)
+            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone(), None, None)
                 .await;
         }
     }
@@ -607,11 +548,11 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
 
     let duration = ctx.started_at.elapsed().as_secs_f64();
     ctx.end_session(args.preserve);
-    let preserved_msg: String = ctx
-        .preserved_dirs
-        .iter()
+    let preserved_msg = ctx
+        .preserved_dir
+        .as_ref()
         .map(|dir| format!("\nWorking directory preserved at: {}", dir.display()))
-        .collect();
+        .unwrap_or_default();
     let (status, message) = if ctx.session_failed {
         (
             "error",

@@ -10,8 +10,8 @@
 //! (`conda-env-params.yaml`, `docker-env-params.yaml`,
 //! `video-sfm-composite.yaml` in openjd-specifications) whose application
 //! commands are replaced with Python stubs that print the values they
-//! receive, plus small fixtures for Session grouping and submission
-//! errors.
+//! receive, plus small fixtures for exiting and re-entering Environments
+//! between Steps and for submission errors.
 
 use super::*;
 
@@ -55,25 +55,29 @@ fn each_step_enters_conda_with_its_own_values() {
     let conda = fixture("conda-env-params.yaml");
     let (code, stdout, stderr) = run_video(&["--environment", &conda]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    // Consecutive Steps all differ (DecodeFrames and EncodeVideo are equal
-    // but not adjacent), so each Step runs in its own Session.
-    assert_eq!(count(&stdout, "\tSession start"), 4, "{stdout}");
+    // One Session runs every Step. Consecutive Steps all differ
+    // (DecodeFrames and EncodeVideo are equal but not adjacent), so the
+    // Session exits Conda after each Step and enters it again with the next
+    // Step's values.
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "Entering Environment: Conda"), 4, "{stdout}");
+    assert_eq!(count(&stdout, "Exiting Environment: Conda"), 4, "{stdout}");
     assert_in_order(
         &stdout,
         &[
             "\tSession start",
+            "Entering Environment: Conda",
             "\tPackages(STRING) = ffmpeg=7",
             "Conda onEnter: Packages='ffmpeg=7' Channels='conda-forge'",
             "Running step 'DecodeFrames'",
             "DecodeFrames task: conda='ffmpeg=7' docker=None",
+            "Exiting Environment: Conda",
             "Conda onExit: Packages='ffmpeg=7'",
-            "Starting a new Session for Step 'SolveSfM': its Environments or their parameter \
-             values differ from the previous Session's.",
-            "\tSession start",
+            "Entering Environment: Conda",
             "Conda onEnter: Packages='colmap=3.11' Channels='conda-forge'",
+            "Running step 'SolveSfM'",
             "SolveSfM task: conda='colmap=3.11' docker=None",
             "Conda onExit: Packages='colmap=3.11'",
-            "Starting a new Session for Step 'Composite'",
             "\tChannels(STRING) = studio-internal conda-forge",
             "\tPackages(STRING) = maya=2025 mtoa",
             "Conda onEnter: Packages='maya=2025 mtoa' Channels='studio-internal conda-forge'",
@@ -82,7 +86,6 @@ fn each_step_enters_conda_with_its_own_values() {
             "Composite task: frames 11-20",
             "Composite task: conda='maya=2025 mtoa' docker=None",
             "Conda onExit: Packages='maya=2025 mtoa'",
-            "Starting a new Session for Step 'EncodeVideo'",
             "Conda onEnter: Packages='ffmpeg=7' Channels='conda-forge'",
             "EncodeVideo task: conda='ffmpeg=7' docker=None",
             "Conda onExit: Packages='ffmpeg=7'",
@@ -133,7 +136,7 @@ fn docker_wraps_each_step_with_its_own_image_and_mapped_mounts() {
     let (code, stdout, stderr) =
         run_video(&["--environment", &docker, "--path-mapping-rules", &rules]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 4, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
 
     let mapped = |rel: &[&str]| {
         let mut p = std::path::PathBuf::from(destination);
@@ -182,6 +185,7 @@ fn docker_wraps_each_step_with_its_own_image_and_mapped_mounts() {
             "Docker onExit: stopping registry.example.com/studio/maya:2025",
             "Docker onEnter: Image='docker.io/linuxserver/ffmpeg:latest' Gpus=''",
             "EncodeVideo task: conda=None docker='docker.io/linuxserver/ffmpeg:latest'",
+            "Docker onExit: stopping docker.io/linuxserver/ffmpeg:latest",
             "All actions completed successfully!",
         ],
     );
@@ -254,15 +258,16 @@ fn a_job_template_without_env_params_takes_the_defaults() {
     assert!(stderr.is_empty(), "{stderr}");
 }
 
-// ── Session grouping ────────────────────────────────────────────────
+// ── Exiting and re-entering Environments between Steps ──────────────
 
 #[test]
-fn consecutive_steps_with_equal_values_share_a_session() {
+fn a_step_with_other_values_reenters_the_environment_in_the_same_session() {
     let (code, stdout, stderr) = run_cli(&["run", &fixture("grouping.yaml")]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
     assert_eq!(count(&stdout, "\tRunning job 'Grouping'"), 1, "{stdout}");
     assert_eq!(count(&stdout, "Seats onEnter"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "Seats onExit"), 2, "{stdout}");
     // Each Session runs only its own group's Steps, each once.
     for step in ["A", "B", "C", "D"] {
         assert_eq!(count(&stdout, &format!("Step {step} ran")), 1, "{stdout}");
@@ -276,30 +281,36 @@ fn consecutive_steps_with_equal_values_share_a_session() {
             "Step A ran",
             // INT 2 written as 2 and as "2" are equal (§3.2.2).
             "Step B ran",
+            // C takes the default, so the Session exits Seats and enters
+            // it again with C's value before C runs (Template Schemas
+            // §3.2.2).
+            "Exiting Environment: Seats",
             "Seats onExit Count=2",
-            "Starting a new Session for Step 'C': its Environments or their parameter values \
-             differ from the previous Session's.",
-            "\tSession start",
+            "Entering Environment: Seats",
             "\tCount(INT) = 1",
             "Seats onEnter Count=1",
+            "Running step 'C'",
             "Step C ran",
             "Step D ran",
             "Seats onExit Count=1",
             "All actions completed successfully!",
         ],
     );
+    assert!(!stdout.contains("Starting a new Session"), "{stdout}");
 }
 
 #[test]
-fn steps_that_enter_different_environments_run_in_different_sessions() {
+fn a_step_that_does_not_request_an_environment_runs_after_it_is_exited() {
     // `activation: ON_REQUEST` (Template Schemas §4 item 4): only the
-    // requesting Steps' Session enters the Environment or has its
-    // variables (§3.2.2, fourth paragraph).
+    // requesting Steps' Tasks run with the Environment entered or its
+    // variables set (§3.2.2, fourth paragraph). The Session exits it before
+    // C and keeps Always, which every Step enters, entered throughout.
     let (code, stdout, stderr) = run_cli(&["run", &fixture("activation_grouping.yaml")]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 2, "{stdout}");
-    assert_eq!(count(&stdout, "Always onEnter"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "Always onEnter"), 1, "{stdout}");
     assert_eq!(count(&stdout, "OnRequest onEnter"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "Exiting Environment: Always"), 1, "{stdout}");
     assert_in_order(
         &stdout,
         &[
@@ -308,12 +319,11 @@ fn steps_that_enter_different_environments_run_in_different_sessions() {
             "OnRequest onEnter",
             "Step A ran ON_REQUEST=set",
             "Step B ran",
+            "Exiting Environment: OnRequest",
             "OnRequest onExit",
-            "Starting a new Session for Step 'C': its Environments or their parameter values \
-             differ from the previous Session's.",
-            "\tSession start",
-            "Always onEnter",
+            "Running step 'C'",
             "Step C ran ON_REQUEST=unset",
+            "Exiting Environment: Always",
             "All actions completed successfully!",
         ],
     );
@@ -337,7 +347,7 @@ fn an_environment_reads_job_name_and_job_env_names() {
 }
 
 #[test]
-fn a_selected_step_with_its_dependencies_is_grouped_the_same_way() {
+fn a_selected_step_with_its_dependencies_reenters_environments_the_same_way() {
     let (code, stdout, stderr) = run_cli(&[
         "run",
         &fixture("grouping.yaml"),
@@ -346,12 +356,13 @@ fn a_selected_step_with_its_dependencies_is_grouped_the_same_way() {
         "--run-dependencies",
     ]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
     assert_in_order(
         &stdout,
         &[
             "Step A ran",
             "Step B ran",
+            "Seats onExit Count=2",
             "Seats onEnter Count=1",
             "Step C ran",
         ],
@@ -360,7 +371,7 @@ fn a_selected_step_with_its_dependencies_is_grouped_the_same_way() {
 }
 
 #[test]
-fn each_session_has_its_own_working_directory() {
+fn a_run_that_reenters_environments_has_one_working_directory() {
     let child = cli_command(&["run", &fixture("grouping.yaml"), "--preserve"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -373,19 +384,19 @@ fn each_session_has_its_own_working_directory() {
         .lines()
         .filter_map(|l| l.strip_prefix("Working directory preserved at: "))
         .collect();
-    assert_eq!(dirs.len(), 2, "{stdout}");
-    // Each Session gets its own working directory. Its name is random
-    // (specs/sessions/session.md), so only distinctness is checked.
-    assert_ne!(dirs[0], dirs[1], "{stdout}");
+    // One Session, so one working directory, although the run exits and
+    // enters Seats again between Steps.
+    assert_eq!(dirs.len(), 1, "{stdout}");
     for dir in dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
 
 #[test]
-fn an_error_in_a_later_session_still_prints_every_preserved_directory() {
-    // Step B is in a second Session, and its explicit Task value is outside
-    // its parameter space, which is an error only when B runs.
+fn an_error_after_reentering_an_environment_still_prints_the_preserved_directory() {
+    // Step B takes Seats' default, so the Session enters Seats again for it,
+    // and its explicit Task value is outside its parameter space, which is
+    // an error only when B runs.
     let dir = tempfile::tempdir().unwrap();
     let job = dir.path().join("late_error.yaml");
     std::fs::write(
@@ -420,8 +431,11 @@ steps:
         "--preserve",
     ]);
     assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
     assert!(stdout.contains("Step A ran"), "{stdout}");
+    // The error still exits every entered Environment.
+    assert_eq!(count(&stdout, "Entering Environment: Seats"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "Exiting Environment: Seats"), 2, "{stdout}");
     assert!(
         stderr.contains(
             "ERROR: Task parameter set 0: Parameter 'T' value '9' is not in the parameter space \
@@ -433,7 +447,7 @@ steps:
         .lines()
         .filter_map(|l| l.strip_prefix("Working directory preserved at: "))
         .collect();
-    assert_eq!(dirs.len(), 2, "{stdout}");
+    assert_eq!(dirs.len(), 1, "{stdout}");
     for dir in dirs {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -469,11 +483,11 @@ fn an_invalid_environment_file_is_named_in_the_error() {
 }
 
 #[test]
-fn a_failure_stops_the_run_before_the_next_session() {
+fn a_failure_stops_the_run_before_the_next_step_reenters_environments() {
     let (code, stdout, stderr) = run_cli(&["run", &fixture("fail_first_group.yaml")]);
     assert_eq!(code, 1, "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
-    assert!(!stdout.contains("Starting a new Session"), "{stdout}");
+    assert_eq!(count(&stdout, "Seats onEnter"), 1, "{stdout}");
     assert!(!stdout.contains("Step B ran"), "{stdout}");
     assert_in_order(
         &stdout,
@@ -1833,9 +1847,10 @@ fn a_disabled_environment_needs_no_values() {
 #[test]
 fn range_expr_values_that_denote_the_same_integers_share_a_session() {
     // §3.2.2: two RANGE_EXPR values are equal when they have the same
-    // canonical form, so A and B (`1-3`), C (`1,2,3`), and E (` 1-3 `) run in
-    // one Session, and D, which takes the default `1-10`, in another. Each
-    // value is its canonical form in the Session, in `run`, and in `summary`.
+    // canonical form, so A and B (`1-3`), C (`1,2,3`), and E (` 1-3 `) run
+    // with Cache entered once, and D, which takes the default `1-10`, only
+    // after the Session exits Cache and enters it again. Each value is its
+    // canonical form in the Session, in `run`, and in `summary`.
     let dir = tempfile::tempdir().unwrap();
     let job = write_file(
         &dir,
@@ -1857,7 +1872,8 @@ fn range_expr_values_that_denote_the_same_integers_share_a_session() {
     );
     let (code, stdout, stderr) = run_cli(&["run", &job]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert_eq!(count(&stdout, "\tSession start"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "Entering Environment: Cache"), 2, "{stdout}");
     assert_in_order(
         &stdout,
         &[
@@ -1867,6 +1883,7 @@ fn range_expr_values_that_denote_the_same_integers_share_a_session() {
             "TASK B",
             "TASK C",
             "TASK E",
+            "Exiting Environment: Cache",
             "F(RANGE_EXPR) = 1-10",
             "ENTER 10 1-10",
             "TASK D",
@@ -1886,4 +1903,146 @@ fn range_expr_values_that_denote_the_same_integers_share_a_session() {
             "step {step}"
         );
     }
+}
+
+#[test]
+fn only_the_environments_above_the_first_difference_are_exited() {
+    // Job Environments First, Middle, and Last, entered in that order. A
+    // requests the ON_REQUEST Middle and B does not, so between them the
+    // Session exits Last and Middle (the reverse of entry order) and enters
+    // Last again; First, the longest entered prefix B also needs, stays
+    // entered. Between B and C only Last's value differs, so only Last is
+    // exited and entered again (Template Schemas §3.2.2).
+    let dir = tempfile::tempdir().unwrap();
+    let echo = |what: &str| format!("{{command: python, args: [\"-c\", \"print('{what}')\"]}}");
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        &format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+             jobEnvironments:\n\
+             - name: First\n  script: {{actions: {{onEnter: {fe}, onExit: {fx}}}}}\n\
+             - name: Middle\n  activation: ON_REQUEST\n  \
+             script: {{actions: {{onEnter: {me}, onExit: {mx}}}}}\n\
+             - name: Last\n  envParameterDefinitions: [{{name: V, type: INT, default: 1}}]\n  \
+             script: {{actions: {{onEnter: {{command: python, args: [\"-c\", \"import sys; \
+             print('ENTER Last ' + sys.argv[1])\", \"{{{{Env.Param.V}}}}\"]}}, \
+             onExit: {{command: python, args: [\"-c\", \"import sys; print('EXIT Last ' + \
+             sys.argv[1])\", \"{{{{Env.Param.V}}}}\"]}}}}}}\n\
+             steps:\n\
+             - name: A\n  dependencies: [{{environment: Middle}}]\n  \
+             script: {{actions: {{onRun: {ta}}}}}\n\
+             - name: B\n  dependencies: [{{dependsOn: A}}]\n  script: {{actions: {{onRun: {tb}}}}}\n\
+             - name: C\n  dependencies: [{{dependsOn: B}}, {{environment: Last, parameters: \
+             {{V: 2}}}}]\n  script: {{actions: {{onRun: {tc}}}}}\n",
+            fe = echo("ENTER First"),
+            fx = echo("EXIT First"),
+            me = echo("ENTER Middle"),
+            mx = echo("EXIT Middle"),
+            ta = echo("TASK A"),
+            tb = echo("TASK B"),
+            tc = echo("TASK C"),
+        ),
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    let markers: Vec<&str> = stdout
+        .lines()
+        .filter_map(|line| {
+            ["ENTER ", "EXIT ", "TASK "]
+                .iter()
+                .find_map(|m| line.find(m).map(|at| &line[at..]))
+        })
+        .collect();
+    assert_eq!(
+        markers,
+        [
+            "ENTER First",
+            "ENTER Middle",
+            "ENTER Last 1",
+            "TASK A",
+            "EXIT Last 1",
+            "EXIT Middle",
+            "ENTER Last 1",
+            "TASK B",
+            "EXIT Last 1",
+            "ENTER Last 2",
+            "TASK C",
+            "EXIT Last 2",
+            "EXIT First",
+        ],
+        "{stdout}"
+    );
+}
+
+#[test]
+fn an_environment_reentered_under_a_wrapper_exits_through_the_wrap_hooks() {
+    // RFC 0008: Wrap wraps the actions of every Environment entered after
+    // it. The Session keeps Wrap entered and exits and enters Seats again
+    // between B and C, each time through Wrap's onWrapEnvExit and
+    // onWrapEnvEnter, with the values Seats was entered with.
+    let dir = tempfile::tempdir().unwrap();
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        r#"specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR, WRAP_ACTIONS]
+name: WrapReenter
+jobEnvironments:
+- name: Wrap
+  script:
+    actions:
+      onEnter: {command: python, args: ["-c", "print('Wrap own onEnter')"]}
+      onWrapEnvEnter: {command: python, args: ["-c", "print('WrapEnvEnter {{WrappedEnv.Name}}')"]}
+      onWrapTaskRun: {command: python, args: ["-c", "print('WrapTaskRun')"]}
+      onWrapEnvExit: {command: python, args: ["-c", "print('WrapEnvExit {{WrappedEnv.Name}}')"]}
+      onExit: {command: python, args: ["-c", "print('Wrap own onExit')"]}
+- name: Seats
+  envParameterDefinitions: [{name: Count, type: INT, default: 1}]
+  script:
+    actions:
+      onEnter: {command: python, args: ["-c", "print('Seats onEnter')"]}
+      onExit: {command: python, args: ["-c", "print('Seats onExit')"]}
+steps:
+- name: B
+  dependencies: [{environment: Seats, parameters: {Count: 2}}]
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step B ran')"]}}}
+- name: C
+  dependencies: [{dependsOn: B}]
+  script: {actions: {onRun: {command: python, args: ["-c", "print('Step C ran')"]}}}
+"#,
+    );
+    let (code, stdout, stderr) = run_cli(&["run", &job]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(count(&stdout, "\tSession start"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "Wrap own onEnter"), 1, "{stdout}");
+    assert_eq!(count(&stdout, "WrapEnvEnter Seats"), 2, "{stdout}");
+    assert_eq!(count(&stdout, "WrapEnvExit Seats"), 2, "{stdout}");
+    // The wrapper substitutes its hooks for Seats' own actions.
+    assert!(!stdout.contains("Seats onEnter"), "{stdout}");
+    assert!(!stdout.contains("Seats onExit"), "{stdout}");
+    assert_in_order(
+        &stdout,
+        &[
+            "Wrap own onEnter",
+            "Entering Environment: Seats",
+            "\tCount(INT) = 2",
+            "WrapEnvEnter Seats",
+            "Running step 'B'",
+            "WrapTaskRun",
+            "Exiting Environment: Seats",
+            "WrapEnvExit Seats",
+            "Entering Environment: Seats",
+            "\tCount(INT) = 1",
+            "WrapEnvEnter Seats",
+            "Running step 'C'",
+            "WrapTaskRun",
+            "Exiting Environment: Seats",
+            "WrapEnvExit Seats",
+            "Exiting Environment: Wrap",
+            "Wrap own onExit",
+            "All actions completed successfully!",
+        ],
+    );
 }

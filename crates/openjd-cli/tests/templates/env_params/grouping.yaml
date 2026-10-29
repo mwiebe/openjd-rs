@@ -1,7 +1,8 @@
 # A Job Environment with one INT parameter, and four Steps that run in
 # this order. A and B supply equal values (INT 2 written as 2 and as "2"),
-# C and D take the default, so `openjd run` runs A and B in one Session and
-# C and D in a second.
+# C and D take the default, so `openjd run` enters Seats once for A and B,
+# then exits it and enters it again with the default for C and D, all in
+# one Session.
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
 name: Grouping

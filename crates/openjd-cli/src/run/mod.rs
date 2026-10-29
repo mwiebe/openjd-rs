@@ -54,6 +54,41 @@ struct EnteredEnvironment {
     identifier: String,
     name: String,
     symtab: EnvSymtab,
+    /// Which Job Environment this is, and the values it was entered with;
+    /// `None` for a Step Environment.
+    job_environment: Option<EnteredJobEnvironment>,
+}
+
+/// The identity of an entered Job Environment and the Environment
+/// parameter values the Session entered it with (Template Schemas §3.2.2).
+struct EnteredJobEnvironment {
+    /// Index into the combined Job's `job_environments`, which names the
+    /// Environment by `(document, name)`.
+    index: usize,
+    values: Option<EnvironmentParameterValues>,
+}
+
+impl EnteredJobEnvironment {
+    /// Whether a Step that enters `target` can keep this entry: the same
+    /// Job Environment, entered with values equal to the Step's
+    /// ([`EnvironmentParameterValues::values_equal`]), or without values on
+    /// both sides.
+    fn matches(&self, target: &JobEnvironmentTarget<'_>) -> bool {
+        self.index == target.index
+            && match (&self.values, target.values) {
+                (None, None) => true,
+                (Some(entered), Some(wanted)) => entered.values_equal(wanted),
+                _ => false,
+            }
+    }
+}
+
+/// A Job Environment a Step enters, with the Step's values for it.
+struct JobEnvironmentTarget<'a> {
+    /// Index into the combined Job's `job_environments`.
+    index: usize,
+    env: &'a Environment,
+    values: Option<&'a EnvironmentParameterValues>,
 }
 
 struct RunContext {
@@ -63,9 +98,9 @@ struct RunContext {
     started_at: Instant,
     tasks_run: usize,
     session_failed: bool,
-    /// The working directories of the Sessions that have ended with
-    /// `--preserve`, in order.
-    preserved_dirs: Vec<PathBuf>,
+    /// The Session's working directory, once the Session has ended with
+    /// `--preserve`.
+    preserved_dir: Option<PathBuf>,
 }
 
 impl RunContext {
@@ -94,36 +129,82 @@ impl RunContext {
         self.session_failed || self.interrupted.load(Ordering::SeqCst)
     }
 
-    /// End the current Session: keep its working directory when
-    /// `preserve` (recording it for the result), else remove it.
+    /// End the Session: keep its working directory when `preserve`
+    /// (recording it for the result), else remove it.
     fn end_session(&mut self, preserve: bool) {
         if preserve {
-            self.preserved_dirs
-                .push(self.session.working_directory().to_path_buf());
+            self.preserved_dir = Some(self.session.working_directory().to_path_buf());
         } else {
             self.session.cleanup();
         }
     }
 
-    /// Print each preserved working directory, for a run that ends with an
-    /// error before its result is reported, so the directories of the
-    /// Sessions that already ran are not lost.
-    fn print_preserved_dirs(&self) {
-        for dir in &self.preserved_dirs {
+    /// Print the preserved working directory, for a run that ends with an
+    /// error before its result is reported.
+    fn print_preserved_dir(&self) {
+        if let Some(dir) = &self.preserved_dir {
             println!("Working directory preserved at: {}", dir.display());
+        }
+    }
+
+    /// Make the Session's entered Job Environments exactly `targets`, in
+    /// order (Template Schemas §3.2.2): exit entered Environments, from the
+    /// most recently entered, until what remains is a prefix of `targets`
+    /// whose every entry [`matches`](EnteredJobEnvironment::matches), then
+    /// enter the rest of `targets` in order. Called between Steps, when no
+    /// Step Environment is entered. Exits go through
+    /// [`exit_environments_down_to`](Self::exit_environments_down_to), so
+    /// an Environment entered under a wrapper is exited through its
+    /// `onWrapEnvExit` while the wrapper is still entered.
+    async fn move_to_job_environments(&mut self, targets: &[JobEnvironmentTarget<'_>]) {
+        let kept = self
+            .entered_envs
+            .iter()
+            .zip(targets)
+            .take_while(|(entered, target)| {
+                entered
+                    .job_environment
+                    .as_ref()
+                    .is_some_and(|job_env| job_env.matches(target))
+            })
+            .count();
+        self.exit_environments_down_to(kept).await;
+        for target in &targets[kept..] {
+            if self.is_stopping() {
+                break;
+            }
+            // The Environment's own frozen table carries the symbols job
+            // creation resolved for it (`Job.Name`, `Job.EnvNames`, and an
+            // attached Environment's own `Param.*`); a Session builds an
+            // Environment's scope from the table it is given.
+            self.enter_environment(
+                target.env,
+                &target.env.name,
+                target.env.resolved_symtab.clone(),
+                target.values,
+                Some(target.index),
+            )
+            .await;
         }
     }
 
     /// Enter `env`, with `values` as its Environment parameter values
     /// (`ENV_PARAMS`) when it declares parameters. The values are printed
-    /// after the banner, as given (before path mapping).
+    /// after the banner, as given (before path mapping). `job_index` is the
+    /// Environment's index in the combined Job's `job_environments`, or
+    /// `None` for a Step Environment.
     async fn enter_environment(
         &mut self,
         env: &Environment,
         name: &str,
         symtab: EnvSymtab,
         values: Option<&EnvironmentParameterValues>,
+        job_index: Option<usize>,
     ) {
+        let job_environment = job_index.map(|index| EnteredJobEnvironment {
+            index,
+            values: values.cloned(),
+        });
         self.print_action_banner(&format!("Entering Environment: {name}"));
         if let Some(values) = values {
             println!("{}\tEnvironment parameter values:", self.timestamp());
@@ -140,6 +221,7 @@ impl RunContext {
                 identifier,
                 name: name.to_string(),
                 symtab,
+                job_environment,
             }),
             Err(e) => {
                 eprintln!("ERROR: Environment setup failed: {e}");
@@ -159,6 +241,7 @@ impl RunContext {
                             identifier: identifier.clone(),
                             name: name.to_string(),
                             symtab,
+                            job_environment,
                         });
                     }
                 }
@@ -378,7 +461,7 @@ mod tests {
             started_at: Instant::now(),
             tasks_run: 0,
             session_failed: false,
-            preserved_dirs: Vec::new(),
+            preserved_dir: None,
         };
 
         ctx.record_interruption();

@@ -1,7 +1,7 @@
 # A Job Environment with `activation: ON_REQUEST`, and three Steps that
-# run in this order. A and B request it and C does not, so `openjd run` runs
-# A and B in one Session that enters it and C in a second Session that does
-# not, although no Step has Environment parameter values.
+# run in this order. A and B request it and C does not, so `openjd run`
+# enters it for A and B and exits it before C, although no Step has
+# Environment parameter values. The Session keeps Always entered throughout.
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
 name: ActivationGrouping

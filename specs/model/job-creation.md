@@ -373,7 +373,7 @@ stage](#the-submission-stage):
   error at the value).
 - A **RANGE_EXPR** value is stored as its `range_expr`, whose transport form is its canonical
   form, so two values that denote the same integers are equal (§3.2.2): `1-3` and `1,2,3` have
-  one transport form, and `Step::environment_values_equal`, Session grouping, and the shared
+  one transport form, and `Step::environment_values_equal`, `openjd run`'s choice of Environments to re-enter, and the shared
   resolutions of `enableIf` and `hostRequirements` see them as one. A Session parses it as it
   parses a RANGE_EXPR Job Parameter's value.
 

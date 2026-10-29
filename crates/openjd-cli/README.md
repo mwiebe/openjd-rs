@@ -52,8 +52,8 @@ openjd summary my-template.yaml -p Frames=1-100
 # Run a job locally, one task at a time
 openjd run my-template.yaml -p Frames=1-10
 
-# Run a job with a queue environment template attached (ENV_PARAMS Steps
-# that supply different values run in separate Sessions)
+# Run a job with a queue environment template attached (between ENV_PARAMS
+# Steps that supply different values, the Session exits and re-enters it)
 openjd run my-template.yaml --environment conda-env.yaml
 ```
 

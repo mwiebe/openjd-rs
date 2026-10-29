@@ -78,6 +78,8 @@ Numbered after plan 4's A48.
 
 * **§3.2.2 equality and RANGE_EXPR testing.** `openjd run` reports "Starting a new Session for Step ..." when values
   differ, so Session sharing of RANGE_EXPR values is observable there after all; the AUDIT.md addendum says it is not.
+  (Superseded: `openjd run` now keeps one Session and exits and re-enters the Environment instead, which its
+  `Exiting Environment` and `Entering Environment` banners still make observable.)
 * **Conformance.** JB-66–JB-69, JB-89, and JB-121 are rejected by the item 2.1 rule (each `openjd run` message names
   the attribute "of which a host has exactly one value"); JB-119 and JB-120 run.
 

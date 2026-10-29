@@ -1,6 +1,6 @@
-# Step A fails; Step B has different Environment parameter values, so it
-# would run in a second Session. A failure stops the run, so no second
-# Session starts.
+# Step A fails; Step B has different Environment parameter values, so the
+# Session would exit Seats and enter it again for B. A failure stops the
+# run, so Seats is exited and not entered again, and B does not run.
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
 name: FailFirstGroup
