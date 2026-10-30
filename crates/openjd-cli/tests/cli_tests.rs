@@ -9072,7 +9072,8 @@ steps:
     }
 
     /// A ' in a given value is written for a POSIX shell, so the example
-    /// still pastes back.
+    /// still pastes back; a given list is written spaced, as placeholders
+    /// are.
     #[test]
     fn a_quote_in_a_given_value_is_escaped_in_the_example() {
         let job = write(&producer_and_consumer(
@@ -9084,7 +9085,7 @@ steps:
             "--step",
             "C",
             "--step-inputs",
-            r#"{"Steps.P.Output.B": "it's"}"#,
+            r#"{"Steps.P.Output.B": "it's", "Steps.P.Output.L": [1,2]}"#,
         ]);
         assert_eq!(code, 1);
         assert_eq!(
@@ -9092,7 +9093,7 @@ steps:
             "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
              Steps.P.Output.A (INT)\n\
              Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
-             --step-inputs '{\"Steps.P.Output.B\": \"it'\\''s\", \"Steps.P.Output.A\": 0}'"
+             --step-inputs '{\"Steps.P.Output.B\": \"it'\\''s\", \"Steps.P.Output.L\": [1, 2], \"Steps.P.Output.A\": 0}'"
         );
     }
 

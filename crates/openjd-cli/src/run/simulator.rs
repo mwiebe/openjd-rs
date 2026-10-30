@@ -3001,8 +3001,9 @@ fn step_inputs_example(example: &IndexMap<String, Placeholder>) -> String {
     text
 }
 
-/// `value` as JSON with `, ` between list elements and map entries and `: `
-/// after keys, as the placeholders are written.
+/// `value` as JSON with `, ` between list elements, as the placeholders
+/// are written. An output value holds no JSON object (the collector refuses
+/// one), so an object is written as serde writes it.
 fn spaced_json(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Array(items) => {
@@ -3011,17 +3012,6 @@ fn spaced_json(value: &serde_json::Value) -> String {
                 items.iter().map(spaced_json).collect::<Vec<_>>().join(", ")
             )
         }
-        serde_json::Value::Object(map) => format!(
-            "{{{}}}",
-            map.iter()
-                .map(|(k, v)| format!(
-                    "{}: {}",
-                    serde_json::Value::from(k.as_str()),
-                    spaced_json(v)
-                ))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
         v => v.to_string(),
     }
 }
