@@ -713,6 +713,61 @@ fn a_zero_task_producers_lists_are_empty_and_typed() {
 }
 
 #[test]
+fn a_given_producer_leaves_outputs_it_lacks_unknown() {
+    let job = producer(
+        "      taskParameterDefinitions: [{name: F, type: INT, range: '1-2'}]\n",
+        "[{name: Num, type: INT}, {name: S, type: STRING}]",
+    );
+    let p = step(&job, "P");
+    let mut inputs = StepInputs::new();
+    let num = |n| outputs(&[("Num", ExprValue::Int(n))]);
+    inputs
+        .add_producer(
+            p,
+            ProducerState::Given {
+                task_outputs: &[num(1), num(2)],
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        inputs
+            .get("Steps.P.Output.Num")
+            .unwrap()
+            .to_display_string(),
+        "[1, 2]"
+    );
+    assert!(!inputs.is_concrete("Steps.P.Output.S"));
+    assert!(!inputs.is_concrete("Steps.P.RawOutput.S"));
+    assert!(inputs.is_concrete("Steps.P.TaskParam.F"));
+    // An output must be given for every Task or for none.
+    assert_eq!(
+        inputs
+            .add_producer(
+                p,
+                ProducerState::Given {
+                    task_outputs: &[num(1), outputs(&[])],
+                },
+            )
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: Task 1 of Step 'P' has no value for output 'Num'."
+    );
+    // With zero Tasks every output is concrete, an empty list.
+    let job = producer(
+        "      taskParameterDefinitions: [{name: F, type: INT, range: '{{[]}}'}]\n",
+        "[{name: Num, type: INT}]",
+    );
+    let mut inputs = StepInputs::new();
+    inputs
+        .add_producer(step(&job, "P"), ProducerState::Given { task_outputs: &[] })
+        .unwrap();
+    assert_eq!(
+        inputs.get("Steps.P.Output.Num").unwrap().list_len(),
+        Some(0)
+    );
+}
+
+#[test]
 fn a_path_value_is_held_only_in_its_raw_form() {
     let job = producer(
         "      taskParameterDefinitions: [{name: D, type: PATH, range: ['/a', '/b']}]\n",
