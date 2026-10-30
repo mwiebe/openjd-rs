@@ -955,7 +955,7 @@ impl Simulator {
         if missing.is_empty() {
             return Ok(());
         }
-        let (lines, example) = self.describe_missing(&missing);
+        let (lines, example) = self.describe_missing(&missing, values);
         // --step-inputs can supply the outputs only of a producer bound at
         // Job creation, which are the ones the example holds.
         let hint = match example {
@@ -972,11 +972,22 @@ impl Simulator {
 
     /// Describe the missing `Steps.*` values `missing`: one line each,
     /// `  <symbol> (<type and shape>)`, and, when `--step-inputs` can give
-    /// any of them, a ready-to-fill `--step-inputs` example with a
-    /// placeholder of the right type and shape for each.
-    fn describe_missing(&self, missing: &[String]) -> (String, Option<String>) {
+    /// any of them, a ready-to-fill `--step-inputs` example: the values
+    /// `given` already, then a placeholder of the right type and shape for
+    /// each missing one, so the example can replace the `--step-inputs`
+    /// given.
+    fn describe_missing(
+        &self,
+        missing: &[String],
+        given: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> (String, Option<String>) {
         let mut lines = Vec::with_capacity(missing.len());
         let mut example: IndexMap<String, Placeholder> = IndexMap::new();
+        let given: IndexMap<String, Placeholder> = given
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| (k.clone(), Placeholder::Value(v.clone())))
+            .collect();
         for symbol in missing {
             let (shape, placeholder) = self.describe_input(symbol);
             lines.push(format!("  {symbol} ({shape})"));
@@ -984,7 +995,11 @@ impl Simulator {
                 example.entry(key).or_insert(placeholder);
             }
         }
-        let example = (!example.is_empty()).then(|| step_inputs_example(&example));
+        let example = (!example.is_empty()).then(|| {
+            let mut all = given;
+            all.extend(example);
+            step_inputs_example(&all)
+        });
         (lines.join("\n"), example)
     }
 
@@ -2054,8 +2069,10 @@ impl Simulator {
     /// blocks the loop, and one this run does not run, with no
     /// `--step-inputs` values, fails it with a message that says how to give
     /// them (or, for a dependency not bound at Job creation, which
-    /// `--step-inputs` cannot give, to use `--run-dependencies`). Any other
-    /// caller error is a bug in the simulator.
+    /// `--step-inputs` cannot give, to use `--run-dependencies`). One
+    /// `--step-inputs` gave, but without an output the error names, fails
+    /// it with a message listing those outputs with a `--step-inputs`
+    /// example. Any other caller error is a bug in the simulator.
     fn missing_loop_input(
         &mut self,
         li: usize,
@@ -2115,12 +2132,12 @@ impl Simulator {
             if not_given.is_empty() {
                 return Err(internal(text));
             }
-            let (lines, example) = self.describe_missing(&not_given);
+            let (lines, example) = self.describe_missing(&not_given, None);
             let example = example
                 .map(|e| format!(" For example:\n{e}"))
                 .unwrap_or_default();
             let message = format!(
-                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give, starting with:\n{lines}\nAdd them to --step-inputs, with any other outputs of these Steps the loop reads.{example}"
+                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give (the first ones it found):\n{lines}\nAdd them to --step-inputs, with any other outputs of these Steps the loop reads.{example}"
             );
             eprintln!("ERROR: {message}");
             self.fail_loop(li, message);
@@ -2694,7 +2711,13 @@ impl Simulator {
                             Node::Step(_) => "Step",
                             Node::Loop(_) => "Loop",
                         };
-                        let why = if !self.in_run.contains(&node) {
+                        let supplied = match node {
+                            Node::Step(j) => self.records[j].supplied,
+                            Node::Loop(j) => self.loop_records[j].supplied,
+                        };
+                        let why = if supplied {
+                            "this run does not run, and --step-inputs does not give the outputs this reads"
+                        } else if !self.in_run.contains(&node) {
                             "this run does not run"
                         } else {
                             match self.state_of(node) {

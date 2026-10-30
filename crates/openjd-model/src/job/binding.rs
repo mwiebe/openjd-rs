@@ -249,8 +249,13 @@ impl StepInputs {
             ProducerState::Succeeded { task_outputs } | ProducerState::Given { task_outputs } => {
                 let given = matches!(state, ProducerState::Given { .. });
                 if !producer.binding.is_bound() {
+                    let what = if given {
+                        "be given outputs"
+                    } else {
+                        "have succeeded"
+                    };
                     return Err(misuse(format!(
-                        "Step '{p}' is not bound, so it cannot have succeeded."
+                        "Step '{p}' is not bound, so it cannot {what}."
                     )));
                 }
                 let space = producer.parameter_space.as_ref();
@@ -342,8 +347,13 @@ impl StepInputs {
             LoopProducerState::Succeeded { outputs } | LoopProducerState::Given { outputs } => {
                 let given = matches!(state, LoopProducerState::Given { .. });
                 if !matches!(producer.binding, LoopBinding::Bound(_)) {
+                    let what = if given {
+                        "be given outputs"
+                    } else {
+                        "have succeeded"
+                    };
                     return Err(misuse(format!(
-                        "loop '{p}' is not bound, so it cannot have succeeded."
+                        "loop '{p}' is not bound, so it cannot {what}."
                     )));
                 }
                 for ov in &producer.output_variables {

@@ -2683,6 +2683,16 @@ fn add_loop_producer_holds_list_path_outputs_raw_and_needs_a_bound_loop() {
             .to_string(),
         "Compatibility error: loop 'L' is not bound, so it cannot have succeeded."
     );
+    assert_eq!(
+        StepInputs::new()
+            .add_loop_producer(
+                &skipped.loops[0],
+                LoopProducerState::Given { outputs: &values }
+            )
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: loop 'L' is not bound, so it cannot be given outputs."
+    );
 }
 
 #[test]
