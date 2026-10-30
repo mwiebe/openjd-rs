@@ -54,7 +54,8 @@ cargo test --workspace
 cargo test -p openjd-sessions
 ```
 
-The workspace has 5,300+ unit and integration tests across all crates.
+The workspace has 8,900+ unit and integration tests across all crates (8,947 passing and 42 ignored by
+`cargo test --workspace` on Linux at the time of writing).
 
 ### Cross-user tests (Docker)
 
@@ -80,21 +81,24 @@ Current coverage: 87.3% line coverage (see [COVERAGE_REPORT.md](COVERAGE_REPORT.
 
 ## Conformance
 
-Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) (1,038 tests on Linux):
+Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDescription/openjd-specifications/tree/mainline/conformance-tests) that runs on Linux: 1,649 tests, with 19 Windows-only tests skipped. The counts are for the `rfc-control-flow` branch of openjd-specifications at commit `69a9e95`, which adds the draft `CONTROL_FLOW` extension's tests. Those tests are not on `mainline` yet, and `mainline` has moved on since that branch was made, so its counts differ:
 
 | Category | Tests |
 |----------|-------|
-| Template validation (base) | 444 |
-| Template validation (EXPR) | 202 |
-| Template validation (FEATURE_BUNDLE_1) | 36 |
+| Template validation (base) | 455 |
+| Template validation (EXPR) | 220 |
+| Template validation (FEATURE_BUNDLE_1) | 42 |
 | Template validation (TASK_CHUNKING) | 11 |
-| Environment template validation | 31 |
-| Job execution (base) | 163 |
-| Job execution (EXPR) | 123 |
-| Job execution (FEATURE_BUNDLE_1) | 13 |
+| Template validation (CONTROL_FLOW) | 199 |
+| Environment template validation (all extensions, including 4 for CONTROL_FLOW) | 63 |
+| Job execution (base) | 196 |
+| Job execution (EXPR) | 157 |
+| Job execution (FEATURE_BUNDLE_1) | 12 |
 | Job execution (TASK_CHUNKING) | 7 |
 | Job execution (REDACTED_ENV_VARS) | 8 |
-| **Total** | **1,038** |
+| Job execution (WRAP_ACTIONS) | 64 |
+| Job execution (CONTROL_FLOW) | 215 |
+| **Total** | **1,649** |
 
 ## Architecture
 
