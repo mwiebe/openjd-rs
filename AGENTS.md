@@ -272,7 +272,7 @@ PRs run these checks (all must pass):
 | **Clippy** | `cargo clippy` on Linux, Windows, macOS — includes the helper binary |
 | **Build** | Release build on all three platforms |
 | **Test** | `cargo test --workspace` + helper tests on all three platforms |
-| **Conformance** | Full OpenJD conformance suite (1,038 tests) on all three platforms |
+| **Conformance** | Full OpenJD conformance suite (`2023-09/*` from openjd-specifications `mainline`) on all three platforms. `mainline` does not have the draft `CONTROL_FLOW` tests yet; see README.md "Conformance" for the counts with them |
 | **MSRV** | `cargo check --workspace` with Rust 1.97.0 |
 | **Documentation** | `cargo doc --no-deps --workspace` with `-D warnings` |
 | **Compliance** | Copyright header check |

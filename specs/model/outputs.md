@@ -189,9 +189,8 @@ format; each element's text is kept as stored), or `worker_format` when empty. E
 mapped back through rules of different source formats therefore share one format, and
 an element taken out of the list has the list's format; forward mapping works on the
 text and does not read the format, so this matters only to EXPR path operations on the
-stored (`RawOutput`) value, which later PRs expose. Constraints, the size, and the
-returned value all use the stored form. A `Path` error names where the path is
-(`value`, `element`, `item[1]`).
+stored (`RawOutput`) value. Constraints, the size, and the returned value all use the
+stored form. A `Path` error names where the path is (`value`, `element`, `item[1]`).
 
 ### Constraints
 
