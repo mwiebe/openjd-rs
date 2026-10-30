@@ -303,6 +303,9 @@ pub(super) struct Simulator {
     control_flow: bool,
     /// Each top-level entry, by name.
     index_of: HashMap<String, Node>,
+    /// The `--step-inputs` values given, for the examples in the errors
+    /// that name what they lack.
+    given_inputs: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Print one line of the run's log.
@@ -773,6 +776,7 @@ impl Simulator {
             order,
             template_order,
             failed_outputs: BTreeSet::new(),
+            given_inputs: serde_json::Map::new(),
         })
     }
 
@@ -846,6 +850,7 @@ impl Simulator {
         target: Node,
         values: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<(), RunError> {
+        self.given_inputs = values.cloned().unwrap_or_default();
         let target_name = self.node_name(target).to_string();
         let target_kind = match target {
             Node::Step(_) => "Step",
@@ -955,7 +960,7 @@ impl Simulator {
         if missing.is_empty() {
             return Ok(());
         }
-        let (lines, example) = self.describe_missing(&missing, values);
+        let (lines, example) = self.describe_missing(&missing);
         // --step-inputs can supply the outputs only of a producer bound at
         // Job creation, which are the ones the example holds.
         let hint = match example {
@@ -973,19 +978,15 @@ impl Simulator {
     /// Describe the missing `Steps.*` values `missing`: one line each,
     /// `  <symbol> (<type and shape>)`, and, when `--step-inputs` can give
     /// any of them, a ready-to-fill `--step-inputs` example: the values
-    /// `given` already, then a placeholder of the right type and shape for
-    /// each missing one, so the example can replace the `--step-inputs`
+    /// `--step-inputs` gave, then a placeholder of the right type and shape
+    /// for each missing one, so the example can replace the `--step-inputs`
     /// given.
-    fn describe_missing(
-        &self,
-        missing: &[String],
-        given: Option<&serde_json::Map<String, serde_json::Value>>,
-    ) -> (String, Option<String>) {
+    fn describe_missing(&self, missing: &[String]) -> (String, Option<String>) {
         let mut lines = Vec::with_capacity(missing.len());
         let mut example: IndexMap<String, Placeholder> = IndexMap::new();
-        let given: IndexMap<String, Placeholder> = given
-            .into_iter()
-            .flatten()
+        let given: IndexMap<String, Placeholder> = self
+            .given_inputs
+            .iter()
             .map(|(k, v)| (k.clone(), Placeholder::Value(v.clone())))
             .collect();
         for symbol in missing {
@@ -2132,12 +2133,12 @@ impl Simulator {
             if not_given.is_empty() {
                 return Err(internal(text));
             }
-            let (lines, example) = self.describe_missing(&not_given, None);
+            let (lines, example) = self.describe_missing(&not_given);
             let example = example
                 .map(|e| format!(" For example:\n{e}"))
                 .unwrap_or_default();
             let message = format!(
-                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give (the first ones it found):\n{lines}\nAdd them to --step-inputs, with any other outputs of these Steps the loop reads.{example}"
+                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give (the first ones it found):\n{lines}\nGive them with --step-inputs too, with any other outputs of these Steps the loop reads.{example}"
             );
             eprintln!("ERROR: {message}");
             self.fail_loop(li, message);
@@ -2974,7 +2975,7 @@ fn step_inputs_example(example: &IndexMap<String, Placeholder>) -> String {
         .iter()
         .map(|(key, placeholder)| {
             let value = match placeholder {
-                Placeholder::Value(v) => v.to_string(),
+                Placeholder::Value(v) => spaced_json(v),
                 Placeholder::PerTask(v, n) => {
                     let shown = (*n).min(EXAMPLE_LIST_LIMIT) as usize;
                     let mut items = vec![v.to_string(); shown];
@@ -2988,13 +2989,41 @@ fn step_inputs_example(example: &IndexMap<String, Placeholder>) -> String {
             format!("{}: {value}", serde_json::Value::from(key.as_str()))
         })
         .collect();
-    let mut text = format!("  --step-inputs '{{{}}}'", entries.join(", "));
+    // Single-quoted for a POSIX shell: each ' in the JSON closes the quotes,
+    // writes an escaped ', and opens them again.
+    let json = format!("{{{}}}", entries.join(", ")).replace('\'', r"'\''");
+    let mut text = format!("  --step-inputs '{json}'");
     if truncated {
         text.push_str(&format!(
             "\n(A list ending in ... needs one value per Task; only the first {EXAMPLE_LIST_LIMIT} are shown.)"
         ));
     }
     text
+}
+
+/// `value` as JSON with `, ` between list elements and map entries and `: `
+/// after keys, as the placeholders are written.
+fn spaced_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Array(items) => {
+            format!(
+                "[{}]",
+                items.iter().map(spaced_json).collect::<Vec<_>>().join(", ")
+            )
+        }
+        serde_json::Value::Object(map) => format!(
+            "{{{}}}",
+            map.iter()
+                .map(|(k, v)| format!(
+                    "{}: {}",
+                    serde_json::Value::from(k.as_str()),
+                    spaced_json(v)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        v => v.to_string(),
+    }
 }
 
 /// `n` `noun`s: `noun` when `n` is 1, `nouns` otherwise.
@@ -3430,7 +3459,8 @@ steps:
         assert_eq!(
             output_symbols_in(
                 "Steps.p.Output.Y, (Steps.p.RawOutput.Z_1) Steps.pq.Output.X \
-                 XSteps.p.Output.W Foo.Steps.p.Output.V Steps.p.Output. Steps.p.TaskParam.I",
+                 XSteps.p.Output.W Foo.Steps.p.Output.V _Steps.p.Output.U Steps.p.Output. \
+                 Steps.p.TaskParam.I",
                 "p"
             ),
             ["Steps.p.Output.Y", "Steps.p.RawOutput.Z_1"]

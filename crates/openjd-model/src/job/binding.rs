@@ -374,8 +374,13 @@ impl StepInputs {
                     if matches!(v, ExprValue::Null) {
                         if ov.collect == crate::types::OutputCollectMode::Append {
                             return Err(misuse(format!(
-                                "loop '{p}': APPEND output '{}' is null; a loop that succeeded has a list.",
-                                ov.name
+                                "loop '{p}': APPEND output '{}' is null; {}",
+                                ov.name,
+                                if given {
+                                    "an APPEND output is a list."
+                                } else {
+                                    "a loop that succeeded has a list."
+                                }
                             )));
                         }
                         insert(
