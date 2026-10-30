@@ -23,6 +23,9 @@ the [`openjd-rs`] workspace.
 - **Output values** (`CONTROL_FLOW`, prototype) — collecting the
   `openjd_output_var` values a Task reports, including `@` file values
   read as the job user, and returning them in `ActionResult::outputs`.
+  For a loop body Step instance, `Session::build_symbol_table` also maps
+  its path-typed loop variables (`RawLoop.<V>` stored, `Loop.<V>` mapped
+  with the Session's path mapping rules), as it does `Steps.*` paths.
 - **Cross-user execution** — running subprocesses as a different OS user
   on Linux/macOS (via `sudo`) and on Windows (via a logon-based helper
   binary), with an **embedded helper** built by `build.rs` and baked

@@ -1,7 +1,11 @@
 # CONTROL_FLOW prototype plan for openjd-rs
 
-Status: PRs 1–7 are implemented on `control-flow-prototype` (at `74e5c98`). PR 7a and the loop PRs 8–11 are
-planned. Target branch: `control-flow-prototype`.
+Status: every PR below is merged into `control-flow-prototype`. PRs 1–7 were merged by `74e5c98`, PR 7a at
+`ec0070d`, and the loop PRs 8–11 at `c3f5ee2`, `fc78e69`, `d1236d8`, and `6553952`. A later change, merged at
+`d157b09`, makes `openjd run --step-inputs` need only the outputs that the Step or loop run alone reads. The
+prototype at `d157b09` was last verified against commit `69a9e95` of the spec branch, which is later than the input
+commit `c3f583b` below (see the Conformance paragraph of [Test strategy](#test-strategy)). Target branch:
+`control-flow-prototype`.
 
 This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its inputs are on branch
 `rfc-control-flow` of openjd-specifications, at commit `c3f583b`:
@@ -1461,12 +1465,15 @@ failures assert the message, the expression, and the caret (`AGENTS.md`, Test Qu
 **Conformance**: openjd-specifications at the target commit has a `conformance-tests/2023-09/CONTROL_FLOW/` set, in
 the same format as `EXPR/jobs/*.test.yaml`, including the `7.4--*` progressive-binding tests and the loop tests
 (`job_templates/1.1--loop-*`, `job_templates/3.8*`, and `jobs/3.8.5--*`). Each file's header cites the RFC (0011, 0012,
-or 0013) that holds its rule. Its README marks the set unverified, because it was written before any implementation,
-and none of the loop tests has been run. Run it against the prototype from PR 6 on, as the `AGENTS.md` conformance
-slice does for the other extensions: from the openjd-specifications checkout, with this build's `openjd` first on
-`PATH`, `uv run --with pyyaml python3.12 conformance-tests/run_openjd_cli_tests.py '2023-09/CONTROL_FLOW/*'`. PR 7a
-runs the non-loop slice, PR 8 the loop `job_templates`, and PRs 10 and 11 the whole set. Raise any disagreement
-between a test and an RFC on the RFC rather than changing the prototype to match the test.
+or 0013) that holds its rule. Run it against the prototype from PR 6 on, as the `AGENTS.md` conformance slice does for
+the other extensions: from the openjd-specifications checkout, with this build's `openjd` first on `PATH`,
+`uv run --with pyyaml python3.12 conformance-tests/run_openjd_cli_tests.py '2023-09/CONTROL_FLOW/*'`, and the full
+suite with `'2023-09/*'`. PR 7a ran the non-loop slice, PR 8 the loop `job_templates`, and PRs 10 and 11 the whole
+set. At `6553952`, against the spec at `c3f583b`, all 363 CONTROL_FLOW tests passed on Linux, and so did all 1,594
+tests of the full 2023-09 suite that run there (its 19 Windows-only tests are skipped on Linux). At `d157b09`,
+against the spec at `69a9e95`, whose set has 418 tests (4 `env_templates`, 199 `job_templates`, and 215 `jobs`), all
+418 pass on Linux, and the full 2023-09 suite passes 1,649 tests, with the 19 Windows-only tests skipped. Raise any
+disagreement between a test and an RFC on the RFC rather than changing the prototype to match the test.
 
 **Python parity (Q7)**: not applicable until openjd-model-for-python implements the extension. The M3 parser and the
 binding API are shaped so that a Python port can mirror them.
@@ -1478,7 +1485,9 @@ picks a behavior for each and records it in the specs. A1–A17 were raised agai
 RFC that holds its text at `c3f583b`. A9, A10, and A12 were about the session-supplied output file, and the RFC
 revision at `5a86c21` that replaced it with the directive settled them. A15 and A16 were settled in `1e89748` and
 `61f27ee`, A11 in `a876d88`, and A17 in `66b6215`. A18 on are about loops (RFC 0013). Resolved items are kept, struck
-through, so the numbering stays stable.
+through, so the numbering stays stable. The items below describe the RFCs at `c3f583b`. Later commits of the spec
+branch, `7644690` to `244026d`, answer A18 (see that item) and also A5, A19, and A21, in RFC 0011 §Limits item 1 and
+RFC 0013 §Limits items 2 and 4; those three items are not yet updated here.
 
 * **A1. The validation warning has no channel.** RFC 0011 §Modifications to the Expression Language says that
   template validation "MUST emit a warning" (RFC 0011 §Validation item 7). At `c3f583b` the warning also covers a
@@ -1496,11 +1505,12 @@ through, so the numbering stays stable.
   ranges. RFC 0011 §Backward compatibility counts only "one existing rule" as relaxed, but the range-length change is
   a second one. RFC 0011 Open Question 6 asks the related question; keying both relaxations on ranges that read
   `Steps.*` would satisfy TR1.
-* **A4. Editorial: the Video example's `"1-0"` note.** RFC 0011 already records that openjd-rs rejects `"1-0"`
-  (RFC 0011 §Empty parameter spaces, "some implementations reject it instead", and RFC 0011 Open Question 7). Its
-  Video example's note says only that `"1-0"` is `[1]` under Template Schemas §3.4.1.1.1. It should mention the
-  divergence too, because openjd-rs fails with `Descending range 1-0 requires a negative step`, and `minValue: 1` is
-  the only guard that works everywhere.
+* **A4. Editorial: the Video example's `"1-0"` note.** RFC 0011 Open Question 7 records that the specification and
+  implementations disagree on a descending range such as `1-0`: Template Schemas §3.4.1.1.1 defines it as `[1]`, and
+  openjd-rs rejects it. It leaves that to be settled on its own. RFC 0011 §Empty parameter spaces also says that
+  "some implementations reject it instead". Its Video example's note says only that `"1-0"` is `[1]` under Template
+  Schemas §3.4.1.1.1. It should mention the divergence too, and point to Open Question 7, because openjd-rs fails with
+  `Descending range 1-0 requires a negative step`, and `minValue: 1` is the only guard that works everywhere.
 * **A5. Task-count limits.** RFC 0011 §Limits item 1 allows a per-Step limit checked when the Step's Tasks become
   known. openjd-rs and services already have a per-Job total (`CallerLimits::max_task_count`) that is checked at
   creation. RFC 0011 should say whether a Job-total limit applies cumulatively as each Step's Tasks become known, so
@@ -1511,7 +1521,10 @@ through, so the numbering stays stable.
   `S=12345678901234567890` then becomes `"1.2345678901234567e+19"` under EXPR coercion (checked with
   `ExprValue::coerce`), while the job-parameter path keeps the digits. RFC 0012 doesn't say whether `S=1.50` gives
   `"1.50"` or `"1.5"`. Specify whether a `STRING` output keeps the written digits (openjd-rs `Float64` can carry an
-  original spelling, but M3 notes the parsing cost), and whether an out-of-range number such as `1e400` is an error.
+  original spelling, but M3 notes the parsing cost). The prototype keeps the written digits: `S=1.50` gives `"1.50"`
+  and `S=12345678901234567890` gives `"12345678901234567890"` (`specs/model/outputs.md`). RFC 0012 already answers
+  the out-of-range case: "a number too large to represent as a `float`" is an error (§Processing a directive, Type
+  conversion), and the prototype rejects `X=1e400` with `'1e400' has a number too large to represent as a float`.
 * **A7. Which coercion, and how lenient (RFC 0012 Open Question 7).** RFC 0012 makes two statements that don't agree
   in openjd-rs. It converts with EXPR's implicit coercion (EXPR §1.2.3), and it also says a `Steps.*` value behaves
   exactly like a `Param.*` value of the same type. But job-parameter values go through a separate, more lenient
@@ -1542,13 +1555,14 @@ through, so the numbering stays stable.
 * **A14. Flattening of list-valued items in `INT` and `FLOAT` range lists.** RFC 0011 §Empty parameter spaces says
   that after a list literal's items are evaluated, "EXPR flattens a list-valued item", which matches the Expression
   Language's list item rule (EXPR §1.3.2: target type `T? | list[T]`, and a list result "is flattened inline").
-  openjd-rs does this only for `STRING` and `PATH` ranges (`ranges.rs:500`–`:522`). An `INT` list literal accepts
-  only integers: `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter fails `openjd check` with
-  `Cannot parse '{{Param.L}}' as integer`. A `FLOAT` list literal parses each item's text as one float
-  (`ranges.rs:407`), so with a `LIST[FLOAT]` parameter it passes `check` and then fails `openjd run` with
-  `Cannot parse '[1.5, 2.5]' as float`. This is mainly an openjd-rs gap against the EXPR spec (Q5), to be fixed before
-  M4.6. RFC 0011 should still say explicitly that range list items follow EXPR §1.3.2, because the EXPR §1.3.12 table
-  types the `INT` range as `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
+  When this plan was written, openjd-rs did this only for `STRING` and `PATH` ranges. An `INT` list literal accepted
+  only integers, so `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter failed `openjd check` with
+  `Cannot parse '{{Param.L}}' as integer`, and a `FLOAT` list literal parsed each item's text as one float, so with a
+  `LIST[FLOAT]` parameter it failed `openjd run` with `Cannot parse '[1.5, 2.5]' as float`. PR 4 (`66c69fa`) fixed
+  that gap in openjd-rs (M4 item 6), with or without `CONTROL_FLOW`: an `INT` or `FLOAT` list literal now flattens a
+  list-valued item inline, as the `STRING` and `PATH` ones do. What remains is editorial: RFC 0011 should still say
+  explicitly that range list items follow EXPR §1.3.2, because the EXPR §1.3.12 table types the `INT` range as
+  `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
 * ~~**A15. Is a directive line logged?**~~ Resolved in `1e89748`, refined in `61f27ee` (now RFC 0012 §The
   `openjd_output_var` directive): like the other messages, the line appears in the log by default; a runtime option
   to hide recognized messages may hide a valid directive, but an invalid one always stays in the log with its error.
@@ -1561,11 +1575,12 @@ through, so the numbering stays stable.
   otherwise would (RFC 0011 §Job outputs item 4). Which job outputs of a failed Job have been evaluated depends on
   evaluation timing and is not specified (RFC 0011 Design Choice 10). Prototype: keep the value (M4 item 9, C1
   item 7).
-* **A18. Does a loop count toward a limit on the number of Steps?** RFC 0013 §Limits item 3 says a body Step counts
-  once as a Step of the template wherever Steps are counted, and that its instances do not. It doesn't say whether
-  the loop entry itself counts. openjd-rs checks a caller limit on `jt.steps.len()`
-  (`validate_v2023_09/structure.rs:33`), which with loops would count a loop and none of its body Steps. Prototype:
-  count every top-level Step, every loop, and every body Step once.
+* ~~**A18. Does a loop count toward a limit on the number of Steps?**~~ Resolved in `7644690`: a loop and each of its
+  body Steps count once each as a Step of the template, wherever Steps are counted, and body Step instances don't
+  (RFC 0013 §Limits item 3). At `c3f583b` that item said only that a body Step counts once and its instances don't.
+  The prototype already counts this way: the caller limit on the number of Steps counts `jt.steps.len()`, which has
+  one entry per top-level Step and per loop, plus the body Steps of every loop
+  (`validate_v2023_09/structure.rs:33`–`:34`).
 * **A19. Job-total Task limits across iterations.** RFC 0013 §Limits item 2 applies RFC 0011's per-Step limit to each
   body Step instance and lets a scheduler limit a loop's total Tasks or its number of instances, and says these
   failures are final. It doesn't say how a Job-total limit such as `CallerLimits::max_task_count` (A5) treats a

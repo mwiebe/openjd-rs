@@ -31,8 +31,8 @@ This places an `openjd` binary on your `PATH`.
 | Command | Purpose |
 |---------|---------|
 | `openjd check FILE [--extensions EXT...]` | Validate a job or environment template. Exit code 0 on success, non-zero on validation error, with per-field error paths. |
-| `openjd summary FILE [-p NAME=VALUE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count. |
-| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...]` | Instantiate and run a job template locally, streaming action output with timestamps. With `CONTROL_FLOW`, it simulates a scheduler: Steps bind as their inputs arrive, and output values and job outputs are printed as they are known. |
+| `openjd summary FILE [-p NAME=VALUE...]` | Print a human-readable summary of a job: steps, parameters, dependency graph, estimated task count. With `CONTROL_FLOW`, it also summarizes each loop. |
+| `openjd run FILE [-p NAME=VALUE...] [--step NAME] [--task-params ...]` | Instantiate and run a job template locally, streaming action output with timestamps. With `CONTROL_FLOW`, it simulates a scheduler: Steps bind as their inputs arrive, loops run one iteration at a time, with each body Step instance named `<Loop>[<N>].<Step>`, and output values, loop outputs, and job outputs are printed as they are known. |
 
 Run `openjd --help` for the full flag list, or `openjd COMMAND --help`
 for a specific command.
