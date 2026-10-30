@@ -297,8 +297,10 @@ Give them with --step-inputs, or run Step 'C' with --run-dependencies. For examp
 The shape is the declared type for a producer without a `parameterSpace`, `a list with
 one T per Task, N Tasks` for one with, `T, the whole list` for a loop's `APPEND` output,
 and `T, or null` for a loop's `LAST` output whose type is `T?`. The example holds one key
-per value, its `Output` form for a missing `RawOutput`, with a placeholder of the type
-(`0`, `0.0`, `false`, `""`, `"1"` for `RANGE_EXPR`, `[]` for a list type), and a per-Task
+per output, its `Output` form for a missing `RawOutput` (so a missing `Output` and
+`RawOutput` of one output share a key), with a placeholder of the type
+(`0`, `0.0`, `false`, `""`, `"/path"` for `PATH` (`"C:\\path"` on Windows), since a
+`PATH` value must be absolute, `"1"` for `RANGE_EXPR`, `[]` for a list type), and a per-Task
 list of exactly N placeholders; a list over 16 Tasks shows its first 16 and `...`, with a
 note that it needs one value per Task. A value `--step-inputs` cannot give is listed with
 why: `T; Step 'Q' is pending inputs itself, so --step-inputs cannot give it` for an output
@@ -449,17 +451,20 @@ the instances that read it as for any producer.
   loop function this way only when the error names a `Steps.*` symbol of such a
   dependency; any other is an internal error. When the dependency is one `--step-inputs`
   gave, but not the output the iteration reads, the loop fails there with `Loop 'L' reads,
-  in iteration 1, Steps.* values that --step-inputs does not give:` followed by the list as
-  above, `Add them to --step-inputs. For example:`, and the example; the values are the
-  `Steps.<P>.Output.<V>` and `RawOutput` symbols of such a dependency that the caller error
-  names and that are not concrete.
+  in iteration 1, Steps.* values that --step-inputs does not give, starting with:` followed
+  by the list as above, `Add them to --step-inputs, with any other outputs of these Steps
+  the loop reads. For example:`, and the example. The values are the `Steps.<P>.Output.<V>`
+  and `RawOutput` symbols of such a dependency that the caller error names and that are not
+  concrete. The model reports the first value an evaluation lacks, and what a later
+  instance or iteration reads can depend on earlier results, so the list cannot be
+  complete; the message says "starting with" for that reason.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
   type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
   reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a
   `while` loop, or a loop with an `enableIf`; RFC 0013 §`Steps.*` in and around a loop).
   As for a Step producer, only the outputs the Step reads need values: the loop is added
-  with `LoopProducerState::Given`, and an output not given stays unknown (RFC 0013
-  §Implementation Impact, "each loop output it reads"). A key
+  with `LoopProducerState::Given`, and an output not given stays unknown (the plan's L8,
+  "each loop output it reads", in `docs/control-flow-prototype-plan.md`). A key
   that names the target itself is refused (`--step-inputs: 'Steps.L.Output.H' names Loop
   'L' itself; give the outputs of the Steps it reads.`). A `Steps.L.TaskParam.*` key is refused (`Loop 'L'
   has no Task parameters`), as is a key naming a body Step (`Step 'P' is a body Step of

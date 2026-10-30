@@ -2120,7 +2120,7 @@ impl Simulator {
                 .map(|e| format!(" For example:\n{e}"))
                 .unwrap_or_default();
             let message = format!(
-                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give:\n{lines}\nAdd them to --step-inputs.{example}"
+                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give, starting with:\n{lines}\nAdd them to --step-inputs, with any other outputs of these Steps the loop reads.{example}"
             );
             eprintln!("ERROR: {message}");
             self.fail_loop(li, message);
@@ -2928,7 +2928,9 @@ const EXAMPLE_LIST_LIMIT: u64 = 16;
 fn placeholder(ty: openjd_model::types::JobParameterType) -> serde_json::Value {
     use openjd_model::types::JobParameterType as T;
     match ty {
-        T::String | T::Path => serde_json::Value::from(""),
+        T::String => serde_json::Value::from(""),
+        // A PATH value must be absolute on the host.
+        T::Path => serde_json::Value::from(if cfg!(windows) { "C:\\path" } else { "/path" }),
         T::RangeExpr => serde_json::Value::from("1"),
         T::Int => serde_json::Value::from(0),
         T::Float => serde_json::Value::from(0.0),
@@ -3405,7 +3407,7 @@ steps:
         assert_eq!(
             output_symbols_in(
                 "Steps.p.Output.Y, (Steps.p.RawOutput.Z_1) Steps.pq.Output.X \
-                 XSteps.p.Output.W Steps.p.Output. Steps.p.TaskParam.I",
+                 XSteps.p.Output.W Foo.Steps.p.Output.V Steps.p.Output. Steps.p.TaskParam.I",
                 "p"
             ),
             ["Steps.p.Output.Y", "Steps.p.RawOutput.Z_1"]
