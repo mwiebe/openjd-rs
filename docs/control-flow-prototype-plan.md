@@ -1470,10 +1470,10 @@ the other extensions: from the openjd-specifications checkout, with this build's
 `uv run --with pyyaml python3.12 conformance-tests/run_openjd_cli_tests.py '2023-09/CONTROL_FLOW/*'`, and the full
 suite with `'2023-09/*'`. PR 7a ran the non-loop slice, PR 8 the loop `job_templates`, and PRs 10 and 11 the whole
 set. At `6553952`, against the spec at `c3f583b`, all 363 CONTROL_FLOW tests passed on Linux, and so did all 1,594
-tests of the full 2023-09 suite that run there (its 19 Windows-only tests are skipped on Linux). At `d157b09`, against the spec at `69a9e95`, whose set has 418 tests (4
-`env_templates`, 199 `job_templates`, and 215 `jobs`), all 418 pass on Linux, and the full 2023-09 suite passes 1,649
-tests, with the 19 Windows-only tests skipped. Raise any disagreement between a test and an RFC on the RFC rather
-than changing the prototype to match the test.
+tests of the full 2023-09 suite that run there (its 19 Windows-only tests are skipped on Linux). At `d157b09`,
+against the spec at `69a9e95`, whose set has 418 tests (4 `env_templates`, 199 `job_templates`, and 215 `jobs`), all
+418 pass on Linux, and the full 2023-09 suite passes 1,649 tests, with the 19 Windows-only tests skipped. Raise any
+disagreement between a test and an RFC on the RFC rather than changing the prototype to match the test.
 
 **Python parity (Q7)**: not applicable until openjd-model-for-python implements the extension. The M3 parser and the
 binding API are shaped so that a Python port can mirror them.
