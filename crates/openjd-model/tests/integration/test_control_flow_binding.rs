@@ -847,6 +847,10 @@ fn add_producer_refuses_a_state_that_does_not_match() {
         "Compatibility error: Step 'P' is not bound, so it cannot have succeeded."
     );
     assert_eq!(
+        err(inputs.add_producer(&pending, ProducerState::Given { task_outputs: &[] })),
+        "Compatibility error: Step 'P' is not bound, so it cannot be given outputs."
+    );
+    assert_eq!(
         inputs.producers().count(),
         0,
         "a refused producer is not added"

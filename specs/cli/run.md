@@ -283,7 +283,8 @@ the Session starts, the simulator checks that every `Steps.*` value X reads is t
 concrete (its groups' inputs if it is pending, and the symbols its script and Step
 Environments read, `job::Step::input_symbols`), and otherwise fails listing each one on
 its own line with its declared type and shape, then a hint and, when `--step-inputs` can
-give any of them, a ready-to-fill example:
+give any of them, a ready-to-fill example that also holds every value `--step-inputs`
+already gave, so it can replace that argument as it is:
 
 ```
 Step 'C' reads Steps.* values of Steps this run does not run:
@@ -327,8 +328,9 @@ the run without making any Step unable to run; a Step interrupted while its Task
 reaching them (RFC 0011 §Job outputs item 4: such an output is unavailable, naming the
 Step). It then prints each job output not evaluated and why each Step it waits on has not
 given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
-(or `which is blocked`, `which this run does not run`, `which did not run all of its
-Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
+(or `which is blocked`, `which this run does not run`, `which this run does not run, and
+--step-inputs does not give the outputs this reads` for a producer `--step-inputs` gave
+without them, `which did not run all of its Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
 failed`. With `--step` alone, the Steps not run are the ones this run does not run. The run succeeds only
 after every job output whose inputs became concrete has been evaluated. The CLI imposes no
 size limit on job outputs, which the RFC's 1 MiB minimum allows.
@@ -450,13 +452,15 @@ the instances that read it as for any producer.
   loop function this way only when the error names a `Steps.*` symbol of such a
   dependency; any other is an internal error. When the dependency is one `--step-inputs`
   gave, but not the output the iteration reads, the loop fails there with `Loop 'L' reads,
-  in iteration 1, Steps.* values that --step-inputs does not give, starting with:` followed
+  in iteration 1, Steps.* values that --step-inputs does not give (the first ones it
+  found):` followed
   by the list as above, `Add them to --step-inputs, with any other outputs of these Steps
   the loop reads. For example:`, and the example. The values are the `Steps.<P>.Output.<V>`
   and `RawOutput` symbols of such a dependency that the caller error names and that are not
   concrete. The model reports the first value an evaluation lacks, and what a later
   instance or iteration reads can depend on earlier results, so the list cannot be
-  complete; the message says "starting with" for that reason.
+  complete; the message says "the first ones it found" for that reason. The example
+  here holds only the missing values, which is why the message says to add them.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
   type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
   reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a
