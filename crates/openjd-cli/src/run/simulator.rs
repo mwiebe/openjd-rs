@@ -303,6 +303,9 @@ pub(super) struct Simulator {
     control_flow: bool,
     /// Each top-level entry, by name.
     index_of: HashMap<String, Node>,
+    /// The `--step-inputs` values given, for the examples in the errors
+    /// that name what they lack.
+    given_inputs: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Print one line of the run's log.
@@ -773,6 +776,7 @@ impl Simulator {
             order,
             template_order,
             failed_outputs: BTreeSet::new(),
+            given_inputs: serde_json::Map::new(),
         })
     }
 
@@ -831,9 +835,11 @@ impl Simulator {
     /// `parameterSpace` is a list with one value per Task, and for a loop
     /// one value of the output's declared type. Each value is checked
     /// against its declared type and constraints as a reported value is
-    /// (the `openjd_output_var` collector). Then check that every `Steps.*`
-    /// value the target reads is concrete, so that a missing one is reported
-    /// before the Session starts.
+    /// (the `openjd_output_var` collector). Only the outputs the target
+    /// reads need values: a producer's outputs not given stay unknown
+    /// ([`ProducerState::Given`]). Then check that every `Steps.*` value the
+    /// target reads is concrete, so that a missing one is reported, with its
+    /// type and a `--step-inputs` example, before the Session starts.
     ///
     /// For a target loop, the producers it may read are its dependencies
     /// (RFC 0013 §`Steps.*` in and around a loop), and what it reads is
@@ -844,6 +850,7 @@ impl Simulator {
         target: Node,
         values: Option<&serde_json::Map<String, serde_json::Value>>,
     ) -> Result<(), RunError> {
+        self.given_inputs = values.cloned().unwrap_or_default();
         let target_name = self.node_name(target).to_string();
         let target_kind = match target {
             Node::Step(_) => "Step",
@@ -920,12 +927,12 @@ impl Simulator {
                     self.inputs
                         .add_producer(
                             &self.job.steps[pi],
-                            ProducerState::Succeeded {
+                            ProducerState::Given {
                                 task_outputs: &task_outputs,
                             },
                         )
                         .map_err(|e| format!("--step-inputs: {e}"))?;
-                    // Succeeded carries the TaskParam lists too; building
+                    // Given carries the TaskParam lists too; building
                     // them again as TasksKnown would replace the supplied
                     // outputs.
                     self.tasks_known_pending.remove(&p);
@@ -938,7 +945,7 @@ impl Simulator {
                     self.inputs
                         .add_loop_producer(
                             &self.job.loops[li],
-                            LoopProducerState::Succeeded { outputs: &outputs },
+                            LoopProducerState::Given { outputs: &outputs },
                         )
                         .map_err(|e| format!("--step-inputs: {e}"))?;
                     self.loop_records[li].supplied = true;
@@ -953,30 +960,118 @@ impl Simulator {
         if missing.is_empty() {
             return Ok(());
         }
+        let (lines, example) = self.describe_missing(&missing);
         // --step-inputs can supply the outputs only of a producer bound at
-        // Job creation.
-        let suppliable = missing.iter().any(|s| {
-            let member = s.split('.').nth(2);
-            matches!(member, Some("Output" | "RawOutput"))
-                && crate::common::step_of_symbol(s)
-                    .and_then(|p| self.node_of(p))
-                    .is_some_and(|n| match n {
-                        Node::Step(j) => self.job.steps[j].binding.is_bound(),
-                        Node::Loop(j) => matches!(self.job.loops[j].binding, LoopBinding::Bound(_)),
-                    })
-        });
-        let hint = if suppliable {
-            format!(
-                "Give them with --step-inputs, or run {target_kind} '{target_name}' with --run-dependencies."
-            )
-        } else {
-            format!("Run {target_kind} '{target_name}' with --run-dependencies.")
+        // Job creation, which are the ones the example holds.
+        let hint = match example {
+            Some(example) => format!(
+                "Give them with --step-inputs, or run {target_kind} '{target_name}' with --run-dependencies. For example:\n{example}"
+            ),
+            None => format!("Run {target_kind} '{target_name}' with --run-dependencies."),
         };
         Err(format!(
-            "{target_kind} '{target_name}' reads Steps.* values of Steps this run does not run: {}.\n{hint}",
-            missing.join(", ")
+            "{target_kind} '{target_name}' reads Steps.* values of Steps this run does not run:\n{lines}\n{hint}"
         )
         .into())
+    }
+
+    /// Describe the missing `Steps.*` values `missing`: one line each,
+    /// `  <symbol> (<type and shape>)`, and, when `--step-inputs` can give
+    /// any of them, a ready-to-fill `--step-inputs` example: the values
+    /// `--step-inputs` gave, then a placeholder of the right type and shape
+    /// for each missing one, so the example can replace the `--step-inputs`
+    /// given.
+    fn describe_missing(&self, missing: &[String]) -> (String, Option<String>) {
+        let mut lines = Vec::with_capacity(missing.len());
+        let mut example: IndexMap<String, Placeholder> = IndexMap::new();
+        let given: IndexMap<String, Placeholder> = self
+            .given_inputs
+            .iter()
+            .map(|(k, v)| (k.clone(), Placeholder::Value(v.clone())))
+            .collect();
+        for symbol in missing {
+            let (shape, placeholder) = self.describe_input(symbol);
+            lines.push(format!("  {symbol} ({shape})"));
+            if let Some((key, placeholder)) = placeholder {
+                example.entry(key).or_insert(placeholder);
+            }
+        }
+        let example = (!example.is_empty()).then(|| {
+            let mut all = given;
+            all.extend(example);
+            step_inputs_example(&all)
+        });
+        (lines.join("\n"), example)
+    }
+
+    /// The type and shape of `Steps.*` value `symbol`, and, when
+    /// `--step-inputs` can give it, its `--step-inputs` key with a
+    /// placeholder value.
+    fn describe_input(&self, symbol: &str) -> (String, Option<(String, Placeholder)>) {
+        let parts: Vec<&str> = symbol.splitn(4, '.').collect();
+        let [_, p, member, name] = parts.as_slice() else {
+            return ("not a Steps.* symbol".to_string(), None);
+        };
+        let pending = |kind: &str| {
+            format!("{kind} '{p}' is pending inputs itself, so --step-inputs cannot give it")
+        };
+        let key = format!("Steps.{p}.Output.{name}");
+        match (self.node_of(p), *member) {
+            (Some(Node::Step(_)), "TaskParam" | "TaskRawParam") => (
+                format!("a Task parameter of Step '{p}', whose Tasks are known only once it runs"),
+                None,
+            ),
+            (Some(Node::Step(j)), "Output" | "RawOutput") => {
+                let producer = &self.job.steps[j];
+                let Some(ov) = producer
+                    .output_variables
+                    .iter()
+                    .flatten()
+                    .find(|v| v.name == *name)
+                else {
+                    return ("not a declared output".to_string(), None);
+                };
+                let ty = ov.param_type.as_spec_str();
+                if !producer.binding.is_bound() {
+                    return (format!("{ty}; {}", pending("Step")), None);
+                }
+                match (&producer.parameter_space, producer.tasks_known()) {
+                    (Some(_), Some(n)) => (
+                        format!("a list with one {ty} per Task, {n} {}", plural(n, "Task")),
+                        Some((key, Placeholder::PerTask(placeholder(ov.param_type), n))),
+                    ),
+                    _ => (
+                        ty.to_string(),
+                        Some((key, Placeholder::Value(placeholder(ov.param_type)))),
+                    ),
+                }
+            }
+            (Some(Node::Loop(j)), "Output" | "RawOutput") => {
+                let producer = &self.job.loops[j];
+                let Some(ov) = producer.output_variable(name) else {
+                    return ("not a declared output".to_string(), None);
+                };
+                let ty = ov.param_type.as_spec_str();
+                if !matches!(producer.binding, LoopBinding::Bound(_)) {
+                    return (format!("{ty}; {}", pending("Loop")), None);
+                }
+                let shape = match ov.collect {
+                    OutputCollectMode::Append => format!("{ty}, the whole list"),
+                    _ if self.loop_last_is_nullable(j).unwrap_or(false) => {
+                        format!("{ty}, or null")
+                    }
+                    _ => ty.to_string(),
+                };
+                (
+                    shape,
+                    Some((key, Placeholder::Value(placeholder(ov.param_type)))),
+                )
+            }
+            _ => (
+                "not a Steps.* value of a Step or loop of the Job".to_string(),
+                None,
+            ),
+        }
     }
 
     /// Check one `--step-inputs` key, `Steps.<p>.<member>.<name>`, for
@@ -1975,8 +2070,10 @@ impl Simulator {
     /// blocks the loop, and one this run does not run, with no
     /// `--step-inputs` values, fails it with a message that says how to give
     /// them (or, for a dependency not bound at Job creation, which
-    /// `--step-inputs` cannot give, to use `--run-dependencies`). Any other
-    /// caller error is a bug in the simulator.
+    /// `--step-inputs` cannot give, to use `--run-dependencies`). One
+    /// `--step-inputs` gave, but without an output the error names, fails
+    /// it with a message listing those outputs with a `--step-inputs`
+    /// example. Any other caller error is a bug in the simulator.
     fn missing_loop_input(
         &mut self,
         li: usize,
@@ -2018,7 +2115,34 @@ impl Simulator {
             })
             .collect();
         if not_run.is_empty() {
-            return Err(internal(text));
+            // A dependency --step-inputs gave, but not every output of it
+            // that this iteration reads.
+            let not_given: Vec<String> = named
+                .iter()
+                .filter(|p| {
+                    self.node_of(p).is_some_and(|n| match n {
+                        Node::Step(j) => self.records[j].supplied,
+                        Node::Loop(j) => self.loop_records[j].supplied,
+                    })
+                })
+                .flat_map(|p| output_symbols_in(&text, p))
+                .filter(|s| !self.is_concrete(s))
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if not_given.is_empty() {
+                return Err(internal(text));
+            }
+            let (lines, example) = self.describe_missing(&not_given);
+            let example = example
+                .map(|e| format!(" For example:\n{e}"))
+                .unwrap_or_default();
+            let message = format!(
+                "Loop '{name}' reads, in iteration {iteration}, Steps.* values that --step-inputs does not give (the first ones it found):\n{lines}\nGive them with --step-inputs too, with any other outputs of these Steps the loop reads.{example}"
+            );
+            eprintln!("ERROR: {message}");
+            self.fail_loop(li, message);
+            return Ok(IterationEnd::Failed);
         }
         let hint = if not_run.iter().any(|(_, suppliable)| *suppliable) {
             format!("Give them with --step-inputs, or run Loop '{name}' with --run-dependencies.")
@@ -2588,7 +2712,13 @@ impl Simulator {
                             Node::Step(_) => "Step",
                             Node::Loop(_) => "Loop",
                         };
-                        let why = if !self.in_run.contains(&node) {
+                        let supplied = match node {
+                            Node::Step(j) => self.records[j].supplied,
+                            Node::Loop(j) => self.loop_records[j].supplied,
+                        };
+                        let why = if supplied {
+                            "this run does not run, and --step-inputs does not give the outputs this reads"
+                        } else if !self.in_run.contains(&node) {
                             "this run does not run"
                         } else {
                             match self.state_of(node) {
@@ -2805,32 +2935,136 @@ fn job_output_line(output: &openjd_model::job::JobOutput, value: &JobOutputValue
     }
 }
 
+/// A placeholder value in a `--step-inputs` example.
+#[derive(Debug)]
+enum Placeholder {
+    /// One value.
+    Value(serde_json::Value),
+    /// A list with this value once per Task, for this many Tasks.
+    PerTask(serde_json::Value, u64),
+}
+
+/// The most values of a per-Task list a `--step-inputs` example writes out;
+/// a longer list is written with its first values and `...`.
+const EXAMPLE_LIST_LIMIT: u64 = 16;
+
+/// A placeholder of type `ty` for a `--step-inputs` example.
+fn placeholder(ty: openjd_model::types::JobParameterType) -> serde_json::Value {
+    use openjd_model::types::JobParameterType as T;
+    match ty {
+        T::String => serde_json::Value::from(""),
+        // A PATH value must be absolute on the host.
+        T::Path => serde_json::Value::from(if cfg!(windows) { "C:\\path" } else { "/path" }),
+        T::RangeExpr => serde_json::Value::from("1"),
+        T::Int => serde_json::Value::from(0),
+        T::Float => serde_json::Value::from(0.0),
+        T::Bool => serde_json::Value::from(false),
+        T::ListString | T::ListInt | T::ListFloat | T::ListPath | T::ListBool | T::ListListInt => {
+            serde_json::Value::Array(Vec::new())
+        }
+        // A type added later: the user fills it in.
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// `  --step-inputs '{"<key>": <placeholder>, ...}'`, with a note when a
+/// per-Task list is too long to write out.
+fn step_inputs_example(example: &IndexMap<String, Placeholder>) -> String {
+    let mut truncated = false;
+    let entries: Vec<String> = example
+        .iter()
+        .map(|(key, placeholder)| {
+            let value = match placeholder {
+                Placeholder::Value(v) => spaced_json(v),
+                Placeholder::PerTask(v, n) => {
+                    let shown = (*n).min(EXAMPLE_LIST_LIMIT) as usize;
+                    let mut items = vec![v.to_string(); shown];
+                    if *n > EXAMPLE_LIST_LIMIT {
+                        truncated = true;
+                        items.push("...".to_string());
+                    }
+                    format!("[{}]", items.join(", "))
+                }
+            };
+            format!("{}: {value}", serde_json::Value::from(key.as_str()))
+        })
+        .collect();
+    // Single-quoted for a POSIX shell: each ' in the JSON closes the quotes,
+    // writes an escaped ', and opens them again.
+    let json = format!("{{{}}}", entries.join(", ")).replace('\'', r"'\''");
+    let mut text = format!("  --step-inputs '{json}'");
+    if truncated {
+        text.push_str(&format!(
+            "\n(A list ending in ... needs one value per Task; only the first {EXAMPLE_LIST_LIMIT} are shown.)"
+        ));
+    }
+    text
+}
+
+/// `value` as JSON with `, ` between list elements, as the placeholders
+/// are written. An output value holds no JSON object (the collector refuses
+/// one), so an object is written as serde writes it.
+fn spaced_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Array(items) => {
+            format!(
+                "[{}]",
+                items.iter().map(spaced_json).collect::<Vec<_>>().join(", ")
+            )
+        }
+        v => v.to_string(),
+    }
+}
+
+/// `n` `noun`s: `noun` when `n` is 1, `nouns` otherwise.
+fn plural(n: u64, noun: &str) -> String {
+    if n == 1 {
+        noun.to_string()
+    } else {
+        format!("{noun}s")
+    }
+}
+
+/// The `Steps.<p>.Output.<V>` and `Steps.<p>.RawOutput.<V>` symbols `text`
+/// names, each as written.
+fn output_symbols_in(text: &str, p: &str) -> Vec<String> {
+    let mut symbols = Vec::new();
+    for member in ["Output", "RawOutput"] {
+        let prefix = format!("Steps.{p}.{member}.");
+        let mut rest = text;
+        while let Some(at) = rest.find(&prefix) {
+            // Not the tail of a longer name, such as Steps.Ap for Steps.p.
+            let boundary = text.len() - rest.len() + at;
+            let preceded = text[..boundary]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.');
+            let after = &rest[at + prefix.len()..];
+            let len = after
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            if !preceded && len > 0 {
+                symbols.push(format!("{prefix}{}", &after[..len]));
+            }
+            rest = &after[len..];
+        }
+    }
+    symbols
+}
+
 /// Loop `producer`'s outputs from `--step-inputs` values: each given in its
 /// declared type, a single value under `LAST` and the whole list under
 /// `APPEND`, checked as reported values are, each element of an `APPEND`
 /// output separately. A `LAST` output may be `null` only when `nullable`
-/// (its type is `T?`). Every output of the loop must be given.
+/// (its type is `T?`). Only the outputs given are returned; the others stay
+/// unknown ([`LoopProducerState::Given`]).
 fn supplied_loop_outputs(
     producer: &Loop,
     nullable: bool,
     given: &[(String, &serde_json::Value)],
 ) -> Result<IndexMap<String, ExprValue>, String> {
     let declared = &producer.output_variables;
-    let missing: Vec<&str> = declared
-        .iter()
-        .filter(|o| !given.iter().any(|(n, _)| *n == o.name))
-        .map(|o| o.name.as_str())
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!(
-            "--step-inputs gives a loop's outputs together, so every output of the loop must be given; missing {}",
-            missing
-                .iter()
-                .map(|n| format!("Steps.{}.Output.{n}", producer.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
+    let is_given = |name: &str| given.iter().any(|(n, _)| n == name);
     // A LAST output given as null (after zero iterations of a while loop, or
     // when the loop is skipped) is not reported to the collector, which
     // requires a LAST value.
@@ -2847,7 +3081,7 @@ fn supplied_loop_outputs(
         .collect();
     let reported: Vec<openjd_model::job::OutputVariable> = declared
         .iter()
-        .filter(|o| !nulls.contains(&o.name.as_str()))
+        .filter(|o| is_given(&o.name) && !nulls.contains(&o.name.as_str()))
         .cloned()
         .collect();
     let mut collector = openjd_model::outputs::OutputCollector::new(
@@ -2890,6 +3124,7 @@ fn supplied_loop_outputs(
     let mut values = finished.swap_remove(&None).unwrap_or_default();
     let outputs = declared
         .iter()
+        .filter(|o| is_given(&o.name))
         .map(|o| {
             let value = values.swap_remove(&o.name).unwrap_or(ExprValue::Null);
             (o.name.clone(), value)
@@ -2901,12 +3136,20 @@ fn supplied_loop_outputs(
 /// Each Task's outputs of `producer` from `--step-inputs` values, checked
 /// as reported values are: a value per Task for a Step with a
 /// `parameterSpace` (a JSON list with one element per Task), each element
-/// of an `APPEND` output reported separately.
+/// of an `APPEND` output reported separately. Only the outputs given are
+/// in each Task's map; the others stay unknown ([`ProducerState::Given`]).
 fn supplied_task_outputs(
     producer: &Step,
     given: &[(String, &serde_json::Value)],
 ) -> Result<Vec<TaskOutputs>, String> {
-    let declared = producer.output_variables.as_deref().unwrap_or(&[]);
+    let declared: Vec<openjd_model::job::OutputVariable> = producer
+        .output_variables
+        .iter()
+        .flatten()
+        .filter(|v| given.iter().any(|(n, _)| *n == v.name))
+        .cloned()
+        .collect();
+    let declared = declared.as_slice();
     let task_count = producer.tasks_known().ok_or("its Tasks are not known")? as usize;
     let multi = producer.parameter_space.is_some();
     let mut per_task: Vec<Vec<(&str, &serde_json::Value)>> = vec![Vec::new(); task_count];
@@ -3188,7 +3431,10 @@ steps:
             .to_string();
         assert_eq!(
             err,
-            "Step 'C' reads Steps.* values of Steps this run does not run: Steps.P.Output.N.\nGive them with --step-inputs, or run Step 'C' with --run-dependencies."
+            "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.P.Output.N (INT)\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.P.Output.N\": 0}'"
         );
         let values: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(r#"{"Steps.P.Output.N": "2"}"#).unwrap();
@@ -3196,6 +3442,19 @@ steps:
         assert!(sim.supplied(0));
         assert!(!sim.settle().unwrap());
         assert_eq!(sim.job.steps[1].tasks_known(), Some(2));
+    }
+
+    #[test]
+    fn output_symbols_in_finds_whole_symbols_of_one_producer() {
+        assert_eq!(
+            output_symbols_in(
+                "Steps.p.Output.Y, (Steps.p.RawOutput.Z_1) Steps.pq.Output.X \
+                 XSteps.p.Output.W Foo.Steps.p.Output.V _Steps.p.Output.U Steps.p.Output. \
+                 Steps.p.TaskParam.I",
+                "p"
+            ),
+            ["Steps.p.Output.Y", "Steps.p.RawOutput.Z_1"]
+        );
     }
 
     #[test]
@@ -3339,11 +3598,12 @@ steps:
         let outputs = given(r#"{"Last": 3, "All": [1, 2]}"#).unwrap();
         assert_eq!(outputs["Last"], ExprValue::Int(3));
         assert_eq!(outputs["All"].to_display_string(), "[1, 2]");
+        // Only the outputs given are returned; the others stay unknown.
+        let outputs = given(r#"{"Last": 3}"#).unwrap();
+        assert_eq!(outputs.keys().collect::<Vec<_>>(), ["Last"]);
+        let outputs = given(r#"{"All": []}"#).unwrap();
+        assert_eq!(outputs.keys().collect::<Vec<_>>(), ["All"]);
         for (json, want) in [
-            (
-                r#"{"Last": 3}"#,
-                "--step-inputs gives a loop's outputs together, so every output of the loop must be given; missing Steps.L.Output.All",
-            ),
             (
                 r#"{"Last": 0, "All": []}"#,
                 "Steps.L.Output.Last: Output variable 'Last': value 0 is less than minimum 1",

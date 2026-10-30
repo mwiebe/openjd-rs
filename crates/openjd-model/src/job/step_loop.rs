@@ -456,6 +456,14 @@ pub enum LoopProducerState<'a> {
         /// Each loop output's committed value, by name.
         outputs: &'a IndexMap<String, ExprValue>,
     },
+    /// Some of the outputs of a bound loop, given by a caller that simulates
+    /// it (such as a CLI running one Step alone with outputs the user
+    /// supplies). As [`LoopProducerState::Succeeded`], except that a declared
+    /// output `outputs` does not hold stays unknown (not concrete).
+    Given {
+        /// The given outputs, by name.
+        outputs: &'a IndexMap<String, ExprValue>,
+    },
     /// The loop is skipped: each of its `Steps.*` symbols is `null`.
     Skipped,
 }

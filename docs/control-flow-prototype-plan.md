@@ -833,8 +833,10 @@ Options:
 
 * `--step X` without `--run-dependencies`, for a Step that reads `Steps.*`, needs the upstream values. Add
   `--step-inputs file://inputs.yaml | '<json>'`, a map of `Steps.P.Output.V` and `Steps.P.TaskParam.N` to values,
-  checked against the declared types with the M3 coercion. Without it, the error names the missing producers. This
-  option is what the proxy testing of the RFC drafts did by hand.
+  checked against the declared types with the M3 coercion. Without it, the error names the missing producers. (As
+  built, the error lists each missing value with its type and shape and a `--step-inputs` example, and only the
+  outputs the Step reads are needed; see `specs/cli/run.md`.) This option is what the proxy testing of the RFC
+  drafts did by hand.
 * `--maximum-tasks` or `--tasks` on a producer leaves its outputs incomplete. Its consumers become `Blocked` with
   "inputs from Step 'P' are incomplete because not all of its Tasks ran". This follows RFC 0011's completeness rule
   (§Reductions item 3).
