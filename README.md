@@ -90,7 +90,7 @@ Passes 100% of the [OpenJD conformance test suite](https://github.com/OpenJobDes
 | Template validation (FEATURE_BUNDLE_1) | 42 |
 | Template validation (TASK_CHUNKING) | 11 |
 | Template validation (CONTROL_FLOW) | 199 |
-| Environment template validation | 63 |
+| Environment template validation (all extensions, including 4 for CONTROL_FLOW) | 63 |
 | Job execution (base) | 196 |
 | Job execution (EXPR) | 157 |
 | Job execution (FEATURE_BUNDLE_1) | 12 |
