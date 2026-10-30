@@ -668,6 +668,12 @@ producer. `add_producer(producer, state)` fills them, typed as RFC 0011 §The
   one-value range becomes its `int`. A pending producer's parameter space is
   read from `PendingBinding.tasks`, so a consumer's Tasks can become known
   before its producer is bound.
+* `ProducerState::Given { task_outputs }` (a bound producer): as
+  `Succeeded`, for a caller that simulates the producer with only some of its
+  outputs (`openjd run --step-inputs`). A declared output absent from every
+  Task's map stays unknown (not concrete), so a binding that reads it still
+  waits on it; one present in some Tasks' maps but not others is refused. A
+  producer with zero Tasks gives every output, a typed `[]`.
 * `ProducerState::Skipped` (a skipped producer): every symbol is `null`.
 
 A type that is or contains `path` gets a value only in its `Raw` form (the
@@ -688,7 +694,7 @@ before. `TasksKnown` on a skipped producer is the same as `Skipped`, since its
 `TaskParam` is concrete as `null` (and `tasks_known()` is `Some(0)`). It
 refuses, as a `ModelError::Compatibility`, a state that does not match the
 producer's binding, a `task_outputs` without one map per Task, a Task that
-lacks a declared output, and a value that does not convert. It does not check that the producer is a
+lacks a declared output (under `Given`, one another Task has), and a value that does not convert. It does not check that the producer is a
 dependency of anything, because job outputs read any Step.
 
 #### attach_step_inputs
@@ -864,7 +870,8 @@ A loop's outputs reach its consumers like a Step's:
 `StepInputs::add_loop_producer(&job_loop, LoopProducerState::Succeeded { outputs })` (or
 `Skipped`) sets `Output.<V>` and `RawOutput.<V>` to each value itself, with no per-Task
 list; a path-typed output is held only in its `Raw` form and derived on the worker, unless
-it is `null`. `create_job` uses a skipped loop's `null`s for the Steps and job outputs
+it is `null`. `LoopProducerState::Given { outputs }` is the same for only the outputs
+`outputs` holds; the others stay unknown (`openjd run --step-inputs`). `create_job` uses a skipped loop's `null`s for the Steps and job outputs
 that read it.
 
 #### Failure, recovery, and consumption

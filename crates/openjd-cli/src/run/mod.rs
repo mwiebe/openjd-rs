@@ -284,7 +284,9 @@ pub struct RunArgs {
     /// CONTROL_FLOW: the Steps.* output values that the Step or loop given with --step reads,
     /// for running it without --run-dependencies (file://path, or inline JSON
     /// '{"Steps.P.Output.V": value}'; a list with one value per Task for a Step with a
-    /// parameterSpace, and one value of the declared type for a loop output).
+    /// parameterSpace, and one value of the declared type for a loop output). Only the
+    /// outputs it reads are needed; when one is missing, the error lists each with its type
+    /// and an example.
     #[arg(long = "step-inputs")]
     pub step_inputs: Option<String>,
 

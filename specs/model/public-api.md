@@ -1201,6 +1201,9 @@ pub enum job::ProducerState<'a> {
     TasksKnown,
     /// Each Task's outputs, in iteration order (chunking disabled).
     Succeeded { task_outputs: &'a [outputs::TaskOutputs] },
+    /// As Succeeded, but a declared output no Task's map holds stays
+    /// unknown (for a caller simulating the producer with some outputs).
+    Given { task_outputs: &'a [outputs::TaskOutputs] },
     /// Every symbol of the producer is null.
     Skipped,
 }
@@ -1474,6 +1477,8 @@ pub enum job::LoopExpression {
 #[derive(Debug, Clone, Copy)]
 pub enum job::LoopProducerState<'a> {
     Succeeded { outputs: &'a IndexMap<String, ExprValue> },
+    /// As Succeeded, but a declared output `outputs` lacks stays unknown.
+    Given { outputs: &'a IndexMap<String, ExprValue> },
     Skipped,
 }
 ```
