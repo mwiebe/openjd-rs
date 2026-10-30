@@ -2387,8 +2387,9 @@ The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
 (RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`
-(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` (the states a producer
-contributes inputs in), and `template::IntRangeItem` (the two forms of an
+(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` and `job::LoopProducerState` (the states a producer
+contributes inputs in, including `Given`, the state of a producer a caller simulates
+with some of its outputs), and `template::IntRangeItem` (the two forms of an
 `<IntRangeList>` item). A change to the RFCs that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
-allows.
+allows, as does a new producer state a caller such as `openjd run` needs.

@@ -8334,6 +8334,100 @@ steps:
         );
     }
 
+    /// Each type's placeholder, a one-Task list, an `until` loop's LAST
+    /// output (not nullable), and one key for a value read as both `Output`
+    /// and `RawOutput`.
+    #[test]
+    fn every_placeholder_and_shape() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Shapes
+steps:
+- name: P
+  outputVariables:
+  - {name: B, type: BOOL}
+  - {name: R, type: RANGE_EXPR}
+  - {name: Pa, type: PATH}
+  - {name: LL, type: 'LIST[LIST[INT]]'}
+  - {name: S, type: STRING}
+  script: {actions: {onRun: {command: x}}}
+- name: Q
+  parameterSpace:
+    taskParameterDefinitions: [{name: I, type: INT, range: '1'}]
+  outputVariables: [{name: F, type: BOOL}]
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{0}}", next: "{{Loop.K + 1}}"}
+    until: "{{Loop.K >= 1}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: Last, type: INT, collect: LAST, value: "{{Loop.K}}"}
+- name: C
+  dependencies: [{dependsOn: P}, {dependsOn: Q}, {dependsOn: L}]
+  script:
+    actions:
+      onRun:
+        command: python
+        args:
+        - -c
+        - "print('ok')"
+        - "{{Steps.P.Output.B}}"
+        - "{{Steps.P.Output.R}}"
+        - "{{Steps.P.Output.Pa}}"
+        - "{{Steps.P.Output.LL}}"
+        - "{{Steps.P.Output.S}}"
+        - "{{Steps.P.RawOutput.S}}"
+        - "{{Steps.Q.Output.F}}"
+        - "{{Steps.L.Output.Last}}"
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_eq!(code, 1);
+        let path = if cfg!(windows) {
+            r#""C:\\path""#
+        } else {
+            r#""/path""#
+        };
+        assert_eq!(
+            stderr.trim_end(),
+            format!(
+                "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.L.Output.Last (INT)\n  \
+                 Steps.P.Output.B (BOOL)\n  \
+                 Steps.P.Output.LL (LIST[LIST[INT]])\n  \
+                 Steps.P.Output.Pa (PATH)\n  \
+                 Steps.P.Output.R (RANGE_EXPR)\n  \
+                 Steps.P.Output.S (STRING)\n  \
+                 Steps.P.RawOutput.S (STRING)\n  \
+                 Steps.Q.Output.F (a list with one BOOL per Task, 1 Task)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{{\"Steps.L.Output.Last\": 0, \"Steps.P.Output.B\": false, \
+                 \"Steps.P.Output.LL\": [], \"Steps.P.Output.Pa\": {path}, \"Steps.P.Output.R\": \"1\", \
+                 \"Steps.P.Output.S\": \"\", \"Steps.Q.Output.F\": [false]}}'"
+            )
+        );
+        // The example, given as it is, is accepted.
+        let example = stderr.trim_end().rsplit_once("--step-inputs '").unwrap().1;
+        let example = example.strip_suffix('\'').unwrap();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            example,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("\tok\n"), "{stdout}");
+    }
+
     /// A later iteration that reads a dependency output --step-inputs did
     /// not give fails the loop, naming the value with an example.
     #[test]
@@ -8372,9 +8466,9 @@ steps:
         assert_eq!(code, 1, "stdout: {stdout}");
         assert_eq!(
             stderr.trim_end(),
-            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give:\n  \
+            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give, starting with:\n  \
              Steps.B.Output.Text (STRING)\n\
-             Add them to --step-inputs. For example:\n  \
+             Add them to --step-inputs, with any other outputs of these Steps the loop reads. For example:\n  \
              --step-inputs '{\"Steps.B.Output.Text\": \"\"}'"
         );
         // Given Text too, the loop runs both iterations.
