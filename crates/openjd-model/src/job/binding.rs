@@ -134,6 +134,17 @@ pub enum ProducerState<'a> {
         /// Each Task's outputs, in iteration order.
         task_outputs: &'a [TaskOutputs],
     },
+    /// Some of the outputs of a bound producer, given by a caller that
+    /// simulates it (such as a CLI running one Step alone with outputs the
+    /// user supplies). As [`ProducerState::Succeeded`], except that a
+    /// declared output absent from every Task's map stays unknown (not
+    /// concrete), so a binding that reads it still waits on it. An output
+    /// must be in every Task's map or in none. For a producer with zero
+    /// Tasks every output is concrete (`[]`), since no Task can give one.
+    Given {
+        /// Each Task's given outputs, in iteration order.
+        task_outputs: &'a [TaskOutputs],
+    },
     /// The producer is skipped: each of its `Steps.*` symbols is `null`.
     Skipped,
 }
@@ -180,6 +191,8 @@ impl StepInputs {
     ///   iteration order (`[]` for zero Tasks). Each value is converted to
     ///   the declared type. Also everything [`ProducerState::TasksKnown`]
     ///   adds.
+    /// * [`ProducerState::Given`]: as `Succeeded`, but only for the outputs
+    ///   the Tasks' maps hold; any other declared output is not concrete.
     /// * [`ProducerState::TasksKnown`]: `TaskParam.<N>` and
     ///   `TaskRawParam.<N>` for each Task parameter, a list with one element
     ///   per Task, from the parameter space with chunking disabled. A
@@ -195,10 +208,11 @@ impl StepInputs {
     ///
     /// Errors, each a [`ModelError::Compatibility`] (a caller error), when
     /// the state does not match the producer's binding (`Succeeded` needs a
-    /// bound Step, `TasksKnown` known Tasks or a skipped Step, `Skipped` a
-    /// skipped Step), when `task_outputs` does not have one map per Task, or
-    /// when a Task lacks a declared output or holds a value that does not
-    /// convert to its type.
+    /// bound Step, `Given` too, `TasksKnown` known Tasks or a skipped Step,
+    /// `Skipped` a skipped Step), when `task_outputs` does not have one map
+    /// per Task, when a Task lacks a declared output (under `Given`, one that
+    /// another Task has), or when a Task holds a value that does not convert
+    /// to its type.
     ///
     /// A producer need not be a dependency of anything: job outputs read any
     /// Step.
@@ -232,10 +246,16 @@ impl StepInputs {
                 };
                 add_task_params(&mut entry, space)?;
             }
-            ProducerState::Succeeded { task_outputs } => {
+            ProducerState::Succeeded { task_outputs } | ProducerState::Given { task_outputs } => {
+                let given = matches!(state, ProducerState::Given { .. });
                 if !producer.binding.is_bound() {
+                    let what = if given {
+                        "be given outputs"
+                    } else {
+                        "have succeeded"
+                    };
                     return Err(misuse(format!(
-                        "Step '{p}' is not bound, so it cannot have succeeded."
+                        "Step '{p}' is not bound, so it cannot {what}."
                     )));
                 }
                 let space = producer.parameter_space.as_ref();
@@ -247,6 +267,13 @@ impl StepInputs {
                     )));
                 }
                 for ov in producer.output_variables.iter().flatten() {
+                    // Under Given, an output no Task holds stays unknown.
+                    if given
+                        && !task_outputs.is_empty()
+                        && task_outputs.iter().all(|o| !o.contains_key(&ov.name))
+                    {
+                        continue;
+                    }
                     let ty = ov.param_type.expr_type();
                     let mut values = Vec::with_capacity(task_outputs.len());
                     for (i, outputs) in task_outputs.iter().enumerate() {
@@ -292,12 +319,15 @@ impl StepInputs {
     ///   `while` loop after zero iterations). For a type that is or contains
     ///   `path`, only `RawOutput` gets the value, and `Output` is derived on
     ///   the worker host, as for a Step's output; a `null` sets both.
+    /// * [`LoopProducerState::Given`]: as `Succeeded`, but only for the
+    ///   outputs `outputs` holds; any other declared output is not concrete.
     /// * [`LoopProducerState::Skipped`]: every symbol of the loop is `null`.
     ///
     /// Errors, each a [`ModelError::Compatibility`] (a caller error), when the
-    /// state does not match the loop's binding (`Succeeded` needs a bound
-    /// loop, `Skipped` a skipped one), or when `outputs` lacks a declared
-    /// output or holds a value that does not convert to its type.
+    /// state does not match the loop's binding (`Succeeded` and `Given` need
+    /// a bound loop, `Skipped` a skipped one), when `outputs` lacks a
+    /// declared output under `Succeeded`, or when it holds a value that does
+    /// not convert to its type.
     pub fn add_loop_producer(
         &mut self,
         producer: &Loop,
@@ -314,14 +344,24 @@ impl StepInputs {
                 }
                 entry.skipped = true;
             }
-            LoopProducerState::Succeeded { outputs } => {
+            LoopProducerState::Succeeded { outputs } | LoopProducerState::Given { outputs } => {
+                let given = matches!(state, LoopProducerState::Given { .. });
                 if !matches!(producer.binding, LoopBinding::Bound(_)) {
+                    let what = if given {
+                        "be given outputs"
+                    } else {
+                        "have succeeded"
+                    };
                     return Err(misuse(format!(
-                        "loop '{p}' is not bound, so it cannot have succeeded."
+                        "loop '{p}' is not bound, so it cannot {what}."
                     )));
                 }
                 for ov in &producer.output_variables {
                     let Some(v) = outputs.get(&ov.name) else {
+                        // Under Given, an output not given stays unknown.
+                        if given {
+                            continue;
+                        }
                         return Err(misuse(format!(
                             "loop '{p}' has no value for output '{}'.",
                             ov.name
@@ -334,8 +374,13 @@ impl StepInputs {
                     if matches!(v, ExprValue::Null) {
                         if ov.collect == crate::types::OutputCollectMode::Append {
                             return Err(misuse(format!(
-                                "loop '{p}': APPEND output '{}' is null; a loop that succeeded has a list.",
-                                ov.name
+                                "loop '{p}': APPEND output '{}' is null; {}",
+                                ov.name,
+                                if given {
+                                    "an APPEND output is a list."
+                                } else {
+                                    "a loop that succeeded has a list."
+                                }
                             )));
                         }
                         insert(

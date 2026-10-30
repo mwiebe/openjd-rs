@@ -1856,6 +1856,44 @@ fn add_loop_producer_types_outputs_and_checks_state() {
 }
 
 #[test]
+fn a_given_loop_leaves_outputs_it_lacks_unknown() {
+    let fx = Fixture::new(
+        &template(
+            "",
+            &single_loop(
+                "    while: '{{Loop.Iteration < 1}}'\n    maxIterations: 3\n",
+                "  outputVariables:
+  - {name: 'N', type: INT, collect: LAST, value: '{{1}}'}
+  - {name: H, type: 'LIST[INT]', collect: APPEND, value: '{{1}}'}
+",
+                "",
+            ),
+        ),
+        &[],
+    );
+    let job = fx.job();
+    let l = &job.loops[0];
+    let mut values = IndexMap::new();
+    values.insert("N".to_string(), ExprValue::Int(4));
+    let mut inputs = StepInputs::new();
+    inputs
+        .add_loop_producer(l, LoopProducerState::Given { outputs: &values })
+        .unwrap();
+    assert_eq!(inputs.get("Steps.L.Output.N"), Some(&ExprValue::Int(4)));
+    assert!(!inputs.is_concrete("Steps.L.Output.H"));
+    assert!(!inputs.is_concrete("Steps.L.RawOutput.H"));
+    // The values given are checked as under Succeeded.
+    values.insert("H".to_string(), ExprValue::Null);
+    assert_eq!(
+        inputs
+            .add_loop_producer(l, LoopProducerState::Given { outputs: &values })
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: loop 'L': APPEND output 'H' is null; an APPEND output is a list."
+    );
+}
+
+#[test]
 fn expression_inputs_list_the_steps_symbols_each_expression_reads() {
     let fx = Fixture::new(
         &template(
@@ -2644,6 +2682,16 @@ fn add_loop_producer_holds_list_path_outputs_raw_and_needs_a_bound_loop() {
             .unwrap_err()
             .to_string(),
         "Compatibility error: loop 'L' is not bound, so it cannot have succeeded."
+    );
+    assert_eq!(
+        StepInputs::new()
+            .add_loop_producer(
+                &skipped.loops[0],
+                LoopProducerState::Given { outputs: &values }
+            )
+            .unwrap_err()
+            .to_string(),
+        "Compatibility error: loop 'L' is not bound, so it cannot be given outputs."
     );
 }
 

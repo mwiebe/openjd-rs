@@ -150,12 +150,14 @@ sorted and without repeats. It is empty for an output that reads none, and for a
 concrete in its `StepInputs` (`StepInputs::is_concrete`):
 
 - an `Output` or `RawOutput` symbol once its Step has succeeded
-  (`ProducerState::Succeeded`) or been skipped (`ProducerState::Skipped`);
+  (`ProducerState::Succeeded`) or been skipped (`ProducerState::Skipped`), or, when a
+  caller gives only some of its outputs (`ProducerState::Given`), for each output given;
 - a `TaskParam` or `TaskRawParam` symbol once its Step's Tasks are known
   (`ProducerState::TasksKnown`) or it has been skipped;
 - a loop's `Output` or `RawOutput` symbol (RFC 0013) once the loop has succeeded
   (`StepInputs::add_loop_producer` with `LoopProducerState::Succeeded` and the
-  `LoopResult::outputs`) or been skipped (`LoopProducerState::Skipped`). A job output
+  `LoopResult::outputs`) or been skipped (`LoopProducerState::Skipped`), or for each
+  output given with `LoopProducerState::Given`. A job output
   never reads a body Step (validation).
 
 `StepInputs::add_producer` does not require the producer to be a dependency of anything,

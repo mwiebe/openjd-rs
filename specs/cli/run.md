@@ -276,15 +276,39 @@ of them runs as before.
 (`file://inputs.yaml`, YAML unless the file ends in `.json`, or inline JSON): a map from
 `Steps.P.Output.V` to a value, which for a producer with a `parameterSpace` is a list with
 one value per Task. Each value is checked against the output's declared type and
-constraints with the collector that checks reported values (`OutputCollector`), and every
-declared `ONCE` or `LAST` output of the producer must be given. Before the Session starts,
-the simulator checks that every `Steps.*` value X reads is then concrete (its groups'
-inputs if it is pending, and the symbols its script and Step Environments read,
-`job::Step::input_symbols`), and otherwise fails naming all of them: `Step 'C' reads
-Steps.* values of Steps this run does not run: Steps.P.Output.V.` followed by `Give them
-with --step-inputs, or run Step 'C' with --run-dependencies.`, or by only `Run Step 'C'
-with --run-dependencies.` when none of the missing values is an output of a producer bound
-at Job creation, which is all `--step-inputs` can give. A key naming a Step whose outputs C
+constraints with the collector that checks reported values (`OutputCollector`). Only the
+outputs X reads need values: the producer is added with `ProducerState::Given`, so an
+output not given, including an `APPEND` one, stays unknown rather than defaulting. Before
+the Session starts, the simulator checks that every `Steps.*` value X reads is then
+concrete (its groups' inputs if it is pending, and the symbols its script and Step
+Environments read, `job::Step::input_symbols`), and otherwise fails listing each one on
+its own line with its declared type and shape, then a hint and, when `--step-inputs` can
+give any of them, a ready-to-fill example that also holds every value `--step-inputs`
+already gave, so it can replace that argument as it is (single-quoted for a POSIX shell,
+with each `'` in a value written `'\''`):
+
+```
+Step 'C' reads Steps.* values of Steps this run does not run:
+  Steps.P.Output.V (a list with one INT per Task, 2 Tasks)
+  Steps.Q.Output.Mx (STRING)
+Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:
+  --step-inputs '{"Steps.P.Output.V": [0, 0], "Steps.Q.Output.Mx": ""}'
+```
+
+The shape is the declared type for a producer without a `parameterSpace`, `a list with
+one T per Task, N Tasks` for one with, `T, the whole list` for a loop's `APPEND` output,
+and `T, or null` for a loop's `LAST` output whose type is `T?`. The example holds one key
+per output, its `Output` form for a missing `RawOutput` (so a missing `Output` and
+`RawOutput` of one output share a key), with a placeholder of the type
+(`0`, `0.0`, `false`, `""`, `"/path"` for `PATH` (`"C:\\path"` on Windows), since a
+`PATH` value must be absolute, `"1"` for `RANGE_EXPR`, `[]` for a list type), and a per-Task
+list of exactly N placeholders; a list over 16 Tasks shows its first 16 and `...`, with a
+note that it needs one value per Task. A value `--step-inputs` cannot give is listed with
+why: `T; Step 'Q' is pending inputs itself, so --step-inputs cannot give it` for an output
+of a producer not bound at Job creation, and `a Task parameter of Step 'R', whose Tasks are
+known only once it runs` for a `TaskParam`, and the example leaves it out. When no listed
+value can be given, the hint is only `Run Step 'C' with --run-dependencies.` and there is
+no example. A key naming a Step whose outputs C
 does not read is refused (`--step-inputs: Step 'C' does not read the outputs of Step
 'R'.`), as is a Step the Job does not have. A `Steps.P.Output.V` key also gives
 `Steps.P.RawOutput.V`, so a missing `RawOutput` is given with the `Output` key. A producer's `TaskParam` comes from its parameter space, so a
@@ -305,8 +329,9 @@ the run without making any Step unable to run; a Step interrupted while its Task
 reaching them (RFC 0011 §Job outputs item 4: such an output is unavailable, naming the
 Step). It then prints each job output not evaluated and why each Step it waits on has not
 given its values: `Job output Sum was not evaluated: it waits on Step 'C', which failed`
-(or `which is blocked`, `which this run does not run`, `which did not run all of its
-Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
+(or `which is blocked`, `which this run does not run`, `which this run does not run, and
+--step-inputs does not give the outputs this reads` for a producer `--step-inputs` gave
+without them, `which did not run all of its Tasks`, `which the run stopped before`), or `Job output S has no value: its evaluation
 failed`. With `--step` alone, the Steps not run are the ones this run does not run. The run succeeds only
 after every job output whose inputs became concrete has been evaluated. The CLI imposes no
 size limit on job outputs, which the RFC's 1 MiB minimum allows.
@@ -417,8 +442,8 @@ the instances that read it as for any producer.
   `Steps.*` symbols of producers outside the body that its boundary expressions
   (`Loop::expression_inputs`) and the body Step instances of iteration 0 read (a
   `start_iteration` call it discards). A missing one fails as for a Step: `Loop 'L' reads
-  Steps.* values of Steps this run does not run: Steps.B.Output.Text.` followed by the
-  hint. An instance that iteration 0 skips is not checked. If a later iteration then reads
+  Steps.* values of Steps this run does not run:` followed by the list, the hint, and the
+  example. An instance that iteration 0 skips is not checked. If a later iteration then reads
   a dependency this run does not run, the loop fails there with `Loop 'L' reads, in
   iteration 1, Steps.* values of 'A', which this run does not run.` followed by `Give them
   with --step-inputs, or run Loop 'L' with --run-dependencies.` (or only `Run Loop 'L'
@@ -426,14 +451,23 @@ the instances that read it as for any producer.
   `--step-inputs` cannot give it), the instance that needed it is `FAILED` with that
   reason, and the run reports its result. The simulator classifies a caller error from a
   loop function this way only when the error names a `Steps.*` symbol of such a
-  dependency; any other is an internal error.
+  dependency; any other is an internal error. When the dependency is one `--step-inputs`
+  gave, but not the output the iteration reads, the loop fails there with `Loop 'L' reads,
+  in iteration 1, Steps.* values that --step-inputs does not give (the first ones it
+  found):` followed
+  by the list as above, `Give them with --step-inputs too, with any other outputs of these
+  Steps the loop reads. For example:`, and the example, which holds the values given too. The values are the `Steps.<P>.Output.<V>`
+  and `RawOutput` symbols of such a dependency that the caller error names and that are not
+  concrete. The model reports the first value an evaluation lacks, and what a later
+  instance or iteration reads can depend on earlier results, so the list cannot be
+  complete; the message says "the first ones it found" for that reason.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
   type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
   reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a
   `while` loop, or a loop with an `enableIf`; RFC 0013 §`Steps.*` in and around a loop).
-  Every output of the loop must be given, even one the Step does not read, as every
-  declared `ONCE` or `LAST` output of a Step must (`--step-inputs gives a loop's outputs
-  together, so every output of the loop must be given; missing Steps.L.Output.H`). A key
+  As for a Step producer, only the outputs the Step reads need values: the loop is added
+  with `LoopProducerState::Given`, and an output not given stays unknown (the plan's L8,
+  "each loop output it reads", in `docs/control-flow-prototype-plan.md`). A key
   that names the target itself is refused (`--step-inputs: 'Steps.L.Output.H' names Loop
   'L' itself; give the outputs of the Steps it reads.`). A `Steps.L.TaskParam.*` key is refused (`Loop 'L'
   has no Task parameters`), as is a key naming a body Step (`Step 'P' is a body Step of

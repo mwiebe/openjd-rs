@@ -1197,6 +1197,9 @@ pub enum job::ProducerState<'a> {
     TasksKnown,
     /// Each Task's outputs, in iteration order (chunking disabled).
     Succeeded { task_outputs: &'a [outputs::TaskOutputs] },
+    /// As Succeeded, but a declared output no Task's map holds stays
+    /// unknown (for a caller simulating the producer with some outputs).
+    Given { task_outputs: &'a [outputs::TaskOutputs] },
     /// Every symbol of the producer is null.
     Skipped,
 }
@@ -1470,6 +1473,8 @@ pub enum job::LoopExpression {
 #[derive(Debug, Clone, Copy)]
 pub enum job::LoopProducerState<'a> {
     Succeeded { outputs: &'a IndexMap<String, ExprValue> },
+    /// As Succeeded, but a declared output `outputs` lacks stays unknown.
+    Given { outputs: &'a IndexMap<String, ExprValue> },
     Skipped,
 }
 ```
@@ -2382,8 +2387,9 @@ The `CONTROL_FLOW` enums are closed too, while the extension is a draft:
 binding states), `job::OutputAllowedValues` / `job::OutputBound` (the
 value kinds the constraint properties take), and `outputs::OutputDirective`
 (RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`
-(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` (the states a producer
-contributes inputs in), and `template::IntRangeItem` (the two forms of an
+(the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` and `job::LoopProducerState` (the states a producer
+contributes inputs in, including `Given`, the state of a producer a caller simulates
+with some of its outputs), and `template::IntRangeItem` (the two forms of an
 `<IntRangeList>` item). A change to the RFCs that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
-allows.
+allows, as does a new producer state a caller such as `openjd run` needs.

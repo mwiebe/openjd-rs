@@ -4595,8 +4595,10 @@ steps:
         assert_ne!(code, 0, "stdout: {stdout}");
         assert!(
             stderr.ends_with(
-                "Step 'C' reads Steps.* values of Steps this run does not run: Steps.P.Output.V.\n\
-                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.P.Output.V (a list with one INT per Task, 2 Tasks)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.P.Output.V\": [0, 0]}'\n"
             ),
             "stderr: {stderr}"
         );
@@ -5275,8 +5277,10 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "Step 'C' reads Steps.* values of Steps this run does not run: Steps.P.Output.D.\n\
-                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.P.Output.D (INT)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.P.Output.D\": 0}'\n"
             ),
             "stderr: {stderr}"
         );
@@ -5491,9 +5495,11 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "Step 'C' reads Steps.* values of Steps this run does not run: \
-                 Steps.P.Output.Num, Steps.Q.Output.Mx.\n\
-                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.P.Output.Num (INT)\n  \
+                 Steps.Q.Output.Mx (INT)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.P.Output.Num\": 0, \"Steps.Q.Output.Mx\": 0}'\n"
             ),
             "stderr: {stderr}"
         );
@@ -5502,8 +5508,8 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "Step 'D' reads Steps.* values of Steps this run does not run: \
-                 Steps.R.TaskParam.I.\n\
+                "Step 'D' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.R.TaskParam.I (a Task parameter of Step 'R', whose Tasks are known only once it runs)\n\
                  Run Step 'D' with --run-dependencies.\n"
             ),
             "stderr: {stderr}"
@@ -5649,9 +5655,10 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "Step 'C' reads Steps.* values of Steps this run does not run: \
-                 Steps.Q.RawOutput.Mx.\n\
-                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.Q.RawOutput.Mx (STRING)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.Q.Output.Mx\": \"\"}'\n"
             ),
             "stderr: {stderr}"
         );
@@ -6043,9 +6050,11 @@ steps:
         assert_ne!(code, 0);
         assert!(
             stderr.ends_with(
-                "Step 'C' reads Steps.* values of Steps this run does not run: \
-                 Steps.P.Output.Num, Steps.P.Output.Os.\n\
-                 Give them with --step-inputs, or run Step 'C' with --run-dependencies.\n"
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.P.Output.Num (INT)\n  \
+                 Steps.P.Output.Os (STRING)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.P.Output.Num\": 0, \"Steps.P.Output.Os\": \"\"}'\n"
             ),
             "stderr: {stderr}"
         );
@@ -6108,8 +6117,10 @@ steps:
             ),
             (
                 r#" {"Steps.P.Output.L": [5]}"#,
-                "Step 'C' reads Steps.* values of Steps this run does not run: \
-                 Steps.Q.Output.V, Steps.Q.TaskParam.I.\nRun Step 'C' with --run-dependencies.\n",
+                "Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.Q.Output.V (INT; Step 'Q' is pending inputs itself, so --step-inputs cannot give it)\n  \
+                 Steps.Q.TaskParam.I (a Task parameter of Step 'Q', whose Tasks are known only once it runs)\n\
+                 Run Step 'C' with --run-dependencies.\n",
             ),
         ] {
             let (code, _stdout, stderr) = run_cli(&[
@@ -6812,9 +6823,13 @@ steps:
         assert_eq!(code, 1);
         assert_eq!(
             stderr.trim_end(),
-            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.B.Output.N.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.B.Output.N (INT)\n\
+             Give them with --step-inputs, or run Loop 'L' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.B.Output.N\": 0}'"
         );
-        // Every ONCE output of a supplied producer must be given.
+        // Only the outputs the loop reads need values: given N, the loop
+        // binds, and iteration 0's W reads Text.
         let (code, _, stderr) = run_cli(&[
             "run",
             path,
@@ -6826,7 +6841,10 @@ steps:
         assert_eq!(code, 1);
         assert_eq!(
             stderr.trim_end(),
-            "ERROR: --step-inputs: Step 'B': Output variable 'Text': no value was reported (collect mode ONCE)"
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.B.Output.Text (STRING)\n\
+             Give them with --step-inputs, or run Loop 'L' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.B.Output.N\": 1, \"Steps.B.Output.Text\": \"\"}'"
         );
         let (code, stdout, stderr) = run_cli(&[
             "run",
@@ -6871,7 +6889,10 @@ steps:
         assert_eq!(code, 1);
         assert_eq!(
             stderr.trim_end(),
-            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.B.Output.Text.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies."
+            "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.B.Output.Text (STRING)\n\
+             Give them with --step-inputs, or run Loop 'L' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.B.Output.Text\": \"\"}'"
         );
     }
 
@@ -6883,7 +6904,10 @@ steps:
         assert_eq!(code, 1);
         assert_eq!(
             stderr.trim_end(),
-            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run: Steps.L.Output.H.\nGive them with --step-inputs, or run Step 'C' with --run-dependencies."
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.L.Output.H (LIST[INT], the whole list)\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.L.Output.H\": []}'"
         );
         let (code, stdout, stderr) = run_cli(&[
             "run",
@@ -7473,7 +7497,8 @@ steps:
             stderr.trim_end(),
             "ERROR: --step-inputs: Loop 'L' is pending inputs itself, which --step-inputs cannot simulate; use --run-dependencies."
         );
-        // Every output of the loop is given together.
+        // Only the loop outputs C reads need values: Extra, which C does
+        // not read, is not given.
         let job = write(&format!(
             "{}    - {{name: Extra, type: INT, collect: LAST, value: \"{{{{1}}}}\"}}\n",
             two_iterations().replace(
@@ -7481,7 +7506,7 @@ steps:
                 "    value: \"{{sum(Steps.P.Output.V)}}\"\n  - {name: Extra, type: INT, collect: LAST, value: \"{{1}}\"}\n",
             ).trim_end_matches(|_| false)
         ).replace("    - {name: Extra, type: INT, collect: LAST, value: \"{{1}}\"}\n", ""));
-        let (code, _, stderr) = run_cli(&[
+        let (code, stdout, stderr) = run_cli(&[
             "run",
             job.path().to_str().unwrap(),
             "--step",
@@ -7489,11 +7514,8 @@ steps:
             "--step-inputs",
             r#"{"Steps.L.Output.H": [1]}"#,
         ]);
-        assert_eq!(code, 1);
-        assert_eq!(
-            stderr.trim_end(),
-            "ERROR: --step-inputs: Loop 'L': --step-inputs gives a loop's outputs together, so every output of the loop must be given; missing Steps.L.Output.Extra"
-        );
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(!has(&stdout, "Running loop 'L'"), "{stdout}");
     }
 
     /// RFC 0008: a body Step Environment with wrap hooks, enabled only in
@@ -7895,7 +7917,10 @@ steps:
             assert_eq!(stdout, "", "{file}");
             assert_eq!(
                 stderr.trim_end(),
-                "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run: Steps.A.Output.V.\nGive them with --step-inputs, or run Loop 'L' with --run-dependencies.",
+                "ERROR: Loop 'L' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.A.Output.V (INT)\n\
+                 Give them with --step-inputs, or run Loop 'L' with --run-dependencies. For example:\n  \
+                 --step-inputs '{\"Steps.A.Output.V\": 0}'",
                 "{file}"
             );
         }
@@ -8123,6 +8148,601 @@ steps:
                     {"name": "R", "dependencies": 1},
                 ],
             })
+        );
+    }
+}
+
+/// CONTROL_FLOW: `--step-inputs` needs only the producer outputs the Step or
+/// loop run alone reads, and the missing-inputs error names each value's
+/// type and shape with a `--step-inputs` example.
+mod control_flow_partial_step_inputs {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    fn write(content: &str) -> NamedTempFile {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        f
+    }
+
+    /// P declares A, B (ONCE), and L (APPEND); C reads only what `reads`
+    /// says.
+    fn producer_and_consumer(reads: &str) -> String {
+        format!(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Partial
+steps:
+- name: P
+  outputVariables:
+  - {{name: A, type: INT}}
+  - {{name: B, type: STRING}}
+  - {{name: L, type: 'LIST[INT]', collect: APPEND}}
+  script: {{actions: {{onRun: {{command: x}}}}}}
+- name: C
+  dependencies: [{{dependsOn: P}}]
+  script: {{actions: {{onRun: {{command: python, args: [-c, "print('GOT {reads}')"]}}}}}}
+"#
+        )
+    }
+
+    #[test]
+    fn a_step_producer_needs_only_the_outputs_read() {
+        let job = write(&producer_and_consumer("{{Steps.P.Output.A}}"));
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.A": 7}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("GOT 7"), "{stdout}");
+    }
+
+    /// A partial set lists only what is still missing; an APPEND output not
+    /// given is missing too, not `[]`.
+    #[test]
+    fn a_partial_set_reports_only_what_is_still_missing() {
+        let job = write(&producer_and_consumer(
+            "{{Steps.P.Output.A}} {{Steps.P.Output.B}} {{Steps.P.Output.L}}",
+        ));
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.A": 7}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.P.Output.B (STRING)\n  \
+             Steps.P.Output.L (LIST[INT])\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.P.Output.A\": 7, \"Steps.P.Output.B\": \"\", \"Steps.P.Output.L\": []}'"
+        );
+        // The example holds the values given too, so it runs as it is.
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.A": 7, "Steps.P.Output.B": "", "Steps.P.Output.L": []}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("GOT 7  []"), "{stdout}");
+        // Every existing check still applies to what is given.
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.A": 7, "Steps.P.Output.L": 3}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: --step-inputs: Step 'P': Steps.P.Output.L: an APPEND output must be given as a list"
+        );
+    }
+
+    /// The example writes a per-Task list in full up to 16 Tasks, and a
+    /// longer one with its first 16 values and `...`, with a note.
+    #[test]
+    fn a_long_per_task_list_is_shortened_in_the_example() {
+        for (tasks, list, note) in [
+            ("1-16", format!("[{}]", vec!["0.0"; 16].join(", ")), ""),
+            (
+                "1-17",
+                format!("[{}, ...]", vec!["0.0"; 16].join(", ")),
+                "\n(A list ending in ... needs one value per Task; only the first 16 are shown.)",
+            ),
+        ] {
+            let job = write(&format!(
+                r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Many
+steps:
+- name: P
+  parameterSpace:
+    taskParameterDefinitions: [{{name: I, type: INT, range: '{tasks}'}}]
+  outputVariables: [{{name: T, type: FLOAT}}]
+  script: {{actions: {{onRun: {{command: x}}}}}}
+- name: C
+  dependencies: [{{dependsOn: P}}]
+  script: {{actions: {{onRun: {{command: python, args: [-c, "print({{{{sum(Steps.P.Output.T)}}}})"]}}}}}}
+"#
+            ));
+            let (code, _stdout, stderr) =
+                run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+            assert_eq!(code, 1);
+            let count = if tasks == "1-16" { 16 } else { 17 };
+            assert_eq!(
+                stderr.trim_end(),
+                format!(
+                    "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                     Steps.P.Output.T (a list with one FLOAT per Task, {count} Tasks)\n\
+                     Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                     --step-inputs '{{\"Steps.P.Output.T\": {list}}}'{note}"
+                ),
+                "{tasks}"
+            );
+        }
+    }
+
+    /// A while loop's LAST output may be null, which the shape says; and a
+    /// value the error lists that --step-inputs cannot give is named with
+    /// why, while the example holds only the ones it can.
+    #[test]
+    fn loop_outputs_and_values_that_cannot_be_given() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Mixed
+steps:
+- name: S
+  outputVariables: [{name: N, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: Q
+  dependencies: [{dependsOn: S}]
+  parameterSpace:
+    taskParameterDefinitions: [{name: I, type: INT, range: "{{range(Steps.S.Output.N)}}"}]
+  outputVariables: [{name: V, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{2}}", next: "{{Loop.K - 1}}"}
+    while: "{{Loop.K > 0}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: Last, type: INT, collect: LAST, value: "{{Loop.K}}"}
+- name: C
+  dependencies: [{dependsOn: L}, {dependsOn: Q}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.L.Output.Last}} {{Steps.Q.Output.V}})"]}}}
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.L.Output.Last (INT, or null)\n  \
+             Steps.Q.Output.V (INT; Step 'Q' is pending inputs itself, so --step-inputs cannot give it)\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.L.Output.Last\": 0}'"
+        );
+    }
+
+    /// Each type's placeholder, a one-Task list, an `until` loop's LAST
+    /// output (not nullable), and one key for a value read as both `Output`
+    /// and `RawOutput`.
+    #[test]
+    fn every_placeholder_and_shape() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Shapes
+steps:
+- name: P
+  outputVariables:
+  - {name: B, type: BOOL}
+  - {name: R, type: RANGE_EXPR}
+  - {name: Pa, type: PATH}
+  - {name: LL, type: 'LIST[LIST[INT]]'}
+  - {name: S, type: STRING}
+  script: {actions: {onRun: {command: x}}}
+- name: Q
+  parameterSpace:
+    taskParameterDefinitions: [{name: I, type: INT, range: '1'}]
+  outputVariables: [{name: F, type: BOOL}]
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{0}}", next: "{{Loop.K + 1}}"}
+    until: "{{Loop.K >= 1}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: Last, type: INT, collect: LAST, value: "{{Loop.K}}"}
+- name: C
+  dependencies: [{dependsOn: P}, {dependsOn: Q}, {dependsOn: L}]
+  script:
+    actions:
+      onRun:
+        command: python
+        args:
+        - -c
+        - "print('ok')"
+        - "{{Steps.P.Output.B}}"
+        - "{{Steps.P.Output.R}}"
+        - "{{Steps.P.Output.Pa}}"
+        - "{{Steps.P.Output.LL}}"
+        - "{{Steps.P.Output.S}}"
+        - "{{Steps.P.RawOutput.S}}"
+        - "{{Steps.Q.Output.F}}"
+        - "{{Steps.L.Output.Last}}"
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_eq!(code, 1);
+        let path = if cfg!(windows) {
+            r#""C:\\path""#
+        } else {
+            r#""/path""#
+        };
+        assert_eq!(
+            stderr.trim_end(),
+            format!(
+                "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+                 Steps.L.Output.Last (INT)\n  \
+                 Steps.P.Output.B (BOOL)\n  \
+                 Steps.P.Output.LL (LIST[LIST[INT]])\n  \
+                 Steps.P.Output.Pa (PATH)\n  \
+                 Steps.P.Output.R (RANGE_EXPR)\n  \
+                 Steps.P.Output.S (STRING)\n  \
+                 Steps.P.RawOutput.S (STRING)\n  \
+                 Steps.Q.Output.F (a list with one BOOL per Task, 1 Task)\n\
+                 Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+                 --step-inputs '{{\"Steps.L.Output.Last\": 0, \"Steps.P.Output.B\": false, \
+                 \"Steps.P.Output.LL\": [], \"Steps.P.Output.Pa\": {path}, \"Steps.P.Output.R\": \"1\", \
+                 \"Steps.P.Output.S\": \"\", \"Steps.Q.Output.F\": [false]}}'"
+            )
+        );
+        // The example, given as it is, is accepted.
+        let example = stderr.trim_end().rsplit_once("--step-inputs '").unwrap().1;
+        let example = example.strip_suffix('\'').unwrap();
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            example,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("\tok\n"), "{stdout}");
+    }
+
+    /// A later iteration that reads a dependency output --step-inputs did
+    /// not give fails the loop, naming the value with an example.
+    #[test]
+    fn a_later_iteration_reading_an_output_not_given_fails_the_loop() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: Later
+steps:
+- name: B
+  outputVariables:
+  - {name: N, type: INT}
+  - {name: Text, type: STRING}
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  dependencies: [{dependsOn: B}]
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{Steps.B.Output.N}}", next: "{{Loop.K - 1}}"}
+    while: "{{Loop.K > 0}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      enableIf: "{{Loop.Iteration > 0}}"
+      script: {actions: {onRun: {command: python, args: [-c, "print('W {{Steps.B.Output.Text}}')"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 2}"#,
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give (the first ones it found):\n  \
+             Steps.B.Output.Text (STRING)\n\
+             Give them with --step-inputs too, with any other outputs of these Steps the loop reads. For example:\n  \
+             --step-inputs '{\"Steps.B.Output.N\": 2, \"Steps.B.Output.Text\": \"\"}'"
+        );
+        // The loop's log line and its JSON reason say the same.
+        assert!(
+            stdout.contains(
+                "\tLoop 'L' failed: Loop 'L' reads, in iteration 1, Steps.* values that \
+                 --step-inputs does not give (the first ones it found)\n"
+            ),
+            "{stdout}"
+        );
+        let (_, stdout, _) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 2}"#,
+            "--output",
+            "json",
+        ]);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout[stdout.find('{').unwrap()..]).unwrap();
+        let l = json["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "L")
+            .unwrap();
+        assert_eq!(l["state"], "FAILED", "{json}");
+        assert_eq!(
+            l["reason"].as_str().unwrap(),
+            stderr.trim_end().strip_prefix("ERROR: ").unwrap(),
+            "{json}"
+        );
+        // Given Text too, the loop runs both iterations.
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 2, "Steps.B.Output.Text": "yo"}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("W yo"), "{stdout}");
+    }
+
+    /// A later iteration that reads an output of a supplied loop dependency
+    /// that was not given fails the loop the same way.
+    #[test]
+    fn a_later_iteration_reading_a_loop_output_not_given_fails_the_loop() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: LaterLoop
+steps:
+- name: A
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{1}}", next: "{{Loop.K - 1}}"}
+    until: "{{Loop.K <= 0}}"
+    maxIterations: 5
+    steps:
+    - name: X
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: N, type: INT, collect: LAST, value: "{{2}}"}
+  - {name: T, type: STRING, collect: LAST, value: "{{'t'}}"}
+- name: L
+  dependencies: [{dependsOn: A}]
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{Steps.A.Output.N}}", next: "{{Loop.K - 1}}"}
+    while: "{{Loop.K > 0}}"
+    maxIterations: 5
+    steps:
+    - name: V
+      enableIf: "{{Loop.Iteration > 0}}"
+      script: {actions: {onRun: {command: python, args: [-c, "print('V {{Steps.A.Output.T}}')"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.A.Output.N": 2}"#,
+        ]);
+        assert_eq!(code, 1, "stdout: {stdout}");
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give (the first ones it found):\n  \
+             Steps.A.Output.T (STRING)\n\
+             Give them with --step-inputs too, with any other outputs of these Steps the loop reads. For example:\n  \
+             --step-inputs '{\"Steps.A.Output.N\": 2, \"Steps.A.Output.T\": \"\"}'"
+        );
+    }
+
+    /// An output of a loop pending inputs at Job creation is listed with why
+    /// --step-inputs cannot give it, and left out of the example.
+    #[test]
+    fn a_pending_loops_output_cannot_be_given() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: PendingLoop
+steps:
+- name: S
+  outputVariables: [{name: N, type: INT}]
+  script: {actions: {onRun: {command: x}}}
+- name: L
+  dependencies: [{dependsOn: S}]
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{Steps.S.Output.N}}", next: "{{Loop.K - 1}}"}
+    while: "{{Loop.K > 0}}"
+    maxIterations: 5
+    steps:
+    - name: W
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: H, type: 'LIST[INT]', collect: APPEND, value: "{{Loop.K}}"}
+- name: C
+  dependencies: [{dependsOn: L}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.L.Output.H}})"]}}}
+"#,
+        );
+        let (code, _stdout, stderr) =
+            run_cli(&["run", job.path().to_str().unwrap(), "--step", "C"]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.L.Output.H (LIST[INT]; Loop 'L' is pending inputs itself, so --step-inputs cannot give it)\n\
+             Run Step 'C' with --run-dependencies."
+        );
+    }
+
+    /// A job output that reads an output --step-inputs did not give says so.
+    #[test]
+    fn a_job_output_waiting_on_an_output_not_given_says_so() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: JobOut
+jobOutputDefinitions:
+- {name: GotA, type: INT, value: "{{Steps.P.Output.A}}"}
+- {name: GotB, type: STRING, value: "{{Steps.P.Output.B}}"}
+steps:
+- name: P
+  outputVariables:
+  - {name: A, type: INT}
+  - {name: B, type: STRING}
+  script: {actions: {onRun: {command: x}}}
+- name: C
+  dependencies: [{dependsOn: P}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.P.Output.A}})"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.A": 7}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("Job output GotA = 7"), "{stdout}");
+        assert!(
+            stdout.contains(
+                "Job output GotB was not evaluated: it waits on Step 'P', which this run does not run, \
+                 and --step-inputs does not give the outputs this reads"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A job output that reads a loop output --step-inputs did not give says
+    /// so too.
+    #[test]
+    fn a_job_output_waiting_on_a_loop_output_not_given_says_so() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: JobOutLoop
+jobOutputDefinitions:
+- {name: GotT, type: STRING, value: "{{Steps.L.Output.T}}"}
+steps:
+- name: L
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{1}}", next: "{{Loop.K - 1}}"}
+    until: "{{Loop.K <= 0}}"
+    maxIterations: 5
+    steps:
+    - name: X
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: N, type: INT, collect: LAST, value: "{{2}}"}
+  - {name: T, type: STRING, collect: LAST, value: "{{'t'}}"}
+- name: C
+  dependencies: [{dependsOn: L}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.L.Output.N}})"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.N": 3}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "Job output GotT was not evaluated: it waits on Loop 'L', which this run does not run, \
+                 and --step-inputs does not give the outputs this reads"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A ' in a given value is written for a POSIX shell, so the example
+    /// still pastes back; a given list is written spaced, as placeholders
+    /// are.
+    #[test]
+    fn a_quote_in_a_given_value_is_escaped_in_the_example() {
+        let job = write(&producer_and_consumer(
+            "{{Steps.P.Output.A}} {{Steps.P.Output.B}}",
+        ));
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.B": "it's", "Steps.P.Output.L": [1,2]}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.P.Output.A (INT)\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.P.Output.B\": \"it'\\''s\", \"Steps.P.Output.L\": [1, 2], \"Steps.P.Output.A\": 0}'"
+        );
+    }
+
+    /// `openjd run --help` says only the outputs read are needed.
+    #[test]
+    fn help_says_only_the_outputs_read_are_needed() {
+        let (code, stdout, _stderr) = run_cli(&["run", "--help"]);
+        assert_eq!(code, 0);
+        let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(
+                "Only the outputs it reads are needed; when one is missing, the error lists each \
+                 with its type and an example"
+            ),
+            "{stdout}"
         );
     }
 }
