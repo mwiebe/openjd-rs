@@ -285,7 +285,8 @@ concrete (its groups' inputs if it is pending, and the symbols its script and St
 Environments read, `job::Step::input_symbols`), and otherwise fails listing each one on
 its own line with its declared type and shape, then a hint and, when `--step-inputs` can
 give any of them, a ready-to-fill example that also holds every value `--step-inputs`
-already gave, so it can replace that argument as it is:
+already gave, so it can replace that argument as it is (single-quoted for a POSIX shell,
+with each `'` in a value written `'\''`):
 
 ```
 Step 'C' reads Steps.* values of Steps this run does not run:
@@ -455,13 +456,12 @@ the instances that read it as for any producer.
   gave, but not the output the iteration reads, the loop fails there with `Loop 'L' reads,
   in iteration 1, Steps.* values that --step-inputs does not give (the first ones it
   found):` followed
-  by the list as above, `Add them to --step-inputs, with any other outputs of these Steps
-  the loop reads. For example:`, and the example. The values are the `Steps.<P>.Output.<V>`
+  by the list as above, `Give them with --step-inputs too, with any other outputs of these
+  Steps the loop reads. For example:`, and the example, which holds the values given too. The values are the `Steps.<P>.Output.<V>`
   and `RawOutput` symbols of such a dependency that the caller error names and that are not
   concrete. The model reports the first value an evaluation lacks, and what a later
   instance or iteration reads can depend on earlier results, so the list cannot be
-  complete; the message says "the first ones it found" for that reason. The example
-  here holds only the missing values, which is why the message says to add them.
+  complete; the message says "the first ones it found" for that reason.
 * For a Step that reads a loop, `--step-inputs` supplies each loop output in its declared
   type: one value under `LAST` and the whole list under `APPEND`, each element checked as a
   reported value is. `null` is accepted for a `LAST` output only when its type is `T?` (a

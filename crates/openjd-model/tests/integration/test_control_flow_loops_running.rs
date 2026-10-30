@@ -1889,7 +1889,7 @@ fn a_given_loop_leaves_outputs_it_lacks_unknown() {
             .add_loop_producer(l, LoopProducerState::Given { outputs: &values })
             .unwrap_err()
             .to_string(),
-        "Compatibility error: loop 'L': APPEND output 'H' is null; a loop that succeeded has a list."
+        "Compatibility error: loop 'L': APPEND output 'H' is null; an APPEND output is a list."
     );
 }
 

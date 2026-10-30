@@ -8845,8 +8845,40 @@ steps:
             stderr.trim_end(),
             "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give (the first ones it found):\n  \
              Steps.B.Output.Text (STRING)\n\
-             Add them to --step-inputs, with any other outputs of these Steps the loop reads. For example:\n  \
-             --step-inputs '{\"Steps.B.Output.Text\": \"\"}'"
+             Give them with --step-inputs too, with any other outputs of these Steps the loop reads. For example:\n  \
+             --step-inputs '{\"Steps.B.Output.N\": 2, \"Steps.B.Output.Text\": \"\"}'"
+        );
+        // The loop's log line and its JSON reason say the same.
+        assert!(
+            stdout.contains(
+                "\tLoop 'L' failed: Loop 'L' reads, in iteration 1, Steps.* values that \
+                 --step-inputs does not give (the first ones it found)\n"
+            ),
+            "{stdout}"
+        );
+        let (_, stdout, _) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "L",
+            "--step-inputs",
+            r#"{"Steps.B.Output.N": 2}"#,
+            "--output",
+            "json",
+        ]);
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout[stdout.find('{').unwrap()..]).unwrap();
+        let l = json["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "L")
+            .unwrap();
+        assert_eq!(l["state"], "FAILED", "{json}");
+        assert_eq!(
+            l["reason"].as_str().unwrap(),
+            stderr.trim_end().strip_prefix("ERROR: ").unwrap(),
+            "{json}"
         );
         // Given Text too, the loop runs both iterations.
         let (code, stdout, stderr) = run_cli(&[
@@ -8908,8 +8940,8 @@ steps:
             stderr.trim_end(),
             "ERROR: Loop 'L' reads, in iteration 1, Steps.* values that --step-inputs does not give (the first ones it found):\n  \
              Steps.A.Output.T (STRING)\n\
-             Add them to --step-inputs, with any other outputs of these Steps the loop reads. For example:\n  \
-             --step-inputs '{\"Steps.A.Output.T\": \"\"}'"
+             Give them with --step-inputs too, with any other outputs of these Steps the loop reads. For example:\n  \
+             --step-inputs '{\"Steps.A.Output.N\": 2, \"Steps.A.Output.T\": \"\"}'"
         );
     }
 
@@ -8988,6 +9020,92 @@ steps:
             stdout.contains(
                 "Job output GotB was not evaluated: it waits on Step 'P', which this run does not run, \
                  and --step-inputs does not give the outputs this reads"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A job output that reads a loop output --step-inputs did not give says
+    /// so too.
+    #[test]
+    fn a_job_output_waiting_on_a_loop_output_not_given_says_so() {
+        let job = write(
+            r#"specificationVersion: jobtemplate-2023-09
+extensions: [EXPR, CONTROL_FLOW]
+name: JobOutLoop
+jobOutputDefinitions:
+- {name: GotT, type: STRING, value: "{{Steps.L.Output.T}}"}
+steps:
+- name: L
+  loop:
+    variables:
+    - {name: K, type: INT, initial: "{{1}}", next: "{{Loop.K - 1}}"}
+    until: "{{Loop.K <= 0}}"
+    maxIterations: 5
+    steps:
+    - name: X
+      script: {actions: {onRun: {command: x}}}
+  outputVariables:
+  - {name: N, type: INT, collect: LAST, value: "{{2}}"}
+  - {name: T, type: STRING, collect: LAST, value: "{{'t'}}"}
+- name: C
+  dependencies: [{dependsOn: L}]
+  script: {actions: {onRun: {command: python, args: [-c, "print({{Steps.L.Output.N}})"]}}}
+"#,
+        );
+        let (code, stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.L.Output.N": 3}"#,
+        ]);
+        assert_eq!(code, 0, "stdout: {stdout}\nstderr: {stderr}");
+        assert!(
+            stdout.contains(
+                "Job output GotT was not evaluated: it waits on Loop 'L', which this run does not run, \
+                 and --step-inputs does not give the outputs this reads"
+            ),
+            "{stdout}"
+        );
+    }
+
+    /// A ' in a given value is written for a POSIX shell, so the example
+    /// still pastes back.
+    #[test]
+    fn a_quote_in_a_given_value_is_escaped_in_the_example() {
+        let job = write(&producer_and_consumer(
+            "{{Steps.P.Output.A}} {{Steps.P.Output.B}}",
+        ));
+        let (code, _stdout, stderr) = run_cli(&[
+            "run",
+            job.path().to_str().unwrap(),
+            "--step",
+            "C",
+            "--step-inputs",
+            r#"{"Steps.P.Output.B": "it's"}"#,
+        ]);
+        assert_eq!(code, 1);
+        assert_eq!(
+            stderr.trim_end(),
+            "ERROR: Step 'C' reads Steps.* values of Steps this run does not run:\n  \
+             Steps.P.Output.A (INT)\n\
+             Give them with --step-inputs, or run Step 'C' with --run-dependencies. For example:\n  \
+             --step-inputs '{\"Steps.P.Output.B\": \"it'\\''s\", \"Steps.P.Output.A\": 0}'"
+        );
+    }
+
+    /// `openjd run --help` says only the outputs read are needed.
+    #[test]
+    fn help_says_only_the_outputs_read_are_needed() {
+        let (code, stdout, _stderr) = run_cli(&["run", "--help"]);
+        assert_eq!(code, 0);
+        let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(
+                "Only the outputs it reads are needed; when one is missing, the error lists each \
+                 with its type and an example"
             ),
             "{stdout}"
         );
