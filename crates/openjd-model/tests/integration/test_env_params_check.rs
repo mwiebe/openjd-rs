@@ -357,7 +357,7 @@ fn an_attachment_shadowed_by_a_job_environment_warns_when_the_job_lists_env_para
 
 #[test]
 fn an_attachments_uri_default_needs_the_callers_permission() {
-    // A URI is a PATH value (§4.5 PATH paragraph) when the caller permits
+    // A URI is a PATH value (§4.5 item 3) when the caller permits
     // URI path values, whatever the Job Template lists.
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Data\n  envParameterDefinitions: [{name: Where, type: PATH, \
@@ -451,7 +451,7 @@ fn labels_name_the_attachments() {
 // ── Constraint 7 names a disabled entry (B2-3) ──────────────────────
 
 const DISABLED_NOTE: &str = " (the Step's 'environment:' dependency for it is disabled by its \
-     enableIf, so it supplies nothing; Template Schemas §3.2 item 5)";
+     enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2)";
 
 const REQUIRED_ATTACHED: &str = r#"
 specificationVersion: environment-2023-09
@@ -487,13 +487,13 @@ fn required_attached_always() -> String {
     REQUIRED_ATTACHED.replace("  name: Conda\n", "  name: Conda\n  activation: ALWAYS\n")
 }
 
-/// The §3.2 item 5 error for Step `step`'s disabled entry `dependencies[j]`
+/// The §3.2 item 3.2 error for Step `step`'s disabled entry `dependencies[j]`
 /// naming the attached `ALWAYS` Environment `label`.
 fn always_entry_disabled(step_index: usize, step: &str, label: &str) -> String {
     format!(
         "JobTemplate -> steps[{step_index}] -> dependencies[0] -> enableIf:\n\tis false, so Step \
          '{step}' would decline Environment {label}, whose activation is ALWAYS: no Step can \
-         leave out an ALWAYS Environment (Template Schemas §3.2 item 5)."
+         leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2)."
     )
 }
 
@@ -508,8 +508,8 @@ fn attached_missing(note: &str) -> String {
 }
 
 // A disabled entry for a `BY_DEFAULT` attachment declines it (§3.2 item
-// 5), so these use an `ALWAYS` one: the entry is an error, and the
-// attachment is still checked as entered, with the note. Before §3.2 item 5
+// 3.2), so these use an `ALWAYS` one: the entry is an error, and the
+// attachment is still checked as entered, with the note. Before §3.2 item 3.2
 // gave a disabled entry a meaning, they used the `BY_DEFAULT`
 // `REQUIRED_ATTACHED`; `a_disabled_entry_declines_a_by_default_attachment`
 // covers that case now.
@@ -545,8 +545,27 @@ fn an_entry_disabled_by_an_expression_is_named_at_job_creation() {
 }
 
 #[test]
+fn a_constant_expression_that_disables_an_always_entry_is_named_at_job_creation() {
+    // A constant expression is still an expression, unknown before the Job
+    // is created (§7.5 rule 5), so `check` accepts the entry and job
+    // creation reports the §4 item 4 error (`specs/cli/check.md`).
+    let jt = job_ok(&entry_with_enable_if(r#""false""#));
+    let envs = [env_ok(&required_attached_always())];
+    assert_eq!(check(&jt, &envs).unwrap(), Vec::<String>::new());
+    let err = apply(&jt, &envs, &[]).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            &always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])"),
+            &attached_missing(DISABLED_NOTE),
+        ],
+    );
+}
+
+#[test]
 fn a_disabled_entry_declines_a_by_default_attachment() {
-    // §3.2 item 5, §3.2.1: the disabled entry's name resolves to the
+    // §3.2 item 3.2, §3.2.1: the disabled entry's name resolves to the
     // `BY_DEFAULT` attachment, which the Step then declines, so constraint
     // 7 does not apply to it, at check and at job creation.
     let jt = job_ok(&entry_with_enable_if("false"));
@@ -1014,7 +1033,7 @@ fn an_all_attachment_named_by_an_enable_if_expression_still_combines_at_check() 
     // The Step's Sessions enter an ALWAYS attachment (the test name
     // predates the rename) whatever the entry's enableIf decides, so its
     // literal requirements conflict either way. A BY_DEFAULT one is
-    // declined where the entry is disabled (§3.2 item 5), so whether the
+    // declined where the entry is disabled (§3.2 item 3.2), so whether the
     // Step enters it is known only at job creation; this test asserted the
     // conflict at check for a BY_DEFAULT attachment before that rule.
     let jt = gpu_job("    amounts: [{name: amount.worker.gpu, max: 1}]\n")

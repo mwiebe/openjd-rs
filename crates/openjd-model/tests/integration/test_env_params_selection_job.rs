@@ -2,9 +2,9 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! `ENV_PARAMS` Step-side selection at job creation (Template Schemas §7.4):
+//! `ENV_PARAMS` Step-side selection at job creation (Template Schemas §7.4.1):
 //! each Step's Environment set from `activation` and its enabled entries
-//! (§4 item 4, §3.2.2), `enableIf` (§3.2 item 5), `Job.EnvNames` (§7.3.1),
+//! (§4 item 4, §3.2.2), `enableIf` (§3.2 item 3.2), `Job.EnvNames` (§7.3.1),
 //! constraint 7 over the set (§3.2 constraint 7, §3.2.1), and the
 //! `WRAP_ACTIONS` single-layer rule over each Step's set (plan R8).
 
@@ -118,8 +118,9 @@ fn a_step_enters_every_all_environment_and_the_on_request_ones_it_requests() {
     assert!(job.steps[0].enters_environment(&Document::JobTemplate, "Only"));
     // An attached Environment of the same name is another Environment.
     assert!(!job.steps[1].enters_environment(&Document::environment_template(0, None), "All"));
-    // Equal Job Environment sets (§3.2.2 ¶4): a Session can go from one
-    // Step to the other without exiting or entering a Job Environment.
+    // Equal Job Environment sets (§3.2.2; How Jobs Are Run, Environment
+    // Parameters): a Session can go from one Step to the other without exiting
+    // or entering a Job Environment.
     assert!(job.steps[0].same_environments(&job.steps[2]));
     assert!(!job.steps[0].same_environments(&job.steps[1]));
 }
@@ -273,7 +274,7 @@ fn an_unreachable_on_request_attachment_is_not_an_error() {
     );
 }
 
-// ── enableIf (§3.2 item 5) ──────────────────────────────────────────
+// ── enableIf (§3.2 item 3.2) ──────────────────────────────────────────
 
 const ENABLE_IF: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -306,12 +307,12 @@ fn an_enabled_entry_requests_and_supplies() {
     );
 }
 
-/// The §3.2 item 5 error for Step `S`'s disabled entry `dependencies[0]`
+/// The §3.2 item 3.2 error for Step `S`'s disabled entry `dependencies[0]`
 /// naming the `ALWAYS` Job Environment `Conda`.
 const ALWAYS_ENTRY_DISABLED: &str =
     "steps[0] -> dependencies[0] -> enableIf:\n\tis false, so Step \
      'S' would decline Environment 'Conda', whose activation is ALWAYS: no Step can leave out an \
-     ALWAYS Environment (Template Schemas §3.2 item 5).";
+     ALWAYS Environment (Template Schemas §3.2 item 3.2).";
 
 #[test]
 fn a_disabled_entry_supplies_nothing_and_means_what_the_activation_says() {
@@ -320,13 +321,13 @@ fn a_disabled_entry_supplies_nothing_and_means_what_the_activation_says() {
     let job = create_ok(&src, &[], &[("Mode", "off")]);
     assert_eq!(job.steps[0].environments, Some(vec![]));
     assert_eq!(job.steps[0].environment_parameters, None);
-    // BY_DEFAULT: declined, so not entered (§3.2 item 5).
+    // BY_DEFAULT: declined, so not entered (§3.2 item 3.2).
     let src = ENABLE_IF.replace("SCOPE", "BY_DEFAULT");
     let job = create_ok(&src, &[], &[("Mode", "off")]);
     assert_eq!(job.steps[0].environments, Some(vec![]));
     assert_eq!(job.steps[0].environment_parameters, None);
     // ALWAYS: an error naming the Step and the Environment. (Before §3.2
-    // item 5 gave a disabled entry a meaning, the Step entered it with
+    // item 3.2 gave a disabled entry a meaning, the Step entered it with
     // every default, as for BY_DEFAULT.)
     let src = ENABLE_IF.replace("SCOPE", "ALWAYS");
     job_ok(&src);
@@ -354,7 +355,7 @@ fn a_windows_submission_keeps_the_template_scope_for_enable_if() {
     // `entry_scope` evaluates again, in the submission path format, only
     // the bindings the enabled entries' values read (`w`). The entry's
     // `enableIf` reads `on`, which it gets from the template scope
-    // (Template Schemas §3.2 item 5, spec 5535230), so it still resolves.
+    // (Template Schemas §7.5, spec 5535230), so it still resolves.
     let jt = job_ok(
         &ENABLE_IF
             .replace("SCOPE", "ON_REQUEST")
@@ -457,7 +458,7 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
     // Disabled: an ON_REQUEST Environment is not entered...
     create_ok(&only, &[], &[("Mode", "off")]);
     // ...a BY_DEFAULT one is declined, so it requires nothing (§3.2 item
-    // 5)...
+    // 3.2)...
     create_ok(&src.replace("SCOPE", "BY_DEFAULT"), &[], &[("Mode", "off")]);
     // ...and for an ALWAYS one the disabled entry is an error; the
     // Environment is still checked as entered with defaults, so the value
@@ -468,7 +469,7 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
     let disabled = missing.replace(
         "'Conda'.",
         "'Conda' (the Step's 'environment:' dependency for it is disabled by its enableIf, so it \
-         supplies nothing; Template Schemas §3.2 item 5).",
+         supplies nothing; Template Schemas §3.2 item 3.2).",
     );
     assert_errors(&err, "JobTemplate", &[ALWAYS_ENTRY_DISABLED, &disabled]);
     // Enabled with an ALWAYS Environment: missing, with no note.
@@ -596,7 +597,7 @@ fn enable_if_is_evaluated_within_the_caller_memory_budget() {
     );
 }
 
-// ── Job.EnvNames (§7.3.1, §7.4) ─────────────────────────────────────
+// ── Job.EnvNames (§7.3.1, §7.4.1) ─────────────────────────────────────
 
 fn env_names_of(job: &Job, step: usize, binding: &str) -> serde_json::Value {
     let table = job.steps[step].resolved_symtab.as_ref().unwrap().as_value();
@@ -640,7 +641,7 @@ fn job_env_names_lists_the_attachments_then_the_job_environments() {
 #[test]
 fn job_env_names_is_concrete_before_step_let_and_enable_if() {
     // A `let` that reads it feeds an `enableIf` and an external entry's
-    // value (§7.4).
+    // value (§7.4.1).
     let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]

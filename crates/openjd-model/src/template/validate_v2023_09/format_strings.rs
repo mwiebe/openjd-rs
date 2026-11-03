@@ -177,7 +177,7 @@ fn build_session_scope_symtab(
 
 /// Add `Env.Param.<name>` and `Env.RawParam.<name>` for each of `env`'s
 /// own `envParameterDefinitions` (`ENV_PARAMS`, §4.5), as unresolved values
-/// of the types §4.5 gives them: `Env.Param.<name>` has the expression type
+/// of the types §7.3.1 gives them: `Env.Param.<name>` has the expression type
 /// of the parameter type, and `Env.RawParam.<name>` the same except
 /// `string` for PATH and `list[string]` for LIST[PATH] — the same type map
 /// as `Param.*` / `RawParam.*` (see [`build_param_symtab`]).
@@ -210,7 +210,7 @@ pub(crate) fn add_env_param_symbols(symtab: &mut SymbolTable, env: &Environment)
 }
 
 /// The scope of an Environment's `hostRequirements` format strings
-/// (`ENV_PARAMS`, §4 item 5.1), for a document with parameters `params`
+/// (`ENV_PARAMS`, §7.3.2), for a document with parameters `params`
 /// that lists `ENV_PARAMS` (and so `EXPR`): the template scope
 /// (`RawParam.*` and non-PATH `Param.*`), `Job.Name` and `Job.EnvNames`,
 /// and the Environment's own `Env.RawParam.*` of any type and `Env.Param.*`
@@ -254,7 +254,7 @@ fn build_env_host_requirements_symtab(
 /// `symtab`: the default scope for a `default`, the entry-value scope for
 /// an `environment:` entry value. `target` is the parameter's expression
 /// type, which a single `{{ }}` expression resolves with (§3.2, §4.5 item
-/// 4), or `None` when the parameter is not known here.
+/// 1), or `None` when the parameter is not known here.
 fn validate_env_param_value_fs(
     fs: &FormatString,
     target: Option<&ExprType>,
@@ -312,7 +312,7 @@ fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
 /// (`ENV_PARAMS`, §3.2) against `symtab`, the Step's template scope.
 ///
 /// A value of an entry whose `enableIf` is absent or `true` (a disabled
-/// entry's parameters are not checked, §3.2 item 5, and one whose `enableIf`
+/// entry's parameters are not checked, §3.2 item 3.2, and one whose `enableIf`
 /// is an expression may be disabled, §7.5 rule 5), for a parameter of a
 /// `jobEnvironments` entry with `activation:
 /// ALWAYS`, or whose own `enableIf` is absent or `true` or certainly
@@ -345,7 +345,7 @@ fn validate_env_entry_values(
         // it is `ALWAYS`, its `enableIf` is absent or `true`, or certainly
         // unresolved with the values of this entry, which must then be
         // certainly enabled. A disabled entry's parameters are not checked
-        // (§3.2 item 5), so only a certainly enabled entry's values are
+        // (§3.2 item 3.2), so only a certainly enabled entry's values are
         // typed here; an expression entry's are typed when the Job is
         // created, if it is enabled (§7.5 rule 5).
         let job_env = job_env_types
@@ -377,7 +377,7 @@ fn validate_env_entry_values(
 }
 
 /// Pass-8 check of each `environment:` entry's `enableIf` (`ENV_PARAMS`,
-/// §3.2 item 5 and constraint 9): an expression field of type
+/// §3.2 item 3.2 and constraint 9): an expression field of type
 /// `bool` (§7.5), checked against `symtab`, the Step's template scope,
 /// which is the scope of a `parameters` value. A scalar must be a boolean,
 /// a `null` is an error, and an expression must parse and have a type that
@@ -406,9 +406,9 @@ fn validate_enable_if(
 
 /// Pass-8 check of an Environment's own `enableIf` (`ENV_PARAMS`, §4 item
 /// 6): an expression field of type `bool` (§7.5), checked
-/// against `symtab`, the scope constraints 1–3 give it. For a
+/// against `symtab`, the scope §7.3.2 gives it. For a
 /// `jobEnvironments` entry or an Environment Template's `environment` that
-/// is its `hostRequirements` scope (§4 item 5.1); for a `stepEnvironments`
+/// is its `hostRequirements` scope (§7.3.2); for a `stepEnvironments`
 /// entry, the Step's template scope (`RawParam.*`, non-PATH `Param.*`,
 /// `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's `let`). The
 /// caller checks it only in a document that lists `ENV_PARAMS`; pass 11
@@ -435,7 +435,7 @@ fn validate_env_enable_if(
 }
 
 /// Pass-8 checks of the format-string `default`s of an Environment's
-/// `envParameterDefinitions` (`ENV_PARAMS`, §4.5 item 4). A `default` may
+/// `envParameterDefinitions` (`ENV_PARAMS`, §4.5 item 1, §7.3.2). A `default` may
 /// reference `RawParam.*` and the non-PATH `Param.*` of the same
 /// document's top-level `parameterDefinitions`, and nothing else, so it is
 /// checked against `default_symtab`, the template-scope table of the
@@ -2220,7 +2220,7 @@ fn compared_name(
 /// Pass-8 checks of one `hostRequirements` object (§3.3) at `hr_path`,
 /// against `hr_symtab`, the scope its format strings resolve in: a Step's
 /// (template scope, `Job.*` and `Step.Name` with `EXPR`, and the Step's
-/// `let`), or an Environment's (`ENV_PARAMS` §4 item 5.1).
+/// `let`), or an Environment's (`ENV_PARAMS` §7.3.2).
 fn validate_host_requirements_fs(
     hr: &HostRequirements,
     hr_symtab: &SymbolTable,
@@ -2504,8 +2504,8 @@ pub fn validate_format_strings(
         // Template's own parameters, template scope, no `Job.Name`.
         let default_symtab = build_template_scope_symtab(jt.parameter_definitions.as_deref());
         for (i, env) in envs.iter().enumerate() {
-            // §4 item 6 constraint 1: `enableIf` has exactly the
-            // `hostRequirements` scope (§4 item 5.1).
+            // §7.3.2: a Job Environment's `enableIf` has exactly the
+            // `hostRequirements` scope.
             if env_params_active && env.enable_if.is_some() {
                 validate_env_enable_if(
                     env,
@@ -2837,7 +2837,7 @@ pub fn validate_format_strings(
                 &step_path,
                 errors,
             );
-            // `enableIf` (§3.2 item 5) has the same scope.
+            // `enableIf` has the same scope (§7.3.2).
             validate_enable_if(
                 step,
                 &step_template_symtab,
@@ -2907,7 +2907,7 @@ pub fn validate_format_strings(
         if let Some(envs) = &step.step_environments {
             let envs_path = path_field(&step_path, "stepEnvironments");
             for (j, env) in envs.iter().enumerate() {
-                // §4 item 6 constraint 2: a Step Environment's `enableIf`
+                // §7.3.2: a Step Environment's `enableIf`
                 // has the Step's template scope, the scope of an
                 // `environment:` entry's `enableIf`.
                 if env_params_active {
@@ -3040,8 +3040,8 @@ pub fn validate_format_strings_environment_template(
     let env_path = vec![PathElement::Field("environment".into())];
     // `Job.EnvNames` (§7.3.1) needs ENV_PARAMS, which requires EXPR.
     let env_names_active = ctx.profile.has_extension(ModelExtension::EnvParams);
-    // §4 item 6 constraint 1: `enableIf` has exactly the `hostRequirements`
-    // scope (§4 item 5.1).
+    // §7.3.2: the Environment's `enableIf` has exactly the
+    // `hostRequirements` scope.
     if env_names_active {
         validate_env_enable_if(
             env,

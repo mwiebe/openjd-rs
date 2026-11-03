@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `ENV_PARAMS`: what a disabled `environment:` entry means (Template
-//! Schemas §3.2 item 5). It supplies no values, and its effect depends on
+//! Schemas §3.2 item 3.2). It supplies no values, and its effect depends on
 //! the `activation` of the Environment it names:
 //!
 //! - `ON_REQUEST`: the Step does not request it;
@@ -86,14 +86,14 @@ fn requirement_names(job: &Job, step: usize) -> Vec<String> {
         .collect()
 }
 
-/// The §3.2 item 5 error for Step `step` (at index `i`), whose entry
+/// The §3.2 item 3.2 error for Step `step` (at index `i`), whose entry
 /// `dependencies[j]` is disabled and names the `ALWAYS` Environment
 /// `label`; `prefix` is the document path (`""` or `"JobTemplate -> "`).
 fn always_error(prefix: &str, i: usize, j: usize, step: &str, label: &str) -> String {
     format!(
         "{prefix}steps[{i}] -> dependencies[{j}] -> enableIf:\n\tis false, so Step '{step}' would \
          decline Environment {label}, whose activation is ALWAYS: no Step can leave out an \
-         ALWAYS Environment (Template Schemas §3.2 item 5)."
+         ALWAYS Environment (Template Schemas §3.2 item 3.2)."
     )
 }
 
@@ -148,7 +148,7 @@ fn a_literal_false_entry_for_an_always_job_environment_is_rejected_at_validation
              activation BY_DEFAULT that the Step does not decline, and each one \
              with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of \
              Environment 'Lic' (the Step's 'environment:' dependency for it is disabled by its \
-             enableIf, so it supplies nothing; Template Schemas §3.2 item 5).",
+             enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2).",
         ],
     );
     // With a default for Product, the entry is the only error.
@@ -179,7 +179,7 @@ fn an_expression_entry_for_an_always_job_environment_is_rejected_at_job_creation
              activation BY_DEFAULT that the Step does not decline, and each one \
              with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of \
              Environment 'Lic' (the Step's 'environment:' dependency for it is disabled by its \
-             enableIf, so it supplies nothing; Template Schemas §3.2 item 5).",
+             enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2).",
         ],
     );
 }
@@ -356,7 +356,7 @@ fn a_declined_environments_value_checks_do_not_apply() {
 #[test]
 fn an_expression_entrys_parameters_are_checked_only_if_it_is_enabled() {
     // The entry may be disabled, and a disabled entry's parameters are not
-    // checked (§3.2 item 5), so its undeclared key, its literal outside
+    // checked (§3.2 item 3.2), so its undeclared key, its literal outside
     // `allowedValues`, and its mistyped format string are not errors at
     // template validation (§7.5 rule 5). Disabled at job creation, they
     // are still not; enabled, each is.
@@ -619,7 +619,7 @@ fn a_disabled_entry_naming_an_ambiguous_attachment_is_an_error() {
     );
 }
 
-// ── WRAP_ACTIONS single-layer rule (§4 item 6 tail) ─────────────────
+// ── WRAP_ACTIONS single-layer rule (§4, after item 9) ─────────────────
 
 fn wrap_env(name: &str, activation: &str) -> String {
     format!(
@@ -977,7 +977,7 @@ steps:
 fn a_disabled_entry_for_a_job_environment_is_not_resolved_against_a_shadowed_attachment() {
     // The Job Environment Conda shadows the attached ALWAYS Conda
     // (§3.2.1 item 4), so the entry declines the Job Environment; it is
-    // not the §3.2 item 5 error against the attachment.
+    // not the §3.2 item 3.2 error against the attachment.
     let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]

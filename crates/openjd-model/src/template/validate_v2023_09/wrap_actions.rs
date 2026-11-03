@@ -122,7 +122,7 @@ pub fn validate_wrap_actions_job_template(
     // `jobEnvironments` entry with `activation: ALWAYS`, every one with
     // `BY_DEFAULT` that the Step does not decline, every one with
     // `activation: ON_REQUEST` that the Step requests (ENV_PARAMS,
-    // Template Schemas §4 item 4, §3.2 item 5), and the Step's own
+    // Template Schemas §4 item 4, §3.2 item 3.2), and the Step's own
     // `stepEnvironments`. So "only one wrap layer per session" reduces to:
     // for every step, (wrap envs among the ALWAYS and BY_DEFAULT
     // jobEnvironments it enters) + (wrap envs among the
@@ -136,7 +136,7 @@ pub fn validate_wrap_actions_job_template(
     // neither is counted, and job creation checks the Step's resolved set
     // (§3.2, checked-at paragraph). A `BY_DEFAULT` one a scalar
     // `enableIf: false` entry declines is not entered. The same holds
-    // for an Environment's own `enableIf` (ENV_PARAMS, §4 item 6 tail): an
+    // for an Environment's own `enableIf` (ENV_PARAMS, §4, after item 9): an
     // Environment whose `enableIf` is absent or `true` is counted, one with
     // the scalar `false` is not entered, and one with an expression (even a
     // constant one) is not counted here and is decided at job creation.
@@ -175,7 +175,7 @@ pub fn validate_wrap_actions_job_template(
     }
     // What each Step's entry for each of them is known to be: a disabled
     // entry declines a BY_DEFAULT one, and an expression entry may
-    // (ENV_PARAMS, Template Schemas §3.2 item 5).
+    // (ENV_PARAMS, Template Schemas §3.2 item 3.2).
     let step_entered: Vec<Vec<bool>> = jt
         .steps
         .iter()

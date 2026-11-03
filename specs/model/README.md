@@ -80,7 +80,7 @@ Currently implements `2023-09` with extensions:
   expression (Template Schemas §3.3; no separate plan; see [validation.md](validation.md)
   and [job-creation.md](job-creation.md)); and `ac63711`, under which a disabled
   `environment:` entry declines a `BY_DEFAULT` Environment and is an error for an `ALWAYS`
-  one (§3.2 item 5; no separate plan; see
+  one (§3.2 item 3.2; no separate plan; see
   [job-creation.md](job-creation.md#environment-parameter-values-env_params)). A document that lists `ENV_PARAMS` must also list `EXPR` (Template Schemas §1.1
   item 3, §1.2 item 3; see [validation.md](validation.md#entry-points)). Decode and
   template validation are implemented: Environment `envParameterDefinitions`, `activation`,
@@ -89,7 +89,7 @@ Currently implements `2023-09` with extensions:
   expression field, Template Schemas §7.5; see
   [template-types.md](template-types.md#expression-fields-75)), `Job.EnvNames`, and the
   `Env.Param.*` / `Env.RawParam.*` scopes (see [validation.md](validation.md) § Pass 11 and
-  § Environment parameter scopes), and so are, at job creation in the Template Schemas §7.4
+  § Environment parameter scopes), and so are, at job creation in the Template Schemas §7.4.1
   order, entry `enableIf`, each Step's Environment set, effective values, and external
   Environment resolution against the attached Environment Templates
   (`create_job_with_environment_templates`; see
@@ -118,6 +118,9 @@ Currently implements `2023-09` with extensions:
   its canonical form, spec `80a2018`; for a Job Parameter the canonical form is checked only in
   a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
-  the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). Not yet implemented
+  the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). The section citations in the
+  code, tests, and specs follow the numbering of the spec at `ca37d31`, where §3.2's
+  *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3
+  and the scope table is §7.3.2; each plan cites the numbering of the spec it targets. Not yet implemented
   in the Python reference (`openjd-model-for-python`), so there is no Python behavior to
   match.

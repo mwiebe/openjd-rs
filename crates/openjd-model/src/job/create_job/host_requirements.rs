@@ -11,7 +11,7 @@
 //! item 5), which differ only in where their errors are reported
 //! ([`Site`]).
 //!
-//! [`combine_step_host_requirements`] is the last stage of §7.4 Job
+//! [`combine_step_host_requirements`] is the last stage of §7.4.1 Job
 //! creation with `ENV_PARAMS`: it resolves each Environment's requirements
 //! once for each Step whose Sessions enter it, with that Step's effective
 //! values, and combines them with the Step's own into the Step's combined
@@ -679,7 +679,7 @@ struct Source {
     requirements: job::HostRequirements,
 }
 
-/// The last stage of §7.4 Job creation with `ENV_PARAMS`: give every Step
+/// The last stage of §7.4.1 Job creation with `ENV_PARAMS`: give every Step
 /// of `job` its combined host requirements (§3.3.3).
 ///
 /// `environments` describes `job.job_environments`, index for index.
@@ -691,9 +691,9 @@ struct Source {
 /// distinct set of effective values among the Steps that enter it (Steps
 /// whose values have the same transport form get equal requirements),
 /// skipping a Step whose values for an Environment that declares
-/// parameters were rejected (already reported), in the scope §4
-/// item 5.1 gives, and checked as a Step's own are (§3.3.1, §3.3.2, and
-/// unique names within the source). The combined set of a Step is the
+/// parameters were rejected (already reported), in the scope §7.3.2 gives, and
+/// checked as a Step's own are (§3.3.1, §3.3.2, and unique names within the
+/// source). The combined set of a Step is the
 /// Step's own requirements followed by each entered Environment's, in Job
 /// order, normalized by [`combine`]. A Step none of whose entered
 /// Environments has requirements keeps its own, unchanged.
@@ -977,7 +977,7 @@ fn site_note(site: &Site) -> &str {
 }
 
 /// The scope of Environment `source`'s `hostRequirements` for a Step with
-/// effective values `values` (§4 item 5.1): the Job Parameters, `Job.Name`
+/// effective values `values` (§7.3.2): the Job Parameters, `Job.Name`
 /// and `Job.EnvNames`, and the Environment's `Env.RawParam.*` of any type (a path as its
 /// unmapped string) and `Env.Param.*` of types other than PATH and LIST[PATH]. Template
 /// validation has rejected every other

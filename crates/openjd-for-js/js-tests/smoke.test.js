@@ -724,7 +724,7 @@ describe("createJob", () => {
   });
 
   it("a Step that declines a BY_DEFAULT Job Environment lists the ones it enters", () => {
-    // Template Schemas §3.2 item 5: a disabled entry declines a BY_DEFAULT
+    // Template Schemas §3.2 item 3.2: a disabled entry declines a BY_DEFAULT
     // Environment, so the Step's Sessions do not enter it. A Step without
     // an entry enters every Job Environment, so it lists none.
     const doc = JSON.stringify({
@@ -882,7 +882,7 @@ describe("createJob", () => {
       doc.jobEnvironments[0].activation = value;
       mod.decodeJobTemplate(JSON.stringify(doc)).free();
     }
-    // §4 item 6, §3.2.2 item 6: an ALWAYS Environment cannot be disabled.
+    // §4 item 4, §3.2.2 item 6: an ALWAYS Environment cannot be disabled.
     const doc = structuredClone(ENV_PARAMS_JOB);
     doc.jobEnvironments[0].activation = "ALWAYS";
     doc.jobEnvironments[0].enableIf = false;
@@ -890,7 +890,7 @@ describe("createJob", () => {
       "Model validation error: 1 validation error for JobTemplate\n" +
         "jobEnvironments[0] -> enableIf:\n\tEnvironment 'Always' has activation ALWAYS, so it " +
         "cannot be disabled, but its enableIf is false for every Step (Template Schemas §4 " +
-        "item 6).",
+        "item 4).",
     );
   });
 

@@ -232,7 +232,7 @@ pub fn validate_structure(
                 let dep_path = path_index(&deps_path, j);
                 validate_dependency_form(dep, &dep_path, env_params_active, errors);
                 // The Step checks apply to `dependsOn` and `step` entries
-                // alike (§3.2 item 1), so a `step` and a `dependsOn` entry
+                // alike (§3.2 item 2), so a `step` and a `dependsOn` entry
                 // naming one Step are duplicates. The
                 // `environment:` form (ENV_PARAMS) is checked in pass 11.
                 let Some(depends_on) = dep.step() else {

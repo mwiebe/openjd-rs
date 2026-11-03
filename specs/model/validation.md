@@ -146,7 +146,7 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   located messages replace the serde "unknown field" / "missing field" errors that the
   old single-field struct produced, so for a malformed `dependsOn` entry they intentionally
   differ from the Python reference, which has no ENV_PARAMS support and reports Pydantic's
-  field errors. For `dependsOn` entries and their ENV_PARAMS synonym `step` (§3.2 item 1),
+  field errors. For `dependsOn` entries and their ENV_PARAMS synonym `step` (§3.2 item 2),
   read through `StepDependency::step()` so the two are one form: no self-dependency, target
   must exist, no duplicates (a `step` and a `dependsOn` entry naming one Step are
   duplicates). The `environment:` form, and the `step` form's gate, are checked in pass 11,
@@ -176,7 +176,7 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   `<AttributeCapabilityValue>` pattern, length and standard-value checks here, and job
   creation resumes all three (see [job-creation.md](job-creation.md)). The single-valued
   standard-attribute rule (`attr.worker.os.family` / `attr.worker.cpu.arch` `allOf` may
-  have at most one element) fires at decode when the list has **more than one element
+  have at most one element, Template Schemas §3.3.2.1) fires at decode when the list has **more than one element
   that certainly contributes exactly one resolved element**: literals, and multi-segment
   format strings, which always concatenate to a single string (Expression Language
   §1.3.2). Only a whole-field single-expression element can null-skip or list-flatten,
@@ -338,7 +338,7 @@ symbols are added either way (see the first item).
   document lists ENV_PARAMS: without it, pass 11's one gate error on `envParameterDefinitions`
   is the whole report, and the environment's own references to those parameters do not add
   "Undefined variable" errors.
-- **A format-string `default`** (§4.5 item 4) is checked by `validate_env_param_defaults`
+- **A format-string `default`** (§4.5 item 1) is checked by `validate_env_param_defaults`
   against the template-scope table of the *same document's* top-level
   `parameterDefinitions`: `RawParam.*` for every Job Parameter and `Param.*` for the
   non-PATH ones, with no `Job.Name`, `Step.Name`, `Session.*`, or `Env.*`. For a Job
@@ -349,7 +349,7 @@ symbols are added either way (see the first item).
   `Job.EnvNames`, `Step.Name`, and the step-level `let` names. `Task.*`, `Session.*`, and
   `Env.*` are not in it. A step-level `let` is itself template scope, so it cannot carry a
   PATH `Param.*` into an entry.
-- **An `environment:` entry's `enableIf`** (§3.2 item 5, constraint 9) is an expression
+- **An `environment:` entry's `enableIf`** (§3.2 item 3.2, constraint 9) is an expression
   field of type `bool` (§7.5), checked by `validate_enable_if` with the expression-field
   checker (see [template-types.md](template-types.md#expression-fields-75)) against the same
   table, for every well-formed `environment:` entry that has one. A scalar other than a boolean
@@ -391,13 +391,13 @@ checked by `validate_env_enable_if` with the expression-field checker and the me
 entry's `enableIf` (above), when the document lists ENV_PARAMS (pass 11 reports it
 otherwise). Its table depends on where the Environment is:
 
-- **A `jobEnvironments` entry or an Environment Template's `environment`** (constraint 1):
+- **A `jobEnvironments` entry or an Environment Template's `environment`** (§7.3.2):
   exactly the table of its `hostRequirements`, `build_env_host_requirements_symtab` (see
   [Environment hostRequirements](#environment-hostrequirements-env_params)): the
   document's `RawParam.*` and non-PATH `Param.*`, `Job.Name`, `Job.EnvNames`, and its own
   `Env.RawParam.*` of any type (PATH as `string`, LIST[PATH] as `list[string]`) and
   `Env.Param.*` of types other than PATH and LIST[PATH].
-- **A `stepEnvironments` entry** (constraint 2): the Step's template-scope table
+- **A `stepEnvironments` entry** (§7.3.2): the Step's template-scope table
   (`step_template_symtab`), the table of an entry's `enableIf`: `RawParam.*`, non-PATH
   `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's `let` names.
 
@@ -413,11 +413,11 @@ single-layer rule an Environment whose `enableIf` is absent or `true` counts as 
 scalar `false` as not entered, and an expression defers to job creation (see
 [Pass 10](#pass-10-wrap_actions-gating)).
 
-An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 6, §3.2.2 item
+An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 4, §3.2.2 item
 6). Pass 11 rejects one whose `enableIf` is the scalar `false`, on a `jobEnvironments` entry
 or an Environment Template's `environment`, at its `enableIf`: "Environment 'Lic' has
 activation ALWAYS, so it cannot be disabled, but its enableIf is false for every Step
-(Template Schemas §4 item 6)." An expression is not rejected here, even a constant one such
+(Template Schemas §4 item 4)." An expression is not rejected here, even a constant one such
 as `"false"`: job creation reports each Step it is `false` for. Since such an Environment is
 entered by every Step's Sessions or the Job is rejected, every check above and below that
 depends on whether a Step enters it (constraints 6 and 7, the target type of a format-string
@@ -425,7 +425,7 @@ value, the single-layer rule) treats it as entered whatever its `enableIf`.
 
 ### Environment hostRequirements (ENV_PARAMS)
 
-An Environment's `hostRequirements` (§4 item 5.1) get the Step's checks
+An Environment's `hostRequirements` (§7.3.2) get the Step's checks
 (`validate_host_requirements_fs`, shared with a Step's) against their own table,
 `build_env_host_requirements_symtab`: the template scope of the *same document's*
 `parameterDefinitions` (`RawParam.*` for every Job Parameter, PATH ones included as
@@ -581,7 +581,7 @@ deferring it to job submission or the worker. Two stages of checking:
 | Field | Target type | Bound | Fully-static check |
 |---|---|---|---|
 | job `name` (Template Schemas §1.1.1) | `string` | ≤ `max_job_name_len` (128, 512 with FB1) | non-empty (§1.1.1 min 1); no Cc control characters |
-| attribute `anyOf`/`allOf` written as one expression (ENV_PARAMS, Template Schemas §3.3.2) | `list[string]?` | — | `null` omits the field (valid); a list must have 1 to 50 elements, each passing `validate_attribute_capability_value`, and at most one for the `allOf` of a single-valued standard attribute. Also, whether or not it is static, a static type of `list[int]` or `list[float]` is rejected (see below) |
+| attribute `anyOf`/`allOf` written as one expression (ENV_PARAMS, Template Schemas §3.3.2) | `list[string]?` | — | `null` omits the field (valid); a list must have 1 to 50 elements, each passing `validate_attribute_capability_value`, and at most one for the `allOf` of a single-valued standard attribute (§3.3.2.1). Also, whether or not it is static, a static type of `list[int]` or `list[float]` is rejected (see below) |
 | attribute `anyOf`/`allOf` values (Template Schemas §3.3.2.2) | `string? \| list[string]` | when certainly a string: ≤ 100; for a standard capability, ≤ longest allowed value | `validate_attribute_capability_value` (charset / allowed set) on the value, or on each element when a list flattens; `null` skips the element |
 | amount / attribute `name` (Template Schemas §3.3.1.1 / §3.3.2.1) | `string` | ≤ 100 | `helpers::check_capability_name` (length, pattern, reserved scope); then, across the requirements, uniqueness of the known names, and for a standard attribute name the standard-value and single-valued `allOf` checks on literal values |
 | task param STRING/PATH range elements (Template Schemas §3.4.2) | `string? \| list[string]` | when certainly a string: ≤ 1024 | ≤ 1024 chars per element (a list flattens); PATH elements additionally must be non-empty (see below); `null` skips the element |
@@ -746,7 +746,7 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   wrap hooks. A session's environment stack is its step's Environment set: the
   `jobEnvironments` entries with `activation: ALWAYS`, those with `BY_DEFAULT` the step does
   not decline, the `ON_REQUEST`
-  ones the step requests (ENV_PARAMS, Template Schemas §4 item 4, §3.2 item 5), and the step's own
+  ones the step requests (ENV_PARAMS, Template Schemas §4 item 4, §3.2 item 3.2), and the step's own
   `stepEnvironments`. So this is enforced per step: for every step, the count of
   wrap-defining envs among those must be ≤ 1. Multiple `ALWAYS` or `BY_DEFAULT` wrap envs in
   `jobEnvironments` that every step certainly enters are reported once at the
@@ -766,7 +766,7 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   checked at job creation, over the
   step's resolved set and the attached Environments (see
   [job-creation.md](job-creation.md#the-submission-stage), prototype plan R8). In the same
-  way (ENV_PARAMS, §4 item 6 tail) a wrapping Environment counts only when its own
+  way (ENV_PARAMS, §4, after item 9) a wrapping Environment counts only when its own
   `enableIf` is absent or the scalar `true`: one with the scalar `false` is not entered, and
   one with an expression is decided at job creation, which checks the final set. An
   `ALWAYS` wrapping Environment counts whatever its `enableIf`, since it cannot be
@@ -775,8 +775,8 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   whatever the expressions resolve to. The rule for every set-dependent check made before
   job creation is to fail only when the failure is certain at that stage; with two certainly
   entered wrapping Environments and a third whose `enableIf` is an expression, the template is
-  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and §4
-  item 6's tail, spec `5535230`). Two
+  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and §4,
+  after item 9, spec `5535230`). Two
   `ON_REQUEST` wrap envs requested by different steps are valid.
 
 The single-layer rule runs only in the job-template path. An environment template defines
@@ -810,12 +810,12 @@ Without the extension:
 With it, `activation` (§4 item 4) is rejected on a `stepEnvironments` entry ("is not permitted
 on a stepEnvironments entry, which only its own Step's Sessions enter."); an unrecognized
 value (constraint 1, case-sensitive: `always` and `by_default` are rejected; plan A24) is a
-decode error naming the three values. `hostRequirements` (§4 item 5.2) is rejected on a `stepEnvironments` entry
-("is not permitted on a stepEnvironments entry, whose Step has hostRequirements of its
-own."); on a `jobEnvironments` entry or an Environment Template's `environment` its §3.3
+decode error naming the three values. `hostRequirements` (§4, after item 9) is rejected on a
+`stepEnvironments` entry ("is not permitted on a stepEnvironments entry, whose Step has
+hostRequirements of its own."); on a `jobEnvironments` entry or an Environment Template's `environment` its §3.3
 checks are passes 6 and 8's.
 
-`enableIf` on any Environment (§4 item 6 constraint 4) needs ENV_PARAMS in the document, in
+`enableIf` on any Environment (§4 item 6) needs ENV_PARAMS in the document, in
 every position, a `stepEnvironments` entry included; without it the field is reported at its
 path: "enableIf on an Environment requires the ENV_PARAMS extension.". Its value is checked
 in pass 8
@@ -823,29 +823,29 @@ in pass 8
 
 With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
 
-- Not permitted on a `stepEnvironments` entry (constraint 4). A `jobEnvironments` entry
+- Not permitted on a `stepEnvironments` entry (§4, after item 9). A `jobEnvironments` entry
   and an Environment Template's `environment` may declare parameters.
 - 1–50 entries (constraints 1–2; the cap is fixed and FEATURE_BUNDLE_1 does not raise
   it), names unique within the list (constraint 3), and each name at most
   `max_identifier_len`. A name may equal a Job Parameter's or another environment's.
-- The type: any Job Parameter type available with EXPR, which the document lists (§4.5 item
-  1), so every type that decodes is allowed and there is no type check here. Type names are
+- The type: any Job Parameter type available with EXPR, which the document lists (§4.5),
+  so every type that decodes is allowed and there is no type check here. Type names are
   case-insensitive, as with EXPR for a Job Parameter; the decode-time case check in
   `parse.rs` does not walk environment `envParameterDefinitions`, since a document without
   EXPR that has them is rejected (by the prerequisite, or without ENV_PARAMS by the gate
   above).
-- `userInterface`, `objectType`, and `dataFlow` are permitted (§4.5 items 2–3), with the
+- `userInterface`, `objectType`, and `dataFlow` are permitted (§4.5), with the
   shape and constraints of the Job Parameter of the same type, since the definition is
   decoded as one. They are informational: nothing in job creation or the sessions runtime
   reads them, and an Environment parameter's `dataFlow` does not add to the Job's.
 - The definition's own checks run through `JobParameterDefinition::validate_definition`
   (for example `minLength` > `maxLength` for a STRING, or a `userInterface` control the type
   does not have), with `RangeExprLengthCheck::AsWrittenAndCanonical`, so a RANGE_EXPR's lengths check its canonical form too
-  (§4.5 item 5).
+  (§4.5 item 4).
 - An explicit `default: null` is no default (decode drops it), as for a Job Parameter.
-- A literal `default` is checked against the type and the constraints (§4.5 "checked at
-  two points", point 1), even when every Step supplies the parameter. The check decodes
-  the literal with the decoder of the Job Parameter type's `default` field (so a STRING
+- A literal `default` is checked against the type and the constraints (§4.5 item 2), even
+  when every Step supplies the parameter. The check decodes the literal with the decoder of
+  the Job Parameter type's `default` field (so a STRING
   `default` must be a string and an INT one an integer or `<intstring>`), coerces it with
   `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
   `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
@@ -854,7 +854,7 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   object or `null`, at any depth, is rejected; so is a list element containing `{{`
   (plan A14: list-literal elements are literals).
 - A format-string `default` of a list type must be a single `{{ }}` expression (§4.5
-  item 4). Its references are checked in pass 8.
+  item 1). Its references are checked in pass 8.
 
 For each `environment:` entry of a Step (§3.2), with constraint 1 already checked in
 pass 6:
@@ -868,7 +868,7 @@ pass 6:
   `<Identifier>` of at most `max_identifier_len` characters.
 - Constraint 8: `required: false` is rejected on an entry that names a
   `jobEnvironments` entry.
-- Constraint 9 (`enableIf`, §3.2 item 5): an expression field of type `bool` (§7.5), whose
+- Constraint 9 (`enableIf`, §3.2 item 3.2): an expression field of type `bool` (§7.5), whose
   value pass 8 checks. A boolean, number, string, or `null` decodes, except an integer above
   `i64::MAX` that fits `u64`; that and a list or a map are decode errors naming `enableIf`.
   Constraint 1's "only with `environment`" is checked for `enableIf` in pass 6, with
@@ -879,7 +879,7 @@ pass 6:
   decoder (`FlexInt`) rejects, so an integer, an integer-valued float, and an integer string
   (trimmed) are accepted.
 - For an entry that names a `jobEnvironments` entry and whose `enableIf` is absent or the
-  boolean scalar `true` (a disabled entry's parameters are not checked, §3.2 item 5; an
+  boolean scalar `true` (a disabled entry's parameters are not checked, §3.2 item 3.2; an
   entry whose `enableIf` is any other expression, even a constant one, may be disabled, so job
   creation checks it if it resolves to `true`, §7.5 rule 5; plan A28, decided 2026-11-03):
   constraint 5 (every key names a
@@ -920,7 +920,7 @@ pass 6:
   an entry is enabled is known here only when its `enableIf` is absent or a boolean scalar
   (§3.2, checked-at paragraph; §7.5 item 1): an entry whose `enableIf` is `false` supplies
   and requests nothing, and declines a `BY_DEFAULT` Environment, which then requires nothing of
-  the Step (§3.2 item 5); for an `ALWAYS` one it is an error (below), and the Environment is
+  the Step (§3.2 item 3.2); for an `ALWAYS` one it is an error (below), and the Environment is
   still checked as entered, so its parameters then all need their
   `default`s; an entry whose `enableIf` is an expression, even a constant one such as
   `"true"`, defers the check for its Environment and Step to job creation. Reported once per Step, at the Step, listing the missing parameters by
@@ -930,7 +930,7 @@ pass 6:
   grows with the number of Steps and not with Steps times parameters. When the Step's entry
   for an Environment in the list is disabled by its `enableIf`, the Environment's group adds
   "(the Step's 'environment:' dependency for it is disabled by its enableIf, so it supplies
-  nothing; Template Schemas §3.2 item 5)", counted in the 512 characters, since the Step does
+  nothing; Template Schemas §3.2 item 3.2)", counted in the 512 characters, since the Step does
   have an entry for the Environment, which a reader would otherwise take as enabled; job creation and the submission stage add the same note for an
   entry an `enableIf` expression disabled. Since a disabled entry declines a `BY_DEFAULT`
   Environment and requests no `ON_REQUEST` one, the note now arises only for an `ALWAYS`
@@ -949,11 +949,11 @@ pass 6:
   entries alone (each `ALWAYS` or `BY_DEFAULT` Environment's start missing; an enabled entry supplies some, or
   adds an `ON_REQUEST` one's; a disabled one removes a `BY_DEFAULT` one's), and the list stops after 50 names, so it is linear in
   the template size.
-- §3.2 item 5: an entry whose `enableIf` is the boolean scalar `false` and that names a
+- §3.2 item 3.2: an entry whose `enableIf` is the boolean scalar `false` and that names a
   `jobEnvironments` entry with `activation: ALWAYS` is an error at `steps[i] ->
   dependencies[j] -> enableIf`: "is false, so Step 'S' would decline Environment 'E', whose
   activation is ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2
-  item 5)." An expression `enableIf`, and an entry naming an external Environment, are left
+  item 3.2)." An expression `enableIf`, and an entry naming an external Environment, are left
   to job creation (§7.5 rule 5).
 
 An entry that names no `jobEnvironments` entry names an external Environment, whose
