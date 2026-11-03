@@ -614,7 +614,8 @@ impl JobParameterDefinition {
     /// satisfies its constraints, and its `userInterface`. For STRING, PATH,
     /// INT and FLOAT it also checks that the constraints are consistent
     /// (`minLength ≤ maxLength`, `minValue ≤ maxValue`, and `allowedValues`
-    /// non-empty and within those bounds). For BOOL, RANGE_EXPR and the
+    /// non-empty; STRING, PATH and FLOAT also check each allowed value
+    /// against those bounds, and INT does not). For BOOL, RANGE_EXPR and the
     /// LIST types it checks only `default` and `userInterface`, so, for
     /// example, a RANGE_EXPR with `minLength: 5` and `maxLength: 3` and no
     /// `default` passes. `length_check` is as for
