@@ -118,9 +118,11 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
 - Non-empty if present
 - No duplicate names (case-sensitive)
 - Parameter type in `rules.allowed_job_param_types`
-- Type-specific validation via `validate_definition(limits, env_params)`, where `env_params` is
-  whether the document lists `ENV_PARAMS`: a RANGE_EXPR `default` is length-checked in canonical
-  form only then (§2.10)
+- Type-specific validation via `validate_definition(limits, length_check)`, where `length_check` is
+  `RangeExprLengthCheck::for_job_parameter(profile)`: a RANGE_EXPR `default` is length-checked in
+  canonical form only when the document lists `ENV_PARAMS` (§2.10). Constraint consistency
+  (`minLength` ≤ `maxLength` and the like) is checked only for STRING, PATH, INT and FLOAT (see
+  [parameters.md](parameters.md#constraint-checking-vs-definition-validation))
 
 **Environment uniqueness:**
 - Names unique within `jobEnvironments`
@@ -837,8 +839,8 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   decoded as one. They are informational: nothing in job creation or the sessions runtime
   reads them, and an Environment parameter's `dataFlow` does not add to the Job's.
 - The definition's own checks run through `JobParameterDefinition::validate_definition`
-  (for example `minLength` > `maxLength`, or a `userInterface` control the type does not
-  have), with `env_params: true`, so a RANGE_EXPR's lengths check its canonical form too
+  (for example `minLength` > `maxLength` for a STRING, or a `userInterface` control the type
+  does not have), with `RangeExprLengthCheck::AsWrittenAndCanonical`, so a RANGE_EXPR's lengths check its canonical form too
   (§4.5 item 5).
 - An explicit `default: null` is no default (decode drops it), as for a Job Parameter.
 - A literal `default` is checked against the type and the constraints (§4.5 "checked at
@@ -847,7 +849,7 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   `default` must be a string and an INT one an integer or `<intstring>`), coerces it with
   `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
   `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
-  Job Parameter `default`), and calls `check_constraints` with `env_params: true`. Absoluteness of a
+  Job Parameter `default`), and calls `check_constraints` with `AsWrittenAndCanonical`. Absoluteness of a
   PATH value depends on the submission path format and is left to job creation. An
   object or `null`, at any depth, is rejected; so is a list element containing `{{`
   (plan A14: list-literal elements are literals).

@@ -65,7 +65,9 @@ use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::job;
 use crate::template::expr_field::{self, ExprField, ExprFieldEval};
 use crate::template::validate_v2023_09::env_params as tv;
-use crate::template::{self, EnvironmentParameterDefinition, EnvironmentParameterValue};
+use crate::template::{
+    self, EnvironmentParameterDefinition, EnvironmentParameterValue, RangeExprLengthCheck,
+};
 use crate::types::{JobParameterType, ValidationContext};
 
 use super::parameters::coerce_from_str;
@@ -839,13 +841,16 @@ fn resolve_value(
     // effective value satisfies its definition (§4.5 item 5). A RANGE_EXPR
     // with a written string is checked as that string, which for an
     // Environment parameter checks both it and its canonical form, hence
-    // `true` below.
+    // `AsWrittenAndCanonical` below.
     if is_format_string {
         let checked = match &text {
             Some(s) => ExprValue::String(s.clone()),
             None => value.clone(),
         };
-        if let Err(e) = def.definition.check_constraints(&checked, true) {
+        if let Err(e) = def
+            .definition
+            .check_constraints(&checked, RangeExprLengthCheck::AsWrittenAndCanonical)
+        {
             errors.add(path, e);
             return (Some(Effective { value }), false);
         }

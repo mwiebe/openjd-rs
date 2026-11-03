@@ -1063,7 +1063,7 @@ impl openjd_model::template::JobParameterDefinition
 pub fn openjd_model::template::JobParameterDefinition::allowed_values_f64(&self) -> core::option::Option<alloc::vec::Vec<f64>>
 pub fn openjd_model::template::JobParameterDefinition::allowed_values_i64(&self) -> core::option::Option<alloc::vec::Vec<i64>>
 pub fn openjd_model::template::JobParameterDefinition::allowed_values_strings(&self) -> core::option::Option<alloc::vec::Vec<alloc::string::String>>
-pub fn openjd_model::template::JobParameterDefinition::check_constraints(&self, &openjd_expr::value::ExprValue, bool) -> core::result::Result<(), alloc::string::String>
+pub fn openjd_model::template::JobParameterDefinition::check_constraints(&self, &openjd_expr::value::ExprValue, openjd_model::template::RangeExprLengthCheck) -> core::result::Result<(), alloc::string::String>
 pub fn openjd_model::template::JobParameterDefinition::default_value(&self) -> core::option::Option<alloc::string::String>
 pub fn openjd_model::template::JobParameterDefinition::description(&self) -> core::option::Option<&str>
 pub fn openjd_model::template::JobParameterDefinition::item_allowed_values_f64(&self) -> core::option::Option<alloc::vec::Vec<f64>>
@@ -1088,7 +1088,7 @@ pub fn openjd_model::template::JobParameterDefinition::min_value_i64(&self) -> c
 pub fn openjd_model::template::JobParameterDefinition::name(&self) -> &str
 pub fn openjd_model::template::JobParameterDefinition::path_properties(&self) -> (core::option::Option<openjd_model::types::ObjectType>, core::option::Option<openjd_model::types::DataFlow>)
 pub fn openjd_model::template::JobParameterDefinition::type_name(&self) -> &str
-pub fn openjd_model::template::JobParameterDefinition::validate_definition(&self, &openjd_model::template::validate_v2023_09::EffectiveLimits, bool) -> core::result::Result<(), alloc::vec::Vec<alloc::string::String>>
+pub fn openjd_model::template::JobParameterDefinition::validate_definition(&self, &openjd_model::template::validate_v2023_09::EffectiveLimits, openjd_model::template::RangeExprLengthCheck) -> core::result::Result<(), alloc::vec::Vec<alloc::string::String>>
 impl core::clone::Clone for openjd_model::template::JobParameterDefinition
 pub fn openjd_model::template::JobParameterDefinition::clone(&self) -> openjd_model::template::JobParameterDefinition
 impl core::fmt::Debug for openjd_model::template::JobParameterDefinition
@@ -1112,6 +1112,23 @@ impl serde_core::ser::Serialize for openjd_model::template::RangeConstraint
 pub fn openjd_model::template::RangeConstraint::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::RangeConstraint
 pub fn openjd_model::template::RangeConstraint::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::template::RangeExprLengthCheck
+pub openjd_model::template::RangeExprLengthCheck::AsWritten
+pub openjd_model::template::RangeExprLengthCheck::AsWrittenAndCanonical
+impl openjd_model::template::RangeExprLengthCheck
+pub fn openjd_model::template::RangeExprLengthCheck::checks_canonical(self) -> bool
+pub fn openjd_model::template::RangeExprLengthCheck::for_job_parameter(&openjd_model::types::ModelProfile) -> Self
+impl core::clone::Clone for openjd_model::template::RangeExprLengthCheck
+pub fn openjd_model::template::RangeExprLengthCheck::clone(&self) -> openjd_model::template::RangeExprLengthCheck
+impl core::cmp::Eq for openjd_model::template::RangeExprLengthCheck
+impl core::cmp::PartialEq for openjd_model::template::RangeExprLengthCheck
+pub fn openjd_model::template::RangeExprLengthCheck::eq(&self, &openjd_model::template::RangeExprLengthCheck) -> bool
+impl core::fmt::Debug for openjd_model::template::RangeExprLengthCheck
+pub fn openjd_model::template::RangeExprLengthCheck::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::template::RangeExprLengthCheck
+pub fn openjd_model::template::RangeExprLengthCheck::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::template::RangeExprLengthCheck
+impl core::marker::StructuralPartialEq for openjd_model::template::RangeExprLengthCheck
 pub enum openjd_model::template::SimpleActionKind
 pub openjd_model::template::SimpleActionKind::Bash
 pub openjd_model::template::SimpleActionKind::Cmd
@@ -1661,8 +1678,8 @@ pub openjd_model::template::JobRangeExprParameterDefinition::min_length: core::o
 pub openjd_model::template::JobRangeExprParameterDefinition::name: openjd_model::template::constrained_strings::Identifier
 pub openjd_model::template::JobRangeExprParameterDefinition::user_interface: core::option::Option<openjd_model::template::RangeExprUserInterface>
 impl openjd_model::template::JobRangeExprParameterDefinition
-pub fn openjd_model::template::JobRangeExprParameterDefinition::check_value_constraints(&self, &openjd_expr::value::ExprValue, bool) -> core::result::Result<(), alloc::string::String>
-pub fn openjd_model::template::JobRangeExprParameterDefinition::validate_definition(&self, bool) -> core::result::Result<(), alloc::vec::Vec<alloc::string::String>>
+pub fn openjd_model::template::JobRangeExprParameterDefinition::check_value_constraints(&self, &openjd_expr::value::ExprValue, openjd_model::template::RangeExprLengthCheck) -> core::result::Result<(), alloc::string::String>
+pub fn openjd_model::template::JobRangeExprParameterDefinition::validate_definition(&self, openjd_model::template::RangeExprLengthCheck) -> core::result::Result<(), alloc::vec::Vec<alloc::string::String>>
 impl core::clone::Clone for openjd_model::template::JobRangeExprParameterDefinition
 pub fn openjd_model::template::JobRangeExprParameterDefinition::clone(&self) -> openjd_model::template::JobRangeExprParameterDefinition
 impl core::fmt::Debug for openjd_model::template::JobRangeExprParameterDefinition

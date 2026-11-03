@@ -314,7 +314,15 @@ must match the template's and its extensions must cover every
 extension the template declares (enabling more is allowed);
 `create_job` returns a `Compatibility` error otherwise. An application
 that does not support an extension rejects such templates at decode
-via `supported_extensions` instead. Every expression
+via `supported_extensions` instead. `create_job` re-checks each value
+against the Job Template's parameter definitions, but a RANGE_EXPR value
+reaches it as a `range_expr`, with no spelling as written. For a
+RANGE_EXPR Job Parameter in a document that does not list `ENV_PARAMS`,
+the re-check therefore enforces no `minLength` or `maxLength` at all: a
+`range_expr` value that did not come from [`preprocess_job_parameters`]
+is accepted whatever its length. Callers that build
+`JobParameterValues` themselves must check those lengths on the value
+as written (see [job-creation.md](job-creation.md), round trip). Every expression
 evaluation it performs runs under the caller's evaluation budgets
 (`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
 
@@ -739,35 +747,62 @@ impl JobParameterDefinition {
     /// constraints. `preprocess_job_parameters` and `create_job` do not call
     /// it: they check the merged definition
     /// (`MergedParameterDefinition::check_constraints`). Used directly for
-    /// Environment parameter values, with `env_params` true. `env_params` is
-    /// whether the document declaring the definition lists ENV_PARAMS: only
-    /// then is a RANGE_EXPR string's canonical form length-checked besides
-    /// the string (§2.10); an Environment parameter passes true (§4.5 item
-    /// 5). It changes nothing for the other types. For INT and FLOAT a
-    /// `String` value is parsed as an `<intstring>` or `<floatstring>`,
-    /// ignoring white space around the number (Template Schemas §7.5).
+    /// Environment parameter values, with `AsWrittenAndCanonical`.
+    /// `length_check` decides whether a RANGE_EXPR string's canonical form is
+    /// length-checked besides the string: pass
+    /// `RangeExprLengthCheck::for_job_parameter` of the declaring document's
+    /// profile (§2.10), or `AsWrittenAndCanonical` for an Environment
+    /// parameter (§4.5 item 5). It changes nothing for the other types. For
+    /// INT and FLOAT a `String` value is parsed as an `<intstring>` or
+    /// `<floatstring>`, ignoring white space around the number (Template
+    /// Schemas §7.5).
     pub fn check_constraints(
         &self,
         value: &openjd_expr::ExprValue,
-        env_params: bool,
+        length_check: RangeExprLengthCheck,
     ) -> Result<(), String>;
 
-    /// The template-validation checks of the definition: consistent
-    /// constraints, a `default` that satisfies them (with `env_params` as
-    /// for `check_constraints`), and a `userInterface` control the type
-    /// allows. Returns every message found.
+    /// The template-validation checks of the definition: a `default` that
+    /// satisfies its constraints (under `length_check` as for
+    /// `check_constraints`) and a `userInterface` control the type allows,
+    /// for every type; for STRING, PATH, INT and FLOAT also consistent
+    /// constraints (min ≤ max, minLength ≤ maxLength, allowedValues
+    /// within bounds). BOOL, RANGE_EXPR and the LIST types do not check
+    /// constraint consistency. Returns every message found.
     pub fn validate_definition(
         &self,
         limits: &EffectiveLimits,
-        env_params: bool,
+        length_check: RangeExprLengthCheck,
     ) -> Result<(), Vec<String>>;
 }
 
+/// Which spellings of a RANGE_EXPR string value `minLength` and
+/// `maxLength` constrain. A `range_expr` value has only its canonical
+/// form, which is checked under either variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeExprLengthCheck {
+    /// The value as written only: a RANGE_EXPR Job Parameter in a
+    /// document that does not list ENV_PARAMS (§2.10).
+    AsWritten,
+    /// The value as written and its canonical form: a RANGE_EXPR Job
+    /// Parameter in a document that lists ENV_PARAMS (§2.10), and every
+    /// Environment parameter of type RANGE_EXPR (§4.5 item 5).
+    AsWrittenAndCanonical,
+}
+
+impl RangeExprLengthCheck {
+    /// `AsWrittenAndCanonical` when `profile` lists ENV_PARAMS, else
+    /// `AsWritten`.
+    pub fn for_job_parameter(profile: &ModelProfile) -> Self;
+    /// True for `AsWrittenAndCanonical`.
+    pub fn checks_canonical(self) -> bool;
+}
+
 `JobRangeExprParameterDefinition` has the RANGE_EXPR forms of these two,
-`check_value_constraints(&self, &ExprValue, env_params: bool)` and
-`validate_definition(&self, env_params: bool)`, with the same meaning
-of `env_params`. A `range_expr` value has only its canonical form, which
-is checked whatever `env_params` is.
+`check_value_constraints(&self, &ExprValue, RangeExprLengthCheck)` and
+`validate_definition(&self, RangeExprLengthCheck)`, with the same meaning
+of the rule. A `range_expr` value has only its canonical form, which
+is checked under either rule.
 ```
 
 ### Task Parameter Definitions

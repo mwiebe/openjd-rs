@@ -11,8 +11,10 @@ use crate::template::{
     JobListListIntParameterDefinition, JobListPathParameterDefinition,
     JobListStringParameterDefinition, JobRangeExprParameterDefinition, ListFloatItemConstraints,
     ListIntItemConstraints, ListListIntItemConstraints, ListStringItemConstraints,
+    RangeExprLengthCheck,
 };
 use openjd_expr::{value::Float64, ExprType, ExprValue, PathFormat};
+use RangeExprLengthCheck::{AsWritten, AsWrittenAndCanonical};
 
 fn id(s: &str) -> Identifier {
     Identifier::new(s).unwrap()
@@ -63,7 +65,7 @@ fn test_range_expr_accepts_valid() {
     };
     let r = "1-10".parse::<openjd_expr::RangeExpr>().unwrap();
     assert!(p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .is_ok());
 }
 
@@ -79,7 +81,7 @@ fn test_range_expr_rejects_too_long() {
     };
     let r = "1-1000".parse::<openjd_expr::RangeExpr>().unwrap();
     let err = p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -277,7 +279,7 @@ fn test_range_expr_rejects_too_short() {
     };
     let r = "1-5".parse::<openjd_expr::RangeExpr>().unwrap();
     let err = p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .unwrap_err();
     assert!(err.contains("less than minimum"), "Got: {err}");
 }
@@ -293,7 +295,7 @@ fn test_range_expr_rejects_non_range() {
         user_interface: None,
     };
     let err = p
-        .check_value_constraints(&ExprValue::String("not a range".into()), false)
+        .check_value_constraints(&ExprValue::String("not a range".into()), AsWritten)
         .unwrap_err();
     assert!(err.contains("not a valid range"), "Got: {err}");
 }
@@ -577,28 +579,28 @@ fn range_param() -> JobRangeExprParameterDefinition {
 #[test]
 fn test_range_expr_accepts_string_value() {
     assert!(range_param()
-        .check_value_constraints(&ExprValue::String("1-10".into()), false)
+        .check_value_constraints(&ExprValue::String("1-10".into()), AsWritten)
         .is_ok());
 }
 
 #[test]
 fn test_range_expr_accepts_string_with_step() {
     assert!(range_param()
-        .check_value_constraints(&ExprValue::String("1-100:10".into()), false)
+        .check_value_constraints(&ExprValue::String("1-100:10".into()), AsWritten)
         .is_ok());
 }
 
 #[test]
 fn test_range_expr_accepts_string_list() {
     assert!(range_param()
-        .check_value_constraints(&ExprValue::String("1,3,5".into()), false)
+        .check_value_constraints(&ExprValue::String("1,3,5".into()), AsWritten)
         .is_ok());
 }
 
 #[test]
 fn test_range_expr_rejects_invalid_string() {
     let err = range_param()
-        .check_value_constraints(&ExprValue::String("not-a-range".into()), false)
+        .check_value_constraints(&ExprValue::String("not-a-range".into()), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -609,7 +611,7 @@ fn test_range_expr_rejects_invalid_string() {
 #[test]
 fn test_range_expr_rejects_wrong_type_int() {
     let err = range_param()
-        .check_value_constraints(&ExprValue::Int(5), false)
+        .check_value_constraints(&ExprValue::Int(5), AsWritten)
         .unwrap_err();
     assert_eq!(err, "Parameter 'Frames': expected range_expr, got int");
 }
@@ -617,7 +619,7 @@ fn test_range_expr_rejects_wrong_type_int() {
 #[test]
 fn test_range_expr_rejects_wrong_type_bool() {
     let err = range_param()
-        .check_value_constraints(&ExprValue::Bool(true), false)
+        .check_value_constraints(&ExprValue::Bool(true), AsWritten)
         .unwrap_err();
     assert_eq!(err, "Parameter 'Frames': expected range_expr, got bool");
 }
@@ -625,7 +627,7 @@ fn test_range_expr_rejects_wrong_type_bool() {
 #[test]
 fn test_range_expr_rejects_wrong_type_float() {
     let err = range_param()
-        .check_value_constraints(&ExprValue::Float(Float64::new(1.0).unwrap()), false)
+        .check_value_constraints(&ExprValue::Float(Float64::new(1.0).unwrap()), AsWritten)
         .unwrap_err();
     assert_eq!(err, "Parameter 'Frames': expected range_expr, got float");
 }
@@ -643,7 +645,7 @@ fn test_range_expr_min_length_at_boundary() {
     };
     let r = "1-5".parse::<openjd_expr::RangeExpr>().unwrap(); // "1-5" is 3 chars
     assert!(p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .is_ok());
 }
 
@@ -659,7 +661,7 @@ fn test_range_expr_min_length_one_below() {
     };
     let r = "1-5".parse::<openjd_expr::RangeExpr>().unwrap(); // "1-5" is 3 chars
     let err = p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -680,7 +682,7 @@ fn test_range_expr_max_length_at_boundary() {
     };
     let r = "1-5".parse::<openjd_expr::RangeExpr>().unwrap(); // "1-5" is 3 chars
     assert!(p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .is_ok());
 }
 
@@ -696,7 +698,7 @@ fn test_range_expr_max_length_one_above() {
     };
     let r = "1-5".parse::<openjd_expr::RangeExpr>().unwrap(); // "1-5" is 3 chars
     let err = p
-        .check_value_constraints(&ExprValue::RangeExpr(r), false)
+        .check_value_constraints(&ExprValue::RangeExpr(r), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -716,7 +718,7 @@ fn test_range_expr_string_min_length_check() {
         user_interface: None,
     };
     let err = p
-        .check_value_constraints(&ExprValue::String("1-5".into()), false)
+        .check_value_constraints(&ExprValue::String("1-5".into()), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -735,7 +737,7 @@ fn test_range_expr_string_max_length_check() {
         user_interface: None,
     };
     let err = p
-        .check_value_constraints(&ExprValue::String("1-5".into()), false)
+        .check_value_constraints(&ExprValue::String("1-5".into()), AsWritten)
         .unwrap_err();
     assert_eq!(
         err,
@@ -744,8 +746,8 @@ fn test_range_expr_string_max_length_check() {
 }
 
 // §2.10: a value as written must satisfy the length constraints, and, in a
-// document that lists ENV_PARAMS (`env_params`), so must its canonical form.
-// An Environment parameter is checked with `env_params` true (§4.5 item 5).
+// document that lists ENV_PARAMS (`AsWrittenAndCanonical`), so must its canonical form.
+// An Environment parameter is checked with `AsWrittenAndCanonical` (§4.5 item 5).
 fn range_expr_def(
     min_length: Option<usize>,
     max_length: Option<usize>,
@@ -761,16 +763,42 @@ fn range_expr_def(
 }
 
 #[test]
+fn test_range_expr_length_check_for_job_parameter_follows_env_params() {
+    use crate::types::{Extensions, ModelExtension, ModelProfile, SpecificationRevision};
+    let profile = |exts: &[ModelExtension]| {
+        ModelProfile::new(SpecificationRevision::V2023_09)
+            .with_extensions(exts.iter().copied().collect::<Extensions>())
+    };
+    assert_eq!(
+        RangeExprLengthCheck::for_job_parameter(&profile(&[])),
+        AsWritten
+    );
+    assert_eq!(
+        RangeExprLengthCheck::for_job_parameter(&profile(&[ModelExtension::Expr])),
+        AsWritten
+    );
+    assert_eq!(
+        RangeExprLengthCheck::for_job_parameter(&profile(&[
+            ModelExtension::Expr,
+            ModelExtension::EnvParams
+        ])),
+        AsWrittenAndCanonical
+    );
+    assert!(!AsWritten.checks_canonical());
+    assert!(AsWrittenAndCanonical.checks_canonical());
+}
+
+#[test]
 fn test_range_expr_written_form_too_long_although_canonical_fits() {
     // "1,2,3" is 5 characters; its canonical form "1-3" is 3. The value as
     // written is checked with or without ENV_PARAMS.
-    for env_params in [false, true] {
+    for length_check in [AsWritten, AsWrittenAndCanonical] {
         let err = range_expr_def(None, Some(3))
-            .check_value_constraints(&ExprValue::String("1,2,3".into()), env_params)
+            .check_value_constraints(&ExprValue::String("1,2,3".into()), length_check)
             .unwrap_err();
         assert_eq!(
             err, "Parameter 'Frames': value '1,2,3' length 5 exceeds maximum 3",
-            "env_params: {env_params}"
+            "{length_check:?}"
         );
     }
 }
@@ -779,7 +807,7 @@ fn test_range_expr_written_form_too_long_although_canonical_fits() {
 fn test_range_expr_canonical_form_too_short_although_written_fits_with_env_params() {
     // "1-3:2" is 5 characters; its canonical form "1,3" is 3.
     let err = range_expr_def(Some(4), None)
-        .check_value_constraints(&ExprValue::String("1-3:2".into()), true)
+        .check_value_constraints(&ExprValue::String("1-3:2".into()), AsWrittenAndCanonical)
         .unwrap_err();
     assert_eq!(
         err,
@@ -793,31 +821,31 @@ fn test_range_expr_canonical_form_not_checked_without_env_params() {
     // ENV_PARAMS its canonical form "1,3" (3) is not checked. Nor is "1,2,3"
     // (5) under maxLength 4, whose canonical form "1-3" also fits.
     assert!(range_expr_def(Some(4), None)
-        .check_value_constraints(&ExprValue::String("1-3:2".into()), false)
+        .check_value_constraints(&ExprValue::String("1-3:2".into()), AsWritten)
         .is_ok());
     assert!(range_expr_def(Some(5), Some(5))
-        .check_value_constraints(&ExprValue::String("1,2,3".into()), false)
+        .check_value_constraints(&ExprValue::String("1,2,3".into()), AsWritten)
         .is_ok());
 }
 
 #[test]
 fn test_range_expr_range_expr_value_checks_only_canonical_form() {
     // A range_expr has no other spelling, so its canonical form is checked
-    // whatever `env_params` is: "1,2,3" parses to the range_expr whose
+    // under either rule: "1,2,3" parses to the range_expr whose
     // canonical form "1-3" fits maxLength 3, and "1-3:2" to "1,3", below
     // minLength 4.
-    for env_params in [false, true] {
+    for length_check in [AsWritten, AsWrittenAndCanonical] {
         let r = "1,2,3".parse::<openjd_expr::RangeExpr>().unwrap();
         assert!(range_expr_def(None, Some(3))
-            .check_value_constraints(&ExprValue::RangeExpr(r), env_params)
+            .check_value_constraints(&ExprValue::RangeExpr(r), length_check)
             .is_ok());
         let r = "1-3:2".parse::<openjd_expr::RangeExpr>().unwrap();
         assert_eq!(
             range_expr_def(Some(4), None)
-                .check_value_constraints(&ExprValue::RangeExpr(r), env_params)
+                .check_value_constraints(&ExprValue::RangeExpr(r), length_check)
                 .unwrap_err(),
             "Parameter 'Frames': canonical form '1,3' length 3 is less than minimum 4",
-            "env_params: {env_params}"
+            "{length_check:?}"
         );
     }
 }
@@ -829,20 +857,20 @@ fn test_range_expr_default_canonical_form_checked_only_with_env_params() {
         default: Some("1-3:2".into()),
         ..range_expr_def(Some(4), None)
     };
-    assert!(def.validate_definition(false).is_ok());
+    assert!(def.validate_definition(AsWritten).is_ok());
     assert_eq!(
-        def.validate_definition(true).unwrap_err(),
+        def.validate_definition(AsWrittenAndCanonical).unwrap_err(),
         ["Parameter 'Frames': canonical form '1,3' length 3 is less than minimum 4 (default)"]
     );
     let def = JobRangeExprParameterDefinition {
         default: Some("1,2,3".into()),
         ..range_expr_def(None, Some(3))
     };
-    for env_params in [false, true] {
+    for length_check in [AsWritten, AsWrittenAndCanonical] {
         assert_eq!(
-            def.validate_definition(env_params).unwrap_err(),
+            def.validate_definition(length_check).unwrap_err(),
             ["Parameter 'Frames': value '1,2,3' length 5 exceeds maximum 3 (default)"],
-            "env_params: {env_params}"
+            "{length_check:?}"
         );
     }
 }

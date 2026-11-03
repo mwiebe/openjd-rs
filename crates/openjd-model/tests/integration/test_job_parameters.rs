@@ -8,6 +8,7 @@
 
 use openjd_expr::path_mapping::PathFormat;
 use openjd_model::decode_job_template;
+use openjd_model::template::RangeExprLengthCheck;
 use openjd_model::CallerLimits;
 
 fn yaml_val(s: &str) -> serde_json::Value {
@@ -1606,7 +1607,9 @@ fn string_param_maxlength_uses_chars_not_bytes() {
     // "héllo" is 5 chars but 6 bytes — should be accepted with maxLength=5
     let test_value = openjd_expr::ExprValue::String("héllo".to_string());
     assert!(
-        param.check_constraints(&test_value, false).is_ok(),
+        param
+            .check_constraints(&test_value, RangeExprLengthCheck::AsWritten)
+            .is_ok(),
         "5-character string 'héllo' should pass maxLength=5 (char count, not byte count)"
     );
 }
@@ -1632,7 +1635,9 @@ fn string_param_minlength_uses_chars_not_bytes() {
     // "ééé" is 3 chars but 6 bytes — should be rejected with minLength=6
     let test_value = openjd_expr::ExprValue::String("ééé".to_string());
     assert!(
-        param.check_constraints(&test_value, false).is_err(),
+        param
+            .check_constraints(&test_value, RangeExprLengthCheck::AsWritten)
+            .is_err(),
         "3-character string 'ééé' should fail minLength=6 (char count, not byte count)"
     );
 }
@@ -1659,7 +1664,9 @@ fn path_param_maxlength_uses_chars_not_bytes() {
     let test_value =
         openjd_expr::ExprValue::new_path("/tmp/héllo".to_string(), openjd_expr::PathFormat::Posix);
     assert!(
-        param.check_constraints(&test_value, false).is_ok(),
+        param
+            .check_constraints(&test_value, RangeExprLengthCheck::AsWritten)
+            .is_ok(),
         "10-character path '/tmp/héllo' should pass maxLength=10 (char count, not byte count)"
     );
 }

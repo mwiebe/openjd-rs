@@ -63,12 +63,15 @@ Common methods on all variants:
 - `name() -> &str`
 - `job_param_type() -> JobParameterType`
 - `default_value() -> Option<String>` — Returns the default as a string representation
-- `check_constraints(&ExprValue, env_params: bool) -> Result<(), String>` — Runtime value validation
-- `validate_definition(&EffectiveLimits, env_params: bool) -> Result<(), Vec<String>>` — Template-level consistency (accumulates errors)
+- `check_constraints(&ExprValue, RangeExprLengthCheck) -> Result<(), String>` — Runtime value validation
+- `validate_definition(&EffectiveLimits, RangeExprLengthCheck) -> Result<(), Vec<String>>` — Template-level checks of the definition (accumulates errors)
 
-`env_params` is whether the document that declares the definition lists `ENV_PARAMS`, and is
-`true` for an Environment parameter. It decides only whether a RANGE_EXPR's canonical form is
-length-checked (below).
+`RangeExprLengthCheck` (`template/expr_parameters.rs`) names the RANGE_EXPR length rule:
+`AsWritten` checks a string value as written only, and `AsWrittenAndCanonical` checks it as
+written and in canonical form. `RangeExprLengthCheck::for_job_parameter(&profile)` gives
+`AsWrittenAndCanonical` when the declaring document's profile lists `ENV_PARAMS`, else
+`AsWritten`; an Environment parameter passes `AsWrittenAndCanonical`. The rule changes nothing
+for the other types (below).
 
 ### Constraint Checking vs Definition Validation
 
@@ -83,9 +86,9 @@ length-checked (below).
 > canonical form, and both must satisfy them (Template Schemas §2.10, spec `8a2803a`); without
 > it the canonical form is not checked, so with `minLength: 4` an EXPR-only template accepts
 > `1-3:2` although its canonical form `1,3` is shorter. An Environment parameter of type
-> RANGE_EXPR always checks both (§4.5 item 5), so its callers pass `env_params: true`. A
-> `range_expr` value, which has no other spelling, is checked in canonical form whatever
-> `env_params` is. `check_constraints` on a string checks the string, and with `env_params` its
+> RANGE_EXPR always checks both (§4.5 item 5), so its callers pass `AsWrittenAndCanonical`. A
+> `range_expr` value, which has no other spelling, is checked in canonical form under either
+> rule. `check_constraints` on a string checks the string, and under `AsWrittenAndCanonical` its
 > canonical form; `preprocess_job_parameters` checks the written string before parsing it and
 > the canonical form after, against the merged lengths of the definitions whose document lists
 > `ENV_PARAMS` (see [Job Creation](job-creation.md), merge rules).
@@ -98,9 +101,12 @@ These are two distinct operations:
   (`MergedParameterDefinition::check_constraints`, called by `preprocess_job_parameters` and
   `create_job`).
 
-- **`validate_definition`** runs during template validation (Pass 3). It checks: min ≤ max,
-  minLength ≤ maxLength, default satisfies own constraints, allowedValues entries satisfy
-  constraints, UI control is compatible with other fields.
+- **`validate_definition`** runs during template validation (Pass 3). For every type it checks
+  that the default satisfies the definition's constraints and that the UI control is compatible
+  with the other fields. For STRING, PATH, INT and FLOAT it also checks that the constraints are
+  consistent: min ≤ max, minLength ≤ maxLength, allowedValues non-empty and within those bounds.
+  For BOOL, RANGE_EXPR and the LIST types it does not check that consistency, so a RANGE_EXPR
+  with `minLength: 5`, `maxLength: 3` and no `default` passes template validation.
 
 ## Task Parameter Types
 
