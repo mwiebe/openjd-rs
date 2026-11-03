@@ -79,7 +79,7 @@ fn job_env_ref(name: &str) -> EnvironmentRef {
     }
 }
 
-// ── Template validation: gating and placement (§4 item 6) ───────────
+// ── Template validation: gating and placement (§4 item 6) ──────────
 
 #[test]
 fn needs_env_params_in_every_position() {
@@ -166,7 +166,7 @@ fn a_disabled_environment_is_still_validated_in_full() {
     );
 }
 
-// ── Template validation: scopes (§7.3.2) ────────────────────────────
+// ── Template validation: scopes (§7.3.2) ───────────────────────────
 
 const JOB_SCOPE_HEAD: &str = "specificationVersion: jobtemplate-2023-09\n\
      extensions: [ENV_PARAMS, EXPR]\nname: J\n\

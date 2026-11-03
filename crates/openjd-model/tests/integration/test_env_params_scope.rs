@@ -214,7 +214,7 @@ steps:
     );
 }
 
-// ── Scope of a `default` (§4.5 item 1, §7.3.2) ─────────────────────────
+// ── Scope of a `default` (§4.5 item 1, §7.3.2) ─────────────────────
 
 #[test]
 fn default_scope_is_the_documents_raw_and_non_path_params() {

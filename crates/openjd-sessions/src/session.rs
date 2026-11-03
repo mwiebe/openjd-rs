@@ -1858,7 +1858,7 @@ impl Session {
 
         let symtab = self.build_symbol_table(None, resolved_symtab)?;
         // ENV_PARAMS: the onExit binds the values the Environment was
-        // entered with (§3.2.2), not anything the caller passes now.
+        // entered with (How Jobs Are Run, Environment Parameters), not anything the caller passes now.
         let env_param_symbols = self.stored_environment_parameter_symbols(Some(identifier))?;
 
         // Evaluate env vars BEFORE removing from tracking (matching Python)
@@ -2826,7 +2826,8 @@ impl Session {
     /// without values. A scheduler compares these with a Step's
     /// [`environment_parameters`](openjd_model::job::Step::environment_parameters)
     /// (using [`EnvironmentParameterValues::values_equal`]) to decide whether
-    /// this Session may run the Step's Tasks (Template Schemas §3.2.2).
+    /// this Session may run the Step's Tasks (How Jobs Are Run, Environment
+    /// Parameters; Template Schemas §3.2.2 defines equality).
     pub fn environment_parameters(&self, identifier: &str) -> Option<&EnvironmentParameterValues> {
         self.environment_parameters.get(identifier)
     }

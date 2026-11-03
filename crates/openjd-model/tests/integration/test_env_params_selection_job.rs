@@ -274,7 +274,7 @@ fn an_unreachable_on_request_attachment_is_not_an_error() {
     );
 }
 
-// ── enableIf (§3.2 item 3.2) ──────────────────────────────────────────
+// ── enableIf (§3.2 item 3.2) ───────────────────────────────────────
 
 const ENABLE_IF: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -597,7 +597,7 @@ fn enable_if_is_evaluated_within_the_caller_memory_budget() {
     );
 }
 
-// ── Job.EnvNames (§7.3.1, §7.4.1) ─────────────────────────────────────
+// ── Job.EnvNames (§7.3.1, §7.4.1) ──────────────────────────────────
 
 fn env_names_of(job: &Job, step: usize, binding: &str) -> serde_json::Value {
     let table = job.steps[step].resolved_symtab.as_ref().unwrap().as_value();

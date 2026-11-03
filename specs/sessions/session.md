@@ -288,7 +288,8 @@ Environment whose own `enableIf` (§4 item 6) is `false` for the Step, are not i
 (job creation leaves them out of `environments` and `step_environments`), so they are not
 entered and their `variables`, actions, and wrap hooks never apply to that Session. A Session may
 run a Step's Tasks only when the Environments it has entered and not exited are the Step's set,
-each entered with values equal to the Step's (§3.2.2); between Steps it may exit Environments,
+each entered with values equal to the Step's (§3.2.2; How Jobs Are Run, Environment
+Parameters); between Steps it may exit Environments,
 in the reverse of the order it entered them, and enter others or enter one again with another
 Step's values. Two Steps can run in turn without such a move only when their sets and values
 are equal (`job::Step::same_environments` and `job::Step::environment_values_equal`). Each Environment's `hostRequirements` were combined into

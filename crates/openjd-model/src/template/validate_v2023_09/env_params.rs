@@ -468,8 +468,9 @@ pub fn validate_env_params_environment_template(
 }
 
 /// §4 item 6: whether one Environment's `enableIf` is
-/// permitted; §4 item 4: its `activation`; §4 item 5: where its
-/// `hostRequirements` are permitted; §4 item 3 and §4.5: its
+/// permitted; §4 item 4 and the paragraph after item 9: its `activation`;
+/// §4 item 5 and the paragraph after item 9: where its `hostRequirements`
+/// are permitted; §4 item 3 and §4.5: its
 /// `envParameterDefinitions`.
 fn check_environment(
     env: &Environment,
@@ -489,8 +490,8 @@ fn check_environment(
             "enableIf on an Environment requires the ENV_PARAMS extension.",
         );
     }
-    // §4, after item 9. Constraint 1 (an unrecognized value) is a
-    // decode error.
+    // §4, after item 9. §4 item 4 constraint 1 (an unrecognized value)
+    // is a decode error.
     if env.activation.is_some() {
         let path = path_field(env_path, "activation");
         if !active {

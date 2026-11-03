@@ -1219,8 +1219,8 @@ fn check_attached_wrap_layers(
 ///   an error when it has parameters without a `default` and its
 ///   `activation` is `ALWAYS`, or `BY_DEFAULT` with its own `enableIf`
 ///   absent, `true`, or certainly unresolved), an ambiguous
-///   name with such an attachment, and every literal `default` (§4.5 item
-///   2);
+///   name with such an attachment, and every literal `default`
+///   (§4.5 item 2);
 /// - each `environment:` entry that names no Job Environment and whose
 ///   `enableIf` is absent or the boolean scalar `true`, resolved by name
 ///   (§3.2.1 items 1–3), with a `required: false` entry that resolves to

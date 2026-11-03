@@ -956,7 +956,7 @@ Step's sets, so it is not entered or exited, sets no `variables`, is not in the 
 no values, and adds no host requirements (which are not resolved for that Step). Two places
 decide it, by what the expression can read:
 
-- **A Step Environment** (constraint 2) reads no effective values, so its `enableIf` is
+- **A Step Environment** (§7.3.2) reads no effective values, so its `enableIf` is
   decided by `resolve_step_entries` (`job/create_job/env_params.rs`), with the entries'
   `enableIf`s, in the same scope, profile, library, and budgets, with POSIX paths (the Step's
   full template scope as job creation built it; an `enableIf` is not host context, so the
@@ -967,7 +967,7 @@ decide it, by what the expression can read:
   `steps[i] -> stepEnvironments[j] -> enableIf`, and the Step Environment is kept. This is
   earlier than §7.4.1 lists it, which changes no result, but an error here is reported by the
   `create_job` body and so hides the submission stage's errors (plan 3 A38).
-- **A Job Environment or an attached Environment** (constraint 1) reads its own effective
+- **A Job Environment or an attached Environment** (§7.3.2) reads its own effective
   values, so its `enableIf` is decided with them (see
   [Disabled Environments](#environment-parameter-values-env_params)): a Job Environment's by
   `resolve_step_entries`, for each Step, in the `create_job` body; an attachment's by the

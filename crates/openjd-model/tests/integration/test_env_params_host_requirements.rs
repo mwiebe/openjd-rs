@@ -139,7 +139,7 @@ fn jt(extra: &str, body: &str) -> String {
 const RUN: &str = "script: {actions: {onRun: {command: x}}}";
 const VARS: &str = "variables: {V: v}";
 
-// ── §4 item 5: where the field is permitted ──────────────────────────
+// ── §4, after item 9: where the field is permitted ─────────────────
 
 #[test]
 fn host_requirements_on_an_environment_require_env_params() {
@@ -248,7 +248,7 @@ fn a_zero_min_is_accepted() {
     ));
 }
 
-// ── §7.3.2: format-string scopes ───────────────────────────────
+// ── §7.3.2: format-string scopes ───────────────────────────────────
 
 /// A Job Template whose one Job Environment has parameters `P` (INT),
 /// `D` (PATH) and `L` (LIST[PATH]), another Environment `O` with parameter

@@ -775,8 +775,8 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   whatever the expressions resolve to. The rule for every set-dependent check made before
   job creation is to fail only when the failure is certain at that stage; with two certainly
   entered wrapping Environments and a third whose `enableIf` is an expression, the template is
-  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and §4,
-  after item 9, spec `5535230`). Two
+  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and the
+  paragraph after §4 item 9; spec `5535230`). Two
   `ON_REQUEST` wrap envs requested by different steps are valid.
 
 The single-layer rule runs only in the job-template path. An environment template defines
@@ -807,8 +807,9 @@ Without the extension:
   Environment requires the ENV_PARAMS extension."
 - `enableIf` on any environment is reported at its path (see below).
 
-With it, `activation` (§4 item 4) is rejected on a `stepEnvironments` entry ("is not permitted
-on a stepEnvironments entry, which only its own Step's Sessions enter."); an unrecognized
+With it, `activation` (§4 item 4, and the paragraph after item 9) is rejected on a
+`stepEnvironments` entry ("is not permitted on a stepEnvironments entry, which only its own
+Step's Sessions enter."); an unrecognized
 value (constraint 1, case-sensitive: `always` and `by_default` are rejected; plan A24) is a
 decode error naming the three values. `hostRequirements` (§4, after item 9) is rejected on a
 `stepEnvironments` entry ("is not permitted on a stepEnvironments entry, whose Step has
