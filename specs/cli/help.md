@@ -67,7 +67,8 @@ try_context_aware_help(&args)
   └── generate_template_help(path, extensions)
       │
       ├── Read and parse template file
-      ├── Resolve extensions (same logic as check/summary/run)
+      ├── Resolve extensions (default ModelExtension::ALL; explicit names passed
+      │                 through trimmed but not uppercased, unlike common::parse_extensions)
       ├── decode_job_template()
       │
       └── format_help(&template, &path)

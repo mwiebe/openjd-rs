@@ -30,8 +30,9 @@ src/
 │   ├── parameters.rs         # Job parameter definitions (§2.1-2.4)
 │   ├── expr_parameters.rs    # EXPR extension parameter types (§2.9-2.16)
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
-│   ├── step.rs               # StepTemplate, SimpleAction (§3)
+│   ├── step.rs               # StepTemplate, StepDependency, SimpleAction (§3)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
+│   ├── env_parameters.rs     # EnvironmentParameterDefinition / Value (§4.5, ENV_PARAMS)
 │   ├── actions.rs            # Action, CancelationMode (§5)
 │   ├── host_requirements.rs  # HostRequirements (§3.3)
 │   ├── constrained_strings.rs # Identifier, Description, ExtensionName (§7)
@@ -42,13 +43,17 @@ src/
 │       ├── feature_bundle_1.rs # Pass 4: FEATURE_BUNDLE_1 gating
 │       ├── format_strings.rs # Pass 5: Format string reference validation
 │       ├── task_chunking.rs  # Pass 6: TASK_CHUNKING gating
+│       ├── env_params.rs     # Pass 11: ENV_PARAMS gating and structural checks
 │       └── helpers.rs        # Shared regex patterns, constants, utilities
 └── job/                      # Instantiated job types (phase 2)
     ├── mod.rs                # Job, Step, StepScript, Environment, etc.
     ├── create_job/           # Job creation pipeline
-    │   ├── mod.rs            # create_job() entry point
+    │   ├── mod.rs            # create_job(), create_job_with_environment_templates() entry points
     │   ├── parameters.rs     # Parameter merging, preprocessing, symbol table
     │   ├── instantiate.rs    # Template → job type conversion
+    │   ├── env_params.rs     # ENV_PARAMS effective values (shared by both stages)
+    │   ├── external.rs       # ENV_PARAMS submission stage, check_environment_templates
+    │   ├── host_requirements.rs # Host requirement resolution; ENV_PARAMS combined host requirements
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph
@@ -61,6 +66,11 @@ The crate re-exports a curated public API from `lib.rs`:
 **Functions:**
 - `decode_job_template`, `decode_environment_template`, `decode_template` — Template parsing
 - `create_job` — Full job instantiation pipeline
+- `create_job_with_environment_templates` — the same with the Environment Templates
+  attached to the submission (ENV_PARAMS): resolve external Environments and their
+  parameter values against them, and fix each Step's Environment set
+- `check_environment_templates` — the submission-stage checks that need no Job
+  Parameter values, on a Job Template (`openjd check --environment`)
 - `preprocess_job_parameters` — Parameter validation and coercion
 - `merge_job_parameter_definitions` — Cross-template parameter merging
 - `build_symbol_table` — Symbol table construction from parameter values
@@ -74,6 +84,8 @@ The crate re-exports a curated public API from `lib.rs`:
 - `TaskParameterDefinition` — Task parameter definition (from template module)
 - `MergedParameterDefinition` — Merged parameter from multiple templates
 - `PathParameterOptions` — Options for PATH parameter resolution
+- `AttachedEnvironmentTemplate`, `CreatedJob`, `StepDisabledEnvironments`,
+  `SubmissionWarning` — inputs and outputs of `create_job_with_environment_templates`
 - `FormatString`, `SymbolTable` — Re-exported from `openjd-expr`
 - `format_string`, `symbol_table` — Modules re-exported wholesale from `openjd-expr`
 - From `types` module: `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,

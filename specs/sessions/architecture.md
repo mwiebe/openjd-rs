@@ -109,8 +109,10 @@ SessionConfig ──► Session::with_config()
                       └── materialize_path_mapping() ──► JSON file + Session.HasPathMappingRules
                       │
                       ▼
-                 enter_environment()
+                 enter_environment() / enter_environment_with_parameters()
                       │
+                      ├── (ENV_PARAMS) bind Env.Param.* (path-mapped) and Env.RawParam.*
+                      │       from the Environment's values; stored until exit
                       ├── evaluate_env_vars() ──► cumulative env var map
                       ├── EnvironmentScriptRunner::enter()
                       │       ├── EmbeddedFiles::allocate_file_paths()
@@ -127,7 +129,8 @@ SessionConfig ──► Session::with_config()
                  run_task()  [same pattern: StepScriptRunner → subprocess]
                       │
                       ▼
-                 exit_environment()  [reverse order, EnvironmentScriptRunner::exit()]
+                 exit_environment()  [reverse order, EnvironmentScriptRunner::exit(),
+                                      with the stored Env.Param.* values]
                       │
                       ▼
                  cleanup()  ──► TempDir::cleanup() + cross-user sudo rm

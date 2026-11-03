@@ -16,18 +16,12 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
     let _ = crate::TIMESTAMP_FORMAT.set(args.timestamp_format.clone());
 
     let prepared = prepare_run(&args)?;
+    // Job creation has checked the RFC 0008 single-layer rule over every
+    // Step's Environment set, attached Environments included.
     let selection = prepare_selection(&args, &prepared.job)?;
-    validate_wrap_environment_stacks(
-        &prepared.job,
-        &prepared.env_templates,
-        &selection.steps_to_run,
-    )?;
-    let env_template_symtab = openjd_model::build_symbol_table(&prepared.param_values)
-        .map_err(|e| format!("Failed to build environment template symbol table: {e}"))?;
 
     let cancel_token = CancellationToken::new();
     let session = create_session(&args, &prepared, cancel_token.clone())?;
-    let working_dir = session.working_directory().to_path_buf();
     let interrupted = install_signal_handler(cancel_token);
     let mut ctx = RunContext {
         session,
@@ -36,31 +30,23 @@ pub(super) async fn execute(args: RunArgs) -> Result<(), RunError> {
         started_at,
         tasks_run: 0,
         session_failed: false,
+        preserved_dir: None,
     };
 
     println!("{}\tSession start", ctx.timestamp());
     println!("{}\tRunning job '{}'", ctx.timestamp(), prepared.job.name);
-    let execution_result = run_workload(
-        &mut ctx,
-        &args,
-        &prepared.job,
-        &prepared.env_templates,
-        &env_template_symtab,
-        &selection,
-    )
-    .await;
+    let execution_result = run_workload(&mut ctx, &args, &prepared, &selection).await;
 
     // Once a Session exists, errors must not bypass environment cleanup.
     ctx.exit_environments_down_to(0).await;
     ctx.record_interruption();
     if let Err(e) = execution_result {
-        if !args.preserve {
-            ctx.session.cleanup();
-        }
+        ctx.end_session(args.preserve);
+        ctx.print_preserved_dir();
         return Err(e);
     }
 
-    report_result(&mut ctx, &args, &prepared.job, &working_dir);
+    report_result(&mut ctx, &args, &prepared.job);
     if ctx.session_failed {
         std::process::exit(1);
     }
@@ -83,20 +69,8 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
         &crate::common::caller_limits(),
     )?;
 
-    let mut env_templates = Vec::new();
-    for env_path in &args.environments {
-        let env_content = std::fs::read_to_string(env_path)?;
-        let env_value = parse::document_string_to_object(
-            &env_content,
-            crate::common::document_type(env_path),
-            &crate::common::caller_limits(),
-        )?;
-        env_templates.push(parse::decode_environment_template(
-            env_value,
-            Some(&supported_exts),
-            &crate::common::caller_limits(),
-        )?);
-    }
+    let env_templates =
+        crate::common::read_environment_templates(&args.environments, &supported_exts)?;
 
     let input_values = parse_cli_parameters(&args.parameters)?;
     let path_rules = load_path_mapping_rules(&args.path_mapping_rules)?;
@@ -126,15 +100,28 @@ fn prepare_run(args: &RunArgs) -> Result<PreparedRun, RunError> {
     // the template's — and carry the CLI's caller limits so job
     // creation enforces the same caps the decode ran under.
     let revision_profile = job_template.profile();
-    let revision_ctx = job_template
-        .default_validation_context()
-        .with_caller_limits(crate::common::caller_limits());
-    let job = openjd_model::create_job(&job_template, &param_values, &revision_ctx)
-        .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    let revision_ctx = crate::common::submission_context(&job_template);
+
+    // Attach the --environment templates, in the order given (Template
+    // Schemas §3.2.1): job creation resolves `environment:` entries that
+    // name no Job Environment, fixes each Step's Environment set, and
+    // computes every Step's values for the attached Environments it
+    // enters. The combined Job lists the attached Environments first, so a
+    // Session enters them first.
+    let labels = crate::common::environment_labels(&args.environments);
+    let attached = crate::common::attach(&env_templates, &labels);
+    let created = openjd_model::create_job_with_environment_templates(
+        &job_template,
+        &attached,
+        &param_values,
+        &revision_ctx,
+    )
+    .map_err(|e| format!("{e}\n\n{}", crate::help::format_help(&job_template, path)))?;
+    crate::common::print_submission_warnings(&created.warnings);
 
     Ok(PreparedRun {
-        job,
-        env_templates,
+        job: created.job,
+        environment_documents: created.environment_documents,
         param_values,
         path_rules,
         revision_profile,
@@ -209,65 +196,6 @@ fn prepare_selection(args: &RunArgs, job: &Job) -> Result<RunSelection, RunError
     })
 }
 
-fn validate_wrap_environment_stacks(
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    steps_to_run: &[usize],
-) -> Result<(), RunError> {
-    let has_wrap_hook = |env: &Environment| {
-        env.script
-            .as_ref()
-            .is_some_and(|script| script.actions.has_any_wrap_hook())
-    };
-    let mut base_wrap_envs: Vec<&str> = env_templates
-        .iter()
-        .filter(|template| {
-            template
-                .environment
-                .script
-                .as_ref()
-                .is_some_and(|script| script.actions.has_any_wrap_hook())
-        })
-        .map(|template| template.environment.name.as_str())
-        .collect();
-    if let Some(job_envs) = &job.job_environments {
-        base_wrap_envs.extend(
-            job_envs
-                .iter()
-                .filter(|env| has_wrap_hook(env))
-                .map(|env| env.name.as_str()),
-        );
-    }
-    reject_multiple_wrap_environments(&base_wrap_envs)?;
-
-    for &step_idx in steps_to_run {
-        let mut stack_wrap_envs = base_wrap_envs.clone();
-        if let Some(step_envs) = &job.steps[step_idx].step_environments {
-            stack_wrap_envs.extend(
-                step_envs
-                    .iter()
-                    .filter(|env| has_wrap_hook(env))
-                    .map(|env| env.name.as_str()),
-            );
-        }
-        reject_multiple_wrap_environments(&stack_wrap_envs)?;
-    }
-    Ok(())
-}
-
-fn reject_multiple_wrap_environments(names: &[&str]) -> Result<(), RunError> {
-    if names.len() <= 1 {
-        return Ok(());
-    }
-    Err(format!(
-        "RFC 0008: a session may have at most one Environment defining wrap hooks \
-         (onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit). Found {}: {}.",
-        names.len(),
-        names.join(", ")
-    )
-    .into())
-}
-
 fn create_session(
     args: &RunArgs,
     prepared: &PreparedRun,
@@ -338,41 +266,65 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
     interrupted
 }
 
+/// Run the selected Steps, in order, in the run's one Session. Before each
+/// Step, move the Session's Job Environments to the ones the Step enters
+/// ([`job_environment_targets`]): exit the entered ones, in the reverse of
+/// the order the Session entered them, down to the longest prefix the Step
+/// also enters with equal values ([`EnteredJobEnvironment::matches`]), then
+/// enter the rest of the Step's in order (Template Schemas §3.2.2). A Job
+/// without `activation: ON_REQUEST`, Environment `enableIf`, disabled
+/// `environment:` entries, or Environment parameter values gives every
+/// Step the same targets, so the
+/// Session enters each Job Environment once, as before `ENV_PARAMS`.
 async fn run_workload(
     ctx: &mut RunContext,
     args: &RunArgs,
-    job: &Job,
-    env_templates: &[EnvironmentTemplate],
-    env_template_symtab: &openjd_expr::SymbolTable,
+    prepared: &PreparedRun,
     selection: &RunSelection,
 ) -> Result<(), RunError> {
-    for template in env_templates {
-        if ctx.is_stopping() {
-            break;
-        }
-        let env = openjd_model::convert_environment_with_symtab(
-            &template.environment,
-            Some(env_template_symtab),
-        );
-        ctx.enter_environment(&env, &template.environment.name, None)
-            .await;
-    }
-    if let Some(job_envs) = &job.job_environments {
-        for env in job_envs {
-            if ctx.is_stopping() {
-                break;
-            }
-            ctx.enter_environment(env, &env.name, None).await;
-        }
-    }
-
+    let job = &prepared.job;
     for &step_idx in &selection.steps_to_run {
         if ctx.is_stopping() {
             break;
         }
-        execute_step(ctx, args, &job.steps[step_idx], step_idx, selection).await?;
+        let step = &job.steps[step_idx];
+        ctx.move_to_job_environments(&job_environment_targets(prepared, step))
+            .await;
+        if ctx.is_stopping() {
+            break;
+        }
+        execute_step(ctx, args, step, step_idx, selection).await?;
     }
     Ok(())
+}
+
+/// The Job Environments of the combined Job (the attached ones, then the
+/// Job Template's own) that `step` enters ([`Step::enters_environment`],
+/// Template Schemas §4 item 4 `activation` and item 6 `enableIf`), in Job
+/// order, each with the Step's Environment parameter values for it, if any.
+fn job_environment_targets<'a>(
+    prepared: &'a PreparedRun,
+    step: &'a Step,
+) -> Vec<JobEnvironmentTarget<'a>> {
+    let step_values = step.environment_parameters.as_deref().unwrap_or(&[]);
+    prepared
+        .job
+        .job_environments
+        .iter()
+        .flatten()
+        .zip(&prepared.environment_documents)
+        .enumerate()
+        .filter(|(_, (env, document))| step.enters_environment(document, &env.name))
+        .map(|(index, (env, document))| JobEnvironmentTarget {
+            index,
+            env,
+            // Keyed by (document, name): an attached Environment may share
+            // its name with a Job Environment (§3.2.1 item 4).
+            values: step_values
+                .iter()
+                .find(|v| &v.document == document && v.environment == env.name),
+        })
+        .collect()
 }
 
 async fn execute_step(
@@ -389,7 +341,7 @@ async fn execute_step(
             if ctx.is_stopping() {
                 break;
             }
-            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone())
+            ctx.enter_environment(env, &env.name, step.resolved_symtab.clone(), None, None)
                 .await;
         }
     }
@@ -586,7 +538,7 @@ fn adjust_adaptive_chunk_size(
     }
 }
 
-fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &std::path::Path) {
+fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job) {
     println!("{}\t", ctx.timestamp());
     if ctx.session_failed {
         println!("{}\tSession ended with errors.", ctx.timestamp());
@@ -596,15 +548,12 @@ fn report_result(ctx: &mut RunContext, args: &RunArgs, job: &Job, working_dir: &
     println!("{}\tLocal session ended.", ctx.timestamp());
 
     let duration = ctx.started_at.elapsed().as_secs_f64();
-    let preserved_msg = if args.preserve {
-        format!(
-            "\nWorking directory preserved at: {}",
-            working_dir.display()
-        )
-    } else {
-        ctx.session.cleanup();
-        String::new()
-    };
+    ctx.end_session(args.preserve);
+    let preserved_msg = ctx
+        .preserved_dir
+        .as_ref()
+        .map(|dir| format!("\nWorking directory preserved at: {}", dir.display()))
+        .unwrap_or_default();
     let (status, message) = if ctx.session_failed {
         (
             "error",

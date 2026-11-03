@@ -37,7 +37,7 @@ Each command module exports an `Args` struct (clap derive) and an `execute()` fu
 
 | Dependency | Purpose |
 |------------|---------|
-| `openjd-model` | `parse::*` (template decoding), `create_job`, `preprocess_job_parameters`, `StepParameterSpaceIterator`, job/template types |
+| `openjd-model` | `parse::*` (template decoding), `create_job_with_environment_templates`, `preprocess_job_parameters`, `check_environment_templates` (`ENV_PARAMS`), `StepParameterSpaceIterator`, job/template types |
 | `openjd-sessions` | `Session`, `SessionConfig`, `ActionState`, `PathMappingRule` |
 | `openjd-expr` | `ExprValue`, `SymbolTable`, serialized symbol tables, host path format |
 | `clap` | Argument parsing via derive macros (`Parser`, `Subcommand`, `Args`) |
@@ -56,6 +56,14 @@ normalization from the run module.
 **Exported from `run/mod.rs` (crate-internal):**
 - `parse_cli_parameters(&[String]) -> Result<HashMap<String, ExprValue>>` — Parses `-p`/`--parameter` arguments
 - `strip_extended_prefix(&Path) -> PathBuf` — Removes Windows extended-length path prefixes
+
+**Shared by the commands, in `common.rs` (crate-internal):** besides file reading,
+`caller_limits`, and `parse_extensions`, the `ENV_PARAMS` helpers that keep `run`, `check`,
+and `summary` consistent: `submission_context` (the `ValidationContext` for `create_job` and
+the submission stage), `read_environment_templates`, `environment_labels` and `attach` (the
+`--environment` templates as `AttachedEnvironmentTemplate`s labeled with their paths),
+`print_submission_warnings`, and `environment_parameter_entries` (one Environment's values
+for display).
 
 ## Entry Point Flow
 
@@ -146,11 +154,11 @@ This is deferred until there's demand for it.
 
 ### Extension Default List
 
-All commands that accept `--extensions` default to enabling all supported extensions:
-`["TASK_CHUNKING", "REDACTED_ENV_VARS", "FEATURE_BUNDLE_1", "EXPR"]`. This matches the
-Python CLI's `SUPPORTED_EXTENSIONS` list. The default is hardcoded in each command's
-`execute()` function rather than centralized — a minor duplication that could be extracted
-to a shared constant if more commands are added.
+All commands that accept `--extensions` default to enabling all supported extensions,
+`openjd_model::ModelExtension::ALL`: `TASK_CHUNKING`, `REDACTED_ENV_VARS`,
+`FEATURE_BUNDLE_1`, `EXPR`, `WRAP_ACTIONS`, and the draft `ENV_PARAMS`. The first four match
+the Python CLI's `SUPPORTED_EXTENSIONS` list. `common::parse_extensions` and the context
+help in `help.rs` both read `ALL`, so the list is not duplicated.
 
 An empty string (`--extensions ""`) disables all extensions, which is useful for testing
 strict base-spec compliance.

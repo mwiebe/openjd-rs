@@ -227,45 +227,59 @@ pub struct JobRangeExprParameterDefinition {
 }
 
 impl JobRangeExprParameterDefinition {
-    #[allow(
-        missing_docs,
-        reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
-    )]
+    /// Check a value against `minLength` and `maxLength` (§2.10). A string
+    /// is a value as written: it must parse as a range expression, and both
+    /// it and its canonical form must satisfy them. A `range_expr` has no
+    /// other spelling, so only its canonical form is checked.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the parameter when the value is not a range
+    /// expression or breaks a length constraint.
     pub fn check_value_constraints(&self, value: &ExprValue) -> Result<(), String> {
-        let s = match value {
-            ExprValue::RangeExpr(r) => r.to_string(),
+        match value {
+            ExprValue::RangeExpr(r) => {
+                self.check_length(&format!("canonical form '{r}'"), &r.to_string())
+            }
             ExprValue::String(s) => {
-                s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
+                let r = s.parse::<openjd_expr::RangeExpr>().map_err(|_| {
                     format!(
                         "Parameter '{}': value '{}' is not a valid range expression",
                         self.name, s
                     )
                 })?;
-                s.clone()
+                self.check_length(&format!("value '{s}'"), s)?;
+                let canonical = r.to_string();
+                if canonical == *s {
+                    return Ok(());
+                }
+                self.check_length(&format!("canonical form '{canonical}'"), &canonical)
             }
-            _ => {
-                return Err(format!(
-                    "Parameter '{}': expected range_expr, got {}",
-                    self.name,
-                    value.type_name()
-                ))
-            }
-        };
+            _ => Err(format!(
+                "Parameter '{}': expected range_expr, got {}",
+                self.name,
+                value.type_name()
+            )),
+        }
+    }
+
+    /// Check one spelling of a value against `minLength` and `maxLength`,
+    /// counted in characters. `what` names the spelling in the message.
+    fn check_length(&self, what: &str, s: &str) -> Result<(), String> {
+        let char_len = s.chars().count();
         if let Some(min) = self.min_length {
-            let char_len = s.chars().count();
             if char_len < min {
                 return Err(format!(
-                    "Parameter '{}': value length {} is less than minimum {min}",
-                    self.name, char_len
+                    "Parameter '{}': {what} length {char_len} is less than minimum {min}",
+                    self.name
                 ));
             }
         }
         if let Some(max) = self.max_length {
-            let char_len = s.chars().count();
             if char_len > max {
                 return Err(format!(
-                    "Parameter '{}': value length {} exceeds maximum {max}",
-                    self.name, char_len
+                    "Parameter '{}': {what} length {char_len} exceeds maximum {max}",
+                    self.name
                 ));
             }
         }
@@ -284,6 +298,11 @@ impl JobRangeExprParameterDefinition {
                     "Parameter '{}': default '{}' is not a valid range expression.",
                     self.name, default
                 ));
+            } else if let Err(e) = self.check_value_constraints(&ExprValue::String(default.clone()))
+            {
+                // The default satisfies minLength and maxLength as written and
+                // in canonical form (§2.10).
+                errors.push(format!("{e} (default)"));
             }
         }
         if let Some(ui) = &self.user_interface {

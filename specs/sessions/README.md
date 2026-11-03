@@ -63,3 +63,7 @@ Currently implements `2023-09` with extensions:
 - `REDACTED_ENV_VARS` (RFC 0003)
 - `FEATURE_BUNDLE_1` (RFC 0004)
 - `EXPR` (RFC 0005)
+- `WRAP_ACTIONS` (RFC 0008)
+- `ENV_PARAMS` (Environment Parameters; prototype):
+  `Session::enter_environment_with_parameters` binds `Env.Param.*` / `Env.RawParam.*`
+  (see [session.md](session.md#enter-with-environment-parameter-values-env_params))

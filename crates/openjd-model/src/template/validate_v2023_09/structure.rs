@@ -13,7 +13,7 @@ use super::EffectiveRules;
 use crate::capabilities;
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::*;
-use crate::types::ValidationContext;
+use crate::types::{ModelExtension, ValidationContext};
 
 pub fn validate_structure(
     jt: &JobTemplate,
@@ -165,6 +165,9 @@ pub fn validate_structure(
     let fb1_active = ctx
         .profile
         .has_extension(crate::types::ModelExtension::FeatureBundle1);
+    let env_params_active = ctx
+        .profile
+        .has_extension(crate::types::ModelExtension::EnvParams);
     let mut step_names = HashSet::new();
     for (i, step) in jt.steps.iter().enumerate() {
         let step_path = vec![PathElement::Field("steps".into()), PathElement::Index(i)];
@@ -222,22 +225,22 @@ pub fn validate_structure(
             let mut dep_names = HashSet::new();
             for (j, dep) in deps.iter().enumerate() {
                 let dep_path = path_index(&deps_path, j);
-                if dep.depends_on == step.name {
+                validate_dependency_form(dep, &dep_path, env_params_active, errors);
+                // The Step checks apply to `dependsOn` and `step` entries
+                // alike (§3.2 item 1), so a `step` and a `dependsOn` entry
+                // naming one Step are duplicates. The
+                // `environment:` form (ENV_PARAMS) is checked in pass 11.
+                let Some(depends_on) = dep.step() else {
+                    continue;
+                };
+                if depends_on == step.name {
                     errors.add(&dep_path, "cannot depend on itself.");
                 }
-                if !step_names.contains(&dep.depends_on)
-                    && !all_step_names.contains(&dep.depends_on)
-                {
-                    errors.add(
-                        &dep_path,
-                        format!("dependency '{}' not found.", dep.depends_on),
-                    );
+                if !step_names.contains(depends_on) && !all_step_names.contains(depends_on) {
+                    errors.add(&dep_path, format!("dependency '{depends_on}' not found."));
                 }
-                if !dep_names.insert(&dep.depends_on) {
-                    errors.add(
-                        &dep_path,
-                        format!("duplicate dependency '{}'.", dep.depends_on),
-                    );
+                if !dep_names.insert(depends_on) {
+                    errors.add(&dep_path, format!("duplicate dependency '{depends_on}'."));
                 }
             }
         }
@@ -245,42 +248,7 @@ pub fn validate_structure(
         // Host requirements
         if let Some(hr) = &step.host_requirements {
             let hr_path = path_field(&step_path, "hostRequirements");
-            match (
-                capabilities::standard_amount_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-                capabilities::standard_attribute_capability_names(
-                    ctx.profile.revision(),
-                    ctx.profile.extensions(),
-                ),
-            ) {
-                (Ok(std_amounts), Ok(std_attrs)) => {
-                    validate_host_requirements(
-                        hr,
-                        &hr_path,
-                        rules,
-                        std_amounts,
-                        &std_attrs,
-                        errors,
-                    );
-                }
-                _ => {
-                    let ext_list: Vec<_> = ctx
-                        .profile
-                        .extensions()
-                        .iter()
-                        .map(|e| e.as_str())
-                        .collect();
-                    errors.add(
-                        &hr_path,
-                        format!(
-                            "cannot validate: no capability definitions for revision {} with extensions {:?}.",
-                            ctx.profile.revision(), ext_list
-                        ),
-                    );
-                }
-            }
+            validate_host_requirements_in_profile(hr, &hr_path, rules, ctx, errors);
         }
 
         // Parameter space
@@ -347,8 +315,16 @@ pub fn validate_structure(
     // Environments
     if let Some(envs) = &jt.job_environments {
         let envs_path = path_field(&root, "jobEnvironments");
+        let env_params_active = ctx.profile.has_extension(ModelExtension::EnvParams);
         for (i, env) in envs.iter().enumerate() {
-            validate_single_environment(env, limits, rules, &path_index(&envs_path, i), errors);
+            let env_path = path_index(&envs_path, i);
+            validate_single_environment(env, limits, rules, &env_path, errors);
+            // ENV_PARAMS §4 item 5: checked on their own (§3.3.3). Pass 11
+            // rejects them without the extension.
+            if let Some(hr) = env.host_requirements.as_ref().filter(|_| env_params_active) {
+                let hr_path = path_field(&env_path, "hostRequirements");
+                validate_host_requirements_in_profile(hr, &hr_path, rules, ctx, errors);
+            }
         }
     }
     for (i, step) in jt.steps.iter().enumerate() {
@@ -598,6 +574,48 @@ fn validate_action(
     }
 }
 
+/// §3.3 checks of one `hostRequirements` object at `hr_path` against the
+/// standard capability tables of `ctx`'s profile: a Step's, or with
+/// `ENV_PARAMS` an Environment's (§4 item 5), each checked on its own
+/// (§3.3.3).
+pub(super) fn validate_host_requirements_in_profile(
+    hr: &HostRequirements,
+    hr_path: &[PathElement],
+    rules: &EffectiveRules,
+    ctx: &ValidationContext,
+    errors: &mut ValidationErrors,
+) {
+    match (
+        capabilities::standard_amount_capability_names(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+        capabilities::standard_attribute_capability_names(
+            ctx.profile.revision(),
+            ctx.profile.extensions(),
+        ),
+    ) {
+        (Ok(std_amounts), Ok(std_attrs)) => {
+            validate_host_requirements(hr, hr_path, rules, std_amounts, &std_attrs, errors);
+        }
+        _ => {
+            let ext_list: Vec<_> = ctx
+                .profile
+                .extensions()
+                .iter()
+                .map(|e| e.as_str())
+                .collect();
+            errors.add(
+                hr_path,
+                format!(
+                    "cannot validate: no capability definitions for revision {} with extensions {:?}.",
+                    ctx.profile.revision(), ext_list
+                ),
+            );
+        }
+    }
+}
+
 fn validate_host_requirements(
     hr: &HostRequirements,
     path: &[PathElement],
@@ -606,9 +624,12 @@ fn validate_host_requirements(
     standard_attrs: &[&str],
     errors: &mut ValidationErrors,
 ) {
+    // §3.3 constraint 1 does not apply in a document that lists
+    // ENV_PARAMS: there an empty object, or empty lists, mean no
+    // requirements.
     let has_amounts = hr.amounts.as_ref().is_some_and(|a| !a.is_empty());
     let has_attrs = hr.attributes.as_ref().is_some_and(|a| !a.is_empty());
-    if !has_amounts && !has_attrs {
+    if !has_amounts && !has_attrs && !rules.env_params_enabled {
         errors.add(path, "must have at least one of amounts or attributes.");
     }
     let total =
@@ -629,7 +650,12 @@ fn validate_host_requirements(
             // name, including uniqueness.
             if amt.name.is_literal() {
                 let name = amt.name.raw();
-                if !names.insert(name.to_lowercase()) {
+                // With ENV_PARAMS the rule applies to the amounts left
+                // after discarding (§3.3), so only two amounts that are
+                // certainly kept are duplicates here; job creation
+                // compares the rest.
+                let kept = !rules.env_params_enabled || !amt.may_be_discarded();
+                if kept && !names.insert(name.to_lowercase()) {
                     errors.add(&amt_path, format!("duplicate amount name '{name}'."));
                 }
                 check_capability_name(
@@ -703,7 +729,9 @@ fn validate_host_requirements(
             // name, including uniqueness.
             if attr.name.is_literal() {
                 let name = attr.name.raw();
-                if !names.insert(name.to_lowercase()) {
+                // As for amounts: only certainly kept attributes here.
+                let kept = !rules.env_params_enabled || !attr.may_be_discarded();
+                if kept && !names.insert(name.to_lowercase()) {
                     errors.add(&attr_path, format!("duplicate attribute name '{name}'."));
                 }
                 check_capability_name(
@@ -718,8 +746,11 @@ fn validate_host_requirements(
                 errors.add(&attr_path, "must have at least one of anyOf or allOf.");
             }
             for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                if let Some(vals) = vals {
-                    let field_path = path_field(&attr_path, field);
+                let field_path = path_field(&attr_path, field);
+                if let Some(AttributeValues::Expression(fs)) = vals {
+                    check_attribute_values_expression(fs, &field_path, rules, errors);
+                }
+                if let Some(vals) = vals.as_ref().and_then(AttributeValues::as_list) {
                     if vals.is_empty() {
                         errors.add(&field_path, "must not be empty.");
                     }
@@ -766,11 +797,16 @@ fn validate_host_requirements(
             // The generic 50-element cap above is not relaxed — it applies
             // to the template element count regardless of expressions, so a
             // deferred single-valued list is still bounded here.
-            check_single_valued_all_of(&attr_lower, attr.all_of.as_deref(), &attr_path, errors);
+            check_single_valued_all_of(
+                &attr_lower,
+                attr.all_of.as_ref().and_then(AttributeValues::as_list),
+                &attr_path,
+                errors,
+            );
             if attr_lower == "attr.worker.os.family" {
                 let valid = ["linux", "windows", "macos"];
                 for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals {
+                    if let Some(vals) = vals.as_ref().and_then(AttributeValues::as_list) {
                         for v in vals {
                             if v.is_literal()
                                 && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
@@ -790,7 +826,7 @@ fn validate_host_requirements(
             if attr_lower == "attr.worker.cpu.arch" {
                 let valid = ["x86_64", "arm64"];
                 for (field, vals) in [("anyOf", &attr.any_of), ("allOf", &attr.all_of)] {
-                    if let Some(vals) = vals {
+                    if let Some(vals) = vals.as_ref().and_then(AttributeValues::as_list) {
                         for v in vals {
                             if v.is_literal()
                                 && !valid.iter().any(|vv| vv.eq_ignore_ascii_case(v.raw()))
@@ -809,6 +845,39 @@ fn validate_host_requirements(
             }
         }
     }
+}
+
+/// The structural checks of an `anyOf` or `allOf` written as a string in
+/// place of the list (§3.3.2): it needs `ENV_PARAMS`, and it must be
+/// exactly one `{{ }}` expression with no other text, since a list has no
+/// string form. Pass 8 checks the expression itself.
+fn check_attribute_values_expression(
+    fs: &openjd_expr::FormatString,
+    field_path: &[PathElement],
+    rules: &EffectiveRules,
+    errors: &mut ValidationErrors,
+) {
+    if !rules.env_params_enabled {
+        errors.add(
+            field_path,
+            "must be a list of values, not a string. A string holding one {{ }} expression \
+             is accepted in place of the list only with the ENV_PARAMS extension (Template \
+             Schemas §3.3.2).",
+        );
+    } else if !is_one_expression(fs) {
+        errors.add(
+            field_path,
+            "must be a list of values, or a string that is exactly one {{ }} expression with \
+             no other text. A list has no string form, so the expression cannot be joined \
+             with other text (Template Schemas §3.3.2).",
+        );
+    }
+}
+
+/// Whether `fs` is exactly one `{{ }}` expression with no other text: a
+/// `<ListExpressionString>` (§3.3.2).
+pub(super) fn is_one_expression(fs: &openjd_expr::FormatString) -> bool {
+    fs.segment_count() == 1 && !fs.is_literal()
 }
 
 fn validate_step_param_space(
@@ -1071,6 +1140,66 @@ fn validate_embedded_files(
     }
 }
 
+/// §3.2 constraint 1: an entry has exactly one of `dependsOn`, `step`, and
+/// `environment`, and `required`, `enableIf`, and `parameters` only with
+/// `environment`.
+///
+/// Without `ENV_PARAMS` neither the `step` nor the `environment` form
+/// exists, so an entry with none of the keys is reported as missing
+/// `dependsOn`, and an entry with more than one names only the keys it has.
+/// With it, the messages name all three forms. A `required`, `enableIf`, or
+/// `parameters` key without `environment` is reported here with or without
+/// the extension; a `step` or `environment` key without the extension is
+/// reported by the gates in pass 11.
+fn validate_dependency_form(
+    dep: &StepDependency,
+    dep_path: &[PathElement],
+    env_params_active: bool,
+    errors: &mut ValidationErrors,
+) {
+    let present: Vec<&str> = [
+        ("dependsOn", dep.depends_on.is_some()),
+        ("step", dep.step.is_some()),
+        ("environment", dep.environment.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(key, is)| is.then_some(key))
+    .collect();
+    const ALL_FORMS: &str = "must have exactly one of 'dependsOn', 'step', or 'environment'";
+    match (present.as_slice(), env_params_active) {
+        ([], true) => errors.add(dep_path, format!("{ALL_FORMS}.")),
+        ([], false) => errors.add(dep_path, "must have 'dependsOn'."),
+        ([_], _) => {}
+        ([a, b], true) => errors.add(dep_path, format!("{ALL_FORMS}, not both '{a}' and '{b}'.")),
+        ([a, b], false) => errors.add(
+            dep_path,
+            format!("must have exactly one of '{a}' or '{b}', not both."),
+        ),
+        (_, _) => errors.add(dep_path, format!("{ALL_FORMS}, not all three.")),
+    }
+    if dep.environment.is_none() {
+        for (key, present) in [
+            ("required", dep.required.is_some()),
+            ("enableIf", dep.enable_if.is_some()),
+            ("parameters", dep.parameters.is_some()),
+        ] {
+            if present {
+                // Without ENV_PARAMS the `environment` form does not exist,
+                // so the message names the extension as well.
+                let msg = if env_params_active {
+                    format!("'{key}' is permitted only with 'environment'.")
+                } else {
+                    format!(
+                        "'{key}' is permitted only with 'environment', which requires the \
+                         ENV_PARAMS extension."
+                    )
+                };
+                errors.add(&path_field(dep_path, key), msg);
+            }
+        }
+    }
+}
+
 fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationErrors) {
     let step_names: HashSet<String> = steps.iter().map(|s| s.name.clone()).collect();
     let mut adj: HashMap<String, Vec<String>> = HashMap::new();
@@ -1079,7 +1208,11 @@ fn detect_dependency_cycles(steps: &[StepTemplate], errors: &mut ValidationError
         let deps: Vec<String> = step
             .dependencies
             .as_ref()
-            .map(|d| d.iter().map(|dep| dep.depends_on.clone()).collect())
+            .map(|d| {
+                d.iter()
+                    .filter_map(|dep| dep.step().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         adj.insert(name, deps);
     }

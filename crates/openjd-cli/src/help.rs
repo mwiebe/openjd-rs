@@ -64,12 +64,10 @@ fn generate_template_help(
         &crate::common::caller_limits(),
     )?;
 
-    let default_exts = vec![
-        "TASK_CHUNKING",
-        "REDACTED_ENV_VARS",
-        "FEATURE_BUNDLE_1",
-        "EXPR",
-    ];
+    let default_exts: Vec<&str> = openjd_model::ModelExtension::ALL
+        .iter()
+        .map(|e| e.as_str())
+        .collect();
     let supported_exts: Vec<&str> = match extensions_arg {
         Some(s) if !s.is_empty() => s.split(',').map(|e| e.trim()).collect(),
         Some(_) => vec![],

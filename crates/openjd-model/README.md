@@ -24,7 +24,16 @@ validation, and job creation for OpenJD templates. Part of the
 - **Host capability matching** — matching host requirements against
   runtime capabilities.
 - **Extensions** — the `EXPR`, `FEATURE_BUNDLE_1`, `TASK_CHUNKING`, and
-  `REDACTED_ENV_VARS` extensions from the 2023-09 specification.
+  `REDACTED_ENV_VARS` extensions from the 2023-09 specification, and the
+  `WRAP_ACTIONS` (RFC 0008) extension.
+  The draft `ENV_PARAMS` extension (Environment Parameters), which requires
+  `EXPR` in the same document, is decoded, validated, and supported at job
+  creation (`create_job`, and
+  `create_job_with_environment_templates` with attached Environment
+  Templates; `check_environment_templates` for the checks that need no Job
+  Parameter values), by the openjd-sessions runtime, and by the CLI, including
+  Environment `hostRequirements` combined into each Step's. It is in
+  `ModelExtension::ALL`.
 
 The crate passes 100% of the upstream [OpenJD conformance test suite] —
 over 700 template validation and environment-template tests on Linux,
