@@ -1785,6 +1785,66 @@ async fn path_input_errors_name_the_symbol() {
 }
 
 #[tokio::test]
+async fn path_input_longer_than_max_path_len_is_an_error() {
+    // As for a PATH parameter, a stored path too long to map is an error, not
+    // passed to the command unmapped. The Raw form alone would be fine.
+    let f = fixture_with(
+        true,
+        true,
+        Some(vec![rule("/src", "/mnt/dst")]),
+        Default::default(),
+    );
+    let long = format!(
+        "/src/{}",
+        "a".repeat(openjd_expr::path_mapping::MAX_PATH_LEN)
+    );
+    let mut st = SymbolTable::new();
+    st.set("Steps.P.RawOutput.X", ExprValue::String(long.clone()))
+        .unwrap();
+    st.set(
+        "Steps.P.TaskRawParam.N",
+        ExprValue::make_list(
+            vec![
+                ExprValue::String("/src/a".into()),
+                ExprValue::String(long.clone()),
+            ],
+            ExprType::STRING,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let err = |symbol: &str, ty: ExprType| {
+        f.session
+            .build_symbol_table(
+                None,
+                Some(&base),
+                &[PathInput {
+                    symbol: symbol.into(),
+                    ty,
+                }],
+            )
+            .unwrap_err()
+            .to_string()
+    };
+    let expected = |symbol: &str| {
+        format!(
+            "Path input '{symbol}' in resolved_symtab: the path is {} bytes long, more than \
+             the limit of 32768 bytes that path mapping handles",
+            long.len()
+        )
+    };
+    assert_eq!(
+        err("Steps.P.RawOutput.X", ExprType::PATH),
+        expected("Steps.P.RawOutput.X")
+    );
+    assert_eq!(
+        err("Steps.P.TaskRawParam.N", ExprType::list(ExprType::PATH)),
+        expected("Steps.P.TaskRawParam.N")
+    );
+}
+
+#[tokio::test]
 async fn environments_read_path_inputs_on_enter_and_exit() {
     let mut f = fixture_with(
         true,

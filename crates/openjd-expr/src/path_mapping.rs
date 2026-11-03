@@ -700,6 +700,14 @@ pub enum UnmapError {
          so it names a location only this worker can see"
     )]
     NoRoundTrip,
+    /// The Session has path mapping rules, and every candidate that could
+    /// otherwise map back to the path is longer than [`MAX_PATH_LEN`] bytes,
+    /// which forward mapping does not handle.
+    #[error(
+        "the path's form in the submission path context would be longer than \
+         {MAX_PATH_LEN} bytes, the most that path mapping handles"
+    )]
+    TooLong,
 }
 
 /// Map a path reported on the worker back to the submission path context.
@@ -727,6 +735,11 @@ pub enum UnmapError {
 ///    [`UnmapError::NoRoundTrip`]. The forward result is compared normalized
 ///    because forward mapping does not apply `..` components and keeps a
 ///    trailing separator.
+/// 6. Forward mapping handles paths of at most [`MAX_PATH_LEN`] bytes, so a
+///    longer candidate is skipped, because no rule matches it. If no other
+///    candidate maps back, the result is [`UnmapError::TooLong`], not
+///    `NoRoundTrip`. The reported path itself may be longer: it is a forward
+///    result, which can exceed the limit.
 ///
 /// `mapper` MUST be the producing Session's own [`PathMapper`], because the
 /// round trip forward-maps with it and must reproduce the Session's forward
@@ -787,14 +800,26 @@ pub fn unapply_rules_with_source_format(
     // A stable sort, so equal lengths keep the caller's order.
     candidates.sort_by_key(|(len, _, _)| std::cmp::Reverse(*len));
 
+    // A candidate longer than `MAX_PATH_LEN` matches no rule, so forward
+    // mapping cannot reproduce the Session's mapping of it: skip it, and say
+    // so if nothing else maps back.
+    let mut too_long = false;
     candidates
         .into_iter()
         .map(|(_, candidate, format)| (candidate, format))
         .find(|(candidate, _)| {
+            if candidate.len() > MAX_PATH_LEN {
+                too_long = true;
+                return false;
+            }
             let forward = mapper.map_with_format(candidate, worker_format);
             NormalPath::new(&forward, windows).equals(&reported, windows)
         })
-        .ok_or(UnmapError::NoRoundTrip)
+        .ok_or(if too_long {
+            UnmapError::TooLong
+        } else {
+            UnmapError::NoRoundTrip
+        })
 }
 
 /// Join the components left after a rule's `destination_path` onto its
@@ -951,9 +976,8 @@ fn component_eq(a: &str, b: &str, windows: bool) -> bool {
 
 /// Split a filesystem path into its canonical anchor and the rest.
 ///
-/// POSIX's implementation-defined `//` root is folded into `/`: forward mapping
-/// onto a root `destination_path` gives `//x` (it appends a separator to one
-/// that already ends with one), and that must compare equal to `/x`.
+/// POSIX's implementation-defined `//` root is folded into `/`, as forward
+/// matching treats `//a` as `/a`.
 fn split_anchor(path: &str, windows: bool) -> (String, &str) {
     if !windows {
         return match path.strip_prefix('/') {

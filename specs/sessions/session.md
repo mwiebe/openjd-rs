@@ -595,6 +595,12 @@ Environments are entered and exited around its Tasks as any Step's are (RFC 0013
   `path` values in the host format, element by element, with the Session's rules;
 - a `null` (from a skipped producer) is left as `null` and gets no twin.
 
+As for a PATH parameter, a stored path longer than 32 KiB
+(`openjd_expr::path_mapping::MAX_PATH_LEN`) is not passed to the command unmapped:
+building the twin fails with `SessionError::Runtime` (`Path input '<symbol>' in
+resolved_symtab: the path is <n> bytes long, more than the limit of 32768 bytes that
+path mapping handles`).
+
 Each is a `SessionError::Runtime` naming the symbol: a symbol of another form (`not a
 Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name>
 symbol`), one

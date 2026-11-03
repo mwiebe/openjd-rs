@@ -1576,6 +1576,24 @@ fn path_with_no_round_trip_is_invalid() {
 }
 
 #[test]
+fn path_too_long_to_map_back_is_invalid() {
+    let rules = [rule(PathFormat::Posix, "/proj", "/mnt/proj")];
+    let mut c = with_rules(&["{name: P, type: PATH}"], &rules, PathFormat::Posix);
+    let long = format!("/mnt/proj/{}", "a".repeat(32 * 1024));
+    let e = err(&mut c, &format!("P=\"{long}\""), OutputErrorKind::Path);
+    // The message shows the value's first 200 characters.
+    assert_eq!(
+        e,
+        format!(
+            "Output variable 'P': value '/mnt/proj/{}...' is not a valid PATH output: the path's \
+             form in the submission path context would be longer than 32768 bytes, the most that \
+             path mapping handles",
+            "a".repeat(200 - "/mnt/proj/".len())
+        )
+    );
+}
+
+#[test]
 fn path_without_rules_is_stored_unchanged() {
     let mut c = collector(&["{name: P, type: PATH}"]);
     let v = ok(&mut c, "P=\"/a/./b\"");

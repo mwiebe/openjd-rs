@@ -1520,6 +1520,9 @@ pub enum path_mapping::UnmapError {
     Relative,
     /// The Session has rules and no candidate maps forward to the path.
     NoRoundTrip,
+    /// The Session has rules, and every candidate that could map back is
+    /// longer than `MAX_PATH_LEN`.
+    TooLong,
 }
 
 /// True iff `path` has a `scheme://` URI prefix, where the scheme matches
