@@ -796,8 +796,8 @@ the Job Template's own extensions.
 ### Collection
 
 For an Allowed action, `run_task` builds an `openjd_model::outputs::OutputCollector` with
-the Step's declarations, `SessionLimits::task_output_bytes()`, the Session's sorted path
-mapping rules (so `PATH` values are mapped back to the submission path context), the host
+the Step's declarations, `SessionLimits::task_output_bytes()`, the Session's own
+`PathMapper` (so `PATH` values are mapped back to the submission path context), the host
 path format, and the chunk. The Step is chunked when an entry of `task_parameter_values`
 has `TaskParameterType::ChunkInt`: its value is an `ExprValue::RangeExpr` (as `openjd run`
 passes) or a string that parses as one (such as `"10-12"`), whose values are the chunk;

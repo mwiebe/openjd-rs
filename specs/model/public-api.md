@@ -1574,11 +1574,12 @@ impl outputs::OutputCollector {
     /// `chunk`: the chunk's CHUNK[INT] values in iteration order, or
     /// `None` for an unchunked Step. A repeated value is a `Selector` error;
     /// `collect: APPEND` on a non-list type is a `Declaration` error.
-    /// `path_rules`: the Session's full rules in its order, unfiltered.
+    /// `path_mapper`: the Session's own mapper, built from its full,
+    /// unfiltered rules.
     pub fn new(
         declared: &[job::OutputVariable],
         max_bytes: usize,
-        path_rules: &[openjd_expr::path_mapping::PathMappingRule],
+        path_mapper: std::sync::Arc<openjd_expr::path_mapping::PathMapper>,
         worker_format: openjd_expr::path_mapping::PathFormat,
         chunk: Option<Vec<i64>>,
     ) -> Result<Self, outputs::OutputError>;

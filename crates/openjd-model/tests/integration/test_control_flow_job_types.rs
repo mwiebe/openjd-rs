@@ -146,12 +146,14 @@ fn range_expr_longer_than_1024_characters_is_accepted_without_max_length() {
     // A RANGE_EXPR job parameter has an implied 1024-character maximum; an
     // output has only the constraints it declares (RFC 0012
     // `<OutputVariableDefinition>` item 6).
+    // Squares have no three equally spaced values, so the canonical form
+    // keeps every value and stays longer than 1024 characters.
     let long: String = (0..400)
-        .map(|i| (i * 3).to_string())
+        .map(|i| (i * i).to_string())
         .collect::<Vec<_>>()
         .join(",");
-    assert!(long.len() > 1024);
     let value = ExprValue::RangeExpr(long.parse::<RangeExpr>().unwrap());
+    assert!(value_len(&value) > 1024);
     def("{name: R, type: RANGE_EXPR}")
         .check_constraints(&value)
         .expect("no maxLength declared");

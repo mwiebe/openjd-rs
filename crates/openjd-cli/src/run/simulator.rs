@@ -3087,7 +3087,7 @@ fn supplied_loop_outputs(
     let mut collector = openjd_model::outputs::OutputCollector::new(
         &reported,
         openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT,
-        &[],
+        std::sync::Arc::new(openjd_expr::PathMapper::default()),
         openjd_expr::PathFormat::host(),
         None,
     )
@@ -3176,7 +3176,7 @@ fn supplied_task_outputs(
         let mut collector = openjd_model::outputs::OutputCollector::new(
             declared,
             openjd_model::outputs::MIN_OUTPUT_BYTES_LIMIT,
-            &[],
+            std::sync::Arc::new(openjd_expr::PathMapper::default()),
             openjd_expr::PathFormat::host(),
             None,
         )

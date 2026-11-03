@@ -65,14 +65,14 @@ have kind `OutputErrorKind::Grammar` and the message
 
 ## The collector
 
-`OutputCollector::new(declared, max_bytes, path_rules, worker_format, chunk)` collects
+`OutputCollector::new(declared, max_bytes, path_mapper, worker_format, chunk)` collects
 the directives of one Action:
 
 | Argument | Meaning |
 |---|---|
 | `declared` | The Step's `job::Step::output_variables` (`step.output_variables.as_deref().unwrap_or_default()`). A repeated name keeps its first declaration (validation rejects repeats). |
 | `max_bytes` | The per-Task size limit. RFC 0012 §Limits item 2 requires at least 1 MiB, `MIN_OUTPUT_BYTES_LIMIT`; the collector takes any value, so tests can use small ones. |
-| `path_rules` | The Session's full path mapping rules, in the order it applies them (`Session::path_mapping_rules()`), unfiltered, as `unapply_rules` requires. |
+| `path_mapper` | The Session's own `PathMapper` (an `Arc`), built from its full, unfiltered path mapping rules, as `unapply_rules` requires. |
 | `worker_format` | The worker host's path format: the format a reported `PATH` value is parsed in. |
 | `chunk` | The values of the Step's `CHUNK[INT]` parameter in the chunk being run, in iteration order; `None` for a Step without one. |
 
@@ -179,7 +179,7 @@ EXPR's string conversions allow.
 
 A `PATH` value, each element of a `LIST[PATH]` value, and each `PATH` element under
 `APPEND` is mapped back with
-`openjd_expr::path_mapping::unapply_rules_with_source_format(path_rules, value,
+`openjd_expr::path_mapping::unapply_rules_with_source_format(path_mapper, value,
 worker_format)` (RFC 0012 §Path values; `specs/expr/path-mapping.md` § Reverse mapping). A
 `Relative` or `NoRoundTrip` result is a `Path` error naming the path. The stored
 `ExprValue::Path` gets the format the function returns: the matching rule's

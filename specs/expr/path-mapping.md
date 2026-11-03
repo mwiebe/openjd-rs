@@ -102,7 +102,7 @@ about 1.2 GB. `openjd-sessions` takes the limit from
 
 ### Reverse mapping
 
-`unapply_rules(rules, path, worker_format) -> Result<String, UnmapError>` maps a
+`unapply_rules(mapper, path, worker_format) -> Result<String, UnmapError>` maps a
 path reported on a worker back to the submission path context, the form in which
 `PATH` job parameters are given. The CONTROL_FLOW extension stores `PATH` output
 values in that form (RFC 0012 §Path values, RFC 0012 Design Choice 5). The RFC states the
@@ -124,25 +124,25 @@ reference inverse:
    one, or `source_path` itself when no components remain. Components keep the
    spelling they have in the reported path, and are appended to a URI unchanged.
 5. Candidates are tried by decreasing `destination_path` length, counted in
-   normalized components, then in the order of `rules`. The first candidate that
-   `apply_rules_with_format(rules, candidate, worker_format)` maps to a path equal
-   to the reported one is returned. If none does, the result is
+   normalized components, then in the order of `mapper.rules()`. The first candidate
+   that `mapper.map_with_format(candidate, worker_format)` maps to a path equal to
+   the reported one is returned. If none does, the result is
    `UnmapError::NoRoundTrip`. The common case is a path under the Session Working
    Directory, which no rule's `destination_path` covers.
 
 The round trip is what makes the result correct, and it is needed because rules can
 nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
 is `P:\x\f`, which maps forward to `/data/x/f`, so the result is `NoRoundTrip`.
-The round trip forward-maps with the `rules` it is given, so `rules` must be the
-producing Session's full rule list in the exact order the Session applies them, as
-`Session::path_mapping_rules()` returns it: sorted by decreasing `source_path` length
-(a stable sort, so ties keep a fixed order). With another order the check reproduces
-the wrong forward mapping and can accept a value the Session maps elsewhere: in the
-example above, listing `P:\` first accepts `P:\x\f`; and swapping the equal-length
-sources `P:\a` → `/x` and `P:/a` → `/y` accepts `P:/a\f` for `/y/f`, which the
-Session maps to `/x/f`. Given sorted rules, the order of rules with equal-length destinations
-only breaks ties among candidates; that is the RFC's "the order the rules are
-listed".
+The round trip forward-maps with the `mapper` it is given, so `mapper` must be the
+producing Session's own `PathMapper` (`openjd-sessions` passes the one it maps
+`PATH` parameters with). A mapper built from other rules reproduces the wrong forward
+mapping and can accept a value the Session maps elsewhere. Forward precedence is the
+mapper's (see [Which rule wins](#which-rule-wins)), so the result does not depend on
+the order of the rules except where the mapper's own precedence does: of the rules
+`P:\a` → `/x` and `P:/a` → `/y`, which name the same location, the mapper keeps the
+later one, so `/y/f` gives `P:/a\f` and `/x/f` is `NoRoundTrip`. Among candidates
+from destinations of the same length, `mapper.rules()` order breaks ties; that is the
+RFC's "the order the rules are listed".
 
 **Lexical normalization** removes `.` and empty components (runs of separators,
 trailing separators) and applies `..` to the preceding component, without resolving
@@ -150,16 +150,17 @@ symbolic links. A `..` directly below a root is dropped, as `/..` is `/`. The an
 is kept separately and is never stripped, so a root keeps its separator. The POSIX
 anchor is `/`, however many leading slashes there are. POSIX lets exactly two be an
 implementation-defined root, and `path()` preserves that spelling, but here it is
-folded into `/`: forward mapping onto a root `destination_path` (`/`) gives `//x`,
-which must compare equal to `/x`. Windows anchors are `X:\` (either separator),
+folded into `/`, as forward matching treats `//a` as `/a` (see
+[Divergence from Python](#divergence-from-python)). Windows anchors are `X:\` (either separator),
 `\\server\share`, and, for non-absolute `destination_path` values only, `X:` and `\`.
 A UNC anchor's server ends at the first separator, so `\\srv\\share` has an empty
 share, as Python 3.12's `PureWindowsPath` parses it. Normalization is applied to both sides of each
-comparison. It matters on the forward side because `apply_with_format` does not
-normalize: a `destination_path` ending in a separator gives `/mnt/p//x`.
+comparison. It matters on the forward side because forward mapping appends the
+remaining components to `destination_path` as written and keeps a trailing
+separator, so `destination_path` `/mnt/./p` gives `/mnt/./p/x`.
 
 **Comparison** under `worker_format`: Windows paths compare case-insensitively
-(ASCII case folding, as forward matching does), with `\` and `/` both separators;
+with ASCII case folding, with `\` and `/` both separators;
 POSIX paths compare case-sensitively with `/` only. `PathFormat::Uri` as the worker
 format is treated as POSIX.
 
@@ -173,24 +174,26 @@ anchor parser serves absoluteness and normalization, so the two agree. Python
 versions disagree on the edge forms, so this follows neither exactly: Python 3.9
 treats `\\srv\` (a UNC server with an empty share) as absolute, and Python 3.12
 treats `1:\x`, `\\\share\x`, and `\\srv\\share` as absolute; here all four are
-`Relative`, as none names a usable Windows location. This is a separate test from
-the `is_rooted` check that forward matching uses, which does not
-treat drive paths as rooted.
+`Relative`, as none names a usable Windows location. Forward matching has its own
+test, for an absolute rule `source_path` (see
+[Source paths must be absolute](#source-paths-must-be-absolute)).
 
 **A candidate no rule matches.** Forward mapping returns a path no rule matches
 unchanged, so such a candidate passes the round trip exactly when it equals the
 reported path. That follows the RFC, whose requirement is on the forward mapping's
 result. The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward
 helper that reports whether a rule matched; the RFC wins where they disagree. Every
-candidate comes from a rule whose `destination_path` matched, so this differs only
-for degenerate rules, such as an empty `source_path`.
+candidate is a rule's absolute `source_path` (a `PathMapper` rejects any other) or a
+path under it, so forward mapping finds a rule for it unless the candidate is longer
+than `MAX_PATH_LEN`, which matches no rule and so fails the round trip unless it
+equals the reported path.
 
 **Source format filtering is not implemented.** The RFC says a runtime that knows the
 submission path format SHOULD use only rules whose `source_path_format` is that
 format or `URI`. `unapply_rules` takes no submission format, since no openjd runtime
 knows it (a Session has its rules but not the Job's submission path format), and a
 caller MUST NOT
-filter `rules` itself: the RFC defines the no-rules case "before any filtering by
+build `mapper` from filtered rules: the RFC defines the no-rules case "before any filtering by
 source format" and the round trip on the Session's own rules, so a list filtered to
 empty would wrongly return a worker-only path unchanged. Without the filter a
 candidate may be in another format than the submission's; the round trip still
@@ -199,8 +202,9 @@ guarantees it maps forward to the reported path.
 **Rejected but valid spellings.** Normalization is lexical, as the RFC defines it, so
 some paths that name a location under a destination are still `NoRoundTrip`: a
 Windows `\\?\C:\...` extended-length path against a `C:\...` destination, and a
-non-ASCII component that differs only in case (folding is ASCII-only). Nothing is
-accepted wrongly; the round trip prevents that.
+non-ASCII component that differs only in case (folding here is ASCII-only, where
+forward matching uses the Windows uppercase table). Nothing is accepted wrongly; the
+round trip prevents that.
 
 `unapply_rules_with_source_format` takes the same arguments and returns the stored
 form together with its path format: `PathFormat::Uri` for a URI returned unchanged,

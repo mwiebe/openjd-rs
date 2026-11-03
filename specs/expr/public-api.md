@@ -1480,15 +1480,15 @@ impl PathMapper {
 /// unchanged; a path that is not absolute under `worker_format` is
 /// `Relative`; with no rules an absolute path is returned unchanged;
 /// otherwise the first candidate (by decreasing normalized
-/// `destination_path` length, then `rules` order) that
-/// `apply_rules_with_format(rules, _, worker_format)` maps back to the
-/// reported path, compared after lexical normalization under
-/// `worker_format`, is returned, or `NoRoundTrip`. `rules` MUST be the
-/// Session's full, unfiltered rules in its exact order
-/// (`Session::path_mapping_rules()`). The RFC's SHOULD source-format filter
-/// is not implemented. See path-mapping.md § Reverse mapping.
+/// `destination_path` length, then `mapper.rules()` order) that
+/// `mapper.map_with_format(_, worker_format)` maps back to the reported
+/// path, compared after lexical normalization under `worker_format`, is
+/// returned, or `NoRoundTrip`. `mapper` MUST be the producing Session's own
+/// `PathMapper`, built from its full, unfiltered rules. The RFC's SHOULD
+/// source-format filter is not implemented. See path-mapping.md § Reverse
+/// mapping.
 pub fn path_mapping::unapply_rules(
-    rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
+    mapper: &PathMapper, path: &str, worker_format: PathFormat,
 ) -> Result<String, path_mapping::UnmapError>;
 
 /// `unapply_rules`, also returning the stored form's path format: `Uri`
@@ -1496,7 +1496,7 @@ pub fn path_mapping::unapply_rules(
 /// returned unchanged with no rules, otherwise the returned candidate's
 /// rule's `source_path_format`.
 pub fn path_mapping::unapply_rules_with_source_format(
-    rules: &[PathMappingRule], path: &str, worker_format: PathFormat,
+    mapper: &PathMapper, path: &str, worker_format: PathFormat,
 ) -> Result<(String, PathFormat), path_mapping::UnmapError>;
 
 /// Why `unapply_rules` or `unapply_rules_with_source_format` failed. `Display` gives a message without the path;

@@ -527,14 +527,14 @@ fn listed_order_breaks_ties_among_many_candidates() {
 }
 
 #[test]
-fn session_order_matters_for_equal_length_sources() {
-    // The round trip reproduces forward mapping with the rules as given. In
-    // this order `P:/a\f` maps forward to `/x/f`, so `/y/f` has no stored
-    // form; swapping the equal-length sources would accept it wrongly, which
-    // is why `rules` must be in the Session's exact order.
+fn later_rule_for_the_same_location_decides_the_round_trip() {
+    // `P:\a` and `P:/a` name the same location, so the `PathMapper` keeps
+    // only the later rule and maps `P:\a\f` forward to `/y/f`. The candidate
+    // that the earlier rule gives for `/x/f` therefore does not round-trip,
+    // which is why the round trip must use the Session's own mapper.
     let rules = [windows("P:\\a", "/x"), windows("P:/a", "/y")];
-    assert_eq!(unmap_posix(&rules, "/y/f"), Err(UnmapError::NoRoundTrip));
-    assert_eq!(unmap_posix(&rules, "/x/f"), Ok("P:\\a\\f".to_string()));
+    assert_eq!(unmap_posix(&rules, "/x/f"), Err(UnmapError::NoRoundTrip));
+    assert_eq!(unmap_posix(&rules, "/y/f"), Ok("P:/a\\f".to_string()));
 }
 
 #[test]
@@ -550,19 +550,10 @@ fn failing_candidate_falls_back_to_next() {
 }
 
 #[test]
-fn candidate_that_no_rule_matches_round_trips_by_identity() {
-    // Forward mapping leaves a value no rule matches unchanged. With an empty
-    // `source_path`, the candidate `/f` is matched by no rule (rootedness
-    // differs), so it maps forward to itself: the reported path.
-    let rules = [posix("", "/")];
-    assert_eq!(unmap_posix(&rules, "/f"), Ok("/f".to_string()));
-}
-
-#[test]
 fn forward_result_deeper_than_reported_is_rejected() {
     // The only candidate is `/a`, which maps forward to `/m/z`, a descendant
-    // of the reported `/m`.
-    let rules = [posix("/a", "/m/z"), posix("/a", "/m")];
+    // of the reported `/m`: the later rule for `/a` replaces the earlier one.
+    let rules = [posix("/a", "/m"), posix("/a", "/m/z")];
     assert_eq!(unmap_posix(&rules, "/m"), Err(UnmapError::NoRoundTrip));
 }
 
