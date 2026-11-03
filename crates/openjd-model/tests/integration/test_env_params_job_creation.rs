@@ -145,7 +145,7 @@ steps:
 
 #[test]
 fn environment_entries_are_not_step_dependencies() {
-    // §3.2 item 2: an entry does not delay scheduling.
+    // §3.2 item 3: an entry does not delay scheduling.
     let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -179,7 +179,7 @@ steps:
     assert_eq!(graph.topo_sorted_names().unwrap(), ["A", "B", "C"]);
 }
 
-// ── Conversion of values (§3.2 bullets, §4.5 item 4) ────────────────
+// ── Conversion of values (§3.2 bullets, §4.5 item 1) ────────────────
 
 const TYPES_EXPR: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -293,7 +293,7 @@ steps:
 
 #[test]
 fn a_resolved_value_is_checked_against_the_constraints() {
-    // Constraint 6 / §4.5 item 5, for a supplied value and a default.
+    // Constraint 6 / §4.5 item 2, for a supplied value and a default.
     create_err(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -319,7 +319,7 @@ steps:
     );
 }
 
-// ── When a default is checked (§4.5 points 1–2; plan A19) ───────────
+// ── When a default is checked (§4.5 item 2; plan A19) ───────────
 
 const UNUSED_DEFAULT: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -376,7 +376,7 @@ steps:
     );
 }
 
-// ── PATH values (§4.5 PATH paragraph; plan A16) ─────────────────────
+// ── PATH values (§4.5 item 3; plan A16) ─────────────────────
 
 const PATHS: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -1100,7 +1100,7 @@ steps:
 
 #[test]
 fn allowed_values_see_the_value_that_is_stored() {
-    // §4.5 item 5: every effective value satisfies its constraints. The
+    // §4.5 item 2: every effective value satisfies its constraints. The
     // value checked is the value stored, so a Step's value is accepted
     // exactly when it is one of `allowedValues` as written there.
     let src = r#"

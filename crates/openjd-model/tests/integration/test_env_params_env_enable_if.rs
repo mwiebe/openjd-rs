@@ -5,10 +5,10 @@
 //! `ENV_PARAMS`: `enableIf` on an `<Environment>` (Template Schemas §4
 //! item 6), an expression field of type `bool` (§7.5).
 //!
-//! Template validation: gating (constraint 4), placement on every
-//! position, the two scopes (constraints 1–3), the §7.5 form rules, and
+//! Template validation: gating (§4 item 6), placement on every
+//! position, the two scopes (§7.3.2), the §7.5 form rules, and
 //! the single-layer rule counting only Environments certainly entered.
-//! Job creation (§7.4): resolution once per Step with its effective
+//! Job creation (§7.4.1): resolution once per Step with its effective
 //! values, and every effect of a disabled Environment (not entered, no
 //! values, no host requirements, `Job.EnvNames` unchanged, no constraint
 //! 7 and no value checks, the Environment-set comparison, the single-layer rule over the
@@ -79,7 +79,7 @@ fn job_env_ref(name: &str) -> EnvironmentRef {
     }
 }
 
-// ── Template validation: gating and placement (constraint 4) ────────
+// ── Template validation: gating and placement (§4 item 6) ───────────
 
 #[test]
 fn needs_env_params_in_every_position() {
@@ -166,7 +166,7 @@ fn a_disabled_environment_is_still_validated_in_full() {
     );
 }
 
-// ── Template validation: scopes (constraints 1–3) ───────────────────
+// ── Template validation: scopes (§7.3.2) ────────────────────────────
 
 const JOB_SCOPE_HEAD: &str = "specificationVersion: jobtemplate-2023-09\n\
      extensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -245,7 +245,7 @@ fn a_job_environment_reads_exactly_its_host_requirements_scope() {
 
 #[test]
 fn an_environments_enable_if_and_host_requirements_read_env_raw_param_of_a_path() {
-    // §4 item 5.1 and item 6 constraint 1: Env.RawParam.<PATH> is the
+    // §7.3.2: Env.RawParam.<PATH> is the
     // unmapped string, as RawParam.<PATH> of a Job Parameter is, so both
     // fields may read it. A disables E by supplying /none; B takes /data.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -319,9 +319,9 @@ fn env_raw_param_of_a_path_is_a_string_to_the_enable_if() {
 
 #[test]
 fn an_attachments_host_requirements_and_enable_if_read_env_raw_param_of_a_path() {
-    // The same scope for an attached Environment Template (§4 item 5.1, item
-    // 6 constraint 1): Env.RawParam of a PATH and of a LIST[PATH] element are
-    // strings. A default of /none disables it; /data enables it.
+    // The same scope for an attached Environment Template (§7.3.2):
+    // Env.RawParam of a PATH and of a LIST[PATH] element are strings. A default
+    // of /none disables it; /data enables it.
     let att = |d: &str| {
         format!(
             "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
@@ -936,9 +936,9 @@ fn an_attached_environment_is_decided_per_step() {
 fn a_declined_environments_enable_if_is_not_evaluated_and_constraint_7_does_not_apply() {
     // The Step's entry for Lic has an expression enableIf, so constraint 7
     // is decided at job creation; the entry is disabled, so the Step
-    // declines Lic, a BY_DEFAULT Environment (§3.2 item 5): Lic's own
+    // declines Lic, a BY_DEFAULT Environment (§3.2 item 3.2): Lic's own
     // enableIf, which reads the parameter the Step does not supply, is not
-    // evaluated, and constraint 7 does not apply. (Before §3.2 item 5 gave
+    // evaluated, and constraint 7 does not apply. (Before §3.2 item 3.2 gave
     // a disabled entry a meaning, the Step entered Lic, its enableIf was
     // unresolved, and constraint 7 rejected the Job with both notes.)
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -1571,7 +1571,7 @@ const WINDOWS_LET_ERROR: &str = "steps[0] -> let[0]:\n\tin the submission path f
 
 #[test]
 fn a_disabled_entrys_values_do_not_reevaluate_let_bindings() {
-    // A disabled entry supplies nothing (§3.2 item 5), so the
+    // A disabled entry supplies nothing (§3.2 item 3.2), so the
     // binding only its value reads is not evaluated again in WINDOWS form,
     // whether its enableIf is the scalar false or an expression.
     for enable_if in ["false", "\"Step.Name == 'Q'\""] {

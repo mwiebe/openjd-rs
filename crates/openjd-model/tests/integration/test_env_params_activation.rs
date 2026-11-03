@@ -70,7 +70,7 @@ fn entered(job: &Job, step: usize) -> Vec<String> {
 fn literal_false(path: &str, env: &str) -> String {
     format!(
         "{path} -> enableIf:\n\tEnvironment '{env}' has activation ALWAYS, so it cannot be \
-         disabled, but its enableIf is false for every Step (Template Schemas §4 item 6)."
+         disabled, but its enableIf is false for every Step (Template Schemas §4 item 4)."
     )
 }
 
@@ -79,7 +79,7 @@ fn literal_false(path: &str, env: &str) -> String {
 fn false_for(path: &str, env: &str, steps: &str) -> String {
     format!(
         "{path} -> enableIf:\n\tEnvironment '{env}' has activation ALWAYS, so it cannot be \
-         disabled, but its enableIf is false for {steps} (Template Schemas §4 item 6)."
+         disabled, but its enableIf is false for {steps} (Template Schemas §4 item 4)."
     )
 }
 

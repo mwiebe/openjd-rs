@@ -8,13 +8,14 @@
 //! Covers: the `ENV_PARAMS` extension name, its gate, and its `EXPR`
 //! prerequisite (§1.1 item 3, §1.2 item 3, RFC Backward compatibility);
 //! `$schema` on an Environment Template (§1.2 item 2);
-//! `<Environment>.envParameterDefinitions` (§4 item 3 constraints 1–4) and
-//! `<EnvironmentParameterDefinition>` (§4.5 items 1–5, literal `default`s per
-//! "checked at two points" point 1); the `environment:` form of
+//! `<Environment>.envParameterDefinitions` (§4 item 3 constraints 1–3 and the
+//! paragraph after item 9) and `<EnvironmentParameterDefinition>` (§4.5, and
+//! literal `default`s per its
+//! item 2); the `environment:` form of
 //! `<StepDependency>` and its constraints 1–4 and 8 (§3.2); the literal-value
 //! forms no parameter type accepts (§3.2 last paragraph; plan A4); and that
 //! `environment:` entries never reach the job's Step dependency graph (§3.2
-//! item 2).
+//! item 3).
 
 use super::env_params_common::*;
 use openjd_model::template::{
@@ -462,7 +463,7 @@ steps:
 
 #[test]
 fn every_job_parameter_type_is_allowed() {
-    // §4.5 item 1: any type a `<JobParameterDefinition>` has in a document
+    // §4.5: any type a `<JobParameterDefinition>` has in a document
     // that lists EXPR, RANGE_EXPR included.
     job_ok(
         r#"
@@ -558,7 +559,7 @@ environment:
 
 #[test]
 fn user_interface_object_type_and_data_flow_are_permitted() {
-    // §4.5 items 2-3: permitted, and informational.
+    // §4.5: permitted, and informational.
     let jt = job_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -708,7 +709,7 @@ steps:
 #[test]
 fn relative_literal_path_default_is_not_a_template_validation_error() {
     // Absoluteness depends on the submission path format and is checked
-    // at job creation (§4.5 point 1, PATH paragraph).
+    // at job creation (§4.5 items 2 and 3).
     job_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -1752,7 +1753,7 @@ steps:
     );
 }
 
-// ── <StepDependency> step: form (§3.2 item 1) ──────────────────────
+// ── <StepDependency> step: form (§3.2 item 2) ──────────────────────
 
 /// A Job Template with Steps `A` and `B`, `B` having `deps` as its
 /// `dependencies`, listing `exts`.

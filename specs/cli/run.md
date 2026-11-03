@@ -333,7 +333,7 @@ Job Parameters). Its submission stage:
   effect, whatever `required` says;
 - fixes each Step's Environment set (`job::Step::environments`): every Environment with
   `activation: ALWAYS`, every `BY_DEFAULT` one that no disabled entry of the Step declines
-  (Template Schemas §3.2 item 5), and each `ON_REQUEST` one an enabled entry of the
+  (Template Schemas §3.2 item 3.2), and each `ON_REQUEST` one an enabled entry of the
   Step requests, less any whose own `enableIf` (Template Schemas §4 item 6) is `false` for
   the Step (for an `ALWAYS` one, that is an error naming the Step and the Environment, as is a
   Step's disabled entry for one, and the Job is not run), which

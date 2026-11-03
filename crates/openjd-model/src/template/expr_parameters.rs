@@ -225,7 +225,7 @@ pub enum RangeExprLengthCheck {
     /// Check the value as written and its canonical form. This is the rule
     /// for a RANGE_EXPR Job Parameter in a document that lists
     /// `ENV_PARAMS` (§2.10), and for every Environment parameter of type
-    /// RANGE_EXPR (§4.5 item 5).
+    /// RANGE_EXPR (§4.5 item 4).
     AsWrittenAndCanonical,
 }
 
@@ -270,7 +270,7 @@ impl JobRangeExprParameterDefinition {
     /// [`RangeExprLengthCheck::AsWrittenAndCanonical`] so must its canonical
     /// form. Pass the rule of the document that declares this definition
     /// ([`RangeExprLengthCheck::for_job_parameter`]), or
-    /// `AsWrittenAndCanonical` for an Environment parameter (§4.5 item 5).
+    /// `AsWrittenAndCanonical` for an Environment parameter (§4.5 item 4).
     /// A `range_expr` has no other spelling, so its canonical form is
     /// checked under either rule.
     ///

@@ -7,8 +7,8 @@
 //!
 //! Covers: `Env.Param.*` / `Env.RawParam.*` within the declaring
 //! Environment only (§4 `Env.*` scope, §7.3.1, RFC Value references),
-//! with their EXPR types (§4.5 last paragraph); the scope of a `default`
-//! (§4.5 item 4) and of an `environment:` entry value (§3.2); the EXPR
+//! with their EXPR types (§7.3.1); the scope of a `default`
+//! (§4.5 item 1) and of an `environment:` entry value (§3.2); the EXPR
 //! target-type check of single-expression values (§7.4, plan A17);
 //! §3.2 constraints 5–7 for `jobEnvironments` entries; the carried-forward
 //! checks at job creation; and the spec samples and RFC examples.
@@ -214,7 +214,7 @@ steps:
     );
 }
 
-// ── Scope of a `default` (§4.5 item 4) ─────────────────────────────
+// ── Scope of a `default` (§4.5 item 1, §7.3.2) ─────────────────────────
 
 #[test]
 fn default_scope_is_the_documents_raw_and_non_path_params() {
@@ -675,7 +675,7 @@ fn spec_samples_without_the_extension_are_rejected() {
     let gate = "environment -> envParameterDefinitions:\n\tenvParameterDefinitions on an Environment requires the ENV_PARAMS extension.";
     // Only the gate fires: the Environment's own `Env.Param.*` references
     // still resolve, so they do not cascade into further errors.
-    // The Conda sample's enableIf is gated too (§4 item 6 constraint 4).
+    // The Conda sample's enableIf is gated too (§4 item 6).
     env_err(
         &strip(CONDA),
         &[
@@ -694,7 +694,7 @@ fn spec_samples_without_the_extension_are_rejected() {
     );
     let gate_dep = "the 'environment' form of a dependency requires the ENV_PARAMS extension.";
     // The sample's Step-to-Step entries are written `step:`, which is gated
-    // too (§3.2 item 1).
+    // too (§3.2 item 2).
     let gate_step = "the 'step' form of a dependency requires the ENV_PARAMS extension.";
     let mut expected = Vec::new();
     for (step, dep, gate) in [

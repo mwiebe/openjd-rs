@@ -300,7 +300,7 @@ impl StepTemplate {
 pub enum DependencyTarget<'a> {
     /// A Step, by name, and the key the entry wrote it under; satisfied
     /// when the Step has completed. The two keys mean the same thing
-    /// (§3.2 item 1): the key is kept only so that messages can name what
+    /// (§3.2 item 2): the key is kept only so that messages can name what
     /// was written.
     Step(&'a str, StepKey),
     /// An Environment, by name: a `jobEnvironments` entry of the same Job
@@ -309,7 +309,7 @@ pub enum DependencyTarget<'a> {
 }
 
 /// The key a Step-naming `<StepDependency>` entry is written with (§3.2
-/// item 1). `step` is a synonym of `dependsOn`, available with the
+/// item 2). `step` is a synonym of `dependsOn`, available with the
 /// `ENV_PARAMS` extension: every rule treats the two alike, and a `step`
 /// entry and a `dependsOn` entry naming one Step are duplicates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -382,7 +382,7 @@ pub struct StepDependency {
     #[serde(default)]
     pub depends_on: Option<String>,
     /// The name of a Step of the same Job Template: the `ENV_PARAMS`
-    /// synonym of [`depends_on`](Self::depends_on) (§3.2 item 1).
+    /// synonym of [`depends_on`](Self::depends_on) (§3.2 item 2).
     #[serde(default)]
     pub step: Option<String>,
     /// The name of an Environment (`ENV_PARAMS`).
@@ -392,7 +392,7 @@ pub struct StepDependency {
     /// (`ENV_PARAMS`). See [`is_required`](Self::is_required).
     #[serde(default)]
     pub required: Option<bool>,
-    /// Whether the entry is in effect (`ENV_PARAMS`, §3.2 item 5): an
+    /// Whether the entry is in effect (`ENV_PARAMS`, §3.2 item 3.2): an
     /// expression field of type `bool` (§7.5), resolved when the Job is
     /// created. Absent means enabled. A disabled entry supplies nothing,
     /// and its effect depends on the `activation` of the Environment it
@@ -486,7 +486,7 @@ impl StepDependency {
         }
     }
 
-    /// `required` with its default applied (§3.2 item 3: absent means
+    /// `required` with its default applied (§3.2 item 3.1: absent means
     /// `true`).
     #[must_use]
     pub fn is_required(&self) -> bool {

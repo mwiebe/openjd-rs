@@ -131,7 +131,7 @@ impl<'de> Deserialize<'de> for ExprField {
     }
 }
 
-/// `deserialize_with` for an optional `enableIf` (§3.2 item 5, §4 item 6):
+/// `deserialize_with` for an optional `enableIf` (§3.2 item 3.2, §4 item 6):
 /// a present `null` becomes `Some(ExprField::Null)` rather than `None`, so
 /// that template validation reports it at the field's path (§7.5). Pair it
 /// with `#[serde(default)]`, which gives `None` when the key is absent. A
@@ -149,8 +149,8 @@ pub(crate) fn deserialize_enable_if<'de, D: Deserializer<'de>>(
 /// under, the function library, and the caller's evaluation budgets. The
 /// scope (the symbol table) is passed per call. Paths are always POSIX:
 /// both expression fields today (the two `enableIf`s) are evaluated in
-/// template scope, not a host context (Template Schemas §3.2 item 5, §4
-/// item 6; spec 5535230).
+/// template scope, not a host context (Template Schemas §7.5, the paragraph
+/// after its rules; spec 5535230).
 pub(crate) struct ExprFieldEval<'a> {
     pub(crate) profile: &'a ExprProfile,
     pub(crate) library: &'a FunctionLibrary,
@@ -182,7 +182,7 @@ impl ExprFieldEval<'_> {
             .with_library(self.library)
             // Both expression fields (the two `enableIf`s) are evaluated
             // in template scope, not a host context: POSIX paths always
-            // (Template Schemas §3.2 item 5, §4 item 6; spec 5535230). A
+            // (Template Schemas §7.5, after its rules; spec 5535230). A
             // later expression field in a host context would need a path
             // format here.
             .with_path_format(PathFormat::Posix);

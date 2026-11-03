@@ -4,7 +4,7 @@
 
 //! `ENV_PARAMS` Step-side selection at template validation: `activation`
 //! (Template Schemas §4 item 4), the `environment:` entry's `enableIf`
-//! (§3.2 item 5, constraint 9, the checked-at paragraph), constraint 7 over
+//! (§3.2 item 3.2, constraint 9, the checked-at paragraph), constraint 7 over
 //! each Step's Environment set, `Job.EnvNames` (§7.3.1), the `WRAP_ACTIONS`
 //! single-layer rule over each Step's set (plan R8), and the
 //! `<nonnegativefloatstring>` erratum (§3.3.1).
@@ -221,7 +221,7 @@ steps:
     );
 }
 
-// ── enableIf (§3.2 item 5, constraint 9) ────────────────────────────
+// ── enableIf (§3.2 item 3.2, constraint 9) ────────────────────────────
 
 const ENABLE_IF: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -473,8 +473,8 @@ fn enable_if_has_the_scope_of_a_parameters_value() {
 
 #[test]
 fn enable_if_is_checked_with_the_template_scope_library_and_posix_paths() {
-    // A host-only function is not in the template-scope library (§3.2
-    // item 5: the scope of a parameters value)...
+    // A host-only function is not in the template-scope library (§7.3.2:
+    // the scope of a parameters value)...
     job_err(
         &enable_if(r#""apply_path_mapping('/a') == '/a'""#),
         &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Unknown function: 'apply_path_mapping'\n  apply_path_mapping('/a') == '/a'\n  ^~~~~~~~~~~~~~~~~~~~~~~~"],
@@ -505,7 +505,7 @@ fn a_literal_false_entry_supplies_nothing_and_declines_a_by_default_environment(
         "    enableIf: false\n    parameters: {Nope: x}\n",
     ));
     // ...and it supplies nothing. For a BY_DEFAULT Environment it declines
-    // it (§3.2 item 5), so constraint 7 does not apply to the Step. (Before
+    // it (§3.2 item 3.2), so constraint 7 does not apply to the Step. (Before
     // that rule this asserted the constraint 7 error, as JT-103 did.)
     let src = ENABLE_IF
         .replace(
@@ -524,13 +524,13 @@ fn a_literal_false_entry_supplies_nothing_and_declines_a_by_default_environment(
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\tis false, so Step 'S' would decline \
              Environment 'Conda', whose activation is ALWAYS: no Step can leave out an ALWAYS \
-             Environment (Template Schemas §3.2 item 5).",
+             Environment (Template Schemas §3.2 item 3.2).",
             &format!(
                 "steps[0]:\n\t{}",
                 must_supply(
                     "'Packages' of Environment 'Conda' (the Step's 'environment:' dependency for \
                      it is disabled by its enableIf, so it supplies nothing; Template Schemas \
-                     §3.2 item 5)"
+                     §3.2 item 3.2)"
                 )
             ),
         ],

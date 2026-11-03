@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `ENV_PARAMS`: disabled Environments (Template Schemas §3.2.2), and
-//! RANGE_EXPR Environment parameters (§4.5 item 1).
+//! RANGE_EXPR Environment parameters (§4.5).
 //!
 //! An Environment is disabled for a Step when its own `enableIf` is `false` for
 //! the Step, decided with the values that are known: a Step's effective value
@@ -141,7 +141,7 @@ fn constraint_5_and_the_value_forms_apply_to_a_disabled_environment() {
     );
 }
 
-// ── Job creation (§3.2.2, §7.4) ─────────────────────────────────────
+// ── Job creation (§3.2.2, §7.4.1) ─────────────────────────────────────
 
 #[test]
 fn a_failed_resolved_default_is_reported_only_for_a_step_it_is_not_disabled_for() {
@@ -219,7 +219,7 @@ fn a_failed_enable_if_is_reported_once_and_the_environment_is_still_checked() {
 
 #[test]
 fn an_environments_enable_if_reads_raw_path_job_parameters() {
-    // §4 item 6 constraint 1: `RawParam.*` of any type, PATH included, with
+    // §7.3.2: `RawParam.*` of any type, PATH included, with
     // the unmapped value.
     let jt = |document: &str| {
         format!(
@@ -293,7 +293,7 @@ fn check_environment_templates_checks_values_only_for_an_attachment_certainly_no
     );
 }
 
-// ── RANGE_EXPR (§4.5 item 1, §3.2.2) ────────────────────────────────
+// ── RANGE_EXPR (§4.5, §3.2.2) ──────────────────────────────────────
 
 const RANGES: &str = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                       name: J\njobEnvironments:\n- name: Cache\n  envParameterDefinitions: \
@@ -507,7 +507,7 @@ fn an_expression_valued_range_expr_is_its_canonical_form() {
 
 #[test]
 fn a_computed_range_expr_value_meets_its_length_constraints_as_written_and_canonically() {
-    // §4.5 item 5 and §2.10: a format string's RANGE_EXPR value, or a single
+    // §4.5 item 4 and §2.10: a format string's RANGE_EXPR value, or a single
     // expression's string result, is checked as written and in canonical
     // form; a single expression whose result is a range_expr has only its
     // canonical form. A result that does not parse, such as the empty
@@ -535,7 +535,7 @@ fn a_computed_range_expr_value_meets_its_length_constraints_as_written_and_canon
     );
     job_ok(&jt("1-3", "maxLength: 3"));
     // And in canonical form, as an Environment parameter's always is
-    // (§4.5 item 5): `1-3:2` is 5 characters, but its canonical form `1,3`
+    // (§4.5 item 4): `1-3:2` is 5 characters, but its canonical form `1,3`
     // is below minLength 4.
     job_err(
         &jt("1-3:2", "minLength: 4"),
@@ -972,7 +972,7 @@ fn a_literal_that_breaks_a_constraint_is_known_to_the_enable_if() {
 
 #[test]
 fn a_relative_path_is_not_checked_where_the_environment_is_disabled() {
-    // §4.5 PATH paragraph: absoluteness is checked only for an Environment
+    // §4.5 item 3: absoluteness is checked only for an Environment
     // that is not disabled for the Step.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               parameterDefinitions: [{name: U, type: STRING, default: 'no'}]\n\
@@ -1073,7 +1073,7 @@ fn an_unknown_value_keeps_its_parameters_type() {
 
 #[test]
 fn an_environments_enable_if_reads_env_raw_param() {
-    // §4 item 6 constraint 1: `Env.RawParam.*` of the Environment's own
+    // §7.3.2: `Env.RawParam.*` of the Environment's own
     // non-PATH parameters, with each Step's value.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               jobEnvironments:\n- name: E\n  envParameterDefinitions: [{name: Mode, type: STRING, \
@@ -1116,7 +1116,7 @@ fn an_attachments_enable_if_reads_job_env_names() {
 fn an_attachment_reads_job_names_whatever_the_job_template_lists() {
     // An attachment that lists ENV_PARAMS lists EXPR (§1.2 item 3), so its
     // enableIf and hostRequirements read `Job.Name` and `Job.EnvNames`
-    // (§4 item 5.1, item 6 constraint 1) even under a Job Template that
+    // (§7.3.2) even under a Job Template that
     // lists neither extension (RFC Backward compatibility).
     let env = |cond: &str| {
         format!(
@@ -1150,7 +1150,7 @@ fn an_attachment_reads_job_names_whatever_the_job_template_lists() {
 
 #[test]
 fn a_literal_default_is_checked_when_its_environment_is_disabled_for_every_step() {
-    // §4.5 point 1 (plan 4 A42): a literal `default` is a property of the
+    // §4.5 item 2 (plan 4 A42): a literal `default` is a property of the
     // definition, so a relative PATH `default` is an error even where the
     // Environment is disabled, for a Job Environment and an attachment.
     let relative = "must be an absolute path in the submission path format (POSIX), since an \
@@ -1183,9 +1183,9 @@ fn a_literal_default_is_checked_when_its_environment_is_disabled_for_every_step(
 
 #[test]
 fn steps_that_differ_in_a_path_value_are_decided_separately() {
-    // A PATH parameter is in an enableIf's scope as its Env.RawParam (§4
-    // item 6 constraint 1), so Steps that differ in a PATH value have
-    // different known values and are decided, and reported, separately.
+    // A PATH parameter is in an enableIf's scope as its Env.RawParam (§7.3.2),
+    // so Steps that differ in a PATH value have different known values and are
+    // decided, and reported, separately.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               parameterDefinitions: [{name: L, type: 'LIST[INT]', default: [1]}]\n\
               jobEnvironments:\n- name: E\n  envParameterDefinitions: [{name: D, type: PATH}]\n  \
@@ -1563,7 +1563,7 @@ fn a_resolved_default_that_breaks_a_constraint_is_known_to_the_enable_if() {
 #[test]
 fn an_enable_if_that_reads_a_missing_path_parameter_is_reported_at_template_validation() {
     // An enableIf may read a PATH parameter's Env.RawParam, its unmapped
-    // string (§4 item 6 constraint 1). P has no default and S does not
+    // string (§7.3.2). P has no default and S does not
     // supply it, so the result depends on a value known to be missing, and
     // constraint 7 is reported at template validation (§3.2.2).
     job_err(

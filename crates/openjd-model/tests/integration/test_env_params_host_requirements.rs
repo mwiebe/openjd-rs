@@ -5,7 +5,7 @@
 //! `ENV_PARAMS` Environment `hostRequirements` (Template Schemas §4 item 5)
 //! and a Step's combined host requirements (§3.3.3): where the field is
 //! permitted, the per-source §3.3 checks, the format-string scopes of
-//! §4 item 5.1, resolution per entering Step at job creation, and the
+//! §7.3.2, resolution per entering Step at job creation, and the
 //! §3.3.3 normalization and conflicts.
 
 use openjd_model::job::{
@@ -248,7 +248,7 @@ fn a_zero_min_is_accepted() {
     ));
 }
 
-// ── §4 item 5.1: format-string scopes ───────────────────────────────
+// ── §7.3.2: format-string scopes ───────────────────────────────
 
 /// A Job Template whose one Job Environment has parameters `P` (INT),
 /// `D` (PATH) and `L` (LIST[PATH]), another Environment `O` with parameter
@@ -270,7 +270,7 @@ fn scope_template(expr: &str) -> String {
 
 #[test]
 fn the_scope_has_the_documents_parameters_job_names_and_the_environments_raw_parameters() {
-    // §4 item 5.1: Env.RawParam.* of any type (a path as its unmapped
+    // §7.3.2: Env.RawParam.* of any type (a path as its unmapped
     // string), and Env.Param.* of non-path types.
     for expr in [
         "Param.N",

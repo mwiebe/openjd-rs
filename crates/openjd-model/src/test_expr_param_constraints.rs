@@ -747,7 +747,7 @@ fn test_range_expr_string_max_length_check() {
 
 // §2.10: a value as written must satisfy the length constraints, and, in a
 // document that lists ENV_PARAMS (`AsWrittenAndCanonical`), so must its canonical form.
-// An Environment parameter is checked with `AsWrittenAndCanonical` (§4.5 item 5).
+// An Environment parameter is checked with `AsWrittenAndCanonical` (§4.5 item 4).
 fn range_expr_def(
     min_length: Option<usize>,
     max_length: Option<usize>,

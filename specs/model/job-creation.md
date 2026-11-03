@@ -359,7 +359,9 @@ budgets template validation and the session runtime apply.
      both resolve to `null`, and an attribute whose `anyOf` and `allOf` both resolve to
      `null`, which only the expression form can (`template::AttributeValues::Expression`,
      resolved with the target type `list[string]?`; a list result is checked as the list
-     form is, 1 to 50 values each an `<AttributeCapabilityValue>`, so `[]` is an error).
+     form is, 1 to 50 values each an `<AttributeCapabilityValue>`, so `[]` is an error, and
+     at most one for the `allOf` of `attr.worker.os.family` or `attr.worker.cpu.arch`,
+     Template Schemas §3.3.2.1).
      A list form whose items all resolve to `null` is left empty, which is an error, not a
      discard. An `anyOf` or `allOf` (either form) that fails to resolve on a Step's own
      requirements is a `FormatStringError` whose message starts with the field's path
@@ -380,9 +382,10 @@ budgets template validation and the session runtime apply.
    Schemas §7.3.1) is a `list[string]` of the attached Environments' names, in attachment
    order, then the `jobEnvironments` names, whatever their `activation`; a shared name repeats,
    and Step Environments are not listed. The attached Environments are known before anything
-   else (§7.4), so it is concrete before any TEMPLATE-scope expression, including a Step's
+   else (§7.4.1), so it is concrete before any TEMPLATE-scope expression, including a Step's
    `let`. The order is the order a Session that entered all of them would enter them, since
-   the combined Job lists the attached Environments first (prototype plan P2). It is bound
+   the combined Job lists the attached Environments first (Template Schemas §1.1 item 7, the
+   Job's Environment order; prototype plan P2). It is bound
    with `EXPR` alone: template validation rejects a reference without ENV_PARAMS, and every
    `resolved_symtab` keeps only the symbols a field references, so a Job that does not use it
    is unchanged. It is not in the scope of the Job name or of an Environment parameter
@@ -399,11 +402,11 @@ budgets template validation and the session runtime apply.
    is reported once, after all steps
 6. Convert environments from template to job types
 7. Build step dependency list from the template's Step entries only: `dependsOn`, and its
-   ENV_PARAMS synonym `step` (§3.2 item 1), each a `job::StepDependency` with `dependsOn`.
+   ENV_PARAMS synonym `step` (§3.2 item 2), each a `job::StepDependency` with `dependsOn`.
    An `environment:` entry (ENV_PARAMS) does not delay scheduling (§3.2
-   item 2), so it is dropped, and a list left empty by the filter becomes
+   item 3), so it is dropped, and a list left empty by the filter becomes
    `None`.
-8. ENV_PARAMS, after the step's `let` bindings (§7.4): evaluate each `environment:` entry's
+8. ENV_PARAMS, after the step's `let` bindings (§7.4.1): evaluate each `environment:` entry's
    `enableIf`, fix which Job Environments the step's Sessions would enter, compute its
    effective Environment parameter values for them, decide each one's own `enableIf` with the
    values that are known, check the values and constraint 7 for the ones it does not disable,
@@ -417,14 +420,14 @@ budgets template validation and the session runtime apply.
 
 #### Environment parameter values (ENV_PARAMS)
 
-**`enableIf`** (§3.2 item 5). Each `environment:` entry's `enableIf` is decided after the
-Step's `let` bindings and before the entry's name is resolved (§7.4). It is an expression
+**`enableIf`** (§3.2 item 3.2). Each `environment:` entry's `enableIf` is decided after the
+Step's `let` bindings and before the entry's name is resolved (§7.4.1). It is an expression
 field of type `bool` (§7.5), resolved by the expression-field checker's `resolve` (see
 [template-types.md](template-types.md#expression-fields-75)) in the Step's template scope
 (below), under the template-scope profile and library pass 8 checked it with, the caller's
 evaluation budgets, and POSIX paths whatever `ctx.submission_path_format` is: an `enableIf` is
-evaluated in template scope, not in a host context (Template Schemas §3.2 item 5 and §4 item
-6, spec `5535230`), so unlike the entry's values it reads the `let` bindings with their
+evaluated in template scope, not in a host context (Template Schemas §7.5, the
+paragraph after its rules; spec `5535230`), so unlike the entry's values it reads the `let` bindings with their
 template-scope values: a boolean scalar is its
 value; an expression must resolve to `true` or `false`. A `null` result ("resolved to null,
 which does not fit type bool (Template Schemas §7.5)."), another type ("resolved to a value
@@ -433,7 +436,7 @@ evaluated: <error>") is reported at `steps[i] -> dependencies[j] -> enableIf`, a
 entry's Environment gets no values for the Step, so the one mistake is reported once. A
 scalar or `null` that template validation rejects is rejected here with its message too,
 for a template built in code. A **disabled** entry requests nothing and supplies nothing,
-and what it means depends on the `activation` of the Environment it names (§3.2 item 5):
+and what it means depends on the `activation` of the Environment it names (§3.2 item 3.2):
 
 - `ON_REQUEST`: the Step does not request it, so its Sessions do not enter it.
 - `BY_DEFAULT`: the Step **declines** it. Its Sessions do not enter it, exactly as for an
@@ -444,7 +447,7 @@ and what it means depends on the `activation` of the Environment it names (§3.2
   disabled.
 - `ALWAYS`: an error at `steps[i] -> dependencies[j] -> enableIf`, "is false, so Step 'S'
   would decline Environment 'E', whose activation is ALWAYS: no Step can leave out an ALWAYS
-  Environment (Template Schemas §3.2 item 5)." Template validation reports it for a literal
+  Environment (Template Schemas §3.2 item 3.2)." Template validation reports it for a literal
   `false` on an entry that names a Job Environment; job creation for an expression that
   resolves to `false`, and the submission stage for any disabled entry naming an attached
   `ALWAYS` Environment. The Environment is still checked as entered, with every parameter at
@@ -496,10 +499,10 @@ stage](#the-submission-stage):
   in that format, so `path(RawParam.Dir) / 'sub'` uses its rules) under the caller's evaluation
   budgets. An entry value's scope, and an `enableIf`'s, is the Step's full template scope
   (`Param.*` other than PATH and LIST[PATH], `RawParam.*`, `Job.Name`, `Job.EnvNames`,
-  `Step.Name`, and the Step's `let` bindings; §3.2 items 4–5). Job creation
+  `Step.Name`, and the Step's `let` bindings; §7.3.2). Job creation
   evaluates the Step's `let` bindings in POSIX; when `submission_path_format` is another
   format, the bindings that the Step's enabled entries' values read (every entry's `enableIf`
-  is decided first; a disabled entry supplies nothing, §3.2 item 5),
+  is decided first; a disabled entry supplies nothing, §3.2 item 3.2),
   directly or through other bindings, are evaluated again in that format for the entry values,
   so a `path` binding (`path(RawParam.Dir) / 'x'`, `.parent`) follows the same rules as the
   value itself. Bindings no entry value reads are not evaluated again, so one that would fail
@@ -509,30 +512,30 @@ stage](#the-submission-stage):
   3), and every Step Environment's `enableIf`, has already been made, so their errors are
   reported with it, and an entry whose `enableIf`
   failed adds nothing to the bindings evaluated again. An `enableIf` (an entry's or a Step Environment's) does not
-  take part: it is evaluated in template scope (Template Schemas §3.2 item 5, §4 item 6, spec
-  `5535230`), with POSIX paths in the scope as job creation built it, so a binding only an
+  take part: it is evaluated in template scope (Template Schemas §7.5, after its
+  rules; spec `5535230`), with POSIX paths in the scope as job creation built it, so a binding only an
   `enableIf` or a disabled entry's value reads is not evaluated again. A
   `default`'s scope is the merged Job Parameters alone, without `Job.Name` or `Job.EnvNames`
-  (§4.5 item 4, §7.3.1; plan A21). A single `{{ }}` expression evaluates with the
+  (§4.5 item 1, §7.3.1; plan A21). A single `{{ }}` expression evaluates with the
   parameter's expression type as its target type, and the result is coerced to the
   Job Parameter type (a `path` result becomes its string). Any other format string resolves to
   a string and is converted with `coerce_from_str`, as a submitted Job Parameter value would
   be, with no directory join. A list-typed value that is not a single expression is an error
   (template validation already rejects it for a Job Environment).
 - **PATH values**, and each LIST[PATH] element, must be non-empty (plan A16) and absolute in
-  `ctx.submission_path_format`, or, with `ctx.allow_uri_path_values`, a URI (plan A12; §4.5 PATH
-  paragraph). In POSIX only a leading `/` is absolute (a backslash is an ordinary filename character,
+  `ctx.submission_path_format`, or, with `ctx.allow_uri_path_values`, a URI (plan A12; §4.5 item
+  3). In POSIX only a leading `/` is absolute (a backslash is an ordinary filename character,
   so `\\srv\share` is relative there). The value is stored as resolved (plan A22): a literal or
   a multi-segment format string as written; a single `{{ }}` expression as the string of its
   result, which for a `path` result follows the submission format's rules (WINDOWS turns `/`
   into `\`).
 - The definition's **constraints** are checked against that stored value (constraint 6,
-  §4.5 item 5), using `JobParameterDefinition::check_constraints` with
+  §4.5 item 2), using `JobParameterDefinition::check_constraints` with
   `RangeExprLengthCheck::AsWrittenAndCanonical`
   (for a literal, by the template-validation check), so every effective value of an
   Environment that is not disabled for its Step satisfies its definition. A RANGE_EXPR's
   `minLength` and `maxLength` check both the value as written and its canonical form, whatever
-  extensions the Job Parameters' documents list (§4.5 item 5, §2.10):
+  extensions the Job Parameters' documents list (§4.5 item 4, §2.10):
   a literal's string, a format string's resolved string, or a single `{{ }}` expression's
   string result, which is read by evaluating the expression again with no target type. A
   single expression whose result is a `range_expr` has only its canonical form, which must be
@@ -544,7 +547,7 @@ stage](#the-submission-stage):
   resolutions of `enableIf` and `hostRequirements` see them as one. A Session parses it as it
   parses a RANGE_EXPR Job Parameter's value.
 
-**Disabled Environments** (§3.2.2, §7.4). For each Step and each Environment its Sessions
+**Disabled Environments** (§3.2.2, §7.4.1). For each Step and each Environment its Sessions
 would enter, `DeclaringEnvironment::values_for_step` computes the effective values without
 reporting the checks that depend on the Environment's own `enableIf` (`PendingValues`):
 
@@ -577,7 +580,7 @@ constraint, a `default` that does not convert, a missing parameter, a second wra
 are reported in the same run instead of one edit at a time. A constraint 7 error for such an
 Environment says its `enableIf` could not be evaluated.
 
-**When a `default` is checked** (§4.5 points 1–2, plan A19). A literal `default` is checked
+**When a `default` is checked** (§4.5 item 2, plan A19). A literal `default` is checked
 when `create_job` sets up the Job Environments, before any Step, so one that fails a
 path-format check (a relative PATH) is an error even when every Step supplies the parameter.
 A non-literal `default` is resolved the first time a Step takes it and cached, since its value
@@ -587,7 +590,7 @@ does not depend on the Step; a failure is reported once, at
 it and for which the Environment is not disabled; a Step for which the Environment is
 disabled does not report it (§3.2.2). A non-literal `default` that no Step takes is never
 evaluated. A literal `default` is checked whatever any `enableIf` decides, since the check
-is of the definition, not of a Step's value (§4.5 point 1; plan 4 A42).
+is of the definition, not of a Step's value (§4.5 item 2; plan 4 A42).
 
 `create_job` also rejects a second `environment:` entry of one Step for the same Environment
 (§3.2 constraint 3), for a template edited after decoding, so neither entry's values are
@@ -616,7 +619,7 @@ checks), then each Step's values after that Step's other checks, in the Environm
 definition order, then the Job Environments' failed `enableIf` evaluations.
 
 **External entries.** An enabled `environment:` entry that names no `jobEnvironments` entry
-refers to an external Environment (§3.2 item 2), whose definitions job creation proper does
+refers to an external Environment (§3.2 item 3), whose definitions job creation proper does
 not see. It is kept for the submission stage as a crate-private `FrozenEntry`: the name, the
 entry's index in `dependencies`, `required` with its default applied, the values as written,
 and `symtab`, the symbols of the Step's full template scope that the values' format strings
@@ -848,7 +851,7 @@ that has entries lists both.
      `envParameterDefinitions`, as in step 1, and those parameters are not reported per Step.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
-   entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 5). It
+   entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
    supplies nothing, so constraints 5 and 6 are not checked for it, and one that matches no
    attachment has no effect and no warning, whatever `required` says (item 2 does not apply).
    Two or more matches are the item 3 error, as for an enabled entry; the spec's §3.2.1 lists
@@ -948,7 +951,7 @@ decide it, by what the expression can read:
   error (a `null` result: "resolved to null, which does not fit type bool (Template Schemas
   §7.5)."; another type; or an evaluation failure) is a `JobTemplate` error at
   `steps[i] -> stepEnvironments[j] -> enableIf`, and the Step Environment is kept. This is
-  earlier than §7.4 lists it, which changes no result, but an error here is reported by the
+  earlier than §7.4.1 lists it, which changes no result, but an error here is reported by the
   `create_job` body and so hides the submission stage's errors (plan 3 A38).
 - **A Job Environment or an attached Environment** (constraint 1) reads its own effective
   values, so its `enableIf` is decided with them (see
@@ -956,7 +959,7 @@ decide it, by what the expression can read:
   `resolve_step_entries`, for each Step, in the `create_job` body; an attachment's by the
   submission stage, in step 3. Either way it is decided after the Step's effective values are
   computed and before their checks and constraint 7, the single-layer rule, and host
-  requirements (§7.4). It is evaluated under its document's template-scope profile, with the
+  requirements (§7.4.1). It is evaluated under its document's template-scope profile, with the
   caller's budgets and the POSIX path format, in its `hostRequirements` scope (the merged Job
   Parameters, `Job.Name`, `Job.EnvNames`, its `Env.RawParam.*` of any type, and its non-PATH
   `Env.Param.*`, each known or `unresolved[T]`). A `false` leaves the
@@ -972,13 +975,13 @@ decide it, by what the expression can read:
   and its combined host requirements. A Job Environment's failure stops the submission stage,
   which makes those last checks.
 
-An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 6, §3.2.2 item 6).
+An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 4, §3.2.2 item 6).
 `DeclaringEnvironment::decide` records each Step its `enableIf` is `false` for and treats
 the Step as entering it, so the Environment stays in the Step's set and values and is
 checked as entered, and the Step's other mistakes for it are reported in the same run.
 `report_enable_if_errors` then reports one error for the Environment at `<environment
 path> -> enableIf` naming every such Step: "Environment 'Lic' has activation ALWAYS, so it
-cannot be disabled, but its enableIf is false for Step 'B' (Template Schemas §4 item 6)."
+cannot be disabled, but its enableIf is false for Step 'B' (Template Schemas §4 item 4)."
 (or "for Steps 'B' and 'C'"), a `JobTemplate` error for a Job Environment and a
 `Submission` error for an attachment. A literal `false` is rejected earlier, at template
 validation. A `true` or unresolved result is not this error. An unresolved result also
@@ -994,13 +997,13 @@ entering Job Environments, compares the final sets. `CreatedJob::disabled_enviro
 records, per Step, the Environments an `enableIf` disabled (Job Environments by document and
 name, attached ones first, Step Environments by name), for display; an Environment the Step
 would not have entered anyway (an `ON_REQUEST` one it does not request, or a `BY_DEFAULT` one
-it declines with a disabled entry, §3.2 item 5) is not listed, since
+it declines with a disabled entry, §3.2 item 3.2) is not listed, since
 its `enableIf` is never evaluated for that Step, and neither is one whose `enableIf` failed.
 
 #### Combined host requirements (ENV_PARAMS)
 
 `combine_step_host_requirements` in `job/create_job/host_requirements.rs` (Template Schemas
-§4 item 5.1, §3.3.3). It runs over the combined Job, so the Job Template's own
+§7.3.2, §3.3.3). It runs over the combined Job, so the Job Template's own
 Environments and the attached ones are handled alike.
 
 - **Resolution.** Each Environment with `hostRequirements` is resolved for the Steps whose
@@ -1030,8 +1033,8 @@ Environments and the attached ones are handled alike.
   one it does not request, a `required: false` entry that resolved to nothing, a `BY_DEFAULT`
   one a disabled entry declines, or an Environment whose own `enableIf` is `false` for the
   Step) contributes nothing. A disabled entry for an attached `ALWAYS` Environment does not remove
-  it: after the Template Schemas §3.2 item 5 error, it is still checked as entered. For an
-  `ALWAYS` Job Environment, job creation reports the §3.2 item 5 error without the conflicts
+  it: after the Template Schemas §3.2 item 3.2 error, it is still checked as entered. For an
+  `ALWAYS` Job Environment, job creation reports the §3.2 item 3.2 error without the conflicts
   that combining its host requirements would add.
   `combine` collects every source's requirements on a capability (names compared ignoring
   case) and combines them at once, so what a host must satisfy does not depend on the order

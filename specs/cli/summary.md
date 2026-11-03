@@ -141,7 +141,7 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
    disabled, and an `enableIf` that is `false` for a Step makes job creation, and so
    `summary`, fail with an error naming the Step and the Environment (Template Schemas §3.2.2
    item 6). A `BY_DEFAULT` Environment the Step declines with a disabled `environment:`
-   entry (§3.2 item 5) is not listed either: its own `enableIf` is not evaluated for the
+   entry (§3.2 item 3.2) is not listed either: its own `enableIf` is not evaluated for the
    Step; and
    `Host requirements:` lists `job::Step::host_requirements`, which job creation has combined
    from the Step's own and its entered Environments' (Template Schemas §3.3.3), one line per

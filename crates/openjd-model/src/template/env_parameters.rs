@@ -122,7 +122,7 @@ impl EnvironmentParameterValueMap {
 /// [`JobParameterDefinition`] (whose `default` is then always `None`),
 /// and keeping `default` as an [`EnvironmentParameterValue`].
 ///
-/// Every field of that shape is permitted (§4.5 items 1–3): any type the
+/// Every field of that shape is permitted (§4.5): any type the
 /// document allows, `RANGE_EXPR` included, and `userInterface`,
 /// `objectType`, and `dataFlow`, which are informational: they describe
 /// the parameter to tools and change nothing about job creation or how the

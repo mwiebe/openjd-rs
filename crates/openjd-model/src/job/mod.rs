@@ -166,7 +166,7 @@ pub struct Step {
     /// Template Schemas §4 item 4, §3.2.2), in the order of
     /// [`Job::job_environments`]: every one with `activation: ALWAYS`, every
     /// one with `activation: BY_DEFAULT` that the Step does not decline with a
-    /// disabled `environment:` entry (§3.2 item 5), and every one with
+    /// disabled `environment:` entry (§3.2 item 3.2), and every one with
     /// `activation: ON_REQUEST` that an enabled entry of the Step requests,
     /// less any whose own
     /// `enableIf` (§4 item 6) is `false` for the Step (for an `ALWAYS` one,
@@ -199,7 +199,7 @@ impl Step {
     }
 
     /// Whether this Step's Sessions enter the same Job Environments as
-    /// `other`'s (Template Schemas §3.2.2, fourth paragraph): one Session
+    /// `other`'s (How Jobs Are Run, Environment Parameters): one Session
     /// may run Tasks of both Steps without exiting and entering Job
     /// Environments between them only when this holds and
     /// [`environment_values_equal`](Self::environment_values_equal) does.

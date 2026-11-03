@@ -131,7 +131,7 @@ pub fn create_job(
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
 /// across all steps is checked after parameter spaces are resolved.
 ///
-/// With `ENV_PARAMS` the stages run in the §7.4 order:
+/// With `ENV_PARAMS` the stages run in the §7.4.1 order:
 ///
 /// 1. `Job.Name` is resolved and, with `EXPR`, `Job.EnvNames` is bound to
 ///    the names of the attached Environments, in attachment order,
@@ -140,7 +140,7 @@ pub fn create_job(
 /// 2. each Step's `let` bindings are evaluated, then each `environment:`
 ///    entry's `enableIf`; a disabled entry supplies nothing, and what it
 ///    means depends on the `activation` of the Environment it names (§3.2
-///    item 5); and each Step Environment's own `enableIf` (§4 item 6), in
+///    item 3.2); and each Step Environment's own `enableIf` (§4 item 6), in
 ///    the same scope; a disabled one is left out of
 ///    [`job::Step::step_environments`];
 /// 3. the Step's Sessions would enter every Job Environment with
@@ -173,7 +173,8 @@ pub fn create_job(
 ///    [`CreatedJob::discarded_host_requirements`].
 ///
 /// The combined Job lists the attached Environments before the Job
-/// Template's own (a Session enters them first), and records on each Step
+/// Template's own, in the Job's Environment order (a Session enters them
+/// first; Template Schemas §1.1 item 7), and records on each Step
 /// the Job Environments its Sessions enter ([`job::Step::environments`]);
 /// [`CreatedJob::disabled_environments`] lists, per Step, the ones an
 /// `enableIf` disabled.
@@ -207,7 +208,7 @@ pub fn create_job_with_environment_templates(
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
 ) -> Result<CreatedJob, ModelError> {
-    // §7.4: the attached Environments are known first, so `Job.EnvNames`
+    // §7.4.1: the attached Environments are known first, so `Job.EnvNames`
     // is concrete before any TEMPLATE-scope expression.
     let env_names: Vec<String> = attached
         .iter()
@@ -296,7 +297,7 @@ fn create_job_from_template(
 
     let mut symtab = build_symbol_table(job_parameter_values)?;
     // ENV_PARAMS `default`s resolve in the Job Parameters alone, without
-    // `Job.Name` or `Job.EnvNames` (§4.5 item 4), so keep the table before
+    // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2), so keep the table before
     // they are added.
     let default_symtab = symtab.clone();
 
@@ -361,7 +362,7 @@ fn create_job_from_template(
 
     if has_expr {
         symtab.set("Job.Name", openjd_expr::ExprValue::String(job_name.clone()))?;
-        // §7.3.1, §7.4: concrete before any TEMPLATE-scope expression,
+        // §7.3.1, §7.4.1: concrete before any TEMPLATE-scope expression,
         // including a Step's `let` bindings. Template validation rejects a
         // reference without ENV_PARAMS, and `resolved_symtab`s keep only
         // the symbols a field references, so binding it with EXPR alone
@@ -426,7 +427,7 @@ fn create_job_from_template(
     // ENV_PARAMS (§3.2.2): each Step's effective values for the Job
     // Environments that declare parameters. Literal `default`s are checked
     // here, before any Step, since one that fails is an error even when no
-    // Step takes it (§4.5 point 1).
+    // Step takes it (§4.5 item 2).
     let env_policy = env_params::ResolvePolicy::new(ctx);
     let job_envs = env_params::JobEnvironments::new(
         job_template,

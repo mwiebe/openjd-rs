@@ -155,8 +155,8 @@ pub enum StepKey {
 ```
 
 An entry is `dependsOn: <StepName>`, or with ENV_PARAMS its synonym `step: <StepName>` (§3.2
-item 1), or with ENV_PARAMS `environment: <EnvironmentName>`
-with optional `required`, `enableIf` (§3.2 item 5), and `parameters`. Every key is optional in
+item 2), or with ENV_PARAMS `environment: <EnvironmentName>`
+with optional `required`, `enableIf` (§3.2 item 3.2), and `parameters`. Every key is optional in
 the struct, so an entry
 with more than one form or none decodes and pass 6 reports it at the entry's path (§3.2
 constraint 1). `target()` returns the form, or `None` for such an entry (`is_well_formed()`
@@ -186,7 +186,7 @@ The differences from that branch, for a later merge to reconcile:
 
 Job creation converts only the Step entries (`dependsOn` and `step`) to
 `job::StepDependency`, whose one key is `dependsOn`, so a `step: X` entry is `dependsOn: X` in
-the Job; an `environment:` entry does not delay scheduling (§3.2 item 2), so
+the Job; an `environment:` entry does not delay scheduling (§3.2 item 3), so
 it is not part of the Step dependency graph, and a list left empty by the filter becomes
 `None`.
 
@@ -212,7 +212,11 @@ Environment's own `enableIf` (below), both of type `bool`.
 Decoding is by hand and accepts every scalar, so that template validation, which knows the
 target type, reports a scalar that does not fit (`enableIf: 1`) at the field's path with the
 §7.5 rule, rather than serde reporting it without one. A string is always `Expression`, never
-read as a scalar: `"true"` is the expression `true`. A list or a map is a decode error that
+read as a scalar: `"true"` is the expression `true`. The YAML decoder follows the YAML 1.2 core
+schema: `true` and `false`, also spelled `True`, `TRUE`, `False`, and `FALSE`, are boolean
+scalars, and an unquoted `yes`, `no`, `on`, or `off` is a string, so it is an expression that
+names an undefined variable. Template Schemas §7.5 asks templates not to use those four
+spellings, since a YAML 1.1 parser reads them as booleans. A list or a map is a decode error that
 names the field ("enableIf must be a boolean, integer, float, or string (an expression field,
 Template Schemas §7.5)"), as is an integer above `i64::MAX` that fits `u64` ("enableIf: the
 integer N is out of range for an expression field …"). A larger integer, or one below
@@ -231,7 +235,7 @@ out of range for an expression field …". A plain `Option<ExprField>` reads a p
 The crate-private checker in `template/expr_field.rs` applies §7.5 for a target type `G`,
 given the field's scope (a symbol table) and an `ExprFieldEval` (profile, library, budgets;
 paths are always POSIX, since an expression field is evaluated in template scope, not a host
-context: Template Schemas §3.2 item 5 and §4 item 6, spec `5535230`):
+context: Template Schemas §7.5, the paragraph after its rules; spec `5535230`):
 
 - `validate` (template validation, rules 1, 2, 4): a scalar must fit `G` (only `int` widens to
   `float`), a `null` is an error, and an expression must parse under the document's profile,
@@ -321,9 +325,9 @@ pub enum EnvironmentActivation {  // serde: SCREAMING_SNAKE_CASE
 
 `activation()` applies the default (§4 item 4: absent means `BY_DEFAULT`). `BY_DEFAULT` and
 `ALWAYS` are both entered by every Step's Sessions; under `BY_DEFAULT` a Step may decline it
-with a disabled `environment:` entry (§3.2 item 5) and the Environment's own
+with a disabled `environment:` entry (§3.2 item 3.2) and the Environment's own
 `enableIf` may leave a Step out, and under `ALWAYS` neither can: a Step's disabled entry for
-it, or its `enableIf` being `false` for a Step, is an error (§4 item 6, §3.2.2 item 6; see
+it, or its `enableIf` being `false` for a Step, is an error (§4 item 4, §3.2.2 item 6; see
 [validation.md](validation.md#environment-enableif-env_params) and
 [job-creation.md](job-creation.md#environment-enableif-env_params)). An unrecognized value,
 including one in another case (`always`, `by_default`) or a value from before the rename
@@ -346,7 +350,7 @@ requires EXPR; see [validation.md](validation.md#entry-points)), and pass 8 chec
 scope (see [validation.md](validation.md#environment-enableif-env_params)). `literal_enabled()` is
 `Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
 scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
-what template validation may count as entered or not (§4 item 6 tail; §7.5 item 1). Job
+what template validation may count as entered or not (§4, after item 9; §7.5 item 1). Job
 creation resolves it once per Step whose Sessions would otherwise enter the Environment (see
 [job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,
 since a disabled Environment is simply left out of the Step's sets.

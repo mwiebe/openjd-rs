@@ -19,13 +19,13 @@
 //! Environment's own `enableIf` (§4 item 6) with the values that are known
 //! ([`DeclaringEnvironment::decide`]), then report the value checks and
 //! constraint 7 only where it does not disable the Environment
-//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4), so the two stages
+//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1), so the two stages
 //! convert and check values the same way:
 //!
 //! - a literal is decoded as the Job Parameter `default` of its type is
 //!   (the template-validation decoder, so the messages match);
 //! - a format string resolves, in the submission path format, in the
-//!   scope its position allows (§3.2, §4.5 item 4). A single `{{ }}`
+//!   scope its position allows (§3.2, §4.5 item 1). A single `{{ }}`
 //!   expression evaluates with the parameter's type as its target type;
 //!   any other format string resolves to a string, which converts as
 //!   a submitted Job Parameter value of that type would, with no directory
@@ -36,18 +36,18 @@
 //!   [`ValidationContext::allow_uri_path_values`], a URI (§4.5; prototype
 //!   plan A12, whose caller-policy half still holds, and A16);
 //! - the definition's constraints are checked against the value
-//!   (constraint 6, §4.5 item 5);
+//!   (constraint 6, §4.5 item 2);
 //! - a RANGE_EXPR value is stored as its `range_expr`, whose transport form
 //!   is its canonical form, so two values are equal when they denote the
 //!   same integers (§3.2.2): `1-3` and `1,2,3` are equal. Its length
 //!   constraints check both the value as written and its canonical form
-//!   (§4.5 item 5, §2.10).
+//!   (§4.5 item 4, §2.10).
 //!
 //! A literal `default` is checked when the Environment is set up, even if
-//! no Step takes it (§4.5 point 1). Any other `default` is resolved the
+//! no Step takes it (§4.5 item 2). Any other `default` is resolved the
 //! first time a Step takes it, and a failure is reported once, naming the
 //! first Step that takes it for which the Environment is not disabled
-//! (§4.5 point 2, §3.2.2; plan A19): its value cannot depend on the Step,
+//! (§4.5 item 2, §3.2.2; plan A19): its value cannot depend on the Step,
 //! since its scope is the document's Job Parameters.
 //!
 //! [`create_job`]: super::create_job
@@ -137,16 +137,16 @@ pub(crate) struct DeclaringEnvironment<'a> {
     decisions: RefCell<EnableIfDecisions>,
     /// For an Environment with `activation: ALWAYS`, the Steps its
     /// `enableIf` is `false` for, in the order they were decided: each is an
-    /// error (§4 item 6, §3.2.2 item 6), reported once for all of them by
+    /// error (§4 item 4, §3.2.2 item 6), reported once for all of them by
     /// [`report_enable_if_errors`](Self::report_enable_if_errors).
     always_disabled: RefCell<Vec<String>>,
 }
 
-/// A resolved `default` (§4.5 item 4): the value converted to the
+/// A resolved `default` (§4.5 item 1): the value converted to the
 /// parameter's type, if it converts; whether it met every check; and the
 /// errors of the checks it failed, reported once, by the first Step for
 /// which the Environment is not disabled that takes it (or, for a literal,
-/// when the Environment is set up, §4.5 point 1).
+/// when the Environment is set up, §4.5 item 2).
 struct DefaultOutcome {
     value: Option<Effective>,
     ok: bool,
@@ -261,7 +261,7 @@ impl<'a> DeclaringEnvironment<'a> {
         !self.defs.is_empty()
     }
 
-    /// §4.5 point 1: check every literal `default` now, so a literal that
+    /// §4.5 item 2: check every literal `default` now, so a literal that
     /// fails a check is an error even when every Step supplies the
     /// parameter, or the Environment is disabled for every Step that takes
     /// it: the check is of the definition, not of a Step's effective value.
@@ -319,7 +319,7 @@ impl<'a> DeclaringEnvironment<'a> {
     ///
     /// Reports into `errors` at once the checks that apply whatever the
     /// `enableIf` decides: every key the Environment does not declare
-    /// (constraint 5). The value checks (constraint 6, §4.5 PATH paragraph) and
+    /// (constraint 5). The value checks (constraint 6, §4.5 item 3) and
     /// constraint 7 are kept in the result, for
     /// [`commit`](Self::commit) to report when the Environment is not
     /// disabled for the Step.
@@ -428,9 +428,9 @@ impl<'a> DeclaringEnvironment<'a> {
     /// Decide this Environment's own `enableIf` (§4 item 6) for the Step
     /// named `step_name`, whose effective values for it are `pending`
     /// (§3.2.2): absent is [`EnableIf::Enabled`], a boolean scalar is used
-    /// as written, and an expression is evaluated in its scope (§4 item 6
-    /// constraint 1): `base`, which holds the document's Job Parameters,
-    /// `Job.Name`, and `Job.EnvNames`, plus this Environment's
+    /// as written, and an expression is evaluated in its scope (§7.3.2):
+    /// `base`, which holds the document's Job Parameters, `Job.Name`, and
+    /// `Job.EnvNames`, plus this Environment's
     /// `Env.RawParam.*` of any type (a path as its unmapped string) and
     /// `Env.Param.*` of types other than PATH and LIST[PATH], each bound to
     /// its known value or, when the value is missing, fails to resolve, or
@@ -443,7 +443,7 @@ impl<'a> DeclaringEnvironment<'a> {
     /// reports once, naming them all.
     ///
     /// An Environment with `activation: ALWAYS` cannot be disabled (§4 item
-    /// 6, §3.2.2 item 6): a `false` result records the Step for that error,
+    /// 4, §3.2.2 item 6): a `false` result records the Step for that error,
     /// which `report_enable_if_errors` reports, and returns
     /// [`EnableIf::Enabled`], so the Step is checked as entering it and its
     /// other mistakes for it are reported in the same run. An unresolved
@@ -566,7 +566,7 @@ impl<'a> DeclaringEnvironment<'a> {
     /// at `<environment> -> enableIf`, once per set of known values, naming
     /// the Steps it was resolved for; then, for an Environment with
     /// `activation: ALWAYS`, one error naming every Step its `enableIf` is
-    /// `false` for (§4 item 6, §3.2.2 item 6).
+    /// `false` for (§4 item 4, §3.2.2 item 6).
     pub(crate) fn report_enable_if_errors(&self, errors: &mut ValidationErrors) {
         for (result, steps) in &self.decisions.borrow().results {
             let Err(msg) = result else {
@@ -596,7 +596,7 @@ impl<'a> DeclaringEnvironment<'a> {
                 &path_field(&self.env_path, "enableIf"),
                 format!(
                     "Environment '{}' has activation ALWAYS, so it cannot be disabled, but its \
-                     enableIf is false for {noun} {} (Template Schemas §4 item 6).",
+                     enableIf is false for {noun} {} (Template Schemas §4 item 4).",
                     self.name,
                     super::host_requirements::name_list(
                         &names.iter().map(String::as_str).collect::<Vec<_>>()
@@ -749,7 +749,7 @@ fn resolve_value(
     let is_format_string = value.as_format_string().is_some();
     let is_range_expr = pt == JobParameterType::RangeExpr;
     // A RANGE_EXPR format string's value as written, which its length
-    // constraints check besides its canonical form (§4.5 item 5): the
+    // constraints check besides its canonical form (§4.5 item 4): the
     // resolved string, or a single `{{ }}` expression's string result.
     // `None` for a single expression whose result is a `range_expr`, which
     // has only its canonical form, and for every other type. A literal is
@@ -800,7 +800,7 @@ fn resolve_value(
                         // `range_expr`, so the string the expression wrote is
                         // read by evaluating it again with no target type.
                         // Only a string result has a spelling to check
-                        // (§4.5 item 5); a `range_expr` result has only its
+                        // (§4.5 item 4); a `range_expr` result has only its
                         // canonical form.
                         if is_range_expr {
                             if let Ok(ExprValue::String(s)) = fs.resolve_with(symtab, &opts) {
@@ -838,7 +838,7 @@ fn resolve_value(
     }
     // The constraints see the value that is stored (a literal's were
     // checked above by the template-validation check, as written), so every
-    // effective value satisfies its definition (§4.5 item 5). A RANGE_EXPR
+    // effective value satisfies its definition (§4.5 item 2). A RANGE_EXPR
     // with a written string is checked as that string, which for an
     // Environment parameter checks both it and its canonical form, hence
     // `AsWrittenAndCanonical` below.
@@ -875,7 +875,7 @@ pub(super) fn paths_to_strings(v: ExprValue) -> ExprValue {
     }
 }
 
-/// §4.5 PATH paragraph: each PATH value, and each LIST[PATH] element, is
+/// §4.5 item 3: each PATH value, and each LIST[PATH] element, is
 /// a non-empty path absolute in the submission path format or, with the
 /// caller's permission, a URI.
 /// Reports every bad element. Returns `false` when it reported an error.
@@ -980,11 +980,11 @@ pub(crate) struct JobEnvironments<'a> {
     /// name).
     by_name: HashMap<&'a str, usize>,
     /// The table `default`s resolve in: the merged Job Parameters, without
-    /// `Job.Name` (§4.5 item 4; plan A21).
+    /// `Job.Name` (§4.5 item 1, §7.3.2; plan A21).
     pub(crate) default_symtab: SymbolTable,
-    /// The table each Job Environment's own `enableIf` (§4 item 6
-    /// constraint 1) resolves in, before its `Env.*` symbols are added:
-    /// the Job Parameters, `Job.Name`, and `Job.EnvNames`.
+    /// The table each Job Environment's own `enableIf` (§7.3.2) resolves in,
+    /// before its `Env.*` symbols are added: the Job Parameters, `Job.Name`,
+    /// and `Job.EnvNames`.
     pub(crate) enable_if_base: SymbolTable,
 }
 
@@ -1106,7 +1106,7 @@ pub(crate) struct StepSelection {
     /// The Step's entries that name no Job Environment and whose `enableIf`
     /// disabled them, in written order. The submission stage resolves each
     /// against the attached Environments (§3.2.1) to learn what it means
-    /// (§3.2 item 5): it declines a `BY_DEFAULT` one, requests no
+    /// (§3.2 item 3.2): it declines a `BY_DEFAULT` one, requests no
     /// `ON_REQUEST` one, and is an error for an `ALWAYS` one; one that
     /// names no attachment has no effect.
     pub(crate) disabled: Vec<DisabledEntry>,
@@ -1129,7 +1129,7 @@ pub(crate) struct StepEntries {
     pub(crate) step_environments_enabled: Vec<bool>,
 }
 
-/// Whether `dep` is enabled (§3.2 item 5): `true` when its `enableIf` is
+/// Whether `dep` is enabled (§3.2 item 3.2): `true` when its `enableIf` is
 /// absent, and otherwise the value of the expression field (§7.5) of type
 /// `bool`, resolved in `symtab`. `None` after reporting, at `<entry> ->
 /// enableIf`, a value that fails to evaluate or does not resolve to `true`
@@ -1183,7 +1183,7 @@ fn resolve_enable_if(
     }
 }
 
-/// Decide a Step's Environments at job creation (§7.4): evaluate each
+/// Decide a Step's Environments at job creation (§7.4.1): evaluate each
 /// `environment:` entry's `enableIf`, compute the Step's effective values
 /// for every Job Environment its Sessions would enter that declares
 /// parameters, and keep each enabled entry that names no Job Environment
@@ -1197,7 +1197,7 @@ fn resolve_enable_if(
 ///
 /// A disabled entry requests nothing and supplies nothing, and what it
 /// means depends on the `activation` of the Environment it names (§3.2
-/// item 5): an `ON_REQUEST` Job Environment it names is not entered; a
+/// item 3.2): an `ON_REQUEST` Job Environment it names is not entered; a
 /// `BY_DEFAULT` one is declined, so the Step's Sessions do not enter it,
 /// its own `enableIf` is not evaluated for the Step, and neither the value
 /// checks nor constraint 7 apply; and an `ALWAYS` one is an error naming
@@ -1211,7 +1211,7 @@ fn resolve_enable_if(
 /// `step_symtab` is the Step's full template scope (`Param.*` other than
 /// PATH, `RawParam.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the
 /// Step's `let` bindings), the scope of an entry's
-/// format strings and `enableIf` (§3.2 items 4–5). An `enableIf` (an
+/// format strings and `enableIf` (§7.3.2). An `enableIf` (an
 /// entry's or a Step Environment's) resolves in it as it is, with POSIX
 /// paths: it is a TEMPLATE-scope expression field, not host context.
 /// `let_base` is that scope before the `let` bindings, from which
@@ -1244,7 +1244,7 @@ pub(crate) fn resolve_step_entries(
     let template_symtab = step_symtab;
 
     // §4 item 6: each Step Environment's own `enableIf`, in the Step's
-    // template scope, the scope of an entry's `enableIf` (constraint 2).
+    // template scope, the scope of an entry's `enableIf` (§7.3.2).
     // It reads no effective values, so it is decided here, with the
     // entries (plan 3 Q7).
     let mut step_environments_enabled = Vec::new();
@@ -1264,10 +1264,10 @@ pub(crate) fn resolve_step_entries(
         step_environments_enabled.push(enabled != Some(false));
     }
 
-    // Decide every `environment:` entry first (§7.4: `enableIf` before the
+    // Decide every `environment:` entry first (§7.4.1: `enableIf` before the
     // entry's name is resolved), in the template scope, so that
     // `entry_scope` re-evaluates only the bindings that enabled entries'
-    // values read: a disabled entry supplies nothing (§3.2 item 5). `None`
+    // values read: a disabled entry supplies nothing (§3.2 item 3.2). `None`
     // for a dependency that is not a decided entry.
     let mut seen: HashSet<&str> = HashSet::new();
     // Names of entries their `enableIf` disabled, for the constraint 7
@@ -1297,7 +1297,7 @@ pub(crate) fn resolve_step_entries(
             match entry_enabled(dep, template_symtab, policy, &entry_path, errors) {
                 Some(true) => Some(true),
                 Some(false) => {
-                    // §3.2 item 5: no Step can leave out an `ALWAYS`
+                    // §3.2 item 3.2: no Step can leave out an `ALWAYS`
                     // Environment.
                     if let Some(de) = job_envs
                         .get(env_name)
@@ -1365,7 +1365,7 @@ pub(crate) fn resolve_step_entries(
             );
             continue;
         }
-        // An external Environment (§3.2 item 2): keep the values as
+        // An external Environment (§3.2 item 3): keep the values as
         // written with the symbols their format strings reference.
         let mut symtab = SymbolTable::new();
         for value in params.values() {
@@ -1382,7 +1382,7 @@ pub(crate) fn resolve_step_entries(
         });
     }
 
-    // §4 item 4, §3.2 item 5: the Step's Sessions enter every `ALWAYS` Job
+    // §4 item 4, §3.2 item 3.2: the Step's Sessions enter every `ALWAYS` Job
     // Environment, every `BY_DEFAULT` one a disabled entry does not
     // decline, and every `ON_REQUEST` one it requests.
     let enters = |name: &str, scope: template::EnvironmentActivation| match scope {
@@ -1393,7 +1393,7 @@ pub(crate) fn resolve_step_entries(
     // §3.2.2: the Step's effective values for each Job Environment its
     // Sessions would enter, then the Environment's own `enableIf` (§4 item
     // 6) with the values that are known, then, for an Environment it does
-    // not disable, the value checks and constraint 7 (§7.4).
+    // not disable, the value checks and constraint 7 (§7.4.1).
     let mut values = Vec::new();
     let mut missing = Vec::new();
     // By index in `jobEnvironments`: the ones disabled, in order, and
@@ -1528,8 +1528,8 @@ fn entry_scope<'s>(
         .to_expr_profile(openjd_expr::HostContext::None);
     // The names the enabled entries' values read (`decisions`, index for
     // index with the Step's dependencies). A disabled entry has no effect
-    // (§3.2 item 2), and an `enableIf` resolves in template scope (§3.2
-    // item 5), so neither adds names here.
+    // (§3.2 item 3.2), and an `enableIf` resolves in template scope (§7.5),
+    // so neither adds names here.
     let mut needed: HashSet<String> = st
         .dependencies
         .iter()

@@ -292,7 +292,7 @@ async fn on_exit_reuses_the_values_stored_at_entry() {
 
 /// `maxLength: 13` fits the unmapped `/mnt/src/data` but not the mapped
 /// `/mnt/destination/data`; path mapping on the Worker Host does not
-/// re-check constraints (§4.5 PATH paragraph).
+/// re-check constraints (§4.5 item 3).
 const PATHS: &str = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -336,7 +336,7 @@ async fn path_values_are_unchanged_without_path_mapping_rules() {
 
 /// `Env.Param` of a PATH is a `path` and `Env.RawParam` a
 /// `string`, and for a LIST[PATH] a `list[path]` and a `list[string]`
-/// (§4.5 last paragraph). `upper()` exists only for a string, and `/` only
+/// (§7.3.1). `upper()` exists only for a string, and `/` only
 /// for a path, so each type is pinned.
 #[tokio::test]
 async fn env_param_of_a_path_is_a_path_and_env_raw_param_a_string() {
@@ -424,7 +424,7 @@ async fn an_attached_environment_takes_its_defaults_for_a_step_that_names_no_ent
 
 /// `required: false` with no such Environment attached: the entry is
 /// ignored, the combined Job has no Environment to enter, and the Step
-/// runs exactly as without the entry (§3.2 item 3).
+/// runs exactly as without the entry (§3.2 item 3.1).
 #[tokio::test]
 async fn an_absent_optional_environment_is_silently_satisfied() {
     let sub = submit_ok(USES_CONDA, &[]);

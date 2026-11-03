@@ -48,9 +48,9 @@ pub struct Environment {
     /// of type `bool` (§7.5) deciding whether a Step's Sessions enter this
     /// Environment. Permitted on every position: a `jobEnvironments` entry,
     /// a `stepEnvironments` entry, and an Environment Template's
-    /// `environment`. Template validation checks it in the scope §4 item 6
-    /// constraints 1–3 give: for a Job Environment or an Environment
-    /// Template, exactly its `hostRequirements` scope; for a Step
+    /// `environment`. Template validation checks it in the scope §7.3.2 gives:
+    /// for a Job Environment or an Environment Template, exactly its
+    /// `hostRequirements` scope; for a Step
     /// Environment, the Step's template scope. Job creation resolves it once
     /// for each Step whose Sessions would otherwise enter the Environment,
     /// with that Step's effective values, and a Step for which it is `false`
@@ -69,8 +69,8 @@ impl Environment {
         self.activation.unwrap_or_default()
     }
 
-    /// Whether `enableIf` is known before the Job is created (§4 item 6
-    /// tail, §7.5 item 1): `Some(true)` when it is absent or the boolean
+    /// Whether `enableIf` is known before the Job is created (§4, after item
+    /// 9, §7.5 item 1): `Some(true)` when it is absent or the boolean
     /// scalar `true`, `Some(false)` for the scalar `false`, and `None`
     /// otherwise, an expression included (even a constant one such as
     /// `"true"`, which is evaluated when the Job is created).
@@ -90,14 +90,14 @@ impl Environment {
         self.activation() == EnvironmentActivation::Always || self.literal_enabled() == Some(true)
     }
 
-    /// Whether a Step's Sessions are known before the Job is created to
-    /// enter the Environment (§4 item 6, the paragraph after the
-    /// constraints), where `entry` is what the Step's `environment:` entry
+    /// Whether a Step's Sessions are known before the Job is created to enter
+    /// the Environment (§4, after item 9), where `entry` is what the Step's
+    /// `environment:` entry
     /// for it is known to be: always for `ALWAYS`, which cannot be disabled
     /// or declined (§3.2.2 item 6); for `BY_DEFAULT` when its `enableIf`
     /// is absent or `true` and the Step has no entry for it or an enabled
     /// one (a disabled entry declines it, and an expression may, §3.2 item
-    /// 5); and for `ON_REQUEST` when its `enableIf` is absent or `true` and
+    /// 3.2); and for `ON_REQUEST` when its `enableIf` is absent or `true` and
     /// an enabled entry requests it.
     pub(crate) fn certainly_entered(&self, entry: KnownEntry) -> bool {
         match self.activation() {
@@ -114,7 +114,7 @@ impl Environment {
 }
 
 /// What a Step's `environment:` entry for one Environment is known to be
-/// before the Job is created (§3.2 item 5, checked-at paragraph; §7.5 rule
+/// before the Job is created (§3.2 item 3.2, checked-at paragraph; §7.5 rule
 /// 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KnownEntry {
@@ -165,8 +165,8 @@ pub enum EnvironmentActivation {
     /// `ALWAYS`: every Session of the Job enters the Environment, in its
     /// position in the Job's Environment order, and it cannot be disabled
     /// or declined: its `enableIf` being `false` for a Step is an error
-    /// (§4 item 6, §3.2.2 item 6), and so is a Step's disabled
-    /// `environment:` entry for it (§3.2 item 5). Each is reported naming
+    /// (§4 item 4, §3.2.2 item 6), and so is a Step's disabled
+    /// `environment:` entry for it (§3.2 item 3.2). Each is reported naming
     /// the Step and the Environment: at template validation when it is
     /// known then (a literal `false`, on the Environment, or on an entry
     /// naming a Job Environment), otherwise when the Job is created.
@@ -174,7 +174,7 @@ pub enum EnvironmentActivation {
     /// `BY_DEFAULT`: every Session of the Job enters the Environment, in its
     /// position in the Job's Environment order, except the Sessions of a
     /// Step that declines it with a disabled `environment:` entry (§3.2
-    /// item 5) and of a Step for which its `enableIf` is `false`. The
+    /// item 3.2) and of a Step for which its `enableIf` is `false`. The
     /// default, and the behavior of every Environment without the
     /// extension.
     #[default]

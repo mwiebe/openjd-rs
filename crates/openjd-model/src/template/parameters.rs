@@ -564,7 +564,7 @@ impl JobParameterDefinition {
     /// [`RangeExprLengthCheck::for_job_parameter`] of the document that
     /// declares the definition (§2.10), or
     /// [`RangeExprLengthCheck::AsWrittenAndCanonical`] for an Environment
-    /// parameter (§4.5 item 5). It changes nothing for the other types.
+    /// parameter (§4.5 item 4). It changes nothing for the other types.
     ///
     /// # Errors
     ///

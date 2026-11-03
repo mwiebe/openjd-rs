@@ -130,7 +130,7 @@ fn check_with_environments(
 /// exactly one attachment has the name and no Job Environment shadows it,
 /// §3.2.1), and each of its own Step Environments. A Step whose entry for a
 /// `BY_DEFAULT` Environment has `enableIf: false` declines it (Template
-/// Schemas §3.2 item 5), so the Environment's own `enableIf` is not
+/// Schemas §3.2 item 3.2), so the Environment's own `enableIf` is not
 /// evaluated for that Step and the Environment is not listed. An
 /// Environment or entry whose `enableIf` is an expression is decided when
 /// the Job is created, so it is not listed. An
@@ -168,7 +168,7 @@ fn disabled_environment_lines(
             .filter_map(|d| d.environment())
             .collect();
         // The names of the Step's entries that are not certainly enabled: a
-        // literal `false` declines a `BY_DEFAULT` Environment (§3.2 item 5),
+        // literal `false` declines a `BY_DEFAULT` Environment (§3.2 item 3.2),
         // and an expression may.
         let not_certain: HashSet<&str> = step
             .dependencies

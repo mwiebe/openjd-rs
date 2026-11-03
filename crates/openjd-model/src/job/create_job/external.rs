@@ -16,7 +16,7 @@
 //! attached Environment Templates by name, fixes the part of each Step's
 //! Environment set that the attachments contribute (§4 item 4
 //! `activation`; a disabled entry declines a `BY_DEFAULT` attachment and is
-//! an error for an `ALWAYS` one, §3.2 item 5), computes every Step's
+//! an error for an `ALWAYS` one, §3.2 item 3.2), computes every Step's
 //! effective values for each attached Environment it would enter, decides
 //! each attachment's own `enableIf` (§4 item 6) per Step with the values
 //! that are known, checks constraint 5 for every attachment and
@@ -120,7 +120,8 @@ impl std::fmt::Display for SubmissionWarning {
 pub struct CreatedJob {
     /// The combined Job: its `job_environments` are the attached
     /// Environments, in attachment order, followed by the Job Template's
-    /// own, which is the order a Session enters them. Each Step's
+    /// own, which is the Job's Environment order, the order a Session enters
+    /// them (Template Schemas §1.1 item 7). Each Step's
     /// `environment_parameters` and `environments` cover both.
     pub job: job::Job,
     /// The document of each entry of `job.job_environments`, index for
@@ -277,7 +278,7 @@ impl<'a> Attachments<'a> {
     /// then could an entry have named it; and an error when it has
     /// parameters without a `default`), an ambiguous name with such
     /// parameters, and every literal `default` that fails its checks
-    /// (§4.5 point 1).
+    /// (§4.5 item 2).
     fn new(
         attached: &'a [AttachedEnvironmentTemplate<'a>],
         job_env_names: &HashSet<&str>,
@@ -619,7 +620,7 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// made, since it supplies nothing (§3.2.1). One that matches an
 /// `ON_REQUEST` attachment has no effect; one that matches a `BY_DEFAULT`
 /// one declines it for the Step; and one that matches an `ALWAYS` one is an
-/// error naming the Step and the Environment (§3.2 item 5), after which the
+/// error naming the Step and the Environment (§3.2 item 3.2), after which the
 /// attachment is checked as entered.
 ///
 /// A Step's Sessions enter every attached Environment with `activation:
@@ -633,12 +634,12 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// `enableIf` (§4 item 6) is then decided for the Step with the values that
 /// are known (§3.2.2), and one it disables is left out of the Step's set
 /// and values; for one with `activation: ALWAYS`, a `false` result is an
-/// error naming the Step instead (§4 item 6, §3.2.2 item 6). Constraint 5 (keys) is checked for every attachment the
+/// error naming the Step instead (§4 item 4, §3.2.2 item 6). Constraint 5 (keys) is checked for every attachment the
 /// Step would enter; the value checks
 /// (constraint 6) and constraint 7 (every parameter without a `default`
 /// supplied) only for one its `enableIf` does not disable. A literal
 /// `default` of an attached Environment is checked even if no Step takes it
-/// (§4.5 point 1). The Job Template's own Job Environments were decided the
+/// (§4.5 item 2). The Job Template's own Job Environments were decided the
 /// same way by job creation (`selections`). Then the `WRAP_ACTIONS`
 /// single-layer rule is checked over each Step's
 /// final Environment set, attached Environments included (RFC 0008; plan
@@ -681,7 +682,7 @@ pub(crate) fn apply_environment_templates(
     let mut errors = ValidationErrors::default();
     let mut warnings = Vec::new();
     // `default`s resolve against the merged Job Parameters, without
-    // `Job.Name` or `Job.EnvNames` (§4.5 item 4; plan A21).
+    // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).
     let default_symtab = build_symbol_table(job_parameter_values)?;
     let job_lists_env_params = job
         .extensions
@@ -709,7 +710,7 @@ pub(crate) fn apply_environment_templates(
     // wrote.
     let mut unapplied: Vec<HashSet<usize>> = Vec::with_capacity(selections.len());
     // Per Step: the `BY_DEFAULT` attachments a disabled entry declines
-    // (§3.2 item 5).
+    // (§3.2 item 3.2).
     let mut declined: Vec<HashSet<usize>> = Vec::with_capacity(selections.len());
     for (i, selection) in selections.iter().enumerate() {
         let deps_path = path_field(
@@ -720,7 +721,7 @@ pub(crate) fn apply_environment_templates(
         let mut step_unapplied = HashSet::new();
         let mut step_declined = HashSet::new();
         // A disabled entry is resolved too, to learn the `activation` that
-        // decides what it means (§3.2.1, §3.2 item 5). It supplies nothing,
+        // decides what it means (§3.2.1, §3.2 item 3.2). It supplies nothing,
         // so constraints 5 and 6 are not checked for it, and one that
         // matches no attachment has no effect, whatever `required` says
         // (item 2 does not apply). An ambiguous name is an error as for an
@@ -779,10 +780,10 @@ pub(crate) fn apply_environment_templates(
     // §3.2.2: the Step's effective values for each attached Environment its
     // Sessions would enter, then the Environment's own `enableIf` (§4 item
     // 6) with the values that are known, then, for one it does not
-    // disable, the value checks and constraint 7 (§7.4).
+    // disable, the value checks and constraint 7 (§7.4.1).
     // The table each attachment's `enableIf` resolves in, before its
     // `Env.*` symbols: the Job Parameters, `Job.Name`, and `Job.EnvNames`
-    // (§4 item 6 constraint 1). Only an attachment that lists `ENV_PARAMS`,
+    // (§7.3.2). Only an attachment that lists `ENV_PARAMS`,
     // and so `EXPR`, has an `enableIf`, so one table serves every
     // attachment.
     let mut base = default_symtab.clone();
@@ -814,7 +815,7 @@ pub(crate) fn apply_environment_templates(
             let entry = resolved
                 .get(i)
                 .and_then(|r| r.iter().find(|(d, _, _)| *d == doc));
-            // §4 item 4, §3.2 item 5: every `ALWAYS` attachment, every
+            // §4 item 4, §3.2 item 3.2: every `ALWAYS` attachment, every
             // `BY_DEFAULT` one a disabled entry of the Step does not
             // decline, and each `ON_REQUEST` one an enabled entry of the
             // Step refers to. A declined one's `enableIf` is not evaluated
@@ -1024,7 +1025,7 @@ pub(crate) fn apply_environment_templates(
         &mut errors,
     );
     // ── §3.3.3: each Step's combined host requirements ──
-    // Last in §7.4: they are resolved with the Step's effective values, and
+    // Last in §7.4.1: they are resolved with the Step's effective values, and
     // only for the Environments the Step's Sessions enter. The Step's own
     // discarded requirements come first.
     let mut discarded_host_requirements: Vec<Vec<DiscardedHostRequirement>> = selections
@@ -1129,13 +1130,13 @@ fn wrap_layers_message(layers: &[String]) -> String {
 /// per Step and attachment, says what the Step's entry for each is known
 /// to be), then the Job Environments in the same way, then its Step
 /// Environments; each only when its own `enableIf` is absent or the
-/// scalar `true` (§4 item 6 tail), except an `ALWAYS` one, which cannot be
+/// scalar `true` (§4, after item 9), except an `ALWAYS` one, which cannot be
 /// disabled or declined (§3.2.2 item 6). An entry or Environment whose
 /// `enableIf` is an expression (even a constant one) is decided at job
 /// creation, which checks the rule again over the full set; one whose
 /// `enableIf` is the scalar `false` is not entered, and an entry whose
 /// `enableIf` is the scalar `false` declines a `BY_DEFAULT` one (§3.2 item
-/// 5). A Step none of whose layers is
+/// 3.2). A Step none of whose layers is
 /// attached is left to template validation, which checks the Job
 /// Template's own layers.
 fn check_attached_wrap_layers(
@@ -1218,8 +1219,8 @@ fn check_attached_wrap_layers(
 ///   an error when it has parameters without a `default` and its
 ///   `activation` is `ALWAYS`, or `BY_DEFAULT` with its own `enableIf`
 ///   absent, `true`, or certainly unresolved), an ambiguous
-///   name with such an attachment, and every literal `default` (§4.5 point
-///   1);
+///   name with such an attachment, and every literal `default` (§4.5 item
+///   2);
 /// - each `environment:` entry that names no Job Environment and whose
 ///   `enableIf` is absent or the boolean scalar `true`, resolved by name
 ///   (§3.2.1 items 1–3), with a `required: false` entry that resolves to
@@ -1228,7 +1229,7 @@ fn check_attached_wrap_layers(
 ///   no attachment (§3.2.1): it declines a `BY_DEFAULT` attachment, which
 ///   the checks below then leave out for its Step, requests no
 ///   `ON_REQUEST` one, and is an error for an `ALWAYS` one, naming the
-///   Step and the Environment (§3.2 item 5); an ambiguous name is an error
+///   Step and the Environment (§3.2 item 3.2); an ambiguous name is an error
 ///   either way. One whose `enableIf` is an expression (an expression
 ///   field, §7.5, so even a constant one such as `"true"`) is checked only
 ///   when the Job is created, and so is every attachment it may name, for
@@ -1342,7 +1343,7 @@ pub fn check_environment_templates(
     let mut disabled: Vec<Vec<&str>> = Vec::new();
     // Per Step: the `BY_DEFAULT` attachments such an entry declines, and
     // the attachments an entry whose `enableIf` is an expression may name
-    // (§3.2 item 5).
+    // (§3.2 item 3.2).
     let mut declined: Vec<HashSet<usize>> = Vec::new();
     let mut undetermined: Vec<HashSet<usize>> = Vec::new();
     for (i, step) in job_template.steps.iter().enumerate() {
@@ -1370,7 +1371,7 @@ pub fn check_environment_templates(
             match dep.literal_enabled() {
                 Some(true) => {}
                 // A disabled entry supplies nothing, but its name is
-                // resolved to learn what it means (§3.2 item 5, §3.2.1),
+                // resolved to learn what it means (§3.2 item 3.2, §3.2.1),
                 // as `apply_environment_templates` does: one that matches
                 // no attachment has no effect.
                 Some(false) => {
@@ -1474,7 +1475,7 @@ pub fn check_environment_templates(
             .collect();
         for (doc, (de, att_ctx)) in set.declaring.iter().zip(&set.contexts).enumerate() {
             let supplied = resolved[i].iter().find(|(d, _)| *d == doc).map(|(_, s)| s);
-            // §4 item 4, §3.2 item 5: the Step's Sessions enter every
+            // §4 item 4, §3.2 item 3.2: the Step's Sessions enter every
             // `ALWAYS` attachment, every `BY_DEFAULT` one a disabled entry
             // does not decline, and each `ON_REQUEST` one an enabled entry
             // refers to.
@@ -1605,7 +1606,7 @@ pub fn check_environment_templates(
         .zip(&ambiguous)
         .map(|((step, known), ambiguous)| {
             // An Environment whose own `enableIf` is not absent or `true`
-            // is not certainly entered (§4 item 6 tail), unless it is
+            // is not certainly entered (§4, after item 9), unless it is
             // `ALWAYS` (§3.2.2 item 6).
             (0..attached.len())
                 .map(|d| {

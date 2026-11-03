@@ -207,9 +207,9 @@ pub(super) fn instantiate_step(
     }
 
     // Only Step entries (`dependsOn` and its ENV_PARAMS synonym `step`,
-    // §3.2 item 1) become job dependencies, each written `dependsOn`. An
+    // §3.2 item 2) become job dependencies, each written `dependsOn`. An
     // `environment:` entry (ENV_PARAMS) does not delay scheduling (§3.2
-    // item 2), so it has no place in the Step dependency graph; a list left
+    // item 3), so it has no place in the Step dependency graph; a list left
     // empty by the filter becomes `None`, as for a Step with no
     // dependencies.
     let dependencies = st
@@ -227,7 +227,7 @@ pub(super) fn instantiate_step(
 
     // ENV_PARAMS: `enableIf`, the Job Environments the Step's Sessions
     // enter and its effective values for them, and the entries for
-    // external Environments frozen for submission (§3.2.2, §7.4).
+    // external Environments frozen for submission (§3.2.2, §7.4.1).
     let entries = super::env_params::resolve_step_entries(
         st,
         step_index,

@@ -135,7 +135,7 @@ submission path format, stored as resolved (plan A22). A Session binds them as `
 item 4 `activation`, §3.2.2), in `Job::job_environments` order, each as the `(document,
 environment)` key `EnvironmentParameterValues` uses: every one with `activation: ALWAYS`,
 every one with `BY_DEFAULT` that no disabled `environment:` entry of the Step declines (§3.2
-item 5), and every one with `activation: ON_REQUEST` that an enabled `environment:` entry
+item 3.2), and every one with `activation: ON_REQUEST` that an enabled `environment:` entry
 of the Step requests, less any whose own `enableIf` (§4 item 6) is `false` for the Step (for
 an `ALWAYS` one either is a job-creation error, so a created Job never leaves one out). The Step's own
 `step_environments`, entered after these, are in its Environment set too but are not listed;
@@ -144,7 +144,7 @@ none remain), and a disabled Environment has no `environment_parameters` entry. 
 not copied to `job::Environment` either (plan 3 Q11). `None` means every Job Environment,
 which is what every Step of a Job that uses no `ON_REQUEST` Environment, no Environment
 `enableIf`, and no disabled `environment:` entry (one declines a `BY_DEFAULT` Environment,
-Template Schemas §3.2 item 5) gets, so such a Job serializes as before; a created Job never holds
+Template Schemas §3.2 item 3.2) gets, so such a Job serializes as before; a created Job never holds
 `Some` of the full list, so the field compares directly. `Step::enters_environment(document,
 name)` answers for one Environment, and `Step::same_environments(&other)` compares the field
 (prototype plan P3). A key rather than an index stays meaningful if a consumer filters the
@@ -159,8 +159,8 @@ participate in the derived `PartialEq` and `Hash` of `Step`.
 
 **Equality.** A Session may run Tasks of two Steps without exiting and re-entering Job
 Environments between them only when they enter the same Job Environments
-(`Step::same_environments`) and their effective values are equal (§3.2.2, fourth
-paragraph). (Each Step's own `step_environments` are entered and exited around its
+(`Step::same_environments`) and their effective values are equal (How Jobs Are Run, Environment
+Parameters). (Each Step's own `step_environments` are entered and exited around its
 Tasks, as without the extension.) `Step::environment_values_equal(&other)` implements §3.2.2
 equality of the values: both Steps have values
 for the same `(document, environment)` keys, and for each, the same parameter names with the

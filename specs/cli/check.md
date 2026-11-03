@@ -97,7 +97,7 @@ with their path), then the Job Template's `jobEnvironments`, then the Step's own
 which it has no entry or one whose `enableIf` is absent or `true`, an `ON_REQUEST` one requested
 by such an entry (an attached one only when exactly one attachment has the name and no Job
 Environment shadows it), and each of its own Step Environments. A Step whose entry for a
-`BY_DEFAULT` Environment has `enableIf: false` declines it (Template Schemas §3.2 item 5): the
+`BY_DEFAULT` Environment has `enableIf: false` declines it (Template Schemas §3.2 item 3.2): the
 Environment's own `enableIf` is not evaluated for that Step, so it is not listed for it, as
 `openjd summary` does not list it under "Disabled environments". An Environment with `activation: ALWAYS` cannot be disabled:
 template validation rejects one with `enableIf: false` before this list is made (Template
@@ -154,7 +154,7 @@ stage that needs no Job Parameter values:
   `false` is entered by no Session; for one whose `enableIf` is an expression `openjd run`
   decides. With `activation: ON_REQUEST` no Session enters it, so it is not an
   error;
-- every attached literal `default` is checked (§4.5 point 1);
+- every attached literal `default` is checked (§4.5 item 2);
 - the RFC 0008 single-layer rule, for each Step whose Sessions enter an attached Environment
   that defines wrap hooks: the wrapping Environments its Sessions certainly enter (attached
   ones with `activation: ALWAYS`, with `BY_DEFAULT` when the Step has no entry for it or an
@@ -175,7 +175,12 @@ stage that needs no Job Parameter values:
 A Step's entry with `enableIf: false` naming an attached Environment declines it when its
 `activation` is `BY_DEFAULT`, so the checks above leave it out for that Step, and is an
 error naming the Step and the Environment when it is `ALWAYS` (Template Schemas §3.2 item
-5). When an `ALWAYS` Environment's missing parameters are reported and the Step's entry for
+3.2). An entry whose `enableIf` is an expression is not reported here, even when it names an
+attached `ALWAYS` Environment and the expression is constant, such as `"false"`: an expression
+field's value is unknown until the Job is created (§7.5 rule 5), so §4 item 4 has the error
+reported then. `check` accepts such a template, and `openjd run` rejects it when the
+expression is `false`. When an `ALWAYS`
+Environment's missing parameters are reported and the Step's entry for
 it was disabled by `enableIf: false`, the message says so. A note marks an Environment whose own
 `enableIf` is unresolved for the Step (it depends on a value that is missing or does not
 convert): `check` adds it for one whose `enableIf` is certainly unresolved, and `openjd run`

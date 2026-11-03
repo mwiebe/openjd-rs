@@ -222,7 +222,7 @@ pub fn convert_environment_with_symtab(
 ) -> job::Environment;
 
 // Job creation with the Environment Templates attached to the submission
-// (ENV_PARAMS, Template Schemas §3.2.1–§3.2.2, §7.4). `create_job` is this
+// (ENV_PARAMS, Template Schemas §3.2.1–§3.2.2, §7.4.1). `create_job` is this
 // with no attachments, returning only the Job.
 pub fn create_job_with_environment_templates(
     job_template: &JobTemplate,
@@ -245,7 +245,8 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a>;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CreatedJob {
     /// The combined Job: attached Environments first, in attachment order,
-    /// then the Job Template's `jobEnvironments`.
+    /// then the Job Template's `jobEnvironments` (the Job's Environment
+    /// order, Template Schemas §1.1 item 7).
     pub job: job::Job,
     /// The document of each `job.job_environments` entry, index for index.
     pub environment_documents: Vec<job::Document>,
@@ -327,7 +328,7 @@ evaluation it performs runs under the caller's evaluation budgets
 (`CallerLimits::max_eval_memory_bytes` / `max_eval_operations`).
 
 With `ENV_PARAMS`, [`create_job_with_environment_templates`] runs the
-Template Schemas §7.4 job-creation order: it binds `Job.Name` and, with
+Template Schemas §7.4.1 job-creation order: it binds `Job.Name` and, with
 `EXPR`, `Job.EnvNames` (the attached Environments' names in attachment
 order, then the `jobEnvironments` names, whatever their `activation`)
 before any Step `let`; evaluates each `environment:` entry's `enableIf`
@@ -517,7 +518,7 @@ impl template::Environment {
 pub enum EnvironmentActivation {
     Always,     // ALWAYS: every Session enters it; its enableIf being false
                 // for a Step, or a Step's disabled entry for it, is an
-                // error (§4 item 6, §3.2.2 item 6, §3.2 item 5)
+                // error (§4 item 4, §3.2.2 item 6, §3.2 item 3.2)
     #[default]
     ByDefault,  // BY_DEFAULT: every Session enters it, except a Step's that
                 // declines it with a disabled entry or for which its
@@ -536,10 +537,10 @@ impl EnvironmentActivation {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct StepDependency {
     pub depends_on: Option<String>,
-    pub step: Option<String>,           // ENV_PARAMS synonym of depends_on, §3.2 item 1
+    pub step: Option<String>,           // ENV_PARAMS synonym of depends_on, §3.2 item 2
     pub environment: Option<String>,
     pub required: Option<bool>,
-    pub enable_if: Option<ExprField>,   // ENV_PARAMS, §3.2 item 5; @expr bool
+    pub enable_if: Option<ExprField>,   // ENV_PARAMS, §3.2 item 3.2; @expr bool
     pub parameters: Option<EnvironmentParameterValueMap>,
 }
 
@@ -606,7 +607,7 @@ impl<'a> DependencyTarget<'a> {
 /// `dependsOn: X` / `step: X` / `environment: X`, as a template writes it.
 impl std::fmt::Display for DependencyTarget<'_>;
 
-/// The key of a Step entry (§3.2 item 1). No rule reads it: it exists so
+/// The key of a Step entry (§3.2 item 2). No rule reads it: it exists so
 /// messages can name what was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StepKey {
@@ -749,7 +750,7 @@ impl JobParameterDefinition {
     /// RANGE_EXPR string's canonical form is length-checked besides the
     /// string: pass `RangeExprLengthCheck::for_job_parameter` of the
     /// declaring document's profile (§2.10), or `AsWrittenAndCanonical`
-    /// for an Environment parameter (§4.5 item 5). It changes nothing for
+    /// for an Environment parameter (§4.5 item 4). It changes nothing for
     /// the other types.
     pub fn check_constraints(
         &self,
@@ -781,7 +782,7 @@ pub enum RangeExprLengthCheck {
     AsWritten,
     /// The value as written and its canonical form: a RANGE_EXPR Job
     /// Parameter in a document that lists ENV_PARAMS (§2.10), and every
-    /// Environment parameter of type RANGE_EXPR (§4.5 item 5).
+    /// Environment parameter of type RANGE_EXPR (§4.5 item 4).
     AsWrittenAndCanonical,
 }
 

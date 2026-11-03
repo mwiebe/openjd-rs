@@ -86,7 +86,7 @@ for the other types (below).
 > canonical form, and both must satisfy them (Template Schemas §2.10, spec `8a2803a`); without
 > it the canonical form is not checked, so with `minLength: 4` an EXPR-only template accepts
 > `1-3:2` although its canonical form `1,3` is shorter. An Environment parameter of type
-> RANGE_EXPR always checks both (§4.5 item 5), so its callers pass `AsWrittenAndCanonical`. A
+> RANGE_EXPR always checks both (§4.5 item 4), so its callers pass `AsWrittenAndCanonical`. A
 > `range_expr` value, which has no other spelling, is checked in canonical form under either
 > rule. `check_constraints` on a string checks the string, and under `AsWrittenAndCanonical` its
 > canonical form; `preprocess_job_parameters` checks the written string before parsing it and

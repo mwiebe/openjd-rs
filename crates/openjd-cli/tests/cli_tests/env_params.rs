@@ -192,7 +192,7 @@ fn docker_wraps_each_step_with_its_own_image_and_mapped_mounts() {
     // The Conda entries are `required: false`, and their `enableIf`
     // disables them when Docker is attached. A disabled entry's name is
     // resolved, but one that matches no attachment has no effect and gives
-    // no warning (Template Schemas §3.2 item 5).
+    // no warning (Template Schemas §3.2 item 3.2).
     assert!(stderr.is_empty(), "{stderr}");
 }
 
@@ -304,7 +304,7 @@ fn a_step_with_other_values_reenters_the_environment_in_the_same_session() {
 fn a_step_that_does_not_request_an_environment_runs_after_it_is_exited() {
     // `activation: ON_REQUEST` (Template Schemas §4 item 4): only the
     // requesting Steps' Tasks run with the Environment entered or its
-    // variables set (§3.2.2, fourth paragraph). The Session exits it before
+    // variables set (How Jobs Are Run, Environment Parameters). The Session exits it before
     // C and keeps Always, which every Step enters, entered throughout.
     let (code, stdout, stderr) = run_cli(&["run", &fixture("activation_grouping.yaml")]);
     assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
@@ -827,7 +827,7 @@ fn check_reports_the_new_template_validation_errors() {
 
 #[test]
 fn an_always_environment_disabled_for_a_step_is_rejected() {
-    // Template Schemas §4 item 6 and §3.2.2 item 6: an Environment with
+    // Template Schemas §4 item 4 and §3.2.2 item 6: an Environment with
     // `activation: ALWAYS` cannot be disabled. `check` rejects a literal
     // `enableIf: false`; an expression that is false for a Step passes
     // `check` and is rejected when `run` and `summary` create the Job.
@@ -854,7 +854,7 @@ fn an_always_environment_disabled_for_a_step_is_rejected() {
         "ERROR: Model validation error: 1 validation error for JobTemplate\n\
          jobEnvironments[0] -> enableIf:\n\tEnvironment 'Lic' has activation ALWAYS, so it \
          cannot be disabled, but its enableIf is false for every Step (Template Schemas §4 item \
-         6).\n"
+         4).\n"
     );
     let expr = write_file(
         &dir,
@@ -867,7 +867,7 @@ fn an_always_environment_disabled_for_a_step_is_rejected() {
     let rejected = "ERROR: Model validation error: 1 validation error for JobTemplate\n\
                     jobEnvironments[0] -> enableIf:\n\tEnvironment 'Lic' has activation \
                     ALWAYS, so it cannot be disabled, but its enableIf is false for Step 'B' \
-                    (Template Schemas §4 item 6).\n";
+                    (Template Schemas §4 item 4).\n";
     // `run` follows the error with its usage text.
     for command in ["run", "summary"] {
         let (code, _stdout, stderr) = run_cli(&[command, &expr]);
@@ -1074,19 +1074,19 @@ fn check_with_environments_names_a_disabled_entry_in_the_missing_parameters_erro
     let (code, _stdout, stderr) = run_cli(&["check", &job, "--environment", &env]);
     assert_ne!(code, 0);
     // Req is ALWAYS, so the disabled entry is an error (a BY_DEFAULT one
-    // would be declined, Template Schemas §3.2 item 5), and Req is still
+    // would be declined, Template Schemas §3.2 item 3.2), and Req is still
     // checked as entered, with the note. The whole report: exactly two.
     let expected = format!(
         "ERROR: Model validation error: 2 validation errors for Submission\n\
          JobTemplate -> steps[0] -> dependencies[0] -> enableIf:\n\tis false, so Step 'S' \
          would decline Environment 'Req' ({env}), whose activation is ALWAYS: no Step can leave \
-         out an ALWAYS Environment (Template Schemas §3.2 item 5).\n\
+         out an ALWAYS Environment (Template Schemas §3.2 item 3.2).\n\
          JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
          parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with \
          activation BY_DEFAULT that the Step does not decline, and each one \
          with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'N' of Environment 'Req' ({env}) (the \
          Step's 'environment:' dependency for it is disabled by its enableIf, so it supplies \
-         nothing; Template Schemas §3.2 item 5)."
+         nothing; Template Schemas §3.2 item 3.2)."
     );
     assert!(
         stderr.starts_with(&format!("{expected}\n")),
@@ -1117,7 +1117,7 @@ fn run_step_enters_only_the_selected_steps_environment_set() {
 
 #[test]
 fn check_reports_a_step_dependency_without_env_params() {
-    // §3.2 item 1: `step:` is the ENV_PARAMS synonym of `dependsOn:`.
+    // §3.2 item 2: `step:` is the ENV_PARAMS synonym of `dependsOn:`.
     let dir = tempfile::tempdir().unwrap();
     let job = dir.path().join("step_form.yaml");
     let template = |exts: &str| {
@@ -1284,9 +1284,9 @@ fn summary_of_one_step_lists_each_environment_in_session_order() {
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
     // The Conda entry's enableIf disabled it, so the Step declines Conda,
-    // a BY_DEFAULT Environment (Template Schemas §3.2 item 5): it does not
+    // a BY_DEFAULT Environment (Template Schemas §3.2 item 3.2): it does not
     // enter it, and since Conda's own enableIf is not evaluated for the
-    // Step, the summary does not list it as disabled. (Before §3.2 item 5,
+    // Step, the summary does not list it as disabled. (Before §3.2 item 3.2,
     // Conda took its defaults, for which its own enableIf is false, and it
     // was listed as disabled.)
     // The host requirements combine the Step's own GPU amount with
@@ -1741,7 +1741,7 @@ fn check_lists_environments_disabled_by_a_scalar_false() {
 }
 
 /// A Step that declines a `BY_DEFAULT` Environment with `enableIf: false`
-/// on its entry (Template Schemas §3.2 item 5) does not have the
+/// on its entry (Template Schemas §3.2 item 3.2) does not have the
 /// Environment's own `enableIf` evaluated, so neither `check` nor `summary`
 /// says the Environment is disabled for it.
 #[test]

@@ -12,7 +12,7 @@
 //! - `enableIf` on an `<Environment>` (§4 item 6), on every position,
 //!   whose value pass 8 checks;
 //! - the `step:` form of a `<StepDependency>`, a synonym of `dependsOn:`
-//!   whose Step rules are pass 6's (§3.2 item 1);
+//!   whose Step rules are pass 6's (§3.2 item 2);
 //! - the `environment:` form of a `<StepDependency>` (§3.2).
 //!
 //! A document that lists `ENV_PARAMS` must also list `EXPR` (§1.1 item 3,
@@ -23,24 +23,23 @@
 //! Without the extension each use is an error. With it, this pass checks
 //! the structural rules that do not involve format strings:
 //!
-//! - §4 item 3 constraints 1–4: 1–50 definitions, unique names, and not on
-//!   a `stepEnvironments` entry; §4 item 4 constraint 2: no `activation` on a
-//!   `stepEnvironments` entry; §4 item 5.2: no `hostRequirements` on a
-//!   `stepEnvironments` entry; §4 item 6: no literal `enableIf: false` on an
-//!   Environment with `activation: ALWAYS`, which cannot be disabled
-//!   (§3.2.2 item 6);
-//! - §4.5 items 1–3 and 5: each type's definition checks (every Job
+//! - §4 item 3 constraints 1–3: 1–50 definitions with unique names; §4,
+//!   after item 9: no `envParameterDefinitions`, `activation`, or
+//!   `hostRequirements` on a `stepEnvironments` entry; §4 item 4: no
+//!   literal `enableIf: false` on an Environment with `activation: ALWAYS`,
+//!   which cannot be disabled (§3.2.2 item 6);
+//! - §4.5 and its item 2: each type's definition checks (every Job
 //!   Parameter type is available, since `EXPR` is listed), which include
 //!   those of a
 //!   `userInterface`, `objectType`, or `dataFlow` (permitted, and
 //!   informational);
-//! - §4.5 "checked at two points", point 1: a literal `default` against
-//!   the parameter's type and constraints; item 4: a non-literal list
+//! - §4.5 item 2: a literal `default` against
+//!   the parameter's type and constraints; item 1: a non-literal list
 //!   `default` is a single `{{ }}` expression;
 //! - §3.2 constraints 2–4 and 8 for every `environment:`
 //!   entry, and the forms of a literal value that no parameter type accepts
 //!   (an object, `null`, a list nested too deeply);
-//! - §3.2 item 5: an entry whose `enableIf` is the literal `false` and that
+//! - §3.2 item 3.2: an entry whose `enableIf` is the literal `false` and that
 //!   names a `jobEnvironments` entry with `activation: ALWAYS` is an error,
 //!   naming the Step and the Environment;
 //! - §3.2 constraints 5 and 6 (against literal values) for entries that
@@ -48,7 +47,7 @@
 //!   `enableIf` is `false`; and constraint 7 over each Step's Environment
 //!   set, for entries whose `enableIf` is absent or a boolean scalar (the
 //!   checked-at paragraph; §7.5 item 1), where a `false` one declines a
-//!   `BY_DEFAULT` Environment (§3.2 item 5). Constraints 6 and 7 are checked
+//!   `BY_DEFAULT` Environment (§3.2 item 3.2). Constraints 6 and 7 are checked
 //!   only for an Environment with `activation: ALWAYS`, which cannot be
 //!   disabled (§3.2.2 item 6), or whose own `enableIf` is absent or `true`, or
 //!   certainly unresolved for the Step ([`enable_if_certainly_unresolved`]): they
@@ -83,7 +82,7 @@ const MAX_ENV_PARAMS: usize = 50;
 const MAX_DECLARED_LIST_CHARS: usize = 512;
 
 /// Where an Environment sits, which decides whether it may declare
-/// parameters (§4 item 3 constraint 4).
+/// parameters (§4, after item 9).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EnvPlacement {
     /// A `jobEnvironments` entry or an Environment Template's `environment`.
@@ -179,7 +178,7 @@ pub(crate) fn capped_name_list<'n>(names: impl Iterator<Item = &'n str>, total: 
 /// order, and `total` is how many there are. `why` says which Environments
 /// the Step's Sessions enter, and cites the rule. A label in `disabled`
 /// names an Environment the Step has an `environment:` entry for whose
-/// `enableIf` disabled it (§3.2 item 5), which its group says, since a
+/// `enableIf` disabled it (§3.2 item 3.2), which its group says, since a
 /// reader would otherwise take the Step's entry as enabled. A label in
 /// `unresolved` names an Environment whose own `enableIf` (§4 item 6) was
 /// unresolved for the Step, which its group also says: the `enableIf`
@@ -273,7 +272,7 @@ pub(crate) fn missing_parameters_message<'n>(
 /// The note [`missing_parameters_message`] adds to an Environment's group
 /// when the Step's entry for it is disabled by its `enableIf`.
 const DISABLED_NOTE: &str = " (the Step's 'environment:' dependency for it is disabled by its \
-     enableIf, so it supplies nothing; Template Schemas §3.2 item 5)";
+     enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2)";
 
 /// The note [`missing_parameters_message`] adds to an Environment's group
 /// when the Environment's own `enableIf` (§4 item 6) was unresolved for
@@ -298,13 +297,13 @@ pub(crate) const EVERY_JOB_ENVIRONMENT: &str =
 
 /// The message for a Step's disabled `environment:` entry that names an
 /// Environment with `activation: ALWAYS`, reported at the entry's
-/// `enableIf` (§3.2 item 5, §3.2.2 item 6): no Step can leave such an
+/// `enableIf` (§3.2 item 3.2, §3.2.2 item 6): no Step can leave such an
 /// Environment out. `label` names the Environment as constraint 7
 /// messages do (`'Name'`, plus the document for an attached one).
 pub(crate) fn always_entry_disabled_message(step_name: &str, label: &str) -> String {
     format!(
         "is false, so Step '{step_name}' would decline Environment {label}, whose activation is \
-         ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 5)."
+         ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2)."
     )
 }
 
@@ -397,7 +396,7 @@ pub fn validate_env_params_job_template(
         let mut seen_envs: HashSet<&str> = HashSet::new();
         for (j, dep) in deps.iter().enumerate() {
             let dep_path = path_index(&deps_path, j);
-            // §3.2 item 1: `step` is the ENV_PARAMS synonym of `dependsOn`;
+            // §3.2 item 2: `step` is the ENV_PARAMS synonym of `dependsOn`;
             // its Step rules are pass 6's.
             if dep.step.is_some() && !active {
                 errors.add(
@@ -468,7 +467,7 @@ pub fn validate_env_params_environment_template(
     );
 }
 
-/// §4 item 6 constraint 4: whether one Environment's `enableIf` is
+/// §4 item 6: whether one Environment's `enableIf` is
 /// permitted; §4 item 4: its `activation`; §4 item 5: where its
 /// `hostRequirements` are permitted; §4 item 3 and §4.5: its
 /// `envParameterDefinitions`.
@@ -480,7 +479,7 @@ fn check_environment(
     limits: &EffectiveLimits,
     errors: &mut ValidationErrors,
 ) {
-    // §4 item 6 constraint 4: `enableIf` needs ENV_PARAMS in the document,
+    // §4 item 6: `enableIf` needs ENV_PARAMS in the document,
     // on every position (a `stepEnvironments` entry included). Its value,
     // an expression field of type `bool` (§7.5), is checked against its
     // scope in pass 8.
@@ -490,7 +489,7 @@ fn check_environment(
             "enableIf on an Environment requires the ENV_PARAMS extension.",
         );
     }
-    // §4 item 4 constraint 2. Constraint 1 (an unrecognized value) is a
+    // §4, after item 9. Constraint 1 (an unrecognized value) is a
     // decode error.
     if env.activation.is_some() {
         let path = path_field(env_path, "activation");
@@ -508,21 +507,22 @@ fn check_environment(
         } else if env.activation() == EnvironmentActivation::Always
             && env.literal_enabled() == Some(false)
         {
-            // §4 item 6 and §3.2.2 item 6: an `ALWAYS` Environment cannot
+            // §4 item 4 and §3.2.2 item 6: an `ALWAYS` Environment cannot
             // be disabled, and a literal `false` is known here (§7.5
             // rule 5). An expression is decided at job creation.
             errors.add(
                 &path_field(env_path, "enableIf"),
                 format!(
                     "Environment '{}' has activation ALWAYS, so it cannot be disabled, but its \
-                     enableIf is false for every Step (Template Schemas §4 item 6).",
+                     enableIf is false for every Step (Template Schemas §4 item 4).",
                     env.name
                 ),
             );
         }
     }
-    // §4 item 5 and item 5.2. The object's own §3.3 checks are made by
-    // pass 6, and its format strings by pass 8, only where it is permitted.
+    // §4 item 5, and the paragraph after item 9. The object's own §3.3
+    // checks are made by pass 6, and its format strings by pass 8, only
+    // where it is permitted.
     if env.host_requirements.is_some() {
         let path = path_field(env_path, "hostRequirements");
         if !active {
@@ -582,7 +582,7 @@ fn check_environment(
     }
 }
 
-/// §4.5 items 1–5 for one definition, and its literal `default`.
+/// §4.5 for one definition, and its literal `default`.
 fn check_definition(
     def: &EnvironmentParameterDefinition,
     def_path: &[PathElement],
@@ -596,18 +596,18 @@ fn check_definition(
             format!("name exceeds {} characters.", limits.max_identifier_len),
         );
     }
-    // §4.5 item 1: any type a `<JobParameterDefinition>` has in a document
+    // §4.5: any type a `<JobParameterDefinition>` has in a document
     // that lists `EXPR`, which `ENV_PARAMS` requires, so every type decodes
-    // to one that is allowed. §4.5 items 2-3: `userInterface`,
+    // to one that is allowed. §4.5: `userInterface`,
     // `objectType`, and `dataFlow` are permitted, with the shape and
     // constraints of the Job Parameter of the same type (checked by
     // `validate_definition` below); they are informational and change
     // nothing about job creation or how the Job runs.
     //
-    // §4.5 item 5: the definition's own constraints, as for the Job
+    // §4.5 item 2: the definition's own constraints, as for the Job
     // Parameter of the same type.
     // An Environment parameter's RANGE_EXPR length always checks the
-    // canonical form too (§4.5 item 5).
+    // canonical form too (§4.5 item 4).
     if let Err(msgs) = def
         .definition
         .validate_definition(limits, RangeExprLengthCheck::AsWrittenAndCanonical)
@@ -621,12 +621,12 @@ fn check_definition(
     };
     let default_path = path_field(def_path, "default");
     match default {
-        // §4.5 point 1: a literal `default` is checked at template
+        // §4.5 item 2: a literal `default` is checked at template
         // validation against the type and constraints.
         EnvironmentParameterValue::Literal(lit) => {
             let _ = check_literal_value(def, lit, &default_path, errors);
         }
-        // §4.5 item 4: a list type has no string form.
+        // §4.5 item 1: a list type has no string form.
         EnvironmentParameterValue::FormatString(fs) => {
             check_list_format_string(pt, fs, &default_path, errors);
         }
@@ -634,10 +634,10 @@ fn check_definition(
 }
 
 /// §3.2 constraints 2–6 and 8 for one `environment:` entry of the Step
-/// named `step_name`, and §3.2 item 5 for one whose `enableIf` is `false`
+/// named `step_name`, and §3.2 item 3.2 for one whose `enableIf` is `false`
 /// that names a Job Environment with `activation: ALWAYS`, an error.
 /// Constraints 5 and 6 apply only to an entry whose `enableIf` is absent or
-/// `true`: a disabled entry's parameters are not checked (§3.2 item 5), and
+/// `true`: a disabled entry's parameters are not checked (§3.2 item 3.2), and
 /// one whose `enableIf` is an expression may be disabled, so job creation
 /// checks it (§7.5 rule 5). Constraint 6 is also skipped for a Job
 /// Environment whose own `enableIf` is not absent or `true` (§3.2.2).
@@ -672,7 +672,7 @@ fn check_environment_entry<'a>(
             format!("duplicate environment dependency '{env_name}'."),
         );
     }
-    // §3.2 item 5: a disabled entry for an `ALWAYS` Environment is an
+    // §3.2 item 3.2: a disabled entry for an `ALWAYS` Environment is an
     // error, known here for a literal `false` on an entry naming a Job
     // Environment (§7.5 rule 5); job creation reports the others.
     if dep.literal_enabled() == Some(false)
@@ -712,7 +712,7 @@ fn check_environment_entry<'a>(
         );
     }
 
-    // A disabled entry's parameters are not checked (§3.2 item 5):
+    // A disabled entry's parameters are not checked (§3.2 item 3.2):
     // constraints 5 and 6 apply only to an enabled entry. One whose
     // `enableIf` is an expression may be disabled, so they are checked for
     // it only when the Job is created (§7.5 rule 5). Constraints 2–4 and 8,
@@ -805,7 +805,7 @@ fn check_environment_entry<'a>(
 /// parameter without a `default` of every `jobEnvironments` entry its
 /// Sessions enter. They enter every entry with `activation: ALWAYS`, every
 /// one with `BY_DEFAULT` that the Step does not decline with a disabled
-/// `environment:` entry (§3.2 item 5), and every entry with `activation:
+/// `environment:` entry (§3.2 item 3.2), and every entry with `activation:
 /// ON_REQUEST` that the Step requests with an enabled `environment:` entry.
 ///
 /// Whether an entry is enabled is known here only when its `enableIf` is
@@ -985,7 +985,7 @@ fn check_required_parameters_supplied(
                     counts_with[r.env],
                     entry.and_then(|d| d.parameters.as_ref()),
                 ),
-                // Declined (§3.2 item 5).
+                // Declined (§3.2 item 3.2).
                 Some(Some(false)) if r.activation == EnvironmentActivation::ByDefault => {
                     (false, None)
                 }
@@ -1153,7 +1153,7 @@ fn check_environment_name(
     }
 }
 
-/// §3.2 `<EnvironmentParameterValue>`, last sentence, and §4.5 item 4: a
+/// §3.2 `<EnvironmentParameterValue>`, last sentence, and §4.5 item 1: a
 /// list-typed parameter has no string form, so a format-string value for
 /// it must be a single `{{ }}` expression.
 pub(crate) fn check_list_format_string(
@@ -1246,7 +1246,7 @@ fn check_no_object_or_null(
 
 /// Check a literal `default` or entry value against its definition: the
 /// form a `<JobParameterDefinition>` `default` of the same type accepts,
-/// and then the definition's constraints (§4.5 point 1; §3.2 constraint 6).
+/// and then the definition's constraints (§4.5 item 2; §3.2 constraint 6).
 ///
 /// The form check decodes the literal with exactly the decoder the Job
 /// Parameter type's `default` field uses, so a STRING value must be a
@@ -1327,7 +1327,7 @@ pub(crate) fn convert_literal_value(
             }
         };
     // A RANGE_EXPR literal is checked as written, which for an Environment
-    // parameter checks both its string and its canonical form (§4.5 item 5,
+    // parameter checks both its string and its canonical form (§4.5 item 4,
     // §2.10), hence `true` below.
     let written = match (pt, lit.as_str()) {
         (JobParameterType::RangeExpr, Some(s)) => {
