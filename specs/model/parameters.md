@@ -101,7 +101,8 @@ These are two distinct operations:
 - **`validate_definition`** runs during template validation (Pass 3). For every type it checks
   that the default satisfies the definition's constraints and that the UI control is compatible
   with the other fields. For STRING, PATH, INT and FLOAT it also checks that the constraints are
-  consistent: min ≤ max, minLength ≤ maxLength, allowedValues non-empty and within those bounds.
+  consistent: min ≤ max, minLength ≤ maxLength, and allowedValues non-empty. STRING, PATH and
+  FLOAT also check each allowed value against those bounds; INT does not.
   For BOOL, RANGE_EXPR and the LIST types it does not check that consistency, so a RANGE_EXPR
   with `minLength: 5`, `maxLength: 3` and no `default` passes template validation.
 
