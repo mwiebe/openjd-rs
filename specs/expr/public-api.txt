@@ -417,6 +417,21 @@ impl serde_core::ser::Serialize for openjd_expr::path_mapping::PathFormat
 pub fn openjd_expr::path_mapping::PathFormat::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_expr::path_mapping::PathFormat
 pub fn openjd_expr::path_mapping::PathFormat::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_expr::path_mapping::UnmapError
+pub openjd_expr::path_mapping::UnmapError::NoRoundTrip
+pub openjd_expr::path_mapping::UnmapError::Relative
+impl core::clone::Clone for openjd_expr::path_mapping::UnmapError
+pub fn openjd_expr::path_mapping::UnmapError::clone(&self) -> openjd_expr::path_mapping::UnmapError
+impl core::cmp::Eq for openjd_expr::path_mapping::UnmapError
+impl core::cmp::PartialEq for openjd_expr::path_mapping::UnmapError
+pub fn openjd_expr::path_mapping::UnmapError::eq(&self, &openjd_expr::path_mapping::UnmapError) -> bool
+impl core::error::Error for openjd_expr::path_mapping::UnmapError
+impl core::fmt::Debug for openjd_expr::path_mapping::UnmapError
+pub fn openjd_expr::path_mapping::UnmapError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openjd_expr::path_mapping::UnmapError
+pub fn openjd_expr::path_mapping::UnmapError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_expr::path_mapping::UnmapError
+impl core::marker::StructuralPartialEq for openjd_expr::path_mapping::UnmapError
 #[non_exhaustive] pub struct openjd_expr::path_mapping::InvalidPathMappingRule
 pub openjd_expr::path_mapping::InvalidPathMappingRule::index: core::option::Option<usize>
 pub openjd_expr::path_mapping::InvalidPathMappingRule::reason: alloc::string::String
@@ -470,6 +485,8 @@ pub fn openjd_expr::path_mapping::PathMappingRule::deserialize<__D>(__D) -> core
 pub const openjd_expr::path_mapping::DEFAULT_MAX_TRIE_BYTES: usize
 pub const openjd_expr::path_mapping::MAX_PATH_LEN: usize
 pub fn openjd_expr::path_mapping::is_uri(&str) -> bool
+pub fn openjd_expr::path_mapping::unapply_rules(&openjd_expr::path_mapping::PathMapper, &str, openjd_expr::path_mapping::PathFormat) -> core::result::Result<alloc::string::String, openjd_expr::path_mapping::UnmapError>
+pub fn openjd_expr::path_mapping::unapply_rules_with_source_format(&openjd_expr::path_mapping::PathMapper, &str, openjd_expr::path_mapping::PathFormat) -> core::result::Result<(alloc::string::String, openjd_expr::path_mapping::PathFormat), openjd_expr::path_mapping::UnmapError>
 pub mod openjd_expr::profile
 #[non_exhaustive] pub enum openjd_expr::profile::ExprExtension
 impl openjd_expr::profile::ExprExtension

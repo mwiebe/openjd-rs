@@ -7,6 +7,12 @@ pub enum openjd_sessions::action::ActionMessage
 pub openjd_sessions::action::ActionMessage::CancelMarkFailed
 pub openjd_sessions::action::ActionMessage::CancelMarkFailed::fail_message: alloc::string::String
 pub openjd_sessions::action::ActionMessage::Fail(alloc::string::String)
+pub openjd_sessions::action::ActionMessage::InvalidOutputVar
+pub openjd_sessions::action::ActionMessage::InvalidOutputVar::fail_message: alloc::string::String
+pub openjd_sessions::action::ActionMessage::OutputVar
+pub openjd_sessions::action::ActionMessage::OutputVar::name: alloc::string::String
+pub openjd_sessions::action::ActionMessage::OutputVar::task: core::option::Option<i64>
+pub openjd_sessions::action::ActionMessage::OutputVar::value: openjd_expr::value::ExprValue
 pub openjd_sessions::action::ActionMessage::Progress(f64)
 pub openjd_sessions::action::ActionMessage::RedactedEnv
 pub openjd_sessions::action::ActionMessage::RedactedEnv::name: alloc::string::String
@@ -42,10 +48,12 @@ impl core::marker::Copy for openjd_sessions::action::ActionState
 impl core::marker::StructuralPartialEq for openjd_sessions::action::ActionState
 pub struct openjd_sessions::action::ActionResult
 pub openjd_sessions::action::ActionResult::exit_code: core::option::Option<i32>
+pub openjd_sessions::action::ActionResult::outputs: core::option::Option<openjd_sessions::action::ActionOutputs>
 pub openjd_sessions::action::ActionResult::state: openjd_sessions::action::ActionState
 pub openjd_sessions::action::ActionResult::stdout: alloc::string::String
 impl core::fmt::Debug for openjd_sessions::action::ActionResult
 pub fn openjd_sessions::action::ActionResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub type openjd_sessions::action::ActionOutputs = indexmap::map::IndexMap<core::option::Option<i64>, openjd_model::outputs::collector::TaskOutputs>
 pub mod openjd_sessions::action_status
 pub struct openjd_sessions::action_status::ActionStatus
 pub openjd_sessions::action_status::ActionStatus::ended_at: core::option::Option<std::time::SystemTime>
@@ -151,6 +159,9 @@ pub openjd_sessions::limits::SessionLimits::max_eval_operations: core::option::O
 pub openjd_sessions::limits::SessionLimits::max_path_mapping_trie_bytes: core::option::Option<usize>
 pub openjd_sessions::limits::SessionLimits::max_resolved_arg_len: core::option::Option<usize>
 pub openjd_sessions::limits::SessionLimits::max_resolved_data_len: core::option::Option<usize>
+pub openjd_sessions::limits::SessionLimits::max_task_output_bytes: core::option::Option<usize>
+impl openjd_sessions::limits::SessionLimits
+pub fn openjd_sessions::limits::SessionLimits::task_output_bytes(&self) -> usize
 impl core::clone::Clone for openjd_sessions::limits::SessionLimits
 pub fn openjd_sessions::limits::SessionLimits::clone(&self) -> openjd_sessions::limits::SessionLimits
 impl core::cmp::Eq for openjd_sessions::limits::SessionLimits
@@ -322,6 +333,20 @@ pub fn openjd_sessions::runner::ScriptRunnerState::fmt(&self, &mut core::fmt::Fo
 impl core::marker::Copy for openjd_sessions::runner::ScriptRunnerState
 impl core::marker::StructuralPartialEq for openjd_sessions::runner::ScriptRunnerState
 pub mod openjd_sessions::session
+pub enum openjd_sessions::session::EnvironmentOrigin
+pub openjd_sessions::session::EnvironmentOrigin::EnvironmentTemplate
+pub openjd_sessions::session::EnvironmentOrigin::JobTemplate
+impl core::clone::Clone for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::clone(&self) -> openjd_sessions::session::EnvironmentOrigin
+impl core::cmp::Eq for openjd_sessions::session::EnvironmentOrigin
+impl core::cmp::PartialEq for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::eq(&self, &openjd_sessions::session::EnvironmentOrigin) -> bool
+impl core::default::Default for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::default() -> openjd_sessions::session::EnvironmentOrigin
+impl core::fmt::Debug for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_sessions::session::EnvironmentOrigin
+impl core::marker::StructuralPartialEq for openjd_sessions::session::EnvironmentOrigin
 pub enum openjd_sessions::session::SessionState
 pub openjd_sessions::session::SessionState::Canceling
 pub openjd_sessions::session::SessionState::Ended
@@ -339,20 +364,40 @@ impl core::fmt::Display for openjd_sessions::session::SessionState
 pub fn openjd_sessions::session::SessionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Copy for openjd_sessions::session::SessionState
 impl core::marker::StructuralPartialEq for openjd_sessions::session::SessionState
+pub struct openjd_sessions::session::EnvironmentOptions<'a>
+pub openjd_sessions::session::EnvironmentOptions::origin: openjd_sessions::session::EnvironmentOrigin
+pub openjd_sessions::session::EnvironmentOptions::path_inputs: &'a [openjd_model::job::output_variable::PathInput]
+impl<'a> core::clone::Clone for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::clone(&self) -> openjd_sessions::session::EnvironmentOptions<'a>
+impl<'a> core::default::Default for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::default() -> openjd_sessions::session::EnvironmentOptions<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::session::EnvironmentOptions<'a>
+pub struct openjd_sessions::session::RunTaskOptions<'a>
+pub openjd_sessions::session::RunTaskOptions::output_variables: core::option::Option<&'a [openjd_model::job::output_variable::OutputVariable]>
+pub openjd_sessions::session::RunTaskOptions::path_inputs: &'a [openjd_model::job::output_variable::PathInput]
+impl<'a> core::clone::Clone for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::clone(&self) -> openjd_sessions::session::RunTaskOptions<'a>
+impl<'a> core::default::Default for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::default() -> openjd_sessions::session::RunTaskOptions<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::session::RunTaskOptions<'a>
 pub struct openjd_sessions::session::Session
 impl openjd_sessions::session::Session
 pub fn openjd_sessions::session::Session::action_status(&self) -> core::option::Option<openjd_sessions::action_status::ActionStatus>
-pub fn openjd_sessions::session::Session::build_symbol_table(&self, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::session::Session::build_symbol_table(&self, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, &[openjd_model::job::output_variable::PathInput]) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::cancel_action(&mut self, core::option::Option<core::time::Duration>, bool) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::cancel_handle(&self) -> openjd_sessions::session::SessionCancelHandle
 pub fn openjd_sessions::session::Session::cleanup(&mut self)
 pub fn openjd_sessions::session::Session::clear_ending_only(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::clone_cancel_writer(&self) -> core::option::Option<std::fs::File>
-pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
-pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::environments_entered(&self) -> &[openjd_sessions::session::EnvironmentIdentifier]
 pub fn openjd_sessions::session::Session::evaluate_env_vars(&self, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> std::collections::hash::map::HashMap<alloc::string::String, core::option::Option<alloc::string::String>>
-pub async fn openjd_sessions::session::Session::exit_environment(&mut self, &openjd_sessions::session::EnvironmentIdentifier, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, bool, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::exit_environment(&mut self, &openjd_sessions::session::EnvironmentIdentifier, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, bool, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::extend_path_mapping_rules(&mut self, alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::files_directory(&self) -> &std::path::Path
 pub fn openjd_sessions::session::Session::get_enabled_extensions(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -361,7 +406,7 @@ pub fn openjd_sessions::session::Session::override_action_state(&mut self, openj
 pub fn openjd_sessions::session::Session::path_mapping_rules(&self) -> &[openjd_expr::path_mapping::PathMappingRule]
 pub fn openjd_sessions::session::Session::redact(&self, &str) -> alloc::string::String
 pub async fn openjd_sessions::session::Session::run_subprocess(&mut self, &str, core::option::Option<&[alloc::string::String]>, core::option::Option<core::time::Duration>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, bool, core::option::Option<&str>) -> core::result::Result<openjd_sessions::SubprocessResult, openjd_sessions::error::SessionError>
-pub async fn openjd_sessions::session::Session::run_task(&mut self, &str, &openjd_model::job::StepScript, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<openjd_sessions::action::ActionResult, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::run_task(&mut self, &str, &openjd_model::job::StepScript, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::RunTaskOptions<'_>) -> core::result::Result<openjd_sessions::action::ActionResult, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::session_id(&self) -> &str
 pub fn openjd_sessions::session::Session::state(&self) -> openjd_sessions::session::SessionState
 pub fn openjd_sessions::session::Session::with_config(openjd_sessions::session::SessionConfig) -> core::result::Result<Self, openjd_sessions::error::SessionError>
@@ -376,11 +421,13 @@ pub fn openjd_sessions::session::SessionCancelHandle::cancel(&self, core::option
 pub struct openjd_sessions::session::SessionConfig
 pub openjd_sessions::session::SessionConfig::callback: core::option::Option<openjd_sessions::session::SessionCallbackType>
 pub openjd_sessions::session::SessionConfig::cancel_token: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub openjd_sessions::session::SessionConfig::control_flow: bool
 pub openjd_sessions::session::SessionConfig::debug_collect_stdout: bool
 pub openjd_sessions::session::SessionConfig::echo_openjd_directives: bool
 pub openjd_sessions::session::SessionConfig::job_parameter_values: openjd_model::types::JobParameterValues
 pub openjd_sessions::session::SessionConfig::limits: openjd_sessions::limits::SessionLimits
 pub openjd_sessions::session::SessionConfig::os_env_vars: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
+pub openjd_sessions::session::SessionConfig::output_callback: core::option::Option<openjd_sessions::session::OutputCallbackType>
 pub openjd_sessions::session::SessionConfig::path_mapping_rules: core::option::Option<alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>>
 pub openjd_sessions::session::SessionConfig::profile: core::option::Option<openjd_model::types::ModelProfile>
 pub openjd_sessions::session::SessionConfig::retain_working_dir: bool
@@ -390,6 +437,7 @@ pub openjd_sessions::session::SessionConfig::sticky_bit_policy: openjd_sessions:
 pub openjd_sessions::session::SessionConfig::user: core::option::Option<alloc::sync::Arc<dyn openjd_sessions::session_user::SessionUser>>
 pub const openjd_sessions::session::DEFAULT_CANCEL_NOTIFY_PERIOD_SECS: u64
 pub type openjd_sessions::session::EnvironmentIdentifier = alloc::string::String
+pub type openjd_sessions::session::OutputCallbackType = alloc::boxed::Box<(dyn core::ops::function::Fn(&str, core::option::Option<i64>, &str, &openjd_expr::value::ExprValue) + core::marker::Send + core::marker::Sync)>
 pub type openjd_sessions::session::SessionCallbackType = alloc::boxed::Box<(dyn core::ops::function::Fn(&str, &openjd_sessions::action_status::ActionStatus) + core::marker::Send + core::marker::Sync)>
 pub mod openjd_sessions::session_user
 pub struct openjd_sessions::session_user::PosixSessionUser
@@ -450,6 +498,12 @@ pub enum openjd_sessions::ActionMessage
 pub openjd_sessions::ActionMessage::CancelMarkFailed
 pub openjd_sessions::ActionMessage::CancelMarkFailed::fail_message: alloc::string::String
 pub openjd_sessions::ActionMessage::Fail(alloc::string::String)
+pub openjd_sessions::ActionMessage::InvalidOutputVar
+pub openjd_sessions::ActionMessage::InvalidOutputVar::fail_message: alloc::string::String
+pub openjd_sessions::ActionMessage::OutputVar
+pub openjd_sessions::ActionMessage::OutputVar::name: alloc::string::String
+pub openjd_sessions::ActionMessage::OutputVar::task: core::option::Option<i64>
+pub openjd_sessions::ActionMessage::OutputVar::value: openjd_expr::value::ExprValue
 pub openjd_sessions::ActionMessage::Progress(f64)
 pub openjd_sessions::ActionMessage::RedactedEnv
 pub openjd_sessions::ActionMessage::RedactedEnv::name: alloc::string::String
@@ -493,6 +547,20 @@ impl core::fmt::Debug for openjd_sessions::runner::CancelMethod
 pub fn openjd_sessions::runner::CancelMethod::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openjd_sessions::runner::CancelMethod
 pub fn openjd_sessions::runner::CancelMethod::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum openjd_sessions::EnvironmentOrigin
+pub openjd_sessions::EnvironmentOrigin::EnvironmentTemplate
+pub openjd_sessions::EnvironmentOrigin::JobTemplate
+impl core::clone::Clone for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::clone(&self) -> openjd_sessions::session::EnvironmentOrigin
+impl core::cmp::Eq for openjd_sessions::session::EnvironmentOrigin
+impl core::cmp::PartialEq for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::eq(&self, &openjd_sessions::session::EnvironmentOrigin) -> bool
+impl core::default::Default for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::default() -> openjd_sessions::session::EnvironmentOrigin
+impl core::fmt::Debug for openjd_sessions::session::EnvironmentOrigin
+pub fn openjd_sessions::session::EnvironmentOrigin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openjd_sessions::session::EnvironmentOrigin
+impl core::marker::StructuralPartialEq for openjd_sessions::session::EnvironmentOrigin
 pub enum openjd_sessions::ScriptRunnerState
 pub openjd_sessions::ScriptRunnerState::Canceled
 pub openjd_sessions::ScriptRunnerState::Canceling
@@ -598,6 +666,7 @@ impl core::marker::Copy for openjd_sessions::tempdir::StickyBitPolicy
 impl core::marker::StructuralPartialEq for openjd_sessions::tempdir::StickyBitPolicy
 pub struct openjd_sessions::ActionResult
 pub openjd_sessions::ActionResult::exit_code: core::option::Option<i32>
+pub openjd_sessions::ActionResult::outputs: core::option::Option<openjd_sessions::action::ActionOutputs>
 pub openjd_sessions::ActionResult::state: openjd_sessions::action::ActionState
 pub openjd_sessions::ActionResult::stdout: alloc::string::String
 impl core::fmt::Debug for openjd_sessions::action::ActionResult
@@ -616,6 +685,16 @@ impl core::default::Default for openjd_sessions::action_status::ActionStatus
 pub fn openjd_sessions::action_status::ActionStatus::default() -> Self
 impl core::fmt::Debug for openjd_sessions::action_status::ActionStatus
 pub fn openjd_sessions::action_status::ActionStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_sessions::EnvironmentOptions<'a>
+pub openjd_sessions::EnvironmentOptions::origin: openjd_sessions::session::EnvironmentOrigin
+pub openjd_sessions::EnvironmentOptions::path_inputs: &'a [openjd_model::job::output_variable::PathInput]
+impl<'a> core::clone::Clone for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::clone(&self) -> openjd_sessions::session::EnvironmentOptions<'a>
+impl<'a> core::default::Default for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::default() -> openjd_sessions::session::EnvironmentOptions<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::session::EnvironmentOptions<'a>
+pub fn openjd_sessions::session::EnvironmentOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::session::EnvironmentOptions<'a>
 pub struct openjd_sessions::LogContent(_)
 impl openjd_sessions::logging::LogContent
 pub const openjd_sessions::logging::LogContent::BANNER: Self
@@ -723,20 +802,30 @@ pub fn openjd_sessions::session_user::PosixSessionUser::as_any(&self) -> &dyn co
 pub fn openjd_sessions::session_user::PosixSessionUser::group(&self) -> &str
 pub fn openjd_sessions::session_user::PosixSessionUser::is_process_user(&self) -> bool
 pub fn openjd_sessions::session_user::PosixSessionUser::user(&self) -> &str
+pub struct openjd_sessions::RunTaskOptions<'a>
+pub openjd_sessions::RunTaskOptions::output_variables: core::option::Option<&'a [openjd_model::job::output_variable::OutputVariable]>
+pub openjd_sessions::RunTaskOptions::path_inputs: &'a [openjd_model::job::output_variable::PathInput]
+impl<'a> core::clone::Clone for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::clone(&self) -> openjd_sessions::session::RunTaskOptions<'a>
+impl<'a> core::default::Default for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::default() -> openjd_sessions::session::RunTaskOptions<'a>
+impl<'a> core::fmt::Debug for openjd_sessions::session::RunTaskOptions<'a>
+pub fn openjd_sessions::session::RunTaskOptions<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for openjd_sessions::session::RunTaskOptions<'a>
 pub struct openjd_sessions::Session
 impl openjd_sessions::session::Session
 pub fn openjd_sessions::session::Session::action_status(&self) -> core::option::Option<openjd_sessions::action_status::ActionStatus>
-pub fn openjd_sessions::session::Session::build_symbol_table(&self, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_sessions::error::SessionError>
+pub fn openjd_sessions::session::Session::build_symbol_table(&self, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, &[openjd_model::job::output_variable::PathInput]) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::cancel_action(&mut self, core::option::Option<core::time::Duration>, bool) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::cancel_handle(&self) -> openjd_sessions::session::SessionCancelHandle
 pub fn openjd_sessions::session::Session::cleanup(&mut self)
 pub fn openjd_sessions::session::Session::clear_ending_only(&mut self) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::clone_cancel_writer(&self) -> core::option::Option<std::fs::File>
-pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
-pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::enter_environment_with_output(&mut self, &openjd_model::job::Environment, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&str>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<(alloc::string::String, alloc::string::String), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::environments_entered(&self) -> &[openjd_sessions::session::EnvironmentIdentifier]
 pub fn openjd_sessions::session::Session::evaluate_env_vars(&self, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> std::collections::hash::map::HashMap<alloc::string::String, core::option::Option<alloc::string::String>>
-pub async fn openjd_sessions::session::Session::exit_environment(&mut self, &openjd_sessions::session::EnvironmentIdentifier, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, bool, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::exit_environment(&mut self, &openjd_sessions::session::EnvironmentIdentifier, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, bool, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::EnvironmentOptions<'_>) -> core::result::Result<alloc::string::String, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::extend_path_mapping_rules(&mut self, alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>) -> core::result::Result<(), openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::files_directory(&self) -> &std::path::Path
 pub fn openjd_sessions::session::Session::get_enabled_extensions(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -745,7 +834,7 @@ pub fn openjd_sessions::session::Session::override_action_state(&mut self, openj
 pub fn openjd_sessions::session::Session::path_mapping_rules(&self) -> &[openjd_expr::path_mapping::PathMappingRule]
 pub fn openjd_sessions::session::Session::redact(&self, &str) -> alloc::string::String
 pub async fn openjd_sessions::session::Session::run_subprocess(&mut self, &str, core::option::Option<&[alloc::string::String]>, core::option::Option<core::time::Duration>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, bool, core::option::Option<&str>) -> core::result::Result<openjd_sessions::SubprocessResult, openjd_sessions::error::SessionError>
-pub async fn openjd_sessions::session::Session::run_task(&mut self, &str, &openjd_model::job::StepScript, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>) -> core::result::Result<openjd_sessions::action::ActionResult, openjd_sessions::error::SessionError>
+pub async fn openjd_sessions::session::Session::run_task(&mut self, &str, &openjd_model::job::StepScript, core::option::Option<&openjd_model::types::TaskParameterSet>, core::option::Option<&openjd_expr::symbol_table::SerializedSymbolTable>, core::option::Option<&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>, &openjd_sessions::session::RunTaskOptions<'_>) -> core::result::Result<openjd_sessions::action::ActionResult, openjd_sessions::error::SessionError>
 pub fn openjd_sessions::session::Session::session_id(&self) -> &str
 pub fn openjd_sessions::session::Session::state(&self) -> openjd_sessions::session::SessionState
 pub fn openjd_sessions::session::Session::with_config(openjd_sessions::session::SessionConfig) -> core::result::Result<Self, openjd_sessions::error::SessionError>
@@ -760,11 +849,13 @@ pub fn openjd_sessions::session::SessionCancelHandle::cancel(&self, core::option
 pub struct openjd_sessions::SessionConfig
 pub openjd_sessions::SessionConfig::callback: core::option::Option<openjd_sessions::session::SessionCallbackType>
 pub openjd_sessions::SessionConfig::cancel_token: core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub openjd_sessions::SessionConfig::control_flow: bool
 pub openjd_sessions::SessionConfig::debug_collect_stdout: bool
 pub openjd_sessions::SessionConfig::echo_openjd_directives: bool
 pub openjd_sessions::SessionConfig::job_parameter_values: openjd_model::types::JobParameterValues
 pub openjd_sessions::SessionConfig::limits: openjd_sessions::limits::SessionLimits
 pub openjd_sessions::SessionConfig::os_env_vars: core::option::Option<std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>>
+pub openjd_sessions::SessionConfig::output_callback: core::option::Option<openjd_sessions::session::OutputCallbackType>
 pub openjd_sessions::SessionConfig::path_mapping_rules: core::option::Option<alloc::vec::Vec<openjd_expr::path_mapping::PathMappingRule>>
 pub openjd_sessions::SessionConfig::profile: core::option::Option<openjd_model::types::ModelProfile>
 pub openjd_sessions::SessionConfig::retain_working_dir: bool
@@ -778,6 +869,9 @@ pub openjd_sessions::SessionLimits::max_eval_operations: core::option::Option<us
 pub openjd_sessions::SessionLimits::max_path_mapping_trie_bytes: core::option::Option<usize>
 pub openjd_sessions::SessionLimits::max_resolved_arg_len: core::option::Option<usize>
 pub openjd_sessions::SessionLimits::max_resolved_data_len: core::option::Option<usize>
+pub openjd_sessions::SessionLimits::max_task_output_bytes: core::option::Option<usize>
+impl openjd_sessions::limits::SessionLimits
+pub fn openjd_sessions::limits::SessionLimits::task_output_bytes(&self) -> usize
 impl core::clone::Clone for openjd_sessions::limits::SessionLimits
 pub fn openjd_sessions::limits::SessionLimits::clone(&self) -> openjd_sessions::limits::SessionLimits
 impl core::cmp::Eq for openjd_sessions::limits::SessionLimits
@@ -818,4 +912,6 @@ pub fn openjd_sessions::session_user::PosixSessionUser::as_any(&self) -> &dyn co
 pub fn openjd_sessions::session_user::PosixSessionUser::group(&self) -> &str
 pub fn openjd_sessions::session_user::PosixSessionUser::is_process_user(&self) -> bool
 pub fn openjd_sessions::session_user::PosixSessionUser::user(&self) -> &str
+pub type openjd_sessions::ActionOutputs = indexmap::map::IndexMap<core::option::Option<i64>, openjd_model::outputs::collector::TaskOutputs>
 pub type openjd_sessions::EnvironmentIdentifier = alloc::string::String
+pub type openjd_sessions::OutputCallbackType = alloc::boxed::Box<(dyn core::ops::function::Fn(&str, core::option::Option<i64>, &str, &openjd_expr::value::ExprValue) + core::marker::Send + core::marker::Sync)>

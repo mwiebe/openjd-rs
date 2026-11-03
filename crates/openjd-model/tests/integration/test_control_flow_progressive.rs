@@ -1299,15 +1299,15 @@ steps:
          Steps.P.RawOutput.W[0].name\n  \
          ~~~~~~~~~~~~~~~~~~^"
     );
-    // An attribute of the symbol read directly is refused too, as an
-    // undefined variable.
+    // An attribute of the symbol read directly is refused the same way.
     assert_eq!(
         evaluate(2).unwrap_err().to_string(),
         "Model validation error: 1 validation error for JobTemplate\n\
          jobOutputDefinitions[2] -> value:\n\
-         \tJob output 'Wd': Undefined variable: 'Steps.P.RawOutput.Wd.name'.\n  \
+         \tJob output 'Wd': Path format mismatch for 'Steps.P.RawOutput.Wd': value has Windows \
+         but evaluator uses Posix\n  \
          Steps.P.RawOutput.Wd.name\n  \
-         ~~~~~~~~~~~~~~~~~~~~~^~~~"
+         ~~~~~~~~~~~~~~~~~~^~"
     );
 }
 
