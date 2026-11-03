@@ -179,7 +179,7 @@ steps:
     assert_eq!(graph.topo_sorted_names().unwrap(), ["A", "B", "C"]);
 }
 
-// ── Conversion of values (§3.2 bullets, §4.5 item 1) ────────────────
+// ── Conversion of values (§3.2 bullets, §4.5 item 1) ───────────────
 
 const TYPES_EXPR: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -319,7 +319,7 @@ steps:
     );
 }
 
-// ── When a default is checked (§4.5 item 2; plan A19) ───────────
+// ── When a default is checked (§4.5 item 2; plan A19) ──────────────
 
 const UNUSED_DEFAULT: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -376,7 +376,7 @@ steps:
     );
 }
 
-// ── PATH values (§4.5 item 3; plan A16) ─────────────────────
+// ── PATH values (§4.5 item 3; plan A16) ────────────────────────────
 
 const PATHS: &str = r#"
 specificationVersion: jobtemplate-2023-09

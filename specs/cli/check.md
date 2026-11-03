@@ -179,9 +179,8 @@ error naming the Step and the Environment when it is `ALWAYS` (Template Schemas 
 attached `ALWAYS` Environment and the expression is constant, such as `"false"`: an expression
 field's value is unknown until the Job is created (§7.5 rule 5), so §4 item 4 has the error
 reported then. `check` accepts such a template, and `openjd run` rejects it when the
-expression is `false`. When an `ALWAYS`
-Environment's missing parameters are reported and the Step's entry for
-it was disabled by `enableIf: false`, the message says so. A note marks an Environment whose own
+expression is `false`. When an `ALWAYS` Environment's missing parameters are reported and the
+Step's entry for it was disabled by `enableIf: false`, the message says so. A note marks an Environment whose own
 `enableIf` is unresolved for the Step (it depends on a value that is missing or does not
 convert): `check` adds it for one whose `enableIf` is certainly unresolved, and `openjd run`
 for any whose `enableIf` was unresolved.

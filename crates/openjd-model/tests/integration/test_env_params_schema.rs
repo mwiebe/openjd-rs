@@ -10,8 +10,7 @@
 //! `$schema` on an Environment Template (§1.2 item 2);
 //! `<Environment>.envParameterDefinitions` (§4 item 3 constraints 1–3 and the
 //! paragraph after item 9) and `<EnvironmentParameterDefinition>` (§4.5, and
-//! literal `default`s per its
-//! item 2); the `environment:` form of
+//! literal `default`s per its item 2); the `environment:` form of
 //! `<StepDependency>` and its constraints 1–4 and 8 (§3.2); the literal-value
 //! forms no parameter type accepts (§3.2 last paragraph; plan A4); and that
 //! `environment:` entries never reach the job's Step dependency graph (§3.2

@@ -124,7 +124,8 @@ impl Session {
     /// entered, or entered without values). A scheduler compares them with
     /// a Step's `environment_parameters` (via
     /// `EnvironmentParameterValues::values_equal`) to decide whether this
-    /// Session may run the Step's Tasks (Template Schemas §3.2.2).
+    /// Session may run the Step's Tasks (How Jobs Are Run, Environment
+    /// Parameters; Template Schemas §3.2.2 defines equality).
     pub fn environment_parameters(&self, identifier: &str)
         -> Option<&EnvironmentParameterValues>;
     pub fn path_mapping_rules(&self) -> &[PathMappingRule];

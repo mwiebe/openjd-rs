@@ -271,7 +271,7 @@ fn install_signal_handler(cancel_token: CancellationToken) -> Arc<AtomicBool> {
 /// ([`job_environment_targets`]): exit the entered ones, in the reverse of
 /// the order the Session entered them, down to the longest prefix the Step
 /// also enters with equal values ([`EnteredJobEnvironment::matches`]), then
-/// enter the rest of the Step's in order (Template Schemas §3.2.2). A Job
+/// enter the rest of the Step's in order (How Jobs Are Run, Environment Parameters). A Job
 /// without `activation: ON_REQUEST`, Environment `enableIf`, disabled
 /// `environment:` entries, or Environment parameter values gives every
 /// Step the same targets, so the

@@ -260,7 +260,8 @@ async fn a_steps_entry_overrides_the_defaults_for_that_step_only() {
 
 /// The onExit binds the values the Environment was entered with, even
 /// though `exit_environment` takes no values and the caller passes no
-/// table (§3.2.2: the Session keeps the values until it exits).
+/// table (How Jobs Are Run, Environment Parameters: the Session keeps the
+/// values until it exits).
 #[tokio::test]
 async fn on_exit_reuses_the_values_stored_at_entry() {
     let sub = submit_ok(LICENSE, &[]);

@@ -221,7 +221,7 @@ steps:
     );
 }
 
-// ── enableIf (§3.2 item 3.2, constraint 9) ────────────────────────────
+// ── enableIf (§3.2 item 3.2, constraint 9) ─────────────────────────
 
 const ENABLE_IF: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -473,8 +473,8 @@ fn enable_if_has_the_scope_of_a_parameters_value() {
 
 #[test]
 fn enable_if_is_checked_with_the_template_scope_library_and_posix_paths() {
-    // A host-only function is not in the template-scope library (§7.3.2:
-    // the scope of a parameters value)...
+    // A host-only function is not in the template-scope library (§7.5,
+    // after its rules)...
     job_err(
         &enable_if(r#""apply_path_mapping('/a') == '/a'""#),
         &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Unknown function: 'apply_path_mapping'\n  apply_path_mapping('/a') == '/a'\n  ^~~~~~~~~~~~~~~~~~~~~~~~"],

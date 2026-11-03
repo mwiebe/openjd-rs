@@ -148,7 +148,7 @@ impl RunContext {
     }
 
     /// Move the Session's entered Job Environments to `targets`, in order
-    /// (Template Schemas §3.2.2): exit entered Environments, from the most
+    /// (How Jobs Are Run, Environment Parameters): exit entered Environments, from the most
     /// recently entered, until what remains is a prefix of `targets` whose
     /// every entry [`matches`](EnteredJobEnvironment::matches), then enter
     /// the rest of `targets` in order. Entering stops at the first failure

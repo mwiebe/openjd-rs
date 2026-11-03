@@ -70,7 +70,7 @@ impl Environment {
     }
 
     /// Whether `enableIf` is known before the Job is created (§4, after item
-    /// 9, §7.5 item 1): `Some(true)` when it is absent or the boolean
+    /// 9; §7.5 item 1): `Some(true)` when it is absent or the boolean
     /// scalar `true`, `Some(false)` for the scalar `false`, and `None`
     /// otherwise, an expression included (even a constant one such as
     /// `"true"`, which is evaluated when the Job is created).

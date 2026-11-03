@@ -141,7 +141,7 @@ fn constraint_5_and_the_value_forms_apply_to_a_disabled_environment() {
     );
 }
 
-// ── Job creation (§3.2.2, §7.4.1) ─────────────────────────────────────
+// ── Job creation (§3.2.2, §7.4.1) ──────────────────────────────────
 
 #[test]
 fn a_failed_resolved_default_is_reported_only_for_a_step_it_is_not_disabled_for() {

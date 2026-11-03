@@ -283,8 +283,8 @@ fn a_step_with_other_values_reenters_the_environment_in_the_same_session() {
             // INT 2 written as 2 and as "2" are equal (§3.2.2).
             "Step B ran",
             // C takes the default, so the Session exits Seats and enters
-            // it again with C's value before C runs (Template Schemas
-            // §3.2.2).
+            // it again with C's value before C runs (How Jobs Are Run,
+            // Environment Parameters).
             "Exiting Environment: Seats",
             "Seats onExit Count=2",
             "Entering Environment: Seats",
@@ -802,7 +802,7 @@ fn check_reports_the_new_template_validation_errors() {
          expected one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`\n"
     );
     // activation and hostRequirements on a Step Environment, each at the
-    // field it names (Template Schemas §4 items 4 and 5).
+    // field it names (Template Schemas §4, after item 9).
     let job = write_file(
         &dir,
         "job.yaml",
@@ -2205,7 +2205,7 @@ fn only_the_environments_above_the_first_difference_are_exited() {
     // Session exits Last and Middle (the reverse of entry order) and enters
     // Last again; First, the longest entered prefix B also needs, stays
     // entered. Between B and C only Last's value differs, so only Last is
-    // exited and entered again (Template Schemas §3.2.2).
+    // exited and entered again (How Jobs Are Run, Environment Parameters).
     let dir = tempfile::tempdir().unwrap();
     let echo = |what: &str| format!("{{command: python, args: [\"-c\", \"print('{what}')\"]}}");
     let job = write_file(
@@ -2395,8 +2395,8 @@ fn three_environment_job(dir: &tempfile::TempDir, seats_on_enter: &str) -> Strin
 #[test]
 fn an_unchanged_environment_above_a_changed_one_is_exited_and_entered_again() {
     // Seats' value differs between A and B, and Third, entered after it, is
-    // unchanged. Exits follow the reverse of entry order (Template Schemas
-    // §3.2.2), so the Session exits Third to reach Seats, and enters both
+    // unchanged. Exits follow the reverse of entry order (How Jobs Are Run,
+    // Environment Parameters), so the Session exits Third to reach Seats, and enters both
     // again in Job order; First, below the difference, stays entered.
     let dir = tempfile::tempdir().unwrap();
     let job = three_environment_job(&dir, "print('ENTER Seats ' + sys.argv[1])");
