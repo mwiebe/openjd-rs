@@ -361,8 +361,9 @@ impl Session {
     /// `Output.V` / `TaskParam.N` / `Loop.V` twin becomes the forward-mapped `path`
     /// values, element by element. A `null` stays `null`. A symbol of
     /// another form, one missing from `base`, a stored value whose shape
-    /// does not match its `ty`, and any `path_inputs` with no `base` are a
-    /// `SessionError::Runtime`.
+    /// does not match its `ty`, a stored path longer than `MAX_PATH_LEN`
+    /// bytes (with or without rules), and any `path_inputs` with no `base`
+    /// are a `SessionError::Runtime`.
     pub fn build_symbol_table(
         &self,
         task_parameter_values: Option<&TaskParameterSet>,

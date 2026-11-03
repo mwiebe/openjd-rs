@@ -2988,7 +2988,10 @@ impl Session {
     /// (Windows for a drive path or one starting with `\\`, the host's for a URI,
     /// POSIX otherwise), and its `Output.<V>`, `TaskParam.<N>`, or `Loop.<V>` twin as
     /// `path` values mapped forward with the Session's rules, element by
-    /// element. A `null` (from a skipped producer) is left as it is.
+    /// element. A `null` (from a skipped producer) is left as it is. A stored
+    /// path longer than [`MAX_PATH_LEN`](openjd_expr::path_mapping::MAX_PATH_LEN)
+    /// bytes is a [`SessionError::Runtime`], with or without rules, as for a
+    /// PATH parameter.
     pub fn build_symbol_table(
         &self,
         task_parameter_values: Option<&openjd_model::types::TaskParameterSet>,
