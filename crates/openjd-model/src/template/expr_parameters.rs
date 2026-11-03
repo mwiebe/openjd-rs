@@ -210,6 +210,43 @@ impl JobBoolParameterDefinition {
     }
 }
 
+/// Which spellings of a RANGE_EXPR value as written (a string) `minLength`
+/// and `maxLength` constrain. The rule depends on the document that
+/// declares the definition.
+///
+/// A `range_expr` value has no spelling but its canonical form, so its
+/// canonical form is checked under either variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RangeExprLengthCheck {
+    /// Check the value as written only. This is the rule for a RANGE_EXPR
+    /// Job Parameter in a document that does not list the `ENV_PARAMS`
+    /// extension (Template Schemas §2.10).
+    AsWritten,
+    /// Check the value as written and its canonical form. This is the rule
+    /// for a RANGE_EXPR Job Parameter in a document that lists
+    /// `ENV_PARAMS` (§2.10), and for every Environment parameter of type
+    /// RANGE_EXPR (§4.5 item 5).
+    AsWrittenAndCanonical,
+}
+
+impl RangeExprLengthCheck {
+    /// The rule for a Job Parameter declared in a document with `profile`:
+    /// [`AsWrittenAndCanonical`](Self::AsWrittenAndCanonical) when the
+    /// profile lists `ENV_PARAMS`, else [`AsWritten`](Self::AsWritten).
+    pub fn for_job_parameter(profile: &crate::types::ModelProfile) -> Self {
+        if profile.has_extension(crate::types::ModelExtension::EnvParams) {
+            Self::AsWrittenAndCanonical
+        } else {
+            Self::AsWritten
+        }
+    }
+
+    /// True for [`AsWrittenAndCanonical`](Self::AsWrittenAndCanonical).
+    pub fn checks_canonical(self) -> bool {
+        self == Self::AsWrittenAndCanonical
+    }
+}
+
 /// §2.10 JobRangeExprParameterDefinition
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -229,12 +266,13 @@ pub struct JobRangeExprParameterDefinition {
 impl JobRangeExprParameterDefinition {
     /// Check a value against `minLength` and `maxLength` (§2.10). A string
     /// is a value as written: it must parse as a range expression and
-    /// satisfy them, and with `env_params` so must its canonical form.
-    /// `env_params` is whether the document that declares this definition
-    /// lists the `ENV_PARAMS` extension; pass `true` for an Environment
-    /// parameter, whose canonical form is always checked (§4.5 item 5). A
-    /// `range_expr` has no other spelling, so its canonical form is checked
-    /// whatever `env_params` is.
+    /// satisfy them, and under
+    /// [`RangeExprLengthCheck::AsWrittenAndCanonical`] so must its canonical
+    /// form. Pass the rule of the document that declares this definition
+    /// ([`RangeExprLengthCheck::for_job_parameter`]), or
+    /// `AsWrittenAndCanonical` for an Environment parameter (§4.5 item 5).
+    /// A `range_expr` has no other spelling, so its canonical form is
+    /// checked under either rule.
     ///
     /// # Errors
     ///
@@ -243,7 +281,7 @@ impl JobRangeExprParameterDefinition {
     pub fn check_value_constraints(
         &self,
         value: &ExprValue,
-        env_params: bool,
+        length_check: RangeExprLengthCheck,
     ) -> Result<(), String> {
         match value {
             ExprValue::RangeExpr(r) => {
@@ -258,7 +296,7 @@ impl JobRangeExprParameterDefinition {
                 })?;
                 self.check_length(&format!("value '{s}'"), s)?;
                 let canonical = r.to_string();
-                if !env_params || canonical == *s {
+                if !length_check.checks_canonical() || canonical == *s {
                     return Ok(());
                 }
                 self.check_length(&format!("canonical form '{canonical}'"), &canonical)
@@ -297,13 +335,16 @@ impl JobRangeExprParameterDefinition {
     /// Check the definition at template validation: its `default` must be
     /// a valid range expression that satisfies `minLength` and `maxLength`,
     /// as [`check_value_constraints`](Self::check_value_constraints) checks
-    /// it with the same `env_params`, and its `userInterface` control must
+    /// it under the same `length_check`, and its `userInterface` control must
     /// be one this type allows.
     ///
     /// # Errors
     ///
     /// Returns every message found, each naming the parameter.
-    pub fn validate_definition(&self, env_params: bool) -> Result<(), Vec<String>> {
+    pub fn validate_definition(
+        &self,
+        length_check: RangeExprLengthCheck,
+    ) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if let Some(default) = &self.default {
             if default.parse::<openjd_expr::RangeExpr>().is_err() {
@@ -312,10 +353,10 @@ impl JobRangeExprParameterDefinition {
                     self.name, default
                 ));
             } else if let Err(e) =
-                self.check_value_constraints(&ExprValue::String(default.clone()), env_params)
+                self.check_value_constraints(&ExprValue::String(default.clone()), length_check)
             {
                 // The default satisfies minLength and maxLength as written,
-                // and with ENV_PARAMS in canonical form (§2.10).
+                // and under AsWrittenAndCanonical in canonical form (§2.10).
                 errors.push(format!("{e} (default)"));
             }
         }

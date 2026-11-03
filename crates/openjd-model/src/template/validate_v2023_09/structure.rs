@@ -98,8 +98,7 @@ pub fn validate_structure(
             // a document that lists ENV_PARAMS (§2.10).
             if let Err(param_errors) = p.validate_definition(
                 limits,
-                ctx.profile
-                    .has_extension(crate::types::ModelExtension::EnvParams),
+                crate::template::RangeExprLengthCheck::for_job_parameter(&ctx.profile),
             ) {
                 for e in param_errors {
                     errors.add(&p_path, e);

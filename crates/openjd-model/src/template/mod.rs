@@ -38,7 +38,8 @@ pub use expr_parameters::{
     JobListBoolParameterDefinition, JobListFloatParameterDefinition, JobListIntParameterDefinition,
     JobListListIntParameterDefinition, JobListPathParameterDefinition,
     JobListStringParameterDefinition, JobRangeExprParameterDefinition, ListFloatUserInterface,
-    ListIntUserInterface, ListPathUserInterface, ListSimpleUserInterface, RangeExprUserInterface,
+    ListIntUserInterface, ListPathUserInterface, ListSimpleUserInterface, RangeExprLengthCheck,
+    RangeExprUserInterface,
 };
 #[cfg(test)]
 pub use expr_parameters::{

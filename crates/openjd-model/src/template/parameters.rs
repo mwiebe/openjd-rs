@@ -5,6 +5,7 @@
 //! Job parameter definitions per spec §2.
 
 use super::constrained_strings::{Description, Identifier};
+use super::expr_parameters::RangeExprLengthCheck;
 use crate::types::{DataFlow, ObjectType};
 use serde::Deserialize;
 
@@ -557,13 +558,13 @@ impl JobParameterDefinition {
         }
     }
 
-    /// Check a value against this definition's constraints. `env_params`
-    /// is whether the document that declares the definition lists the
-    /// `ENV_PARAMS` extension, which decides whether a RANGE_EXPR string's
-    /// canonical form is checked against `minLength` and `maxLength` besides
-    /// the string itself (§2.10); pass `true` for an Environment parameter,
-    /// whose canonical form is always checked (§4.5 item 5). It changes
-    /// nothing for the other types.
+    /// Check a value against this definition's constraints. `length_check`
+    /// decides whether a RANGE_EXPR string's canonical form is checked
+    /// against `minLength` and `maxLength` besides the string itself: pass
+    /// [`RangeExprLengthCheck::for_job_parameter`] of the document that
+    /// declares the definition (§2.10), or
+    /// [`RangeExprLengthCheck::AsWrittenAndCanonical`] for an Environment
+    /// parameter (§4.5 item 5). It changes nothing for the other types.
     ///
     /// # Errors
     ///
@@ -572,7 +573,7 @@ impl JobParameterDefinition {
     pub fn check_constraints(
         &self,
         value: &openjd_expr::ExprValue,
-        env_params: bool,
+        length_check: RangeExprLengthCheck,
     ) -> Result<(), String> {
         // Extract string representation for base type constraint checking
         let s;
@@ -599,7 +600,7 @@ impl JobParameterDefinition {
             Self::FLOAT(p) => p.check_constraints(str_val),
             Self::PATH(p) => p.check_constraints(str_val),
             Self::BOOL(p) => p.check_value_constraints(value),
-            Self::RANGE_EXPR(p) => p.check_value_constraints(value, env_params),
+            Self::RANGE_EXPR(p) => p.check_value_constraints(value, length_check),
             Self::LIST_STRING(p) => p.check_value_constraints(value),
             Self::LIST_PATH(p) => p.check_value_constraints(value),
             Self::LIST_INT(p) => p.check_value_constraints(value),
@@ -609,9 +610,14 @@ impl JobParameterDefinition {
         }
     }
 
-    /// Check the definition at template validation: the consistency of its
-    /// constraints, that its `default` satisfies them, and its
-    /// `userInterface`. `env_params` is as for
+    /// Check the definition at template validation: that its `default`
+    /// satisfies its constraints, and its `userInterface`. For STRING, PATH,
+    /// INT and FLOAT it also checks that the constraints are consistent
+    /// (`minLength ≤ maxLength`, `minValue ≤ maxValue`, and `allowedValues`
+    /// non-empty and within those bounds). For BOOL, RANGE_EXPR and the
+    /// LIST types it checks only `default` and `userInterface`, so, for
+    /// example, a RANGE_EXPR with `minLength: 5` and `maxLength: 3` and no
+    /// `default` passes. `length_check` is as for
     /// [`check_constraints`](Self::check_constraints).
     ///
     /// # Errors
@@ -620,7 +626,7 @@ impl JobParameterDefinition {
     pub fn validate_definition(
         &self,
         limits: &super::validate_v2023_09::EffectiveLimits,
-        env_params: bool,
+        length_check: RangeExprLengthCheck,
     ) -> Result<(), Vec<String>> {
         match self {
             Self::STRING(p) => p.validate_definition(limits),
@@ -628,7 +634,7 @@ impl JobParameterDefinition {
             Self::FLOAT(p) => p.validate_definition(),
             Self::PATH(p) => p.validate_definition(limits),
             Self::BOOL(p) => p.validate_definition(),
-            Self::RANGE_EXPR(p) => p.validate_definition(env_params),
+            Self::RANGE_EXPR(p) => p.validate_definition(length_check),
             Self::LIST_STRING(p) => p.validate_definition(),
             Self::LIST_PATH(p) => p.validate_definition(),
             Self::LIST_INT(p) => p.validate_definition(),

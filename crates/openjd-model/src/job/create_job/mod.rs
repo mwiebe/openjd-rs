@@ -100,6 +100,14 @@ pub fn create_job(
 /// via [`preprocess_job_parameters`] before calling this function, with
 /// the same Environment Templates.
 ///
+/// Each value is re-checked against the Job Template's parameter
+/// definitions ([`MergedParameterDefinition::check_constraints`]). A
+/// RANGE_EXPR value is a `range_expr`, with no spelling as written, so for
+/// a RANGE_EXPR Job Parameter in a Job Template that does not list
+/// `ENV_PARAMS` the re-check enforces no `minLength` or `maxLength`: a
+/// `range_expr` that did not come from [`preprocess_job_parameters`] is
+/// accepted whatever its length (§2.10).
+///
 /// The `ctx` parameter carries the specification revision, enabled
 /// extensions, caller limits, and submission path policy
 /// ([`submission_path_format`](ValidationContext::submission_path_format),

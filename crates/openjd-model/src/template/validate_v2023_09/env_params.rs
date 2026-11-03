@@ -70,7 +70,7 @@ use crate::error::{path_field, path_index, PathElement, ValidationErrors};
 use crate::template::expr_parameters::BoolValue;
 use crate::template::{
     Environment, EnvironmentActivation, EnvironmentParameterDefinition, EnvironmentParameterValue,
-    EnvironmentTemplate, FlexFloat, FlexInt, JobTemplate, StepDependency,
+    EnvironmentTemplate, FlexFloat, FlexInt, JobTemplate, RangeExprLengthCheck, StepDependency,
 };
 use crate::types::{JobParameterType, ModelExtension, ValidationContext};
 
@@ -607,8 +607,11 @@ fn check_definition(
     // §4.5 item 5: the definition's own constraints, as for the Job
     // Parameter of the same type.
     // An Environment parameter's RANGE_EXPR length always checks the
-    // canonical form too (§4.5 item 5), hence `true`.
-    if let Err(msgs) = def.definition.validate_definition(limits, true) {
+    // canonical form too (§4.5 item 5).
+    if let Err(msgs) = def
+        .definition
+        .validate_definition(limits, RangeExprLengthCheck::AsWrittenAndCanonical)
+    {
         for m in msgs {
             errors.add(def_path, m);
         }
@@ -1332,10 +1335,10 @@ pub(crate) fn convert_literal_value(
         }
         _ => None,
     };
-    if let Err(e) = def
-        .definition
-        .check_constraints(written.as_ref().unwrap_or(&value), true)
-    {
+    if let Err(e) = def.definition.check_constraints(
+        written.as_ref().unwrap_or(&value),
+        RangeExprLengthCheck::AsWrittenAndCanonical,
+    ) {
         errors.add(path, e);
         return (Some(value), false);
     }

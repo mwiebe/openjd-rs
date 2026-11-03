@@ -108,12 +108,14 @@ pub struct PathParameterOptions<'a> {
 
 **Round trip:** a value `preprocess_job_parameters` returns should be a value it accepts as input.
 Both its input and output types are public, so a caller can hand its output straight back to it.
-`create_job` relies on something adjacent for every caller: it re-runs `check_constraints` over each
-value it is given (`create_job/mod.rs`, the "Validate parameter values against template constraints"
-loop at the start of `create_job`). A RANGE_EXPR value reaches it as a `range_expr`, whose spelling as
-submitted is gone, so the re-check tests only its canonical form, and only against the lengths of a
-template that lists `ENV_PARAMS`; `preprocess_job_parameters` has already checked the value as
-written. Testing the canonical form against an EXPR-only template's lengths would break the round
+`create_job` re-runs `check_constraints` over each value it is given (`create_job/mod.rs`, the
+"Validate parameter values against template constraints" loop at the start of `create_job`), which
+holds for every caller with one exception. A RANGE_EXPR value reaches it as a `range_expr`, whose
+spelling as submitted is gone, so the re-check tests only its canonical form, and only against the
+lengths of a template that lists `ENV_PARAMS`; `preprocess_job_parameters` has already checked the
+value as written. For a RANGE_EXPR Job Parameter in a template that does not list `ENV_PARAMS`,
+`create_job` therefore enforces no length bounds, and a `range_expr` value that did not come from
+`preprocess_job_parameters` is accepted whatever its length. Testing the canonical form against an EXPR-only template's lengths would break the round
 trip: `1-3:2` passes `minLength: 4` in the first pass, and its canonical form `1,3` would fail it in
 the second.
 
@@ -525,7 +527,8 @@ stage](#the-submission-stage):
   result, which for a `path` result follows the submission format's rules (WINDOWS turns `/`
   into `\`).
 - The definition's **constraints** are checked against that stored value (constraint 6,
-  §4.5 item 5), using `JobParameterDefinition::check_constraints` with `env_params: true`
+  §4.5 item 5), using `JobParameterDefinition::check_constraints` with
+  `RangeExprLengthCheck::AsWrittenAndCanonical`
   (for a literal, by the template-validation check), so every effective value of an
   Environment that is not disabled for its Step satisfies its definition. A RANGE_EXPR's
   `minLength` and `maxLength` check both the value as written and its canonical form, whatever

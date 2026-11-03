@@ -3993,6 +3993,47 @@ fn test_preprocess_range_expr_merged_length_follows_each_documents_extensions() 
     assert!(preprocess_range_expr_with(WITH_ENV_PARAMS, plain, &[et], None).is_ok());
 }
 
+#[test]
+fn test_preprocess_range_expr_merged_canonical_length_takes_tightest_env_params_bound() {
+    // §1.2.1: merging tightens constraints, so across the definitions whose
+    // document lists ENV_PARAMS the canonical form is bounded by the largest
+    // minLength and the smallest maxLength, whichever document declares it
+    // (§2.10). Every document here lists ENV_PARAMS, and each case runs with
+    // the tighter bound in the Job Template and in the Environment Template.
+    let run = |job_def: &str, env_def: &str, value: &str| {
+        let et = range_expr_env_template(WITH_ENV_PARAMS, env_def);
+        preprocess_range_expr_with(
+            WITH_ENV_PARAMS,
+            job_def,
+            &[et],
+            Some(openjd_expr::ExprValue::String(value.into())),
+        )
+        .map(|_| ())
+    };
+    // "1-3:2" (5 characters) meets minLength 2 and 4 as written; its
+    // canonical form "1,3" (3) meets 2 but not 4.
+    let min2 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 2}"#;
+    let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
+    for (job_def, env_def) in [(min2, min4), (min4, min2)] {
+        assert_eq!(
+            run(job_def, env_def, "1-3:2").unwrap_err(),
+            "Validation error: Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4",
+            "job: {job_def}, env: {env_def}"
+        );
+    }
+    // "14,12,16-18" (11 characters) meets maxLength 12 and 20 as written;
+    // its canonical form "12-16:2,17,18" (13) meets 20 but not 12.
+    let max12 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 12}"#;
+    let max20 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 20}"#;
+    for (job_def, env_def) in [(max12, max20), (max20, max12)] {
+        assert_eq!(
+            run(job_def, env_def, "14,12,16-18").unwrap_err(),
+            "Validation error: Parameter 'Foo': canonical form '12-16:2,17,18' length 13 exceeds maximum 12",
+            "job: {job_def}, env: {env_def}"
+        );
+    }
+}
+
 fn expr_env_template(params: &str) -> serde_json::Value {
     yaml_val(&format!(
         r#"{{
