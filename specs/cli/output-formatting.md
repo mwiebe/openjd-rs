@@ -110,7 +110,7 @@ Session ended successfully
 Job: MyJob
 Step: Render
 Duration: 42.123 seconds
-Tasks run: 100
+Chunks run: 100
 ```
 
 **JSON:**
@@ -121,7 +121,7 @@ Tasks run: 100
   "job_name": "MyJob",
   "step_name": "Render",
   "duration": 42.123,
-  "tasks_run": 100
+  "chunks_run": 100
 }
 ```
 
@@ -132,7 +132,7 @@ message: Session ended successfully
 job_name: MyJob
 step_name: Render
 duration: 42.123
-tasks_run: 100
+chunks_run: 100
 ```
 
 ## Implementation Pattern
@@ -173,8 +173,11 @@ Both JSON and human-readable formats omit empty optional fields:
 - `description` — omitted if the step/environment has no description
 - `environments` — omitted if the step has no environments
 - `dependencies` — omitted if the step has no dependencies
+- `environment_parameters` — omitted if the step has no effective Environment parameter
+  values (in summary output; `ENV_PARAMS`)
 - `total_environments` — omitted if zero (in JSON summary output)
-- `step_name` — omitted if no specific step was selected (in run output)
+- `step_name` — `null` in JSON (and YAML) run output when no `--step` was given; the
+  human-readable run output omits the `Step:` line
 
 ## Differences from Python CLI
 

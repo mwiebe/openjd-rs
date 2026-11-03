@@ -99,14 +99,21 @@ pub fn check_capability_name(
 /// its contribution is unknowable here and job creation re-checks the
 /// resolved count. Two or more certain elements violate the rule under
 /// every possible resolution. `attr_path` is the attribute's path.
+/// Whether a host has exactly one value of attribute `name` (§3.3.3 item
+/// 2.1): `attr.worker.os.family` and `attr.worker.cpu.arch`, compared
+/// ignoring case. Their `allOf` may hold at most one value.
+pub fn is_single_valued_attribute(name: &str) -> bool {
+    let name = name.to_lowercase();
+    name == "attr.worker.os.family" || name == "attr.worker.cpu.arch"
+}
+
 pub fn check_single_valued_all_of(
     capability_name: &str,
     all_of: Option<&[openjd_expr::FormatString]>,
     attr_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
-    let lower = capability_name.to_lowercase();
-    if lower != "attr.worker.os.family" && lower != "attr.worker.cpu.arch" {
+    if !is_single_valued_attribute(capability_name) {
         return;
     }
     let Some(vals) = all_of else {

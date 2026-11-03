@@ -1,0 +1,13 @@
+# An Environment Template defining the Licenses Environment that
+# requires_licenses.yaml names.
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: Licenses
+  envParameterDefinitions:
+  - {name: Seats, type: INT}
+  script:
+    actions:
+      onEnter:
+        command: python
+        args: ["-c", "import sys; print('Licenses onEnter Seats=' + sys.argv[1])", "{{Env.Param.Seats}}"]

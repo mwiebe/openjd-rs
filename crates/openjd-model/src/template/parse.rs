@@ -191,8 +191,13 @@ fn validate_extensions_list(
 /// it should be reported at.
 type WrittenTypeName = (Vec<PathElement>, String);
 
-/// Collect the `type` string of every parameter definition, as written, from the
-/// raw document.
+/// Collect the `type` string of every Job Parameter and Task Parameter
+/// definition, as written, from the raw document.
+///
+/// An Environment's `envParameterDefinitions` (ENV_PARAMS) are not collected:
+/// a document that lists `ENV_PARAMS` lists `EXPR` too (Template Schemas §1.1
+/// item 3), under which type names are case-insensitive, and template
+/// validation rejects any other document that has them.
 ///
 /// The two kinds are collected separately so each can be checked against its own
 /// type table. Deserialization matches the tag case-blind (§2 makes type names
@@ -235,10 +240,8 @@ fn collect_written_type_names(
         return;
     };
     for (i, step) in steps.iter().enumerate() {
-        let space_path = path_field(
-            &path_index(&path_field(&root, "steps"), i),
-            "parameterSpace",
-        );
+        let step_path = path_index(&path_field(&root, "steps"), i);
+        let space_path = path_field(&step_path, "parameterSpace");
         collect_from(
             step.get("parameterSpace")
                 .and_then(|s| s.get("taskParameterDefinitions")),
@@ -396,8 +399,8 @@ pub fn decode_environment_template(
 
     // An environment template's `parameterDefinitions` is the same
     // `JobParameterDefinition` union a job template's is, so §2's casing rule
-    // applies here too. Collected before `template` is moved below. There are no
-    // steps on this document, so no task parameter names.
+    // applies here too. Collected before `template` is moved below. There are
+    // no steps on this document, so no task parameter names.
     let mut job_type_names = Vec::new();
     let mut task_type_names = Vec::new();
     collect_written_type_names(&template, &mut job_type_names, &mut task_type_names);

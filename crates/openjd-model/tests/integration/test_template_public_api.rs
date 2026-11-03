@@ -147,7 +147,8 @@ fn job_template_field_access() {
 
     // StepDependency.
     let dep = &steps[1].dependencies.as_ref().unwrap()[0];
-    assert_eq!(dep.depends_on, "S0");
+    assert_eq!(dep.depends_on.as_deref(), Some("S0"));
+    assert_eq!(dep.step(), Some("S0"));
 }
 
 #[test]
@@ -204,7 +205,10 @@ fn step_template_full_surface() {
     assert_eq!(amount.min.as_ref().unwrap().raw(), "4");
     let attr: &AttributeRequirement = &hr.attributes.as_ref().unwrap()[0];
     assert_eq!(attr.name.raw(), "attr.worker.os.family");
-    assert_eq!(attr.any_of.as_ref().unwrap()[0].raw(), "linux");
+    assert_eq!(
+        attr.any_of.as_ref().unwrap().as_list().unwrap()[0].raw(),
+        "linux"
+    );
 
     let script: &StepScript = s.script.as_ref().unwrap();
     let actions: &StepActions = &script.actions;

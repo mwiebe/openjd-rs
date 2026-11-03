@@ -55,6 +55,8 @@ pub enum SessionError {
 
     #[error("The session was canceled through its session-wide cancel token and cannot be continued.")]
     SessionCanceled,
+    #[error("Environment '{environment}': invalid Environment parameter values: {reason}")]
+    InvalidEnvironmentParameters { environment: String, reason: String },
 }
 ```
 
@@ -153,6 +155,18 @@ ending-only again. Rather than return the session to `Ready` under a cancellatio
 can't undo, `clear_ending_only()` refuses and leaves the session `ReadyEnding`; only
 `exit_environment()` and `cleanup()` remain. Per-action cancels (`cancel_action()` and
 `SessionCancelHandle`) don't raise this — they install a fresh token per action.
+### InvalidEnvironmentParameters
+
+Returned by `enter_environment_with_parameters` (ENV_PARAMS) when its values name
+another Environment, or their table is not one transport entry per bare parameter name:
+the table is not a JSON array or has more than `MAX_SYMBOL_TABLE_ENTRIES` entries, or
+an entry has no string `name`, a name that is not an `<Identifier>` or repeats, no
+string `type` or one that is not an expression type, no `value`, or a value that does
+not decode with its type (a `path` that is not a string, a `list[path]` that is not a
+list of strings). `reason` names the entry or parameter at fault. The check runs before any state for the Environment is
+recorded, so the session stays `Ready`. `environment` is the name of the Environment
+being entered. It is a distinct variant, not `Runtime`, because it reports a caller
+error in the values rather than a failure of the session.
 
 ## Error Propagation Patterns
 

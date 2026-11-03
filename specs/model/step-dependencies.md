@@ -47,6 +47,13 @@ pub struct StepDependencyEdge {
 3. For each step's dependencies, creates edges from the dependency target to the step
 4. Errors on unknown dependency targets (step name not found)
 
+Every `job::StepDependency` is a Step edge. A template `step:` entry (ENV_PARAMS, §3.2 item 1)
+is a synonym of `dependsOn:`, and `create_job` writes it as a `job::StepDependency` like any
+other. A template `environment:` entry (ENV_PARAMS) does
+not delay scheduling (Template Schemas §3.2 item 2), so `create_job` leaves it out of
+`job::Step::dependencies` (it becomes `environment_parameters` and `environments` instead),
+and the graph never sees one.
+
 ## Topological Sort
 
 `topo_sorted()` returns step indices in dependency-respecting order using iterative

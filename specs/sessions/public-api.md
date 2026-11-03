@@ -21,7 +21,15 @@ A typical caller (e.g. the Deadline Cloud worker agent) flow is:
 1. Build a [`SessionConfig`] with the job parameters, path-mapping rules, and
    (optionally) a cross-user [`SessionUser`].
 2. `Session::with_config(config)?` to create the session.
-3. For each job/step environment, `session.enter_environment(env, resolved_symtab, …).await?`.
+3. For each job/step environment, `session.enter_environment(env, resolved_symtab, …).await?`,
+   or, for an Environment that declares parameters (`ENV_PARAMS`),
+   `session.enter_environment_with_parameters(env, resolved_symtab, step_values, …).await?`
+   with the entry of the Step's `environment_parameters` for that Environment. With
+   `ENV_PARAMS`, enter only the Job Environments the Step's Sessions enter
+   (`job::Step::enters_environment`, from `activation`, the Step's entries, and each
+   Environment's `enableIf`),
+   and pass each Job Environment's own
+   `resolved_symtab`, which carries `Job.Name` and `Job.EnvNames`.
 4. For each task, `session.run_task(script, task_params, resolved_symtab, …).await?`.
 5. For each environment in reverse LIFO order, `session.exit_environment(id, …).await?`.
 6. `session.cleanup()` when done.
@@ -115,6 +123,14 @@ impl Session {
     pub fn files_directory(&self) -> &Path;
     pub fn environments_entered(&self) -> &[EnvironmentIdentifier];
     pub fn job_parameter_values(&self) -> &JobParameterValues;
+    /// ENV_PARAMS: the Environment parameter values the entered
+    /// Environment `identifier` was entered with, or `None` (not
+    /// entered, or entered without values). A scheduler compares them with
+    /// a Step's `environment_parameters` (via
+    /// `EnvironmentParameterValues::values_equal`) to decide whether this
+    /// Session may run the Step's Tasks (Template Schemas §3.2.2).
+    pub fn environment_parameters(&self, identifier: &str)
+        -> Option<&EnvironmentParameterValues>;
     pub fn path_mapping_rules(&self) -> &[PathMappingRule];
 
     /// Latest action status — `None` before the first action runs.
@@ -156,6 +172,33 @@ impl Session {
         os_env_vars: Option<&HashMap<String, String>>,
     ) -> Result<(String, String), SessionError>;
 
+    /// ENV_PARAMS: enter an environment with its effective parameter
+    /// values (`openjd_model::job::EnvironmentParameterValues`, the
+    /// entry of `Step::environment_parameters` whose `(document,
+    /// environment)` names this Environment). `enter_environment_with_output`
+    /// is this with `parameters: None`.
+    ///
+    /// Each entry of `parameters.values` is bound as `Env.Param.<name>`
+    /// (PATH and each LIST[PATH] element path-mapped with the session's
+    /// rules, as a `path`) and `Env.RawParam.<name>` (unmapped; a
+    /// `string` / `list[string]` for PATH / LIST[PATH]) for this
+    /// Environment's `variables`, script `let`, `onEnter`, `onExit`,
+    /// embedded files, and its own wrap hooks, and nothing else. The
+    /// session stores the values until `exit_environment`, which reuses
+    /// them. Values are not checked against the parameter definitions.
+    ///
+    /// Fails with `SessionError::InvalidEnvironmentParameters`, before
+    /// any state is recorded, when `parameters.environment != env.name`
+    /// or the table is not one entry per bare parameter name.
+    pub async fn enter_environment_with_parameters(
+        &mut self,
+        env: &Environment,
+        resolved_symtab: Option<&SerializedSymbolTable>,
+        parameters: Option<&EnvironmentParameterValues>,
+        identifier: Option<&str>,
+        os_env_vars: Option<&HashMap<String, String>>,
+    ) -> Result<(String, String), SessionError>;
+
     /// Exit an environment. Must be called in LIFO order — the
     /// last-entered environment first. Fails with
     /// `SessionError::LifoViolation` if called out of order.
@@ -170,6 +213,10 @@ impl Session {
     /// never brings an ending-only session back to Ready, for example
     /// after an earlier action ended Failed, Canceled or Timeout;
     /// only `clear_ending_only` does that.
+    ///
+    /// ENV_PARAMS: the `onExit` binds the `Env.Param.*` /
+    /// `Env.RawParam.*` values the environment was entered with; the
+    /// session drops them once the environment is exited.
     pub async fn exit_environment(
         &mut self,
         identifier: &EnvironmentIdentifier,
@@ -1087,6 +1134,11 @@ pub enum SessionError {
     /// permanent (a tokio token can't be reset), so the session can't be
     /// returned to Ready; only `exit_environment` and `cleanup` remain.
     SessionCanceled,
+    /// ENV_PARAMS: `enter_environment_with_parameters` was given values
+    /// for another Environment, or a table that is not one entry per
+    /// bare parameter name in transport form. Raised before any state is
+    /// recorded; the session stays Ready.
+    InvalidEnvironmentParameters { environment: String, reason: String },
 }
 ```
 
