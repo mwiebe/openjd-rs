@@ -700,9 +700,9 @@ pub enum UnmapError {
          so it names a location only this worker can see"
     )]
     NoRoundTrip,
-    /// The Session has path mapping rules, and every candidate that could
-    /// otherwise map back to the path is longer than [`MAX_PATH_LEN`] bytes,
-    /// which forward mapping does not handle.
+    /// The Session has path mapping rules, a candidate was skipped because it
+    /// is longer than [`MAX_PATH_LEN`] bytes, which forward mapping does not
+    /// handle, and no other candidate maps back to the path.
     #[error(
         "the path's form in the submission path context would be longer than \
          {MAX_PATH_LEN} bytes, the most that path mapping handles"

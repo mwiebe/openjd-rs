@@ -1483,7 +1483,9 @@ impl PathMapper {
 /// `destination_path` length, then `mapper.rules()` order) that
 /// `mapper.map_with_format(_, worker_format)` maps back to the reported
 /// path, compared after lexical normalization under `worker_format`, is
-/// returned, or `NoRoundTrip`. `mapper` MUST be the producing Session's own
+/// returned, or `NoRoundTrip`. A candidate longer than `MAX_PATH_LEN` is
+/// skipped, and if one was and none maps back the result is `TooLong`.
+/// `mapper` MUST be the producing Session's own
 /// `PathMapper`, built from its full, unfiltered rules. The RFC's SHOULD
 /// source-format filter is not implemented. See path-mapping.md § Reverse
 /// mapping.
@@ -1507,8 +1509,8 @@ pub enum path_mapping::UnmapError {
     Relative,
     /// The Session has rules and no candidate maps forward to the path.
     NoRoundTrip,
-    /// The Session has rules, and every candidate that could map back is
-    /// longer than `MAX_PATH_LEN`.
+    /// The Session has rules, a candidate was skipped as longer than
+    /// `MAX_PATH_LEN`, and no other candidate maps back.
     TooLong,
 }
 

@@ -622,12 +622,20 @@ fn reported_path_longer_than_max_path_len_is_unchanged_without_rules() {
 }
 
 #[test]
+fn candidate_longer_than_max_path_len_is_not_accepted_by_identity() {
+    // The candidate `/m/a/...` from `/m` -> `/m` is the reported path itself,
+    // one byte too long for forward mapping, which would return it unchanged.
+    // Accepting it by identity would store a value that the Session's rules
+    // send to `/elsewhere`.
+    let reported = format!("/m/a/{}", "a".repeat(MAX_PATH_LEN - "/m/a/".len() + 1));
+    let rules = [posix("/m", "/m"), posix("/m/a", "/elsewhere")];
+    assert_eq!(unmap_posix(&rules, &reported), Err(UnmapError::TooLong));
+}
+
+#[test]
 fn candidate_longer_than_max_path_len_is_skipped() {
     // The reported path fits, but the candidate from the longer source path
-    // does not: no rule would match it, so forward mapping could not
-    // reproduce the Session's mapping. With rules `/m` -> `/m` and
-    // `/m/a` -> `/elsewhere`, accepting `/m/a/...` by identity would store a
-    // value the Session maps to `/elsewhere`.
+    // does not, so it is skipped.
     let tail = "a".repeat(MAX_PATH_LEN - "/m/a/".len());
     let reported = format!("/m/a/{tail}");
     assert_eq!(reported.len(), MAX_PATH_LEN);

@@ -1813,6 +1813,18 @@ async fn path_input_longer_than_max_path_len_is_an_error() {
         .unwrap(),
     )
     .unwrap();
+    st.set(
+        "Steps.P.RawOutput.LL",
+        ExprValue::make_list(
+            vec![
+                ExprValue::make_list(vec![ExprValue::String(long.clone())], ExprType::STRING)
+                    .unwrap(),
+            ],
+            ExprType::list(ExprType::STRING),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
     let err = |symbol: &str, ty: ExprType| {
         f.session
@@ -1841,6 +1853,40 @@ async fn path_input_longer_than_max_path_len_is_an_error() {
     assert_eq!(
         err("Steps.P.TaskRawParam.N", ExprType::list(ExprType::PATH)),
         expected("Steps.P.TaskRawParam.N")
+    );
+    assert_eq!(
+        err(
+            "Steps.P.RawOutput.LL",
+            ExprType::list(ExprType::list(ExprType::PATH))
+        ),
+        expected("Steps.P.RawOutput.LL")
+    );
+    // A path of exactly MAX_PATH_LEN bytes is mapped.
+    let fits = format!(
+        "/src/{}",
+        "a".repeat(openjd_expr::path_mapping::MAX_PATH_LEN - "/src/".len())
+    );
+    let mut st = SymbolTable::new();
+    st.set("Steps.P.RawOutput.X", ExprValue::String(fits.clone()))
+        .unwrap();
+    let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    let built = f
+        .session
+        .build_symbol_table(
+            None,
+            Some(&base),
+            &[PathInput {
+                symbol: "Steps.P.RawOutput.X".into(),
+                ty: ExprType::PATH,
+            }],
+        )
+        .unwrap();
+    assert_eq!(
+        built.get_value("Steps.P.Output.X").cloned().unwrap(),
+        ExprValue::new_path(
+            format!("/mnt/dst/{}", &fits["/src/".len()..]),
+            PathFormat::host()
+        )
     );
 }
 
