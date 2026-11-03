@@ -198,7 +198,7 @@ pub enum ExprField {
     Int(i64),            // an integer scalar
     Float(f64),          // a number with a fraction or exponent
     Expression(String),  // a string: one expression, without {{ }}
-    Null,                // a present null (`null`, `~`, or an empty key)
+    Null,                // a present null
 }
 ```
 
@@ -212,11 +212,7 @@ Environment's own `enableIf` (below), both of type `bool`.
 Decoding is by hand and accepts every scalar, so that template validation, which knows the
 target type, reports a scalar that does not fit (`enableIf: 1`) at the field's path with the
 §7.5 rule, rather than serde reporting it without one. A string is always `Expression`, never
-read as a scalar: `"true"` is the expression `true`. The YAML decoder follows the YAML 1.2 core
-schema: `true` and `false`, also spelled `True`, `TRUE`, `False`, and `FALSE`, are boolean
-scalars, and an unquoted `yes`, `no`, `on`, or `off` is a string, so it is an expression that
-names an undefined variable. Template Schemas §7.5 asks templates not to use those four
-spellings, since a YAML 1.1 parser reads them as booleans. A list or a map is a decode error that
+read as a scalar: `"true"` is the expression `true`. A list or a map is a decode error that
 names the field ("enableIf must be a boolean, integer, float, or string (an expression field,
 Template Schemas §7.5)"), as is an integer above `i64::MAX` that fits `u64` ("enableIf: the
 integer N is out of range for an expression field …"). A larger integer, or one below

@@ -23,11 +23,10 @@ use serde::{Deserialize, Deserializer};
 /// A YAML or JSON boolean decodes as [`Bool`](Self::Bool), an integer as
 /// [`Int`](Self::Int), a number with a fraction or exponent as
 /// [`Float`](Self::Float), a string as [`Expression`](Self::Expression),
-/// and a present `null` (`null`, `~`, or a key with no value) as
-/// [`Null`](Self::Null). A list, a map, or an integer above `i64::MAX`
-/// that fits `u64` is a decode error; a larger integer, or one below
-/// `i64::MIN`, arrives from JSON number parsing as a float and decodes as
-/// [`Float`](Self::Float).
+/// and a present `null` as [`Null`](Self::Null). A list, a map, or an
+/// integer above `i64::MAX` that fits `u64` is a decode error; a larger
+/// integer, or one below `i64::MIN`, arrives from JSON number parsing as a
+/// float and decodes as [`Float`](Self::Float).
 ///
 /// A scalar of any type decodes, and so does a present `null`, so that
 /// template validation, which knows the field's target type, can report
