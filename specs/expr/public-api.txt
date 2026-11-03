@@ -420,6 +420,7 @@ pub fn openjd_expr::path_mapping::PathFormat::deserialize<__D>(__D) -> core::res
 pub enum openjd_expr::path_mapping::UnmapError
 pub openjd_expr::path_mapping::UnmapError::NoRoundTrip
 pub openjd_expr::path_mapping::UnmapError::Relative
+pub openjd_expr::path_mapping::UnmapError::TooLong
 impl core::clone::Clone for openjd_expr::path_mapping::UnmapError
 pub fn openjd_expr::path_mapping::UnmapError::clone(&self) -> openjd_expr::path_mapping::UnmapError
 impl core::cmp::Eq for openjd_expr::path_mapping::UnmapError

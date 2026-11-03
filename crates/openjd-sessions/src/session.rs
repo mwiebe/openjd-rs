@@ -2946,12 +2946,25 @@ impl Session {
             return Ok(());
         }
         let raw = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
-            openjd_expr::ExprValue::new_path(s, stored_path_format(s))
+            Ok(openjd_expr::ExprValue::new_path(s, stored_path_format(s)))
         })
         .map_err(err)?;
         let host = openjd_expr::path_mapping::PathFormat::host();
+        let max = openjd_expr::path_mapping::MAX_PATH_LEN;
         let mapped = map_stored_paths(&stored, depth, &input.ty, &mut |s| {
-            openjd_expr::ExprValue::new_path(self.path_mapper.map(s), host)
+            // As for PATH parameters, a path too long to map is an error
+            // rather than passed through unmapped.
+            if s.len() > max {
+                return Err(format!(
+                    "the path is {} bytes long, more than the limit of {max} bytes \
+                     that path mapping handles",
+                    s.len()
+                ));
+            }
+            Ok(openjd_expr::ExprValue::new_path(
+                self.path_mapper.map(s),
+                host,
+            ))
         })
         .map_err(err)?;
         symtab
@@ -3309,23 +3322,24 @@ fn path_type_depth(ty: &openjd_expr::ExprType) -> Option<usize> {
 
 /// Turn a stored `string` (`depth` 0), `list[string]` (1), or
 /// `list[list[string]]` (2) into the same shape of `path` values, converting
-/// each string with `f`. A stored value of another shape is an error that
-/// names `ty`, the type the input was recorded with.
+/// each string with `f`, which may refuse it. A stored value of another shape
+/// is an error that names `ty`, the type the input was recorded with.
 fn map_stored_paths(
     value: &openjd_expr::ExprValue,
     depth: usize,
     ty: &openjd_expr::ExprType,
-    f: &mut dyn FnMut(&str) -> openjd_expr::ExprValue,
+    f: &mut dyn FnMut(&str) -> Result<openjd_expr::ExprValue, String>,
 ) -> Result<openjd_expr::ExprValue, String> {
     use openjd_expr::{ExprType, ExprValue};
     let paths = |items: Vec<ExprValue>, elem: ExprType| {
         ExprValue::make_list(items, elem).map_err(|e| e.to_string())
     };
     match (depth, value) {
-        (0, ExprValue::String(s)) => Ok(f(s)),
-        (1, ExprValue::ListString(items, _)) => {
-            paths(items.iter().map(|s| f(s)).collect(), ExprType::PATH)
-        }
+        (0, ExprValue::String(s)) => f(s),
+        (1, ExprValue::ListString(items, _)) => paths(
+            items.iter().map(|s| f(s)).collect::<Result<_, _>>()?,
+            ExprType::PATH,
+        ),
         // An empty list can be stored without its element type.
         (1, ExprValue::ListList(items, _, _)) if items.is_empty() => {
             paths(Vec::new(), ExprType::PATH)

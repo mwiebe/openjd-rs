@@ -8,7 +8,7 @@
 
 use openjd_expr::path_mapping::{
     unapply_rules, unapply_rules_with_source_format, PathFormat, PathMapper, PathMappingRule,
-    UnmapError,
+    UnmapError, MAX_PATH_LEN,
 };
 
 fn rule(format: PathFormat, src: &str, dst: &str) -> PathMappingRule {
@@ -578,6 +578,65 @@ fn error_messages() {
         "no path mapping rule maps the path back to the submission path context, \
          so it names a location only this worker can see"
     );
+    assert_eq!(
+        UnmapError::TooLong.to_string(),
+        "the path's form in the submission path context would be longer than 32768 bytes, \
+         the most that path mapping handles"
+    );
+}
+
+// === Paths longer than MAX_PATH_LEN ===
+
+#[test]
+fn candidate_at_max_path_len_maps_back_and_one_past_it_is_too_long() {
+    let rules = [posix("/src", "/mnt/dst")];
+    let fits = "a".repeat(MAX_PATH_LEN - "/src/".len());
+    assert_eq!(
+        unmap_posix(&rules, &format!("/mnt/dst/{fits}")),
+        Ok(format!("/src/{fits}"))
+    );
+    let over = "a".repeat(MAX_PATH_LEN - "/src/".len() + 1);
+    assert_eq!(
+        unmap_posix(&rules, &format!("/mnt/dst/{over}")),
+        Err(UnmapError::TooLong)
+    );
+}
+
+#[test]
+fn reported_path_longer_than_max_path_len_maps_back_to_a_short_form() {
+    // Forward mapping takes inputs of at most MAX_PATH_LEN bytes, but its
+    // result may be longer, so a long reported path can have a short stored
+    // form.
+    let dest = format!("/mnt/{}", "d".repeat(MAX_PATH_LEN - 10));
+    let tail = "f".repeat(100);
+    let reported = format!("{dest}/{tail}");
+    assert!(reported.len() > MAX_PATH_LEN);
+    let rules = [posix("/s", &dest)];
+    assert_eq!(unmap_posix(&rules, &reported), Ok(format!("/s/{tail}")));
+}
+
+#[test]
+fn reported_path_longer_than_max_path_len_is_unchanged_without_rules() {
+    let long = format!("/out/{}", "a".repeat(MAX_PATH_LEN));
+    assert_eq!(unmap_posix(&[], &long), Ok(long.clone()));
+}
+
+#[test]
+fn candidate_longer_than_max_path_len_is_skipped() {
+    // The reported path fits, but the candidate from the longer source path
+    // does not: no rule would match it, so forward mapping could not
+    // reproduce the Session's mapping. With rules `/m` -> `/m` and
+    // `/m/a` -> `/elsewhere`, accepting `/m/a/...` by identity would store a
+    // value the Session maps to `/elsewhere`.
+    let tail = "a".repeat(MAX_PATH_LEN - "/m/a/".len());
+    let reported = format!("/m/a/{tail}");
+    assert_eq!(reported.len(), MAX_PATH_LEN);
+    let long_source = format!("/{}", "s".repeat(40));
+    let rules = [posix(&long_source, "/m")];
+    assert_eq!(unmap_posix(&rules, &reported), Err(UnmapError::TooLong));
+    // A shorter candidate that maps back is still chosen.
+    let rules = [posix(&long_source, "/m"), posix("/t", "/m/a")];
+    assert_eq!(unmap_posix(&rules, &reported), Ok(format!("/t/{tail}")));
 }
 
 // === unapply_rules_with_source_format ===

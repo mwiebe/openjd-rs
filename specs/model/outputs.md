@@ -181,7 +181,7 @@ A `PATH` value, each element of a `LIST[PATH]` value, and each `PATH` element un
 `APPEND` is mapped back with
 `openjd_expr::path_mapping::unapply_rules_with_source_format(path_mapper, value,
 worker_format)` (RFC 0012 §Path values; `specs/expr/path-mapping.md` § Reverse mapping). A
-`Relative` or `NoRoundTrip` result is a `Path` error naming the path. The stored
+`Relative`, `NoRoundTrip` or `TooLong` result is a `Path` error naming the path. The stored
 `ExprValue::Path` gets the format the function returns: the matching rule's
 `source_path_format`, `Uri` for a URI, or `worker_format` when there are no rules. A
 `LIST[PATH]` value takes its first element's format (an `ExprValue::ListPath` has one

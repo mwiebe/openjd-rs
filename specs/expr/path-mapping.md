@@ -129,6 +129,9 @@ reference inverse:
    the reported one is returned. If none does, the result is
    `UnmapError::NoRoundTrip`. The common case is a path under the Session Working
    Directory, which no rule's `destination_path` covers.
+6. A candidate longer than `MAX_PATH_LEN` is skipped, and the result is
+   `UnmapError::TooLong` if no other candidate maps back (see **Paths longer than
+   `MAX_PATH_LEN`** below).
 
 The round trip is what makes the result correct, and it is needed because rules can
 nest: with `P:\` → `/mnt/p` and `P:\x` → `/data/x`, the candidate for `/mnt/p/x/f`
@@ -178,15 +181,23 @@ treats `1:\x`, `\\\share\x`, and `\\srv\\share` as absolute; here all four are
 test, for an absolute rule `source_path` (see
 [Source paths must be absolute](#source-paths-must-be-absolute)).
 
-**A candidate no rule matches.** Forward mapping returns a path no rule matches
-unchanged, so such a candidate passes the round trip exactly when it equals the
-reported path. That follows the RFC, whose requirement is on the forward mapping's
-result. The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward
-helper that reports whether a rule matched; the RFC wins where they disagree. Every
-candidate is a rule's absolute `source_path` (a `PathMapper` rejects any other) or a
-path under it, so forward mapping finds a rule for it unless the candidate is longer
-than `MAX_PATH_LEN`, which matches no rule and so fails the round trip unless it
-equals the reported path.
+**Paths longer than `MAX_PATH_LEN`.** Every candidate is a rule's absolute
+`source_path` (a `PathMapper` rejects any other) or a path under it, so forward
+mapping finds a rule for it, unless it is longer than `MAX_PATH_LEN` (32 KiB), which
+matches no rule ([Path length limit](#path-length-limit)). Forward mapping would
+return such a candidate unchanged, so the round trip could accept it by identity even
+though the Session's rules send its location elsewhere (with `/m` → `/m` and `/m/a` →
+`/elsewhere`, the reported `/m/a/<32 KiB>` would be stored as itself). So a candidate
+longer than `MAX_PATH_LEN` is skipped, and if no other candidate maps back, the result
+is `UnmapError::TooLong` rather than `NoRoundTrip`, whose message would wrongly say
+the path is on the worker only. The reported path itself may be longer than the
+limit, because it is a forward result, and forward results can be: with `/s` →
+`/mnt/<32 KiB>`, the reported `/mnt/<32 KiB>/f` is stored as `/s/f`. With no rules, a
+long absolute path is stored unchanged like any other. This mirrors forward mapping of `PATH` parameters,
+where a value longer than `MAX_PATH_LEN` is an error (`specs/sessions/session.md`).
+The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward helper that
+reports whether a rule matched; the round trip on the forward result is what the RFC
+requires, and this length check is the one case where they would differ.
 
 **Source format filtering is not implemented.** The RFC says a runtime that knows the
 submission path format SHOULD use only rules whose `source_path_format` is that
