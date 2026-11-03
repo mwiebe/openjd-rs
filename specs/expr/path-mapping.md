@@ -181,7 +181,8 @@ treats `1:\x`, `\\\share\x`, and `\\srv\\share` as absolute; here all four are
 test, for an absolute rule `source_path` (see
 [Source paths must be absolute](#source-paths-must-be-absolute)).
 
-**Paths longer than `MAX_PATH_LEN`.** Every candidate is a rule's absolute
+**Paths longer than `MAX_PATH_LEN`.** The limit is 32 KiB counted in bytes, not
+characters. Every candidate is a rule's absolute
 `source_path` (a `PathMapper` rejects any other) or a path under it, so forward
 mapping finds a rule for it, unless it is longer than `MAX_PATH_LEN` (32 KiB), which
 matches no rule ([Path length limit](#path-length-limit)). Forward mapping would
@@ -192,7 +193,8 @@ longer than `MAX_PATH_LEN` is skipped, and if no other candidate maps back, the 
 is `UnmapError::TooLong` rather than `NoRoundTrip`, whose message would wrongly say
 the path is on the worker only. The reported path itself may be longer than the
 limit, because it is a forward result, and forward results can be: with `/s` →
-`/mnt/<32 KiB>`, the reported `/mnt/<32 KiB>/f` is stored as `/s/f`. With no rules, a
+`/mnt/<just under 32 KiB>`, the reported `/mnt/<just under 32 KiB>/<100 bytes>` is
+stored as `/s/<100 bytes>`. With no rules, a
 long absolute path is accepted and stored unchanged like any other, as RFC 0012's
 inverse step 6 says; but a Session that then reads it as a `Steps.*` or `Loop.*` input
 cannot map it forward and fails, as it does for a `PATH` parameter longer than
