@@ -428,7 +428,10 @@ As for a PATH parameter, a stored path longer than 32 KiB
 (`openjd_expr::path_mapping::MAX_PATH_LEN`) is not passed to the command unmapped:
 building the twin fails with `SessionError::Runtime` (`Path input '<symbol>' in
 resolved_symtab: the path is <n> bytes long, more than the limit of 32768 bytes that
-path mapping handles`).
+path mapping handles`), whether or not the Session has rules. A producer Session with
+no rules stores such a value unchanged (`specs/expr/path-mapping.md` § Reverse
+mapping), so it fails every Session that reads it. The message does not say which
+list element is too long.
 
 Each is a `SessionError::Runtime` naming the symbol: a symbol of another form (`not a
 Steps.<Step>.RawOutput.<Name>, Steps.<Step>.TaskRawParam.<Name>, or RawLoop.<Name>

@@ -193,8 +193,10 @@ is `UnmapError::TooLong` rather than `NoRoundTrip`, whose message would wrongly 
 the path is on the worker only. The reported path itself may be longer than the
 limit, because it is a forward result, and forward results can be: with `/s` →
 `/mnt/<32 KiB>`, the reported `/mnt/<32 KiB>/f` is stored as `/s/f`. With no rules, a
-long absolute path is stored unchanged like any other. This mirrors forward mapping of `PATH` parameters,
-where a value longer than `MAX_PATH_LEN` is an error (`specs/sessions/session.md`).
+long absolute path is accepted and stored unchanged like any other, as RFC 0012's
+inverse step 6 says; but a Session that then reads it as a `Steps.*` or `Loop.*` input
+cannot map it forward and fails, as it does for a `PATH` parameter longer than
+`MAX_PATH_LEN` (`specs/sessions/session.md`).
 The plan (`docs/control-flow-prototype-plan.md` §E1) asked for a forward helper that
 reports whether a rule matched; the round trip on the forward result is what the RFC
 requires, and this length check is the one case where they would differ.
