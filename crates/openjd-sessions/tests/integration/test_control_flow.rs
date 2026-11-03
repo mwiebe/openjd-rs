@@ -1861,6 +1861,33 @@ async fn path_input_longer_than_max_path_len_is_an_error() {
         ),
         expected("Steps.P.RawOutput.LL")
     );
+    // Without rules too: the path cannot be mapped by any Session, and the
+    // check does not depend on there being rules. A `RawLoop.*` input is
+    // checked the same way.
+    let no_rules = fixture();
+    let mut st = SymbolTable::new();
+    st.set("Steps.P.RawOutput.X", ExprValue::String(long.clone()))
+        .unwrap();
+    st.set("RawLoop.V", ExprValue::String(long.clone()))
+        .unwrap();
+    let base_no_rules = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+    for symbol in ["Steps.P.RawOutput.X", "RawLoop.V"] {
+        assert_eq!(
+            no_rules
+                .session
+                .build_symbol_table(
+                    None,
+                    Some(&base_no_rules),
+                    &[PathInput {
+                        symbol: symbol.into(),
+                        ty: ExprType::PATH,
+                    }],
+                )
+                .unwrap_err()
+                .to_string(),
+            expected(symbol)
+        );
+    }
     // A path of exactly MAX_PATH_LEN bytes is mapped.
     let fits = format!(
         "/src/{}",

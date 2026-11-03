@@ -645,6 +645,14 @@ fn candidate_longer_than_max_path_len_is_skipped() {
     // A shorter candidate that maps back is still chosen.
     let rules = [posix(&long_source, "/m"), posix("/t", "/m/a")];
     assert_eq!(unmap_posix(&rules, &reported), Ok(format!("/t/{tail}")));
+    // When the short candidate fails its round trip too, the result is still
+    // TooLong: a skipped candidate might have been the stored form.
+    let rules = [
+        posix(&long_source, "/m/a"),
+        posix("/t", "/m"),
+        posix("/t/a", "/x"),
+    ];
+    assert_eq!(unmap_posix(&rules, &reported), Err(UnmapError::TooLong));
 }
 
 // === unapply_rules_with_source_format ===
