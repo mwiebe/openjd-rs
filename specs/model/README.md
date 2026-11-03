@@ -115,7 +115,8 @@ Currently implements `2023-09` with extensions:
   [`docs/env-params-prototype-plan-5.md`](../../docs/env-params-prototype-plan-5.md) for the
   update to `d335619` (the exact attribute conjunction, and RANGE_EXPR equality by spelling,
   since replaced by equality by canonical form and length checks of both the written value and
-  its canonical form, spec `80a2018`),
+  its canonical form, spec `80a2018`; for a Job Parameter the canonical form is checked only in
+  a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
   the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). Not yet implemented
   in the Python reference (`openjd-model-for-python`), so there is no Python behavior to

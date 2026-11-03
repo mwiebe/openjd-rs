@@ -735,14 +735,39 @@ impl JobParameterDefinition {
     pub fn allowed_values_f64(&self) -> Option<Vec<f64>>;
     pub fn allowed_values_strings(&self) -> Option<Vec<String>>;
 
-    /// Validate an ExprValue against this definition's own constraints.
-    /// `preprocess_job_parameters` and `create_job` do not call it: they check
-    /// the merged definition (`MergedParameterDefinition::check_constraints`).
-    /// For INT and FLOAT a `String` value is parsed as an `<intstring>` or
-    /// `<floatstring>`, ignoring white space around the number (Template
-    /// Schemas §7.5).
-    pub fn check_constraints(&self, value: &openjd_expr::ExprValue) -> Result<(), String>;
+    /// Validate an already-coerced ExprValue against this definition's
+    /// constraints. `preprocess_job_parameters` and `create_job` do not call
+    /// it: they check the merged definition
+    /// (`MergedParameterDefinition::check_constraints`). Used directly for
+    /// Environment parameter values, with `env_params` true. `env_params` is
+    /// whether the document declaring the definition lists ENV_PARAMS: only
+    /// then is a RANGE_EXPR string's canonical form length-checked besides
+    /// the string (§2.10); an Environment parameter passes true (§4.5 item
+    /// 5). It changes nothing for the other types. For INT and FLOAT a
+    /// `String` value is parsed as an `<intstring>` or `<floatstring>`,
+    /// ignoring white space around the number (Template Schemas §7.5).
+    pub fn check_constraints(
+        &self,
+        value: &openjd_expr::ExprValue,
+        env_params: bool,
+    ) -> Result<(), String>;
+
+    /// The template-validation checks of the definition: consistent
+    /// constraints, a `default` that satisfies them (with `env_params` as
+    /// for `check_constraints`), and a `userInterface` control the type
+    /// allows. Returns every message found.
+    pub fn validate_definition(
+        &self,
+        limits: &EffectiveLimits,
+        env_params: bool,
+    ) -> Result<(), Vec<String>>;
 }
+
+`JobRangeExprParameterDefinition` has the RANGE_EXPR forms of these two,
+`check_value_constraints(&self, &ExprValue, env_params: bool)` and
+`validate_definition(&self, env_params: bool)`, with the same meaning
+of `env_params`. A `range_expr` value has only its canonical form, which
+is checked whatever `env_params` is.
 ```
 
 ### Task Parameter Definitions
@@ -1568,8 +1593,10 @@ impl MergedParameterDefinition {
     pub fn validate_satisfiable(&self) -> Result<(), ModelError>;
 
     /// Check a coerced value against the merged constraints. A RANGE_EXPR
-    /// `range_expr` is checked in canonical form; `preprocess_job_parameters`
-    /// also checks its value as written (§2.10).
+    /// `range_expr` is checked in canonical form against the lengths of
+    /// the definitions whose document lists ENV_PARAMS, and against no
+    /// lengths when none does; `preprocess_job_parameters` also checks
+    /// its value as written against every definition's (§2.10).
     pub fn check_constraints(&self, value: &ExprValue) -> Result<(), ModelError>;
 }
 ```

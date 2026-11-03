@@ -606,7 +606,9 @@ fn check_definition(
     //
     // §4.5 item 5: the definition's own constraints, as for the Job
     // Parameter of the same type.
-    if let Err(msgs) = def.definition.validate_definition(limits) {
+    // An Environment parameter's RANGE_EXPR length always checks the
+    // canonical form too (§4.5 item 5), hence `true`.
+    if let Err(msgs) = def.definition.validate_definition(limits, true) {
         for m in msgs {
             errors.add(def_path, m);
         }
@@ -1321,8 +1323,9 @@ pub(crate) fn convert_literal_value(
                 return (None, false);
             }
         };
-    // A RANGE_EXPR literal is checked as written, which checks both its
-    // string and its canonical form (§4.5 item 5, §2.10).
+    // A RANGE_EXPR literal is checked as written, which for an Environment
+    // parameter checks both its string and its canonical form (§4.5 item 5,
+    // §2.10), hence `true` below.
     let written = match (pt, lit.as_str()) {
         (JobParameterType::RangeExpr, Some(s)) => {
             Some(openjd_expr::ExprValue::String(s.to_string()))
@@ -1331,7 +1334,7 @@ pub(crate) fn convert_literal_value(
     };
     if let Err(e) = def
         .definition
-        .check_constraints(written.as_ref().unwrap_or(&value))
+        .check_constraints(written.as_ref().unwrap_or(&value), true)
     {
         errors.add(path, e);
         return (Some(value), false);

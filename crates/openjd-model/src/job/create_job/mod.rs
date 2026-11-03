@@ -274,7 +274,11 @@ fn create_job_from_template(
         )));
     }
 
-    // Validate parameter values against template constraints.
+    // Validate parameter values against template constraints. A RANGE_EXPR
+    // value is a `range_expr`, whose spelling as submitted is not known
+    // here, so only its canonical form is checked, and only in a template
+    // that lists ENV_PARAMS (§2.10); `preprocess_job_parameters` checks
+    // the value as written.
     let merged = parameters::merge_job_parameter_definitions(job_template, &[])?;
     for param in &merged {
         if let Some(jpv) = job_parameter_values.get(&param.name) {

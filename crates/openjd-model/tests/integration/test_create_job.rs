@@ -3729,15 +3729,56 @@ fn test_preprocess_range_expr_invalid_stays_string() {
     assert!(err.to_string().contains("not a valid range"), "got: {err}");
 }
 
-/// Preprocess one RANGE_EXPR Job Parameter `Foo` with definition `def`,
-/// submitting `submitted` when given, else taking the `default`.
-fn preprocess_range_expr(
+/// The extensions of a document whose RANGE_EXPR Job Parameter's length
+/// is checked as written only (§2.10).
+const EXPR_ONLY: &[&str] = &["EXPR"];
+/// The extensions of a document whose RANGE_EXPR Job Parameter's length
+/// is checked as written and in canonical form (§2.10).
+const WITH_ENV_PARAMS: &[&str] = &["ENV_PARAMS", "EXPR"];
+
+/// A Job Template listing `exts` with the one parameter definition `def`.
+fn range_expr_job_template(exts: &[&str], def: &str) -> openjd_model::template::JobTemplate {
+    let v = yaml_val(&format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": {exts:?},
+        "name": "test",
+        "parameterDefinitions": [{def}],
+        "steps": [{{"name": "step", "script": {{"actions": {{"onRun": {{"command": "do thing"}}}}}}}}]
+    }}"#
+    ));
+    decode_job_template(v, Some(WITH_ENV_PARAMS), &CallerLimits::default()).unwrap()
+}
+
+/// An Environment Template listing `exts` with the one parameter
+/// definition `def`.
+fn range_expr_env_template(
+    exts: &[&str],
     def: &str,
+) -> openjd_model::template::EnvironmentTemplate {
+    let v = yaml_val(&format!(
+        r#"{{
+        "specificationVersion": "environment-2023-09",
+        "extensions": {exts:?},
+        "parameterDefinitions": [{def}],
+        "environment": {{"name": "env", "script": {{"actions": {{"onEnter": {{"command": "bar"}}}}}}}}
+    }}"#
+    ));
+    decode_environment_template(v, Some(WITH_ENV_PARAMS), &CallerLimits::default()).unwrap()
+}
+
+/// Preprocess one RANGE_EXPR Job Parameter `Foo` declared by a Job
+/// Template listing `exts` with definition `def`, and by the Environment
+/// Templates `envs`, submitting `submitted` when given, else taking the
+/// `default`. Returns the value `Foo` is given.
+fn preprocess_range_expr_with(
+    exts: &[&str],
+    def: &str,
+    envs: &[openjd_model::template::EnvironmentTemplate],
     submitted: Option<openjd_expr::ExprValue>,
 ) -> Result<openjd_expr::ExprValue, String> {
     let td = TestDirs::new();
-    let jt_val = expr_job_template_with_param(def);
-    let jt = decode_job_template(jt_val, Some(&["EXPR"]), &CallerLimits::default()).unwrap();
+    let jt = range_expr_job_template(exts, def);
     let mut input = JobParameterInputValues::new();
     if let Some(v) = submitted {
         input.insert("Foo".into(), v);
@@ -3745,7 +3786,7 @@ fn preprocess_range_expr(
     preprocess_job_parameters(
         &jt,
         &input,
-        &[],
+        envs,
         &openjd_model::PathParameterOptions {
             job_template_dir: td.cwd(),
             current_working_dir: td.cwd(),
@@ -3758,10 +3799,20 @@ fn preprocess_range_expr(
     .map_err(|e| e.to_string())
 }
 
+/// [`preprocess_range_expr_with`] for an EXPR-only Job Template and no
+/// Environment Templates.
+fn preprocess_range_expr(
+    def: &str,
+    submitted: Option<openjd_expr::ExprValue>,
+) -> Result<openjd_expr::ExprValue, String> {
+    preprocess_range_expr_with(EXPR_ONLY, def, &[], submitted)
+}
+
 #[test]
-fn test_preprocess_range_expr_length_checks_value_as_written_and_canonical_form() {
-    // §2.10: a submitted string, or the `default`, must satisfy minLength
-    // and maxLength both as written and in canonical form.
+fn test_preprocess_range_expr_length_checks_value_as_written_without_env_params() {
+    // §2.10: in a document that does not list ENV_PARAMS, a submitted
+    // string must satisfy minLength and maxLength as written; its canonical
+    // form is not checked.
     let s = |v: &str| Some(openjd_expr::ExprValue::String(v.into()));
     let max3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3}"#;
     let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
@@ -3771,14 +3822,14 @@ fn test_preprocess_range_expr_length_checks_value_as_written_and_canonical_form(
         err.contains("Parameter 'Foo': value '1,2,3' length 5 exceeds maximum 3"),
         "got: {err}"
     );
-    // "1-3:2" (5) fits minLength 4 as written; its canonical form "1,3" (3)
-    // does not.
-    let err = preprocess_range_expr(min4, s("1-3:2")).unwrap_err();
+    // "1-3:2" (5) fits minLength 4 as written, and is accepted although its
+    // canonical form "1,3" (3) is shorter. It is stored as its range_expr.
+    let v = preprocess_range_expr(min4, s("1-3:2")).unwrap();
     assert!(
-        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
-        "got: {err}"
+        matches!(&v, openjd_expr::ExprValue::RangeExpr(r) if r.to_string() == "1,3"),
+        "got: {v:?}"
     );
-    // Both forms fit, and the value is stored as its range_expr.
+    // Fits as written, and stored as its range_expr.
     let v = preprocess_range_expr(max3, s("1-3")).unwrap();
     assert!(
         matches!(&v, openjd_expr::ExprValue::RangeExpr(r) if r.to_string() == "1-3"),
@@ -3787,53 +3838,106 @@ fn test_preprocess_range_expr_length_checks_value_as_written_and_canonical_form(
     // An invalid string is reported as invalid, whatever its length.
     let err = preprocess_range_expr(max3, s("abcdef")).unwrap_err();
     assert!(err.contains("not a valid range expression"), "got: {err}");
-    // minLength is inclusive: "1-3" (3) meets minLength 3 in both forms.
+    // minLength is inclusive: "1-3" (3) meets minLength 3.
     let min3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 3}"#;
     assert!(preprocess_range_expr(min3, s("1-3")).is_ok());
-    // A Job Template's own `default` is checked at template validation
-    // (test_range_expr_default_length_checks_as_written_and_canonical_form);
-    // a merged one is checked here (below).
-    // A submitted range_expr has only its canonical form: "1,2,3" parsed is
-    // "1-3", which fits maxLength 3.
+    // A `default` "1-3:2" under minLength 4 is accepted too (a Job
+    // Template's own `default` is also checked at template validation, see
+    // test_range_expr_default_length_without_env_params_checks_as_written).
+    let min4_default =
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#;
+    assert!(preprocess_range_expr(min4_default, None).is_ok());
+    // A submitted range_expr is written in its canonical form, its only
+    // spelling, so that is checked: "1,2,3" parsed is "1-3", which fits
+    // maxLength 3, and "1-1000" does not.
     let r = "1,2,3".parse::<openjd_expr::RangeExpr>().unwrap();
     assert!(preprocess_range_expr(max3, Some(openjd_expr::ExprValue::RangeExpr(r))).is_ok());
+    let r = "1-1000".parse::<openjd_expr::RangeExpr>().unwrap();
+    let err = preprocess_range_expr(max3, Some(openjd_expr::ExprValue::RangeExpr(r))).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': canonical form '1-1000' length 6 exceeds maximum 3"),
+        "got: {err}"
+    );
 }
 
 #[test]
-fn test_preprocess_range_expr_merged_default_length_as_written_and_canonical_form() {
+fn test_preprocess_range_expr_length_checks_value_as_written_and_canonical_form_with_env_params() {
+    // §2.10: in a document that lists ENV_PARAMS, a submitted string must
+    // satisfy minLength and maxLength both as written and in canonical form.
+    let s = |v: &str| Some(openjd_expr::ExprValue::String(v.into()));
+    let run = |def: &str, v| preprocess_range_expr_with(WITH_ENV_PARAMS, def, &[], v);
+    let max3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3}"#;
+    let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
+    // "1,2,3" (5) is too long as written; its canonical form "1-3" fits.
+    let err = run(max3, s("1,2,3")).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': value '1,2,3' length 5 exceeds maximum 3"),
+        "got: {err}"
+    );
+    // "1-3:2" (5) fits minLength 4 as written; its canonical form "1,3" (3)
+    // does not.
+    let err = run(min4, s("1-3:2")).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
+        "got: {err}"
+    );
+    let v = run(max3, s("1-3")).unwrap();
+    assert!(
+        matches!(&v, openjd_expr::ExprValue::RangeExpr(r) if r.to_string() == "1-3"),
+        "got: {v:?}"
+    );
+    // A submitted range_expr has only its canonical form, which is checked:
+    // "1-3:2" parsed is "1,3", below minLength 4.
+    let r = "1-3:2".parse::<openjd_expr::RangeExpr>().unwrap();
+    let err = run(min4, Some(openjd_expr::ExprValue::RangeExpr(r))).unwrap_err();
+    assert!(
+        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
+        "got: {err}"
+    );
+}
+
+#[test]
+fn test_create_job_range_expr_length_without_env_params_ignores_canonical_form() {
+    // `create_job` re-checks the Job Template's own parameters against the
+    // value `preprocess_job_parameters` returns, a range_expr. Without
+    // ENV_PARAMS that re-check must not apply minLength to its canonical
+    // form: "1-3:2" fits minLength 4 as written, its canonical form "1,3"
+    // does not (§2.10).
+    let td = TestDirs::new();
+    let jt = range_expr_job_template(
+        EXPR_ONLY,
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#,
+    );
+    let mut input = JobParameterInputValues::new();
+    input.insert("Foo".into(), openjd_expr::ExprValue::String("1-3:2".into()));
+    let processed = preprocess_job_parameters(
+        &jt,
+        &input,
+        &[],
+        &openjd_model::PathParameterOptions {
+            job_template_dir: td.cwd(),
+            current_working_dir: td.cwd(),
+            allow_template_dir_walk_up: false,
+            path_format: PathFormat::host(),
+            allow_uri_path_values: true,
+        },
+    )
+    .unwrap();
+    create_job(&jt, &processed, &jt.default_validation_context()).unwrap();
+}
+
+#[test]
+fn test_preprocess_range_expr_merged_default_length_as_written_without_env_params() {
     // §2.10 and §1.2.1: a RANGE_EXPR `default` that an Environment Template
     // supplies, constrained by the Job Template's maxLength or minLength, is
-    // checked as written and in canonical form when the Job is created.
-    let td = TestDirs::new();
+    // checked when the Job is created. Neither document lists ENV_PARAMS, so
+    // it is checked as written only.
     let run = |job_def: &str, env_default: &str| {
-        let jt = decode_job_template(
-            expr_job_template_with_param(job_def),
-            Some(&["EXPR"]),
-            &CallerLimits::default(),
-        )
-        .unwrap();
-        let et = decode_environment_template(
-            expr_env_template(&format!(
-                r#"{{"name": "Foo", "type": "RANGE_EXPR", "default": "{env_default}"}}"#
-            )),
-            Some(&["EXPR"]),
-            &CallerLimits::default(),
-        )
-        .unwrap();
-        preprocess_job_parameters(
-            &jt,
-            &JobParameterInputValues::new(),
-            &[et],
-            &openjd_model::PathParameterOptions {
-                job_template_dir: td.cwd(),
-                current_working_dir: td.cwd(),
-                allow_template_dir_walk_up: false,
-                path_format: PathFormat::host(),
-                allow_uri_path_values: true,
-            },
-        )
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        let et = range_expr_env_template(
+            EXPR_ONLY,
+            &format!(r#"{{"name": "Foo", "type": "RANGE_EXPR", "default": "{env_default}"}}"#),
+        );
+        preprocess_range_expr_with(EXPR_ONLY, job_def, &[et], None).map(|_| ())
     };
     let max3 = r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3}"#;
     let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
@@ -3842,12 +3946,51 @@ fn test_preprocess_range_expr_merged_default_length_as_written_and_canonical_for
         err.contains("Parameter 'Foo': value '1,2,3' length 5 exceeds maximum 3"),
         "got: {err}"
     );
-    let err = run(min4, "1-3:2").unwrap_err();
-    assert!(
-        err.contains("Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4"),
-        "got: {err}"
-    );
+    assert!(run(min4, "1-3:2").is_ok());
     assert!(run(max3, "1-3").is_ok());
+}
+
+#[test]
+fn test_preprocess_range_expr_merged_length_follows_each_documents_extensions() {
+    // Each document's extensions apply to its own parameter definitions
+    // (Template Schemas §1.2 item 3), so a merged RANGE_EXPR value is
+    // checked in canonical form against the minLength and maxLength of the
+    // definitions whose document lists ENV_PARAMS, and as written against
+    // every definition's (§2.10, §1.2.1). "1-3:2" is 5 characters, and its
+    // canonical form "1,3" is 3.
+    let canonical_err = "Parameter 'Foo': canonical form '1,3' length 3 is less than minimum 4";
+    let min4 = r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4}"#;
+    let min4_default =
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#;
+    let plain_default = r#"{"name": "Foo", "type": "RANGE_EXPR", "default": "1-3:2"}"#;
+    let plain = r#"{"name": "Foo", "type": "RANGE_EXPR"}"#;
+    // The Job Template lists ENV_PARAMS and constrains minLength; the
+    // Environment Template's `default` breaks it in canonical form.
+    let et = range_expr_env_template(EXPR_ONLY, plain_default);
+    let err = preprocess_range_expr_with(WITH_ENV_PARAMS, min4, &[et], None).unwrap_err();
+    assert!(err.contains(canonical_err), "got: {err}");
+    // The Environment Template lists ENV_PARAMS and constrains minLength;
+    // the EXPR-only Job Template's `default` breaks it in canonical form.
+    let et = range_expr_env_template(WITH_ENV_PARAMS, min4);
+    let err = preprocess_range_expr_with(EXPR_ONLY, plain_default, &[et], None).unwrap_err();
+    assert!(err.contains(canonical_err), "got: {err}");
+    // A submitted value is checked the same way.
+    let et = range_expr_env_template(WITH_ENV_PARAMS, min4);
+    let err = preprocess_range_expr_with(
+        EXPR_ONLY,
+        plain,
+        &[et],
+        Some(openjd_expr::ExprValue::String("1-3:2".into())),
+    )
+    .unwrap_err();
+    assert!(err.contains(canonical_err), "got: {err}");
+    // The constraint is declared only in an EXPR-only document, so its
+    // canonical form is not checked, although the other document, which
+    // supplies the `default`, lists ENV_PARAMS.
+    let et = range_expr_env_template(WITH_ENV_PARAMS, plain_default);
+    assert!(preprocess_range_expr_with(EXPR_ONLY, min4, &[et], None).is_ok());
+    let et = range_expr_env_template(EXPR_ONLY, min4_default);
+    assert!(preprocess_range_expr_with(WITH_ENV_PARAMS, plain, &[et], None).is_ok());
 }
 
 fn expr_env_template(params: &str) -> serde_json::Value {

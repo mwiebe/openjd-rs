@@ -14,13 +14,19 @@ use crate::error::ModelError;
 use crate::template::{EnvironmentTemplate, JobParameterDefinition, JobTemplate};
 use crate::types::{
     DataFlow, JobParameterInputValues, JobParameterType, JobParameterValue, JobParameterValues,
-    ObjectType,
+    ModelExtension, ObjectType,
 };
 
 /// Merge parameter definitions from environment templates and the job template.
 ///
 /// Per §1.2.1: environment templates are processed in order, job template last.
 /// Type conflicts are errors. Defaults come from the last template that defines one.
+///
+/// Each template's own extensions apply to the definitions it declares
+/// (Template Schemas §1.2 item 3). A RANGE_EXPR's `minLength` and
+/// `maxLength` from every template constrain the value as written; those
+/// from a template that lists `ENV_PARAMS` also constrain its canonical
+/// form (§2.10).
 pub fn merge_job_parameter_definitions(
     job_template: &JobTemplate,
     environment_templates: &[EnvironmentTemplate],
@@ -28,7 +34,10 @@ pub fn merge_job_parameter_definitions(
     let mut merged: IndexMap<String, MergedParameterDefinition> = IndexMap::new();
 
     // Helper: process one parameter definition into the merged map.
-    let mut process_param = |p: &JobParameterDefinition, source: &str| -> Result<(), ModelError> {
+    let mut process_param = |p: &JobParameterDefinition,
+                             source: &str,
+                             env_params: bool|
+     -> Result<(), ModelError> {
         let name = p.name().to_string();
         if let Some(existing) = merged.get(&name) {
             if existing.param_type != p.job_param_type() {
@@ -79,7 +88,7 @@ pub fn merge_job_parameter_definitions(
                     m.data_flow = Some(v);
                 }
                 m.source = src.clone();
-                m.merge_constraints(p);
+                m.merge_constraints(p, env_params);
             })
             .or_insert_with(|| {
                 let mut m = MergedParameterDefinition {
@@ -95,6 +104,8 @@ pub fn merge_job_parameter_definitions(
                     max_value_f64: None,
                     min_length: None,
                     max_length: None,
+                    canonical_min_length: None,
+                    canonical_max_length: None,
                     allowed_values_int: None,
                     allowed_values_float: None,
                     allowed_values_str: None,
@@ -111,7 +122,7 @@ pub fn merge_job_parameter_definitions(
                     item_item_max_value_i64: None,
                     item_item_allowed_values_int: None,
                 };
-                m.merge_constraints(p);
+                m.merge_constraints(p, env_params);
                 m
             });
         Ok(())
@@ -120,15 +131,19 @@ pub fn merge_job_parameter_definitions(
     // Process env templates first (in order), job template last
     for et in environment_templates {
         let source = format!("EnvironmentTemplate '{}'", et.environment.name);
+        let env_params = et.profile().has_extension(ModelExtension::EnvParams);
         if let Some(params) = &et.parameter_definitions {
             for p in params {
-                process_param(p, &source)?;
+                process_param(p, &source, env_params)?;
             }
         }
     }
     let source = "JobTemplate".to_string();
+    let env_params = job_template
+        .profile()
+        .has_extension(ModelExtension::EnvParams);
     for p in job_template.parameter_definitions_list() {
-        process_param(p, &source)?;
+        process_param(p, &source, env_params)?;
     }
 
     Ok(merged.into_values().collect())
@@ -158,6 +173,11 @@ pub struct MergedParameterDefinition {
     pub(crate) max_value_f64: Option<f64>,
     pub(crate) min_length: Option<usize>,
     pub(crate) max_length: Option<usize>,
+    /// A RANGE_EXPR's `minLength` and `maxLength` merged from the
+    /// definitions whose document lists `ENV_PARAMS`, which constrain its
+    /// canonical form as well as its value as written (§2.10).
+    pub(crate) canonical_min_length: Option<usize>,
+    pub(crate) canonical_max_length: Option<usize>,
     pub(crate) allowed_values_int: Option<Vec<i64>>,
     pub(crate) allowed_values_float: Option<Vec<f64>>,
     pub(crate) allowed_values_str: Option<Vec<String>>,
@@ -177,8 +197,10 @@ pub struct MergedParameterDefinition {
 }
 
 impl MergedParameterDefinition {
-    /// Merge constraints from a parameter definition into this merged definition.
-    fn merge_constraints(&mut self, def: &JobParameterDefinition) {
+    /// Merge constraints from a parameter definition into this merged
+    /// definition. `env_params` is whether the document that declares `def`
+    /// lists `ENV_PARAMS`.
+    fn merge_constraints(&mut self, def: &JobParameterDefinition, env_params: bool) {
         if let Some(v) = def.min_value_i64() {
             self.min_value_i64 = Some(self.min_value_i64.map_or(v, |cur| cur.max(v)));
         }
@@ -196,6 +218,16 @@ impl MergedParameterDefinition {
         }
         if let Some(v) = def.max_length() {
             self.max_length = Some(self.max_length.map_or(v, |cur| cur.min(v)));
+        }
+        if env_params && self.param_type == JobParameterType::RangeExpr {
+            if let Some(v) = def.min_length() {
+                self.canonical_min_length =
+                    Some(self.canonical_min_length.map_or(v, |cur| cur.max(v)));
+            }
+            if let Some(v) = def.max_length() {
+                self.canonical_max_length =
+                    Some(self.canonical_max_length.map_or(v, |cur| cur.min(v)));
+            }
         }
         // allowedValues: intersect
         if let Some(new_vals) = def.allowed_values_strings() {
@@ -656,41 +688,60 @@ impl MergedParameterDefinition {
                     }
                 }
             }
-            // A range_expr has only its canonical form; the value as written
-            // is checked by `check_range_expr_written` (§2.10).
+            // The canonical form of a range_expr is checked against the
+            // lengths of the definitions whose document lists ENV_PARAMS;
+            // the value as written is checked against every definition's by
+            // `check_range_expr_written` (§2.10).
             openjd_expr::ExprValue::RangeExpr(r) => {
-                self.check_range_expr_length("canonical form", &r.to_string())?;
+                Self::check_range_expr_length(
+                    &self.name,
+                    "canonical form",
+                    &r.to_string(),
+                    self.canonical_min_length,
+                    self.canonical_max_length,
+                )?;
             }
             _ => {} // BOOL — no cross-template mergeable constraints
         }
         Ok(())
     }
 
-    /// Check a RANGE_EXPR value as written, a submitted string or a
-    /// `default`, against the merged `minLength` and `maxLength` (§2.10). Its
-    /// canonical form is checked by [`check_constraints`](Self::check_constraints)
-    /// once the value is parsed; both must satisfy them.
-    pub(crate) fn check_range_expr_written(&self, written: &str) -> Result<(), ModelError> {
-        self.check_range_expr_length("value", written)
+    /// Check a RANGE_EXPR value as written against the merged `minLength`
+    /// and `maxLength` of every definition (§2.10): a submitted string or a
+    /// `default`, which `what` names "value", or the canonical form of a
+    /// submitted `range_expr`, its only spelling, which `what` names
+    /// "canonical form". The canonical form of a parsed string is checked by
+    /// [`check_constraints`](Self::check_constraints), against the
+    /// definitions whose document lists `ENV_PARAMS`.
+    pub(crate) fn check_range_expr_written(
+        &self,
+        what: &str,
+        written: &str,
+    ) -> Result<(), ModelError> {
+        Self::check_range_expr_length(&self.name, what, written, self.min_length, self.max_length)
     }
 
-    /// One spelling of a RANGE_EXPR value against the merged length
-    /// constraints, counted in characters. `what` names it in the message.
-    fn check_range_expr_length(&self, what: &str, s: &str) -> Result<(), ModelError> {
+    /// One spelling `s` of the RANGE_EXPR parameter `name` against `min`
+    /// and `max`, counted in characters. `what` names it in the message.
+    fn check_range_expr_length(
+        name: &str,
+        what: &str,
+        s: &str,
+        min: Option<usize>,
+        max: Option<usize>,
+    ) -> Result<(), ModelError> {
         let len = s.chars().count();
-        if let Some(min) = self.min_length {
+        if let Some(min) = min {
             if len < min {
                 return Err(ModelError::DecodeValidation(format!(
-                    "Parameter '{}': {what} '{s}' length {len} is less than minimum {min}",
-                    self.name
+                    "Parameter '{name}': {what} '{s}' length {len} is less than minimum {min}"
                 )));
             }
         }
-        if let Some(max) = self.max_length {
+        if let Some(max) = max {
             if len > max {
                 return Err(ModelError::DecodeValidation(format!(
-                    "Parameter '{}': {what} '{s}' length {len} exceeds maximum {max}",
-                    self.name
+                    "Parameter '{name}': {what} '{s}' length {len} exceeds maximum {max}"
                 )));
             }
         }
@@ -956,10 +1007,17 @@ pub fn preprocess_job_parameters(
             let Some(coerced) = coerced_opt else { continue };
             // A RANGE_EXPR submitted as a string is checked as written too
             // (§2.10), once it has parsed, so an invalid string is reported
-            // as one; its canonical form is checked with the other
-            // constraints below.
+            // as one; a `range_expr` is written in its canonical form, its
+            // only spelling. The canonical form is checked with the other
+            // constraints below, against the definitions whose document
+            // lists ENV_PARAMS.
             let written = match (param_type, &coerced) {
-                (JobParameterType::RangeExpr, openjd_expr::ExprValue::String(s)) => Some(s.clone()),
+                (JobParameterType::RangeExpr, openjd_expr::ExprValue::String(s)) => {
+                    Some(("value", s.clone()))
+                }
+                (JobParameterType::RangeExpr, openjd_expr::ExprValue::RangeExpr(r)) => {
+                    Some(("canonical form", r.to_string()))
+                }
                 _ => None,
             };
             let coerced = coerce_to_job_parameter_type(&coerced, param_type)
@@ -970,8 +1028,8 @@ pub fn preprocess_job_parameters(
             match coerced {
                 Ok(expr_value) => {
                     let checked = written
-                        .as_deref()
-                        .map_or(Ok(()), |w| param.check_range_expr_written(w))
+                        .as_ref()
+                        .map_or(Ok(()), |(what, w)| param.check_range_expr_written(what, w))
                         .and_then(|()| param.check_constraints(&expr_value));
                     if let Err(e) = checked {
                         errors.push(model_err_message(e));
@@ -1014,7 +1072,7 @@ pub fn preprocess_job_parameters(
                 Ok(expr_value) => {
                     // A RANGE_EXPR default is checked as written too (§2.10).
                     let checked = if param_type == JobParameterType::RangeExpr {
-                        param.check_range_expr_written(&value_str)
+                        param.check_range_expr_written("value", &value_str)
                     } else {
                         Ok(())
                     }

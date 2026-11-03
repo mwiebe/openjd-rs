@@ -94,7 +94,13 @@ pub fn validate_structure(
                     format!("parameter type '{}' is not allowed.", p.type_name()),
                 );
             }
-            if let Err(param_errors) = p.validate_definition(limits) {
+            // A RANGE_EXPR `default` is checked in canonical form only in
+            // a document that lists ENV_PARAMS (§2.10).
+            if let Err(param_errors) = p.validate_definition(
+                limits,
+                ctx.profile
+                    .has_extension(crate::types::ModelExtension::EnvParams),
+            ) {
                 for e in param_errors {
                     errors.add(&p_path, e);
                 }
