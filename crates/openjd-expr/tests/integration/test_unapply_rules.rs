@@ -633,6 +633,16 @@ fn candidate_longer_than_max_path_len_is_not_accepted_by_identity() {
 }
 
 #[test]
+fn max_path_len_is_counted_in_bytes() {
+    // 20,005 characters but 40,005 bytes: over the limit, so the candidate
+    // that would be accepted by identity is skipped.
+    let reported = format!("/m/a/{}", "é".repeat(20_000));
+    assert!(reported.chars().count() < MAX_PATH_LEN && reported.len() > MAX_PATH_LEN);
+    let rules = [posix("/m", "/m"), posix("/m/a", "/elsewhere")];
+    assert_eq!(unmap_posix(&rules, &reported), Err(UnmapError::TooLong));
+}
+
+#[test]
 fn candidate_longer_than_max_path_len_is_skipped() {
     // The reported path fits, but the candidate from the longer source path
     // does not, so it is skipped.

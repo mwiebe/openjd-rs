@@ -1888,6 +1888,37 @@ async fn path_input_longer_than_max_path_len_is_an_error() {
             expected(symbol)
         );
     }
+    // One byte over the limit fails, and the limit is in bytes, not
+    // characters.
+    let max = openjd_expr::path_mapping::MAX_PATH_LEN;
+    for over in [
+        format!("/src/{}", "a".repeat(max + 1 - "/src/".len())),
+        format!("/src/{}", "é".repeat((max + 1 - "/src/".len()).div_ceil(2))),
+    ] {
+        assert!(over.len() > max && over.chars().count() <= max + 1);
+        let mut st = SymbolTable::new();
+        st.set("Steps.P.RawOutput.X", ExprValue::String(over.clone()))
+            .unwrap();
+        let base = openjd_expr::SerializedSymbolTable::from_symtab(&st);
+        assert_eq!(
+            f.session
+                .build_symbol_table(
+                    None,
+                    Some(&base),
+                    &[PathInput {
+                        symbol: "Steps.P.RawOutput.X".into(),
+                        ty: ExprType::PATH,
+                    }],
+                )
+                .unwrap_err()
+                .to_string(),
+            format!(
+                "Path input 'Steps.P.RawOutput.X' in resolved_symtab: the path is {} bytes long, \
+                 more than the limit of 32768 bytes that path mapping handles",
+                over.len()
+            )
+        );
+    }
     // A path of exactly MAX_PATH_LEN bytes is mapped.
     let fits = format!(
         "/src/{}",
