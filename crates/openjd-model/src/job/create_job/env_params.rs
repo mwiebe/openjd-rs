@@ -837,14 +837,15 @@ fn resolve_value(
     // The constraints see the value that is stored (a literal's were
     // checked above by the template-validation check, as written), so every
     // effective value satisfies its definition (§4.5 item 5). A RANGE_EXPR
-    // with a written string is checked as that string, which checks both it
-    // and its canonical form.
+    // with a written string is checked as that string, which for an
+    // Environment parameter checks both it and its canonical form, hence
+    // `true` below.
     if is_format_string {
         let checked = match &text {
             Some(s) => ExprValue::String(s.clone()),
             None => value.clone(),
         };
-        if let Err(e) = def.definition.check_constraints(&checked) {
+        if let Err(e) = def.definition.check_constraints(&checked, true) {
             errors.add(path, e);
             return (Some(Effective { value }), false);
         }

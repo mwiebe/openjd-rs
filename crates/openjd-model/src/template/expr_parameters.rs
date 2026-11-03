@@ -228,15 +228,23 @@ pub struct JobRangeExprParameterDefinition {
 
 impl JobRangeExprParameterDefinition {
     /// Check a value against `minLength` and `maxLength` (§2.10). A string
-    /// is a value as written: it must parse as a range expression, and both
-    /// it and its canonical form must satisfy them. A `range_expr` has no
-    /// other spelling, so only its canonical form is checked.
+    /// is a value as written: it must parse as a range expression and
+    /// satisfy them, and with `env_params` so must its canonical form.
+    /// `env_params` is whether the document that declares this definition
+    /// lists the `ENV_PARAMS` extension; pass `true` for an Environment
+    /// parameter, whose canonical form is always checked (§4.5 item 5). A
+    /// `range_expr` has no other spelling, so its canonical form is checked
+    /// whatever `env_params` is.
     ///
     /// # Errors
     ///
     /// Returns a message naming the parameter when the value is not a range
     /// expression or breaks a length constraint.
-    pub fn check_value_constraints(&self, value: &ExprValue) -> Result<(), String> {
+    pub fn check_value_constraints(
+        &self,
+        value: &ExprValue,
+        env_params: bool,
+    ) -> Result<(), String> {
         match value {
             ExprValue::RangeExpr(r) => {
                 self.check_length(&format!("canonical form '{r}'"), &r.to_string())
@@ -250,7 +258,7 @@ impl JobRangeExprParameterDefinition {
                 })?;
                 self.check_length(&format!("value '{s}'"), s)?;
                 let canonical = r.to_string();
-                if canonical == *s {
+                if !env_params || canonical == *s {
                     return Ok(());
                 }
                 self.check_length(&format!("canonical form '{canonical}'"), &canonical)
@@ -286,11 +294,16 @@ impl JobRangeExprParameterDefinition {
         Ok(())
     }
 
-    #[allow(
-        missing_docs,
-        reason = "missing-docs burn-down: predates the lint; document these items, then delete this attribute"
-    )]
-    pub fn validate_definition(&self) -> Result<(), Vec<String>> {
+    /// Check the definition at template validation: its `default` must be
+    /// a valid range expression that satisfies `minLength` and `maxLength`,
+    /// as [`check_value_constraints`](Self::check_value_constraints) checks
+    /// it with the same `env_params`, and its `userInterface` control must
+    /// be one this type allows.
+    ///
+    /// # Errors
+    ///
+    /// Returns every message found, each naming the parameter.
+    pub fn validate_definition(&self, env_params: bool) -> Result<(), Vec<String>> {
         let mut errors = Vec::new();
         if let Some(default) = &self.default {
             if default.parse::<openjd_expr::RangeExpr>().is_err() {
@@ -298,10 +311,11 @@ impl JobRangeExprParameterDefinition {
                     "Parameter '{}': default '{}' is not a valid range expression.",
                     self.name, default
                 ));
-            } else if let Err(e) = self.check_value_constraints(&ExprValue::String(default.clone()))
+            } else if let Err(e) =
+                self.check_value_constraints(&ExprValue::String(default.clone()), env_params)
             {
-                // The default satisfies minLength and maxLength as written and
-                // in canonical form (§2.10).
+                // The default satisfies minLength and maxLength as written,
+                // and with ENV_PARAMS in canonical form (§2.10).
                 errors.push(format!("{e} (default)"));
             }
         }

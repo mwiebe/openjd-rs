@@ -63,8 +63,12 @@ Common methods on all variants:
 - `name() -> &str`
 - `job_param_type() -> JobParameterType`
 - `default_value() -> Option<String>` — Returns the default as a string representation
-- `check_constraints(&ExprValue) -> Result<(), String>` — Runtime value validation
-- `validate_definition(&EffectiveLimits) -> Result<(), Vec<String>>` — Template-level consistency (accumulates errors)
+- `check_constraints(&ExprValue, env_params: bool) -> Result<(), String>` — Runtime value validation
+- `validate_definition(&EffectiveLimits, env_params: bool) -> Result<(), Vec<String>>` — Template-level consistency (accumulates errors)
+
+`env_params` is whether the document that declares the definition lists `ENV_PARAMS`, and is
+`true` for an Environment parameter. It decides only whether a RANGE_EXPR's canonical form is
+length-checked (below).
 
 ### Constraint Checking vs Definition Validation
 
@@ -74,11 +78,17 @@ Common methods on all variants:
 > (its UTF-8 byte length). This applies to both `check_constraints` (runtime) and
 > `validate_definition` (template-time) checks for STRING and PATH parameters.
 >
-> A RANGE_EXPR's `minLength` and `maxLength` check two strings, and both must satisfy them
-> (Template Schemas §2.10): the value as written (a submitted string or the `default`) and its
-> canonical form. A `range_expr` value, which has no other spelling, is checked only in
-> canonical form. `check_constraints` on a string checks both; `preprocess_job_parameters`
-> checks the written string before parsing it and the canonical form after.
+> A RANGE_EXPR Job Parameter's `minLength` and `maxLength` check the value as written (a
+> submitted string or the `default`). In a document that lists `ENV_PARAMS` they also check its
+> canonical form, and both must satisfy them (Template Schemas §2.10, spec `8a2803a`); without
+> it the canonical form is not checked, so with `minLength: 4` an EXPR-only template accepts
+> `1-3:2` although its canonical form `1,3` is shorter. An Environment parameter of type
+> RANGE_EXPR always checks both (§4.5 item 5), so its callers pass `env_params: true`. A
+> `range_expr` value, which has no other spelling, is checked in canonical form whatever
+> `env_params` is. `check_constraints` on a string checks the string, and with `env_params` its
+> canonical form; `preprocess_job_parameters` checks the written string before parsing it and
+> the canonical form after, against the merged lengths of the definitions whose document lists
+> `ENV_PARAMS` (see [Job Creation](job-creation.md), merge rules).
 
 These are two distinct operations:
 

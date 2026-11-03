@@ -534,6 +534,15 @@ fn a_computed_range_expr_value_meets_its_length_constraints_as_written_and_canon
         )],
     );
     job_ok(&jt("1-3", "maxLength: 3"));
+    // And in canonical form, as an Environment parameter's always is
+    // (§4.5 item 5): `1-3:2` is 5 characters, but its canonical form `1,3`
+    // is below minLength 4.
+    job_err(
+        &jt("1-3:2", "minLength: 4"),
+        &[&format!(
+            "{at}Parameter 'R': canonical form '1,3' length 3 is less than minimum 4"
+        )],
+    );
     // A string result, from a single expression or a format string, is
     // checked as written: `1,3,5,7,9` is 9 characters.
     for (r, written) in [
@@ -551,6 +560,17 @@ fn a_computed_range_expr_value_meets_its_length_constraints_as_written_and_canon
             )],
         );
     }
+    // A string result is checked in canonical form too: `1,3,5,7,9` fits
+    // minLength 6 as written, but its canonical form `1-9:2` does not.
+    create_err(
+        &jt("{{ Param.S }}", "minLength: 6"),
+        &[],
+        &[],
+        "JobTemplate",
+        &[&format!(
+            "{at}Parameter 'R': canonical form '1-9:2' length 5 is less than minimum 6"
+        )],
+    );
     // A range_expr result has only its canonical form, `1-9:2`, 5
     // characters: within maxLength 8, below minLength 6.
     create_ok(&jt("{{ Param.P }}", "maxLength: 8"), &[], &[]);

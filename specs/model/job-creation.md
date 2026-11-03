@@ -33,6 +33,13 @@ and its source template.
 - `maxLength`/`maxValue`: takes the minimum (most restrictive)
 - PATH-specific: `objectType` and `dataFlow` must be identical across definitions
 - Default value: last template to define one wins
+- RANGE_EXPR `minLength`/`maxLength`: each document's extensions apply to its own definitions
+  (Template Schemas §1.2 item 3). Every definition's lengths constrain the value as written; only
+  the definitions whose document lists `ENV_PARAMS` constrain its canonical form (§2.10). The
+  merge keeps these as two pairs of bounds, so a value is accepted exactly when it satisfies every
+  definition under its own document's rule. With an EXPR-only Job Template declaring
+  `minLength: 4` and an `ENV_PARAMS` Environment Template supplying the `default` `1-3:2`, the
+  default is accepted; with the extensions swapped, it is rejected for its canonical form `1,3`.
 
 Conflicts produce `ModelError::Compatibility` with details about which templates conflict.
 
@@ -103,7 +110,12 @@ pub struct PathParameterOptions<'a> {
 Both its input and output types are public, so a caller can hand its output straight back to it.
 `create_job` relies on something adjacent for every caller: it re-runs `check_constraints` over each
 value it is given (`create_job/mod.rs`, the "Validate parameter values against template constraints"
-loop at the start of `create_job`).
+loop at the start of `create_job`). A RANGE_EXPR value reaches it as a `range_expr`, whose spelling as
+submitted is gone, so the re-check tests only its canonical form, and only against the lengths of a
+template that lists `ENV_PARAMS`; `preprocess_job_parameters` has already checked the value as
+written. Testing the canonical form against an EXPR-only template's lengths would break the round
+trip: `1-3:2` passes `minLength: 4` in the first pass, and its canonical form `1,3` would fail it in
+the second.
 
 For `PATH` this holds because both passes check constraints against the same resolved value: the
 first pass joins a relative default and checks the joined path, and the second pass receives that
@@ -513,10 +525,11 @@ stage](#the-submission-stage):
   result, which for a `path` result follows the submission format's rules (WINDOWS turns `/`
   into `\`).
 - The definition's **constraints** are checked against that stored value (constraint 6,
-  §4.5 item 5), using `JobParameterDefinition::check_constraints` (for a literal, by the
-  template-validation check), so every effective value of an Environment that is not
-  disabled for its Step satisfies its definition. A RANGE_EXPR's `minLength` and
-  `maxLength` check both the value as written and its canonical form (§4.5 item 5, §2.10):
+  §4.5 item 5), using `JobParameterDefinition::check_constraints` with `env_params: true`
+  (for a literal, by the template-validation check), so every effective value of an
+  Environment that is not disabled for its Step satisfies its definition. A RANGE_EXPR's
+  `minLength` and `maxLength` check both the value as written and its canonical form, whatever
+  extensions the Job Parameters' documents list (§4.5 item 5, §2.10):
   a literal's string, a format string's resolved string, or a single `{{ }}` expression's
   string result, which is read by evaluating the expression again with no target type. A
   single expression whose result is a `range_expr` has only its canonical form, which must be

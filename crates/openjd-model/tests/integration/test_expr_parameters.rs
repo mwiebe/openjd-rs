@@ -353,24 +353,70 @@ fn test_range_expr_invalid_default() {
 }
 
 #[test]
-fn test_range_expr_default_length_checks_as_written_and_canonical_form() {
-    // §2.10: "1,2,3" (5) breaks maxLength 3 as written; "1-3:2" (5) meets
-    // minLength 4 as written, but its canonical form "1,3" (3) does not.
+fn test_range_expr_default_length_without_env_params_checks_as_written() {
+    // §2.10: in a document that does not list ENV_PARAMS, a `default` is
+    // checked against minLength and maxLength as written only. "1,2,3" (5)
+    // breaks maxLength 3; "1-3:2" (5) meets minLength 4, and is accepted
+    // although its canonical form "1,3" (3) does not.
     check_err(
         &job_with_expr_param(
             r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3, "default": "1,2,3"}"#,
         ),
         &["parameterDefinitions[0]:\n\tParameter 'Foo': value '1,2,3' length 5 exceeds maximum 3 (default)"],
     );
-    check_err(
-        &job_with_expr_param(
-            r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#,
-        ),
-        &["parameterDefinitions[0]:\n\tParameter 'Foo': canonical form '1,3' length 3 is less than minimum 4 (default)"],
-    );
+    decode_ok(&job_with_expr_param(
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#,
+    ));
     decode_ok(&job_with_expr_param(
         r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 3, "maxLength": 3, "default": "1-3"}"#,
     ));
+}
+
+/// A Job Template listing `ENV_PARAMS` and `EXPR` with the one parameter
+/// definition `param_json`, decoded with both supported.
+fn decode_with_env_params(param_json: &str) -> Result<(), String> {
+    let s = format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "Test",
+        "extensions": ["ENV_PARAMS", "EXPR"],
+        "parameterDefinitions": [{param_json}],
+        "steps": [{{"name": "S", "script": {{"actions": {{"onRun": {{"command": "foo"}}}}}}}}]
+    }}"#
+    );
+    decode_job_template(
+        yaml_val(&s),
+        Some(&["ENV_PARAMS", "EXPR"]),
+        &CallerLimits::default(),
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn test_range_expr_default_length_with_env_params_checks_as_written_and_canonical_form() {
+    // §2.10: in a document that lists ENV_PARAMS, a `default` is checked
+    // against minLength and maxLength as written and in canonical form.
+    let err = decode_with_env_params(
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "maxLength": 3, "default": "1,2,3"}"#,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("parameterDefinitions[0]:\n\tParameter 'Foo': value '1,2,3' length 5 exceeds maximum 3 (default)"),
+        "got: {err}"
+    );
+    let err = decode_with_env_params(
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 4, "default": "1-3:2"}"#,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("parameterDefinitions[0]:\n\tParameter 'Foo': canonical form '1,3' length 3 is less than minimum 4 (default)"),
+        "got: {err}"
+    );
+    decode_with_env_params(
+        r#"{"name": "Foo", "type": "RANGE_EXPR", "minLength": 3, "maxLength": 3, "default": "1-3"}"#,
+    )
+    .unwrap();
 }
 
 #[test]
