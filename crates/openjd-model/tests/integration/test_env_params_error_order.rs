@@ -1528,3 +1528,33 @@ fn a_step_environment_whose_enable_if_fails_counts_for_the_single_layer_rule() {
     );
     assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 2 validation errors for JobTemplate\nsteps[0] -> stepEnvironments[1] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~\nsteps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer' (stepEnvironments), 'Inner' (stepEnvironments). A Session may have at most one Environment defining wrap hooks (RFC 0008).");
 }
+
+// ── Round 7 ──────────────────────────────────────────────────────────
+
+#[test]
+fn a_job_template_without_env_params_reports_its_own_staged_error_alone() {
+    // A template edited after decoding: a duplicate entry, then ENV_PARAMS
+    // removed. Its one error is the Job Template's own, reported alone for
+    // JobTemplate before the attachment is applied.
+    let mut jt = job_ok(&format!(
+        "{HEAD}jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n- name: S\n  \
+         dependencies: [{{environment: E}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    ));
+    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let e = deps[0].clone();
+    deps.push(e);
+    jt.extensions
+        .as_mut()
+        .unwrap()
+        .retain(|x| x.as_str() != "ENV_PARAMS");
+    let x = env_ok(&env("name: X"));
+    let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
+    let err = create_job_with_environment_templates(
+        &jt,
+        &[AttachedEnvironmentTemplate::new(&x)],
+        &values,
+        &posix_ctx(&jt),
+    )
+    .expect_err("expected job creation to fail");
+    assert_eq!(err.to_string(), "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> dependencies[1] -> environment:\n\tduplicate environment dependency 'E'.");
+}
