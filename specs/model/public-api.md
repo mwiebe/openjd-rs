@@ -413,7 +413,9 @@ messages and paths (a single-layer or host-requirement error in the same
 form, naming only the layers a Session certainly enters and the literal
 requirements), except that a grouped Job Environment's errors, which job
 creation reports in its `JobTemplate` error when no attachment shares
-the group, are reported here at `JobTemplate ->` paths, and returns the warnings. Format-string values,
+the group, are reported here at `JobTemplate ->` paths, and that a Step's
+constraint 7 error leaves out the Environments it cannot know the Step
+enters, and returns the warnings. Format-string values,
 non-literal `default`s and host requirements, and entries whose
 `enableIf` is an expression are left to job creation. `openjd check
 --environment` calls it. See

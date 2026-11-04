@@ -1477,8 +1477,10 @@ fn certainly_entered_per_step(
 /// Returns the warnings, or one `ModelValidation` error for `Submission`
 /// holding every violation, in the order job creation reports them, except
 /// that job creation resolves a Step's disabled entries before its enabled
-/// ones, and reports a grouped Job Environment that no attachment's group
-/// shares in its own `JobTemplate` error.
+/// ones, reports a grouped Job Environment that no attachment's group
+/// shares in its own `JobTemplate` error, and may list more Environments in
+/// a Step's constraint 7 error (this one leaves out those it cannot know
+/// the Step enters).
 pub fn check_environment_templates(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
