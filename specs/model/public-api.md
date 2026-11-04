@@ -342,19 +342,18 @@ the Environment for an `ALWAYS` one), recording it in
 Step's effective Environment parameter values for the Environments in
 its set into `job::Step::environment_parameters`; resolves each
 entry naming no Job Environment, enabled or disabled, against `attached` (each
-attachment under its own profile; `ctx`'s profile is not read); resolves
-each Environment's own `enableIf` (§4 item 6) for each Step whose
-Sessions would enter it, with that Step's effective values that are known
-(a missing or unconvertible value is `unresolved[T]`, §3.2.2), taking a
+attachment under its own profile; `ctx`'s profile is not read); for
+each Step, takes the Environments its Sessions would enter in the Job's
+Environment order, and supersedes one whose `exclusiveGroup` an earlier
+one left in the Step's set already has, without evaluating its `enableIf`
+(§4 item 7, §7.4.1 step 6), and resolves every other one's own `enableIf`
+(§4 item 6) with that Step's effective values that are known (a missing or
+unconvertible value is `unresolved[T]`, §3.2.2); takes a superseded or
 disabled one out of the Step's `environments`, `step_environments`, and
-`environment_parameters` and listing it in
+`environment_parameters` and lists it in
 `CreatedJob::disabled_environments` (for an Environment with `activation:
 ALWAYS`, which cannot be disabled, a `false` result is instead an error at
-its `enableIf` naming every such Step, §3.2.2 item 6); taking the
-Environments in the Job's Environment order, supersedes one whose
-`exclusiveGroup` an earlier one left in the Step's set already has, which
-disables it the same way, without evaluating its `enableIf` (§4 item 7,
-§7.4.1 step 6); checks each value of an
+its `enableIf` naming every such Step, §3.2.2 item 6); checks each value of an
 Environment that is not disabled for the Step against its definition, and
 PATH values against `ctx.submission_path_format` /
 `ctx.allow_uri_path_values`, and that the Step supplies every parameter

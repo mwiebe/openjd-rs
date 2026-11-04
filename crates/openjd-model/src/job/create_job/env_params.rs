@@ -1220,11 +1220,15 @@ fn resolve_enable_if(
 /// parameters, and keep each enabled entry that names no Job Environment
 /// for the submission stage. Each Step Environment's own `enableIf` (§4
 /// item 6) is evaluated here too, in the same scope
-/// ([`StepEntries::step_environments_enabled`]). Each Job Environment's
-/// own `enableIf` is decided with the Step's effective values for it, with
-/// the values that are known (§3.2.2, [`DeclaringEnvironment::decide`]),
-/// and the value checks and constraint 7 are reported only for the Job
-/// Environments it does not disable.
+/// ([`StepEntries::step_environments_enabled`]). In written order, a Job
+/// Environment whose `exclusiveGroup` an earlier one left in the Step's set
+/// already has is superseded without its own `enableIf` being evaluated
+/// (§4 item 7, §7.4.1 step 6), and one whose group an attachment shares is
+/// left, undecided, to the submission stage ([`DeferredJobEnvironment`]).
+/// Any other Job Environment's own `enableIf` is decided with the Step's
+/// effective values for it, with the values that are known (§3.2.2,
+/// [`DeclaringEnvironment::decide`]), and the value checks and constraint
+/// 7 are reported only for the Job Environments it does not disable.
 ///
 /// A disabled entry requests nothing and supplies nothing, and what it
 /// means depends on the `activation` of the Environment it names (§3.2
@@ -1423,9 +1427,10 @@ pub(crate) fn resolve_step_entries<'a>(
         template::EnvironmentActivation::OnRequest => requested.contains(name),
     };
     // §3.2.2: the Step's effective values for each Job Environment its
-    // Sessions would enter, then the Environment's own `enableIf` (§4 item
-    // 6) with the values that are known, then, for an Environment it does
-    // not disable, the value checks and constraint 7 (§7.4.1).
+    // Sessions would enter; then, unless it is superseded or deferred, the
+    // Environment's own `enableIf` (§4 item 6) with the values that are
+    // known; then, for an Environment it does not disable, the value checks
+    // and constraint 7 (§7.4.1 steps 6 and 7).
     let mut values = Vec::new();
     let mut missing = Vec::new();
     // By index in `jobEnvironments`: the ones disabled, in order, and
