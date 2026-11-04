@@ -597,11 +597,12 @@ fn host_attached(activation: &str) -> String {
 
 #[test]
 fn check_environment_templates_combines_an_always_environments_literal_host_requirements() {
-    let conflict = |source: &str, env: &str| {
+    // `job` is the Job Template's path prefix: none without attachments.
+    let conflict = |job: &str, source: &str, env: &str| {
         format!(
-            "JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host \
+            "{job}steps[0]:\n\tStep 'A': no host can satisfy the combined host \
              requirements for amount 'amount.custom': {source} -> hostRequirements \
-             (Environment '{env}') requires min 4, and JobTemplate -> steps[0] -> \
+             (Environment '{env}') requires min 4, and {job}steps[0] -> \
              hostRequirements requires max 2. Template Schemas §3.3.3."
         )
     };
@@ -609,8 +610,8 @@ fn check_environment_templates_combines_an_always_environments_literal_host_requ
     let err = check(&host_job(Some("ALWAYS")), &[]).unwrap_err();
     assert_errors(
         &err.to_string(),
-        "Submission",
-        &[&conflict("JobTemplate -> jobEnvironments[0]", "Own")],
+        "JobTemplate",
+        &[&conflict("", "jobEnvironments[0]", "Own")],
     );
     check(&host_job(Some("BY_DEFAULT")), &[]).unwrap();
     // An attachment.
@@ -618,7 +619,11 @@ fn check_environment_templates_combines_an_always_environments_literal_host_requ
     assert_errors(
         &err.to_string(),
         "Submission",
-        &[&conflict("EnvironmentTemplate[0] -> environment", "Att")],
+        &[&conflict(
+            "JobTemplate -> ",
+            "EnvironmentTemplate[0] -> environment",
+            "Att",
+        )],
     );
     check(&host_job(None), &[&host_attached("BY_DEFAULT")]).unwrap();
 }

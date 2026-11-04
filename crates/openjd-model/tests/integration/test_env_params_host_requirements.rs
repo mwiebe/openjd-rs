@@ -86,7 +86,14 @@ impl Submission {
         let err = self
             .create_labelled(labels)
             .expect_err("expected the submission to be rejected");
-        assert_errors(&err.to_string(), "Submission", expected);
+        // Shaped by the inputs: paths start with their document only when
+        // Environment Templates are attached.
+        let model = if self.envs.is_empty() {
+            "JobTemplate"
+        } else {
+            "Submission"
+        };
+        assert_errors(&err.to_string(), model, expected);
     }
 }
 
@@ -635,7 +642,7 @@ fn the_combination_does_not_depend_on_the_order_of_the_sources() {
         "anyOf: [windows, macos]",
         "allOf: [macos]",
     ]) {
-        submission(&three_sources("attr.worker.os.family", order), &[], &[]).err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[0] -> hostRequirements, JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E1'), JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3."]);
+        submission(&three_sources("attr.worker.os.family", order), &[], &[]).err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[0] -> hostRequirements, jobEnvironments[0] -> hostRequirements (Environment 'E1'), jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3."]);
     }
 }
 
@@ -722,7 +729,7 @@ fn a_tie_names_the_first_source_and_a_sources_any_of_comes_first() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for amount 'amount.custom': JobTemplate -> jobEnvironments[2] -> hostRequirements (Environment 'E3') requires min 8, and JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E1') requires max 4. Template Schemas §3.3.3."]);
+    .err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for amount 'amount.custom': jobEnvironments[2] -> hostRequirements (Environment 'E3') requires min 8, and jobEnvironments[0] -> hostRequirements (Environment 'E1') requires max 4. Template Schemas §3.3.3."]);
     let job = job(&jt(
         "",
         &format!(
@@ -754,7 +761,7 @@ fn a_single_valued_all_of_conflicts_with_an_any_of_without_its_value() {
             ),
         )
     };
-    submission(&template("attr.worker.os.family"), &[], &[]).err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[0] -> hostRequirements and JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3."]);
+    submission(&template("attr.worker.os.family"), &[], &[]).err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[0] -> hostRequirements and jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3."]);
     assert_eq!(
         job(&template("custom:attr.os")).steps[0].host_requirements,
         reqs(
@@ -859,7 +866,7 @@ fn an_amount_conflict_names_the_step_the_sources_and_the_capability() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for amount 'amount.custom': JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E1') requires min 4, and JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E2') requires max 2. Template Schemas §3.3.3."]);
+    .err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for amount 'amount.custom': jobEnvironments[0] -> hostRequirements (Environment 'E1') requires min 4, and jobEnvironments[1] -> hostRequirements (Environment 'E2') requires max 2. Template Schemas §3.3.3."]);
 }
 
 #[test]
@@ -881,7 +888,7 @@ fn a_single_valued_conflict_names_every_source_that_requires_the_attribute() {
     .err(&[
         // A: linux, windows / windows, macos / macos have no common value.
         // B's requirements are E1's and E2's only: macos.
-        "JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[0] -> hostRequirements, JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E1'), JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3.",
+        "steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[0] -> hostRequirements, jobEnvironments[0] -> hostRequirements (Environment 'E1'), jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3.",
     ]);
 }
 
@@ -951,8 +958,8 @@ fn an_environment_is_resolved_with_each_steps_effective_values() {
 #[test]
 fn a_conflict_that_only_resolution_reveals_is_reported_for_each_step_it_affects() {
     submission(&per_step_template(true), &[], &[]).err(&[
-        "JobTemplate -> steps[1]:\n\tStep 'B': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[1] -> hostRequirements and JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3.",
-        "JobTemplate -> steps[2]:\n\tStep 'C': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[2] -> hostRequirements and JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3.",
+        "steps[1]:\n\tStep 'B': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[1] -> hostRequirements and jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3.",
+        "steps[2]:\n\tStep 'C': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[2] -> hostRequirements and jobEnvironments[0] -> hostRequirements (Environment 'E') have no value in common. Template Schemas §3.3.3.",
     ]);
 }
 
@@ -976,7 +983,7 @@ fn amount_template(n: &str) -> String {
 #[test]
 fn a_resolved_value_is_checked_once_per_distinct_values_naming_its_steps() {
     submission(&amount_template("-1"), &[], &[]).err(&[
-        "JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative. Resolved for Steps 'A' and 'B'.",
+        "jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative. Resolved for Steps 'A' and 'B'.",
     ]);
     let job = submission(&amount_template("3"), &[], &[]).job();
     assert_eq!(
@@ -1004,7 +1011,7 @@ fn resolved_names_must_be_unique_within_one_environment() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[1]:\n\tduplicate attribute name 'custom:attr.X'. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[1]:\n\tduplicate attribute name 'custom:attr.X'. Resolved for Step 'A'."]);
 }
 
 #[test]
@@ -1164,8 +1171,8 @@ fn the_resolved_for_note_precedes_an_expression_errors_source_lines() {
     .to_string();
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for Submission\n\
-         JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\t\
+        "Model validation error: 1 validation error for JobTemplate\n\
+         jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\t\
          Format string error: Cannot convert 'x' to int. Resolved for Step 'A'.\n  \
          int(Env.Param.S)\n  \
          ^~~~~~~~~~~~~~~~"
@@ -1210,7 +1217,7 @@ fn resolved_capability_names_of_an_environment_are_checked() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0]:\n\tname 'amount.custom.bad name!' does not match capability name pattern. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> amounts[0]:\n\tname 'amount.custom.bad name!' does not match capability name pattern. Resolved for Step 'A'."]);
     submission(
         &jt(
             "",
@@ -1223,7 +1230,7 @@ fn resolved_capability_names_of_an_environment_are_checked() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0]:\n\tname 'attr.custom.bad name!' does not match capability name pattern. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0]:\n\tname 'attr.custom.bad name!' does not match capability name pattern. Resolved for Step 'A'."]);
 }
 
 #[test]
@@ -1256,7 +1263,7 @@ fn resolved_amount_names_must_be_unique_within_one_environment() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.custom.X'. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> amounts[1]:\n\tduplicate amount name 'amount.custom.X'. Resolved for Step 'A'."]);
 }
 
 #[test]
@@ -1331,7 +1338,7 @@ fn a_single_valued_conflict_is_reported_once_however_many_sources_take_part() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> steps[0] -> hostRequirements, JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E1'), JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3."]);
+    .err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of steps[0] -> hostRequirements, jobEnvironments[0] -> hostRequirements (Environment 'E1'), jobEnvironments[1] -> hostRequirements (Environment 'E2') have no value in common. Template Schemas §3.3.3."]);
 }
 
 #[test]
@@ -1354,7 +1361,7 @@ fn an_environments_resolved_lists_are_checked_at_its_field() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> allOf:\n\tsingle-valued attribute cannot have more than 1 element after resolution. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0] -> allOf:\n\tsingle-valued attribute cannot have more than 1 element after resolution. Resolved for Step 'A'."]);
     let fifty_one: Vec<String> = (0..51).map(|i| format!("v{i}")).collect();
     submission(
         &template(
@@ -1367,7 +1374,7 @@ fn an_environments_resolved_lists_are_checked_at_its_field() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has 51 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2). Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has 51 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2). Resolved for Step 'A'."]);
     submission(
         &template(
             "{name: L, type: \"LIST[STRING]\", default: [x]}",
@@ -1376,7 +1383,7 @@ fn an_environments_resolved_lists_are_checked_at_its_field() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has no anyOf values after resolution. An empty list is not allowed (Template Schemas §3.3.2); to have no requirement, write the field as one expression that resolves to null. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has no anyOf values after resolution. An empty list is not allowed (Template Schemas §3.3.2); to have no requirement, write the field as one expression that resolves to null. Resolved for Step 'A'."]);
 }
 
 #[test]
@@ -1453,7 +1460,7 @@ fn the_steps_a_resolution_error_names_are_capped() {
     );
     let names: Vec<String> = (0..50).map(|i| format!("'S{i}'")).collect();
     submission(&src, &[], &[]).err(&[&format!(
-        "JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative. Resolved for Steps {}, and 10 more.",
+        "jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust be non-negative. Resolved for Steps {}, and 10 more.",
         names.join(", ")
     )]);
 }
@@ -1607,7 +1614,7 @@ fn a_resolved_min_above_its_own_max_is_reported_at_the_environment() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0]:\n\tmin (5) > max (2). Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> amounts[0]:\n\tmin (5) > max (2). Resolved for Step 'A'."]);
 }
 
 #[test]
@@ -1642,7 +1649,7 @@ fn an_environments_resolved_amount_needs_a_positive_max_or_is_discarded() {
         &[],
         &[],
     )
-    .err(&["JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0] -> max:\n\tmust be positive. Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> amounts[0] -> max:\n\tmust be positive. Resolved for Step 'A'."]);
     // An amount with no bound left is discarded, not an error (§3.3), and
     // the Environment then adds no requirements.
     let created = submission(
@@ -1689,7 +1696,7 @@ fn an_item_2_1_conflict_caps_its_list_of_sources() {
     // Every source that names the attribute is listed (plan 5 A49), capped
     // as the other job-creation lists are (512 characters, then "and N
     // more"), so the message stays bounded however many sources conflict.
-    let envs: String = (0..8)
+    let envs: String = (0..10)
         .map(|i| {
             let value = if i == 0 { "linux" } else { "windows" };
             format!(
@@ -1702,5 +1709,5 @@ fn an_item_2_1_conflict_caps_its_list_of_sources() {
         "",
         &format!("jobEnvironments:\n{envs}steps:\n- name: A\n  {RUN}\n"),
     );
-    submission(&template, &[], &[]).err(&["JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of JobTemplate -> jobEnvironments[0] -> hostRequirements (Environment 'E0'), JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E1'), JobTemplate -> jobEnvironments[2] -> hostRequirements (Environment 'E2'), JobTemplate -> jobEnvironments[3] -> hostRequirements (Environment 'E3'), JobTemplate -> jobEnvironments[4] -> hostRequirements (Environment 'E4'), JobTemplate -> jobEnvironments[5] -> hostRequirements (Environment 'E5'), and 2 more have no value in common. Template Schemas §3.3.3."]);
+    submission(&template, &[], &[]).err(&["steps[0]:\n\tStep 'A': no host can satisfy the combined host requirements for attribute 'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf values of jobEnvironments[0] -> hostRequirements (Environment 'E0'), jobEnvironments[1] -> hostRequirements (Environment 'E1'), jobEnvironments[2] -> hostRequirements (Environment 'E2'), jobEnvironments[3] -> hostRequirements (Environment 'E3'), jobEnvironments[4] -> hostRequirements (Environment 'E4'), jobEnvironments[5] -> hostRequirements (Environment 'E5'), jobEnvironments[6] -> hostRequirements (Environment 'E6'), jobEnvironments[7] -> hostRequirements (Environment 'E7'), and 2 more have no value in common. Template Schemas §3.3.3."]);
 }

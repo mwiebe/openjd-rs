@@ -461,8 +461,8 @@ fn range_expr_spellings_share_an_enable_if_and_a_host_requirements_resolution() 
         &jt("true", "{{ Env.Param.F[10] }}"),
         &[],
         &[],
-        "Submission",
-        &["JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tFormat \
+        "JobTemplate",
+        &["jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tFormat \
           string error: hostRequirements amount min: Index 10 out of bounds for range_expr of length \
           3. Resolved for Steps 'A' and 'B'.\n  Env.Param.F[10]\n  ~~~~~~~~~~~^~~~"],
     );

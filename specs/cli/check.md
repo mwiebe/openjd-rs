@@ -206,8 +206,12 @@ checks them. The
 messages and paths are those `openjd run` reports for the same
 submission, except that a single-layer or host-requirement error names only what `check`
 can know without Job Parameter values (the layers a Session certainly enters, the literal
-requirements), so `openjd run` may count or name more: errors are one `Submission` validation error whose paths start with the
-document (`JobTemplate`, or the Environment Template's path), and warnings go to stderr.
+requirements), so `openjd run` may count or name more, and that `check` reports every
+violation it is certain of, where `openjd run` reports a Step's value errors only once its
+entries resolve (Template Schemas §7.4.1; see
+[job-creation.md](../model/job-creation.md#error-order-env_params)): errors are one
+`Submission` validation error whose paths start with the document (`JobTemplate`, or the
+Environment Template's path), and warnings go to stderr.
 Without `--environment`, `check` makes no assumption about which Environments a queue
 attaches and reports none of these.
 

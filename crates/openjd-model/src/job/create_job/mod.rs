@@ -12,8 +12,7 @@ mod host_requirements;
 mod instantiate;
 pub mod parameters;
 mod ranges;
-
-use std::collections::HashSet;
+mod staged;
 
 use indexmap::IndexMap;
 
@@ -82,8 +81,8 @@ impl EvalBudgets {
 /// returning only the Job; see it for every rule. In particular, with
 /// `ENV_PARAMS` an enabled `environment:` entry that names no
 /// `jobEnvironments` entry is an error unless it has `required: false`,
-/// and the error is reported for `Submission`, as when Environment
-/// Templates are attached.
+/// and the error is reported for `JobTemplate`, at the Job Template's
+/// paths, with every other error.
 pub fn create_job(
     job_template: &JobTemplate,
     job_parameter_values: &JobParameterValues,
@@ -133,48 +132,43 @@ pub fn create_job(
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
 /// across all steps is checked after parameter spaces are resolved.
 ///
-/// With `ENV_PARAMS` the stages run in the §7.4.1 order:
+/// With `ENV_PARAMS` job creation takes the steps of Template Schemas
+/// §7.4.1 over the Job Template and the attached Environment Templates
+/// together, in one pass:
 ///
 /// 1. `Job.Name` is resolved and, with `EXPR`, `Job.EnvNames` is bound to
 ///    the names of the attached Environments, in attachment order,
 ///    followed by the Job Template's `jobEnvironments`, whatever their
-///    `activation` (§7.3.1; plan P2), before any TEMPLATE-scope expression;
-/// 2. each Step's `let` bindings are evaluated, then each `environment:`
-///    entry's `enableIf`; a disabled entry supplies nothing, and what it
-///    means depends on the `activation` of the Environment it names (§3.2
-///    item 3.2); and each Step Environment's own `enableIf` (§4 item 6), in
-///    the same scope; a disabled one is left out of
-///    [`job::Step::step_environments`];
-/// 3. the Step's Sessions would enter every Job Environment with
-///    `activation: ALWAYS`, every `BY_DEFAULT` one that no disabled entry of
-///    the Step declines, and every `ON_REQUEST` one an enabled entry
-///    requests, and a disabled entry for an `ALWAYS` one is an error naming
-///    the Step and the Environment; the Step gets its effective values for each
-///    of the Job Template's own; in written order, one whose
-///    `exclusiveGroup` (§4 item 7) an earlier one that remains in the
-///    Step's set already has is superseded, which disables it for the
-///    Step, and its own `enableIf` is not evaluated (§7.4.1 step 6); for
-///    any other, its own `enableIf` (§4 item 6) is decided with the values
-///    that are known (a missing or unconvertible value is `unresolved[T]`;
-///    Template Schemas §3.2.2), and one that is `false` is left out of the
-///    Step's set and values, or, for an `ALWAYS` one, is an error naming
-///    the Step (§3.2.2 item 6), while one it does not disable takes its
-///    group; and for the ones not disabled each value is checked against
-///    its definition and constraint 7 is checked (step 7). The attached
-///    Environments come first in the Job's Environment order, so a Job
-///    Environment whose group an attached one shares is left to stage 4,
-///    which applies the group rule to the attached ones and then to it,
-///    and decides its `enableIf` and checks its values only if it is not
-///    superseded;
-/// 4. the entries that name no Job Environment, enabled or disabled, are
+///    `activation` (§7.3.1; plan P2), before any TEMPLATE-scope expression,
+///    including each Step's `let` bindings;
+/// 2. each `environment:` entry's `enableIf` is evaluated; a disabled entry
+///    supplies nothing, and what it means depends on the `activation` of
+///    the Environment it names (§3.2 item 3.2);
+/// 3. the entries that name no Job Environment, enabled or disabled, are
 ///    resolved against `attached` (§3.2.1; a disabled one that matches no
-///    attachment has no effect), the Step's attached Environments are
-///    fixed in the same way, its effective values for them are computed,
-///    each one's own `enableIf` is decided as in stage 3, the
-///    `exclusiveGroup` rule is applied as in stage 3, and the values of the
-///    ones not disabled are checked; then the `WRAP_ACTIONS`
-///    single-layer rule is checked over the final set;
-/// 5. each Environment's `hostRequirements` (`ENV_PARAMS`, §4 item 5) are
+///    attachment has no effect);
+/// 4. each Step's set of Environments is fixed: its Sessions would enter
+///    every Environment with `activation: ALWAYS`, every `BY_DEFAULT` one
+///    that no disabled entry of the Step declines, and every `ON_REQUEST`
+///    one an enabled entry requests, and a disabled entry for an `ALWAYS`
+///    one is an error naming the Step and the Environment;
+/// 5. the Step gets its effective values for each Environment in its set
+///    (an entry's undeclared key is an error here, constraint 5);
+/// 6. the Environments are taken in the Job's Environment order: one whose
+///    `exclusiveGroup` (§4 item 7) an earlier one that remains in the Step's
+///    set already has is superseded, which disables it for the Step, and its
+///    own `enableIf` is not evaluated; for any other, its own `enableIf`
+///    (§4 item 6) is decided with the values that are known (a missing or
+///    unconvertible value is `unresolved[T]`; §3.2.2), and one that is
+///    `false` is left out of the Step's set and values, or, for an `ALWAYS`
+///    one, is an error naming the Step (§3.2.2 item 6), while one it does
+///    not disable takes its group. Each Step Environment's own `enableIf`
+///    is decided too, and a disabled one is left out of
+///    [`job::Step::step_environments`];
+/// 7. for the Environments that remain in each Step's set, each value is
+///    checked against its definition, constraint 7 is checked, and so is
+///    the `WRAP_ACTIONS` single-layer rule;
+/// 8. each Environment's `hostRequirements` (`ENV_PARAMS`, §4 item 5) are
 ///    resolved for each Step whose Sessions enter it, with that Step's
 ///    effective values, and combined with the Step's own into the Step's
 ///    combined host requirements (§3.3.3), which replace
@@ -197,23 +191,36 @@ pub fn create_job(
 /// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
 /// whatever `ctx` enables.
 ///
-/// The resolved-value re-checks on carried-forward fields (and the
-/// `let` bindings feeding them), and the Job Template's Environment
-/// parameter value checks, are reported together: every such failure
-/// across job environments, steps, and step environments becomes one
-/// `ModelError::ModelValidation` for `JobTemplate`, in template-validation
-/// order (the Job Environments' literal `default`s after their other
-/// checks, each Step's values after its other checks, and the failed
-/// `enableIf` evaluations of the Job Environments stage 3 decides last).
+/// Every check failure is reported in one `ModelError::ModelValidation`.
 /// Failures that make a step uninstantiable (resolving its own host
-/// requirements or parameter space) abort immediately and are reported
-/// alone. Stages 4 and 5 run only when those succeed, and their checks
-/// (including an Environment's resolved `hostRequirements`, a combined
-/// set's conflicts, and the `enableIf`, value checks and constraint 7 of
-/// a Job Environment left to stage 4) are reported together as one
-/// `ModelError::ModelValidation` for `Submission`, whose paths start with
-/// the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
-/// attachment's label).
+/// requirements or parameter space, or a step-level `let` binding) abort
+/// immediately instead, and so do the caller limits, which are checked
+/// after the Job Template's own steps, before the attachments are applied,
+/// and only when those found no error. The errors are in this order:
+///
+/// - first the checks job creation makes in the template-validation style:
+///   the resolved-value re-checks on carried-forward fields (and the `let`
+///   bindings feeding them), Job Environment by Job Environment and then
+///   Step by Step, then the literal `default`s, the Job Template's before
+///   the attachments';
+/// - then by §7.4.1 step, then by Step, then by the Environment's place in
+///   the Job's Environment order (an entry's error by its place in the
+///   Step's `dependencies`). An error that names several Steps (a failed
+///   `enableIf`, an Environment's resolved `hostRequirements`) is filed under
+///   the first; one about no Step (an unreachable attachment) after the
+///   Steps' errors of its step.
+///
+/// A Step with an error from steps 1–4 has no fixed set of Environments, so
+/// steps 5–8 are not taken for it, and none of its errors from them are
+/// reported; the other Steps are checked in full. So a Step's value and
+/// constraint 7 errors appear only once its entries resolve.
+///
+/// The error is shaped by the inputs. Without attached Environment
+/// Templates it is for `JobTemplate`, at paths relative to the Job
+/// Template, as job creation's other errors are. With them it is for
+/// `Submission`, and every path starts with its document (`JobTemplate`,
+/// `EnvironmentTemplate[i]`, or the attachment's label). The warnings
+/// ([`CreatedJob::warnings`]) have the same paths.
 pub fn create_job_with_environment_templates(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
@@ -233,25 +240,16 @@ pub fn create_job_with_environment_templates(
                 .map(|e| e.name.clone()),
         )
         .collect();
-    // §4 item 7: a Job Environment that shares a group with an attached
-    // Environment is decided with it, by the submission stage.
-    let attached_groups: HashSet<String> = attached
-        .iter()
-        .filter_map(|a| a.template.environment().group())
-        .map(str::to_string)
-        .collect();
-    let (job, selections, job_envs) = create_job_from_template(
+    let body = create_job_from_template(
         job_template,
         job_parameter_values,
         ctx,
         &env_names,
-        attached_groups,
+        attached.len(),
     )?;
     external::apply_environment_templates(
         job_template,
-        job,
-        selections,
-        &job_envs,
+        body,
         &env_names,
         attached,
         job_parameter_values,
@@ -259,26 +257,76 @@ pub fn create_job_with_environment_templates(
     )
 }
 
-/// Job creation from the Job Template alone (stages 1–3 of
+/// What job creation from the Job Template alone gives the submission
+/// stage.
+pub(super) struct Body<'a> {
+    /// The Job, without the attached Environments and with no Step's
+    /// `environments` set.
+    pub(super) job: job::Job,
+    /// For each Step, what its entries decided.
+    pub(super) selections: Vec<env_params::StepSelection<'a>>,
+    /// The Job Environments, set up for the submission stage to decide.
+    pub(super) job_envs: env_params::JobEnvironments<'a>,
+    /// The template-validation-style errors, at paths relative to the Job
+    /// Template ([`staged::Stage::Validation`]).
+    pub(super) check_errors: crate::error::ValidationErrors,
+    /// The errors of §7.4.1's steps found so far, at paths relative to the
+    /// Job Template.
+    pub(super) staged: staged::StagedErrors,
+}
+
+/// Report every error of one job creation in §7.4.1 order: the
+/// template-validation-style `check_errors`, then `body`'s and
+/// `submission`'s by step, Step and position (see [`staged`]), leaving out
+/// steps 5–8 of every Step with an error from steps 1–4.
+///
+/// The error is shaped by the inputs. Without attached Environment
+/// Templates it is for `JobTemplate`, at paths relative to the Job
+/// Template. With them it is for `Submission`, and every path starts with
+/// its document: `check_errors` and `body` get `JobTemplate`, and
+/// `submission`'s already have it.
+pub(super) fn finish_errors(
+    check_errors: crate::error::ValidationErrors,
+    body: staged::StagedErrors,
+    submission: staged::StagedErrors,
+    attached: bool,
+) -> Result<(), ModelError> {
+    let prefix: Vec<crate::error::PathElement> = if attached {
+        vec![crate::error::PathElement::Field("JobTemplate".to_string())]
+    } else {
+        Vec::new()
+    };
+    let mut all = staged::StagedErrors::default();
+    all.at(staged::Stage::Validation, 0, 0).errors.extend(
+        check_errors
+            .errors
+            .into_iter()
+            .map(|e| staged::prefixed(&prefix, e)),
+    );
+    all.absorb(body, &prefix);
+    all.absorb(submission, &[]);
+    all.finish(if attached {
+        "Submission"
+    } else {
+        "JobTemplate"
+    })
+}
+
+/// Job creation from the Job Template alone (§7.4.1 steps 1 and 2, and
+/// steps 4 and 5 for the Job Environments, of
 /// [`create_job_with_environment_templates`]): the Job, without the
-/// attached Environments and with no Step's `environments` set, and for
-/// each Step what the submission stage needs. `env_names` is the value of
-/// `Job.EnvNames`.
-#[allow(clippy::type_complexity)]
+/// attached Environments and with no Step's `environments` set, for each
+/// Step what the submission stage needs, and the errors found so far,
+/// which the submission stage reports with its own. `env_names` is the
+/// value of `Job.EnvNames`; `attached_count` is the number of attached
+/// Environments, which come first in the Job's Environment order.
 fn create_job_from_template<'a>(
     job_template: &'a JobTemplate,
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
     env_names: &[String],
-    attached_groups: HashSet<String>,
-) -> Result<
-    (
-        job::Job,
-        Vec<env_params::StepSelection<'a>>,
-        env_params::JobEnvironments<'a>,
-    ),
-    ModelError,
-> {
+    attached_count: usize,
+) -> Result<Body<'a>, ModelError> {
     // The context must be compatible with what the template declares:
     // same revision, and at least the template's extensions enabled.
     // Anything less makes the evaluation passes below ambiguous (an
@@ -468,10 +516,11 @@ fn create_job_from_template<'a>(
         job_template,
         default_symtab,
         symtab.clone(),
-        attached_groups,
+        attached_count,
         env_policy,
         &mut check_errors,
     );
+    let mut staged = staged::StagedErrors::default();
 
     let mut steps = Vec::with_capacity(job_template.steps.len());
     for (step_index, st) in job_template.steps.iter().enumerate() {
@@ -489,27 +538,33 @@ fn create_job_from_template<'a>(
                 .profile()
                 .has_extension(crate::types::ModelExtension::EnvParams),
             &mut check_errors,
+            &mut staged,
         )?);
     }
-    // A Job Environment's `enableIf` that failed is reported once for all
-    // the Steps it was resolved for.
-    job_envs.report_enable_if_errors(&mut check_errors);
-    check_errors.into_result("JobTemplate")?;
     // `instantiate_step` only declines to build a step after recording
-    // the failure in `check_errors`, so every step is present here.
-    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) = steps
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| {
-            ModelError::DecodeValidation(
-                "internal error: a step was skipped without a recorded error".to_string(),
-            )
-        })?
-        .into_iter()
-        .unzip();
+    // the failure in `check_errors`. Such a Step cannot be instantiated, so
+    // the submission stage does not run, and the errors so far are
+    // reported.
+    let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
+        finish_errors(
+            check_errors,
+            staged,
+            staged::StagedErrors::default(),
+            attached_count > 0,
+        )?;
+        return Err(ModelError::DecodeValidation(
+            "internal error: a step was skipped without a recorded error".to_string(),
+        ));
+    };
+    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) =
+        built.into_iter().unzip();
+    // The caller limits below abort job creation alone. With errors
+    // already found the Job is rejected anyway, so they are not checked,
+    // and the submission stage reports every error.
+    let limits_apply = check_errors.is_empty() && staged.is_empty();
 
     // Caller-imposed total task count limit across all steps
-    if let Some(max_task_count) = ctx.caller_limits.max_task_count {
+    if let Some(max_task_count) = ctx.caller_limits.max_task_count.filter(|_| limits_apply) {
         // u128: each step's count is a u64, so the sum cannot overflow, and
         // the total is compared and reported exactly.
         let mut total: u128 = 0;
@@ -555,7 +610,11 @@ fn create_job_from_template<'a>(
     });
 
     // Caller-imposed step script size limit (JSON-encoded bytes)
-    if let Some(max) = ctx.caller_limits.max_step_script_size {
+    if let Some(max) = ctx
+        .caller_limits
+        .max_step_script_size
+        .filter(|_| limits_apply)
+    {
         for step in &steps {
             let size = serde_json::to_string(&step.script)
                 .map(|s| s.len())
@@ -572,7 +631,11 @@ fn create_job_from_template<'a>(
     }
 
     // Caller-imposed environment size limit (JSON-encoded bytes)
-    if let Some(max) = ctx.caller_limits.max_environment_size {
+    if let Some(max) = ctx
+        .caller_limits
+        .max_environment_size
+        .filter(|_| limits_apply)
+    {
         let all_envs = steps
             .iter()
             .flat_map(|s| s.step_environments.iter().flatten())
@@ -590,8 +653,8 @@ fn create_job_from_template<'a>(
         }
     }
 
-    Ok((
-        job::Job {
+    Ok(Body {
+        job: job::Job {
             name: job_name,
             description: job_template.description.as_ref().map(|d| d.0.clone()),
             extensions,
@@ -601,5 +664,7 @@ fn create_job_from_template<'a>(
         },
         selections,
         job_envs,
-    ))
+        check_errors,
+        staged,
+    })
 }

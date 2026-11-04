@@ -703,10 +703,14 @@ struct Source {
 /// each such Step `s`, in Job order. An Environment left with no
 /// requirements for a Step takes no part in its combination.
 ///
-/// Every failure is added to `errors`, under the `Submission` model, with
-/// paths starting with the document: a resolution failure at the
-/// Environment's field, naming the Steps it was resolved for, and a
-/// conflict at `JobTemplate -> steps[i]`.
+/// Every failure is filed in `staged` under §7.4.1 step 8, with paths
+/// starting with the document when Environment Templates are attached: a
+/// resolution failure at the Environment's field, naming the Steps it was
+/// resolved for, filed under the first of them and the Environment's place
+/// in the Job's order; and a conflict at `steps[i]` (`JobTemplate ->
+/// steps[i]` with attachments), filed under Step `i` after its
+/// Environments' failures. A Step that enters no Environment, as
+/// `entered` says of a Step stopped after §7.4.1 step 4, is left alone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn combine_step_host_requirements(
     job: &mut job::Job,
@@ -717,8 +721,9 @@ pub(super) fn combine_step_host_requirements(
     env_names: &ExprValue,
     budgets: super::EvalBudgets,
     discarded: &mut [Vec<super::DiscardedHostRequirement>],
-    errors: &mut ValidationErrors,
+    staged: &mut super::staged::StagedErrors,
 ) {
+    use super::staged::{Stage, ANY};
     // resolved[s][e]: Environment e's requirements for Step s, when Step s
     // enters it, it has requirements, and they resolved.
     let mut resolved: Vec<Vec<Option<job::HostRequirements>>> =
@@ -803,8 +808,15 @@ pub(super) fn combine_step_host_requirements(
                         }
                     }
                 }
-                Err(ModelError::ModelValidation(ve)) => errors.errors.extend(ve.errors),
-                Err(other) => errors.add(&hr_path, format!("{other} {}", site_note(&site))),
+                // §7.4.1 step 8, filed under the first Step it was resolved
+                // for, at the Environment's place in the Job's order.
+                Err(ModelError::ModelValidation(ve)) => staged
+                    .at(Stage::Step8, steps[0], e)
+                    .errors
+                    .extend(ve.errors),
+                Err(other) => staged
+                    .at(Stage::Step8, steps[0], e)
+                    .add(&hr_path, format!("{other} {}", site_note(&site))),
             }
         }
     }
@@ -823,7 +835,12 @@ pub(super) fn combine_step_host_requirements(
         if let Some(own) = step.host_requirements.take() {
             sources.insert(0, step_source(&step_path, own));
         }
-        step.host_requirements = Some(combine(&step.name, &step_path, &sources, errors));
+        step.host_requirements = Some(combine(
+            &step.name,
+            &step_path,
+            &sources,
+            staged.at(Stage::Step8, s, ANY),
+        ));
     }
 }
 

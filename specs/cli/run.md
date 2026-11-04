@@ -331,9 +331,12 @@ Job Parameters). Its submission stage:
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
   the attached Environments by name. A missing `required` Environment, an ambiguous name, an
   undeclared key, a bad value, or a parameter without a `default` that a Step does not
-  supply fails the run with one `Submission` validation error before any Session starts,
-  each error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`),
-  followed, like every job-creation error, by the Job Template's help text. A
+  supply fails the run with one validation error before any Session starts, in Template
+  Schemas §7.4.1 order (a Step's value errors are reported once its entries resolve; see
+  [job-creation.md](../model/job-creation.md#error-order-env_params)): for `Submission`, each
+  error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`), with
+  `--environment`, and for `JobTemplate`, at the Job Template's paths (`steps[0] -> ...`),
+  without it; followed, like every job-creation error, by the Job Template's help text. A
   `required: false` entry that resolves to nothing has no effect. An entry whose `enableIf`
   is `false` supplies nothing; its name is resolved too, and one that matches nothing has no
   effect, whatever `required` says;

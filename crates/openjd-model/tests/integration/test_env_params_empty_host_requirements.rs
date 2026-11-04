@@ -533,9 +533,9 @@ fn a_steps_expression_that_fails_to_resolve_names_its_field() {
              else [Env.Param.P] }}\"}]}",
         ),
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\t\
+            "jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\t\
            Format string error: Cannot coerce string to list[string]?. Resolved for Step 'S'.",
         ],
     );
@@ -719,9 +719,9 @@ fn an_expression_that_resolves_to_an_empty_list_is_an_error() {
              != ''] }}\"}]}",
         ),
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> jobEnvironments[0] -> hostRequirements -> attributes[0] -> allOf:\n\t\
+            "jobEnvironments[0] -> hostRequirements -> attributes[0] -> allOf:\n\t\
            attribute 'custom:attr.flavor' of Environment 'E' has no allOf values after \
            resolution. An empty list is not allowed (Template Schemas §3.3.2); an expression \
            that resolves to null omits the field instead. Resolved for Step 'S'.",

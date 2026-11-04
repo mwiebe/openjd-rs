@@ -49,6 +49,7 @@ pub(super) fn instantiate_step<'a>(
     job_envs: &super::env_params::JobEnvironments<'a>,
     lists_env_params: bool,
     check_errors: &mut ValidationErrors,
+    staged: &mut super::staged::StagedErrors,
 ) -> Result<Option<(job::Step, super::env_params::StepSelection<'a>)>, ModelError> {
     let mut step_symtab = symtab.clone();
 
@@ -235,7 +236,7 @@ pub(super) fn instantiate_step<'a>(
         let_base.as_ref(),
         job_envs,
         super::env_params::ResolvePolicy::new(ctx),
-        check_errors,
+        staged,
     );
 
     // §4 item 6: a Step Environment whose `enableIf` is `false` is not
@@ -275,7 +276,8 @@ pub(super) fn instantiate_step<'a>(
             resolved_symtab: Some(openjd_expr::SerializedSymbolTable::from_symtab(
                 &filtered_symtab,
             )),
-            environment_parameters: entries.environment_parameters,
+            // Set by the submission stage, which decides the Environments.
+            environment_parameters: None,
             environments: None,
         },
         super::env_params::StepSelection {

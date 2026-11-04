@@ -557,8 +557,8 @@ steps:
     .unwrap_err();
     assert_errors(
         &err.to_string(),
-        "Submission",
-        &["JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2)."],
+        "JobTemplate",
+        &["steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2)."],
     );
 }
 
@@ -1262,13 +1262,17 @@ steps:
     let (e, x) = (deps[0].clone(), deps[1].clone());
     deps.push(e);
     deps.push(x);
+    // The duplicates are §7.4.1 step 2 errors; the first Ext entry is still
+    // resolved, in step 3, and names no Environment.
     let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[
-            "steps[0] -> dependencies[2] -> environment:\n\tduplicate environment dependency 'E'.",
-            "steps[0] -> dependencies[3] -> environment:\n\tduplicate environment dependency 'Ext'.",
-        ],
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 3 validation errors for JobTemplate\n\
+         steps[0] -> dependencies[2] -> environment:\n\tduplicate environment dependency 'E'.\n\
+         steps[0] -> dependencies[3] -> environment:\n\tduplicate environment dependency 'Ext'.\n\
+         steps[0] -> dependencies[1] -> environment:\n\tnames Environment 'Ext', which is not a \
+         jobEnvironments entry of the Job Template, and no Environment Template is attached. The \
+         entry is required; set 'required: false' if the Step can run without the Environment \
+         (Template Schemas §3.2.1 item 2)."
     );
 }
