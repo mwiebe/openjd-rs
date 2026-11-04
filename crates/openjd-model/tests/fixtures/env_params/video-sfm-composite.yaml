@@ -14,15 +14,12 @@
 #   - Docker, matching environment_templates/docker-env-params.yaml
 # When a Conda Environment is attached the Conda entries apply, when a Docker
 # Environment is attached the Docker entries apply, and when neither is
-# attached because the hosts have the software preinstalled, neither applies. The Job Template is the same in all three cases.
+# attached because the hosts have the software preinstalled, neither applies.
+# The Job Template is the same in all three cases.
 #
-# A scheduler may attach both. The Conda entries carry
-#   enableIf: "'Docker' not in Job.EnvNames"
-# which disables them when a Docker Environment is present, so a Step is
-# never told to install conda packages inside a container that has no conda.
-# Job.EnvNames lists the names of every Environment the Job has once
-# external ones are attached. The Docker Environment is ON_REQUEST, so the
-# Steps' requests are what bring it into their Sessions.
+# A scheduler may attach both. The two Environments share an exclusiveGroup,
+# so each Step's Sessions enter only the first one attached that is enabled
+# for the Step, and the Job Template does not choose between them.
 #
 # `required: false` covers a Job with no Environment of that name attached.
 # An attached Conda (or Docker) Environment that declares no ENV_PARAMS
@@ -37,14 +34,15 @@
 #
 # The Docker entries also tell the container which host paths to mount (the
 # Job's PATH parameters, path-mapped on the host) and, for SolveSfM, to pass
-# the host's GPUs. The Mounts value and the Conda enableIf are the same for
-# every Step, so each is written once with a YAML anchor (&mounts,
-# &prefer_docker) and reused.
+# the host's GPUs. The Mounts value is the same for every Step, so it is
+# written once with a YAML anchor (&mounts) and reused.
 #
-# Steps whose values differ never share a Session, so each Session installs
-# (or pulls) only one application. DecodeFrames and EncodeVideo supply equal
-# values for both Environments, so a scheduler may run them in the same
-# Session or reuse a host that already prepared that software.
+# Steps whose values differ never run under one entry of an Environment (a
+# Session may exit it and enter it again with the other Step's values), so
+# each entry installs (or pulls) only one application. DecodeFrames and
+# EncodeVideo supply equal values for both Environments, so a scheduler may
+# run them under one entry or reuse a host that already prepared that
+# software.
 #
 # Once ENV_PARAMS is implemented in the openjd tools, see the Steps and their
 # dependencies with:
@@ -119,7 +117,6 @@ steps:
   dependencies:
   - environment: Conda
     required: false
-    enableIf: &prefer_docker "'Docker' not in Job.EnvNames"
     parameters:
       Packages: "ffmpeg=7"
   - environment: Docker
@@ -148,7 +145,6 @@ steps:
   - step: DecodeFrames
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "colmap=3.11"
   - environment: Docker
@@ -190,7 +186,6 @@ steps:
   - step: SolveSfM
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "maya=2025 mtoa"
       Channels: "studio-internal conda-forge"
@@ -307,7 +302,6 @@ steps:
   # conda environment or pulled this image.
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "ffmpeg=7"
   - environment: Docker

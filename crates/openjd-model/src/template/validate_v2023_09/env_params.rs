@@ -24,7 +24,7 @@
 //! the structural rules that do not involve format strings:
 //!
 //! - §4 item 3 constraints 1–3: 1–50 definitions with unique names; §4,
-//!   after item 9: no `envParameterDefinitions`, `activation`, or
+//!   after item 10: no `envParameterDefinitions`, `activation`, or
 //!   `hostRequirements` on a `stepEnvironments` entry; §4 item 4: no
 //!   literal `enableIf: false` on an Environment with `activation: ALWAYS`,
 //!   which cannot be disabled (§3.2.2 item 6);
@@ -82,7 +82,7 @@ const MAX_ENV_PARAMS: usize = 50;
 const MAX_DECLARED_LIST_CHARS: usize = 512;
 
 /// Where an Environment sits, which decides whether it may declare
-/// parameters (§4, after item 9).
+/// parameters (§4, after item 10).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EnvPlacement {
     /// A `jobEnvironments` entry or an Environment Template's `environment`.
@@ -111,6 +111,13 @@ struct JobEnvIndex<'a> {
     /// `enableIf` that is certainly unresolved for the Step
     /// ([`enable_if_certainly_unresolved`]), which is checked per entry.
     certainly_enabled: bool,
+    /// Whether the Environment has an `exclusiveGroup` (§4 item 7). Before
+    /// the Environment Templates are known, an attached Environment of its
+    /// group may come first in the Job's Environment order and supersede
+    /// it, which disables it for the Step (§3.2.2), so it is never known to
+    /// be entered here (§4, after item 10), and constraints 6 and 7 are left
+    /// to job creation for it.
+    grouped: bool,
     /// The definitions by name; for a duplicated name, the first.
     defs: HashMap<&'a str, &'a EnvironmentParameterDefinition>,
     /// The declared names in written order, each once.
@@ -133,6 +140,7 @@ impl<'a> JobEnvIndex<'a> {
             env,
             activation: env.activation(),
             certainly_enabled: env.certainly_not_disabled(),
+            grouped: env.group().is_some(),
             defs,
             names,
             declared: OnceCell::new(),
@@ -468,9 +476,10 @@ pub fn validate_env_params_environment_template(
 }
 
 /// §4 item 6: whether one Environment's `enableIf` is
-/// permitted; §4 item 4 and the paragraph after item 9: its `activation`;
-/// §4 item 5 and the paragraph after item 9: where its `hostRequirements`
-/// are permitted; §4 item 3 and §4.5: its
+/// permitted; §4 item 4 and the paragraph after item 10: its `activation`;
+/// §4 item 5 and the paragraph after item 10: where its `hostRequirements`
+/// are permitted; §4 item 7 and the paragraph after item 10: its
+/// `exclusiveGroup`; §4 item 3 and §4.5: its
 /// `envParameterDefinitions`.
 fn check_environment(
     env: &Environment,
@@ -490,7 +499,7 @@ fn check_environment(
             "enableIf on an Environment requires the ENV_PARAMS extension.",
         );
     }
-    // §4, after item 9. §4 item 4 constraint 1 (an unrecognized value)
+    // §4, after item 10. §4 item 4 constraint 1 (an unrecognized value)
     // is a decode error.
     if env.activation.is_some() {
         let path = path_field(env_path, "activation");
@@ -521,7 +530,7 @@ fn check_environment(
             );
         }
     }
-    // §4 item 5, and the paragraph after item 9. The object's own §3.3
+    // §4 item 5, and the paragraph after item 10. The object's own §3.3
     // checks are made by pass 6, and its format strings by pass 8, only
     // where it is permitted.
     if env.host_requirements.is_some() {
@@ -537,6 +546,47 @@ fn check_environment(
                 "is not permitted on a stepEnvironments entry, whose Step has hostRequirements \
                  of its own.",
             );
+        }
+    }
+    // §4 item 7, and the paragraph after item 10: an `<Identifier>` (§7.1),
+    // permitted where `activation` is, and not on an `ALWAYS` Environment
+    // (constraint 1).
+    if let Some(group) = &env.exclusive_group {
+        let path = path_field(env_path, "exclusiveGroup");
+        if !active {
+            errors.add(
+                &path,
+                "exclusiveGroup on an Environment requires the ENV_PARAMS extension.",
+            );
+        } else if placement == EnvPlacement::Step {
+            errors.add(
+                &path,
+                "is not permitted on a stepEnvironments entry, which only its own Step's \
+                 Sessions enter.",
+            );
+        } else {
+            if !is_identifier(group) || group.chars().count() > limits.max_identifier_len {
+                errors.add(
+                    &path,
+                    format!(
+                        "'{group}' is not a valid exclusiveGroup: it must match \
+                         [A-Za-z_][A-Za-z0-9_]* and be at most {} characters (Template Schemas \
+                         §7.1).",
+                        limits.max_identifier_len
+                    ),
+                );
+            }
+            if env.activation() == EnvironmentActivation::Always {
+                errors.add(
+                    &path,
+                    format!(
+                        "Environment '{}' has activation ALWAYS, which cannot be disabled, so it \
+                         must not have an exclusiveGroup (Template Schemas §4 item 7 constraint \
+                         1).",
+                        env.name
+                    ),
+                );
+            }
         }
     }
     let Some(defs) = &env.env_parameter_definitions else {
@@ -723,8 +773,11 @@ fn check_environment_entry<'a>(
     // disabled for the Step (§3.2.2): one whose `enableIf` is absent or
     // `true`, or certainly unresolved with this entry's values (`job_env`
     // is `Some` only for a certainly enabled entry, above).
+    // A grouped one may be superseded (§4 item 7), so its values are
+    // checked when the Job is created.
     let values_checked = job_env.is_some_and(|e| {
-        e.certainly_enabled || enable_if_certainly_unresolved(e.env, Some(&params.0), ctx)
+        !e.grouped
+            && (e.certainly_enabled || enable_if_certainly_unresolved(e.env, Some(&params.0), ctx))
     });
 
     // Constraint 5 for a Job Environment that declares no parameters.
@@ -870,6 +923,12 @@ fn check_required_parameters_supplied(
         // (§3.2.2 item 6; `check_environment` reports its `false`), so it
         // is checked as entered.
         if !index.certainly_enabled && env.literal_enabled() == Some(false) {
+            continue;
+        }
+        // Never known to be entered here: an Environment of its group may
+        // come first and supersede it (§4 item 7), so job creation checks
+        // it.
+        if index.grouped {
             continue;
         }
         let names: Vec<&str> = index

@@ -82,11 +82,16 @@ steps:
 #[test]
 fn the_sample_job_passes_with_each_sample_environment_and_with_none() {
     let jt = job_ok(VIDEO);
-    // The Conda entries' `enableIf` is an expression (`'Docker' not in
-    // Job.EnvNames`), so `check` leaves them to job creation and warns only
-    // for the Docker entries, when no Docker Environment is attached. Job
-    // creation disables the Conda entries when Docker is attached.
-    for (envs, warned) in [(&[CONDA][..], 4), (&[DOCKER], 0), (&[CONDA, DOCKER], 0)] {
+    // Each Step has a `required: false` entry for each of Conda and
+    // Docker, so `check` warns for the four entries of whichever one is not
+    // attached. With both attached, their shared exclusiveGroup decides
+    // which one each Step enters (§4 item 7).
+    for (envs, warned) in [
+        (&[CONDA][..], 4),
+        (&[DOCKER], 4),
+        (&[CONDA, DOCKER], 0),
+        (&[DOCKER, CONDA], 0),
+    ] {
         let envs: Vec<EnvironmentTemplate> = envs.iter().map(|s| env_ok(s)).collect();
         let warnings = check(&jt, &envs).unwrap_or_else(|e| panic!("check failed:\n{e}"));
         assert_eq!(warnings.len(), warned, "{warnings:?}");
@@ -96,18 +101,15 @@ fn the_sample_job_passes_with_each_sample_environment_and_with_none() {
          Environment 'Docker', which is not a jobEnvironments entry of the Job Template, and no \
          Environment Template is attached. The entry has 'required: false', so it has no effect.";
     let warnings = check(&jt, &[]).unwrap();
-    assert_eq!(warnings.len(), 4, "{warnings:?}");
-    assert_eq!(warnings[0], docker_warning);
-    // Job creation also enables the Conda entries, which find nothing.
-    let applied = apply(&jt, &[], &[]).unwrap();
-    assert_eq!(applied.len(), 8, "{applied:?}");
+    assert_eq!(warnings.len(), 8, "{warnings:?}");
     assert_eq!(
-        applied[0],
+        warnings[0],
         "JobTemplate -> steps[0] -> dependencies[0] -> environment: names Environment 'Conda', \
          which is not a jobEnvironments entry of the Job Template, and no Environment Template \
          is attached. The entry has 'required: false', so it has no effect."
     );
-    assert_eq!(applied[1], docker_warning);
+    assert_eq!(warnings[1], docker_warning);
+    assert_eq!(warnings, apply(&jt, &[], &[]).unwrap());
 }
 
 // ── §3.2.1 items 1–3: resolution ────────────────────────────────────

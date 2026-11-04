@@ -675,11 +675,14 @@ fn spec_samples_without_the_extension_are_rejected() {
     let gate = "environment -> envParameterDefinitions:\n\tenvParameterDefinitions on an Environment requires the ENV_PARAMS extension.";
     // Only the gate fires: the Environment's own `Env.Param.*` references
     // still resolve, so they do not cascade into further errors.
-    // The Conda sample's enableIf is gated too (§4 item 6).
+    // The Conda sample's enableIf and exclusiveGroup are gated too (§4
+    // items 6 and 7).
+    let gate_group = "environment -> exclusiveGroup:\n\texclusiveGroup on an Environment requires the ENV_PARAMS extension.";
     env_err(
         &strip(CONDA),
         &[
             "environment -> enableIf:\n\tenableIf on an Environment requires the ENV_PARAMS extension.",
+            gate_group,
             gate,
         ],
     );
@@ -689,6 +692,7 @@ fn spec_samples_without_the_extension_are_rejected() {
         &[
             "environment -> activation:\n\tactivation on an Environment requires the ENV_PARAMS extension.",
             "environment -> hostRequirements:\n\thostRequirements on an Environment requires the ENV_PARAMS extension.",
+            gate_group,
             gate,
         ],
     );

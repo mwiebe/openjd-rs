@@ -4,8 +4,8 @@
 # samples/v2023-09/environment_templates/docker-env-params.yaml from
 # openjd-specifications, which combines ENV_PARAMS with WRAP_ACTIONS. The
 # schema parts (extensions, parameterDefinitions, the Environment's
-# activation, envParameterDefinitions, and hostRequirements, the wrap hooks'
-# argv) are unchanged. The scripts are
+# activation, exclusiveGroup, envParameterDefinitions, and hostRequirements,
+# the wrap hooks' argv) are unchanged. The scripts are
 # Python stubs: onEnter prints the values instead of starting a container
 # (Env.Param.Mounts path-mapped, Env.RawParam.Mounts as given), and the wrap
 # script prints the image and then runs the wrapped action directly with
@@ -28,6 +28,7 @@ environment:
     Runs the Session's actions inside a container started from the image the
     Session's Step asked for.
   activation: ON_REQUEST
+  exclusiveGroup: SoftwareProvider
   envParameterDefinitions:
   - name: Image
     type: STRING

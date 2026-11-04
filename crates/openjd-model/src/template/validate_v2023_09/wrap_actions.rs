@@ -136,7 +136,7 @@ pub fn validate_wrap_actions_job_template(
     // neither is counted, and job creation checks the Step's resolved set
     // (§3.2, checked-at paragraph). A `BY_DEFAULT` one a scalar
     // `enableIf: false` entry declines is not entered. The same holds
-    // for an Environment's own `enableIf` (ENV_PARAMS, §4, after item 9): an
+    // for an Environment's own `enableIf` (ENV_PARAMS, §4, after item 10): an
     // Environment whose `enableIf` is absent or `true` is counted, one with
     // the scalar `false` is not entered, and one with an expression (even a
     // constant one) is not counted here and is decided at job creation.
@@ -162,7 +162,11 @@ pub fn validate_wrap_actions_job_template(
         for (i, env) in envs.iter().enumerate() {
             // `check_env` gates the hooks whatever the Environment's
             // `enableIf`; only one certainly entered is counted.
-            if check_env(env, &path_index(&envs_path, i), active, errors) {
+            // A grouped one is never certainly entered before the
+            // Environment Templates are known: one of its group may come
+            // first and supersede it (§4 item 7, and the paragraph after
+            // item 10).
+            if check_env(env, &path_index(&envs_path, i), active, errors) && env.group().is_none() {
                 if env.activation() == EnvironmentActivation::OnRequest {
                     if env.certainly_entered(KnownEntry::Enabled) {
                         requested_wrap_envs.insert(env.name.as_str());

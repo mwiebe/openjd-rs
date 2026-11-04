@@ -4,7 +4,7 @@
 # samples/v2023-09/job_templates/video-sfm-composite.yaml from
 # openjd-specifications. The schema parts (extensions, parameterDefinitions,
 # every Step's dependencies with their `step:` and `environment:` entries,
-# values, and enableIf, hostRequirements, parameterSpace, and the argv of
+# values, hostRequirements, parameterSpace, and the argv of
 # each onRun) are unchanged. Each Step's script is a Python stub that prints its name and
 # arguments and the environment variables the attached Conda or Docker
 # stub exported, instead of running ffmpeg, COLMAP, or Maya.
@@ -63,7 +63,6 @@ steps:
   dependencies:
   - environment: Conda
     required: false
-    enableIf: &prefer_docker "'Docker' not in Job.EnvNames"
     parameters:
       Packages: "ffmpeg=7"
   - environment: Docker
@@ -89,7 +88,6 @@ steps:
   - step: DecodeFrames
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "colmap=3.11"
   - environment: Docker
@@ -120,7 +118,6 @@ steps:
   - step: SolveSfM
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "maya=2025 mtoa"
       Channels: "studio-internal conda-forge"
@@ -169,7 +166,6 @@ steps:
   # conda environment or pulled this image.
   - environment: Conda
     required: false
-    enableIf: *prefer_docker
     parameters:
       Packages: "ffmpeg=7"
   - environment: Docker

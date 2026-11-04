@@ -766,9 +766,11 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   checked at job creation, over the
   step's resolved set and the attached Environments (see
   [job-creation.md](job-creation.md#the-submission-stage), prototype plan R8). In the same
-  way (ENV_PARAMS, §4, after item 9) a wrapping Environment counts only when its own
+  way (ENV_PARAMS, §4, after item 10) a wrapping Environment counts only when its own
   `enableIf` is absent or the scalar `true`: one with the scalar `false` is not entered, and
-  one with an expression is decided at job creation, which checks the final set. An
+  one with an expression is decided at job creation, which checks the final set. A wrapping
+  Job Environment with an `exclusiveGroup` (§4 item 7) does not count, since an attached
+  Environment of its group may supersede it (see [Pass 11](#pass-11-env_params-gating)). An
   `ALWAYS` wrapping Environment counts whatever its `enableIf`, since it cannot be
   disabled (§3.2.2 item 6). So a
   violation is reported here only among Environments certainly entered, and it is one
@@ -776,7 +778,7 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   job creation is to fail only when the failure is certain at that stage; with two certainly
   entered wrapping Environments and a third whose `enableIf` is an expression, the template is
   rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and the
-  paragraph after §4 item 9; spec `5535230`). Two
+  paragraph after §4 item 10; spec `5535230`). Two
   `ON_REQUEST` wrap envs requested by different steps are valid.
 
 The single-layer rule runs only in the job-template path. An environment template defines
@@ -806,15 +808,39 @@ Without the extension:
 - `hostRequirements` on any environment is reported at its path: "hostRequirements on an
   Environment requires the ENV_PARAMS extension."
 - `enableIf` on any environment is reported at its path (see below).
+- `exclusiveGroup` on any environment is reported at its path: "exclusiveGroup on an
+  Environment requires the ENV_PARAMS extension."
 
-With it, `activation` (§4 item 4, and the paragraph after item 9) is rejected on a
+With it, `activation` (§4 item 4, and the paragraph after item 10) is rejected on a
 `stepEnvironments` entry ("is not permitted on a stepEnvironments entry, which only its own
 Step's Sessions enter."); an unrecognized
 value (constraint 1, case-sensitive: `always` and `by_default` are rejected; plan A24) is a
-decode error naming the three values. `hostRequirements` (§4, after item 9) is rejected on a
+decode error naming the three values. `hostRequirements` (§4, after item 10) is rejected on a
 `stepEnvironments` entry ("is not permitted on a stepEnvironments entry, whose Step has
 hostRequirements of its own."); on a `jobEnvironments` entry or an Environment Template's `environment` its §3.3
 checks are passes 6 and 8's.
+
+`exclusiveGroup` (§4 item 7, and the paragraph after item 10) is rejected on a
+`stepEnvironments` entry ("is not permitted on a stepEnvironments entry, which only its own
+Step's Sessions enter."). On a `jobEnvironments` entry or an Environment Template's
+`environment`, a value that is not an `<Identifier>` (§7.1), or is longer than
+`max_identifier_len`, is reported at its path ("'Software Provider' is not a valid
+exclusiveGroup: it must match [A-Za-z_][A-Za-z0-9_]* and be at most 64 characters (Template
+Schemas §7.1)."), and so is one on an Environment whose `activation` is `ALWAYS` (constraint 1:
+"Environment 'A' has activation ALWAYS, which cannot be disabled, so it must not have an
+exclusiveGroup (Template Schemas §4 item 7 constraint 1)."). Both can be reported for one
+value.
+
+Template validation does not know the Environment Templates the Job will be submitted with,
+and an attached Environment of a grouped Job Environment's group comes first in the Job's
+Environment order (§1.1 item 7) and may supersede it, which disables it for the Step
+(§3.2.2). So a Job Environment with an `exclusiveGroup` is never known here to be entered
+(§4, after item 10), and every check below that applies only to an Environment known to be
+entered leaves it to job creation: the single-layer rule (pass 10) does not count it,
+constraint 7 is not checked for it, and neither constraint 6 nor pass 8's typing of a
+format-string value is applied to an entry's values for it. Constraint 5 still applies to its
+entries. `check_environment_templates` knows the attachments, and applies the group bullet to
+them (see [job-creation.md](job-creation.md#check_environment_templates)).
 
 `enableIf` on any Environment (§4 item 6) needs ENV_PARAMS in the document, in
 every position, a `stepEnvironments` entry included; without it the field is reported at its
@@ -824,7 +850,7 @@ in pass 8
 
 With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
 
-- Not permitted on a `stepEnvironments` entry (§4, after item 9). A `jobEnvironments` entry
+- Not permitted on a `stepEnvironments` entry (§4, after item 10). A `jobEnvironments` entry
   and an Environment Template's `environment` may declare parameters.
 - 1–50 entries (constraints 1–2; the cap is fixed and FEATURE_BUNDLE_1 does not raise
   it), names unique within the list (constraint 3), and each name at most
@@ -916,7 +942,8 @@ pass 6:
   (above; with the values of its entry, if one requests it), is checked: one whose `enableIf`
   is `false` is disabled for every Step and is not held to constraint 7, and one whose
   `enableIf` is any other expression may be disabled, so a violation is not certain and the
-  check is left to job creation (§3.2.2, §7.5 rule 5). For a certainly unresolved one the
+  check is left to job creation (§3.2.2, §7.5 rule 5). One with an `exclusiveGroup` is left
+  to job creation too, since it may be superseded. For a certainly unresolved one the
   Environment's group gets the unresolved note below. Whether
   an entry is enabled is known here only when its `enableIf` is absent or a boolean scalar
   (§3.2, checked-at paragraph; §7.5 item 1): an entry whose `enableIf` is `false` supplies

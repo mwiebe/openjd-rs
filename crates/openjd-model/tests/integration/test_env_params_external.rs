@@ -384,8 +384,12 @@ fn two_same_named_attachments_no_entry_names_are_both_kept() {
         "  dependencies:\n  - environment: Conda\n    required: false\n    parameters: {Packages: \"colmap=3.11\"}\n",
         "",
     );
-    // Non-empty Packages, so the sample's enableIf enters both.
-    let s = submission(&jt, &[CONDA, CONDA], &[("CondaPackages", "p")]);
+    // Non-empty Packages, so the sample's enableIf enters both. The second
+    // copy leaves out the sample's exclusiveGroup, which would supersede it
+    // (§4 item 7).
+    let ungrouped = CONDA.replace("  exclusiveGroup: SoftwareProvider\n", "");
+    assert_ne!(ungrouped, CONDA);
+    let s = submission(&jt, &[CONDA, &ungrouped], &[("CondaPackages", "p")]);
     let (job, _) = s.combined();
     assert_eq!(
         rendered_values(&job.steps[0]),

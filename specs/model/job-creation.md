@@ -1013,6 +1013,58 @@ name, attached ones first, Step Environments by name), for display; an Environme
 would not have entered anyway (an `ON_REQUEST` one it does not request, or a `BY_DEFAULT` one
 it declines with a disabled entry, §3.2 item 3.2) is not listed, since
 its `enableIf` is never evaluated for that Step, and neither is one whose `enableIf` failed.
+A superseded Environment (next section) is listed too.
+
+#### Exclusive groups (ENV_PARAMS)
+
+An Environment's `exclusiveGroup` (Template Schemas §4 item 7) is applied for each Step after
+every Environment's own `enableIf` and before the value checks and constraint 7 (§7.4.1
+step 7, before step 8). Of the Environments the Step's Sessions would enter whose
+`enableIf` did not disable them (`true`, unresolved, or failed), those that share a group are
+reduced to the first in the Job's Environment order: the attached Environments in attachment
+order, then the `jobEnvironments` in written order. The others are superseded, which
+disables them for the Step (§3.2.2): they are left out of `job::Step::environments` and
+`environment_parameters`, their values for the Step are not checked (constraint 6) and they
+are not held to constraint 7, their `hostRequirements` are not resolved for the Step, the
+single-layer rule does not count them, and `CreatedJob::disabled_environments` lists them with
+the ones an `enableIf` disabled, in Job order. Constraint 5 still applies to the Step's entry
+for one (`values_for_step` reports it before the group is applied), as do the checks of an
+entry as written at template validation. An `ALWAYS` Environment has no group for the rule
+(`Environment::group`), since it cannot be disabled; template validation rejects one with a
+group.
+
+The stages of [create_job](#create_job) decide the Job Environments before the attached ones,
+which come first in the Job's Environment order, so a group that spans the two documents
+cannot be settled by the `create_job` body alone. `create_job_with_environment_templates`
+collects the groups of the attached Environments and gives them to `JobEnvironments`
+(`attached_groups`):
+
+- In the `create_job` body (`resolve_step_entries`), each Job Environment is decided in
+  written order with a set of the groups already taken. One whose group no attachment shares
+  is superseded when its group is taken, and is otherwise committed (its values checked and
+  constraint 7 counted) and takes its group. One whose group an attachment shares is
+  superseded when an earlier Job Environment took its group (the group's first is then that
+  one or an attachment); otherwise it takes its group and is *deferred*: its pending values
+  and `enableIf` decision go into `StepSelection::deferred`, unchecked, and it stays in the
+  Step's entered list for now.
+- In the submission stage (`apply_environment_templates`), each Step's attachments are decided
+  in attachment order with a fresh set of taken groups: one whose `enableIf` did not disable
+  it is superseded when its group is taken, and otherwise takes it (an ambiguous attachment,
+  which is reported and gets no values, still takes its group, so the later ones of its group
+  are not checked either). Then the Step's deferred Job Environments, in written order: one
+  whose group an attachment took is superseded, set not entered and added to the Step's
+  disabled list; any other is committed now, its errors prefixed with `JobTemplate`, its
+  constraint 7 names reported in a second error at `JobTemplate -> steps[i]` with the
+  jobEnvironments wording, and its values placed among the Step's Job Environment values in
+  written order.
+
+So a group's first is the same whichever documents its members come from. A Job without
+attached Environments, or whose attached Environments share no group with its own, decides
+every group in the `create_job` body, and reports its errors there as before. One mistake can
+therefore be reported in two shapes: a missing value of a grouped Job Environment is a
+`JobTemplate` error at `steps[i]` when no attachment shares its group, and a `Submission` error
+at `JobTemplate -> steps[i]` when one does and does not supersede it. The deferred checks also
+run only when the `create_job` body found no error, as every submission-stage check does.
 
 #### Combined host requirements (ENV_PARAMS)
 
@@ -1121,7 +1173,9 @@ wrap-layer rule and host requirements):
    for an unreachable attachment is reported only when its own `enableIf` is absent or `true`,
    or certainly unresolved with no values supplied (see
    [validation.md](validation.md#pass-11-env_params-gating)), since one with `false` is not entered and
-   one with any other expression is undetermined (§7.5 rule 5);
+   one with any other expression is undetermined (§7.5 rule 5), and, for one with an
+   `exclusiveGroup`, only when no earlier attachment shares its group (no entry can reach it,
+   so only an earlier attachment could supersede it);
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
    template-validation error), with `required` defaulting to `true`. An entry whose `enableIf`
@@ -1144,7 +1198,13 @@ wrap-layer rule and host requirements):
    [validation.md](validation.md#pass-11-env_params-gating); the constraint 7 message then carries the
    unresolved note): one whose `enableIf` is `false` is disabled, and one whose `enableIf` is
    any other expression is undetermined, so a violation need not hold whatever it resolves to
-   (§3.2.2, §7.5 rule 5); constraint 5 is checked for every attachment;
+   (§3.2.2, §7.5 rule 5). They are also made only for an attachment no earlier attachment of
+   its `exclusiveGroup` may supersede: each attachment's state for the Step (entered when it
+   is entered and its `enableIf` is as above; not entered when it is not entered or its
+   `enableIf` is the scalar `false`; undetermined otherwise, including an attachment an
+   expression entry may name) goes through `apply_exclusive_groups` (§4, after item 10), and
+   only a known-entered result is checked. The Job Template's own Environments come after the
+   attachments, so they supersede none. Constraint 5 is checked for every attachment;
 4. the `WRAP_ACTIONS` single-layer rule (`check_attached_wrap_layers`), for each Step whose
    Sessions enter a wrapping attachment, over the wrapping Environments the Step's Sessions
    certainly enter, in Session order: attachments with `activation: ALWAYS`, those with
@@ -1154,8 +1214,12 @@ wrap-layer rule and host requirements):
    `enableIf`; then the Step's Step Environments; each only when its own `enableIf`
    is absent or the scalar `true` (one with the scalar `false` is not entered, and one with
    an expression is decided at job creation), or it is `ALWAYS`, which is entered whatever
-   its `enableIf` and the Step's entries (`template::Environment::certainly_entered`, given
-   what the Step's entry is known to be, `template::KnownEntry`). Job creation's message is reused (`wrap_layers_message`), but it lists only
+   its `enableIf` and the Step's entries (`template::Environment::known_state`, given
+   what the Step's entry is known to be, `template::KnownEntry`), and, for one with an
+   `exclusiveGroup`, only when every earlier Environment of its group, attached or the Job
+   Template's own, is known not to be entered (`certainly_entered_per_step`, which applies
+   `apply_exclusive_groups` over the attachments and then the Job Environments). Job
+   creation's message is reused (`wrap_layers_message`), but it lists only
    the layers the Step certainly enters, so when an `enableIf` expression on an entry or an
    Environment brings in another one, job creation's message counts and lists more. A Step whose
    wrapping Environments are all the Job Template's own is left to template validation;
@@ -1163,7 +1227,7 @@ wrap-layer rule and host requirements):
    (`host_requirements::check_literal_combinations`): for each Step, the requirements of its
    own `hostRequirements` and of each Environment its Sessions certainly enter (as in item 4,
    so an Environment whose own `enableIf` is not absent or `true` is left out, unless it is
-   `ALWAYS`)
+   `ALWAYS`, and so is one an earlier one of its group may supersede)
    whose format strings are all literals (`literal_part`; an `anyOf` or `allOf` written as
    one expression is never literal), resolved with an empty symbol table
    and combined by the same `combine` job creation uses, so a conflict among literal sources

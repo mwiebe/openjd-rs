@@ -265,13 +265,14 @@ entry reaches JS as a `Map` with keys `name`, `type`, and `value`, since serde-w
 delivers a JSON object held as `serde_json::Value` as a `Map`. A Step without values has no
 `environmentParameters` key. A Step whose Sessions do not enter every Job Environment
 (`activation: ON_REQUEST`, a `BY_DEFAULT` Environment it declines with a disabled
-`environment:` entry, or an Environment whose own `enableIf` is `false` for it) carries
+`environment:` entry, an Environment whose own `enableIf` is `false` for it, or one an
+earlier Job Environment of its `exclusiveGroup` supersedes) carries
 `environments`: a list of `{document, environment}`, the Job Environments it enters; a Step
 that enters every one has no `environments` key. A Step Environment whose `enableIf` is
 `false` for its Step is left out of `stepEnvironments`, and a disabled Environment has no
 `environmentParameters` entry. So a Job without Environment parameters, `ON_REQUEST`
-Environments, Environment `enableIf`s, or disabled `environment:` entries serializes exactly as
-before.
+Environments, Environment `enableIf`s or `exclusiveGroup`s, or disabled `environment:` entries
+serializes exactly as before.
 A Step's `hostRequirements` is its combined host requirements (Template Schemas §3.3.3): its
 own and those of every Job Environment its Sessions enter, resolved with its values and
 normalized per capability, once the requirements that resolve to nothing are discarded
@@ -279,8 +280,9 @@ normalized per capability, once the requirements that resolve to nothing are dis
 attribute name other than `attr.worker.os.family` and `attr.worker.cpu.arch` may appear more
 than once (an `allOf`, then `anyOf`s of two or more values; §3.3.3 item 2.2); a conflict makes
 `createJob` throw. `Job.EnvNames` is in each `resolvedSymTab` that references it, as a
-`list[string]` entry. The template-side fields (`activation`, `hostRequirements`, and
-`enableIf` on an Environment, `enableIf` on an `environment:` dependency) are decoded and
+`list[string]` entry. The template-side fields (`activation`, `hostRequirements`,
+`enableIf`, and `exclusiveGroup` on an Environment, `enableIf` on an `environment:`
+dependency) are decoded and
 validated by
 `decodeJobTemplate` and `decodeEnvironmentTemplate` with `ENV_PARAMS` in the supported
 extensions (the default); a document that lists `ENV_PARAMS` must also list `EXPR`, so both
@@ -297,8 +299,12 @@ same rules, permitted on every Environment, and `createJob` resolves it per Step
 Step's effective values that are known (Template Schemas §3.2.2); a Step's values for an
 Environment it disables are not checked against their type and constraints (constraint 5
 still applies), and the Step is not held to constraint 7 for it.
-`createJob` returns only the Job, so the Environments an `enableIf` disabled are visible
-only as the ones missing from a Step's sets.
+Of the Job Environments a Step would enter that share an `exclusiveGroup` (§4 item 7) and
+that their `enableIf` does not disable, `createJob` enters only the first in
+`jobEnvironments` order and supersedes the others, which disables them for the Step in the
+same way (`createJob` attaches no Environment Templates, so no attached one comes first).
+`createJob` returns only the Job, so the Environments an `enableIf` disabled or a group
+superseded are visible only as the ones missing from a Step's sets.
 
 #### `Step`
 

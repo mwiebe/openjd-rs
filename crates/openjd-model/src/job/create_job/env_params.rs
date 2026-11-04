@@ -17,9 +17,10 @@
 //! Templates' Environments. Both go through
 //! [`DeclaringEnvironment::values_for_step`], then decide the
 //! Environment's own `enableIf` (§4 item 6) with the values that are known
-//! ([`DeclaringEnvironment::decide`]), then report the value checks and
-//! constraint 7 only where it does not disable the Environment
-//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1), so the two stages
+//! ([`DeclaringEnvironment::decide`]), then apply the `exclusiveGroup` rule
+//! (§4 item 7, §7.4.1 step 7), then report the value checks and
+//! constraint 7 only where the Environment is not disabled
+//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1 step 8), so the two stages
 //! convert and check values the same way:
 //!
 //! - a literal is decoded as the Job Parameter `default` of its type is
@@ -986,6 +987,10 @@ pub(crate) struct JobEnvironments<'a> {
     /// before its `Env.*` symbols are added: the Job Parameters, `Job.Name`,
     /// and `Job.EnvNames`.
     pub(crate) enable_if_base: SymbolTable,
+    /// The `exclusiveGroup`s (§4 item 7) of the attached Environments. A
+    /// Job Environment in one of them is decided by the submission stage
+    /// (see [`DeferredJobEnvironment`]).
+    pub(crate) attached_groups: HashSet<String>,
 }
 
 impl<'a> JobEnvironments<'a> {
@@ -993,6 +998,7 @@ impl<'a> JobEnvironments<'a> {
         jt: &'a template::JobTemplate,
         default_symtab: SymbolTable,
         enable_if_base: SymbolTable,
+        attached_groups: HashSet<String>,
         policy: ResolvePolicy<'_>,
         errors: &mut ValidationErrors,
     ) -> Self {
@@ -1032,6 +1038,7 @@ impl<'a> JobEnvironments<'a> {
             by_name,
             default_symtab,
             enable_if_base,
+            attached_groups,
         }
     }
 
@@ -1085,24 +1092,49 @@ pub(crate) struct DisabledEntry {
     pub(crate) dependency_index: usize,
 }
 
+/// A Job Environment of a Step whose `exclusiveGroup` (§4 item 7) an
+/// attached Environment shares, and which its own `enableIf` did not
+/// disable for the Step. An attached Environment comes first in the Job's
+/// Environment order and may supersede it, so the submission stage
+/// applies the group rule to it (§7.4.1 step 7) and only then reports its
+/// value checks and constraint 7 (step 8).
+pub(crate) struct DeferredJobEnvironment<'a> {
+    /// Its index in `jobEnvironments`.
+    pub(crate) position: usize,
+    /// Its index in [`JobEnvironments::environments`].
+    pub(crate) environment: usize,
+    /// The Step's effective values for it, not yet checked.
+    pub(crate) pending: PendingValues<'a>,
+    /// What its own `enableIf` decided for the Step: not
+    /// [`EnableIf::Disabled`].
+    pub(crate) decision: EnableIf,
+}
+
 /// What job creation decides about one Step's Environments, for the
 /// submission stage.
-pub(crate) struct StepSelection {
+pub(crate) struct StepSelection<'a> {
     /// The Step's enabled entries that name no Job Environment.
     pub(crate) frozen: Vec<FrozenEntry>,
     /// For each `jobEnvironments` entry, index for index, whether the
     /// Step's Sessions enter it: its `activation` is `ALWAYS`, or
     /// `BY_DEFAULT` and no disabled entry of the Step declines it, or it is
-    /// `ON_REQUEST` and an enabled entry of the Step requests it, and its
-    /// own `enableIf` (§4 item 6) did not disable it for the Step. (One
+    /// `ON_REQUEST` and an enabled entry of the Step requests it, its
+    /// own `enableIf` (§4 item 6) did not disable it for the Step, and no
+    /// earlier Job Environment of its `exclusiveGroup` superseded it (§4
+    /// item 7; one in [`deferred`](Self::deferred) is set by the submission
+    /// stage). (One
     /// whose `enableIf` failed, or an `ALWAYS` one whose `enableIf` is
     /// `false` or that a disabled entry names, is left in: the error fails
     /// job creation, so the list is not read.)
     pub(crate) job_environments_entered: Vec<bool>,
     /// The `jobEnvironments` entries, by index, that the Step's Sessions
     /// would otherwise enter and that their own `enableIf` disabled for
-    /// the Step, in written order.
+    /// the Step, or that an earlier Job Environment of their
+    /// `exclusiveGroup` superseded (§4 item 7), in written order.
     pub(crate) disabled_job_environments: Vec<usize>,
+    /// The Job Environments whose group an attached Environment shares,
+    /// in written order, for the submission stage.
+    pub(crate) deferred: Vec<DeferredJobEnvironment<'a>>,
     /// The Step's entries that name no Job Environment and whose `enableIf`
     /// disabled them, in written order. The submission stage resolves each
     /// against the attached Environments (§3.2.1) to learn what it means
@@ -1120,9 +1152,9 @@ pub(crate) struct StepSelection {
 }
 
 /// What a Step's `environment:` entries resolve to at job creation.
-pub(crate) struct StepEntries {
+pub(crate) struct StepEntries<'a> {
     pub(crate) environment_parameters: Option<Vec<job::EnvironmentParameterValues>>,
-    pub(crate) selection: StepSelection,
+    pub(crate) selection: StepSelection<'a>,
     /// For each `stepEnvironments` entry, index for index, whether its
     /// `enableIf` (§4 item 6) lets the Step's Sessions enter it: `true`
     /// when it is absent, resolved to `true`, or failed (reported).
@@ -1218,15 +1250,15 @@ fn resolve_enable_if(
 /// [`entry_scope`] evaluates the bindings the entries' parameter values
 /// read in the submission path format; `None` when there is nothing to
 /// evaluate again (a POSIX submission, or a Step without `let` bindings).
-pub(crate) fn resolve_step_entries(
+pub(crate) fn resolve_step_entries<'a>(
     st: &template::StepTemplate,
     step_index: usize,
     step_symtab: &SymbolTable,
     let_base: Option<&SymbolTable>,
-    job_envs: &JobEnvironments<'_>,
+    job_envs: &JobEnvironments<'a>,
     policy: ResolvePolicy<'_>,
     errors: &mut ValidationErrors,
-) -> StepEntries {
+) -> StepEntries<'a> {
     let step_path = path_index(&path_field(&[], "steps"), step_index);
     let deps_path = path_field(&step_path, "dependencies");
     let empty = BTreeMap::new();
@@ -1335,6 +1367,7 @@ pub(crate) fn resolve_step_entries(
                 frozen: Vec::new(),
                 job_environments_entered: entered_by_scope(),
                 disabled_job_environments: Vec::new(),
+                deferred: Vec::new(),
                 disabled: Vec::new(),
                 disabled_step_environments,
             },
@@ -1403,7 +1436,16 @@ pub(crate) fn resolve_step_entries(
     let mut left_out = vec![false; job_envs.all.len()];
     let mut unresolved_labels: HashSet<&str> = HashSet::new();
     let mut failed_labels: HashSet<&str> = HashSet::new();
-    for (de, &position) in job_envs.environments.iter().zip(&job_envs.positions) {
+    // §4 item 7, §7.4.1 step 7: the groups an Environment the Step's
+    // Sessions enter already has, so the later ones of each are superseded.
+    let mut taken: HashSet<&str> = HashSet::new();
+    let mut deferred = Vec::new();
+    for (k, (de, &position)) in job_envs
+        .environments
+        .iter()
+        .zip(&job_envs.positions)
+        .enumerate()
+    {
         if !enters(de.name, de.activation) || failed.contains(de.name) {
             continue;
         }
@@ -1413,7 +1455,31 @@ pub(crate) fn resolve_step_entries(
             policy,
             errors,
         );
-        match de.decide(&pending, &st.name, &job_envs.enable_if_base, policy) {
+        let decision = de.decide(&pending, &st.name, &job_envs.enable_if_base, policy);
+        let group = de.env.group().filter(|_| decision != EnableIf::Disabled);
+        // An attached Environment of the group comes first and may
+        // supersede it, which only the submission stage knows.
+        if let Some(group) = group.filter(|g| job_envs.attached_groups.contains(*g)) {
+            if !taken.contains(group) {
+                deferred.push(DeferredJobEnvironment {
+                    position,
+                    environment: k,
+                    pending,
+                    decision,
+                });
+                taken.insert(group);
+                continue;
+            }
+        }
+        if let Some(group) = group {
+            if !taken.insert(group) {
+                // Superseded: disabled for the Step (§3.2.2).
+                env_disabled.push(position);
+                left_out[position] = true;
+                continue;
+            }
+        }
+        match decision {
             EnableIf::Disabled => {
                 env_disabled.push(position);
                 left_out[position] = true;
@@ -1483,6 +1549,7 @@ pub(crate) fn resolve_step_entries(
                 .map(|(k, (name, scope))| enters(name, *scope) && !left_out[k])
                 .collect(),
             disabled_job_environments: env_disabled,
+            deferred,
             disabled_step_environments,
         },
         step_environments_enabled,

@@ -13,6 +13,8 @@ mod instantiate;
 pub mod parameters;
 mod ranges;
 
+use std::collections::HashSet;
+
 use indexmap::IndexMap;
 
 use openjd_expr::path_mapping::PathFormat;
@@ -152,16 +154,23 @@ pub fn create_job(
 ///    6) is decided with the values that are known (a missing or
 ///    unconvertible value is `unresolved[T]`; Template Schemas §3.2.2), one
 ///    that is `false` is left out of the Step's set and values, or, for an
-///    `ALWAYS` one, is an error naming the Step (§3.2.2 item 6), and for
-///    the others
-///    each value is checked against its definition and constraint 7 is
-///    checked;
+///    `ALWAYS` one, is an error naming the Step (§3.2.2 item 6); of the
+///    ones left that share an `exclusiveGroup` (§4 item 7), only the first
+///    in written order is entered, and the others are superseded, which
+///    disables them for the Step (§7.4.1 step 7); and for the ones not
+///    disabled each value is checked against its definition and constraint
+///    7 is checked (step 8). The attached Environments come first in the
+///    Job's Environment order, so a Job Environment whose group an attached
+///    one shares is left to stage 4, which applies the group rule to the
+///    attached ones and then to it, and checks its values only if it is
+///    not superseded;
 /// 4. the entries that name no Job Environment, enabled or disabled, are
 ///    resolved against `attached` (§3.2.1; a disabled one that matches no
 ///    attachment has no effect), the Step's attached Environments are
 ///    fixed in the same way, its effective values for them are computed,
-///    each one's own `enableIf` is decided as in stage 3, and the values
-///    of the ones not disabled are checked; then the `WRAP_ACTIONS`
+///    each one's own `enableIf` is decided as in stage 3, the
+///    `exclusiveGroup` rule is applied as in stage 3, and the values of the
+///    ones not disabled are checked; then the `WRAP_ACTIONS`
 ///    single-layer rule is checked over the final set;
 /// 5. each Environment's `hostRequirements` (`ENV_PARAMS`, §4 item 5) are
 ///    resolved for each Step whose Sessions enter it, with that Step's
@@ -177,7 +186,7 @@ pub fn create_job(
 /// first; Template Schemas §1.1 item 7), and records on each Step
 /// the Job Environments its Sessions enter ([`job::Step::environments`]);
 /// [`CreatedJob::disabled_environments`] lists, per Step, the ones an
-/// `enableIf` disabled.
+/// `enableIf` disabled or a group superseded.
 /// `job.extensions` is left as the Job Template declared it: an extension
 /// applies to the document that lists it (§1.2 item 3). Every document
 /// that holds an Environment parameter value lists `ENV_PARAMS` and so
@@ -197,8 +206,9 @@ pub fn create_job(
 /// make a step uninstantiable (resolving its own host requirements or
 /// parameter space) abort immediately and are reported alone. Stages 4
 /// and 5 run only when those succeed, and their checks (including an
-/// Environment's resolved `hostRequirements` and a combined set's
-/// conflicts) are reported together as one
+/// Environment's resolved `hostRequirements`, a combined set's
+/// conflicts, and the value checks of a Job Environment left to stage 4)
+/// are reported together as one
 /// `ModelError::ModelValidation` for `Submission`, whose paths start with
 /// the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
 /// attachment's label).
@@ -221,12 +231,25 @@ pub fn create_job_with_environment_templates(
                 .map(|e| e.name.clone()),
         )
         .collect();
-    let (job, selections) =
-        create_job_from_template(job_template, job_parameter_values, ctx, &env_names)?;
+    // §4 item 7: a Job Environment that shares a group with an attached
+    // Environment is decided with it, by the submission stage.
+    let attached_groups: HashSet<String> = attached
+        .iter()
+        .filter_map(|a| a.template.environment().group())
+        .map(str::to_string)
+        .collect();
+    let (job, selections, job_envs) = create_job_from_template(
+        job_template,
+        job_parameter_values,
+        ctx,
+        &env_names,
+        attached_groups,
+    )?;
     external::apply_environment_templates(
         job_template,
         job,
         selections,
+        &job_envs,
         &env_names,
         attached,
         job_parameter_values,
@@ -239,12 +262,21 @@ pub fn create_job_with_environment_templates(
 /// attached Environments and with no Step's `environments` set, and for
 /// each Step what the submission stage needs. `env_names` is the value of
 /// `Job.EnvNames`.
-fn create_job_from_template(
-    job_template: &JobTemplate,
+#[allow(clippy::type_complexity)]
+fn create_job_from_template<'a>(
+    job_template: &'a JobTemplate,
     job_parameter_values: &JobParameterValues,
     ctx: &ValidationContext,
     env_names: &[String],
-) -> Result<(job::Job, Vec<env_params::StepSelection>), ModelError> {
+    attached_groups: HashSet<String>,
+) -> Result<
+    (
+        job::Job,
+        Vec<env_params::StepSelection<'a>>,
+        env_params::JobEnvironments<'a>,
+    ),
+    ModelError,
+> {
     // The context must be compatible with what the template declares:
     // same revision, and at least the template's extensions enabled.
     // Anything less makes the evaluation passes below ambiguous (an
@@ -434,6 +466,7 @@ fn create_job_from_template(
         job_template,
         default_symtab,
         symtab.clone(),
+        attached_groups,
         env_policy,
         &mut check_errors,
     );
@@ -462,7 +495,7 @@ fn create_job_from_template(
     check_errors.into_result("JobTemplate")?;
     // `instantiate_step` only declines to build a step after recording
     // the failure in `check_errors`, so every step is present here.
-    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection>) = steps
+    let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) = steps
         .into_iter()
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| {
@@ -565,5 +598,6 @@ fn create_job_from_template(
             job_environments,
         },
         selections,
+        job_envs,
     ))
 }

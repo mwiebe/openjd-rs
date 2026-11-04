@@ -758,6 +758,39 @@ describe("createJob", () => {
     template.free();
   });
 
+  it("a Step enters only the first Job Environment of an exclusiveGroup", () => {
+    // Template Schemas §4 item 7: B is superseded by A, which disables it
+    // for the Step, so it is not held to constraint 7 (its parameter has no
+    // default) and gets no values.
+    const doc = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["ENV_PARAMS", "EXPR"],
+      name: "J",
+      jobEnvironments: [
+        { name: "A", exclusiveGroup: "G", variables: { V: "a" } },
+        {
+          name: "B",
+          exclusiveGroup: "G",
+          envParameterDefinitions: [{ name: "P", type: "STRING" }],
+          variables: { V: "b" },
+        },
+      ],
+      steps: [{ name: "S", script: { actions: { onRun: { command: "x" } } } }],
+    });
+    const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
+      "ENV_PARAMS",
+      "EXPR",
+    ]);
+    const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
+    const job = mod.createJob(template, {}, opts);
+    const [step] = job.toJSON().steps;
+    expect(step.environments.map((e) => e.environment)).toEqual(["A"]);
+    expect("environmentParameters" in step).toBe(false);
+    job.free();
+    opts.free();
+    template.free();
+  });
+
   it("carries ENV_PARAMS effective values on each Step", () => {
     const doc = JSON.stringify({
       specificationVersion: "jobtemplate-2023-09",
@@ -861,7 +894,7 @@ describe("createJob", () => {
       expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
         `Validation error: 'jobtemplate-2023-09' failed checks: unknown field \`${field}\`, ` +
           "expected one of `name`, `description`, `envParameterDefinitions`, `activation`, " +
-          "`hostRequirements`, `enableIf`, `script`, `variables`",
+          "`hostRequirements`, `enableIf`, `exclusiveGroup`, `script`, `variables`",
       );
     }
     // The renamed value is case-sensitive, and the old values are unknown.

@@ -308,6 +308,7 @@ pub struct Environment {
     pub activation: Option<EnvironmentActivation>,                              // ENV_PARAMS
     pub host_requirements: Option<HostRequirements>,                            // ENV_PARAMS
     pub enable_if: Option<ExprField>,                                           // ENV_PARAMS; @expr bool; absent = enabled
+    pub exclusive_group: Option<String>,                                        // ENV_PARAMS; an <Identifier>
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
@@ -346,10 +347,31 @@ requires EXPR; see [validation.md](validation.md#entry-points)), and pass 8 chec
 scope (see [validation.md](validation.md#environment-enableif-env_params)). `literal_enabled()` is
 `Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
 scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
-what template validation may count as entered or not (§4, after item 9; §7.5 item 1). Job
+what template validation may count as entered or not (§4, after item 10; §7.5 item 1). Job
 creation resolves it once per Step whose Sessions would otherwise enter the Environment (see
 [job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,
 since a disabled Environment is simply left out of the Step's sets.
+
+`exclusive_group` (§4 item 7) names a group of Environments of which a Step's Sessions enter
+at most one. For each Step, of the Environments its Sessions would enter that share a group
+and whose `enableIf` is not `false` for it, only the first in the Job's Environment order
+(attached ones first, then `jobEnvironments`; §1.1 item 7) is entered, and the others are
+*superseded*, which disables them for the Step (§3.2.2). It is a plain `String`, so pass 11
+reports a value that is not an `<Identifier>` (§7.1, at most 64 characters, or 512 with
+`FEATURE_BUNDLE_1`) at its own path. Pass 11 also rejects it without ENV_PARAMS, on a
+`stepEnvironments` entry, and on an Environment whose `activation` is `ALWAYS` (constraint
+1). `group()` (crate-private) is the group the rule applies with: none for an `ALWAYS`
+Environment, so a template that breaks constraint 1 and is created anyway never has its
+`ALWAYS` Environment superseded. Before the Job is created, `known_state(entry)` gives what is
+known about a Step entering the Environment from its `activation`, its `enableIf`, and the
+Step's entry (`Known::Entered`, `NotEntered`, or `Undetermined`; the first three bullets
+after §4 item 10), and `apply_exclusive_groups` applies the group bullet to one Step's
+Environments in Job order: a grouped one is entered only when it is entered by its own state
+and every earlier one of its group is known not to be, and is not entered when an earlier one
+is known to be entered (that one, or one before it, is then the group's first). No job type
+records the group: `Job.EnvNames` lists every Environment (§7.3.1), and a superseded one is
+left out of the Step's sets like any disabled one (see
+[job-creation.md](job-creation.md#exclusive-groups-env_params)).
 
 ### EnvironmentScript (§4.1)
 
