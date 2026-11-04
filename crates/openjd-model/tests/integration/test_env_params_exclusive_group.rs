@@ -1541,6 +1541,10 @@ fn check_decides_each_steps_job_environments_with_its_own_entries() {
 const FAILING: &str = "envParameterDefinitions: [{name: S, type: STRING, default: abc}], \
                        enableIf: \"int(Env.Param.S) > 0\"";
 
+/// [`FAILING`], with a parameter `P` that has no default.
+const FAILING_WITH_P: &str = "envParameterDefinitions: [{name: S, type: STRING, default: abc}, \
+                              {name: P, type: STRING}], enableIf: \"int(Env.Param.S) > 0\"";
+
 /// The error of [`FAILING`]'s `enableIf` for Step `S`, at `path`.
 fn failing(path: &str) -> String {
     format!(
@@ -1797,6 +1801,94 @@ fn a_deferred_job_environments_failed_enable_if_follows_the_attachments() {
             "Model validation error: 2 validation errors for Submission\n{}\n{}",
             failing("EnvironmentTemplate[0] -> environment"),
             failing("JobTemplate -> jobEnvironments[0]")
+        )
+    );
+}
+
+/// A Job Template with two Steps, S0 and S1, without entries.
+fn two_plain_steps() -> &'static str {
+    "steps:\n- name: S0\n  script: {actions: {onRun: {command: x}}}\n\
+     - name: S1\n  script: {actions: {onRun: {command: x}}}\n"
+}
+
+#[test]
+fn every_step_applies_the_group_rule() {
+    // The group rule holds for each Step, not only the first, in the
+    // create_job body, for attachments, and for deferred Job Environments.
+    let steps = two_plain_steps();
+    let ab = format!(
+        "{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         - {{name: B, exclusiveGroup: G, variables: {{V: b}}}}\n{steps}"
+    );
+    let created = create_ok(&ab, &[]);
+    let attached = create_ok(
+        &format!("{HEAD}{steps}"),
+        &[
+            &env("name: X, exclusiveGroup: G"),
+            &env("name: Y, exclusiveGroup: G"),
+        ],
+    );
+    let deferred = create_ok(&ab, &[&env("name: X, exclusiveGroup: G, enableIf: false")]);
+    for step in 0..2 {
+        assert_eq!(entered(&created, step), ["A"], "step {step}");
+        assert_eq!(disabled(&created, step), ["B"], "step {step}");
+        assert_eq!(entered(&attached, step), ["X@0"], "step {step}");
+        assert_eq!(disabled(&attached, step), ["Y@1"], "step {step}");
+        assert_eq!(entered(&deferred, step), ["A"], "step {step}");
+        assert_eq!(disabled(&deferred, step), ["X@0", "B"], "step {step}");
+    }
+}
+
+#[test]
+fn a_deferred_job_environments_failed_enable_if_precedes_the_unreachable_attachments() {
+    // B, deferred behind the disabled attachment X, fails its enableIf; U,
+    // attached under a Job Environment's name, has a parameter no Step can
+    // supply. The enableIf error comes first.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n\
+         - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n{STEP}"
+    );
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let u = env("name: U, envParameterDefinitions: [{name: P, type: STRING}]");
+    let err = create(&jt, &[&x, &u]).expect_err("expected job creation to fail");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 2 validation errors for Submission\n{}\n\
+             EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment \
+             'U' has the same name as a jobEnvironments entry of the Job Template, so no \
+             'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it \
+             has parameters without a default that no Step can supply: P. Its activation is \
+             BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).",
+            failing("JobTemplate -> jobEnvironments[1]")
+        )
+    );
+}
+
+#[test]
+fn a_superseded_step_does_not_count_as_deciding_an_unreachable_attachment() {
+    // U's enableIf fails for S0. For S1, A comes first in the group and
+    // supersedes U, whose enableIf is not evaluated there. So every Step
+    // that decided U failed to, and the message says so.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\nsteps:\n- name: S0\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: \
+         [{{environment: A}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
+    let u = env(&format!("name: U, exclusiveGroup: G, {FAILING_WITH_P}"));
+    let err = create(&jt, &[&a, &u]).expect_err("expected job creation to fail");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 2 validation errors for Submission\n{}\n\
+             EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\tEnvironment \
+             'U' has the same name as a jobEnvironments entry of the Job Template, so no \
+             'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it \
+             has parameters without a default that no Step can supply: P. Its activation is \
+             BY_DEFAULT and its enableIf could not be evaluated, so it is checked as if \
+             Sessions enter it, and the submission is rejected (§3.2.1).",
+            failing("EnvironmentTemplate[1] -> environment").replace("Step 'S'", "Step 'S0'")
         )
     );
 }
