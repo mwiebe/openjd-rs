@@ -377,8 +377,9 @@ Environment order; a Step with an error from steps 1–4 gets no checks
 from steps 5–8. The error is shaped by the inputs: for `JobTemplate`, at
 the Job Template's paths, without attachments, and for `Submission`, with
 every path starting at its document, with them; the warnings' paths
-follow the same rule. For a Job Template without ENV_PARAMS this is a change
-only when Environment Templates are attached: its own errors and the
+follow the same rule. For a Job Template without ENV_PARAMS that template
+validation accepts, this is a change only when Environment Templates are
+attached: its own errors and the
 attachments' are now reported together, for `Submission`, where before its
 own were reported alone, for `JobTemplate`, and a caller limit is reported
 only when the attachments add no error. [`create_job`] is the same with no attachments, so

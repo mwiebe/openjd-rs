@@ -229,8 +229,9 @@ pub fn create_job(
 /// `EnvironmentTemplate[i]`, or the attachment's label). The warnings
 /// ([`CreatedJob::warnings`]) have the same paths.
 ///
-/// For a Job Template without `ENV_PARAMS` and no attachments the result
-/// is what it was before the one-pass order. With attachments, its own
+/// For a Job Template without `ENV_PARAMS` that template validation
+/// accepts, with no attachments, the result is what it was before the
+/// one-pass order. With attachments, its own
 /// errors and theirs are now reported together, for `Submission`, where
 /// before its own errors were reported alone, for `JobTemplate`, and the
 /// attachments were applied only when it had none.
