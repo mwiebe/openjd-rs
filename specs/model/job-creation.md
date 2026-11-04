@@ -523,8 +523,9 @@ stage](#the-submission-stage):
   only in that format (and is read by the Step's script, which keeps the POSIX value) does not
   reject the Job. A binding that is read and fails is reported at `steps[i] -> let[j]`, and the
   Step's entry values are not computed; every entry's `enableIf` and duplicate check (constraint
-  3), and every Step Environment's `enableIf`, has already been made, so their errors are
-  reported with it, and an entry whose `enableIf`
+  3) has already been made, so their errors (§7.4.1 step 2) are reported with it, while the
+  binding's error (step 1) stops the Step, so its Step Environments' `enableIf` errors (step
+  6) are not; and an entry whose `enableIf`
   failed adds nothing to the bindings evaluated again. An `enableIf` (an entry's or a Step Environment's) does not
   take part: it is evaluated in template scope (Template Schemas §7.5, after its
   rules; spec `5535230`), with POSIX paths in the scope as job creation built it, so a binding only an
@@ -869,9 +870,10 @@ that has entries lists both.
    error at `<attachment> -> environment -> envParameterDefinitions`, and those parameters are
    not reported again per Step under constraint 7. The error is reported after every Step's
    values, when the attachment's `enableIf` (decided in step 3, with the parameters unknown)
-   is not `false` for some Step; a `BY_DEFAULT` one disabled for every Step is not entered,
-   so it is not an error (§3.2.2), and an `ALWAYS` one is whenever some Step is not stopped
-   after §7.4.1 step 4 (§3.2.1 item 4; see [Error order](#error-order-env_params)). One with `activation: ON_REQUEST` is never entered, since no entry can
+   is not `false` for some Step that is not stopped after §7.4.1 step 4 (see
+   [Error order](#error-order-env_params)); a `BY_DEFAULT` one disabled for every such Step is
+   not entered, so it is not an error (§3.2.2), and an `ALWAYS` one is an error whenever some
+   Step is not stopped (§3.2.1 item 4). One with `activation: ON_REQUEST` is never entered, since no entry can
    request it, so it is not an error. (Warnings are returned only with a successful result.)
 2. Each Step's frozen entries are matched to the attachments by `environment.name`:
    - exactly one: the entry refers to it, whatever `required` says (§3.2.1 item 1);
@@ -883,8 +885,9 @@ that has entries lists both.
      that no entry names are not an error (plan A11), unless their `activation` is `ALWAYS` or
      `BY_DEFAULT` and they have parameters without a `default`: no entry can reach them, so
      each such attachment
-     that its `enableIf` does not disable for every Step gets one error at its
-     `envParameterDefinitions`, as in step 1, and those parameters are not reported per Step.
+     that its `enableIf` does not disable for every Step that is not stopped gets one error
+     at its `envParameterDefinitions`, as in step 1, and those parameters are not reported per
+     Step.
 
    A disabled entry (`StepSelection::disabled`) is matched too, before the Step's frozen
    entries, to learn the `activation` that decides what it means (§3.2.1, §3.2 item 3.2). It
@@ -1273,7 +1276,7 @@ for the order and number of errors: job creation reports them in §7.4.1 order a
 step after step 4 for a Step with an error from steps 1–4 (see
 [Error order](#error-order-env_params)), while this function reports every violation it is
 certain of, in its own order (so it can report a Step's value errors that job creation
-reports only once the Step's entries resolve):
+reports only once the Step's step 1–4 errors are fixed):
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
    for an unreachable attachment is reported only when its own `enableIf` is absent or `true`,
