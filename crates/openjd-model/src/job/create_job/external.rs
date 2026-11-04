@@ -1887,7 +1887,7 @@ pub fn check_environment_templates(
             &mut errors,
         );
         // The grouped Job Environments the Step is known to enter, as job
-        // creation checks them when an attachment shares the group.
+        // creation checks them.
         let deps_path = path_field(&step_path, "dependencies");
         let mut job_missing = Vec::new();
         let mut job_unresolved = HashSet::new();
