@@ -1006,13 +1006,15 @@ A superseded Environment (next section) is listed too.
 
 #### Exclusive groups (ENV_PARAMS)
 
-An Environment's `exclusiveGroup` (Template Schemas §4 item 7) is applied for each Step after
-every Environment's own `enableIf` and before the value checks and constraint 7 (§7.4.1
-step 7, before step 8). Of the Environments the Step's Sessions would enter whose
-`enableIf` did not disable them (`true`, unresolved, or failed), those that share a group are
-reduced to the first in the Job's Environment order: the attached Environments in attachment
-order, then the `jobEnvironments` in written order. The others are superseded, which
-disables them for the Step (§3.2.2): they are left out of `job::Step::environments` and
+An Environment's `exclusiveGroup` (Template Schemas §4 item 7) is applied for each Step with
+the Environments' own `enableIf`, before the value checks and constraint 7 (§7.4.1 step 6,
+before step 7). The Environments the Step's Sessions would otherwise enter are taken in the
+Job's Environment order: the attached Environments in attachment order, then the
+`jobEnvironments` in written order. One whose group an earlier one that remains in the Step's
+set already has is superseded, and its `enableIf` is not evaluated for the Step, so an
+`enableIf` that would fail or be unresolved there is no error (JB-154). Any other has its
+`enableIf` decided, and takes its group when the result does not disable it (`true`,
+unresolved, or failed). Superseding disables an Environment for the Step (§3.2.2): they are left out of `job::Step::environments` and
 `environment_parameters`, their values for the Step are not checked (constraint 6) and they
 are not held to constraint 7, their `hostRequirements` are not resolved for the Step, the
 single-layer rule does not count them, and `CreatedJob::disabled_environments` lists them with
@@ -1030,33 +1032,39 @@ collects the groups of the attached Environments and gives them to `JobEnvironme
 
 - In the `create_job` body (`resolve_step_entries`), each Job Environment is decided in
   written order with a set of the groups already taken. One whose group no attachment shares
-  is superseded when its group is taken, and is otherwise committed (its values checked and
-  constraint 7 counted) and takes its group. Every one whose group an attachment shares, and
-  whose own `enableIf` did not disable it, is *deferred*: its pending values and `enableIf`
-  decision go into `StepSelection::deferred`, unchecked, and it stays in the Step's entered
-  list for now. A Job Environment whose entry's `enableIf` failed (an error) takes its group
+  is superseded when its group is taken, without its `enableIf` being evaluated; otherwise its
+  `enableIf` is decided, and one it does not disable is committed (its values checked and
+  constraint 7 counted) and takes its group. Every one whose group an attachment shares is
+  *deferred* before its `enableIf` is evaluated: its pending values go into
+  `StepSelection::deferred`, unchecked, and it stays in the Step's entered list for now. A Job Environment whose entry's `enableIf` failed (an error) takes its group
   without being decided, so the later ones of its group add no errors.
 - In the submission stage (`apply_environment_templates`), each Step's attachments are decided
-  in attachment order with a fresh set of taken groups: one whose `enableIf` did not disable
-  it is superseded when its group is taken, and otherwise takes it. An ambiguous attachment
+  in attachment order with a fresh set of taken groups: one is superseded when its group is
+  taken, without its `enableIf` being evaluated; otherwise its `enableIf` is decided, and one
+  it does not disable takes its group. An ambiguous attachment
   (reported, with no values computed) is entered, and takes its group, when the Step would
   enter it by its `activation` alone (`ALWAYS` or `BY_DEFAULT`, since no entry resolves to
   it), its `enableIf` is not the scalar `false`, and no earlier one took its group; so the
   single-layer rule counts it only then. For the unreachable-attachment error it counts as
   entered for such a Step when its `enableIf` is absent, `true`, or certainly unresolved, as
   `check_environment_templates` decides it. Then the Step's deferred Job Environments, in written
-  order: one whose group an attachment or an earlier deferred one took is superseded, set not
-  entered and added to the Step's disabled list; any other takes its group and is committed
-  now, its errors prefixed with `JobTemplate`, its constraint 7 names reported in a second
+  order: one whose group an attachment or an earlier deferred one took is superseded, without
+  its `enableIf` being evaluated, set not entered and added to the Step's disabled list; any
+  other has its `enableIf` decided now, and one it disables is set not entered and added to
+  the disabled list in the same way, while one it does not disable takes its group and is
+  committed now, its errors prefixed with `JobTemplate`, its constraint 7 names reported in a second
   error at `JobTemplate -> steps[i]` with the jobEnvironments wording, and its values placed
-  among the Step's Job Environment values in written order.
+  among the Step's Job Environment values in written order. A failed `enableIf` of a deferred
+  one is reported after the attachments' failed `enableIf`s, once for all the Steps it was
+  resolved for, at `JobTemplate -> jobEnvironments[k] -> enableIf`.
 
 So a group's first is the same whichever documents its members come from. A Job without
 attached Environments, or whose attached Environments share no group with its own, decides
 every group in the `create_job` body, and reports its errors there as before. One mistake can
 therefore be reported in two shapes: a missing value of a grouped Job Environment is a
 `JobTemplate` error at `steps[i]` when no attachment shares its group, and a `Submission` error
-at `JobTemplate -> steps[i]` when one does and does not supersede it. The deferred checks also
+at `JobTemplate -> steps[i]` when one does and does not supersede it; the same holds for a
+failed `enableIf` of a grouped Job Environment. The deferred checks also
 run only when the `create_job` body found no error, as every submission-stage check does.
 
 #### Combined host requirements (ENV_PARAMS)

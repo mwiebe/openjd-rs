@@ -350,10 +350,11 @@ disabled one out of the Step's `environments`, `step_environments`, and
 `environment_parameters` and listing it in
 `CreatedJob::disabled_environments` (for an Environment with `activation:
 ALWAYS`, which cannot be disabled, a `false` result is instead an error at
-its `enableIf` naming every such Step, §3.2.2 item 6); of the ones left that
-share an `exclusiveGroup`, enters only the first in the Job's Environment
-order and supersedes the others, which disables them the same way (§4 item
-7, §7.4.1 step 7); checks each value of an
+its `enableIf` naming every such Step, §3.2.2 item 6); taking the
+Environments in the Job's Environment order, supersedes one whose
+`exclusiveGroup` an earlier one left in the Step's set already has, which
+disables it the same way, without evaluating its `enableIf` (§4 item 7,
+§7.4.1 step 6); checks each value of an
 Environment that is not disabled for the Step against its definition, and
 PATH values against `ctx.submission_path_format` /
 `ctx.allow_uri_path_values`, and that the Step supplies every parameter

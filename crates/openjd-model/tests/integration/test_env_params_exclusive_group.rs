@@ -11,8 +11,9 @@
 //! own) is entered. The others are superseded, which disables them for the
 //! Step (§3.2.2): they are not held to constraint 7 and the Step's values
 //! for them are not checked, though an entry's keys still are. Job creation
-//! applies the rule after every `enableIf` and before those checks (§7.4.1
-//! step 7). Before then, a grouped Environment is known to be entered only
+//! takes them in that order, and once one is entered does not evaluate the
+//! later ones' `enableIf` for the Step (§7.4.1 step 6), before those checks
+//! (step 7). Before then, a grouped Environment is known to be entered only
 //! when every earlier one of its group is known not to be (§4, after item
 //! 10), so the Job Template alone, whose attachments are not known, never
 //! counts a grouped Job Environment as entered.
@@ -288,8 +289,9 @@ fn only_the_first_job_environment_of_a_group_is_entered() {
 
 #[test]
 fn a_disabled_job_environment_does_not_supersede() {
-    // §4 item 7: the group is applied after each one's enableIf, so B is
-    // the group's first for the Step, and is held to constraint 7.
+    // §4 item 7: only an Environment its enableIf does not disable takes
+    // the group, so B is the group's first for the Step, and is held to
+    // constraint 7.
     for a_enable_if in ["false", "\"Job.Name == 'other'\""] {
         create_err(
             &a_and_b("G", "G", a_enable_if),
@@ -1529,5 +1531,115 @@ fn check_decides_each_steps_job_environments_with_its_own_entries() {
         &[],
         "JobTemplate",
         &[&missing("steps[1]", true, "'B'")],
+    );
+}
+
+// ── §7.4.1 step 6: a superseded Environment's enableIf is not evaluated ──
+
+/// An Environment body whose `enableIf` fails when it is evaluated: its
+/// `S` defaults to `abc`, which `int` cannot convert.
+const FAILING: &str = "envParameterDefinitions: [{name: S, type: STRING, default: abc}], \
+                       enableIf: \"int(Env.Param.S) > 0\"";
+
+/// The error of [`FAILING`]'s `enableIf` for Step `S`, at `path`.
+fn failing(path: &str) -> String {
+    format!(
+        "{path} -> enableIf:\n\tcould not be evaluated: Cannot convert 'abc' to int. Resolved \
+         for Step 'S'.\n  int(Env.Param.S) > 0\n  ^~~~~~~~~~~~~~~~"
+    )
+}
+
+#[test]
+fn a_superseded_job_environments_enable_if_is_not_evaluated() {
+    // §4 item 7, §7.4.1 step 6 (JB-154): A is entered, so B is superseded
+    // and its enableIf, which would fail, is not evaluated for the Step.
+    let jt = |a_enable_if: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n\
+             - {{name: A, exclusiveGroup: G, enableIf: {a_enable_if}, variables: {{V: a}}}}\n\
+             - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n{STEP}"
+        )
+    };
+    let created = create_ok(&jt("true"), &[]);
+    assert_eq!(entered(&created, 0), ["A"]);
+    assert_eq!(disabled(&created, 0), ["B"]);
+    // A disabled: B is its group's first, so its enableIf is evaluated.
+    create_err(
+        &jt("false"),
+        &[],
+        "JobTemplate",
+        &[&failing("jobEnvironments[1]")],
+    );
+}
+
+#[test]
+fn a_superseded_attachments_enable_if_is_not_evaluated() {
+    let x = |enable_if: &str| {
+        env(&format!(
+            "name: X, exclusiveGroup: G, enableIf: {enable_if}"
+        ))
+    };
+    let y = env(&format!("name: Y, exclusiveGroup: G, {FAILING}"));
+    let created = create_ok(&format!("{HEAD}{STEP}"), &[&x("true"), &y]);
+    assert_eq!(entered(&created, 0), ["X@0"]);
+    assert_eq!(disabled(&created, 0), ["Y@1"]);
+    create_err(
+        &format!("{HEAD}{STEP}"),
+        &[&x("false"), &y],
+        "Submission",
+        &[&failing("EnvironmentTemplate[1] -> environment")],
+    );
+}
+
+#[test]
+fn an_attachment_supersedes_a_job_environment_without_evaluating_its_enable_if() {
+    // The attached X comes first in the Job's Environment order. When it
+    // is entered, the Job Environment B of its group is superseded before
+    // its enableIf is evaluated; when X is disabled, B's enableIf is
+    // evaluated, and its failure is reported at the Job Template's path.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n\
+         {STEP}"
+    );
+    let x = |enable_if: &str| {
+        env(&format!(
+            "name: X, exclusiveGroup: G, enableIf: {enable_if}"
+        ))
+    };
+    let created = create_ok(&jt, &[&x("true")]);
+    assert_eq!(entered(&created, 0), ["X@0"]);
+    assert_eq!(disabled(&created, 0), ["B"]);
+    create_err(
+        &jt,
+        &[&x("false")],
+        "Submission",
+        &[&failing("JobTemplate -> jobEnvironments[0]")],
+    );
+}
+
+#[test]
+fn a_job_environment_decided_by_the_submission_stage_notes_a_failed_enable_if() {
+    // X is disabled, so the submission stage evaluates B's enableIf, which
+    // fails. B is then checked as if it is not disabled, so its missing P
+    // is reported with the note, before the enableIf error.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: S, type: STRING, default: abc}}, {{name: P, type: STRING}}], enableIf: \
+         \"int(Env.Param.S) > 0\", variables: {{V: b}}}}\n{STEP}"
+    );
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let note = " (its own enableIf could not be evaluated for this Step, so the Environment is \
+                checked as if it is not disabled)";
+    create_err(
+        &jt,
+        &[&x],
+        "Submission",
+        &[
+            &format!(
+                "{}{note}.",
+                missing("JobTemplate -> steps[0]", true, "'B'").trim_end_matches('.')
+            ),
+            &failing("JobTemplate -> jobEnvironments[0]"),
+        ],
     );
 }

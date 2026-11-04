@@ -15,13 +15,15 @@
 //! 6); its submission stage,
 //! [`apply_environment_templates`], does it for the attached Environment
 //! Templates' Environments. Both go through
-//! [`DeclaringEnvironment::values_for_step`], then decide the
+//! [`DeclaringEnvironment::values_for_step`], then, in the Job's
+//! Environment order, apply the `exclusiveGroup` rule and decide the
 //! Environment's own `enableIf` (§4 item 6) with the values that are known
-//! ([`DeclaringEnvironment::decide`]), then apply the `exclusiveGroup` rule
-//! (§4 item 7, §7.4.1 step 7), then report the value checks and
-//! constraint 7 only where the Environment is not disabled
-//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1 step 8), so the two stages
-//! convert and check values the same way:
+//! ([`DeclaringEnvironment::decide`]): one whose group an earlier one that
+//! remains in the Step's set already has is superseded, and its `enableIf`
+//! is not evaluated (§4 item 7, §7.4.1 step 6). Then they report the value
+//! checks and constraint 7 only where the Environment is not disabled
+//! ([`DeclaringEnvironment::commit`]; §3.2.2, §7.4.1 step 7), so the two
+//! stages convert and check values the same way:
 //!
 //! - a literal is decoded as the Job Parameter `default` of its type is
 //!   (the template-validation decoder, so the messages match);
@@ -1092,12 +1094,12 @@ pub(crate) struct DisabledEntry {
     pub(crate) dependency_index: usize,
 }
 
-/// A Job Environment of a Step whose `exclusiveGroup` (§4 item 7) an
-/// attached Environment shares, and which its own `enableIf` did not
-/// disable for the Step. An attached Environment comes first in the Job's
-/// Environment order and may supersede it, so the submission stage
-/// applies the group rule to it (§7.4.1 step 7) and only then reports its
-/// value checks and constraint 7 (step 8).
+/// A Job Environment that a Step's Sessions would otherwise enter, and
+/// whose `exclusiveGroup` (§4 item 7) an attached Environment shares. An
+/// attached Environment comes first in the Job's Environment order and may
+/// supersede it, so the submission stage applies the group rule to it and
+/// decides its own `enableIf` only when it is not superseded (§7.4.1 step
+/// 6), and only then reports its value checks and constraint 7 (step 7).
 pub(crate) struct DeferredJobEnvironment<'a> {
     /// Its index in `jobEnvironments`.
     pub(crate) position: usize,
@@ -1105,9 +1107,6 @@ pub(crate) struct DeferredJobEnvironment<'a> {
     pub(crate) environment: usize,
     /// The Step's effective values for it, not yet checked.
     pub(crate) pending: PendingValues<'a>,
-    /// What its own `enableIf` decided for the Step: not
-    /// [`EnableIf::Disabled`].
-    pub(crate) decision: EnableIf,
 }
 
 /// What job creation decides about one Step's Environments, for the
@@ -1436,7 +1435,7 @@ pub(crate) fn resolve_step_entries<'a>(
     let mut left_out = vec![false; job_envs.all.len()];
     let mut unresolved_labels: HashSet<&str> = HashSet::new();
     let mut failed_labels: HashSet<&str> = HashSet::new();
-    // §4 item 7, §7.4.1 step 7: the groups an Environment the Step's
+    // §4 item 7, §7.4.1 step 6: the groups an Environment the Step's
     // Sessions enter already has, so the later ones of each are superseded.
     let mut taken: HashSet<&str> = HashSet::new();
     let mut deferred = Vec::new();
@@ -1458,32 +1457,40 @@ pub(crate) fn resolve_step_entries<'a>(
             }
             continue;
         }
+        // Computed for every Environment the Step's Sessions would
+        // otherwise enter, so an entry's keys are checked (constraint 5)
+        // even for one that is superseded.
         let pending = de.values_for_step(
             supplied.get(de.name),
             &job_envs.default_symtab,
             policy,
             errors,
         );
+        let group = de.env.group();
+        // An attached Environment of the group comes first and may
+        // supersede it, which only the submission stage knows, so it
+        // decides every Job Environment of such a group, in order, its
+        // `enableIf` included.
+        if group.is_some_and(|group| job_envs.attached_groups.contains(group)) {
+            deferred.push(DeferredJobEnvironment {
+                position,
+                environment: k,
+                pending,
+            });
+            continue;
+        }
+        // §4 item 7, §7.4.1 step 6: once an Environment of the group
+        // remains in the Step's set, the later ones are superseded, and
+        // their `enableIf` is not evaluated for the Step. Superseded:
+        // disabled for the Step (§3.2.2).
+        if group.is_some_and(|group| taken.contains(group)) {
+            env_disabled.push(position);
+            left_out[position] = true;
+            continue;
+        }
         let decision = de.decide(&pending, &st.name, &job_envs.enable_if_base, policy);
-        if let Some(group) = de.env.group().filter(|_| decision != EnableIf::Disabled) {
-            // An attached Environment of the group comes first and may
-            // supersede it, which only the submission stage knows, so it
-            // decides every Job Environment of such a group, in order.
-            if job_envs.attached_groups.contains(group) {
-                deferred.push(DeferredJobEnvironment {
-                    position,
-                    environment: k,
-                    pending,
-                    decision,
-                });
-                continue;
-            }
-            if !taken.insert(group) {
-                // Superseded: disabled for the Step (§3.2.2).
-                env_disabled.push(position);
-                left_out[position] = true;
-                continue;
-            }
+        if let Some(group) = group.filter(|_| decision != EnableIf::Disabled) {
+            taken.insert(group);
         }
         match decision {
             EnableIf::Disabled => {

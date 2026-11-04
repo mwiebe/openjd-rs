@@ -835,7 +835,7 @@ Template validation does not know the Environment Templates the Job will be subm
 and an attached Environment of a grouped Job Environment's group comes first in the Job's
 Environment order (§1.1 item 7) and may supersede it, which disables it for the Step
 (§3.2.2). So a Job Environment with an `exclusiveGroup` is never known here to be entered
-(§4, after item 10), and every check below that applies only to an Environment known to be
+(§4, after item 10; JT-189), and every check below that applies only to an Environment known to be
 entered leaves it to job creation: the single-layer rule (pass 10) does not count it,
 constraint 7 is not checked for it, and neither constraint 6 nor pass 8's typing of a
 format-string value is applied to an entry's values for it. Constraint 5 still applies to its
