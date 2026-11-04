@@ -1053,9 +1053,12 @@ collects the groups of the attached Environments and gives them to `JobEnvironme
 - In the submission stage (`apply_environment_templates`), each Step's attachments are decided
   in attachment order with a fresh set of taken groups: one whose `enableIf` did not disable
   it is superseded when its group is taken, and otherwise takes it. An ambiguous attachment
-  (reported, with no values computed) takes its group when the Step would enter it by its
-  `activation` alone (`ALWAYS` or `BY_DEFAULT`, since no entry resolves to it) and its
-  `enableIf` is not the scalar `false`. Then the Step's deferred Job Environments, in written
+  (reported, with no values computed) is entered, and takes its group, when the Step would
+  enter it by its `activation` alone (`ALWAYS` or `BY_DEFAULT`, since no entry resolves to
+  it), its `enableIf` is not the scalar `false`, and no earlier one took its group; so the
+  single-layer rule counts it only then. For the unreachable-attachment error it counts as
+  entered for such a Step when its `enableIf` is absent, `true`, or certainly unresolved, as
+  `check_environment_templates` decides it. Then the Step's deferred Job Environments, in written
   order: one whose group an attachment or an earlier deferred one took is superseded, set not
   entered and added to the Step's disabled list; any other takes its group and is committed
   now, its errors prefixed with `JobTemplate`, its constraint 7 names reported in a second
@@ -1225,7 +1228,8 @@ disabled entries before its enabled ones, so errors of the two can come in a dif
    reports them in its `JobTemplate` error when no attachment shares the group. With no
    attachments, every such Job Environment first in its group is checked;
 4. the `WRAP_ACTIONS` single-layer rule (`check_attached_wrap_layers`), for each Step whose
-   Sessions enter a wrapping attachment, over the wrapping Environments the Step's Sessions
+   Sessions certainly enter a wrapping attachment or a wrapping grouped Job Environment (which
+   template validation does not count), over the wrapping Environments the Step's Sessions
    certainly enter, in Session order: attachments with `activation: ALWAYS`, those with
    `BY_DEFAULT` for which the Step has no entry or an enabled one (a disabled entry declines
    it, and an expression entry may), and the `ON_REQUEST` ones an enabled entry resolved to;
@@ -1241,7 +1245,8 @@ disabled entries before its enabled ones, so errors of the two can come in a dif
    creation's message is reused (`wrap_layers_message`), but it lists only
    the layers the Step certainly enters, so when an `enableIf` expression on an entry or an
    Environment brings in another one, job creation's message counts and lists more. A Step whose
-   wrapping Environments are all the Job Template's own is left to template validation;
+   wrapping Environments are all the Job Template's own and ungrouped is left to template
+   validation;
 5. the §3.3.3 combination over literal requirements
    (`host_requirements::check_literal_combinations`): for each Step, the requirements of its
    own `hostRequirements` and of each Environment its Sessions certainly enter (as in item 4,

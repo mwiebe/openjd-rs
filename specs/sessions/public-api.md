@@ -26,8 +26,8 @@ A typical caller (e.g. the Deadline Cloud worker agent) flow is:
    `session.enter_environment_with_parameters(env, resolved_symtab, step_values, …).await?`
    with the entry of the Step's `environment_parameters` for that Environment. With
    `ENV_PARAMS`, enter only the Job Environments the Step's Sessions enter
-   (`job::Step::enters_environment`, from `activation`, the Step's entries, and each
-   Environment's `enableIf`),
+   (`job::Step::enters_environment`, from `activation`, the Step's entries, each
+   Environment's `enableIf`, and each `exclusiveGroup`),
    and pass each Job Environment's own
    `resolved_symtab`, which carries `Job.Name` and `Job.EnvNames`.
 4. For each task, `session.run_task(script, task_params, resolved_symtab, …).await?`.

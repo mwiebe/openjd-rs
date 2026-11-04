@@ -300,7 +300,8 @@ async fn run_workload(
 
 /// The Job Environments of the combined Job (the attached ones, then the
 /// Job Template's own) that `step` enters ([`Step::enters_environment`],
-/// Template Schemas §4 item 4 `activation` and item 6 `enableIf`), in Job
+/// Template Schemas §4 item 4 `activation`, item 6 `enableIf`, and item 7
+/// `exclusiveGroup`), in Job
 /// order, each with the Step's Environment parameter values for it, if any.
 fn job_environment_targets<'a>(
     prepared: &'a PreparedRun,
