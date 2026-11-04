@@ -73,7 +73,9 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
-  `ac63711`. That includes `e1b7e8c`, which splits `activation: ALWAYS` into a strict
+  `e0a9e44`, which adds an Environment's `exclusiveGroup` (§4 item 7; no separate plan; see
+  [template-types.md](template-types.md#environment-4) and
+  [job-creation.md](job-creation.md#exclusive-groups-env_params)). That includes `e1b7e8c`, which splits `activation: ALWAYS` into a strict
   `ALWAYS` and `BY_DEFAULT`, the default (no separate plan; see
   [template-types.md](template-types.md#environment-4)); `6c23a08` through `4a5d353`:
   empty and discarded host requirements, and an `anyOf` or `allOf` written as one
@@ -84,7 +86,8 @@ Currently implements `2023-09` with extensions:
   [job-creation.md](job-creation.md#environment-parameter-values-env_params)). A document that lists `ENV_PARAMS` must also list `EXPR` (Template Schemas §1.1
   item 3, §1.2 item 3; see [validation.md](validation.md#entry-points)). Decode and
   template validation are implemented: Environment `envParameterDefinitions`, `activation`,
-  `hostRequirements`, and `enableIf` (an expression field, §4 item 6),
+  `hostRequirements`, `enableIf` (an expression field, §4 item 6), and `exclusiveGroup`
+  (§4 item 7),
   the `step:` and `environment:` forms of `<StepDependency>`, the latter with `enableIf` (an
   expression field, Template Schemas §7.5; see
   [template-types.md](template-types.md#expression-fields-75)), `Job.EnvNames`, and the
@@ -96,7 +99,10 @@ Currently implements `2023-09` with extensions:
   [job-creation.md](job-creation.md#environment-parameter-values-env_params)), each
   Environment's own `enableIf` per Step with the values that are known, before the checks
   of the values and constraint 7, which a disabled Environment escapes (see
-  [job-creation.md](job-creation.md#environment-enableif-env_params)), and last each
+  [job-creation.md](job-creation.md#environment-enableif-env_params)), then each
+  `exclusiveGroup` (§4 item 7), which supersedes, and so disables, all but the first of a
+  group's Environments a Step would enter (see
+  [job-creation.md](job-creation.md#exclusive-groups-env_params)), and last each
   Environment's `hostRequirements` resolved per entering Step and combined with the Step's
   own (see [job-creation.md](job-creation.md#combined-host-requirements-env_params)). The
   openjd-sessions runtime binds the values (see
@@ -119,8 +125,9 @@ Currently implements `2023-09` with extensions:
   a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
   the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). The section citations in the
-  code, tests, and specs follow the numbering of the spec at `ca37d31`, where §3.2's
-  *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3
-  and the scope table is §7.3.2; each plan cites the numbering of the spec it targets. Not yet implemented
+  code, tests, and specs follow the numbering of the spec at `e0a9e44`, where §3.2's
+  *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3,
+  the scope table is §7.3.2, and §4's *script*, *variables*, and at-least-one rule are items
+  8–10, after *exclusiveGroup* as item 7; each plan cites the numbering of the spec it targets. Not yet implemented
   in the Python reference (`openjd-model-for-python`), so there is no Python behavior to
   match.

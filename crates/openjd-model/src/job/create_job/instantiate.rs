@@ -37,7 +37,7 @@ use super::ranges;
 /// parameter space need the concrete values, so they are skipped. The
 /// failure is already recorded in `check_errors`, so job creation fails.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn instantiate_step(
+pub(super) fn instantiate_step<'a>(
     st: &template::StepTemplate,
     symtab: &SymbolTable,
     has_expr: bool,
@@ -46,10 +46,10 @@ pub(super) fn instantiate_step(
     ctx: &crate::types::ValidationContext,
     step_index: usize,
     budgets: super::EvalBudgets,
-    job_envs: &super::env_params::JobEnvironments<'_>,
+    job_envs: &super::env_params::JobEnvironments<'a>,
     lists_env_params: bool,
     check_errors: &mut ValidationErrors,
-) -> Result<Option<(job::Step, super::env_params::StepSelection)>, ModelError> {
+) -> Result<Option<(job::Step, super::env_params::StepSelection<'a>)>, ModelError> {
     let mut step_symtab = symtab.clone();
 
     let step_name = st.name.clone();

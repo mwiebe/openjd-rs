@@ -3,7 +3,8 @@
 # A test copy of the ENV_PARAMS RFC sample
 # samples/v2023-09/environment_templates/conda-env-params.yaml from
 # openjd-specifications. The schema parts (extensions, parameterDefinitions,
-# the Environment's envParameterDefinitions, its enableIf, and its argv) are
+# the Environment's envParameterDefinitions, its enableIf and exclusiveGroup,
+# and its argv) are
 # unchanged: a Step whose Packages is empty does not enter it. The
 # onEnter script is a Python stub that prints the values it was given
 # instead of running conda, and exports CONDA_STUB_PACKAGES so a Task can
@@ -28,6 +29,8 @@ parameterDefinitions:
   default: "conda-forge"
 environment:
   name: Conda
+  enableIf: "Env.Param.Packages != ''"
+  exclusiveGroup: SoftwareProvider
   description: >
     Creates a conda environment in the Session Working Directory with the
     packages the Session's Step asked for, and activates it for the rest of
@@ -39,7 +42,6 @@ environment:
   - name: Channels
     type: STRING
     default: "{{Param.CondaChannels}}"
-  enableIf: "Env.Param.Packages != ''"
   script:
     actions:
       onEnter:

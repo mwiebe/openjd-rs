@@ -281,7 +281,9 @@ fn validate_env_param_value_fs(
 /// `enableIf` is `false` or an expression they are checked with no target
 /// type (§7.5 rule 5), unless
 /// the expression is certainly unresolved for the entry
-/// (`env_params::enable_if_certainly_unresolved`).
+/// (`env_params::enable_if_certainly_unresolved`). One with an
+/// `exclusiveGroup` (§4 item 7) may be superseded, which disables it, so
+/// its values are also checked with no target type.
 type JobEnvParamTypes<'a> = std::collections::HashMap<
     &'a str,
     (
@@ -352,8 +354,15 @@ fn validate_env_entry_values(
             .get(env_name)
             .filter(|_| dep.literal_enabled() == Some(true))
             .filter(|(env, certain, _)| {
-                *certain
-                    || super::env_params::enable_if_certainly_unresolved(env, Some(&params.0), ctx)
+                // A grouped one may be superseded (§4 item 7), which
+                // disables it, so its values are typed at job creation.
+                env.group().is_none()
+                    && (*certain
+                        || super::env_params::enable_if_certainly_unresolved(
+                            env,
+                            Some(&params.0),
+                            ctx,
+                        ))
             })
             .map(|(_, _, types)| types);
         let params_path = path_field(&path_index(&deps_path, j), "parameters");

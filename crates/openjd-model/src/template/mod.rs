@@ -58,7 +58,7 @@ pub use env_parameters::{
 // expr_field (Template Schemas §7.5)
 pub use expr_field::ExprField;
 // environment
-pub(crate) use environment::KnownEntry;
+pub(crate) use environment::{apply_exclusive_groups, Known, KnownEntry};
 pub use environment::{EmbeddedFile, Environment, EnvironmentActivation, EnvironmentScript};
 // actions
 pub(crate) use actions::impl_environment_actions_helpers;

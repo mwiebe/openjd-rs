@@ -189,11 +189,18 @@ fn docker_wraps_each_step_with_its_own_image_and_mapped_mounts() {
             "All actions completed successfully!",
         ],
     );
-    // The Conda entries are `required: false`, and their `enableIf`
-    // disables them when Docker is attached. A disabled entry's name is
-    // resolved, but one that matches no attachment has no effect and gives
-    // no warning (Template Schemas §3.2 item 3.2).
-    assert!(stderr.is_empty(), "{stderr}");
+    // Every Step's Conda entry is `required: false`, and no Conda
+    // Environment is attached.
+    assert_eq!(count(&stderr, "WARNING: "), 4, "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "WARNING: JobTemplate -> steps[0] -> dependencies[0] -> environment: names \
+             Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and \
+             none of the attached Environment Templates ({docker}) defines it. The entry has \
+             'required: false', so it has no effect."
+        )),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -540,20 +547,44 @@ fn an_attached_environment_named_like_a_job_environment_keeps_its_own_values() {
 }
 
 #[test]
-fn with_both_environments_attached_each_step_chooses_docker() {
-    // The sample's Conda entries have `enableIf: "'Docker' not in
-    // Job.EnvNames"`, so with Docker attached they are disabled. Conda's
-    // activation is BY_DEFAULT, so the Step takes its defaults (no packages),
-    // for which Conda's own enableIf is false (Template Schemas §4 item
-    // 6): its Sessions do not enter Conda at all, and Docker gets the
-    // entry's values.
+fn with_both_environments_attached_each_step_enters_the_first_attached() {
+    // The Conda and Docker samples share `exclusiveGroup: SoftwareProvider`,
+    // so each Step's Sessions enter only the first one attached that is
+    // enabled for the Step; the other is superseded (Template Schemas §4
+    // item 7, §7.4.1 step 7). Every Step supplies Conda packages, so Conda's
+    // own enableIf is true for each.
     let conda = fixture("conda-env-params.yaml");
     let docker = fixture("docker-env-params.yaml");
+    for (first, second, entered, superseded) in [
+        (&conda, &docker, "Conda", "Docker"),
+        (&docker, &conda, "Docker", "Conda"),
+    ] {
+        let (code, stdout, stderr) = run_video(&["--environment", first, "--environment", second]);
+        assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+        assert_eq!(
+            count(&stdout, &format!("Entering Environment: {entered}")),
+            4,
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains(&format!("Entering Environment: {superseded}")),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains(&format!("{superseded} onEnter")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("All actions completed successfully!"),
+            "{stdout}"
+        );
+        assert!(stderr.is_empty(), "{stderr}");
+    }
     let (code, stdout, stderr) = run_video(&[
         "--environment",
-        &conda,
-        "--environment",
         &docker,
+        "--environment",
+        &conda,
         "--step",
         "SolveSfM",
     ]);
@@ -802,7 +833,7 @@ fn check_reports_the_new_template_validation_errors() {
          expected one of `ALWAYS`, `BY_DEFAULT`, `ON_REQUEST`\n"
     );
     // activation and hostRequirements on a Step Environment, each at the
-    // field it names (Template Schemas §4, after item 9).
+    // field it names (Template Schemas §4, after item 10).
     let job = write_file(
         &dir,
         "job.yaml",
@@ -1268,9 +1299,9 @@ fn summary_of_one_step_lists_each_environment_in_session_order() {
         "summary",
         &video,
         "--environment",
-        &conda,
-        "--environment",
         &docker,
+        "--environment",
+        &conda,
         "--step",
         "SolveSfM",
         "-p",
@@ -1283,17 +1314,16 @@ fn summary_of_one_step_lists_each_environment_in_session_order() {
         "OutputVideo=/out.mp4",
     ]);
     assert_eq!(code, 0, "stderr: {stderr}");
-    // The Conda entry's enableIf disabled it, so the Step declines Conda,
-    // a BY_DEFAULT Environment (Template Schemas §3.2 item 3.2): it does not
-    // enter it, and since Conda's own enableIf is not evaluated for the
-    // Step, the summary does not list it as disabled. (Before §3.2 item 3.2,
-    // Conda took its defaults, for which its own enableIf is false, and it
-    // was listed as disabled.)
+    // Docker is attached first, and the two samples share an
+    // exclusiveGroup, so the Step enters Docker and Conda is superseded,
+    // which disables it for the Step (Template Schemas §4 item 7, §3.2.2):
+    // it is listed as disabled.
     // The host requirements combine the Step's own GPU amount with
     // Docker's GPU amount (resolved with the Step's Gpus value) and its os
     // family (Template Schemas §3.3.3).
     let expected = format!(
-        "\nSession environments:\n  - Docker ({docker})\nHost requirements:\n  - \
+        "\nSession environments:\n  - Docker ({docker})\nDisabled environments:\n  - \
+         Conda ({conda})\nHost requirements:\n  - \
          amount.worker.gpu: min 1\n  - \
          attr.worker.os.family: anyOf linux\n\nEnvironment parameters:\n  Docker ({docker}):\n    \
          - Gpus (STRING): all\n    - Image (STRING): docker.io/colmap/colmap:latest\n    - \

@@ -57,6 +57,19 @@ pub struct Environment {
     /// does not enter it; see [`literal_enabled`](Self::literal_enabled).
     #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
     pub enable_if: Option<ExprField>,
+    /// §4 item 7 `exclusiveGroup` (`ENV_PARAMS` extension): a name shared
+    /// by Environments of which a Step's Sessions enter at most one. For
+    /// each Step, of the Environments its Sessions would enter that share a
+    /// group and whose `enableIf` is not `false` for it, only the first in
+    /// the Job's Environment order (§1.1 item 7) is entered; the others are
+    /// *superseded* for the Step, which disables them for it (§3.2.2), so
+    /// they are not held to constraint 7 and the Step's values for them are
+    /// not checked. Job creation applies the rule after every `enableIf` and
+    /// before those checks (§7.4.1 step 7). Template validation checks that
+    /// the value is an `<Identifier>` (§7.1), and rejects the field without
+    /// `ENV_PARAMS`, on a `stepEnvironments` entry, and on an Environment
+    /// with `activation: ALWAYS` (constraint 1).
+    pub exclusive_group: Option<String>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
 }
@@ -91,7 +104,7 @@ impl Environment {
     }
 
     /// Whether a Step's Sessions are known before the Job is created to enter
-    /// the Environment (§4, after item 9), where `entry` is what the Step's
+    /// the Environment (§4, after item 10), where `entry` is what the Step's
     /// `environment:` entry
     /// for it is known to be: always for `ALWAYS`, which cannot be disabled
     /// or declined (§3.2.2 item 6); for `BY_DEFAULT` when its `enableIf`
@@ -99,18 +112,96 @@ impl Environment {
     /// one (a disabled entry declines it, and an expression may, §3.2 item
     /// 3.2); and for `ON_REQUEST` when its `enableIf` is absent or `true` and
     /// an enabled entry requests it.
+    ///
+    /// This is before the `exclusiveGroup` rule (§4 item 7); see
+    /// [`known_state`](Self::known_state) and [`apply_exclusive_groups`].
     pub(crate) fn certainly_entered(&self, entry: KnownEntry) -> bool {
-        match self.activation() {
-            EnvironmentActivation::Always => true,
-            EnvironmentActivation::ByDefault => {
-                self.literal_enabled() == Some(true)
-                    && matches!(entry, KnownEntry::Absent | KnownEntry::Enabled)
+        self.known_state(entry) == Known::Entered
+    }
+
+    /// What is known before the Job is created about whether a Step's
+    /// Sessions enter the Environment, where `entry` is what the Step's
+    /// `environment:` entry for it is known to be (§4, after item 10, its
+    /// first three bullets), before the `exclusiveGroup` rule: entered as
+    /// [`certainly_entered`](Self::certainly_entered) describes; not
+    /// entered when its own `enableIf` is the scalar `false` (unless it is
+    /// `ALWAYS`, which cannot be disabled), when it is `BY_DEFAULT` and a
+    /// disabled entry declines it, or when it is `ON_REQUEST` and no
+    /// enabled entry requests it; and undetermined otherwise.
+    pub(crate) fn known_state(&self, entry: KnownEntry) -> Known {
+        let activation = self.activation();
+        if activation == EnvironmentActivation::Always {
+            return Known::Entered;
+        }
+        let requested = match (activation, entry) {
+            (EnvironmentActivation::ByDefault, KnownEntry::Absent | KnownEntry::Enabled) => {
+                Some(true)
             }
-            EnvironmentActivation::OnRequest => {
-                entry == KnownEntry::Enabled && self.literal_enabled() == Some(true)
-            }
+            (EnvironmentActivation::OnRequest, KnownEntry::Enabled) => Some(true),
+            (_, KnownEntry::Undetermined) => None,
+            _ => Some(false),
+        };
+        match (requested, self.literal_enabled()) {
+            (Some(false), _) | (_, Some(false)) => Known::NotEntered,
+            (Some(true), Some(true)) => Known::Entered,
+            _ => Known::Undetermined,
         }
     }
+
+    /// The `exclusiveGroup` that the superseding rule (§4 item 7) applies
+    /// with: none for an Environment with `activation: ALWAYS`, which
+    /// cannot be disabled (§3.2.2 item 6) and must not have one
+    /// (constraint 1, reported by template validation).
+    pub(crate) fn group(&self) -> Option<&str> {
+        self.exclusive_group
+            .as_deref()
+            .filter(|_| self.activation() != EnvironmentActivation::Always)
+    }
+}
+
+/// What is known before the Job is created about whether a Step's Sessions
+/// enter one Environment (§4, after item 10; §7.5 rule 5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Known {
+    /// Known to be entered.
+    Entered,
+    /// Known not to be entered.
+    NotEntered,
+    /// Decided only when the Job is created.
+    Undetermined,
+}
+
+/// Apply the `exclusiveGroup` bullet of §4 (after item 10) to one Step's
+/// Environments, given in the Job's Environment order (§1.1 item 7) as each
+/// one's [`Environment::group`] and its state before the rule
+/// ([`Environment::known_state`], or a sharper one): one with a group is
+/// known to be entered only when, in addition, every earlier one of its
+/// group is known not to be entered, and is known not to be entered when an
+/// earlier one of its group is known to be entered, since that one, or one
+/// before it, is then the group's first. Any other one keeps its state.
+pub(crate) fn apply_exclusive_groups<'g>(
+    states: impl IntoIterator<Item = (Option<&'g str>, Known)>,
+) -> Vec<Known> {
+    // Per group: whether an earlier member is known to be entered, and
+    // whether one is undetermined.
+    let mut seen: HashMap<&str, (bool, bool)> = HashMap::new();
+    states
+        .into_iter()
+        .map(|(group, state)| {
+            let Some(group) = group else {
+                return state;
+            };
+            let earlier = seen.entry(group).or_insert((false, false));
+            let result = match (*earlier, state) {
+                (_, Known::NotEntered) | ((true, _), _) => Known::NotEntered,
+                ((false, false), Known::Entered) => Known::Entered,
+                _ => Known::Undetermined,
+            };
+            earlier.0 |= state == Known::Entered;
+            earlier.1 |= state == Known::Undetermined;
+            result
+        })
+        .collect()
 }
 
 /// What a Step's `environment:` entry for one Environment is known to be

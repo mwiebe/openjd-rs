@@ -619,7 +619,7 @@ fn a_disabled_entry_naming_an_ambiguous_attachment_is_an_error() {
     );
 }
 
-// ── WRAP_ACTIONS single-layer rule (§4, after item 9) ──────────────
+// ── WRAP_ACTIONS single-layer rule (§4, after item 10) ──────────────
 
 fn wrap_env(name: &str, activation: &str) -> String {
     format!(

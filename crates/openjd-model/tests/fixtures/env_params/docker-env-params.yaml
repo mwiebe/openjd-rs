@@ -9,9 +9,10 @@
 # the Session runs inside it via the wrap hooks.
 #
 # The Environment has activation: ON_REQUEST, so only the Sessions of Steps
-# that request it through an `environment: Docker` dependency enter it. A
-# scheduler can attach it alongside a Conda Environment and let each Step choose;
-# Steps that ask for neither run directly on the host. The Environment also
+# that request it through an `environment: Docker` dependency enter it. Its
+# exclusiveGroup, SoftwareProvider, is shared with the Conda sample, so where a
+# scheduler attaches both, each Step's Sessions enter only the first one
+# attached that is enabled for the Step. The Environment also
 # declares hostRequirements: a Linux host (docker), and at least one GPU for
 # exactly the Steps whose Gpus value is non-empty. Those combine with each
 # Step's own requirements.
@@ -72,6 +73,7 @@ environment:
     Runs the Session's actions inside a container started from the image the
     Session's Step asked for.
   activation: ON_REQUEST
+  exclusiveGroup: SoftwareProvider
   envParameterDefinitions:
   - name: Image
     type: STRING

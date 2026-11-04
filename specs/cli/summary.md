@@ -135,9 +135,11 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
    none), computed from the combined Job before its Environment listing is filtered;
    `Disabled environments:` lists, in the same form, the Environments its Sessions would
    otherwise have entered that their own `enableIf` (Template Schemas §4 item 6) disabled for
-   the Step (`CreatedJob::disabled_environments`: combined Job Environments in Job order with
+   the Step, or that an earlier Environment of their `exclusiveGroup` superseded (§4 item 7;
+   with the Conda and Docker samples both attached, the one attached second;
+   `CreatedJob::disabled_environments`: combined Job Environments in Job order with
    their document, then Step Environments marked `stepEnvironments`), and is omitted when
-   there are none. An Environment with `activation: ALWAYS` is never listed: it cannot be
+   there are none. The listing does not say which of the two disabled an Environment. An Environment with `activation: ALWAYS` is never listed: it cannot be
    disabled, and an `enableIf` that is `false` for a Step makes job creation, and so
    `summary`, fail with an error naming the Step and the Environment (Template Schemas §3.2.2
    item 6). A `BY_DEFAULT` Environment the Step declines with a disabled `environment:`
@@ -213,7 +215,8 @@ empty. `environment_parameters` is an array of `{"environment", "document", "val
 objects whose `values` are `{"name", "type", "value"}` objects, with the same strings as the
 human-readable form. With `ENV_PARAMS`, each Step also has `session_environments`, an array
 of `{"name", "source"}` objects (`source` is the declaring document, or `stepEnvironments`),
-when an `enableIf` disabled any, `disabled_environments` in the same form,
+when an `enableIf` disabled or an `exclusiveGroup` superseded any, `disabled_environments` in
+the same form,
 and, when it has any, `host_requirements`, `{"amounts": [{"name", "min"?, "max"?}],
 "attributes": [{"name", "anyOf"?, "allOf"?}]}` with each list present when non-empty and
 amounts as numbers, and, when any were discarded, `discarded_host_requirements`, an array of

@@ -1303,6 +1303,7 @@ pub openjd_model::template::Environment::activation: core::option::Option<openjd
 pub openjd_model::template::Environment::description: core::option::Option<openjd_model::template::Description>
 pub openjd_model::template::Environment::enable_if: core::option::Option<openjd_model::template::ExprField>
 pub openjd_model::template::Environment::env_parameter_definitions: core::option::Option<alloc::vec::Vec<openjd_model::template::EnvironmentParameterDefinition>>
+pub openjd_model::template::Environment::exclusive_group: core::option::Option<alloc::string::String>
 pub openjd_model::template::Environment::host_requirements: core::option::Option<openjd_model::template::HostRequirements>
 pub openjd_model::template::Environment::name: alloc::string::String
 pub openjd_model::template::Environment::script: core::option::Option<openjd_model::template::EnvironmentScript>

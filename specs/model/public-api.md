@@ -252,7 +252,8 @@ pub struct CreatedJob {
     pub environment_documents: Vec<job::Document>,
     pub warnings: Vec<SubmissionWarning>,
     /// Per Step of `job`, index for index, the Environments an `enableIf`
-    /// on the Environment (§4 item 6) disabled for it, for display.
+    /// on the Environment (§4 item 6) disabled for it, or an earlier one
+    /// of its `exclusiveGroup` superseded (§4 item 7), for display.
     pub disabled_environments: Vec<StepDisabledEnvironments>,
     /// Per Step of `job`, index for index, the host requirements that
     /// resolved to nothing and were discarded (ENV_PARAMS, §3.3): the
@@ -349,7 +350,10 @@ disabled one out of the Step's `environments`, `step_environments`, and
 `environment_parameters` and listing it in
 `CreatedJob::disabled_environments` (for an Environment with `activation:
 ALWAYS`, which cannot be disabled, a `false` result is instead an error at
-its `enableIf` naming every such Step, §3.2.2 item 6); checks each value of an
+its `enableIf` naming every such Step, §3.2.2 item 6); of the ones left that
+share an `exclusiveGroup`, enters only the first in the Job's Environment
+order and supersedes the others, which disables them the same way (§4 item
+7, §7.4.1 step 7); checks each value of an
 Environment that is not disabled for the Step against its definition, and
 PATH values against `ctx.submission_path_format` /
 `ctx.allow_uri_path_values`, and that the Step supplies every parameter
@@ -498,9 +502,13 @@ Option<Vec<EnvironmentParameterDefinition>>` field (ENV_PARAMS, §4 item 3,
 `envParameterDefinitions`), an `activation: Option<EnvironmentActivation>` field
 (ENV_PARAMS, §4 item 4), a
 `host_requirements: Option<template::HostRequirements>` field (ENV_PARAMS,
-§4 item 5, the Step's type), and an `enable_if: Option<ExprField>` field
+§4 item 5, the Step's type), an `enable_if: Option<ExprField>` field
 (ENV_PARAMS, §4 item 6; an expression field of type `bool`,
-permitted on every position) between `description` and `script`:
+permitted on every position), and an `exclusive_group: Option<String>` field
+(ENV_PARAMS, §4 item 7; an `<Identifier>`, not on a `stepEnvironments` entry or an
+`ALWAYS` Environment) between `description` and `script`. Adding
+`exclusive_group` is a breaking change for code that builds a
+`template::Environment` with a struct literal:
 
 ```rust
 impl template::Environment {

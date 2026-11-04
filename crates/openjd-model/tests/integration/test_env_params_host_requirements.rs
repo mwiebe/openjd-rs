@@ -139,7 +139,7 @@ fn jt(extra: &str, body: &str) -> String {
 const RUN: &str = "script: {actions: {onRun: {command: x}}}";
 const VARS: &str = "variables: {V: v}";
 
-// ── §4, after item 9: where the field is permitted ─────────────────
+// ── §4, after item 10: where the field is permitted ─────────────────
 
 #[test]
 fn host_requirements_on_an_environment_require_env_params() {

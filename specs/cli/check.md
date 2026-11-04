@@ -104,8 +104,10 @@ template validation rejects one with `enableIf: false` before this list is made 
 Schemas §3.2.2 item 6). An Environment or entry whose `enableIf` is an expression (even a
 constant one) is decided when the Job is created, so it is not listed; `openjd summary`
 shows each Step's Environments with the Job Parameter values (see
-[summary.md](summary.md)). A Job Template with no such Environment prints only the success
-line, as before. A listed Environment is disabled for the Step, so it is not held to
+[summary.md](summary.md)). An Environment superseded by an earlier one of its
+`exclusiveGroup` (Template Schemas §4 item 7) is disabled too, but these lines list only what
+the scalar `enableIf: false` disables; `openjd summary` lists the superseded ones. A Job
+Template with no such Environment prints only the success line, as before. A listed Environment is disabled for the Step, so it is not held to
 constraint 7 and the Step's values for it are not checked against their type and
 constraints (Template Schemas §3.2.2): a Step that supplies none of its parameters without a
 `default`, or a value outside its constraints, still passes. A key the Environment does not

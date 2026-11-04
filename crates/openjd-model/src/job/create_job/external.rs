@@ -41,13 +41,13 @@ use crate::types::{JobParameterValues, ModelExtension, ValidationContext};
 
 use super::build_symbol_table;
 use super::env_params::{
-    report_missing, DeclaringEnvironment, EnableIf, FrozenEntry, ResolvePolicy, StepSelection,
-    Supplied,
+    report_missing, DeclaringEnvironment, EnableIf, FrozenEntry, JobEnvironments, ResolvePolicy,
+    StepSelection, Supplied,
 };
 use crate::template::validate_v2023_09::env_params::{
-    self as tv, always_entry_disabled_message, capped_name_list,
+    self as tv, always_entry_disabled_message, capped_name_list, EVERY_JOB_ENVIRONMENT,
 };
-use crate::template::{EnvironmentActivation, KnownEntry};
+use crate::template::{apply_exclusive_groups, EnvironmentActivation, Known, KnownEntry};
 
 /// The model name submission-time errors report under: these checks relate
 /// several documents, so no single template is "the" model.
@@ -136,10 +136,11 @@ pub struct CreatedJob {
     /// entry that resolves to no Environment (RFC "External Environments
     /// are named implicitly" item 3).
     pub warnings: Vec<SubmissionWarning>,
-    /// For each Step of `job`, index for index, the Environments that its
-    /// `enableIf` (Template Schemas §4 item 6) disabled for that Step:
-    /// ones its Sessions would otherwise have entered, and which `job`
-    /// therefore leaves out of the Step's
+    /// For each Step of `job`, index for index, the Environments disabled
+    /// for that Step (Template Schemas §3.2.2): those its own `enableIf`
+    /// (§4 item 6) disabled, and those an earlier Environment of its
+    /// `exclusiveGroup` superseded (§4 item 7). Its Sessions would otherwise
+    /// have entered them, and `job` therefore leaves them out of the Step's
     /// [`environments`](job::Step::environments) and
     /// [`step_environments`](job::Step::step_environments). For display;
     /// empty for a Step with none.
@@ -187,8 +188,9 @@ impl From<crate::template::validate_v2023_09::helpers::CapabilityKind> for HostR
     }
 }
 
-/// The Environments an `enableIf` (Template Schemas §4 item 6) disabled
-/// for one Step of a [`CreatedJob`].
+/// The Environments disabled for one Step of a [`CreatedJob`]: by their
+/// `enableIf` (Template Schemas §4 item 6), or, for a Job Environment, by
+/// being superseded by an earlier one of its `exclusiveGroup` (§4 item 7).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepDisabledEnvironments {
     /// Job Environments of the combined Job (attached ones first, then the
@@ -634,13 +636,20 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// `enableIf` (§4 item 6) is then decided for the Step with the values that
 /// are known (§3.2.2), and one it disables is left out of the Step's set
 /// and values; for one with `activation: ALWAYS`, a `false` result is an
-/// error naming the Step instead (§4 item 4, §3.2.2 item 6). Constraint 5 (keys) is checked for every attachment the
-/// Step would enter; the value checks
+/// error naming the Step instead (§4 item 4, §3.2.2 item 6). Of the ones
+/// left that share an `exclusiveGroup`, in attachment order, only the first
+/// is entered; the others are superseded, which disables them for the Step
+/// (§4 item 7, §7.4.1 step 7). Constraint 5 (keys) is checked for every
+/// attachment the Step would enter; the value checks
 /// (constraint 6) and constraint 7 (every parameter without a `default`
-/// supplied) only for one its `enableIf` does not disable. A literal
+/// supplied) only for one that is not disabled (§7.4.1 step 8). A literal
 /// `default` of an attached Environment is checked even if no Step takes it
 /// (§4.5 item 2). The Job Template's own Job Environments were decided the
-/// same way by job creation (`selections`). Then the `WRAP_ACTIONS`
+/// same way by job creation (`selections`), except those whose group an
+/// attachment shares: they come after the attachments in the Job's
+/// Environment order, so the group rule is applied to them here, after the
+/// attachments, and one that is not superseded gets its value checks and
+/// constraint 7 here, at `JobTemplate` paths. Then the `WRAP_ACTIONS`
 /// single-layer rule is checked over each Step's
 /// final Environment set, attached Environments included (RFC 0008; plan
 /// R8). Last, each Step gets its
@@ -651,7 +660,8 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 ///
 /// Every violation is reported in one `ModelValidation` error for
 /// `Submission`, in this order: the attachments' literal `default`s, then
-/// Step by Step the entries' resolution, then each Step's values, then
+/// Step by Step the entries' resolution, then each Step's values (the
+/// attachments', then those of the Job Environments decided here), then
 /// the attachments' failed `enableIf`s, then the unreachable attachments'
 /// parameters without a `default`, then each Step's wrap layers, then the
 /// Environments' resolved host requirements and each Step's combination
@@ -665,7 +675,8 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 pub(crate) fn apply_environment_templates(
     job_template: &JobTemplate,
     mut job: job::Job,
-    selections: Vec<StepSelection>,
+    mut selections: Vec<StepSelection<'_>>,
+    job_envs: &JobEnvironments<'_>,
     env_names: &[String],
     attached: &[AttachedEnvironmentTemplate<'_>],
     job_parameter_values: &JobParameterValues,
@@ -688,6 +699,11 @@ pub(crate) fn apply_environment_templates(
         .extensions
         .as_ref()
         .is_some_and(|exts| exts.contains(&ModelExtension::EnvParams));
+    // The Job Environments job creation left for the group rule, per Step.
+    let mut deferred: Vec<Vec<_>> = selections
+        .iter_mut()
+        .map(|selection| std::mem::take(&mut selection.deferred))
+        .collect();
     let set = Attachments::new(
         attached,
         &job_env_names,
@@ -795,6 +811,16 @@ pub(crate) fn apply_environment_templates(
     let mut entered_by_some_step = vec![false; set.declaring.len()];
     // Whether some Step's decision was other than a failed `enableIf`.
     let mut decided_by_some_step = vec![false; set.declaring.len()];
+    // Whether some Step's Sessions would enter it, before its `enableIf`
+    // and its `exclusiveGroup` decide.
+    let mut considered_by_some_step = vec![false; set.declaring.len()];
+    // Per Step: its values for the Job Environments the group rule decided
+    // here, with their indices in `jobEnvironments`.
+    let mut deferred_values: Vec<Vec<(usize, job::EnvironmentParameterValues)>> =
+        Vec::with_capacity(job.steps.len());
+    // Per Step: the indices in `jobEnvironments` of the ones superseded
+    // here.
+    let mut superseded_job_environments: Vec<Vec<usize>> = Vec::with_capacity(job.steps.len());
     let mut attached_disabled: Vec<Vec<usize>> = Vec::with_capacity(job.steps.len());
     let mut step_environment_parameters = Vec::with_capacity(job.steps.len());
     for (i, step) in job.steps.iter().enumerate() {
@@ -811,6 +837,10 @@ pub(crate) fn apply_environment_templates(
             .flatten()
             .map(|e| e.name.as_str())
             .collect();
+        // §4 item 7, §7.4.1 step 7: the groups an Environment the Step's
+        // Sessions enter already has, in the Job's Environment order, so
+        // the later ones of each are superseded.
+        let mut taken: HashSet<&str> = HashSet::new();
         for (doc, (de, att_ctx)) in set.declaring.iter().zip(&set.contexts).enumerate() {
             let entry = resolved
                 .get(i)
@@ -828,6 +858,11 @@ pub(crate) fn apply_environment_templates(
                 EnvironmentActivation::OnRequest => entry.is_some(),
             };
             if !enters || unapplied.get(i).is_some_and(|u| u.contains(&doc)) {
+                // An ambiguous one (reported) is taken as entered, so it
+                // supersedes the later ones of its group, as it would have.
+                if let Some(group) = de.env.group().filter(|_| enters) {
+                    taken.insert(group);
+                }
                 entered.push(enters);
                 continue;
             }
@@ -840,11 +875,21 @@ pub(crate) fn apply_environment_templates(
             let pending =
                 de.values_for_step(supplied.as_ref(), &default_symtab, policy, &mut errors);
             let decision = de.decide(&pending, &step.name, &base, policy);
+            considered_by_some_step[doc] = true;
+            decided_by_some_step[doc] |= decision != EnableIf::Failed;
+            // Superseded by an earlier one of its group: disabled for the
+            // Step (§3.2.2), so its values are not checked.
+            if decision != EnableIf::Disabled
+                && de.env.group().is_some_and(|group| !taken.insert(group))
+            {
+                entered.push(false);
+                disabled_docs.push(doc);
+                continue;
+            }
             // A failed `enableIf` is checked as if it does not disable the
             // Environment, so the Step's other mistakes are reported too.
             let not_disabled = decision != EnableIf::Disabled;
             entered_by_some_step[doc] |= not_disabled;
-            decided_by_some_step[doc] |= decision != EnableIf::Failed;
             entered.push(not_disabled);
             match decision {
                 EnableIf::Disabled => disabled_docs.push(doc),
@@ -886,9 +931,65 @@ pub(crate) fn apply_environment_templates(
             &failed,
             &mut errors,
         );
+        // The Job Environments whose group an attached Environment shares,
+        // which job creation left for the group rule. The attached ones come
+        // first in the Job's Environment order. One that is not superseded
+        // gets its value checks and constraint 7 now (§7.4.1 step 8), at the
+        // Job Template's paths.
+        let mut job_missing = Vec::new();
+        let mut job_unresolved = HashSet::new();
+        let mut job_failed = HashSet::new();
+        let mut step_deferred_values = Vec::new();
+        let mut step_superseded = Vec::new();
+        if let Some(step_deferred) = deferred.get_mut(i) {
+            for d in std::mem::take(step_deferred) {
+                let de = &job_envs.environments[d.environment];
+                if de.env.group().is_some_and(|group| !taken.insert(group)) {
+                    step_superseded.push(d.position);
+                    continue;
+                }
+                let mut scratch = ValidationErrors::default();
+                let (v, m) = de.commit(d.pending, &step.name, &mut scratch);
+                for mut e in scratch.errors {
+                    e.path = job_path.iter().cloned().chain(e.path).collect();
+                    errors.errors.push(e);
+                }
+                step_deferred_values.extend(v.map(|v| (d.position, v)));
+                if !m.is_empty() {
+                    match d.decision {
+                        EnableIf::Unresolved => {
+                            job_unresolved.insert(de.label.as_str());
+                        }
+                        EnableIf::Failed => {
+                            job_failed.insert(de.label.as_str());
+                        }
+                        EnableIf::Enabled | EnableIf::Disabled => {}
+                    }
+                    job_missing.push((de.label.clone(), m));
+                }
+            }
+        }
+        superseded_job_environments.push(step_superseded);
+        report_missing(
+            &step_path,
+            &job_missing,
+            EVERY_JOB_ENVIRONMENT,
+            &HashSet::new(),
+            &job_unresolved,
+            &job_failed,
+            &mut errors,
+        );
+        deferred_values.push(step_deferred_values);
         attached_entered.push(entered);
         attached_disabled.push(disabled_docs);
         step_environment_parameters.push(values);
+    }
+    drop(resolved);
+    for (selection, superseded) in selections.iter_mut().zip(superseded_job_environments) {
+        for position in superseded {
+            selection.job_environments_entered[position] = false;
+            selection.disabled_job_environments.push(position);
+        }
     }
     // A failed `enableIf` is reported once for all the Steps it was
     // resolved for.
@@ -904,7 +1005,10 @@ pub(crate) fn apply_environment_templates(
     // for a Step is checked as if that Step enters it.
     set.report_unreachable(
         &mut errors,
-        |doc| entered_by_some_step[doc] || set.declaring[doc].certainly_enabled,
+        |doc| {
+            entered_by_some_step[doc]
+                || (!considered_by_some_step[doc] && set.declaring[doc].certainly_enabled)
+        },
         |doc| entered_by_some_step[doc] && !decided_by_some_step[doc],
     );
 
@@ -957,12 +1061,36 @@ pub(crate) fn apply_environment_templates(
         })
         .collect();
     let mut per_step = step_environment_parameters.into_iter();
+    let mut deferred_per_step = deferred_values.into_iter();
+    // Each Job Environment's index in `jobEnvironments`, by name, to keep a
+    // Step's values for them in written order.
+    let job_env_position: HashMap<&str, usize> = job_envs
+        .environments
+        .iter()
+        .zip(&job_envs.positions)
+        .map(|(de, &position)| (de.name, position))
+        .collect();
     let mut entered_per_step = Vec::with_capacity(job.steps.len());
     for ((step, selection), attached_entered) in
         job.steps.iter_mut().zip(&selections).zip(&attached_entered)
     {
         let mut values = per_step.next().unwrap_or_default();
-        values.extend(step.environment_parameters.take().into_iter().flatten());
+        let mut own: Vec<(usize, job::EnvironmentParameterValues)> = step
+            .environment_parameters
+            .take()
+            .into_iter()
+            .flatten()
+            .map(|v| {
+                let position = job_env_position
+                    .get(v.environment.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX);
+                (position, v)
+            })
+            .chain(deferred_per_step.next().unwrap_or_default())
+            .collect();
+        own.sort_by_key(|(position, _)| *position);
+        values.extend(own.into_iter().map(|(_, v)| v));
         step.environment_parameters = (!values.is_empty()).then_some(values);
         let entered: Vec<bool> = attached_entered
             .iter()
@@ -983,6 +1111,7 @@ pub(crate) fn apply_environment_templates(
                     .iter()
                     .map(|k| attached.len() + k),
             );
+            docs.sort_unstable();
             docs
         })
         .collect();
@@ -1130,7 +1259,7 @@ fn wrap_layers_message(layers: &[String]) -> String {
 /// per Step and attachment, says what the Step's entry for each is known
 /// to be), then the Job Environments in the same way, then its Step
 /// Environments; each only when its own `enableIf` is absent or the
-/// scalar `true` (§4, after item 9), except an `ALWAYS` one, which cannot be
+/// scalar `true` (§4, after item 10), except an `ALWAYS` one, which cannot be
 /// disabled or declined (§3.2.2 item 6). An entry or Environment whose
 /// `enableIf` is an expression (even a constant one) is decided at job
 /// creation, which checks the rule again over the full set; one whose
@@ -1143,7 +1272,7 @@ fn check_attached_wrap_layers(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
     doc_names: &[String],
-    known: &[Vec<KnownEntry>],
+    entered: &[Vec<bool>],
     job_path: &[PathElement],
     errors: &mut ValidationErrors,
 ) {
@@ -1158,15 +1287,11 @@ fn check_attached_wrap_layers(
     if wrapping_attached.is_empty() {
         return;
     }
+    let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
     for (i, step) in job_template.steps.iter().enumerate() {
         let mut layers: Vec<String> = wrapping_attached
             .iter()
-            .filter(|d| {
-                attached[**d]
-                    .template
-                    .environment()
-                    .certainly_entered(known[i][**d])
-            })
+            .filter(|d| entered[i][**d])
             .map(|d| {
                 format!(
                     "'{}' ({})",
@@ -1179,14 +1304,11 @@ fn check_attached_wrap_layers(
             continue;
         }
         layers.extend(
-            job_template
-                .job_environments
+            own_envs
                 .iter()
-                .flatten()
-                .filter(|env| {
-                    wraps(env) && env.certainly_entered(KnownEntry::in_step(step, &env.name))
-                })
-                .map(|env| format!("'{}'", env.name)),
+                .enumerate()
+                .filter(|(j, env)| wraps(env) && entered[i][attached.len() + j])
+                .map(|(_, env)| format!("'{}'", env.name)),
         );
         layers.extend(
             step.step_environments
@@ -1202,6 +1324,45 @@ fn check_attached_wrap_layers(
             );
         }
     }
+}
+
+/// For each Step, whether its Sessions are certainly entered into each
+/// Environment of the Job, attached ones first and then the Job Template's
+/// own, in the Job's Environment order (§1.1 item 7): each one's state from
+/// what the Step's entry for it is known to be (`known`, per Step and
+/// attachment; for a Job Environment, the Step's entry as written), then
+/// the `exclusiveGroup` bullet (§4, after item 10), so a grouped one counts
+/// only when every earlier one of its group is known not to be entered.
+fn certainly_entered_per_step(
+    job_template: &JobTemplate,
+    attached: &[AttachedEnvironmentTemplate<'_>],
+    known: &[Vec<KnownEntry>],
+) -> Vec<Vec<bool>> {
+    let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
+    job_template
+        .steps
+        .iter()
+        .zip(known)
+        .map(|(step, known)| {
+            let states = attached
+                .iter()
+                .zip(known)
+                .map(|(a, k)| {
+                    let env = a.template.environment();
+                    (env.group(), env.known_state(*k))
+                })
+                .chain(own_envs.iter().map(|env| {
+                    (
+                        env.group(),
+                        env.known_state(KnownEntry::in_step(step, &env.name)),
+                    )
+                }));
+            apply_exclusive_groups(states)
+                .into_iter()
+                .map(|s| s == Known::Entered)
+                .collect()
+        })
+        .collect()
 }
 
 /// Check a Job Template against the Environment Templates it would be
@@ -1319,12 +1480,21 @@ pub fn check_environment_templates(
     // not disabled, which is known here only for an `enableIf` that is
     // absent or `true`, or certainly unresolved with no values supplied
     // (§3.2.2, §7.5 rule 5).
+    // A grouped one is known to be entered only when no earlier attachment
+    // shares its group (§4 item 7, and the paragraph after item 10): no
+    // entry reaches it, so only an earlier one could supersede it.
     set.report_unreachable(
         &mut errors,
         |doc| {
             let de = &set.declaring[doc];
-            de.certainly_enabled
-                || tv::enable_if_certainly_unresolved(de.env, None, &set.contexts[doc])
+            let first_of_group = de.env.group().is_none_or(|g| {
+                set.declaring[..doc]
+                    .iter()
+                    .all(|earlier| earlier.env.group() != Some(g))
+            });
+            first_of_group
+                && (de.certainly_enabled
+                    || tv::enable_if_certainly_unresolved(de.env, None, &set.contexts[doc]))
         },
         // No `enableIf` is evaluated here, so none has failed.
         |_| false,
@@ -1473,35 +1643,72 @@ pub fn check_environment_templates(
             .flatten()
             .map(|e| e.name.as_str())
             .collect();
+        // §4 item 4, §3.2 item 3.2: the Step's Sessions enter every
+        // `ALWAYS` attachment, every `BY_DEFAULT` one a disabled entry does
+        // not decline, and each `ON_REQUEST` one an enabled entry refers
+        // to. The value checks and constraint 7 do not apply to a Step for
+        // which the Environment is disabled (§3.2.2), so they are made only
+        // for one known not to be: its own `enableIf` is absent or `true`,
+        // or is certainly unresolved with the Step's values (one whose
+        // `enableIf` is `false` is disabled, and any other expression is
+        // undetermined, §7.5 rule 5), and no earlier attachment of its
+        // `exclusiveGroup` may supersede it (§4 item 7, and the paragraph
+        // after item 10). The Job Template's own Environments come after
+        // the attachments in the Job's Environment order, so they supersede
+        // none.
+        let mut states = Vec::with_capacity(set.declaring.len());
+        let mut checks = Vec::with_capacity(set.declaring.len());
         for (doc, (de, att_ctx)) in set.declaring.iter().zip(&set.contexts).enumerate() {
             let supplied = resolved[i].iter().find(|(d, _)| *d == doc).map(|(_, s)| s);
-            // §4 item 4, §3.2 item 3.2: the Step's Sessions enter every
-            // `ALWAYS` attachment, every `BY_DEFAULT` one a disabled entry
-            // does not decline, and each `ON_REQUEST` one an enabled entry
-            // refers to.
             let enters = match de.activation {
                 EnvironmentActivation::Always => true,
                 EnvironmentActivation::ByDefault => !declined[i].contains(&doc),
                 EnvironmentActivation::OnRequest => supplied.is_some(),
             };
-            if !enters || unapplied[i].contains(&doc) {
-                continue;
-            }
-            // The value checks and constraint 7 do not apply to a Step for
-            // which the Environment is disabled (§3.2.2), so they are made
-            // only for one whose own `enableIf` is absent or `true`, or is
-            // certainly unresolved with the Step's values: one whose
-            // `enableIf` is `false` is disabled, and any other expression is
-            // undetermined (§7.5 rule 5).
             let certainly_unresolved = !de.certainly_enabled
                 && tv::enable_if_certainly_unresolved(de.env, supplied.map(|s| s.params), att_ctx);
+            // An attachment an entry with an `enableIf` expression may name
+            // (or an ambiguous one) is in `unapplied`: whether that entry
+            // requests or declines it is decided at job creation.
+            let state = if de.activation != EnvironmentActivation::Always
+                && de.env.literal_enabled() == Some(false)
+            {
+                Known::NotEntered
+            } else if unapplied[i].contains(&doc) {
+                Known::Undetermined
+            } else if !enters {
+                Known::NotEntered
+            } else if de.certainly_enabled || certainly_unresolved {
+                Known::Entered
+            } else {
+                Known::Undetermined
+            };
+            states.push((de.env.group(), state));
+            checks.push((
+                enters && !unapplied[i].contains(&doc),
+                supplied,
+                certainly_unresolved,
+            ));
+        }
+        let states = apply_exclusive_groups(states);
+        for (doc, ((de, att_ctx), (checked, supplied, certainly_unresolved))) in set
+            .declaring
+            .iter()
+            .zip(&set.contexts)
+            .zip(checks)
+            .enumerate()
+        {
+            if !checked {
+                continue;
+            }
+            let values_checked = states[doc] == Known::Entered;
             let m = de.check_step_statically(
                 supplied,
-                de.certainly_enabled || certainly_unresolved,
+                values_checked,
                 ResolvePolicy::new(att_ctx),
                 &mut errors,
             );
-            if certainly_unresolved && !m.is_empty() {
+            if values_checked && certainly_unresolved && !m.is_empty() {
                 unresolved.insert(de.label.as_str());
             }
             set.sort_missing(
@@ -1542,11 +1749,12 @@ pub fn check_environment_templates(
                 .collect()
         })
         .collect();
+    let certainly_entered = certainly_entered_per_step(job_template, attached, &known);
     check_attached_wrap_layers(
         job_template,
         attached,
         &set.doc_names,
-        &known,
+        &certainly_entered,
         &job_path,
         &mut errors,
     );
@@ -1599,29 +1807,17 @@ pub fn check_environment_templates(
             .as_ref()
             .is_some_and(|p| !p.is_empty())
     };
-    let entered: Vec<Vec<bool>> = job_template
-        .steps
-        .iter()
-        .zip(&known)
+    // An Environment whose own `enableIf` is not absent or `true` is not
+    // certainly entered (§4, after item 10), unless it is `ALWAYS` (§3.2.2
+    // item 6), nor is one an earlier one of its group may supersede.
+    let entered: Vec<Vec<bool>> = certainly_entered
+        .into_iter()
         .zip(&ambiguous)
-        .map(|((step, known), ambiguous)| {
-            // An Environment whose own `enableIf` is not absent or `true`
-            // is not certainly entered (§4, after item 9), unless it is
-            // `ALWAYS` (§3.2.2 item 6).
-            (0..attached.len())
-                .map(|d| {
-                    attached[d]
-                        .template
-                        .environment()
-                        .certainly_entered(known[d])
-                        && !(ambiguous.contains(&d) && declares(d))
-                })
-                .chain(
-                    own_envs
-                        .iter()
-                        .map(|env| env.certainly_entered(KnownEntry::in_step(step, &env.name))),
-                )
-                .collect()
+        .map(|(mut entered, ambiguous)| {
+            for (d, e) in entered.iter_mut().enumerate().take(attached.len()) {
+                *e &= !(ambiguous.contains(&d) && declares(d));
+            }
+            entered
         })
         .collect();
     let step_ctx = job_template
