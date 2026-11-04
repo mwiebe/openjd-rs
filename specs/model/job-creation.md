@@ -1057,8 +1057,11 @@ collects the groups of the attached Environments and gives them to `JobEnvironme
   `enableIf` is decided, and one it does not disable is committed (its values checked and
   constraint 7 counted) and takes its group. Every one whose group an attachment shares is
   *deferred* before its `enableIf` is evaluated: its pending values go into
-  `StepSelection::deferred`, unchecked, and it stays in the Step's entered list for now. A Job Environment whose entry's `enableIf` failed (an error) takes its group
-  without being decided, so the later ones of its group add no errors.
+  `StepSelection::deferred`, unchecked, and it stays in the Step's entered list for now. A Job
+  Environment that the Step's Sessions would enter by its `activation` alone (`ALWAYS` or
+  `BY_DEFAULT`), and whose entry's `enableIf` failed (an error), takes its group without being
+  decided, so the later ones of its group add no errors; an `ON_REQUEST` one is not requested by
+  such an entry, so it does not take its group.
 - In the submission stage (`apply_environment_templates`), each Step's attachments are decided
   in attachment order with a fresh set of taken groups: one is superseded when its group is
   taken, without its `enableIf` being evaluated; otherwise its `enableIf` is decided, and one
