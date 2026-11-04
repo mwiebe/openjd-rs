@@ -1508,9 +1508,10 @@ pub(crate) fn resolve_step_entries<'a>(
 /// one that would fail only in that format does not reject the Job. A
 /// binding that is read and fails is reported at `steps[i] -> let[j]`, and
 /// the Step's entry values are not computed (`None`); job creation fails
-/// on the error. The entries' `enableIf`s and duplicate checks, and the
-/// Step Environments' `enableIf`s, were made before this, so their errors
-/// are reported with it.
+/// on the error, a §7.4.1 step 1 error, which stops the Step. The
+/// entries' `enableIf`s and duplicate checks (step 2) were made before
+/// this and are reported with it; the Step Environments' `enableIf`s
+/// (step 6) are not.
 #[allow(clippy::too_many_arguments)]
 fn entry_scope<'s>(
     st: &template::StepTemplate,

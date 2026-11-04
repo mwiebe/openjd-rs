@@ -404,7 +404,8 @@ budgets template validation and the session runtime apply.
 5. Run the resolved-value checks on the carried-forward fields
    (next section) — job environments first, then each step as it is
    instantiated — accumulating every failure into one collection that
-   is reported once, after all steps
+   is reported once: for a Job Template without ENV_PARAMS, after all steps; with it, with
+   the submission stage's errors (see [Error order](#error-order-env_params))
 6. Convert environments from template to job types
 7. Build step dependency list from the template's Step entries only: `dependsOn`, and its
    ENV_PARAMS synonym `step` (§3.2 item 2), each a `job::StepDependency` with `dependsOn`.
@@ -768,7 +769,9 @@ in the template at once: one `ValidationErrors` collection is threaded
 through the job environments and every step (`instantiate_step` takes
 it as `&mut`) and converted to a single `ModelError::ModelValidation`
 once, after all steps are instantiated and before the caller-limit
-task-count and size checks. The order is pass 8's order — deterministic
+task-count and size checks (with ENV_PARAMS, it is held and reported with
+the submission stage's errors, first, as the `Validation` key of
+[Error order](#error-order-env_params) says). The order is pass 8's order — deterministic
 except within one environment's `variables`, which is a `HashMap` and
 iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
 order — its step-level `let`, its script (`let`, `onRun`
@@ -777,8 +780,10 @@ its `stepEnvironments` in order (`let`, `variables`, every action's
 `command`/`args`, every action's `timeout`/`cancelation`, embedded-file
 `data`). **Non-check failures are reported alone.** The job name and
 parameter constraints are checked before any check failure is
-collected, and the caller task-count / size caps after the collection
-is converted, so neither interacts with it. Resolving a step's host
+collected, and the caller task-count / size caps are checked only when
+the collection is empty (with ENV_PARAMS, also only when job creation
+proper filed no other error), so a cap is never reported together with a
+check failure. Resolving a step's host
 requirements or parameter space for real (a value that cannot coerce,
 a duplicate resolved capability name, an association length mismatch,
 …) aborts immediately, discarding any check failures collected from
@@ -973,7 +978,7 @@ them in key order, and in the order they were filed within a key:
 | `Step2` | an entry's `enableIf` that fails; a duplicate entry | the entry's index |
 | `Step3` | an entry that names no Environment while required, or names several | the entry's index |
 | `Step4` | a disabled entry for an `ALWAYS` Environment | the entry's index |
-| `Step5` | an entry's undeclared key (constraint 5) | the Environment's place in the Job's Environment order |
+| `Step5` | an entry's undeclared key (constraint 5) | the Environment's place in the Job's Environment order (from step 5 on, an error is about an Environment, so it is ordered by the Environment, not by the entry that names it) |
 | `Step6` | an Environment's own `enableIf` that fails, or an `ALWAYS` one's that is `false`; a Step Environment's `enableIf` that fails | as for step 5, Step Environments after every Job Environment |
 | `Step7` | the value checks and constraint 7 (by the first Environment the message names); the single-layer rule; an unreachable attachment's parameters | as for step 5; the single-layer rule after the Step's Environments |
 | `Step8` | an Environment's resolved `hostRequirements`; a combination's conflict | as for step 5; the conflict after the Step's Environments |
