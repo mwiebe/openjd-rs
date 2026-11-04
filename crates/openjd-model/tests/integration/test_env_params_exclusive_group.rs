@@ -1374,3 +1374,79 @@ fn check_applies_the_single_layer_rule_to_grouped_job_environments() {
         check_err_same_as_create(&jt, &[&env("name: U")], &[layers]);
     }
 }
+
+// ── Audit round 4: a second Step decided differently from the first ─
+
+#[test]
+fn a_deferred_job_environment_is_decided_for_every_step() {
+    // B shares group G with the attachment X, so the submission stage
+    // decides it for each Step: superseded for both when X is entered, and
+    // its missing P reported for both when X is disabled.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: P, type: INT}}], variables: {{V: b}}}}\nsteps:\n- name: S0\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  script: {{actions: {{onRun: \
+         {{command: x}}}}}}\n"
+    );
+    let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G")]);
+    for step in 0..2 {
+        assert_eq!(entered(&created, step), ["X@0"]);
+        assert_eq!(disabled(&created, step), ["B"]);
+    }
+    check_err_same_as_create(
+        &jt,
+        &[&env("name: X, exclusiveGroup: G, enableIf: false")],
+        &[
+            &missing("JobTemplate -> steps[0]", true, "'B'"),
+            &missing("JobTemplate -> steps[1]", true, "'B'"),
+        ],
+    );
+}
+
+#[test]
+fn an_ambiguous_entry_in_a_later_step_gets_no_values_there() {
+    // Only S1 names the ambiguous Gpu, so only S1's Sessions skip its
+    // values and host requirements: the copies' GPU minimum does not
+    // conflict with S1's maximum, and only the ambiguity is reported.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S0\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  dependencies: [{{environment: Gpu}}]\n  hostRequirements: {{amounts: \
+         [{{name: amount.worker.gpu, max: 1}}]}}\n  script: {{actions: {{onRun: {{command: \
+         x}}}}}}\n"
+    );
+    // Gpu declares a parameter, so job creation gives a Step whose entry
+    // for it is ambiguous no values for it, and skips its requirements.
+    let gpu = env(
+        "name: Gpu, envParameterDefinitions: [{name: N, type: INT, default: 2}], \
+         hostRequirements: {amounts: [{name: amount.worker.gpu, min: 2}]}",
+    );
+    let ambiguous = "JobTemplate -> steps[1] -> dependencies[0] -> environment:\n\tnames \
+                     Environment 'Gpu', which 2 attached Environment Templates define \
+                     (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                     exactly one (Template Schemas §3.2.1 item 3).";
+    check_err_same_as_create(&jt, &[&gpu, &gpu], &[ambiguous]);
+}
+
+#[test]
+fn an_expression_entry_in_one_step_leaves_another_step_known() {
+    // S0's entry for Conda has an enableIf expression, so Conda is
+    // undetermined for S0 only; S1 has no entry, so its Sessions enter
+    // Conda and its P is missing, before job creation as at it.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: Mode, type: STRING, default: 'on'}}]\n\
+         steps:\n- name: S0\n  dependencies: [{{environment: Conda, enableIf: \"Param.Mode == \
+         'on'\", parameters: {{P: x}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let conda =
+        env("name: Conda, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(
+        &jt,
+        &[&conda],
+        &[&missing(
+            "JobTemplate -> steps[1]",
+            false,
+            "'Conda' (EnvironmentTemplate[0])",
+        )],
+    );
+}
