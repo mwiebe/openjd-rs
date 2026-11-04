@@ -381,8 +381,9 @@ follow the same rule. For a Job Template without ENV_PARAMS that template
 validation accepts, this is a change only when Environment Templates are
 attached: its own errors and the
 attachments' are now reported together, for `Submission`, where before its
-own were reported alone, for `JobTemplate`, and a caller limit is reported
-only when the attachments add no error. [`create_job`] is the same with no attachments, so
+own were reported alone, for `JobTemplate`; the attachments' errors are in
+§7.4.1 order rather than the order they were found; and a caller limit is
+reported only when the attachments add no error. [`create_job`] is the same with no attachments, so
 its Job is complete: an enabled required entry naming no Job Environment
 is a `JobTemplate` error. See
 [job-creation.md](job-creation.md#error-order).

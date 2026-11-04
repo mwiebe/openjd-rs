@@ -135,8 +135,8 @@ pub fn create_job(
 /// Job creation takes the steps of Template Schemas §7.4.1 over the Job
 /// Template and the attached Environment Templates together, in one pass,
 /// whether or not the Job Template lists `ENV_PARAMS` (without it, steps
-/// 1–5 find nothing to do in the Job Template, and the attachments' errors
-/// are ordered the same way):
+/// 1–5 find nothing to do in a Job Template that template validation
+/// accepts, and the attachments' errors are ordered the same way):
 ///
 /// 1. `Job.Name` is resolved and, with `EXPR`, `Job.EnvNames` is bound to
 ///    the names of the attached Environments, in attachment order,
