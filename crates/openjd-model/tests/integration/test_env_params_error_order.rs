@@ -14,6 +14,11 @@
 //! steps 5–8; the other Steps do. The error is for `JobTemplate`, at paths
 //! relative to it, without attached Environment Templates, and for
 //! `Submission`, with every path starting at its document, with them.
+//!
+//! [`create`], which most tests here use, also creates every failing Job
+//! Template that lists `ENV_PARAMS` again with `ENV_PARAMS` removed in
+//! code, and checks that the error is the same, so each of these tests also
+//! pins the order for a Job Template without `ENV_PARAMS`.
 
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
@@ -34,7 +39,39 @@ fn create(
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    let result = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt));
+    // Every error order test is also a test of a Job Template without
+    // ENV_PARAMS: the one-pass order applies to every Job Template, so with
+    // ENV_PARAMS removed in code the template's errors are the same.
+    if let Err(e) = &result {
+        if lists_env_params(&jt) {
+            let mut plain = jt.clone();
+            plain
+                .extensions
+                .as_mut()
+                .unwrap()
+                .retain(|x| x.as_str() != "ENV_PARAMS");
+            let twin = create_job_with_environment_templates(
+                &plain,
+                &attached,
+                &values,
+                &posix_ctx(&plain),
+            );
+            assert_eq!(
+                twin.err().map(|e| e.to_string()),
+                Some(e.to_string()),
+                "the same Job Template without ENV_PARAMS"
+            );
+        }
+    }
+    result
+}
+
+fn lists_env_params(jt: &openjd_model::template::JobTemplate) -> bool {
+    jt.extensions
+        .iter()
+        .flatten()
+        .any(|x| x.as_str() == "ENV_PARAMS")
 }
 
 /// Job creation fails with exactly `expected`, the whole message, in order.

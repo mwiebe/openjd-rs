@@ -771,9 +771,9 @@ diagnostic from this stage names a synthesized node.
 in the template at once: one `ValidationErrors` collection is threaded
 through the job environments and every step (`instantiate_step` takes
 it as `&mut`) and converted to a single `ModelError::ModelValidation`
-once, with the submission stage's errors, first, as the `Validation` key of
-[Error order](#error-order) says; the caller-limit task-count and size
-checks come after them. The order is pass 8's order — deterministic
+once, together with the submission stage's errors and before them, as the
+`Validation` key of [Error order](#error-order) says; the caller-limit
+task-count and size checks come after them. The order is pass 8's order — deterministic
 except within one environment's `variables`, which is a `HashMap` and
 iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
 order — its step-level `let`, its script (`let`, `onRun`
