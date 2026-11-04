@@ -1054,8 +1054,9 @@ Without attached Environment Templates the output is unchanged for a template th
 validation accepts: the submission stage finds no error for it, so the errors
 are the Job Template's own, for `JobTemplate`, in the order they were found, and a caller limit
 is reported only when there are none, as before. (A template built or edited in code that
-template validation would reject can get more errors than before, from the submission stage,
-or one of them in place of a caller limit.) With attachments it changes in three ways:
+template validation would reject can get different errors than before: more of them, from the
+submission stage; one of them in place of a caller limit; the same ones in §7.4.1 order; or,
+for a Step that a step 1–4 error now stops, that error in place of the Step's later ones.) With attachments it changes in three ways:
 
 - The Job Template's errors and the attachments' are reported together, for `Submission`, in
   §7.4.1 order. Before, the Job Template's own errors were reported alone, for `JobTemplate`,
