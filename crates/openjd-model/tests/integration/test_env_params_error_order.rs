@@ -357,17 +357,20 @@ fn a_stopped_step_gets_no_single_layer_or_host_requirements_check() {
             )
         ),
     );
-    // Without the entry, both are reported.
+    // Without the entry, both are reported, the single-layer rule (step 7)
+    // before the host requirements (step 8).
     let fixed = jt.replace("  dependencies: [{environment: Missing}]\n", "");
-    let err = create(&fixed, &[], &[]).expect_err("expected job creation to fail");
-    let err = err.to_string();
-    assert!(
-        err.starts_with("Model validation error: 2 validation errors for JobTemplate\nsteps[0]:\n\tits Sessions would enter 2 Environments"),
-        "{err}"
-    );
-    assert!(
-        err.contains("no host can satisfy the combined host requirements"),
-        "{err}"
+    create_err(
+        &fixed,
+        &[],
+        &[],
+        "Model validation error: 2 validation errors for JobTemplate\nsteps[0]:\n\tits \
+         Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, \
+         onWrapTaskRun, onWrapEnvExit): 'W1', 'W2'. A Session may have at most one Environment \
+         defining wrap hooks (RFC 0008).\nsteps[0]:\n\tStep 'S': no host can satisfy the \
+         combined host requirements for amount 'amount.custom': jobEnvironments[2] -> \
+         hostRequirements (Environment 'H') requires min 4, and steps[0] -> hostRequirements \
+         requires max 2. Template Schemas §3.3.3.",
     );
 }
 
@@ -443,4 +446,341 @@ fn a_stopped_step_gets_no_single_layer_check_of_its_step_environments() {
          onWrapEnvExit): 'Outer' (stepEnvironments), 'Inner' (stepEnvironments). A Session may \
          have at most one Environment defining wrap hooks (RFC 0008).",
     );
+}
+
+#[test]
+fn a_job_template_without_env_params_is_created_in_two_passes_as_before() {
+    // §7.4.1 applies with ENV_PARAMS. Without it, the Job Template's own
+    // errors are reported alone, for JobTemplate, before the attached
+    // Environment Templates are applied, as before the extension: here
+    // the timeout, and not the single-layer error the attachment would add.
+    let jt = format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [WRAP_ACTIONS, EXPR, FEATURE_BUNDLE_1]\nname: J\n\
+         parameterDefinitions: [{{name: T, type: INT, default: 0}}]\n\
+         jobEnvironments:\n- {{name: W1, {WRAP}}}\nsteps:\n- name: S\n  \
+         script: {{actions: {{onRun: {{command: x, timeout: '{{{{Param.T}}}}'}}}}}}\n"
+    );
+    let w2 = format!(
+        "specificationVersion: environment-2023-09\nextensions: [WRAP_ACTIONS, EXPR]\n\
+         environment: {{name: W2, {WRAP}}}\n"
+    );
+    create_err(
+        &jt,
+        &[&w2],
+        &[],
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.",
+    );
+    // With the timeout fixed, the attachment's single-layer error, for
+    // Submission, as before.
+    create_err(
+        &jt,
+        &[&w2],
+        &[("T", "5")],
+        "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[0]:\n\
+         \tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, \
+         onWrapTaskRun, onWrapEnvExit): 'W2' (EnvironmentTemplate[0]), 'W1'. A Session may have \
+         at most one Environment defining wrap hooks (RFC 0008).",
+    );
+}
+
+// ── Positions and stages, one at a time ──────────────────────────────
+//
+// Each test below has errors whose filing order differs from their report
+// order, so it pins one key of the order.
+
+/// Run `jt` with `envs` attached and return the error's text.
+fn err_text(jt: &str, envs: &[&str], params: &[(&str, &str)]) -> String {
+    create(jt, envs, params)
+        .expect_err("expected job creation to fail")
+        .to_string()
+}
+
+#[test]
+fn order_step_4_by_entry_index() {
+    // Both entries are disabled (by an expression, so template validation
+    // leaves them) and name ALWAYS Environments: the attached one at entry
+    // 0 is resolved by the submission stage, after job creation proper
+    // found the Job Environment's at entry 1.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: false}}]\n\
+         jobEnvironments:\n- {{name: J, activation: ALWAYS, variables: {{V: j}}}}\nsteps:\n\
+         - name: S\n  dependencies: [{{environment: X, enableIf: \"Param.B\"}}, {{environment: J, \
+         enableIf: \"Param.B\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x = env("name: X, activation: ALWAYS");
+    assert_eq!(err_text(&jt, &[&x], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[0] -> enableIf:\n\tis false, so Step 'S' would decline Environment 'X' (EnvironmentTemplate[0]), whose activation is ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2).\nJobTemplate -> steps[0] -> dependencies[1] -> enableIf:\n\tis false, so Step 'S' would decline Environment 'J', whose activation is ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2).");
+}
+
+#[test]
+fn order_step_5_by_environment_order() {
+    // Entry 0 names the Job Environment J (an expression enableIf, so
+    // template validation leaves its keys), entry 1 the attached X; both
+    // supply an undeclared key. X comes first in the Job's order.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: true}}]\n\
+         jobEnvironments:\n- {{name: J, envParameterDefinitions: [{{name: P, type: STRING, \
+         default: p}}], variables: {{V: j}}}}\nsteps:\n- name: S\n  dependencies: [{{environment: \
+         J, enableIf: \"Param.B\", parameters: {{Q: 1}}}}, {{environment: X, parameters: {{Q: \
+         1}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x = env(
+        "name: X, activation: ON_REQUEST, envParameterDefinitions: [{name: P, type: \
+                 STRING, default: p}]",
+    );
+    assert_eq!(err_text(&jt, &[&x], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> parameters -> Q:\n\tEnvironment 'X' (EnvironmentTemplate[0]) declares no parameter 'Q'. Declared: P.\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> Q:\n\tEnvironment 'J' declares no parameter 'Q'. Declared: P.");
+}
+
+#[test]
+fn order_step_6_by_environment_order() {
+    // For Step S, the attachment X1, the Job Environment J, and the Step
+    // Environment SE fail their enableIf; X0 does not. X1 is filed after J
+    // was found, and SE before either.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+         jobEnvironments:\n- {{name: J, {FAILING}, variables: {{V: j}}}}\nsteps:\n- name: S\n  \
+         stepEnvironments:\n  - {{name: SE, enableIf: \"Param.L[4] == 1\", variables: {{V: s}}}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x0 = env("name: X0");
+    let x1 = env(&format!("name: X1, {FAILING}"));
+    assert_eq!(err_text(&jt, &[&x0, &x1], &[]), "Model validation error: 3 validation errors for Submission\nEnvironmentTemplate[1] -> environment -> enableIf:\n\tcould not be evaluated: Cannot convert 'abc' to int. Resolved for Step 'S'.\n  int(Env.Param.S) > 0\n  ^~~~~~~~~~~~~~~~\nJobTemplate -> jobEnvironments[0] -> enableIf:\n\tcould not be evaluated: Cannot convert 'abc' to int. Resolved for Step 'S'.\n  int(Env.Param.S) > 0\n  ^~~~~~~~~~~~~~~~\nJobTemplate -> steps[0] -> stepEnvironments[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
+}
+
+#[test]
+fn order_step_7_by_environment_order() {
+    // J1 misses P, which is found after the Step's values; J2's value is
+    // below its minimum, found while they are computed; the attachment X,
+    // named like S's Step Environment, has a parameter without a default
+    // that no entry can reach. By the Job's Environment order: X, J1, J2.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: true}}]\n\
+         jobEnvironments:\n\
+         - {{name: J1, envParameterDefinitions: [{{name: P, type: STRING}}], enableIf: \
+         \"Param.B\", variables: {{V: a}}}}\n\
+         - {{name: J2, envParameterDefinitions: [{{name: N, type: INT, minValue: 5}}], \
+         variables: {{V: b}}}}\nsteps:\n- name: S\n  dependencies: [{{environment: J2, \
+         enableIf: \"Param.B\", parameters: {{N: 1}}}}]\n  stepEnvironments:\n  - {{name: X, \
+         variables: {{V: s}}}}\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x = env("name: X, envParameterDefinitions: [{name: Q, type: STRING}]");
+    assert_eq!(err_text(&jt, &[&x], &[]), "Model validation error: 3 validation errors for Submission\nJobTemplate -> steps[0]:\n\tcannot supply the parameters without a default of Environment 'X' (EnvironmentTemplate[0]): Q. It has the same name as a stepEnvironments entry of this Step, so no 'environment:' dependency of this Step can reach it (Template Schemas §3.2.1 item 5), and its activation is BY_DEFAULT, so this Step's Sessions enter it.\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'J1'.\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value 1 is less than minimum 5");
+}
+
+#[test]
+fn order_step_8_by_step_then_environment() {
+    // E1's requirements fail to resolve, for S0 and S1 alike (one error,
+    // filed under S0); E0's conflict with each Step's own. S0's errors, then
+    // S1's.
+    let jt = String::from(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR, \
+         FEATURE_BUNDLE_1]\nname: J\n\
+         parameterDefinitions: [{name: L, type: 'LIST[INT]', default: [1]}]\n\
+         jobEnvironments:\n\
+         - {name: E0, hostRequirements: {amounts: [{name: amount.custom, min: 4}]}, \
+         variables: {V: a}}\n\
+         - {name: E1, hostRequirements: {amounts: [{name: amount.other, min: \
+         \"{{Param.L[4]}}\"}]}, variables: {V: b}}\nsteps:\n\
+         - name: S0\n  hostRequirements: {amounts: [{name: amount.custom, max: 2}]}\n  \
+         script: {actions: {onRun: {command: x}}}\n\
+         - name: S1\n  hostRequirements: {amounts: [{name: amount.custom, max: 2}]}\n  \
+         script: {actions: {onRun: {command: x}}}\n",
+    );
+    assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 3 validation errors for JobTemplate\njobEnvironments[1] -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Steps 'S0' and 'S1'.\n  Param.L[4]\n  ~~~~~~~^~~\nsteps[0]:\n\tStep 'S0': no host can satisfy the combined host requirements for amount 'amount.custom': jobEnvironments[0] -> hostRequirements (Environment 'E0') requires min 4, and steps[0] -> hostRequirements requires max 2. Template Schemas §3.3.3.\nsteps[1]:\n\tStep 'S1': no host can satisfy the combined host requirements for amount 'amount.custom': jobEnvironments[0] -> hostRequirements (Environment 'E0') requires min 4, and steps[1] -> hostRequirements requires max 2. Template Schemas §3.3.3.");
+}
+
+#[test]
+fn order_step_6_always_error_under_its_first_step() {
+    // A (ALWAYS) is false only for S1, which supplies P: 'no'; J fails only
+    // for S0, which does not supply S. S0's error comes first although A is
+    // earlier in the Job's order.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: A, activation: ALWAYS, envParameterDefinitions: [{{name: P, type: STRING, \
+         default: 'yes'}}], enableIf: \"Env.Param.P == 'yes'\", variables: {{V: a}}}}\n\
+         - {{name: J, {FAILING}, variables: {{V: j}}}}\nsteps:\n\
+         - name: S0\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  dependencies: [{{environment: A, parameters: {{P: 'no'}}}}, {{environment: \
+         J, parameters: {{S: '1'}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 2 validation errors for JobTemplate\njobEnvironments[1] -> enableIf:\n\tcould not be evaluated: Cannot convert 'abc' to int. Resolved for Step 'S0'.\n  int(Env.Param.S) > 0\n  ^~~~~~~~~~~~~~~~\njobEnvironments[0] -> enableIf:\n\tEnvironment 'A' has activation ALWAYS, so it cannot be disabled, but its enableIf is false for Step 'S1' (Template Schemas §4 item 4).");
+}
+
+#[test]
+fn order_stages_within_one_step() {
+    // In one Step: a carried-forward check of its script (template-
+    // validation style), an undeclared key (step 5), a failed enableIf
+    // (step 6), and a missing value (step 7).
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}, {{name: B, \
+         type: BOOL, default: true}}]\n\
+         jobEnvironments:\n\
+         - {{name: J, envParameterDefinitions: [{{name: P, type: STRING}}], enableIf: \
+         \"Param.L[4] == 1\", variables: {{V: j}}}}\nsteps:\n\
+         - name: S\n  dependencies: [{{environment: J, enableIf: \"Param.B\", parameters: \
+         {{Z: 1}}}}]\n  script: {{actions: {{onRun: {{command: x, args: \
+         ['{{{{Param.L[4]}}}}']}}}}}}\n"
+    );
+    assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 4 validation errors for JobTemplate\nsteps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 14]. Index 4 out of bounds for list of length 1\n  Param.L[4]\n  ~~~~~~~^~~\nsteps[0] -> dependencies[0] -> parameters -> Z:\n\tEnvironment 'J' declares no parameter 'Z'. Declared: P.\njobEnvironments[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1. Resolved for Step 'S'.\n  Param.L[4] == 1\n  ~~~~~~~^~~\nsteps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'J' (its own enableIf could not be evaluated for this Step, so the Environment is checked as if it is not disabled).");
+}
+
+#[test]
+fn order_unreachable_before_host_requirements() {
+    // U, attached under a Job Environment's name, has a parameter no Step
+    // can supply (step 7, about no single Step); S's requirements conflict
+    // with E's (step 8).
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n\
+         - {{name: E, hostRequirements: {{amounts: [{{name: amount.custom, min: 4}}]}}, \
+         variables: {{V: e}}}}\nsteps:\n- name: S\n  hostRequirements: {{amounts: [{{name: \
+         amount.custom, max: 2}}]}}\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let u = env("name: U, envParameterDefinitions: [{name: P, type: STRING}]");
+    assert_eq!(err_text(&jt, &[&u], &[]), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment 'U' has the same name as a jobEnvironments entry of the Job Template, so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1).\nJobTemplate -> steps[0]:\n\tStep 'S': no host can satisfy the combined host requirements for amount 'amount.custom': JobTemplate -> jobEnvironments[1] -> hostRequirements (Environment 'E') requires min 4, and JobTemplate -> steps[0] -> hostRequirements requires max 2. Template Schemas §3.3.3.");
+}
+
+#[test]
+fn an_uninstantiable_step_reports_the_errors_found_in_the_submissions_shape() {
+    // S0's step-level let fails, so it cannot be instantiated and the
+    // attachments are not applied; S1's entry enableIf failed before that.
+    // With an attachment, the errors are for Submission.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+         jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n\
+         - name: S0\n  let: [\"a = Param.L[4]\"]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  dependencies: [{{environment: E, enableIf: \"Param.L[4] == 1\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    assert_eq!(err_text(&jt, &[&env("name: X")], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> let[0]:\n\tInvalid expression in let binding 'a': Index 4 out of bounds for list of length 1\n  a = Param.L[4]\n      ~~~~~~~^~~\nJobTemplate -> steps[1] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
+    assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 2 validation errors for JobTemplate\nsteps[0] -> let[0]:\n\tInvalid expression in let binding 'a': Index 4 out of bounds for list of length 1\n  a = Param.L[4]\n      ~~~~~~~^~~\nsteps[1] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
+}
+
+#[test]
+fn the_caller_limits_are_not_checked_after_a_template_validation_style_error() {
+    let jt = job_ok(&format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\nsteps:\n\
+         - name: S\n  script: {{actions: {{onRun: {{command: x, args: ['{{{{Param.L[4]}}}}']}}}}}}\n"
+    ));
+    let values = job_params_with(&jt, &[], &[]);
+    let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+        max_task_count: Some(0),
+        ..Default::default()
+    });
+    let err = openjd_model::create_job(&jt, &values, &ctx).expect_err("expected an error");
+    assert_eq!(err.to_string(), "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> script -> actions -> onRun -> args[0]:\n\tFailed to parse interpolation expression at [0, 14]. Index 4 out of bounds for list of length 1\n  Param.L[4]\n  ~~~~~~~^~~");
+}
+
+#[test]
+fn order_step_4_by_entry_index_after_a_job_environment_entry() {
+    // Entry 1 names the ALWAYS Job Environment J and entry 2 the ALWAYS
+    // attachment X, both disabled: J's error first.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: false}}]\n\
+         jobEnvironments:\n- {{name: E, activation: ON_REQUEST, variables: {{V: e}}}}\n\
+         - {{name: J, activation: ALWAYS, variables: {{V: j}}}}\nsteps:\n\
+         - name: S\n  dependencies: [{{environment: E}}, {{environment: J, enableIf: \
+         \"Param.B\"}}, {{environment: X, enableIf: \"Param.B\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x = env("name: X, activation: ALWAYS");
+    let decline = |dep: usize, label: &str| {
+        format!(
+            "JobTemplate -> steps[0] -> dependencies[{dep}] -> enableIf:\n\tis false, so Step \
+             'S' would decline Environment {label}, whose activation is ALWAYS: no Step can \
+             leave out an ALWAYS Environment (Template Schemas §3.2 item 3.2)."
+        )
+    };
+    assert_eq!(
+        err_text(&jt, &[&x], &[]),
+        format!(
+            "Model validation error: 2 validation errors for Submission\n{}\n{}",
+            decline(1, "'J'"),
+            decline(2, "'X' (EnvironmentTemplate[0])")
+        )
+    );
+}
+
+#[test]
+fn order_step_7_an_attachments_value_before_a_later_ones_missing_value() {
+    // X (first attached) has a value below its minimum, found while the
+    // values are computed; Y (second) misses P, found after them.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: X, parameters: {{N: 1}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let x = env(
+        "name: X, activation: ON_REQUEST, envParameterDefinitions: [{name: N, type: INT, \
+         minValue: 5}]",
+    );
+    let y = env("name: Y, envParameterDefinitions: [{name: P, type: STRING}]");
+    assert_eq!(
+        err_text(&jt, &[&x, &y], &[]),
+        "Model validation error: 2 validation errors for Submission\n\
+         JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value \
+         1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an \
+         'environment:' dependency, every parameter without a default of each Environment its \
+         Sessions enter (every attached Environment with activation ALWAYS, each one with \
+         activation BY_DEFAULT that the Step does not decline, and each one with activation \
+         ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of \
+         Environment 'Y' (EnvironmentTemplate[1])."
+    );
+}
+
+#[test]
+fn order_the_single_layer_rule_after_the_steps_values_and_before_step_8() {
+    // In Step S: J's value below its minimum (step 7, at J's place), the
+    // single-layer rule over W1 and W2 (step 7, after the Environments),
+    // and H's requirements failing to resolve (step 8).
+    let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, \
+              EXPR, FEATURE_BUNDLE_1]\nname: J\n\
+              parameterDefinitions: [{name: L, type: 'LIST[INT]', default: [1]}]\n\
+              jobEnvironments:\n\
+              - {name: W1, script: {actions: {onWrapEnvEnter: {command: x}, onWrapTaskRun: \
+              {command: x}, onWrapEnvExit: {command: x}}}}\n\
+              - {name: W2, enableIf: \"Job.Name == 'J'\", script: {actions: {onWrapEnvEnter: \
+              {command: x}, onWrapTaskRun: {command: x}, onWrapEnvExit: {command: x}}}}\n\
+              - {name: J, envParameterDefinitions: [{name: N, type: INT, minValue: 5}], variables: \
+              {V: j}}\n\
+              - {name: H, hostRequirements: {amounts: [{name: amount.custom, min: \
+              \"{{Param.L[4]}}\"}]}, variables: {V: h}}\nsteps:\n\
+              - name: S\n  dependencies: [{environment: J, parameters: {N: \"{{Param.L[0]}}\"}}]\n  \
+              script: {actions: {onRun: {command: x}}}\n";
+    assert_eq!(err_text(jt, &[], &[]), "Model validation error: 3 validation errors for JobTemplate\nsteps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value 1 is less than minimum 5\nsteps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W1', 'W2'. A Session may have at most one Environment defining wrap hooks (RFC 0008).\njobEnvironments[3] -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Step 'S'.\n  Param.L[4]\n  ~~~~~~~^~~");
+}
+
+#[test]
+fn order_literal_defaults_of_edited_templates() {
+    // Decode rejects a literal default that fails its definition, so edit
+    // the decoded templates: the Job Environment J's and the attachment
+    // X's N default to 1, below their minimum. Both are template-
+    // validation-style checks, first, the Job Template's before the
+    // attachment's, and before Step S's missing P (step 7).
+    let mut jt = job_ok(&format!(
+        "{HEAD}jobEnvironments:\n- {{name: J, envParameterDefinitions: [{{name: N, type: INT, \
+         minValue: 5, default: 5}}, {{name: P, type: STRING}}], enableIf: \"Job.Name == 'J'\", \
+         variables: {{V: j}}}}\n{}",
+        "steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n"
+    ));
+    let mut x = env_ok(&env(
+        "name: X, envParameterDefinitions: [{name: N, type: INT, minValue: 5, default: 5}]",
+    ));
+    let one = env_ok(&env(
+        "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
+    ))
+    .environment
+    .env_parameter_definitions
+    .unwrap()[0]
+        .default
+        .clone();
+    jt.job_environments.as_mut().unwrap()[0]
+        .env_parameter_definitions
+        .as_mut()
+        .unwrap()[0]
+        .default = one.clone();
+    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = one;
+    let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
+    let attached = [AttachedEnvironmentTemplate::new(&x)];
+    let err = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+        .expect_err("expected job creation to fail");
+    assert_eq!(err.to_string(), "Model validation error: 3 validation errors for Submission\nJobTemplate -> jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'J'.");
 }

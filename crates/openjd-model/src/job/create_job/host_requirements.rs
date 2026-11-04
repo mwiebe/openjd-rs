@@ -46,9 +46,9 @@ pub(super) struct Site {
     /// historical forms (a `JobTemplate` validation error, or the error of
     /// the failing resolution, which for an `anyOf` or `allOf` is prefixed
     /// with the field's path by [`Site::attribute_values_resolution`]). `Some` for an
-    /// Environment's, resolved for a Step: every error becomes a
-    /// `Submission` validation error at its path, with this sentence
-    /// (naming the Steps) appended.
+    /// Environment's, resolved for a Step: every error becomes an error of
+    /// the submission at its path, filed under §7.4.1 step 8, with this
+    /// sentence (naming the Steps) appended.
     resolved_for: Option<String>,
 }
 
