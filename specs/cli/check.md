@@ -167,8 +167,9 @@ stage that needs no Job Parameter values:
   decides. With `activation: ON_REQUEST` no Session enters it, so it is not an
   error;
 - every attached literal `default` is checked (§4.5 item 2);
-- the RFC 0008 single-layer rule, for each Step whose Sessions enter an attached Environment
-  that defines wrap hooks: the wrapping Environments its Sessions certainly enter (attached
+- the RFC 0008 single-layer rule, for each Step whose Sessions certainly enter an attached
+  Environment, or a `jobEnvironments` entry with an `exclusiveGroup` (which template validation
+  does not count), that defines wrap hooks: the wrapping Environments its Sessions certainly enter (attached
   ones with `activation: ALWAYS`, with `BY_DEFAULT` when the Step has no entry for it or an
   enabled one (an entry whose `enableIf` is `false` declines it, and an expression may), or
   requested by a resolved entry; Job Environments in the same way, with an entry whose

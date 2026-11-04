@@ -1233,3 +1233,144 @@ fn not_absolute(value: &str) -> String {
          relative to; got '{value}'."
     )
 }
+
+// ── Audit round 3 ──────────────────────────────────────────────────
+
+/// The unreachable-attachment error for the ambiguous `Amb` copy at
+/// attachment `doc`, of two at `docs`, entered as `how` says.
+fn unreachable_amb(doc: usize, docs: (usize, usize), how: &str) -> String {
+    format!(
+        "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
+         'Amb' is defined by 2 attached Environment Templates (EnvironmentTemplate[{}], \
+         EnvironmentTemplate[{}]), so no 'environment:' dependency can reach it (Template \
+         Schemas §3.2.1 item 3), and it has parameters without a default that no Step can \
+         supply: P. {how}, and the submission is rejected (§3.2.1).",
+        docs.0, docs.1
+    )
+}
+
+/// The ambiguous-entry error for `Amb` at Step `step`'s `dependencies[dep]`.
+fn ambiguous_amb(step: usize, dep: usize, docs: (usize, usize)) -> String {
+    format!(
+        "JobTemplate -> steps[{step}] -> dependencies[{dep}] -> environment:\n\tnames \
+         Environment 'Amb', which 2 attached Environment Templates define \
+         (EnvironmentTemplate[{}], EnvironmentTemplate[{}]); an entry must match exactly one \
+         (Template Schemas §3.2.1 item 3).",
+        docs.0, docs.1
+    )
+}
+
+const GROUPED_ENTERED: &str = "Its activation is BY_DEFAULT and an earlier Environment of its \
+                               exclusiveGroup does not supersede it, so Sessions enter it";
+
+#[test]
+fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
+    // S1 names Amb, so its Sessions enter the first copy, which is its
+    // group's first; S0 requests A, which supersedes both copies for S0.
+    // Either way, some Step enters it.
+    let amb =
+        env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
+    let jt = format!(
+        "{HEAD}steps:\n- name: S0\n  dependencies: [{{environment: A}}]\n  script: {{actions: \
+         {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: [{{environment: Amb}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    check_err_same_as_create(
+        &jt,
+        &[&a, &amb, &amb],
+        &[
+            &ambiguous_amb(1, 0, (1, 2)),
+            &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
+        ],
+    );
+    // S1 declines X, so it enters the first copy; S2 enters X, which then
+    // supersedes the copies for S2. Any Step entering it counts, not the
+    // last.
+    let x = env("name: X, exclusiveGroup: G");
+    let jt = format!(
+        "{HEAD}steps:\n- name: S1\n  dependencies: [{{environment: X, enableIf: false}}, \
+         {{environment: Amb}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S2\n  dependencies: [{{environment: Amb}}]\n  script: {{actions: {{onRun: \
+         {{command: x}}}}}}\n"
+    );
+    check_err_same_as_create(
+        &jt,
+        &[&x, &amb, &amb],
+        &[
+            &ambiguous_amb(0, 1, (1, 2)),
+            &ambiguous_amb(1, 0, (1, 2)),
+            &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
+        ],
+    );
+}
+
+#[test]
+fn an_ambiguous_attachment_with_an_enable_if_expression() {
+    // Every Step names Amb, so no Step decides its enableIf. A certainly
+    // unresolved one does not disable it, so both copies are entered; any
+    // other expression may, so neither is known to be.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let amb = |enable_if: &str| {
+        env(&format!(
+            "name: Amb, envParameterDefinitions: [{{name: P, type: STRING}}], enableIf: \
+             {enable_if}"
+        ))
+    };
+    let unresolved = amb("\"Env.Param.P != ''\"");
+    let how = "Its activation is BY_DEFAULT and its enableIf does not disable it, so Sessions \
+               enter it";
+    check_err_same_as_create(
+        &jt,
+        &[&unresolved, &unresolved],
+        &[
+            &ambiguous_amb(0, 0, (0, 1)),
+            &unreachable_amb(0, (0, 1), how),
+            &unreachable_amb(1, (0, 1), how),
+        ],
+    );
+    let other = amb("\"Job.Name == 'J'\"");
+    check_err_same_as_create(&jt, &[&other, &other], &[&ambiguous_amb(0, 0, (0, 1))]);
+}
+
+#[test]
+fn the_single_layer_rule_counts_ambiguous_attachments_by_their_group() {
+    // Two wrapping copies of an ambiguous Amb: in one group only the first
+    // would be entered, and with enableIf false neither would.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    for amb in ["name: Amb, exclusiveGroup: G", "name: Amb, enableIf: false"] {
+        let amb = wrapping_env(amb);
+        check_err_same_as_create(&jt, &[&amb, &amb], &[&ambiguous_amb(0, 0, (0, 1))]);
+    }
+}
+
+#[test]
+fn check_applies_the_single_layer_rule_to_grouped_job_environments() {
+    // Template validation counts no grouped Job Environment, so check,
+    // which knows there are no attachments of their groups, does.
+    let jt = |a: &str, b: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, \
+             EXPR]\nname: J\njobEnvironments:\n- {{name: A, {a}{WRAP}}}\n- {{name: B, {b}{WRAP}}}\n\
+             {STEP}"
+        )
+    };
+    let layers = "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that \
+                  define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A', 'B'. A \
+                  Session may have at most one Environment defining wrap hooks (RFC 0008).";
+    for (a, b) in [
+        ("exclusiveGroup: H, ", "exclusiveGroup: G, "),
+        ("", "exclusiveGroup: G, "),
+    ] {
+        let jt = jt(a, b);
+        job_ok(&jt);
+        check_err_same_as_create(&jt, &[], &[layers]);
+        check_err_same_as_create(&jt, &[&env("name: U")], &[layers]);
+    }
+}
