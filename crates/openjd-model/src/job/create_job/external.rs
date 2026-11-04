@@ -803,9 +803,10 @@ pub(crate) fn apply_environment_templates(
 
     // ── Each Step's attached Environments, and its values for them ──
     // §3.2.2: the Step's effective values for each attached Environment its
-    // Sessions would enter, then the Environment's own `enableIf` (§4 item
-    // 6) with the values that are known, then, for one it does not
-    // disable, the value checks and constraint 7 (§7.4.1).
+    // Sessions would enter; then, unless it is superseded, the
+    // Environment's own `enableIf` (§4 item 6) with the values that are
+    // known; then, for one it does not disable, the value checks and
+    // constraint 7 (§7.4.1 steps 6 and 7).
     // The table each attachment's `enableIf` resolves in, before its
     // `Env.*` symbols: the Job Parameters, `Job.Name`, and `Job.EnvNames`
     // (§7.3.2). Only an attachment that lists `ENV_PARAMS`,
@@ -1245,7 +1246,7 @@ pub(crate) fn env_names_value(names: &[String]) -> ExprValue {
 /// The `WRAP_ACTIONS` single-layer rule (RFC 0008) over each Step's final
 /// Environment set: the combined Job Environments it enters
 /// (`environments`, with their `documents`) and its own Step Environments,
-/// after every `enableIf`. Template validation checks the Job Template's
+/// as §7.4.1 step 6 leaves them (§7.4.1 step 7). Template validation checks the Job Template's
 /// own layers that are certainly entered (entries and Environments whose
 /// `enableIf` is absent or a boolean scalar); this check also covers an
 /// `enableIf` expression and the attached Environments (plan R8).

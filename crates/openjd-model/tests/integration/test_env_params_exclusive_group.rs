@@ -1643,3 +1643,83 @@ fn a_job_environment_decided_by_the_submission_stage_notes_a_failed_enable_if() 
         ],
     );
 }
+
+#[test]
+fn a_deferred_job_environment_its_enable_if_disables_does_not_supersede() {
+    // X, attached, is disabled, so the submission stage decides B and C.
+    // B's own enableIf disables it, so it is left out and does not take
+    // the group: C is the group's first.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: B, exclusiveGroup: G, enableIf: false, variables: {{V: b}}}}\n\
+         - {{name: C, exclusiveGroup: G, variables: {{V: c}}}}\n{STEP}"
+    );
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let created = create_ok(&jt, &[&x]);
+    assert_eq!(entered(&created, 0), ["C"]);
+    assert_eq!(disabled(&created, 0), ["X@0", "B"]);
+}
+
+#[test]
+fn a_failed_enable_if_takes_the_group_in_the_submission_stage() {
+    // §4 item 7: a failed enableIf does not disable the Environment, so it
+    // remains in the Step's set and the later members are superseded
+    // without their enableIf being evaluated: only the first failure is
+    // reported, for attachments and for deferred Job Environments alike.
+    let y = |name: &str| env(&format!("name: {name}, exclusiveGroup: G, {FAILING}"));
+    create_err(
+        &format!("{HEAD}{STEP}"),
+        &[&y("X"), &y("Y")],
+        "Submission",
+        &[&failing("EnvironmentTemplate[0] -> environment")],
+    );
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n\
+         - {{name: C, exclusiveGroup: G, {FAILING}, variables: {{V: c}}}}\n{STEP}"
+    );
+    create_err(
+        &jt,
+        &[&env("name: X, exclusiveGroup: G, enableIf: false")],
+        "Submission",
+        &[&failing("JobTemplate -> jobEnvironments[0]")],
+    );
+}
+
+#[test]
+fn each_step_decides_which_enable_ifs_of_a_group_are_evaluated() {
+    // A's enableIf reads U, which only Step S0 supplies as 'yes'. For S0,
+    // A is entered and B is superseded without its enableIf being
+    // evaluated; for S, A is disabled, so B's enableIf is evaluated and
+    // fails. The error names only S.
+    let a = "{name: A, exclusiveGroup: G, envParameterDefinitions: [{name: U, type: STRING, \
+             default: 'no'}], enableIf: \"Env.Param.U == 'yes'\", variables: {V: a}}";
+    let steps = "steps:\n\
+                 - name: S0\n  dependencies: [{environment: A, parameters: {U: 'yes'}}]\n  \
+                 script: {actions: {onRun: {command: x}}}\n\
+                 - name: S\n  script: {actions: {onRun: {command: x}}}\n";
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {a}\n\
+         - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n{steps}"
+    );
+    create_err(&jt, &[], "JobTemplate", &[&failing("jobEnvironments[1]")]);
+    // The same with an attached X of the group, disabled, so that the
+    // submission stage decides A and B for each Step.
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    create_err(
+        &jt,
+        &[&x],
+        "Submission",
+        &[&failing("JobTemplate -> jobEnvironments[1]")],
+    );
+    // Both Steps evaluate B when neither supplies U: one error names both.
+    let steps = "steps:\n- name: S0\n  script: {actions: {onRun: {command: x}}}\n\
+                 - name: S\n  script: {actions: {onRun: {command: x}}}\n";
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {a}\n\
+         - {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n{steps}"
+    );
+    let both = failing("JobTemplate -> jobEnvironments[1]")
+        .replace("for Step 'S'", "for Steps 'S0' and 'S'");
+    create_err(&jt, &[&x], "Submission", &[&both]);
+}
