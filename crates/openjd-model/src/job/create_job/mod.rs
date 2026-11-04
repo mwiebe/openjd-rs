@@ -195,7 +195,8 @@ pub fn create_job(
 /// in one `ModelError::ModelValidation`. Resolving a step's own host
 /// requirements or parameter space aborts job creation immediately instead.
 /// A step-level `let` binding that fails leaves its step uninstantiable:
-/// the other steps are still checked, the attachments are not applied, and
+/// the other steps get only the checks made before the attachments are
+/// applied (§7.4.1 steps 1 and 2), the attachments are not applied, and
 /// the errors found so far are reported. The caller limits abort job
 /// creation, but only when no other error was found, after the submission
 /// stage. These aborts keep their own forms, which the shape rule below
