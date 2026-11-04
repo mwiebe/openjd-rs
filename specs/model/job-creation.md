@@ -1213,9 +1213,10 @@ disabled entries before its enabled ones, so errors of the two can come in a dif
    are reported at `JobTemplate` paths with the jobEnvironments wording, while job creation
    reports them in its `JobTemplate` error when no attachment shares the group. With no
    attachments, every such Job Environment first in its group is checked;
-4. the `WRAP_ACTIONS` single-layer rule (`check_attached_wrap_layers`), for each Step whose
-   Sessions certainly enter a wrapping attachment or a wrapping grouped Job Environment (which
-   template validation does not count), over the wrapping Environments the Step's Sessions
+4. the `WRAP_ACTIONS` single-layer rule (`check_attached_wrap_layers`), for each Step (a
+   Step whose only wrapping layers are the Job Template's own ungrouped Environments and its
+   Step Environments passed template validation, which counts them the same way, so it adds
+   no error; a grouped Job Environment is counted only here), over the wrapping Environments the Step's Sessions
    certainly enter, in Session order: attachments with `activation: ALWAYS`, those with
    `BY_DEFAULT` for which the Step has no entry or an enabled one (a disabled entry declines
    it, and an expression entry may), and the `ON_REQUEST` ones an enabled entry resolved to;
@@ -1230,9 +1231,7 @@ disabled entries before its enabled ones, so errors of the two can come in a dif
    `apply_exclusive_groups` over the attachments and then the Job Environments). Job
    creation's message is reused (`wrap_layers_message`), but it lists only
    the layers the Step certainly enters, so when an `enableIf` expression on an entry or an
-   Environment brings in another one, job creation's message counts and lists more. A Step whose
-   wrapping Environments are all the Job Template's own and ungrouped is left to template
-   validation;
+   Environment brings in another one, job creation's message counts and lists more;
 5. the §3.3.3 combination over literal requirements
    (`host_requirements::check_literal_combinations`): for each Step, the requirements of its
    own `hostRequirements` and of each Environment its Sessions certainly enter (as in item 4,

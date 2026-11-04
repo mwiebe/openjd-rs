@@ -1280,9 +1280,8 @@ fn wrap_layers_message(layers: &[String]) -> String {
 /// decided at job creation, which checks the rule again over the full set;
 /// one whose `enableIf` is the scalar `false` is not entered, and an entry
 /// whose `enableIf` is the scalar `false` declines a `BY_DEFAULT` one (§3.2
-/// item 3.2). A Step none of whose layers is attached or a grouped Job
-/// Environment is left to template validation, which checks the Job
-/// Template's own ungrouped layers.
+/// item 3.2). Template validation counts the Job Template's own ungrouped
+/// layers the same way, so a Step with only those passes here too.
 fn check_attached_wrap_layers(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
@@ -1312,19 +1311,16 @@ fn check_attached_wrap_layers(
                 )
             })
             .collect();
-        // A Step whose layers are all ungrouped Environments of the Job
-        // Template was checked by template validation, which never counts
-        // a grouped Job Environment.
-        let mut checked_here = !layers.is_empty();
-        for (j, env) in own_envs.iter().enumerate() {
-            if wraps(env) && entered[i][attached.len() + j] {
-                checked_here |= env.group().is_some();
-                layers.push(format!("'{}'", env.name));
-            }
-        }
-        if !checked_here {
-            continue;
-        }
+        // Every Step is checked: one whose layers are all ungrouped
+        // Environments of the Job Template passed template validation,
+        // which counts them the same way, so it adds no error here.
+        layers.extend(
+            own_envs
+                .iter()
+                .enumerate()
+                .filter(|(j, env)| wraps(env) && entered[i][attached.len() + j])
+                .map(|(_, env)| format!("'{}'", env.name)),
+        );
         layers.extend(
             step.step_environments
                 .iter()
