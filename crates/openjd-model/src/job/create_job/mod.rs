@@ -203,14 +203,14 @@ pub fn create_job(
 /// across job environments, steps, and step environments becomes one
 /// `ModelError::ModelValidation` for `JobTemplate`, in template-validation
 /// order (the Job Environments' literal `default`s after their other
-/// checks, each Step's values after its other checks, and the Job
-/// Environments' failed `enableIf` evaluations last). Failures that
-/// make a step uninstantiable (resolving its own host requirements or
-/// parameter space) abort immediately and are reported alone. Stages 4
-/// and 5 run only when those succeed, and their checks (including an
-/// Environment's resolved `hostRequirements`, a combined set's
-/// conflicts, and the value checks of a Job Environment left to stage 4)
-/// are reported together as one
+/// checks, each Step's values after its other checks, and the failed
+/// `enableIf` evaluations of the Job Environments stage 3 decides last).
+/// Failures that make a step uninstantiable (resolving its own host
+/// requirements or parameter space) abort immediately and are reported
+/// alone. Stages 4 and 5 run only when those succeed, and their checks
+/// (including an Environment's resolved `hostRequirements`, a combined
+/// set's conflicts, and the `enableIf`, value checks and constraint 7 of
+/// a Job Environment left to stage 4) are reported together as one
 /// `ModelError::ModelValidation` for `Submission`, whose paths start with
 /// the document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
 /// attachment's label).

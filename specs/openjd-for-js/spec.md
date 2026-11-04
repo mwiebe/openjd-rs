@@ -299,10 +299,10 @@ same rules, permitted on every Environment, and `createJob` resolves it per Step
 Step's effective values that are known (Template Schemas §3.2.2); a Step's values for an
 Environment it disables are not checked against their type and constraints (constraint 5
 still applies), and the Step is not held to constraint 7 for it.
-Of the Job Environments a Step would enter that share an `exclusiveGroup` (§4 item 7) and
-that their `enableIf` does not disable, `createJob` enters only the first in
-`jobEnvironments` order and supersedes the others, without evaluating their `enableIf`,
-which disables them for the Step in the same way (`createJob` attaches no Environment
+Of the Job Environments a Step would enter that share an `exclusiveGroup` (§4 item 7),
+`createJob` takes them in `jobEnvironments` order: once one is left in the Step's set (its
+`enableIf` does not disable it), it supersedes the later ones without evaluating their
+`enableIf`, which disables them for the Step in the same way (`createJob` attaches no Environment
 Templates, so no attached one comes first).
 `createJob` returns only the Job, so the Environments an `enableIf` disabled or a group
 superseded are visible only as the ones missing from a Step's sets.
