@@ -408,8 +408,11 @@ budgets template validation and the session runtime apply.
    `None`.
 8. ENV_PARAMS, after the step's `let` bindings (§7.4.1): evaluate each `environment:` entry's
    `enableIf`, fix which Job Environments the step's Sessions would enter, compute its
-   effective Environment parameter values for them, decide each one's own `enableIf` with the
-   values that are known, check the values and constraint 7 for the ones it does not disable,
+   effective Environment parameter values for them, and, in written order, supersede each one
+   whose `exclusiveGroup` an earlier one left in the Step's set already has, leave each one whose
+   group an attachment shares to the submission stage, decide every other one's own `enableIf`
+   with the values that are known, check the values and constraint 7 for the ones it does not
+   disable,
    and keep its enabled entries for external Environments for the submission stage; see [Environment parameter
    values](#environment-parameter-values-env_params). Each Step Environment's own `enableIf`
    is decided here too, and a disabled one is left out of `job::Step::step_environments`
@@ -959,24 +962,28 @@ decide it, by what the expression can read:
 - **A Job Environment or an attached Environment** (§7.3.2) reads its own effective
   values, so its `enableIf` is decided with them (see
   [Disabled Environments](#environment-parameter-values-env_params)): a Job Environment's by
-  `resolve_step_entries`, for each Step, in the `create_job` body; an attachment's by the
-  submission stage, in step 3. Either way it is decided after the Step's effective values are
-  computed and before their checks and constraint 7, the single-layer rule, and host
-  requirements (§7.4.1). It is evaluated under its document's template-scope profile, with the
+  `resolve_step_entries`, for each Step, in the `create_job` body, except one whose
+  `exclusiveGroup` an attachment shares, which the submission stage decides after the
+  attachments; an attachment's by the submission stage, in step 3. A superseded one's is not
+  evaluated (see [Exclusive groups](#exclusive-groups-env_params)). Either way it is decided
+  after the Step's effective values are computed and before their checks and constraint 7, the
+  single-layer rule, and host requirements (§7.4.1). It is evaluated under its document's template-scope profile, with the
   caller's budgets and the POSIX path format, in its `hostRequirements` scope (the merged Job
   Parameters, `Job.Name`, `Job.EnvNames`, its `Env.RawParam.*` of any type, and its non-PATH
   `Env.Param.*`, each known or `unresolved[T]`). A `false` leaves the
   Environment out of the Step's entered list and values, so `job::Step::environments` and
   `environment_parameters` leave it out, and its values for the Step are not checked. An error
   is reported at `<environment path> -> enableIf` with "Resolved for Step 'A'." (or "Steps 'A'
-  and 'B'") appended: for a Job Environment a `JobTemplate` error at `jobEnvironments[i] ->
-  enableIf`, reported with the other job-creation errors, so it hides the submission stage's;
-  for an attachment a `Submission` error. The Environment is then checked for those Steps as if
+  and 'B'") appended: for a Job Environment the `create_job` body decides, a `JobTemplate` error
+  at `jobEnvironments[i] -> enableIf`, reported with the other job-creation errors, so it hides
+  the submission stage's; for an attachment, and for a Job Environment the submission stage
+  decides, a `Submission` error (at `JobTemplate -> jobEnvironments[i] -> enableIf` for the
+  latter, after the attachments'). The Environment is then checked for those Steps as if
   it is not disabled, so their other mistakes are reported in the same run (plan 4 A40,
   revised): its values and constraint 7; and for an attachment also the single-layer rule, the
   unreachable-attachment check (whose message then says the `enableIf` could not be evaluated, in place of "does not disable it"),
-  and its combined host requirements. A Job Environment's failure stops the submission stage,
-  which makes those last checks.
+  and its combined host requirements. A failure of a Job Environment the `create_job` body
+  decides stops the submission stage, which makes those last checks.
 
 An Environment whose `activation` is `ALWAYS` cannot be disabled (§4 item 4, §3.2.2 item 6).
 `DeclaringEnvironment::decide` records each Step its `enableIf` is `false` for and treats

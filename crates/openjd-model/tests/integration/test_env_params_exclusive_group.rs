@@ -1723,3 +1723,80 @@ fn each_step_decides_which_enable_ifs_of_a_group_are_evaluated() {
         .replace("for Step 'S'", "for Steps 'S0' and 'S'");
     create_err(&jt, &[&x], "Submission", &[&both]);
 }
+
+#[test]
+fn a_failed_enable_if_takes_the_group_in_the_create_job_body() {
+    // A's enableIf fails, so A remains in the Step's set and B is
+    // superseded: B's missing P is not reported.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: A, exclusiveGroup: G, {FAILING}, variables: {{V: a}}}}\n\
+         - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
+         variables: {{V: b}}}}\n{STEP}"
+    );
+    create_err(&jt, &[], "JobTemplate", &[&failing("jobEnvironments[0]")]);
+}
+
+#[test]
+fn an_unresolved_enable_if_takes_the_group_in_the_submission_stage() {
+    // The first member's enableIf reads its Q, which has no value, so it is
+    // unresolved: the member is entered, and the later one, which needs
+    // P, is superseded. Only the first's Q is missing.
+    let unresolved = "envParameterDefinitions: [{name: Q, type: STRING}], enableIf: \
+                      \"Env.Param.Q != ''\"";
+    let x = env(&format!("name: X, exclusiveGroup: G, {unresolved}"));
+    let y = env("name: Y, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    create_err(
+        &format!("{HEAD}{STEP}"),
+        &[&x, &y],
+        "Submission",
+        &[&format!(
+            "{}{UNRESOLVED_NOTE}.",
+            missing_named(
+                "JobTemplate -> steps[0]",
+                false,
+                "'X' (EnvironmentTemplate[0])",
+                "Q"
+            )
+            .trim_end_matches('.')
+        )],
+    );
+    // The same for deferred Job Environments, after a disabled attachment.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: B, exclusiveGroup: G, {unresolved}, variables: {{V: b}}}}\n\
+         - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
+         variables: {{V: c}}}}\n{STEP}"
+    );
+    create_err(
+        &jt,
+        &[&env("name: X, exclusiveGroup: G, enableIf: false")],
+        "Submission",
+        &[&format!(
+            "{}{UNRESOLVED_NOTE}.",
+            missing_named("JobTemplate -> steps[0]", true, "'B'", "Q").trim_end_matches('.')
+        )],
+    );
+}
+
+#[test]
+fn a_deferred_job_environments_failed_enable_if_follows_the_attachments() {
+    // The attachment Y (group H) and the Job Environment B (group G, which
+    // the disabled attachment X shares, so the submission stage decides it)
+    // both fail. The attachments' failures are reported first.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, {FAILING}, variables: {{V: b}}}}\n\
+         {STEP}"
+    );
+    let y = env(&format!("name: Y, exclusiveGroup: H, {FAILING}"));
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let err = create(&jt, &[&y, &x]).expect_err("expected job creation to fail");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 2 validation errors for Submission\n{}\n{}",
+            failing("EnvironmentTemplate[0] -> environment"),
+            failing("JobTemplate -> jobEnvironments[0]")
+        )
+    );
+}

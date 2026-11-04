@@ -370,11 +370,12 @@ combining and listed in `CreatedJob::discarded_host_requirements`, and a
 Step left with no requirements has `host_requirements: None` (§3.3). The
 Job Template's own checks are reported in one
 `ModelError::ModelValidation` for `JobTemplate`; the submission-stage
-checks (entry resolution, the attachments' values, constraints 5–7 over
-the combined Job, the wrap layers, the Environments' resolved
-`hostRequirements` and the combination's conflicts), which run only when the Job
-Template's succeed, in one for `Submission`, with paths starting at the
-document. [`create_job`] is the same with no
+checks (entry resolution, the attachments' values and `enableIf`s,
+constraints 5–7 over the combined Job, the `enableIf`, values and
+constraint 7 of a Job Environment whose `exclusiveGroup` an attachment
+shares, the wrap layers, the Environments' resolved `hostRequirements` and
+the combination's conflicts), which run only when the Job Template's
+succeed, in one for `Submission`, with paths starting at the document. [`create_job`] is the same with no
 attachments, so its Job is complete: an enabled required entry naming no
 Job Environment is a `Submission` error. See
 [job-creation.md](job-creation.md#the-submission-stage).
