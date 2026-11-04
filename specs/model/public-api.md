@@ -387,25 +387,33 @@ job creation), constraint 5; for an attachment with `activation: ALWAYS`
 or whose own `enableIf` is absent or `true`, or certainly unresolved for the Step
 (see validation.md, pass 11) (one with `false` is disabled, and one
 with an expression is undetermined, Template Schemas §3.2.2, §7.5 rule 5),
+and that no earlier attachment of its `exclusiveGroup` supersedes or may
+supersede (§4 item 7),
 constraint 6 for literal values (with PATH absoluteness in
 `ctx.submission_path_format`), the single-expression rule, and
 constraint 7 over the attachments each Step enters (every `ALWAYS` one,
 every `BY_DEFAULT` one it does not decline with a disabled entry, and
-each `ON_REQUEST` one it requests); a disabled entry naming an
+each `ON_REQUEST` one it requests); the same value checks and
+constraint 7 for each Job Environment with an `exclusiveGroup` a Step is
+known to enter, which template validation leaves out; a disabled entry naming an
 attached `ALWAYS` Environment, an error; the
 attachment-level warnings and errors (a warning, when the Job Template
 lists `ENV_PARAMS`, for an attachment named like a Job Environment; an
 error for an attachment that no entry can reach and that has parameters
 without a `default`, when its `activation` is `ALWAYS`, or `BY_DEFAULT`
-with its own `enableIf` absent, `true`, or certainly unresolved), and the
+with its own `enableIf` absent, `true`, or certainly unresolved, and some
+Step is known to enter it after the group rule), and the
 attachments' literal
 `default`s, the `WRAP_ACTIONS` single-layer rule for each Step whose
 Sessions enter a wrapping attachment, and the §3.3.3 combination of
 each Step's literal host requirements with the literal ones of the
-Environments its Sessions certainly enter. It reports with the same
+Environments its Sessions certainly enter (with the group rule applied).
+It reports with the same
 messages and paths (a single-layer or host-requirement error in the same
 form, naming only the layers a Session certainly enters and the literal
-requirements) and returns the warnings. Format-string values,
+requirements), except that a grouped Job Environment's errors, which job
+creation reports in its `JobTemplate` error when no attachment shares
+the group, are reported here at `JobTemplate ->` paths, and returns the warnings. Format-string values,
 non-literal `default`s and host requirements, and entries whose
 `enableIf` is an expression are left to job creation. `openjd check
 --environment` calls it. See
@@ -529,9 +537,11 @@ pub enum EnvironmentActivation {
                 // error (§4 item 4, §3.2.2 item 6, §3.2 item 3.2)
     #[default]
     ByDefault,  // BY_DEFAULT: every Session enters it, except a Step's that
-                // declines it with a disabled entry or for which its
-                // enableIf is false
-    OnRequest,  // ON_REQUEST
+                // declines it with a disabled entry, for which its
+                // enableIf is false, or for which an earlier one of its
+                // exclusiveGroup supersedes it
+    OnRequest,  // ON_REQUEST: a Step's that requests it, with the same
+                // enableIf and exclusiveGroup exceptions
 }
 impl EnvironmentActivation {
     /// `ALWAYS`, `BY_DEFAULT`, or `ON_REQUEST`.

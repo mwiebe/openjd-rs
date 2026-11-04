@@ -136,7 +136,8 @@ Steps with no parameter space have exactly 1 task (the implicit single task).
    `Disabled environments:` lists, in the same form, the Environments its Sessions would
    otherwise have entered that their own `enableIf` (Template Schemas §4 item 6) disabled for
    the Step, or that an earlier Environment of their `exclusiveGroup` superseded (§4 item 7;
-   with the Conda and Docker samples both attached, the one attached second;
+   with the Conda and Docker samples both attached to the video sample, whose Steps request
+   both and give Conda packages, the one attached second;
    `CreatedJob::disabled_environments`: combined Job Environments in Job order with
    their document, then Step Environments marked `stepEnvironments`), and is omitted when
    there are none. The listing does not say which of the two disabled an Environment. An Environment with `activation: ALWAYS` is never listed: it cannot be
