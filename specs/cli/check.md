@@ -146,13 +146,21 @@ stage that needs no Job Parameter values:
   Environment whose `enableIf` is `false` is disabled, so its
   values are not checked and it is not held to constraint 7 (Template Schemas §3.2.2); for
   one whose `enableIf` is an expression a violation is not certain without Job Parameter
-  values (§7.5 rule 5), so `openjd run` makes those checks;
+  values (§7.5 rule 5), so `openjd run` makes those checks. Nor are they made for an
+  attached Environment that an earlier one of its `exclusiveGroup` supersedes or may
+  supersede (Template Schemas §4 item 7, and the bullets after item 10): one is checked
+  only when every earlier one of its group is known not to be entered;
+- the same value checks and constraint 7 for each `jobEnvironments` entry with an
+  `exclusiveGroup` that the Step is known to enter, given the attachments (template
+  validation, which does not know them, leaves these to `openjd run`); the other Job
+  Environments were checked by template validation;
 - an attached Environment named like a `jobEnvironments` entry is a warning when the Job
   Template lists `ENV_PARAMS` (§3.2.1 item 4). When such an attachment, or one of two or more
   attachments with the same name (item 3), has parameters without a `default` and either
   `activation: ALWAYS` or `activation: BY_DEFAULT` with an own `enableIf` that is absent or
-  `true` (or certainly unresolved), every Session enters it and no entry can supply them, so
-  that is an error at its `envParameterDefinitions`. A `BY_DEFAULT` one whose `enableIf` is
+  `true` (or certainly unresolved), Sessions enter it and no entry can supply them, so
+  that is an error at its `envParameterDefinitions`, unless an earlier attachment of its
+  `exclusiveGroup` supersedes or may supersede it for every Step. A `BY_DEFAULT` one whose `enableIf` is
   `false` is entered by no Session; for one whose `enableIf` is an expression `openjd run`
   decides. With `activation: ON_REQUEST` no Session enters it, so it is not an
   error;
@@ -163,12 +171,14 @@ stage that needs no Job Parameter values:
   enabled one (an entry whose `enableIf` is `false` declines it, and an expression may), or
   requested by a resolved entry; Job Environments in the same way, with an entry whose
   `enableIf` is absent or the scalar `true` enabled; and its Step Environments; each only
-  when its own `enableIf` is absent or the scalar `true` or it is `ALWAYS`) must be at most
-  one;
+  when its own `enableIf` is absent or the scalar `true` or it is `ALWAYS`, and, for one
+  with an `exclusiveGroup`, only when every earlier one of its group is known not to be
+  entered) must be at most one;
 - each Step's combined host requirements (§3.3.3), over the requirements written as literals
   of the Step's own `hostRequirements` and of the Environments its Sessions certainly enter
   (attached and the Job Template's own, as for the single-layer rule, so not one whose own
-  `enableIf` is the scalar `false` or an expression, unless it is `ALWAYS`): a conflict (a `min` above a `max`, or
+  `enableIf` is the scalar `false` or an expression, unless it is `ALWAYS`, nor one an
+  earlier one of its group may supersede): a conflict (a `min` above a `max`, or
   `attr.worker.os.family` or `attr.worker.cpu.arch` lists with no value in common) is an error, with `openjd run`'s message when only literal
   requirements of that capability take part. A conflict between the Job Template's own
   requirements alone is therefore reported with any `--environment`, though `check` without

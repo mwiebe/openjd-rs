@@ -244,8 +244,8 @@ code, so they are always in sync.
 - Dependencies (step names)
 - Parameter definitions (name and type)
 - Environments (name, parent step, description)
-- With `ENV_PARAMS`, the Step's Environment set, the Environments an `enableIf` disabled for
-  it, its combined host requirements, and its discarded host requirements, as in the job
+- With `ENV_PARAMS`, the Step's Environment set, the Environments an `enableIf` disabled or
+  an `exclusiveGroup` superseded for it, its combined host requirements, and its discarded host requirements, as in the job
   summary, under `Session environments:`, `Disabled environments:`, `Host requirements:`,
   and `Discarded host requirements:` headings and in the JSON `session_environments`,
   `disabled_environments`, `host_requirements`, and `discarded_host_requirements` fields
@@ -262,7 +262,7 @@ Eight private structs organize the collected summary data:
 ```rust
 struct StepEnvSets {                     // per Step, with ENV_PARAMS
     entered: Vec<SessionEnvInfo>,        // the Environments its Sessions enter
-    disabled: Vec<SessionEnvInfo>,       // disabled by an enableIf (§4 item 6)
+    disabled: Vec<SessionEnvInfo>,       // disabled by an enableIf or superseded (§4 items 6, 7)
     discarded: Vec<DiscardedInfo>,       // resolved to nothing (§3.3)
 }
 
@@ -279,7 +279,7 @@ struct StepInfo<'a> {
 
 struct EnvParamsDetails<'a> {
     session_envs: &'a [SessionEnvInfo],               // the Step's Environment set
-    disabled_envs: &'a [SessionEnvInfo],              // disabled by an enableIf (§4 item 6)
+    disabled_envs: &'a [SessionEnvInfo],              // disabled by an enableIf or superseded (§4 items 6, 7)
     host_requirements: Option<&'a job::HostRequirements>, // combined (§3.3.3)
     discarded: &'a [DiscardedInfo],                   // resolved to nothing (§3.3)
 }

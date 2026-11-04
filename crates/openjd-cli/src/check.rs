@@ -97,7 +97,10 @@ pub fn execute(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// entered, and its values and parameters without a `default` are not
 /// checked (§3.2.2), so the value checks and constraint 7 are made only
 /// for an attached Environment whose `enableIf` is absent or `true`, or
-/// certainly unresolved (it reads only values that stay unknown).
+/// certainly unresolved (it reads only values that stay unknown), and that
+/// no earlier Environment of its `exclusiveGroup` supersedes or may
+/// supersede (§4 item 7), and for a grouped Job Environment the Step is
+/// known to enter.
 /// Returns the Environment Templates read.
 fn check_with_environments(
     job_template: &openjd_model::template::JobTemplate,

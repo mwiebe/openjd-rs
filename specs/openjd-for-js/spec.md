@@ -315,7 +315,7 @@ superseded are visible only as the ones missing from a Step's sets.
 | `taskCount` | `number` |
 | `dependencies` | `string[]` |
 | `stepEnvironments` | `Environment[]` |
-| `environments` | `{document, environment}[]`, absent unless `ENV_PARAMS` (`activation: ON_REQUEST` or an Environment's `enableIf`) leaves out a Job Environment (see above) |
+| `environments` | `{document, environment}[]`, absent unless `ENV_PARAMS` (`activation: ON_REQUEST`, an Environment's `enableIf`, or an `exclusiveGroup`) leaves out a Job Environment (see above) |
 | `hostRequirements` | `{amounts, attributes} \| undefined`, the combined host requirements with `ENV_PARAMS` (see above) |
 
 #### `Environment`
