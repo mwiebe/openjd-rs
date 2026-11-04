@@ -132,9 +132,11 @@ pub fn create_job(
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
 /// across all steps is checked after parameter spaces are resolved.
 ///
-/// With `ENV_PARAMS` job creation takes the steps of Template Schemas
-/// §7.4.1 over the Job Template and the attached Environment Templates
-/// together, in one pass:
+/// Job creation takes the steps of Template Schemas §7.4.1 over the Job
+/// Template and the attached Environment Templates together, in one pass,
+/// whether or not the Job Template lists `ENV_PARAMS` (without it, steps
+/// 1–5 find nothing to do in the Job Template, and the attachments' errors
+/// are ordered the same way):
 ///
 /// 1. `Job.Name` is resolved and, with `EXPR`, `Job.EnvNames` is bound to
 ///    the names of the attached Environments, in attachment order,
@@ -191,8 +193,7 @@ pub fn create_job(
 /// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
 /// whatever `ctx` enables.
 ///
-/// With `ENV_PARAMS` in the Job Template, every check failure is reported
-/// in one `ModelError::ModelValidation`. Resolving a step's own host
+/// Every check failure is reported in one `ModelError::ModelValidation`. Resolving a step's own host
 /// requirements or parameter space aborts job creation immediately instead.
 /// A step-level `let` binding that fails leaves its step uninstantiable:
 /// the other steps get only the checks made before the attachments are
@@ -221,19 +222,18 @@ pub fn create_job(
 /// reported; the other Steps are checked in full. So a Step's value and
 /// constraint 7 errors appear only once its step 1–4 errors are fixed.
 ///
-/// A Job Template that does not list `ENV_PARAMS` is created as before the
-/// extension (§7.4.1 applies with it), in two passes: its own errors are
-/// reported alone, for `JobTemplate`, and only when it has none are the
-/// attached Environment Templates applied, whose errors are for
-/// `Submission`, with every path starting at its document.
-///
-/// With `ENV_PARAMS` in the Job Template, the error is shaped by the
-/// inputs. Without attached Environment Templates it is for `JobTemplate`,
+/// The error is shaped by the inputs. Without attached Environment Templates it is for `JobTemplate`,
 /// at paths relative to the Job Template, as job creation's other errors
 /// are. With them it is for
 /// `Submission`, and every path starts with its document (`JobTemplate`,
 /// `EnvironmentTemplate[i]`, or the attachment's label). The warnings
 /// ([`CreatedJob::warnings`]) have the same paths.
+///
+/// For a Job Template without `ENV_PARAMS` and no attachments the result
+/// is what it was before the one-pass order. With attachments, its own
+/// errors and theirs are now reported together, for `Submission`, where
+/// before its own errors were reported alone, for `JobTemplate`, and the
+/// attachments were applied only when it had none.
 pub fn create_job_with_environment_templates(
     job_template: &JobTemplate,
     attached: &[AttachedEnvironmentTemplate<'_>],
@@ -287,8 +287,7 @@ pub(super) struct Body<'a> {
     /// Job Template.
     pub(super) staged: staged::StagedErrors,
     /// The caller limits' result, which the submission stage reports only
-    /// when it and job creation proper found no error (always `Ok` for a
-    /// Job Template without ENV_PARAMS, which checks them itself).
+    /// when it and job creation proper found no error.
     pub(super) limits: Result<(), ModelError>,
 }
 
@@ -561,20 +560,13 @@ fn create_job_from_template<'a>(
     // `instantiate_step` only declines to build a step after recording
     // the failure in `check_errors`. Such a Step cannot be instantiated, so
     // the submission stage does not run, and the errors so far are
-    // reported.
-    // A Job Template that does not list ENV_PARAMS is created as before the
-    // extension, in two passes (§7.4.1 applies with it): its own errors are
-    // reported alone, for `JobTemplate`, before any Environment Template is
-    // applied.
-    let one_pass = job_template
-        .profile()
-        .has_extension(crate::types::ModelExtension::EnvParams);
+    // reported, in the shape the inputs give (see `finish_errors`).
     let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
         finish_errors(
             check_errors,
             staged,
             staged::StagedErrors::default(),
-            one_pass && attached_count > 0,
+            attached_count > 0,
         )?;
         return Err(ModelError::DecodeValidation(
             "internal error: a step was skipped without a recorded error".to_string(),
@@ -589,20 +581,9 @@ fn create_job_from_template<'a>(
                 .collect()
         });
     // The caller limits abort job creation alone, and only when no other
-    // error was found. Without ENV_PARAMS that is decided here, as before
-    // the extension: the Job Template's own errors are reported alone,
-    // before any Environment Template is applied. With it, the submission
-    // stage finds more errors, so it checks the limits after them.
-    let mut limits = check_caller_limits(&steps, job_environments.as_deref(), ctx);
-    if !one_pass {
-        if !(check_errors.is_empty() && staged.is_empty()) {
-            finish_errors(check_errors, staged, staged::StagedErrors::default(), false)?;
-            return Err(ModelError::DecodeValidation(
-                "internal error: errors were found but not reported".to_string(),
-            ));
-        }
-        std::mem::replace(&mut limits, Ok(()))?;
-    }
+    // error was found. The submission stage finds more errors, so it checks
+    // the limits after them.
+    let limits = check_caller_limits(&steps, job_environments.as_deref(), ctx);
 
     // job_template.extensions is `Option<Vec<ExtensionName>>` where every
     // entry has already passed decode-time recognition: any string that

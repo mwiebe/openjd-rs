@@ -399,8 +399,8 @@ budgets template validation and the session runtime apply.
 5. Run the resolved-value checks on the carried-forward fields
    (next section) — job environments first, then each step as it is
    instantiated — accumulating every failure into one collection that
-   is reported once: for a Job Template without ENV_PARAMS, after all steps; with it, with
-   the submission stage's errors (see [Error order](#error-order-env_params))
+   is reported once, with the submission stage's errors (see [Error
+   order](#error-order))
 6. Convert environments from template to job types
 7. Build step dependency list from the template's Step entries only: `dependsOn`, and its
    ENV_PARAMS synonym `step` (§3.2 item 2), each a `job::StepDependency` with `dependsOn`.
@@ -416,7 +416,7 @@ budgets template validation and the session runtime apply.
    values](#environment-parameter-values-env_params). Each Step Environment's own `enableIf`
    is decided here too, and a disabled one is left out of `job::Step::step_environments`
    (see [Environment enableIf](#environment-enableif-env_params)). Errors are filed by §7.4.1
-   step (see [Error order](#error-order-env_params))
+   step (see [Error order](#error-order))
 9. Attach resolved symbol table to each step
 10. Run [the submission stage](#the-submission-stage) with the attached Environment Templates
     (possibly none)
@@ -454,7 +454,7 @@ and what it means depends on the `activation` of the Environment it names (§3.2
   `false` on an entry that names a Job Environment; job creation for an expression that
   resolves to `false`, and the submission stage for any disabled entry naming an attached
   `ALWAYS` Environment. It is a §7.4.1 step 4 error, so job creation takes no later step for
-  the Step (see [Error order](#error-order-env_params)). `check_environment_templates`, which
+  the Step (see [Error order](#error-order)). `check_environment_templates`, which
   reports every violation it is certain of, still checks the Environment as entered, with
   every parameter at its `default`, since no Step can leave it out (§3.2.2 item 6): a
   parameter without a `default` is also reported missing there, with the note that the entry
@@ -626,7 +626,7 @@ depends on a value that is missing or does not convert, so it does not disable t
 Environment; Template Schemas §3.2.2)", since a reader who expected it to be `false` would
 otherwise not see why the parameter is required.
 These errors join the carried-forward check failures in the one `ModelValidation` error
-`create_job` reports, in §7.4.1 order (see [Error order](#error-order-env_params)): the
+`create_job` reports, in §7.4.1 order (see [Error order](#error-order)): the
 literal `default`s with the carried-forward checks, after the Job Environments' ones, and the
 values and constraint 7 under step 7, by Step and then the Environment's place in the Job's
 Environment order.
@@ -766,10 +766,9 @@ diagnostic from this stage names a synthesized node.
 in the template at once: one `ValidationErrors` collection is threaded
 through the job environments and every step (`instantiate_step` takes
 it as `&mut`) and converted to a single `ModelError::ModelValidation`
-once, after all steps are instantiated and before the caller-limit
-task-count and size checks (with ENV_PARAMS, it is held and reported with
-the submission stage's errors, first, as the `Validation` key of
-[Error order](#error-order-env_params) says). The order is pass 8's order — deterministic
+once, with the submission stage's errors, first, as the `Validation` key of
+[Error order](#error-order) says; the caller-limit task-count and size
+checks come after them. The order is pass 8's order — deterministic
 except within one environment's `variables`, which is a `HashMap` and
 iterates in arbitrary order (shared with pass 8): `jobEnvironments` in template order, then each step in template
 order — its step-level `let`, its script (`let`, `onRun`
@@ -778,10 +777,9 @@ its `stepEnvironments` in order (`let`, `variables`, every action's
 `command`/`args`, every action's `timeout`/`cancelation`, embedded-file
 `data`). **Non-check failures are reported alone.** The job name and
 parameter constraints are checked before any check failure is
-collected, and the caller task-count / size caps are checked only when
-the collection is empty (with ENV_PARAMS, only when no error at all was
-found, after the submission stage), so a cap is never reported together
-with a check failure. Resolving a step's host
+collected, and the caller task-count / size caps are reported only when
+no error at all was found, after the submission stage, so a cap is never
+reported together with a check failure. Resolving a step's host
 requirements or parameter space for real (a value that cannot coerce,
 a duplicate resolved capability name, an association length mismatch,
 …) aborts immediately, discarding any check failures collected from
@@ -829,7 +827,7 @@ once at submission instead of per-task-per-worker.
 
 The paths below are written in the form they take when Environment Templates are attached
 (`JobTemplate -> steps[i]`); without them they have no document prefix (`steps[i]`), as
-[Error order](#error-order-env_params) says.
+[Error order](#error-order) says.
 
 The last stage of `create_job_with_environment_templates` (Template Schemas §3.2.1–§3.2.2, §4
 item 4), the crate-private `apply_environment_templates` in `job/create_job/external.rs`. A
@@ -849,7 +847,8 @@ that has entries lists both.
 1. Each attachment's literal `default`s are checked, as job creation checks the Job
    Template's. An attachment named like a Job Environment gets a warning (§3.2.1 item 4) when
    the Job Template lists `ENV_PARAMS` (without it the Job Template has no entries, and the
-   submission behaves as before the extension, RFC Backward compatibility); if its `activation`
+   submission gets no warning it did not get before the extension, RFC Backward
+   compatibility); if its `activation`
    is `ALWAYS` or `BY_DEFAULT` and it has parameters without a `default`, every Session of a
    Step for which its own `enableIf` does not disable it enters it (every Session, for
    `ALWAYS`, which cannot be disabled), and no entry can supply them, so that is one
@@ -857,7 +856,7 @@ that has entries lists both.
    not reported again per Step under constraint 7. The error is reported after every Step's
    values, when the attachment's `enableIf` (decided in step 3, with the parameters unknown)
    is not `false` for some Step that is not stopped after §7.4.1 step 4 (see
-   [Error order](#error-order-env_params)); a `BY_DEFAULT` one disabled for every such Step is
+   [Error order](#error-order)); a `BY_DEFAULT` one disabled for every such Step is
    not entered, so it is not an error (§3.2.2), and an `ALWAYS` one is an error whenever some
    Step is not stopped (§3.2.1 item 4). One with `activation: ON_REQUEST` is never entered, since no entry can
    request it, so it is not an error. (Warnings are returned only with a successful result.)
@@ -892,7 +891,7 @@ that has entries lists both.
    constraint 7 "must supply" message.
 3. A Step with an error from §7.4.1 steps 1–4 (here, or in job creation) is stopped: none of
    the rest of this step, or steps 6–8 below, is done for it, and it counts as entering no
-   Environment (see [Error order](#error-order-env_params)). For every other Step:
+   Environment (see [Error order](#error-order)). For every other Step:
    its Sessions enter every attachment with `activation: ALWAYS`, every one with
    `BY_DEFAULT` that a disabled entry of the Step does not decline (its own `enableIf` is then
    not evaluated for the Step, and no value check applies), and
@@ -946,18 +945,20 @@ that has entries lists both.
    §7.4.
 
 Every error, with the ones job creation proper found, is reported in one `ModelValidation`
-error in §7.4.1 order (see [Error order](#error-order-env_params)). With `ENV_PARAMS`, the
-submission stage runs whenever job creation proper built every Step: an error there does not
-stop it (without it, see the end of [Error order](#error-order-env_params)). The stage
+error in §7.4.1 order (see [Error order](#error-order)). The submission stage runs
+whenever job creation proper built every Step, with or without `ENV_PARAMS`: an error there
+does not stop it. The stage
 does not re-run the carried-forward resolved-value checks on the attachments' own format
 strings (the `SERVICE` prototype's submission function does).
 
-#### Error order (ENV_PARAMS)
+#### Error order
 
 Job creation takes the steps of Template Schemas §7.4.1 over the Job Template and the
-attached Environment Templates together, in one pass. Earlier versions made two passes, and
-an error of the Job Template alone stopped job creation before the attachments were applied,
-so errors were reported out of §7.4.1 order. Every error is filed in a crate-private
+attached Environment Templates together, in one pass, for every Job Template, whether or not
+it lists `ENV_PARAMS`. Earlier versions made two passes, and an error of the Job Template
+alone stopped job creation before the attachments were applied, so errors were reported out
+of §7.4.1 order. A Job Template without `ENV_PARAMS` kept the two passes until now (see
+[Without ENV_PARAMS](#without-env_params)). Every error is filed in a crate-private
 `StagedErrors` (`job/create_job/staged.rs`) under a key: the §7.4.1 step, then the Step's
 index, then a position within the Step. `finish_errors` (`job/create_job/mod.rs`) reports
 them in key order, and in the order they were filed within a key:
@@ -998,14 +999,7 @@ Environment's error, now found there, or an unresolved entry's, is reported in p
 limit. These aborts keep their own forms (a limit's error is for `Template`, a parameter
 space's is not a `ModelValidation`), which the shape rule below does not cover.
 
-A Job Template that does not list `ENV_PARAMS` is created as before the extension, since
-§7.4.1 applies with it: in two passes, its own errors reported alone, for `JobTemplate`, then
-the caller limits, and only when there is no error the submission stage, whose errors (with
-Environment Templates attached, the single-layer rule, say) are for `Submission`, at paths
-starting with the document, in the order they are found (`StagedErrors::unordered`), even
-when an attachment lists `ENV_PARAMS`.
-
-With `ENV_PARAMS`, the error is shaped by the inputs. Without attached Environment Templates it is for
+The error is shaped by the inputs, with or without `ENV_PARAMS`. Without attached Environment Templates it is for
 `JobTemplate`, and its paths are relative to the Job Template, as every other job-creation
 error is. With them it is for `Submission`, and every path starts with its document:
 `JobTemplate`, `EnvironmentTemplate[i]`, or the attachment's label. One `ModelValidation`
@@ -1040,6 +1034,55 @@ Environment Template, the error is for `Submission`, at `JobTemplate -> steps[0]
 dependencies[1] -> environment`, and says that none of the attached Environment Templates
 defines `Missing`. When the two errors are in different Steps, both are
 reported, step 3's first (`test_env_params_error_order.rs`).
+
+##### Without ENV_PARAMS
+
+A Job Template that does not list `ENV_PARAMS` follows the same rule. It has no `environment:`
+entries and no Environment `enableIf`, `exclusiveGroup` or `hostRequirements` of its own, so
+§7.4.1 steps 1–5 file nothing for it, and no Step is stopped. What does apply is filed under
+the same keys: the template-validation-style re-checks (`Validation`), and, from the attached
+Environment Templates, their literal `default`s (`Validation`), an attachment's own `enableIf`
+(`Step6`), its values and constraint 7, the single-layer rule over each Step's set and an
+unreachable attachment's parameters (`Step7`), and its resolved `hostRequirements` (`Step8`).
+The caller limits are checked after the submission stage, as above. The aborts (a Step's own
+host requirements or parameter space, a failed step-level `let`, a caller limit) keep their
+forms.
+
+Without attached Environment Templates the output is unchanged: for such a template that
+template validation accepts, the submission stage finds no error, so the errors
+are the Job Template's own, for `JobTemplate`, in the order they were found, and a caller limit
+is reported only when there are none, as before. With attachments it changes in three ways:
+
+- The Job Template's errors and the attachments' are reported together, for `Submission`, in
+  §7.4.1 order. Before, the Job Template's own errors were reported alone, for `JobTemplate`,
+  and the attachments were applied only when it had none.
+- The attachments' errors are in §7.4.1 order rather than the order they were found (an
+  attachment's `enableIf` that fails, step 6, before its constraint 7 errors, step 7).
+- A caller limit is reported only when the attachments add no error. Before, it was checked
+  before they were applied.
+
+For example, take a Job Template without `ENV_PARAMS` whose Job Environment `W1` and the
+attached Environment `W2` both define wrap hooks (`WRAP_ACTIONS`), and whose Step `S` has a
+`timeout` that resolves to 0. Before, `create_job_with_environment_templates` reported:
+
+```
+Model validation error: 1 validation error for JobTemplate
+steps[0] -> script -> actions -> onRun -> timeout:
+	timeout must be > 0.
+```
+
+and the single-layer error only once the timeout was fixed. Now it reports both:
+
+```
+Model validation error: 2 validation errors for Submission
+JobTemplate -> steps[0] -> script -> actions -> onRun -> timeout:
+	timeout must be > 0.
+JobTemplate -> steps[0]:
+	its Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W2' (EnvironmentTemplate[0]), 'W1'. A Session may have at most one Environment defining wrap hooks (RFC 0008).
+```
+
+(`test_env_params_error_order.rs`,
+`a_job_template_without_env_params_reports_its_errors_with_the_attachments_in_one_pass`.)
 
 #### Environment enableIf (ENV_PARAMS)
 
@@ -1188,7 +1231,7 @@ Environments and the attached ones are handled alike.
   one a disabled entry declines, an Environment whose own `enableIf` is `false` for the
   Step, or one its `exclusiveGroup` supersedes) contributes nothing. A disabled entry for an
   `ALWAYS` Environment is a §3.2 item 3.2 error of §7.4.1 step 4, which stops the Step, so its
-  requirements are not combined (see [Error order](#error-order-env_params)).
+  requirements are not combined (see [Error order](#error-order)).
   `combine` collects every source's requirements on a capability (names compared ignoring
   case) and combines them at once, so what a host must satisfy does not depend on the order
   of the sources (plan 5 S1); only the stored spelling and value order follow first appearance.
@@ -1260,7 +1303,7 @@ leaves out the Environments it cannot know the Step enters, such as one an earli
 undetermined one of its group may supersede, so job creation's message can list more), and
 for the order and number of errors: job creation reports them in §7.4.1 order and takes no
 step after step 4 for a Step with an error from steps 1–4 (see
-[Error order](#error-order-env_params)), while this function reports every violation it is
+[Error order](#error-order)), while this function reports every violation it is
 certain of, in its own order (so it can report a Step's value errors that job creation
 reports only once the Step's step 1–4 errors are fixed):
 
