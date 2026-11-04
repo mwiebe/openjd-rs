@@ -781,9 +781,9 @@ its `stepEnvironments` in order (`let`, `variables`, every action's
 `data`). **Non-check failures are reported alone.** The job name and
 parameter constraints are checked before any check failure is
 collected, and the caller task-count / size caps are checked only when
-the collection is empty (with ENV_PARAMS, also only when job creation
-proper filed no other error), so a cap is never reported together with a
-check failure. Resolving a step's host
+the collection is empty (with ENV_PARAMS, only when no error at all was
+found, after the submission stage), so a cap is never reported together
+with a check failure. Resolving a step's host
 requirements or parameter space for real (a value that cannot coerce,
 a duplicate resolved capability name, an association length mismatch,
 …) aborts immediately, discarding any check failures collected from
@@ -868,7 +868,8 @@ that has entries lists both.
    not reported again per Step under constraint 7. The error is reported after every Step's
    values, when the attachment's `enableIf` (decided in step 3, with the parameters unknown)
    is not `false` for some Step; a `BY_DEFAULT` one disabled for every Step is not entered,
-   so it is not an error (§3.2.2), and an `ALWAYS` one always is (§3.2.1 item 4). One with `activation: ON_REQUEST` is never entered, since no entry can
+   so it is not an error (§3.2.2), and an `ALWAYS` one is whenever some Step is not stopped
+   after §7.4.1 step 4 (§3.2.1 item 4; see [Error order](#error-order-env_params)). One with `activation: ON_REQUEST` is never entered, since no entry can
    request it, so it is not an error. (Warnings are returned only with a successful result.)
 2. Each Step's frozen entries are matched to the attachments by `environment.name`:
    - exactly one: the entry refers to it, whatever `required` says (§3.2.1 item 1);
@@ -917,10 +918,8 @@ that has entries lists both.
    disabled one is not entered, its values are not checked, and it is not held to constraint 7.
    An `ALWAYS` attachment whose `enableIf` is `false` for the Step is an error instead (see
    [Environment enableIf](#environment-enableif-env_params)).
-   An
-   attachment that one of the Step's rejected entries names (an ambiguous name) is skipped for
-   that Step, so the one mistake is not also reported as "must supply" or "does not supply"
-   errors. The entry's format strings resolve against its frozen `symtab`. A key the
+   (A Step whose entry names an ambiguous attachment is stopped, so the one mistake is not
+   also reported as "must supply" or "does not supply" errors.) The entry's format strings resolve against its frozen `symtab`. A key the
    attachment does not declare is an error (constraint 5), including any key for an
    attachment that declares no parameters, such as one written before ENV_PARAMS; and a parameter
    without a `default` of an attachment the Step enters that the
@@ -980,7 +979,7 @@ them in key order, and in the order they were filed within a key:
 | `Step4` | a disabled entry for an `ALWAYS` Environment | the entry's index |
 | `Step5` | an entry's undeclared key (constraint 5) | the Environment's place in the Job's Environment order (from step 5 on, an error is about an Environment, so it is ordered by the Environment, not by the entry that names it) |
 | `Step6` | an Environment's own `enableIf` that fails, or an `ALWAYS` one's that is `false`; a Step Environment's `enableIf` that fails | as for step 5, Step Environments after every Job Environment |
-| `Step7` | the value checks and constraint 7 (by the first Environment the message names); the single-layer rule; an unreachable attachment's parameters | as for step 5; the single-layer rule after the Step's Environments |
+| `Step7` | the value checks and constraint 7 (by the first Environment the message names); the single-layer rule; an unreachable attachment's parameters | as for step 5; the single-layer rule after the Step's Environments; an unreachable attachment's error, about no Step, by the attachment |
 | `Step8` | an Environment's resolved `hostRequirements`; a combination's conflict | as for step 5; the conflict after the Step's Environments |
 
 An error that names several Steps (a failed `enableIf`, resolved once per distinct set of
@@ -998,14 +997,18 @@ Resolving a Step's own host requirements or parameter space still aborts job cre
 once. A step-level `let` binding that fails leaves its Step uninstantiable: the other Steps
 are still checked, the submission stage does not run, and the errors found so far are
 reported in the same order and shape. The caller limits (task count, script and Environment
-sizes) are checked after job creation proper, before the submission stage, and abort job
-creation too, but only when job creation proper found no error.
+sizes, measured on the Job Template's own Environments and Steps) abort job creation too, but
+only when no other error was found: they are checked after the submission stage, so a Job
+Environment's error, now found there, or an unresolved entry's, is reported in place of a
+limit. These aborts keep their own forms (a limit's error is for `Template`, a parameter
+space's is not a `ModelValidation`), which the shape rule below does not cover.
 
 A Job Template that does not list `ENV_PARAMS` is created as before the extension, since
-§7.4.1 applies with it: in two passes, its own errors reported alone, for `JobTemplate`, and
-only when it has none is the submission stage run, whose errors (with Environment Templates
-attached, the single-layer rule, say) are for `Submission`, at paths starting with the
-document.
+§7.4.1 applies with it: in two passes, its own errors reported alone, for `JobTemplate`, then
+the caller limits, and only when there is no error the submission stage, whose errors (with
+Environment Templates attached, the single-layer rule, say) are for `Submission`, at paths
+starting with the document, in the order they are found (`StagedErrors::unordered`), even
+when an attachment lists `ENV_PARAMS`.
 
 With `ENV_PARAMS`, the error is shaped by the inputs. Without attached Environment Templates it is for
 `JobTemplate`, and its paths are relative to the Job Template, as every other job-creation
@@ -1013,8 +1016,8 @@ error is. With them it is for `Submission`, and every path starts with its docum
 `JobTemplate`, `EnvironmentTemplate[i]`, or the attachment's label. One `ModelValidation`
 error is used either way: the errors of the two documents are interleaved in step order, so
 they cannot be split into a Job Template error and a Submission error that each read in
-order, and the shape then depends only on the inputs, never on which errors occurred. The
-warnings (`CreatedJob::warnings`) have the same paths.
+order, and the shape then depends only on the inputs, never on which of these errors occurred.
+The warnings (`CreatedJob::warnings`) have the same paths.
 
 For example, take the Job Environment `Lic`, whose `enableIf` is `Param.UseLic`, with `Seats`
 without a `default`, and a Step `S` with the entry `{environment: Lic}`, which supplies none,
@@ -1147,7 +1150,8 @@ the Job's Environment order with one set of taken groups:
   added to the Step's disabled list; any other has its `enableIf` decided, and one it disables
   is set not entered and added to the disabled list in the same way, while one it does not
   disable takes its group and is committed, its errors at the Job Template's paths, its
-  constraint 7 names reported in an error at `steps[i]` with the jobEnvironments wording, and
+  constraint 7 names reported in an error at `steps[i]` (`JobTemplate -> steps[i]` with
+  attachments) with the jobEnvironments wording, and
   its values placed among the Step's Job Environment values in written order.
 
 So a group's first is the same whichever documents its members come from, and a mistake of a
@@ -1254,7 +1258,7 @@ Templates can check constraints 5–7 early; prototype plan A9). Also in
 `job/create_job/external.rs`; `openjd check --environment` calls it. The two functions share
 the attachment index (`Attachments`), the name resolution of an entry (`match_entry`), and the
 sorting of a Step's missing parameters (`sort_missing`), so they report the same conditions
-with the same messages and paths, in the same order, except as items 4 and 5 say for the
+with the same messages and paths, except as items 4 and 5 say for the
 wrap-layer rule and host requirements, as item 3 says for a Step's constraint 7 error (it
 leaves out the Environments it cannot know the Step enters, such as one an earlier
 undetermined one of its group may supersede, so job creation's message can list more), and
@@ -1301,8 +1305,9 @@ reports only once the Step's entries resolve):
    `enableIf` is the scalar `false`; undetermined otherwise, including an attachment an
    expression entry may name) goes through `apply_exclusive_groups` (§4, after item 10), and
    only a known-entered result is checked. An attachment no entry can reach (named like a
-   Job Environment, or ambiguous) is entered by its `activation` and `enableIf` alone, as job
-   creation takes it, whatever entries name it, and its values are not checked. The Job
+   Job Environment, or ambiguous) is entered by its `activation` and `enableIf` alone, whatever
+   entries name it, and its values are not checked (job creation stops a Step whose entry
+   names an ambiguous attachment, so it reports less for that Step). The Job
    Template's own Environments come after the attachments, so they supersede none. Constraint
    5 is checked for every attachment. The same value checks and constraint 7 are made for each
    Job Environment with an `exclusiveGroup` that the Step is known to enter after the

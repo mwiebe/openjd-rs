@@ -68,13 +68,33 @@ pub(crate) const ANY: usize = usize::MAX;
 #[derive(Default)]
 pub(crate) struct StagedErrors {
     buckets: BTreeMap<(Stage, usize, usize), ValidationErrors>,
+    /// Whether every error goes in one bucket, in filing order, whatever
+    /// its key: for a Job Template without `ENV_PARAMS`, created as before
+    /// the extension ([`unordered`](Self::unordered)).
+    flat: bool,
 }
 
 impl StagedErrors {
+    /// Errors that are reported in the order they are filed, keys ignored:
+    /// the submission stage of a Job Template without `ENV_PARAMS`, whose
+    /// errors keep the order they had before the extension (§7.4.1 applies
+    /// with it).
+    pub(crate) fn unordered() -> Self {
+        Self {
+            buckets: BTreeMap::new(),
+            flat: true,
+        }
+    }
+
     /// The errors filed under `stage`, Step `step`, and position `at`, to
     /// add to.
     pub(crate) fn at(&mut self, stage: Stage, step: usize, at: usize) -> &mut ValidationErrors {
-        self.buckets.entry((stage, step, at)).or_default()
+        let key = if self.flat {
+            (Stage::Validation, 0, 0)
+        } else {
+            (stage, step, at)
+        };
+        self.buckets.entry(key).or_default()
     }
 
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that

@@ -959,8 +959,10 @@ pass 6:
   for an Environment in the list is disabled by its `enableIf`, the Environment's group adds
   "(the Step's 'environment:' dependency for it is disabled by its enableIf, so it supplies
   nothing; Template Schemas §3.2 item 3.2)", counted in the 512 characters, since the Step does
-  have an entry for the Environment, which a reader would otherwise take as enabled; job creation and the submission stage add the same note for an
-  entry an `enableIf` expression disabled. Since a disabled entry declines a `BY_DEFAULT`
+  have an entry for the Environment, which a reader would otherwise take as enabled;
+  `check_environment_templates` adds the same note for an attachment (job creation does not:
+  a disabled entry for an `ALWAYS` Environment is a §7.4.1 step 4 error, which stops the Step
+  before constraint 7). Since a disabled entry declines a `BY_DEFAULT`
   Environment and requests no `ON_REQUEST` one, the note now arises only for an `ALWAYS`
   one. A second note, also counted in the 512
   characters, marks an Environment whose own `enableIf` is unresolved for the Step (it depends

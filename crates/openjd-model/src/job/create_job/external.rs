@@ -432,10 +432,11 @@ impl<'a> Attachments<'a> {
     /// `default` (see
     /// [`unreachable_required`](Self::unreachable_required)) for which
     /// `not_disabled(doc)` holds: a Step's Sessions enter it, as its own
-    /// `enableIf` does not disable it for every Step.
+    /// `enableIf` does not disable it for every Step. Each goes to `add`
+    /// with the attachment's index, its path and its message.
     fn report_unreachable(
         &self,
-        errors: &mut ValidationErrors,
+        mut add: impl FnMut(usize, &[PathElement], String),
         not_disabled: impl Fn(usize) -> bool,
         only_failed: impl Fn(usize) -> bool,
     ) {
@@ -449,7 +450,7 @@ impl<'a> Attachments<'a> {
                 } else {
                     message.clone()
                 };
-                errors.add(path, message);
+                add(*doc, path, message);
             }
         }
     }
@@ -642,9 +643,9 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// with `activation: ON_REQUEST` that one of its enabled entries refers to.
 /// For each one it enters that declares parameters, the Step gets
 /// effective values from its entry if one refers to it and from the
-/// `default`s otherwise (except an attachment that one of the Step's
-/// rejected entries names, an ambiguous name, which is skipped for that
-/// Step so the one mistake is reported once). Then the attachments and the
+/// `default`s otherwise (a Step whose entry names an ambiguous attachment
+/// is stopped, so the one mistake is reported once). Then the attachments
+/// and the
 /// Job Environments are decided in the Job's Environment order, attached
 /// ones first: one whose `exclusiveGroup` an earlier one that remains in
 /// the Step's set already has is superseded, which disables it for the
@@ -691,6 +692,7 @@ pub(crate) fn apply_environment_templates(
         job_envs,
         check_errors,
         staged: body_staged,
+        limits,
     } = body;
     let job_envs = &job_envs;
     // Paths start with their document only when Environment Templates are
@@ -717,7 +719,16 @@ pub(crate) fn apply_environment_templates(
         .map(|e| e.name.as_str())
         .collect();
 
-    let mut staged = StagedErrors::default();
+    // A Job Template without ENV_PARAMS is created as before the extension,
+    // its errors in the order they are found (§7.4.1 applies with it).
+    let mut staged = if job_template
+        .profile()
+        .has_extension(ModelExtension::EnvParams)
+    {
+        StagedErrors::default()
+    } else {
+        StagedErrors::unordered()
+    };
     let mut warnings = Vec::new();
     // `default`s resolve against the merged Job Parameters, without
     // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).
@@ -1090,7 +1101,7 @@ pub(crate) fn apply_environment_templates(
     // enters it. Not about one Step, so filed after the Steps' errors of
     // step 7.
     set.report_unreachable(
-        staged.at(Stage::Step7, ANY, 0),
+        |doc, path, message| staged.at(Stage::Step7, ANY, doc).add(path, message),
         |doc| entered_by_some_step[doc],
         |doc| entered_by_some_step[doc] && !decided_by_some_step[doc],
     );
@@ -1259,6 +1270,7 @@ pub(crate) fn apply_environment_templates(
         &mut staged,
     );
     super::finish_errors(check_errors, body_staged, staged, !attached.is_empty())?;
+    limits?;
 
     job.job_environments = (!environments.is_empty()).then_some(environments);
     Ok(CreatedJob {
@@ -1798,8 +1810,8 @@ pub fn check_environment_templates(
             // it is decided at job creation. No entry decides an unreachable
             // one (named like a Job Environment, or ambiguous, which is
             // reported): it is entered by its `activation` and `enableIf`
-            // alone, as job creation takes it, and its values are not
-            // checked.
+            // alone, and its values are not checked (job creation stops a
+            // Step whose entry names an ambiguous one).
             let state = if de.activation != EnvironmentActivation::Always
                 && de.env.literal_enabled() == Some(false)
             {
@@ -1947,7 +1959,7 @@ pub fn check_environment_templates(
     // Step is known to enter it. Reported after the Steps' values, as job
     // creation reports it.
     set.report_unreachable(
-        &mut errors,
+        |_, path, message| errors.add(path, message),
         |doc| known_entered_by_some_step[doc],
         // No `enableIf` is evaluated here, so none has failed.
         |_| false,
@@ -2013,9 +2025,9 @@ pub fn check_environment_templates(
         })
         .collect();
     // An attachment that declares parameters and that an ambiguous entry
-    // of the Step names is left out: job creation computes no values for
-    // it and then skips its host requirements, so combining it here would
-    // report a conflict job creation does not. (An `ALWAYS` attachment that
+    // of the Step names is left out: no value of it is known, and job
+    // creation stops such a Step before host requirements, so combining it
+    // here would report a conflict job creation does not. (An `ALWAYS` attachment that
     // an entry with an `enableIf` expression names is entered either way,
     // so it is kept; a `BY_DEFAULT` one may be declined, so it is not
     // certainly entered.)
