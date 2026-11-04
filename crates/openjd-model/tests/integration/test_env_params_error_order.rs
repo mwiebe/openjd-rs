@@ -1736,9 +1736,10 @@ const B_HOST: &str = "specificationVersion: environment-2023-09\nextensions: [EN
 
 // ── Round 2: each key, for a Job Template without ENV_PARAMS ─────────
 //
-// The keys come from code shared with ENV_PARAMS. These tests pin them for
-// a Job Template without it, each with two errors that the key, and not
-// the order they are found in, puts in order.
+// The keys come from code shared with ENV_PARAMS. These tests pin each
+// key's value for a Job Template without it: each has two errors whose
+// order a change to that key would swap. (In most of them the errors are
+// also found in that order, so they passed before the one-pass order too.)
 
 /// A Job Template without ENV_PARAMS, listing `exts`, with `rest` (its
 /// `jobEnvironments` and `steps`) after the name.
@@ -1953,4 +1954,73 @@ fn an_edited_job_template_without_env_params_files_an_undeclared_key_at_step_5()
         edited(&src, |_| {}, &[&x, &failing_enable_if("A")], &[]),
         "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> Z:\n\tEnvironment 'X' (EnvironmentTemplate[0]) declares no parameter 'Z'. Declared: N.\nEnvironmentTemplate[1] -> environment -> enableIf:\n\tcould not be evaluated: Division by zero. Resolved for Step 'S'.\n  Env.Param.X / (Env.Param.X - Env.Param.X) > 0\n  ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
     );
+}
+
+// ── Round 3 ──────────────────────────────────────────────────────────
+
+#[test]
+fn without_env_params_the_job_templates_validation_errors_precede_the_attachments_defaults() {
+    // Both are template-validation-style checks: the Job Template's
+    // timeout, then the attachment's relative PATH default.
+    let jt = plain(
+        "EXPR, FEATURE_BUNDLE_1",
+        "parameterDefinitions: [{name: T, type: INT, default: 0}]\nsteps:\n- name: S\n  \
+         script: {actions: {onRun: {command: x, timeout: '{{Param.T}}'}}}\n",
+    );
+    let a = env("name: A, envParameterDefinitions: [{name: P, type: PATH, default: rel/x}]");
+    assert_eq!(err_text(&jt, &[&a], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'rel/x'.");
+}
+
+#[test]
+fn an_edited_job_template_without_env_params_stops_a_step_as_with_env_params() {
+    // Each template of an ENV_PARAMS test, with ENV_PARAMS removed in code:
+    // the stop rule and the uninstantiable Step give the same errors.
+    let x = env("name: X");
+    let cases: [(String, Vec<&str>); 3] = [
+        // An undeclared key (step 5, found first) on a Step that its
+        // unresolved entry (step 3) stops.
+        (
+            format!(
+                "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: true}}]\n\
+                 jobEnvironments:\n- {{name: A, envParameterDefinitions: [{{name: P, type: \
+                 STRING, default: p}}], variables: {{V: a}}}}\nsteps:\n- name: S\n  \
+                 dependencies: [{{environment: A, enableIf: \"Param.B\", parameters: {{Q: \
+                 2}}}}, {{environment: Missing}}]\n  script: {{actions: {{onRun: {{command: \
+                 x}}}}}}\n"
+            ),
+            vec![&x],
+        ),
+        // A disabled entry for an ALWAYS Environment (step 4) stops S, so
+        // SE's failing enableIf (step 6) is not reported.
+        (
+            format!(
+                "{HEAD}parameterDefinitions: [{{name: B, type: BOOL, default: false}}, {{name: \
+                 L, type: 'LIST[INT]', default: [1]}}]\njobEnvironments:\n- {{name: A, \
+                 activation: ALWAYS, variables: {{V: a}}}}\nsteps:\n- name: S\n  \
+                 dependencies: [{{environment: A, enableIf: \"Param.B\"}}]\n  \
+                 stepEnvironments:\n  - {{name: SE, enableIf: \"Param.L[4] == 1\", variables: \
+                 {{V: s}}}}\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+            ),
+            vec![],
+        ),
+        // S0's let binding fails, so the attachments are not applied; S1's
+        // failing entry enableIf (step 2) is still reported.
+        (
+            format!(
+                "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+                 steps:\n- name: S0\n  let: [\"z = Param.L[5]\"]\n  script: {{actions: \
+                 {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: [{{environment: \
+                 Missing, enableIf: \"Param.L[4] == 1\"}}]\n  script: {{actions: {{onRun: \
+                 {{command: x}}}}}}\n"
+            ),
+            vec![],
+        ),
+    ];
+    let mut texts = Vec::new();
+    for (src, envs) in &cases {
+        let text = edited(src, |_| {}, envs, &[]);
+        assert_eq!(text, err_text(src, envs, &[]), "{src}");
+        texts.push(text);
+    }
+    assert_eq!(texts[0], "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tnames Environment 'Missing', which is not a jobEnvironments entry of the Job Template, and none of the attached Environment Templates (EnvironmentTemplate[0]) defines it. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).");
 }

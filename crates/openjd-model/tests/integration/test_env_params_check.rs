@@ -369,8 +369,8 @@ fn an_attachment_shadowed_by_a_job_environment_warns_when_the_job_lists_env_para
     assert_eq!(warnings, apply(&jt, &envs, &[]).unwrap());
 
     // Without ENV_PARAMS the Job Template has no entries that could reach
-    // any attachment, and the submission behaves as before the extension:
-    // no warning (RFC Backward compatibility).
+    // any attachment, and the submission gets no warning it did not get
+    // before the extension (RFC Backward compatibility).
     let jt = job_ok(&shadowing(""));
     assert_eq!(check(&jt, &envs).unwrap(), Vec::<String>::new());
     assert_eq!(apply(&jt, &envs, &[]).unwrap(), Vec::<String>::new());
