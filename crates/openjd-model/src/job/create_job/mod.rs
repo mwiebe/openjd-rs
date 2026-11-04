@@ -196,7 +196,9 @@ pub fn create_job(
 /// requirements or parameter space aborts job creation immediately instead.
 /// A step-level `let` binding that fails leaves its step uninstantiable:
 /// the other steps get only the checks made before the attachments are
-/// applied (§7.4.1 steps 1 and 2), the attachments are not applied, and
+/// applied (§7.4.1 steps 1 and 2, steps 4 and 5 for their Job Environment
+/// entries, step 6 for their Step Environments), the attachments are not
+/// applied, and
 /// the errors found so far are reported. The caller limits abort job
 /// creation, but only when no other error was found, after the submission
 /// stage. These aborts keep their own forms, which the shape rule below
@@ -217,7 +219,7 @@ pub fn create_job(
 /// A Step with an error from steps 1–4 has no fixed set of Environments, so
 /// steps 5–8 are not taken for it, and none of its errors from them are
 /// reported; the other Steps are checked in full. So a Step's value and
-/// constraint 7 errors appear only once its entries resolve.
+/// constraint 7 errors appear only once its step 1–4 errors are fixed.
 ///
 /// A Job Template that does not list `ENV_PARAMS` is created as before the
 /// extension (§7.4.1 applies with it), in two passes: its own errors are
@@ -327,8 +329,9 @@ pub(super) fn finish_errors(
     })
 }
 
-/// Job creation from the Job Template alone (§7.4.1 steps 1 and 2, and
-/// steps 4 and 5 for the Job Environments, of
+/// Job creation from the Job Template alone (§7.4.1 steps 1 and 2, steps
+/// 4 and 5 for the Job Environments, and step 6 for the Step Environments,
+/// of
 /// [`create_job_with_environment_templates`]): the Job, without the
 /// attached Environments and with no Step's `environments` set, for each
 /// Step what the submission stage needs, and the errors found so far,
@@ -633,8 +636,10 @@ fn create_job_from_template<'a>(
 }
 
 /// The caller limits (`ctx.caller_limits`): the total task count across
-/// all steps, each step script's size, and each Job and Step Environment's
-/// size (JSON-encoded bytes). The first one exceeded is the error.
+/// all steps, each step script's size, and each Environment's size
+/// (JSON-encoded bytes), every Step's Step Environments before the Job
+/// Environments. The first one exceeded is the error; a value equal to its
+/// limit is within it.
 fn check_caller_limits(
     steps: &[job::Step],
     job_environments: Option<&[job::Environment]>,

@@ -332,7 +332,7 @@ Job Parameters). Its submission stage:
   the attached Environments by name. A missing `required` Environment, an ambiguous name, an
   undeclared key, a bad value, or a parameter without a `default` that a Step does not
   supply fails the run with one validation error before any Session starts, in Template
-  Schemas §7.4.1 order (a Step's value errors are reported once its entries resolve; see
+  Schemas §7.4.1 order (a Step's value errors are reported once its §7.4.1 step 1–4 errors are fixed; see
   [job-creation.md](../model/job-creation.md#error-order-env_params)): for `Submission`, each
   error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`), with
   `--environment`, and for `JobTemplate`, at the Job Template's paths (`steps[0] -> ...`),
