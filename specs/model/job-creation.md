@@ -1045,21 +1045,22 @@ collects the groups of the attached Environments and gives them to `JobEnvironme
 - In the `create_job` body (`resolve_step_entries`), each Job Environment is decided in
   written order with a set of the groups already taken. One whose group no attachment shares
   is superseded when its group is taken, and is otherwise committed (its values checked and
-  constraint 7 counted) and takes its group. One whose group an attachment shares is
-  superseded when an earlier Job Environment took its group (the group's first is then that
-  one or an attachment); otherwise it takes its group and is *deferred*: its pending values
-  and `enableIf` decision go into `StepSelection::deferred`, unchecked, and it stays in the
-  Step's entered list for now.
+  constraint 7 counted) and takes its group. Every one whose group an attachment shares, and
+  whose own `enableIf` did not disable it, is *deferred*: its pending values and `enableIf`
+  decision go into `StepSelection::deferred`, unchecked, and it stays in the Step's entered
+  list for now. A Job Environment whose entry's `enableIf` failed (an error) takes its group
+  without being decided, so the later ones of its group add no errors.
 - In the submission stage (`apply_environment_templates`), each Step's attachments are decided
   in attachment order with a fresh set of taken groups: one whose `enableIf` did not disable
-  it is superseded when its group is taken, and otherwise takes it (an ambiguous attachment,
-  which is reported and gets no values, still takes its group, so the later ones of its group
-  are not checked either). Then the Step's deferred Job Environments, in written order: one
-  whose group an attachment took is superseded, set not entered and added to the Step's
-  disabled list; any other is committed now, its errors prefixed with `JobTemplate`, its
-  constraint 7 names reported in a second error at `JobTemplate -> steps[i]` with the
-  jobEnvironments wording, and its values placed among the Step's Job Environment values in
-  written order.
+  it is superseded when its group is taken, and otherwise takes it. An ambiguous attachment
+  (reported, with no values computed) takes its group when the Step would enter it by its
+  `activation` alone (`ALWAYS` or `BY_DEFAULT`, since no entry resolves to it) and its
+  `enableIf` is not the scalar `false`. Then the Step's deferred Job Environments, in written
+  order: one whose group an attachment or an earlier deferred one took is superseded, set not
+  entered and added to the Step's disabled list; any other takes its group and is committed
+  now, its errors prefixed with `JobTemplate`, its constraint 7 names reported in a second
+  error at `JobTemplate -> steps[i]` with the jobEnvironments wording, and its values placed
+  among the Step's Job Environment values in written order.
 
 So a group's first is the same whichever documents its members come from. A Job without
 attached Environments, or whose attached Environments share no group with its own, decides
@@ -1170,17 +1171,21 @@ Templates can check constraints 5–7 early; prototype plan A9). Also in
 `job/create_job/external.rs`; `openjd check --environment` calls it. The two functions share
 the attachment index (`Attachments`), the name resolution of an entry (`match_entry`), and the
 sorting of a Step's missing parameters (`sort_missing`), so they report the same conditions
-with the same messages and paths, in the same order (except as items 4 and 5 say for the
-wrap-layer rule and host requirements):
+with the same messages and paths, in the same order, except as items 4 and 5 say for the
+wrap-layer rule and host requirements, and as item 3 says for a grouped Job Environment's
+errors (job creation reports them in its `JobTemplate` error, and stops there, when no
+attachment shares the group). Within entry resolution, job creation resolves a Step's
+disabled entries before its enabled ones, so errors of the two can come in a different order:
 
 1. step 1 above, with an empty symbol table: a literal `default` reads no symbols; the error
    for an unreachable attachment is reported only when its own `enableIf` is absent or `true`,
    or certainly unresolved with no values supplied (see
    [validation.md](validation.md#pass-11-env_params-gating)), since one with `false` is not entered and
    one with any other expression is undetermined (§7.5 rule 5), and only when some Step is
-   known to enter it after the group rule of item 3 (no earlier attachment of its
-   `exclusiveGroup` is known to be entered or undetermined for that Step). That error is
-   reported after item 3's errors, where job creation reports it;
+   known to enter it after the group rule of item 3 (it is entered by its `activation` and
+   `enableIf` alone, and no earlier attachment of its `exclusiveGroup` is known to be entered
+   or undetermined for that Step). That error is reported after item 3's errors, where job
+   creation reports it;
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
    template-validation error), with `required` defaulting to `true`. An entry whose `enableIf`
@@ -1208,8 +1213,9 @@ wrap-layer rule and host requirements):
    is entered and its `enableIf` is as above; not entered when it is not entered or its
    `enableIf` is the scalar `false`; undetermined otherwise, including an attachment an
    expression entry may name) goes through `apply_exclusive_groups` (§4, after item 10), and
-   only a known-entered result is checked. An attachment an ambiguous entry names is taken as
-   entered for the group, as job creation takes it, but its values are not checked. The Job
+   only a known-entered result is checked. An attachment no entry can reach (named like a
+   Job Environment, or ambiguous) is entered by its `activation` and `enableIf` alone, as job
+   creation takes it, whatever entries name it, and its values are not checked. The Job
    Template's own Environments come after the attachments, so they supersede none. Constraint
    5 is checked for every attachment. The same value checks and constraint 7 are made for each
    Job Environment with an `exclusiveGroup` that the Step is known to enter after the

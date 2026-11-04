@@ -265,15 +265,17 @@ pub enum EnvironmentActivation {
     /// `BY_DEFAULT`: every Session of the Job enters the Environment, in its
     /// position in the Job's Environment order, except the Sessions of a
     /// Step that declines it with a disabled `environment:` entry (§3.2
-    /// item 3.2) and of a Step for which its `enableIf` is `false`. The
-    /// default, and the behavior of every Environment without the
-    /// extension.
+    /// item 3.2), of a Step for which its `enableIf` is `false`, and of a
+    /// Step for which an earlier Environment of its `exclusiveGroup`
+    /// supersedes it (§4 item 7). The default, and the behavior of every
+    /// Environment without the extension.
     #[default]
     ByDefault,
     /// `ON_REQUEST`: only the Sessions of a Step that requests the
     /// Environment through an enabled `environment:` entry of its
     /// `dependencies` enter it, less any for which its `enableIf` is
-    /// `false`.
+    /// `false` or an earlier Environment of its `exclusiveGroup` supersedes
+    /// it (§4 item 7).
     OnRequest,
 }
 

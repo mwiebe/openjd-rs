@@ -160,7 +160,9 @@ stage that needs no Job Parameter values:
   `activation: ALWAYS` or `activation: BY_DEFAULT` with an own `enableIf` that is absent or
   `true` (or certainly unresolved), Sessions enter it and no entry can supply them, so
   that is an error at its `envParameterDefinitions`, unless an earlier attachment of its
-  `exclusiveGroup` supersedes or may supersede it for every Step. A `BY_DEFAULT` one whose `enableIf` is
+  `exclusiveGroup` supersedes or may supersede it for every Step. No entry decides whether a
+  Step enters such an attachment, so an entry naming its name, with any `enableIf`, does not
+  change this. A `BY_DEFAULT` one whose `enableIf` is
   `false` is entered by no Session; for one whose `enableIf` is an expression `openjd run`
   decides. With `activation: ON_REQUEST` no Session enters it, so it is not an
   error;

@@ -21,7 +21,7 @@ use openjd_model::job::{AttributeRequirement, Document, EnvironmentRef, HostRequ
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
     check_environment_templates, create_job_with_environment_templates,
-    AttachedEnvironmentTemplate, CreatedJob, ModelError,
+    AttachedEnvironmentTemplate, CallerLimits, CreatedJob, ModelError, ValidationContext,
 };
 
 use crate::env_params_common::{
@@ -49,11 +49,34 @@ fn create_err(jt_src: &str, env_srcs: &[&str], model: &str, expected: &[&str]) {
 
 /// Run `check_environment_templates` for `jt_src` with `env_srcs`.
 fn check(jt_src: &str, env_srcs: &[&str]) -> Result<(), ModelError> {
+    check_with(jt_src, env_srcs, |c| c)
+}
+
+/// [`check`] with the context `ctx` makes of the default one.
+fn check_with(
+    jt_src: &str,
+    env_srcs: &[&str],
+    ctx: impl Fn(ValidationContext) -> ValidationContext,
+) -> Result<(), ModelError> {
     let jt = job_ok(jt_src);
     let envs: Vec<EnvironmentTemplate> = env_srcs.iter().map(|s| env_ok(s)).collect();
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    check_environment_templates(&jt, &attached, &posix_ctx(&jt)).map(|_| ())
+    check_environment_templates(&jt, &attached, &ctx(posix_ctx(&jt))).map(|_| ())
+}
+
+/// [`create`] with the context `ctx` makes of the default one.
+fn create_with(
+    jt_src: &str,
+    env_srcs: &[&str],
+    ctx: impl Fn(ValidationContext) -> ValidationContext,
+) -> Result<CreatedJob, ModelError> {
+    let jt = job_ok(jt_src);
+    let envs: Vec<EnvironmentTemplate> = env_srcs.iter().map(|s| env_ok(s)).collect();
+    let values = job_params_with(&jt, &[], &envs);
+    let attached: Vec<AttachedEnvironmentTemplate<'_>> =
+        envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    create_job_with_environment_templates(&jt, &attached, &values, &ctx(posix_ctx(&jt)))
 }
 
 fn check_ok(jt_src: &str, env_srcs: &[&str]) {
@@ -886,7 +909,9 @@ fn check_holds_a_grouped_job_environment_first_in_its_group_to_constraint_7() {
     );
     let x = env("name: X, exclusiveGroup: G");
     check_ok(&jt, &[&x]);
-    create_ok(&jt, &[&x]);
+    let created = create_ok(&jt, &[&x]);
+    assert_eq!(entered(&created, 0), ["X@0"]);
+    assert_eq!(disabled(&created, 0), ["J"]);
 }
 
 #[test]
@@ -996,4 +1021,215 @@ fn disabled_environments_are_in_job_order() {
     let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G")]);
     assert_eq!(entered(&created, 0), ["X@0"]);
     assert_eq!(disabled(&created, 0), ["S", "D"]);
+}
+
+// ── Audit round 2 ──────────────────────────────────────────────────
+
+/// The unreachable-attachment error for `U` at attachment `doc`.
+fn unreachable_u(doc: usize) -> String {
+    format!(
+        "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\tEnvironment \
+         'U' has the same name as a jobEnvironments entry of the Job Template, so no \
+         'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
+         parameters without a default that no Step can supply: P. Its activation is BY_DEFAULT \
+         and an earlier Environment of its exclusiveGroup does not supersede it, so Sessions \
+         enter it, and the submission is rejected (§3.2.1)."
+    )
+}
+
+#[test]
+fn an_unreachable_attachment_one_step_enters_is_an_error() {
+    // S1 requests A, which then supersedes U for S1; S0 does not, so S0's
+    // Sessions enter U.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\nsteps:\n- name: S0\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: \
+         [{{environment: A}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
+    let u = env("name: U, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(&jt, &[&a, &u], &[&unreachable_u(1)]);
+}
+
+#[test]
+fn an_attachment_an_expression_entry_may_request_is_undetermined() {
+    // Whether the entry requests A is decided at job creation, so B may be
+    // superseded and is not checked before then; here it is.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: UseA, type: STRING, default: 'yes'}}]\n\
+         steps:\n- name: S\n  dependencies: [{{environment: A, enableIf: \"Param.UseA == \
+         'yes'\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G");
+    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_ok(&jt, &[&a, &b]);
+    let created = create_ok(&jt, &[&a, &b]);
+    assert_eq!(entered(&created, 0), ["A@0"]);
+}
+
+#[test]
+fn an_ambiguous_attachment_is_entered_by_its_activation_alone() {
+    // No entry resolves to an ambiguous Amb. An ON_REQUEST one is not
+    // entered, so B is its group's first; a BY_DEFAULT one whose enableIf
+    // is false is not entered either; a BY_DEFAULT one is, so B is
+    // superseded.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let ambiguous = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
+                     Environment 'Amb', which 2 attached Environment Templates define \
+                     (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                     exactly one (Template Schemas §3.2.1 item 3).";
+    let b_missing = missing(
+        "JobTemplate -> steps[0]",
+        false,
+        "'B' (EnvironmentTemplate[2])",
+    );
+    for amb in [
+        "name: Amb, activation: ON_REQUEST, exclusiveGroup: G",
+        "name: Amb, exclusiveGroup: G, enableIf: false",
+    ] {
+        let amb = env(amb);
+        check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous, &b_missing]);
+    }
+    let amb = env("name: Amb, exclusiveGroup: G");
+    check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous]);
+}
+
+#[test]
+fn only_the_first_ambiguous_copy_of_a_group_is_an_unreachable_error() {
+    // Every Step's entry for Amb is ambiguous, so no Step decides either
+    // copy. Ungrouped, both are entered and both need P; in one group, the
+    // second copy is superseded.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let ambiguous = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
+                     Environment 'Amb', which 2 attached Environment Templates define \
+                     (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                     exactly one (Template Schemas §3.2.1 item 3).";
+    let unreachable = |doc: usize, how: &str| {
+        format!(
+            "EnvironmentTemplate[{doc}] -> environment -> envParameterDefinitions:\n\t\
+             Environment 'Amb' is defined by 2 attached Environment Templates \
+             (EnvironmentTemplate[0], EnvironmentTemplate[1]), so no 'environment:' \
+             dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters \
+             without a default that no Step can supply: P. {how}, and the submission is \
+             rejected (§3.2.1)."
+        )
+    };
+    let every = "Its activation is BY_DEFAULT, so every Session enters it";
+    let grouped = "Its activation is BY_DEFAULT and an earlier Environment of its \
+                   exclusiveGroup does not supersede it, so Sessions enter it";
+    let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(
+        &jt,
+        &[&amb, &amb],
+        &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
+    );
+    let amb =
+        env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(&jt, &[&amb, &amb], &[ambiguous, &unreachable(0, grouped)]);
+    // With an expression entry naming it, no Step decides it either, and it
+    // is still an error, without a group.
+    let expr = jt.replace(
+        "[{environment: Amb}]",
+        "[{environment: Amb, enableIf: \"Job.Name == 'J'\"}]",
+    );
+    let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(
+        &expr,
+        &[&amb, &amb],
+        &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
+    );
+}
+
+/// A Job Template whose grouped Job Environment J declares a PATH `D`,
+/// with C, ungrouped, before it, and a Step that names C then J with
+/// `D: value`.
+fn grouped_path(value: &str) -> String {
+    format!(
+        "{HEAD}jobEnvironments:\n- {{name: C, variables: {{V: c}}}}\n- {{name: J, \
+         exclusiveGroup: G, envParameterDefinitions: [{{name: D, type: PATH}}], variables: {{V: \
+         j}}}}\nsteps:\n- name: S\n  dependencies: [{{environment: C}}, {{environment: J, \
+         parameters: {{D: '{value}'}}}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    )
+}
+
+#[test]
+fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
+    // As job creation does: the path format, URI values, and the caller's
+    // limits, and the error at the entry's own index.
+    let relative = grouped_path("relative/x");
+    let err = check(&relative, &[]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&format!("JobTemplate -> {}", not_absolute("relative/x"))],
+    );
+    create_err(
+        &relative,
+        &[],
+        "JobTemplate",
+        &[&not_absolute("relative/x")],
+    );
+    let windows = |c: ValidationContext| {
+        c.with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows)
+    };
+    check_with(&grouped_path("C:\\x"), &[], windows).unwrap();
+    create_with(&grouped_path("C:\\x"), &[], windows).unwrap();
+    let err = check(&grouped_path("C:\\x"), &[]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&format!("JobTemplate -> {}", not_absolute("C:\\x"))],
+    );
+    let uri = |c: ValidationContext| c.with_allow_uri_path_values(true);
+    check_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
+    create_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
+    let err = check(&grouped_path("s3://bucket/key"), &[]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[
+            "JobTemplate -> steps[0] -> dependencies[1] -> parameters -> D:\n\tis a URI \
+           ('s3://bucket/key'), and URI path values are not permitted for this submission.",
+        ],
+    );
+    // An enableIf whose evaluation exceeds the caller's limit is not
+    // certainly unresolved, so J is not known to be entered.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: P, type: STRING}}], enableIf: \"Env.Param.P != ''\", variables: {{V: j}}}}\n\
+         {STEP}"
+    );
+    let limited = |c: ValidationContext| {
+        c.with_caller_limits(CallerLimits {
+            max_eval_operations: Some(1),
+            ..Default::default()
+        })
+    };
+    check_with(&jt, &[], limited).unwrap();
+    let err = check(&jt, &[]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&format!(
+            "{}{UNRESOLVED_NOTE}.",
+            missing("JobTemplate -> steps[0]", true, "'J'").trim_end_matches('.')
+        )],
+    );
+}
+
+/// The error for a PATH value `value` of J's `D` that is not absolute in
+/// the POSIX submission path format.
+fn not_absolute(value: &str) -> String {
+    format!(
+        "steps[0] -> dependencies[1] -> parameters -> D:\n\tmust be an absolute path in the \
+         submission path format (POSIX), since an Environment parameter has no directory to be \
+         relative to; got '{value}'."
+    )
 }

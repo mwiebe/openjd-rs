@@ -322,8 +322,9 @@ pub enum EnvironmentActivation {  // serde: SCREAMING_SNAKE_CASE
 
 `activation()` applies the default (§4 item 4: absent means `BY_DEFAULT`). `BY_DEFAULT` and
 `ALWAYS` are both entered by every Step's Sessions; under `BY_DEFAULT` a Step may decline it
-with a disabled `environment:` entry (§3.2 item 3.2) and the Environment's own
-`enableIf` may leave a Step out, and under `ALWAYS` neither can: a Step's disabled entry for
+with a disabled `environment:` entry (§3.2 item 3.2), the Environment's own
+`enableIf` may leave a Step out, and an earlier Environment of its `exclusiveGroup` may
+supersede it (§4 item 7), and under `ALWAYS` none of these can: a Step's disabled entry for
 it, or its `enableIf` being `false` for a Step, is an error (§4 item 4, §3.2.2 item 6; see
 [validation.md](validation.md#environment-enableif-env_params) and
 [job-creation.md](job-creation.md#environment-enableif-env_params)). An unrecognized value,
