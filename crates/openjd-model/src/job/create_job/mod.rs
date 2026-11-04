@@ -191,18 +191,21 @@ pub fn create_job(
 /// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
 /// whatever `ctx` enables.
 ///
-/// Every check failure is reported in one `ModelError::ModelValidation`.
-/// Failures that make a step uninstantiable (resolving its own host
-/// requirements or parameter space, or a step-level `let` binding) abort
-/// immediately instead, and so do the caller limits, which are checked
+/// With `ENV_PARAMS` in the Job Template, every check failure is reported
+/// in one `ModelError::ModelValidation`. Resolving a step's own host
+/// requirements or parameter space aborts job creation immediately instead.
+/// A step-level `let` binding that fails leaves its step uninstantiable:
+/// the other steps are still checked, the attachments are not applied, and
+/// the errors found so far are reported. The caller limits are checked
 /// after the Job Template's own steps, before the attachments are applied,
-/// and only when those found no error. The errors are in this order:
+/// only when those found no error, and abort job creation. The errors are
+/// in this order:
 ///
 /// - first the checks job creation makes in the template-validation style:
-///   the resolved-value re-checks on carried-forward fields (and the `let`
-///   bindings feeding them), Job Environment by Job Environment and then
-///   Step by Step, then the literal `default`s, the Job Template's before
-///   the attachments';
+///   the resolved-value re-checks on the Job Environments' carried-forward
+///   fields, then the Job Environments' literal `default`s, then each
+///   Step's carried-forward fields (and the `let` bindings feeding them),
+///   then the attachments' literal `default`s;
 /// - then by §7.4.1 step, then by Step, then by the Environment's place in
 ///   the Job's Environment order (an entry's error by its place in the
 ///   Step's `dependencies`). An error that names several Steps (a failed
@@ -214,6 +217,12 @@ pub fn create_job(
 /// steps 5–8 are not taken for it, and none of its errors from them are
 /// reported; the other Steps are checked in full. So a Step's value and
 /// constraint 7 errors appear only once its entries resolve.
+///
+/// A Job Template that does not list `ENV_PARAMS` is created as before the
+/// extension (§7.4.1 applies with it), in two passes: its own errors are
+/// reported alone, for `JobTemplate`, and only when it has none are the
+/// attached Environment Templates applied, whose errors are for
+/// `Submission`, with every path starting at its document.
 ///
 /// The error is shaped by the inputs. Without attached Environment
 /// Templates it is for `JobTemplate`, at paths relative to the Job
@@ -544,12 +553,19 @@ fn create_job_from_template<'a>(
     // the failure in `check_errors`. Such a Step cannot be instantiated, so
     // the submission stage does not run, and the errors so far are
     // reported.
+    // A Job Template that does not list ENV_PARAMS is created as before the
+    // extension, in two passes (§7.4.1 applies with it): its own errors are
+    // reported alone, for `JobTemplate`, before any Environment Template is
+    // applied.
+    let one_pass = job_template
+        .profile()
+        .has_extension(crate::types::ModelExtension::EnvParams);
     let Some(built) = steps.into_iter().collect::<Option<Vec<_>>>() else {
         finish_errors(
             check_errors,
             staged,
             staged::StagedErrors::default(),
-            attached_count > 0,
+            one_pass && attached_count > 0,
         )?;
         return Err(ModelError::DecodeValidation(
             "internal error: a step was skipped without a recorded error".to_string(),
@@ -561,6 +577,12 @@ fn create_job_from_template<'a>(
     // already found the Job is rejected anyway, so they are not checked,
     // and the submission stage reports every error.
     let limits_apply = check_errors.is_empty() && staged.is_empty();
+    if !one_pass && !limits_apply {
+        finish_errors(check_errors, staged, staged::StagedErrors::default(), false)?;
+        return Err(ModelError::DecodeValidation(
+            "internal error: errors were found but not reported".to_string(),
+        ));
+    }
 
     // Caller-imposed total task count limit across all steps
     if let Some(max_task_count) = ctx.caller_limits.max_task_count.filter(|_| limits_apply) {

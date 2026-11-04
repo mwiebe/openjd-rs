@@ -1719,9 +1719,10 @@ fn a_job_environments_enable_if_runs_under_the_caller_memory_budget() {
 }
 
 #[test]
-fn a_step_environments_enable_if_error_is_reported_when_entry_scope_fails() {
-    // The entry value's binding fails in WINDOWS form, and the Step
-    // Environment's enableIf fails too: both are reported.
+fn a_step_environments_enable_if_error_is_not_reported_when_entry_scope_fails() {
+    // The entry value's binding fails in WINDOWS form (§7.4.1 step 1),
+    // which stops the Step after step 4, so the Step Environment's failing
+    // enableIf (step 6) is not reported; it is once the binding is fixed.
     let jt = job_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          parameterDefinitions: [{name: S, type: STRING, default: x}]\n\
@@ -1735,13 +1736,15 @@ fn a_step_environments_enable_if_error_is_reported_when_entry_scope_fails() {
     let values = job_params_with(&jt, &[], &[]);
     let err =
         create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt)).unwrap_err();
+    assert_errors(&err.to_string(), "JobTemplate", &[WINDOWS_LET_ERROR]);
+    let err =
+        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
         &[
             "steps[0] -> stepEnvironments[0] -> enableIf:\n\tcould not be evaluated: Cannot \
-             convert 'x' to int\n  int(Param.S) > 0\n  ^~~~~~~~~~~~",
-            WINDOWS_LET_ERROR,
+           convert 'x' to int\n  int(Param.S) > 0\n  ^~~~~~~~~~~~",
         ],
     );
 }

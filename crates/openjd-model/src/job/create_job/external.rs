@@ -99,8 +99,10 @@ impl<'a> From<&'a EnvironmentTemplate> for AttachedEnvironmentTemplate<'a> {
 /// implicitly").
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmissionWarning {
-    /// Where the condition is, starting with the document (`JobTemplate`,
-    /// `EnvironmentTemplate[i]`, or the attachment's label).
+    /// Where the condition is: relative to the Job Template when no
+    /// Environment Template is attached, and otherwise starting with the
+    /// document (`JobTemplate`, `EnvironmentTemplate[i]`, or the
+    /// attachment's label).
     pub path: Vec<PathElement>,
     /// What the condition is.
     pub message: String,

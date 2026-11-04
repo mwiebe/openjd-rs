@@ -20,8 +20,9 @@
 //! order they were made.
 //!
 //! A Step with an error from steps 1–4 has no fixed set of Environments,
-//! so steps 5–8 are not taken for it, and nothing is filed for it under
-//! them ([`StagedErrors::stopped`]); the other Steps go on.
+//! so steps 5–8 are not taken for it ([`StagedErrors::stopped`]), and
+//! [`StagedErrors::finish`] leaves out anything filed for it under them
+//! before it was known to be stopped; the other Steps go on.
 
 use std::collections::BTreeMap;
 
@@ -101,10 +102,22 @@ impl StagedErrors {
     }
 
     /// Every error, in key order, as one `ModelValidation` error for
-    /// `model`, or `Ok` when there are none.
+    /// `model`, or `Ok` when there are none. The errors filed under steps
+    /// 5–8 for a [`stopped`](Self::stopped) Step are left out.
     pub(crate) fn finish(self, model: &str) -> Result<(), crate::error::ModelError> {
+        let stopped: std::collections::HashSet<usize> = self
+            .buckets
+            .iter()
+            .filter(|((stage, _, _), errors)| {
+                (Stage::Step1..=Stage::Step4).contains(stage) && !errors.is_empty()
+            })
+            .map(|((_, step, _), _)| *step)
+            .collect();
         let mut all = ValidationErrors::default();
-        for (_, errors) in self.buckets {
+        for ((stage, step, _), errors) in self.buckets {
+            if stage >= Stage::Step5 && stopped.contains(&step) {
+                continue;
+            }
             all.errors.extend(errors.errors);
         }
         all.into_result(model)
@@ -127,12 +140,12 @@ mod tests {
         staged.at(Stage::Step7, 0, 0).add(&[], "7/0/0");
         staged.at(Stage::Step7, ANY, 0).add(&[], "7/any");
         staged.at(Stage::Step7, 0, 1).add(&[], "7/0/1 b");
-        staged.at(Stage::Step7, 1, 0).add(&[], "7/1/0");
+        staged.at(Stage::Step7, 2, 0).add(&[], "7/2/0");
         staged.at(Stage::Validation, 0, 0).add(&[], "validation");
         assert_eq!(
             messages(staged, "M"),
             "Model validation error: 7 validation errors for M\nM: validation\nM: 3/1/0\n\
-             M: 7/0/0\nM: 7/0/1 a\nM: 7/0/1 b\nM: 7/1/0\nM: 7/any"
+             M: 7/0/0\nM: 7/0/1 a\nM: 7/0/1 b\nM: 7/2/0\nM: 7/any"
         );
     }
 
@@ -153,6 +166,22 @@ mod tests {
         }
         assert!(!staged.stopped(0));
         assert!(!staged.stopped(5));
+    }
+
+    #[test]
+    fn a_stopped_steps_errors_from_steps_5_to_8_are_left_out() {
+        let mut staged = StagedErrors::default();
+        staged
+            .at(Stage::Step6, 0, 0)
+            .add(&[], "6/0 filed before the stop");
+        staged.at(Stage::Step2, 0, 0).add(&[], "2/0");
+        staged.at(Stage::Step8, 0, ANY).add(&[], "8/0");
+        staged.at(Stage::Step5, 1, 0).add(&[], "5/1");
+        staged.at(Stage::Step7, ANY, 0).add(&[], "7/any");
+        assert_eq!(
+            messages(staged, "M"),
+            "Model validation error: 3 validation errors for M\nM: 2/0\nM: 5/1\nM: 7/any"
+        );
     }
 
     #[test]
