@@ -1512,3 +1512,19 @@ fn a_value_equal_to_a_caller_limit_is_within_it() {
         Err(format!("Model validation error: 1 validation error for Template\nTemplate: Environment 'SE' size ({se} bytes) exceeds caller limit of 1 bytes."))
     );
 }
+
+// ── Round 6 ──────────────────────────────────────────────────────────
+
+#[test]
+fn a_step_environment_whose_enable_if_fails_counts_for_the_single_layer_rule() {
+    // Inner's enableIf fails (step 6), so it is checked as if enabled: with
+    // Outer, the Step enters two wrapping Environments (step 7).
+    let jt = format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR, \
+         WRAP_ACTIONS]\nname: J\nparameterDefinitions: [{{name: L, type: 'LIST[INT]', default: \
+         [1]}}]\nsteps:\n- name: S\n  stepEnvironments:\n  - {{name: Outer, {WRAP}}}\n  - \
+         {{name: Inner, enableIf: \"Param.L[4] == 1\", {WRAP}}}\n  script: {{actions: {{onRun: \
+         {{command: x}}}}}}\n"
+    );
+    assert_eq!(err_text(&jt, &[], &[]), "Model validation error: 2 validation errors for JobTemplate\nsteps[0] -> stepEnvironments[1] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~\nsteps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer' (stepEnvironments), 'Inner' (stepEnvironments). A Session may have at most one Environment defining wrap hooks (RFC 0008).");
+}
