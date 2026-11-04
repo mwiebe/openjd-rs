@@ -2604,3 +2604,57 @@ steps:
         "{stdout}"
     );
 }
+
+#[test]
+fn run_and_summary_report_a_job_template_without_env_params_with_its_attachments_errors() {
+    // A Job Template without ENV_PARAMS: its Step's timeout resolves to 0,
+    // and its Job Environment W1 and the attached W2 both wrap. Job creation
+    // takes one pass for every Job Template, so with `--environment` both
+    // errors are reported, in §7.4.1 order, for Submission; without it, the
+    // timeout alone, for JobTemplate.
+    let wrap = "script: {actions: {onWrapEnvEnter: {command: x}, onWrapTaskRun: {command: x}, \
+                onWrapEnvExit: {command: x}}}";
+    let dir = tempfile::tempdir().unwrap();
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        &format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [WRAP_ACTIONS, EXPR, \
+             FEATURE_BUNDLE_1]\nname: J\nparameterDefinitions: [{{name: T, type: INT, default: \
+             0}}]\njobEnvironments:\n- {{name: W1, {wrap}}}\nsteps:\n- name: S\n  script: \
+             {{actions: {{onRun: {{command: x, timeout: '{{{{Param.T}}}}'}}}}}}\n"
+        ),
+    );
+    let w2 = write_file(
+        &dir,
+        "w2.yaml",
+        &format!(
+            "specificationVersion: environment-2023-09\nextensions: [WRAP_ACTIONS, EXPR]\n\
+             environment: {{name: W2, {wrap}}}\n"
+        ),
+    );
+    for command in ["run", "summary"] {
+        let (code, _stdout, stderr) = run_cli(&[command, &job, "--environment", &w2]);
+        assert_ne!(code, 0, "{command}");
+        assert!(
+            stderr.starts_with(&format!(
+                "ERROR: Model validation error: 2 validation errors for Submission\n\
+                 JobTemplate -> steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout \
+                 must be > 0.\nJobTemplate -> steps[0]:\n\tits Sessions would enter 2 \
+                 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, \
+                 onWrapEnvExit): 'W2' ({w2}), 'W1'. A Session may have at most one Environment \
+                 defining wrap hooks (RFC 0008).\n"
+            )),
+            "{command}: {stderr}"
+        );
+        let (code, _stdout, stderr) = run_cli(&[command, &job]);
+        assert_ne!(code, 0, "{command}");
+        assert!(
+            stderr.starts_with(
+                "ERROR: Model validation error: 1 validation error for JobTemplate\n\
+                 steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\n"
+            ),
+            "{command}: {stderr}"
+        );
+    }
+}

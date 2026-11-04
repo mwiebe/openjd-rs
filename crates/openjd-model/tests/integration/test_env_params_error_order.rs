@@ -1623,19 +1623,24 @@ fn a_job_template_without_env_params_and_its_attachments_errors_are_ordered_by_s
              so the Environment is checked as if it is not disabled)."
         )
     };
-    let text = err_text(jt, &[&a, b], &[]);
-    let timeout = "JobTemplate -> steps[1] -> script -> actions -> onRun -> timeout:\n\ttimeout \
-                   must be > 0.";
     let enable_if = "EnvironmentTemplate[0] -> environment -> enableIf:\n\tcould not be \
-                     evaluated: Division by zero. Resolved for Steps 'S0' and 'S1'.";
-    let host = "EnvironmentTemplate[1] -> environment -> hostRequirements -> amounts[0] -> min:";
-    let at = |part: &str| {
-        text.find(part)
-            .unwrap_or_else(|| panic!("{part:?} is not in {text}"))
-    };
-    assert!(text.starts_with("Model validation error: 5 validation errors for Submission\n"));
-    let order = [at(timeout), at(enable_if), at(&c7(0)), at(&c7(1)), at(host)];
-    assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?} in {text}");
+                     evaluated: Division by zero. Resolved for Steps 'S0' and 'S1'.\n  \
+                     Env.Param.X / (Env.Param.X - Env.Param.X) > 0\n  \
+                     ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~";
+    let host = "EnvironmentTemplate[1] -> environment -> hostRequirements -> amounts[0] -> \
+                min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds \
+                for list of length 1. Resolved for Steps 'S0' and 'S1'.\n  Env.Param.L[4]\n  \
+                ~~~~~~~~~~~^~~";
+    assert_eq!(
+        err_text(jt, &[&a, b], &[]),
+        format!(
+            "Model validation error: 5 validation errors for Submission\nJobTemplate -> \
+             steps[1] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > \
+             0.\n{enable_if}\n{}\n{}\n{host}",
+            c7(0),
+            c7(1)
+        )
+    );
 }
 
 #[test]
@@ -1667,3 +1672,64 @@ fn a_job_template_without_env_params_and_without_attachments_reports_as_before()
     assert_eq!(limited(&src("0")), "Model validation error: 2 validation errors for JobTemplate\nsteps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\nsteps[1] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.");
     assert_eq!(limited(&src("5")), "Model validation error: 1 validation error for Template\nTemplate: Total task count (4) exceeds caller limit of 2.");
 }
+
+#[test]
+fn a_job_template_without_env_params_files_the_single_layer_rule_between_steps_6_and_8() {
+    // No ENV_PARAMS in the Job Template, whose Job Environment W1 wraps.
+    // Attached: A, whose enableIf fails (step 6); W2, which wraps too, so S
+    // breaks the single-layer rule (step 7); and B, whose hostRequirements
+    // fail (step 8). The single-layer error comes between them, by its
+    // step.
+    let jt = format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [WRAP_ACTIONS, EXPR]\nname: \
+         J\njobEnvironments:\n- {{name: W1, {WRAP}}}\nsteps:\n- name: S\n  script: {{actions: \
+         {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = env(
+        "name: A, envParameterDefinitions: [{name: X, type: INT, default: 1}], enableIf: \
+         \"Env.Param.X / (Env.Param.X - Env.Param.X) > 0\"",
+    );
+    let w2 = format!(
+        "specificationVersion: environment-2023-09\nextensions: [WRAP_ACTIONS, EXPR]\n\
+         environment: {{name: W2, {WRAP}}}\n"
+    );
+    let b = B_HOST;
+    assert_eq!(err_text(&jt, &[&a, &w2, b], &[]), "Model validation error: 3 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> enableIf:\n\tcould not be evaluated: Division by zero. Resolved for Step 'S'.\n  Env.Param.X / (Env.Param.X - Env.Param.X) > 0\n  ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~\nJobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W2' (EnvironmentTemplate[1]), 'W1'. A Session may have at most one Environment defining wrap hooks (RFC 0008).\nEnvironmentTemplate[2] -> environment -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Step 'S'.\n  Env.Param.L[4]\n  ~~~~~~~~~~~^~~");
+}
+
+#[test]
+fn a_stopped_step_of_a_job_template_without_env_params_does_not_stop_the_others() {
+    // A Job Template edited in code: S0 has a duplicate entry (step 2),
+    // then ENV_PARAMS is removed. S0 is stopped, so B's hostRequirements
+    // (step 8) are resolved for S1 only, and both errors are reported, for
+    // Submission.
+    let mut jt = job_ok(&format!(
+        "{HEAD}jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n- name: S0\n  \
+         dependencies: [{{environment: E}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    ));
+    let deps = jt.steps[0].dependencies.as_mut().unwrap();
+    let e = deps[0].clone();
+    deps.push(e);
+    jt.extensions
+        .as_mut()
+        .unwrap()
+        .retain(|x| x.as_str() != "ENV_PARAMS");
+    let b = env_ok(B_HOST);
+    let values = job_params_with(&jt, &[], std::slice::from_ref(&b));
+    let err = create_job_with_environment_templates(
+        &jt,
+        &[AttachedEnvironmentTemplate::new(&b)],
+        &values,
+        &posix_ctx(&jt),
+    )
+    .expect_err("expected job creation to fail");
+    assert_eq!(err.to_string(), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tduplicate environment dependency 'E'.\nEnvironmentTemplate[0] -> environment -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Step 'S1'.\n  Env.Param.L[4]\n  ~~~~~~~~~~~^~~");
+}
+
+/// An attachment whose `hostRequirements` fail for every Step that enters
+/// it (§7.4.1 step 8).
+const B_HOST: &str = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR, \
+                      FEATURE_BUNDLE_1]\nenvironment: {name: B, envParameterDefinitions: [{name: \
+                      L, type: 'LIST[INT]', default: [1]}], hostRequirements: {amounts: [{name: \
+                      amount.worker.vcpu, min: \"{{Env.Param.L[4]}}\"}]}, variables: {V: b}}\n";

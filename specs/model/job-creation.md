@@ -1051,9 +1051,11 @@ reported, step 3's first (`test_env_params_error_order.rs`).
 
 ##### Without ENV_PARAMS
 
-A Job Template that does not list `ENV_PARAMS` follows the same rule. It has no `environment:`
-entries and no Environment `enableIf`, `exclusiveGroup` or `hostRequirements` of its own, so
-§7.4.1 steps 1–5 file nothing for it, and no Step is stopped. What does apply is filed under
+A Job Template that does not list `ENV_PARAMS` follows the same rule. One that template
+validation accepts has no `environment:` entries and no Environment `enableIf`,
+`exclusiveGroup` or `hostRequirements` of its own, so §7.4.1 steps 1–5 file nothing for it,
+and no Step is stopped. (A template built or edited in code can still carry entries; they are
+checked, and a Step with a step 1–4 error is stopped, as with `ENV_PARAMS`.) What does apply is filed under
 the same keys: the template-validation-style re-checks (`Validation`), and, from the attached
 Environment Templates, their literal `default`s (`Validation`), an attachment's own `enableIf`
 (`Step6`), its values and constraint 7, the single-layer rule over each Step's set and an
@@ -1062,10 +1064,12 @@ The caller limits are checked after the submission stage, as above. The aborts (
 host requirements or parameter space, a failed step-level `let`, a caller limit) keep their
 forms.
 
-Without attached Environment Templates the output is unchanged: for such a template that
-template validation accepts, the submission stage finds no error, so the errors
+Without attached Environment Templates the output is unchanged for a template that template
+validation accepts: the submission stage finds no error for it, so the errors
 are the Job Template's own, for `JobTemplate`, in the order they were found, and a caller limit
-is reported only when there are none, as before. With attachments it changes in three ways:
+is reported only when there are none, as before. (A template built or edited in code that
+template validation would reject can get more errors than before, from the submission stage,
+or one of them in place of a caller limit.) With attachments it changes in three ways:
 
 - The Job Template's errors and the attachments' are reported together, for `Submission`, in
   §7.4.1 order. Before, the Job Template's own errors were reported alone, for `JobTemplate`,
