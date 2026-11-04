@@ -941,8 +941,9 @@ that has entries lists both.
    §7.4.
 
 Every error, with the ones job creation proper found, is reported in one `ModelValidation`
-error in §7.4.1 order (see [Error order](#error-order-env_params)). The submission stage runs
-whenever job creation proper built every Step: an error there does not stop it. The stage
+error in §7.4.1 order (see [Error order](#error-order-env_params)). With `ENV_PARAMS`, the
+submission stage runs whenever job creation proper built every Step: an error there does not
+stop it (without it, see the end of [Error order](#error-order-env_params)). The stage
 does not re-run the carried-forward resolved-value checks on the attachments' own format
 strings (the `SERVICE` prototype's submission function does).
 
@@ -981,8 +982,9 @@ requirements, and `finish_errors` drops anything job creation proper filed for i
 So a Step's value and constraint 7 errors appear only once its step 1–4 errors are fixed.
 Resolving a Step's own host requirements or parameter space still aborts job creation at
 once. A step-level `let` binding that fails leaves its Step uninstantiable: the other Steps
-are still checked, the submission stage does not run, and the errors found so far are
-reported in the same order and shape. The caller limits (task count, script and Environment
+get only the checks job creation proper makes (steps 1 and 2, and template-validation style
+errors), the submission stage does not run, so no entry is resolved (step 3) and nothing
+after it is checked, and the errors found so far are reported in the same order and shape. The caller limits (task count, script and Environment
 sizes, measured on the Job Template's own Environments and Steps) abort job creation too, but
 only when no other error was found: they are checked after the submission stage, so a Job
 Environment's error, now found there, or an unresolved entry's, is reported in place of a
@@ -1027,8 +1029,9 @@ steps[0] -> dependencies[1] -> environment:
 ```
 
 and the `Seats` error once the `Missing` entry is fixed. With `--environment` naming an
-Environment Template, the same error is for `Submission`, at `JobTemplate -> steps[0] ->
-dependencies[1] -> environment`. When the two errors are in different Steps, both are
+Environment Template, the error is for `Submission`, at `JobTemplate -> steps[0] ->
+dependencies[1] -> environment`, and says that none of the attached Environment Templates
+defines `Missing`. When the two errors are in different Steps, both are
 reported, step 3's first (`test_env_params_error_order.rs`).
 
 #### Environment enableIf (ENV_PARAMS)
@@ -1261,8 +1264,8 @@ reports only once the Step's entries resolve):
    one with any other expression is undetermined (§7.5 rule 5), and only when some Step is
    known to enter it after the group rule of item 3 (it is entered by its `activation` and
    `enableIf` alone, and no earlier attachment of its `exclusiveGroup` is known to be entered
-   or undetermined for that Step). That error is reported after item 3's errors, where job
-   creation reports it;
+   or undetermined for that Step). That error is reported after item 3's errors (job creation
+   reports it after every Step's step 7 errors, the single-layer rule included);
 2. step 2 above, over each Step's template `dependencies`: every `environment:` entry that
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
    template-validation error), with `required` defaulting to `true`. An entry whose `enableIf`

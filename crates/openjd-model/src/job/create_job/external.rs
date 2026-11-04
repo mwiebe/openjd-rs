@@ -9,9 +9,10 @@
 //!
 //! A submission combines one Job Template with zero or more Environment
 //! Templates that the scheduler attaches, in the scheduler's order. Job
-//! creation proper computes effective values for the Job Template's own
-//! `jobEnvironments` and keeps each enabled `environment:` entry that names
-//! no Job Environment as a [`FrozenEntry`], and each disabled one by name.
+//! creation proper keeps each enabled `environment:` entry that names no
+//! Job Environment as a [`FrozenEntry`], and each disabled one by name,
+//! and, with `ENV_PARAMS`, defers the Job Template's own `jobEnvironments`
+//! with each Step's pending values for them.
 //! [`apply_environment_templates`] then resolves those entries against the
 //! attached Environment Templates by name, fixes the part of each Step's
 //! Environment set that the attachments contribute (§4 item 4
@@ -22,8 +23,8 @@
 //! that are known, checks constraint 5 for every attachment and
 //! constraints 6 and 7 for those it does not disable (§3.2.2), checks the
 //! `WRAP_ACTIONS` single-layer rule over each Step's final set, and builds
-//! the combined Job. Job creation proper decides the Job Template's own Job
-//! Environments the same way.
+//! the combined Job. It decides the deferred Job Environments the same way,
+//! after the attachments.
 //!
 //! [`check_environment_templates`] runs the checks that need no Job
 //! Parameter values, before any are known.
@@ -856,8 +857,8 @@ pub(crate) fn apply_environment_templates(
     // Whether some Step's decision was other than a failed `enableIf`.
     let mut decided_by_some_step = vec![false; set.declaring.len()];
     // Per Step: its values for the Job Environments the group rule decided
-    // here, with their indices in `jobEnvironments`.
-    let mut deferred_values: Vec<Vec<(usize, job::EnvironmentParameterValues)>> =
+    // here, in written order.
+    let mut deferred_values: Vec<Vec<job::EnvironmentParameterValues>> =
         Vec::with_capacity(job.steps.len());
     // Per Step: the indices in `jobEnvironments` of the ones decided here
     // that are superseded or that their own `enableIf` disables.
@@ -1036,7 +1037,7 @@ pub(crate) fn apply_environment_templates(
                     e.path = job_path.iter().cloned().chain(e.path).collect();
                     at.errors.push(e);
                 }
-                step_deferred_values.extend(v.map(|v| (d.position, v)));
+                step_deferred_values.extend(v);
                 if !m.is_empty() {
                     match decision {
                         EnableIf::Unresolved => {
@@ -1156,35 +1157,15 @@ pub(crate) fn apply_environment_templates(
         .collect();
     let mut per_step = step_environment_parameters.into_iter();
     let mut deferred_per_step = deferred_values.into_iter();
-    // Each Job Environment's index in `jobEnvironments`, by name, to keep a
-    // Step's values for them in written order.
-    let job_env_position: HashMap<&str, usize> = job_envs
-        .environments
-        .iter()
-        .zip(&job_envs.positions)
-        .map(|(de, &position)| (de.name, position))
-        .collect();
     let mut entered_per_step = Vec::with_capacity(job.steps.len());
     for ((step, selection), attached_entered) in
         job.steps.iter_mut().zip(&selections).zip(&attached_entered)
     {
+        // The attachments' values, then the Job Environments', which were
+        // committed in written order. Job creation proper sets no values.
+        debug_assert!(step.environment_parameters.is_none());
         let mut values = per_step.next().unwrap_or_default();
-        let mut own: Vec<(usize, job::EnvironmentParameterValues)> = step
-            .environment_parameters
-            .take()
-            .into_iter()
-            .flatten()
-            .map(|v| {
-                let position = job_env_position
-                    .get(v.environment.as_str())
-                    .copied()
-                    .unwrap_or(usize::MAX);
-                (position, v)
-            })
-            .chain(deferred_per_step.next().unwrap_or_default())
-            .collect();
-        own.sort_by_key(|(position, _)| *position);
-        values.extend(own.into_iter().map(|(_, v)| v));
+        values.extend(deferred_per_step.next().unwrap_or_default());
         step.environment_parameters = (!values.is_empty()).then_some(values);
         // A Step stopped after §7.4.1 step 4 has no fixed set; it is
         // counted as entering none, so steps 7 and 8 leave it alone.
