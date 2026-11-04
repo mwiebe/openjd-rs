@@ -362,7 +362,12 @@ Job Parameters). Its submission stage:
 
 `CreatedJob::environment_documents` records which document each `job_environments` entry comes
 from. When neither the Job Template nor any attached Environment Template lists `ENV_PARAMS`,
-this stage only converts the attached Environments, so a run behaves as before. When only an
+this stage converts the attached Environments and checks the `WRAP_ACTIONS` single-layer rule
+over them. Job creation takes one pass for every Job Template, so with `--environment` a Job
+Template without `ENV_PARAMS` has its own errors and the attachments' reported together, for
+`Submission`, in Template Schemas §7.4.1 order, and a caller limit only when the attachments
+add no error; before, its own errors were reported alone, for `JobTemplate` (see
+[job-creation.md](../model/job-creation.md#without-env_params)). When only an
 Environment Template lists it, its Environment is entered with its `default`s (RFC Backward
 compatibility), and an attachment named like a Job Environment is not warned about, since a
 Job Template without `ENV_PARAMS` has no entries that could name it.
