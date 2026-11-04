@@ -389,8 +389,8 @@ fn a_disabled_entry_naming_no_attachment_has_no_effect() {
     create_err(
         &src,
         &[],
-        "Submission",
-        &["JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Missing', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2)."],
+        "JobTemplate",
+        &["steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Missing', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2)."],
     );
 }
 
@@ -460,18 +460,12 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
     // ...a BY_DEFAULT one is declined, so it requires nothing (§3.2 item
     // 3.2)...
     create_ok(&src.replace("SCOPE", "BY_DEFAULT"), &[], &[("Mode", "off")]);
-    // ...and for an ALWAYS one the disabled entry is an error; the
-    // Environment is still checked as entered with defaults, so the value
-    // is missing, and the message says the entry was disabled (B2-3).
+    // ...and for an ALWAYS one the disabled entry is an error, of §7.4.1
+    // step 4, which stops the Step, so its constraint 7 is not checked.
     let err = create(&src.replace("SCOPE", "ALWAYS"), &[], &[("Mode", "off")])
         .unwrap_err()
         .to_string();
-    let disabled = missing.replace(
-        "'Conda'.",
-        "'Conda' (the Step's 'environment:' dependency for it is disabled by its enableIf, so it \
-         supplies nothing; Template Schemas §3.2 item 3.2).",
-    );
-    assert_errors(&err, "JobTemplate", &[ALWAYS_ENTRY_DISABLED, &disabled]);
+    assert_errors(&err, "JobTemplate", &[ALWAYS_ENTRY_DISABLED]);
     // Enabled with an ALWAYS Environment: missing, with no note.
     let err = create(&src.replace("SCOPE", "ALWAYS"), &[], &[])
         .unwrap_err()
@@ -743,8 +737,8 @@ fn wrap_layers_are_checked_over_the_resolved_set() {
         .to_string();
     assert_errors(
         &err,
-        "Submission",
-        &["JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W1', 'W2'. A Session may have at most one Environment defining wrap hooks (RFC 0008)."],
+        "JobTemplate",
+        &["steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W1', 'W2'. A Session may have at most one Environment defining wrap hooks (RFC 0008)."],
     );
 }
 

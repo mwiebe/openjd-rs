@@ -840,11 +840,11 @@ describe("createJob", () => {
     const template = mod.decodeJobTemplate(JSON.stringify(doc));
     const opts = new mod.PathParameterOptions("/tmpl", "/cwd");
     expect(() => mod.createJob(template, {}, opts)).toThrow(
-      "Model validation error: 1 validation error for Submission\n" +
-        "JobTemplate -> steps[0]:\n" +
+      "Model validation error: 1 validation error for JobTemplate\n" +
+        "steps[0]:\n" +
         "\tStep 'Requester': no host can satisfy the combined host requirements for " +
-        "amount 'amount.worker.gpu': JobTemplate -> jobEnvironments[1] -> " +
-        "hostRequirements (Environment 'Gpu') requires min 2, and JobTemplate -> " +
+        "amount 'amount.worker.gpu': jobEnvironments[1] -> " +
+        "hostRequirements (Environment 'Gpu') requires min 2, and " +
         "steps[0] -> hostRequirements requires max 1. Template Schemas §3.3.3.",
     );
     opts.free();

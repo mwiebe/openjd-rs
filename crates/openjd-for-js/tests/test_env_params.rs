@@ -86,8 +86,8 @@ fn a_required_external_environment_is_an_error_with_no_attachments() {
     let err = create(&EXTERNAL.replace("REQUIRED", "true"), &opts).unwrap_err();
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for Submission\n\
-         JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> dependencies[0] -> environment:\n\
          \tnames Environment 'Conda', which is not a jobEnvironments entry of the Job Template, \
          and no Environment Template is attached. The entry is required; set 'required: false' \
          if the Step can run without the Environment (Template Schemas §3.2.1 item 2)."
@@ -120,12 +120,12 @@ fn create_job_combines_environment_host_requirements() {
     let err = create(&HOST_REQUIREMENTS.replace("SCOPE", "ALWAYS"), &opts).unwrap_err();
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for Submission\n\
-         JobTemplate -> steps[0]:\n\
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0]:\n\
          \tStep 'S': no host can satisfy the combined host requirements for attribute \
          'attr.worker.os.family', of which a host has exactly one value: the anyOf and allOf \
-         values of JobTemplate -> steps[0] -> \
-         hostRequirements and JobTemplate -> jobEnvironments[0] -> hostRequirements \
+         values of steps[0] -> \
+         hostRequirements and jobEnvironments[0] -> hostRequirements \
          (Environment 'Linux') have no value in common. Template Schemas §3.3.3."
     );
     create(&HOST_REQUIREMENTS.replace("SCOPE", "ON_REQUEST"), &opts)

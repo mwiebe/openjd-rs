@@ -88,9 +88,29 @@ fn check_ok(jt_src: &str, env_srcs: &[&str]) {
 /// `expected`, the same message.
 fn check_err_same_as_create(jt_src: &str, env_srcs: &[&str], expected: &[&str]) {
     let checked = check(jt_src, env_srcs).expect_err("expected check to fail");
-    assert_errors(&checked.to_string(), "Submission", expected);
+    assert_errors(&checked.to_string(), model(env_srcs), expected);
     let created = create(jt_src, env_srcs).expect_err("expected job creation to fail");
     assert_eq!(checked.to_string(), created.to_string());
+}
+
+/// The model an error names: shaped by the inputs, `Submission` with
+/// attached Environment Templates and `JobTemplate` without.
+fn model(env_srcs: &[&str]) -> &'static str {
+    if env_srcs.is_empty() {
+        "JobTemplate"
+    } else {
+        "Submission"
+    }
+}
+
+/// `check` rejects the submission with exactly `checked`, and job creation
+/// with exactly `created`: job creation takes no step after §7.4.1 step 4
+/// for a Step with an error from steps 1–4, while `check` reports every
+/// violation it is certain of.
+fn check_err_and_create_err(jt_src: &str, env_srcs: &[&str], checked: &[&str], created: &[&str]) {
+    let err = check(jt_src, env_srcs).expect_err("expected check to fail");
+    assert_errors(&err.to_string(), "Submission", checked);
+    create_err(jt_src, env_srcs, "Submission", created);
 }
 
 /// The Environments Step `step`'s Sessions enter, as `name` for a Job
@@ -477,14 +497,13 @@ fn an_attached_environment_supersedes_a_job_environment_of_its_group() {
             &[&missing("JobTemplate -> steps[0]", true, "'B'")],
         );
     }
-    // An attachment in another group does not, and B's mistake is then
-    // reported by job creation from the Job Template alone, before the
-    // attachments are applied.
+    // An attachment in another group does not; with an attachment, every
+    // path starts with its document.
     create_err(
         &jt,
         &[&env("name: X, exclusiveGroup: H")],
-        "JobTemplate",
-        &[&missing("steps[0]", true, "'B'")],
+        "Submission",
+        &[&missing("JobTemplate -> steps[0]", true, "'B'")],
     );
 }
 
@@ -654,9 +673,9 @@ fn the_single_layer_rule_counts_only_the_first_of_a_group() {
     create_err(
         &jt,
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
            hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A', 'B'. A Session may have \
            at most one Environment defining wrap hooks (RFC 0008).",
         ],
@@ -901,13 +920,11 @@ fn check_holds_a_grouped_job_environment_first_in_its_group_to_constraint_7() {
         "Submission",
         &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
     );
-    // Job creation reports it from the Job Template, since no attachment
-    // shares its group.
     create_err(
         &jt,
         &[&u],
-        "JobTemplate",
-        &[&missing_named("steps[0]", true, "'J'", "N")],
+        "Submission",
+        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
     );
     let x = env("name: X, exclusiveGroup: G");
     check_ok(&jt, &[&x]);
@@ -998,8 +1015,8 @@ fn check_decides_a_grouped_job_environment_as_template_validation_would() {
     create_err(
         &known,
         &[&u],
-        "JobTemplate",
-        &[&missing_named("steps[0]", true, "'J'", "Q")],
+        "Submission",
+        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "Q")],
     );
     // Another expression, or an entry whose enableIf is an expression.
     check_ok(&jt("\"Job.Name == 'other'\"", ""), &[&u]);
@@ -1093,8 +1110,15 @@ fn an_ambiguous_attachment_is_entered_by_its_activation_alone() {
         "name: Amb, activation: ON_REQUEST, exclusiveGroup: G",
         "name: Amb, exclusiveGroup: G, enableIf: false",
     ] {
+        // The ambiguous entry stops the Step after §7.4.1 step 4 at job
+        // creation, so B's missing P is reported by check only.
         let amb = env(amb);
-        check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous, &b_missing]);
+        check_err_and_create_err(
+            &jt,
+            &[&amb, &amb, &b],
+            &[ambiguous, &b_missing],
+            &[ambiguous],
+        );
     }
     let amb = env("name: Amb, exclusiveGroup: G");
     check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous]);
@@ -1127,14 +1151,22 @@ fn only_the_first_ambiguous_copy_of_a_group_is_an_unreachable_error() {
     let grouped = "Its activation is BY_DEFAULT and an earlier Environment of its \
                    exclusiveGroup does not supersede it, so Sessions enter it";
     let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
-    check_err_same_as_create(
+    // At job creation the ambiguous entry stops S, the only Step, after
+    // §7.4.1 step 4, so only the ambiguity is reported there.
+    check_err_and_create_err(
         &jt,
         &[&amb, &amb],
         &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
+        &[ambiguous],
     );
     let amb =
         env("name: Amb, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
-    check_err_same_as_create(&jt, &[&amb, &amb], &[ambiguous, &unreachable(0, grouped)]);
+    check_err_and_create_err(
+        &jt,
+        &[&amb, &amb],
+        &[ambiguous, &unreachable(0, grouped)],
+        &[ambiguous],
+    );
     // With an expression entry naming it, no Step decides it either, and it
     // is still an error, without a group.
     let expr = jt.replace(
@@ -1142,10 +1174,11 @@ fn only_the_first_ambiguous_copy_of_a_group_is_an_unreachable_error() {
         "[{environment: Amb, enableIf: \"Job.Name == 'J'\"}]",
     );
     let amb = env("name: Amb, envParameterDefinitions: [{name: P, type: STRING}]");
-    check_err_same_as_create(
+    check_err_and_create_err(
         &expr,
         &[&amb, &amb],
         &[ambiguous, &unreachable(0, every), &unreachable(1, every)],
+        &[ambiguous],
     );
 }
 
@@ -1169,8 +1202,8 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     let err = check(&relative, &[]).expect_err("expected check to fail");
     assert_errors(
         &err.to_string(),
-        "Submission",
-        &[&format!("JobTemplate -> {}", not_absolute("relative/x"))],
+        "JobTemplate",
+        &[&not_absolute("relative/x")],
     );
     create_err(
         &relative,
@@ -1184,20 +1217,16 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     check_with(&grouped_path("C:\\x"), &[], windows).unwrap();
     create_with(&grouped_path("C:\\x"), &[], windows).unwrap();
     let err = check(&grouped_path("C:\\x"), &[]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[&format!("JobTemplate -> {}", not_absolute("C:\\x"))],
-    );
+    assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:\\x")]);
     let uri = |c: ValidationContext| c.with_allow_uri_path_values(true);
     check_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
     create_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
     let err = check(&grouped_path("s3://bucket/key"), &[]).expect_err("expected check to fail");
     assert_errors(
         &err.to_string(),
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> steps[0] -> dependencies[1] -> parameters -> D:\n\tis a URI \
+            "steps[0] -> dependencies[1] -> parameters -> D:\n\tis a URI \
            ('s3://bucket/key'), and URI path values are not permitted for this submission.",
         ],
     );
@@ -1218,10 +1247,10 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     let err = check(&jt, &[]).expect_err("expected check to fail");
     assert_errors(
         &err.to_string(),
-        "Submission",
+        "JobTemplate",
         &[&format!(
             "{}{UNRESOLVED_NOTE}.",
-            missing("JobTemplate -> steps[0]", true, "'J'").trim_end_matches('.')
+            missing("steps[0]", true, "'J'").trim_end_matches('.')
         )],
     );
 }
@@ -1278,13 +1307,16 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
          {{onRun: {{command: x}}}}}}\n- name: S1\n  dependencies: [{{environment: Amb}}]\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
-    check_err_same_as_create(
+    // At job creation the ambiguous entry stops S1 after §7.4.1 step 4, and
+    // A supersedes both copies for S0, so no Step is known to enter them.
+    check_err_and_create_err(
         &jt,
         &[&a, &amb, &amb],
         &[
             &ambiguous_amb(1, 0, (1, 2)),
             &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
         ],
+        &[&ambiguous_amb(1, 0, (1, 2))],
     );
     // S1 declines X, so it enters the first copy; S2 enters X, which then
     // supersedes the copies for S2. Any Step entering it counts, not the
@@ -1296,7 +1328,7 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
          - name: S2\n  dependencies: [{{environment: Amb}}]\n  script: {{actions: {{onRun: \
          {{command: x}}}}}}\n"
     );
-    check_err_same_as_create(
+    check_err_and_create_err(
         &jt,
         &[&x, &amb, &amb],
         &[
@@ -1304,6 +1336,7 @@ fn an_ambiguous_copy_one_step_enters_first_is_an_unreachable_error() {
             &ambiguous_amb(1, 0, (1, 2)),
             &unreachable_amb(1, (1, 2), GROUPED_ENTERED),
         ],
+        &[&ambiguous_amb(0, 1, (1, 2)), &ambiguous_amb(1, 0, (1, 2))],
     );
 }
 
@@ -1325,7 +1358,9 @@ fn an_ambiguous_attachment_with_an_enable_if_expression() {
     let unresolved = amb("\"Env.Param.P != ''\"");
     let how = "Its activation is BY_DEFAULT and its enableIf does not disable it, so Sessions \
                enter it";
-    check_err_same_as_create(
+    // At job creation the ambiguous entry stops S, the only Step, after
+    // §7.4.1 step 4, so no Step is known to enter either copy.
+    check_err_and_create_err(
         &jt,
         &[&unresolved, &unresolved],
         &[
@@ -1333,6 +1368,7 @@ fn an_ambiguous_attachment_with_an_enable_if_expression() {
             &unreachable_amb(0, (0, 1), how),
             &unreachable_amb(1, (0, 1), how),
         ],
+        &[&ambiguous_amb(0, 0, (0, 1))],
     );
     let other = amb("\"Job.Name == 'J'\"");
     check_err_same_as_create(&jt, &[&other, &other], &[&ambiguous_amb(0, 0, (0, 1))]);
@@ -1372,7 +1408,7 @@ fn check_applies_the_single_layer_rule_to_grouped_job_environments() {
     ] {
         let jt = jt(a, b);
         job_ok(&jt);
-        check_err_same_as_create(&jt, &[], &[layers]);
+        check_err_same_as_create(&jt, &[], &[layers.trim_start_matches("JobTemplate -> ")]);
         check_err_same_as_create(&jt, &[&env("name: U")], &[layers]);
     }
 }
@@ -1520,18 +1556,7 @@ fn check_decides_each_steps_job_environments_with_its_own_entries() {
          envParameterDefinitions: [{{name: P, type: STRING}}], variables: {{V: b}}}}\n\
          {two_steps}"
     );
-    let err = check(&jt, &[]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &[&missing("JobTemplate -> steps[1]", true, "'B'")],
-    );
-    create_err(
-        &jt,
-        &[],
-        "JobTemplate",
-        &[&missing("steps[1]", true, "'B'")],
-    );
+    check_err_same_as_create(&jt, &[], &[&missing("steps[1]", true, "'B'")]);
 }
 
 // ── §7.4.1 step 6: a superseded Environment's enableIf is not evaluated ──

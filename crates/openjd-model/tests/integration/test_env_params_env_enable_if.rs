@@ -560,7 +560,7 @@ fn two_wrappers(outer: Option<&str>, inner: Option<&str>) -> String {
 
 const SINGLE_LAYER_TV: &str = "jobEnvironments:\n\tonly one environment in the session stack may \
      define any of onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit (RFC 0008).";
-const SINGLE_LAYER_JC: &str = "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 \
+const SINGLE_LAYER_JC: &str = "steps[0]:\n\tits Sessions would enter 2 \
      Environments that define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): \
      'Outer', 'Inner'. A Session may have at most one Environment defining wrap hooks (RFC \
      0008).";
@@ -579,7 +579,7 @@ fn single_layer_rule_counts_only_environments_certainly_entered() {
     for inner in ["\"true\"", "\"Param.UseInner == 'yes'\""] {
         let jt = two_wrappers(None, Some(inner));
         job_ok(&jt);
-        create_err(&jt, &[], &[], "Submission", &[SINGLE_LAYER_JC]);
+        create_err(&jt, &[], &[], "JobTemplate", &[SINGLE_LAYER_JC]);
     }
     let created = create_ok(
         &two_wrappers(None, Some("\"Param.UseInner == 'yes'\"")),
@@ -621,9 +621,9 @@ fn single_layer_rule_skips_a_disabled_step_environment() {
         &jt("\"Step.Name == 'S'\""),
         &[],
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
            hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer', 'Inner' \
            (stepEnvironments). A Session may have at most one Environment defining wrap hooks \
            (RFC 0008).",
@@ -745,9 +745,9 @@ steps:
         &jt.replace("\"Env.Param.N >= 0\"", "true"),
         &[],
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust \
+            "jobEnvironments[0] -> hostRequirements -> amounts[0] -> min:\n\tmust \
            be non-negative. Resolved for Step 'B'.",
         ],
     );
@@ -1187,12 +1187,11 @@ fn check_environment_templates_skips_a_disabled_job_environments_literal_require
 }
 
 #[test]
-fn a_failed_job_environment_enable_if_stops_before_the_single_layer_rule() {
+fn a_failed_job_environment_enable_if_is_reported_with_the_single_layer_rule() {
     // Outer's enableIf fails for S. Outer is checked as if it is not
-    // disabled, but a Job Environment's failure is reported when the Job
-    // Template's Steps are decided, which stops job creation before the
-    // submission stage, where the single-layer rule runs; so Outer and Inner
-    // are not also reported. One Step, so the note is singular.
+    // disabled. §7.4.1 steps 5-8 are taken together, so the single-layer
+    // rule (step 7) reports Outer and Inner too, after the enableIf error
+    // (step 6). One Step, so the note is singular.
     let jt = format!(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, EXPR]\n\
          name: J\njobEnvironments:\n- name: Outer\n  enableIf: \"None if Job.Name == 'J' else true\"\n  \
@@ -1208,6 +1207,10 @@ fn a_failed_job_environment_enable_if_stops_before_the_single_layer_rule() {
         &[
             "jobEnvironments[0] -> enableIf:\n\tresolved to null, which does not fit \
            type bool (Template Schemas §7.5). Resolved for Step 'S'.",
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks \
+           (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer', 'Inner' \
+           (stepEnvironments). A Session may have at most one Environment defining wrap hooks \
+           (RFC 0008).",
         ],
     );
 }

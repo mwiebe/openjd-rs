@@ -226,7 +226,7 @@ fn optional_entries_are_satisfied_without_any_environment() {
     assert_eq!(count(&stderr, "WARNING: "), 8, "{stderr}");
     assert!(
         stderr.contains(
-            "WARNING: JobTemplate -> steps[0] -> dependencies[0] -> environment: names \
+            "WARNING: steps[0] -> dependencies[0] -> environment: names \
              Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and \
              no Environment Template is attached. The entry has 'required: false', so it has no \
              effect."
@@ -647,7 +647,12 @@ fn expected_submission_errors(conda: &str, errors: &[&str]) -> String {
 }
 
 #[test]
-fn a_missing_required_environment_and_an_undeclared_key_fail_the_run() {
+fn a_missing_required_environment_fails_the_run_before_its_steps_values() {
+    // The Step's entry for Licenses resolves to nothing (Template Schemas
+    // §7.4.1 step 3), so its set of Environments is not fixed, and job
+    // creation takes no later step for it: the undeclared key of its Conda
+    // entry (step 5) is reported once Licenses resolves. `check` reports
+    // both (see check_with_environments_reports_every_error_it_is_certain_of).
     let conda = fixture("conda-env-params.yaml");
     let (code, stdout, stderr) = run_cli(&[
         "run",
@@ -657,7 +662,7 @@ fn a_missing_required_environment_and_an_undeclared_key_fail_the_run() {
     ]);
     assert_ne!(code, 0);
     assert!(!stdout.contains("Session start"), "{stdout}");
-    let expected = expected_submission_errors(&conda, &[LICENSES_MISSING, BOGUS_KEY]);
+    let expected = expected_submission_errors(&conda, &[LICENSES_MISSING]);
     // Like every job-creation error, the Submission errors are followed by
     // the Job Template's help text.
     let expected = format!(
@@ -671,7 +676,7 @@ fn a_missing_required_environment_and_an_undeclared_key_fail_the_run() {
 }
 
 #[test]
-fn check_with_environments_reports_the_same_errors_as_run() {
+fn check_with_environments_reports_every_error_it_is_certain_of() {
     let job = fixture("requires_licenses.yaml");
     let conda = fixture("conda-env-params.yaml");
     let licenses = fixture("licenses-env.yaml");

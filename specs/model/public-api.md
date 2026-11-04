@@ -367,18 +367,19 @@ requirement that resolves to nothing (an amount whose `min` and `max`
 both resolve to `null`, an attribute whose `anyOf` and `allOf`, written
 as one expression, both resolve to `null`) is discarded before
 combining and listed in `CreatedJob::discarded_host_requirements`, and a
-Step left with no requirements has `host_requirements: None` (§3.3). The
-Job Template's own checks are reported in one
-`ModelError::ModelValidation` for `JobTemplate`; the submission-stage
-checks (entry resolution, the attachments' values and `enableIf`s,
-constraints 5–7 over the combined Job, the `enableIf`, values and
-constraint 7 of a Job Environment whose `exclusiveGroup` an attachment
-shares, the wrap layers, the Environments' resolved `hostRequirements` and
-the combination's conflicts), which run only when the Job Template's
-succeed, in one for `Submission`, with paths starting at the document. [`create_job`] is the same with no
-attachments, so its Job is complete: an enabled required entry naming no
-Job Environment is a `Submission` error. See
-[job-creation.md](job-creation.md#the-submission-stage).
+Step left with no requirements has `host_requirements: None` (§3.3). It
+takes the §7.4.1 steps over the Job Template and the attachments in one
+pass and reports every check failure in one `ModelError::ModelValidation`,
+in §7.4.1 order: the template-validation-style checks first, then by
+step, then by Step, then by the Environment's place in the Job's
+Environment order; a Step with an error from steps 1–4 gets no checks
+from steps 5–8. The error is shaped by the inputs: for `JobTemplate`, at
+the Job Template's paths, without attachments, and for `Submission`, with
+every path starting at its document, with them; the warnings' paths
+follow the same rule. [`create_job`] is the same with no attachments, so
+its Job is complete: an enabled required entry naming no Job Environment
+is a `JobTemplate` error. See
+[job-creation.md](job-creation.md#error-order-env_params).
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need
@@ -412,11 +413,12 @@ Environments its Sessions certainly enter (with the group rule applied).
 It reports with the same
 messages and paths (a single-layer or host-requirement error in the same
 form, naming only the layers a Session certainly enters and the literal
-requirements), except that a grouped Job Environment's errors, which job
-creation reports in its `JobTemplate` error when no attachment shares
-the group, are reported here at `JobTemplate ->` paths, and that a Step's
-constraint 7 error leaves out the Environments it cannot know the Step
-enters, and returns the warnings. Format-string values,
+requirements), shaped as job creation's error is (for `JobTemplate`
+without attachments, for `Submission` with them), except that it reports
+every violation it is certain of, in its own order, where job creation
+orders by §7.4.1 step and takes no step after step 4 for a Step with an
+error from steps 1–4, and that a Step's constraint 7 error leaves out the
+Environments it cannot know the Step enters, and returns the warnings. Format-string values,
 non-literal `default`s and host requirements, and entries whose
 `enableIf` is an expression are left to job creation. `openjd check
 --environment` calls it. See

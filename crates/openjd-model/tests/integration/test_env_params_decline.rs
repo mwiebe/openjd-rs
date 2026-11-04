@@ -163,7 +163,9 @@ fn a_literal_false_entry_for_an_always_job_environment_is_rejected_at_validation
 
 #[test]
 fn an_expression_entry_for_an_always_job_environment_is_rejected_at_job_creation() {
-    // Not known to be disabled at template validation (§7.5 rule 5).
+    // Not known to be disabled at template validation (§7.5 rule 5). The
+    // error, of §7.4.1 step 4, stops the Step, so its constraint 7 is not
+    // checked.
     let src = lic("ALWAYS", MODE_ON, "maya");
     job_ok(&src);
     create_ok(&src, &[], &[("Mode", "on")]);
@@ -172,15 +174,7 @@ fn an_expression_entry_for_an_always_job_environment_is_rejected_at_job_creation
         &[],
         &[("Mode", "off")],
         "JobTemplate",
-        &[
-            &always_error("", 0, 0, "A", "'Lic'"),
-            "steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a \
-             default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with \
-             activation BY_DEFAULT that the Step does not decline, and each one \
-             with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'Product' of \
-             Environment 'Lic' (the Step's 'environment:' dependency for it is disabled by its \
-             enableIf, so it supplies nothing; Template Schemas §3.2 item 3.2).",
-        ],
+        &[&always_error("", 0, 0, "A", "'Lic'")],
     );
 }
 
@@ -480,11 +474,11 @@ steps:
         &src("true"),
         &[],
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> steps[0]:\n\tStep 'A': no host can satisfy the combined host \
-           requirements for amount 'amount.custom.gpus': JobTemplate -> jobEnvironments[0] -> \
-           hostRequirements (Environment 'Gpu') requires min 2, and JobTemplate -> steps[0] -> \
+            "steps[0]:\n\tStep 'A': no host can satisfy the combined host \
+           requirements for amount 'amount.custom.gpus': jobEnvironments[0] -> \
+           hostRequirements (Environment 'Gpu') requires min 2, and steps[0] -> \
            hostRequirements requires max 1. Template Schemas §3.3.3.",
         ],
     );
@@ -682,9 +676,9 @@ fn a_declined_wrapper_is_not_a_layer() {
         &src,
         &[],
         &[],
-        "Submission",
+        "JobTemplate",
         &[
-            "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
+            "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
            hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W1', 'W2'. A Session may have \
            at most one Environment defining wrap hooks (RFC 0008).",
         ],

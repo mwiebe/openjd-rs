@@ -55,9 +55,29 @@ fn check_err_same_as_apply(jt_src: &str, env_srcs: &[&str], expected: &[&str]) {
     let jt = job_ok(jt_src);
     let envs: Vec<EnvironmentTemplate> = env_srcs.iter().map(|s| env_ok(s)).collect();
     let checked = check(&jt, &envs).expect_err("expected check to reject the submission");
-    assert_errors(&checked.to_string(), "Submission", expected);
+    // Shaped by the inputs: `Submission` with attachments, `JobTemplate`
+    // without.
+    let model = if envs.is_empty() {
+        "JobTemplate"
+    } else {
+        "Submission"
+    };
+    assert_errors(&checked.to_string(), model, expected);
     let applied = apply(&jt, &envs, &[]).expect_err("expected apply to reject the submission");
     assert_eq!(checked.to_string(), applied.to_string());
+}
+
+/// `check` rejects the submission with exactly `checked`, and job creation
+/// with exactly `applied`: a Step with an error from §7.4.1 steps 1–4 gets
+/// no checks from steps 5–8 at job creation, while `check` reports every
+/// violation it is certain of.
+fn check_err_and_apply_err(jt_src: &str, env_srcs: &[&str], checked: &[&str], applied: &[&str]) {
+    let jt = job_ok(jt_src);
+    let envs: Vec<EnvironmentTemplate> = env_srcs.iter().map(|s| env_ok(s)).collect();
+    let err = check(&jt, &envs).expect_err("expected check to reject the submission");
+    assert_errors(&err.to_string(), "Submission", checked);
+    let err = apply(&jt, &envs, &[]).expect_err("expected apply to reject the submission");
+    assert_errors(&err.to_string(), "Submission", applied);
 }
 
 fn steps_naming(env: &str, required: bool, params: &str) -> String {
@@ -97,15 +117,14 @@ fn the_sample_job_passes_with_each_sample_environment_and_with_none() {
         assert_eq!(warnings.len(), warned, "{warnings:?}");
         assert_eq!(warnings, apply(&jt, &envs, &[]).unwrap());
     }
-    let docker_warning = "JobTemplate -> steps[0] -> dependencies[1] -> environment: names \
+    let docker_warning = "steps[0] -> dependencies[1] -> environment: names \
          Environment 'Docker', which is not a jobEnvironments entry of the Job Template, and no \
          Environment Template is attached. The entry has 'required: false', so it has no effect.";
     let warnings = check(&jt, &[]).unwrap();
     assert_eq!(warnings.len(), 8, "{warnings:?}");
     assert_eq!(
         warnings[0],
-        "JobTemplate -> steps[0] -> dependencies[0] -> environment: names Environment 'Conda', \
-         which is not a jobEnvironments entry of the Job Template, and no Environment Template \
+        "steps[0] -> dependencies[0] -> environment: names Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and no Environment Template \
          is attached. The entry has 'required: false', so it has no effect."
     );
     assert_eq!(warnings[1], docker_warning);
@@ -120,7 +139,7 @@ fn a_missing_required_environment_is_rejected() {
         &steps_naming("Conda", true, "{Packages: x}"),
         &[],
         &[
-            "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment \
+            "steps[0] -> dependencies[0] -> environment:\n\tnames Environment \
            'Conda', which is not a jobEnvironments entry of the Job Template, and no \
            Environment Template is attached. The entry is required; set 'required: false' if \
            the Step can run without the Environment (Template Schemas §3.2.1 item 2).",
@@ -518,13 +537,14 @@ fn attached_missing(note: &str) -> String {
 
 #[test]
 fn a_literally_disabled_entry_is_named_in_the_missing_parameters_message() {
-    check_err_same_as_apply(
+    // Job creation stops the Step after §7.4.1 step 4, so only check, which
+    // reports every violation it is certain of, gives the note.
+    let disabled = always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])");
+    check_err_and_apply_err(
         &entry_with_enable_if("false"),
         &[&required_attached_always()],
-        &[
-            &always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])"),
-            &attached_missing(DISABLED_NOTE),
-        ],
+        &[&disabled, &attached_missing(DISABLED_NOTE)],
+        &[&disabled],
     );
 }
 
@@ -539,10 +559,11 @@ fn an_entry_disabled_by_an_expression_is_named_at_job_creation() {
     assert_errors(
         &err.to_string(),
         "Submission",
-        &[
-            &always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])"),
-            &attached_missing(DISABLED_NOTE),
-        ],
+        &[&always_entry_disabled(
+            0,
+            "S",
+            "'Conda' (EnvironmentTemplate[0])",
+        )],
     );
 }
 
@@ -550,7 +571,9 @@ fn an_entry_disabled_by_an_expression_is_named_at_job_creation() {
 fn a_constant_expression_that_disables_an_always_entry_is_named_at_job_creation() {
     // A constant expression is still an expression, unknown before the Job
     // is created (§7.5 rule 5), so `check` accepts the entry and job
-    // creation reports the §4 item 4 error (`specs/cli/check.md`).
+    // creation reports the §4 item 4 error (`specs/cli/check.md`). That
+    // error, of §7.4.1 step 4, stops the Step, so its constraint 7 is not
+    // checked.
     let jt = job_ok(&entry_with_enable_if(r#""false""#));
     let envs = [env_ok(&required_attached_always())];
     assert_eq!(check(&jt, &envs).unwrap(), Vec::<String>::new());
@@ -558,10 +581,11 @@ fn a_constant_expression_that_disables_an_always_entry_is_named_at_job_creation(
     assert_errors(
         &err.to_string(),
         "Submission",
-        &[
-            &always_entry_disabled(0, "S", "'Conda' (EnvironmentTemplate[0])"),
-            &attached_missing(DISABLED_NOTE),
-        ],
+        &[&always_entry_disabled(
+            0,
+            "S",
+            "'Conda' (EnvironmentTemplate[0])",
+        )],
     );
 }
 
@@ -1062,9 +1086,10 @@ fn an_all_attachment_named_by_an_enable_if_expression_still_combines_at_check() 
 
 #[test]
 fn an_ambiguous_attachment_without_parameters_still_combines_at_check() {
-    // Job creation needs no values for an attachment without parameters,
-    // so it combines its requirements despite the ambiguous entry, and so
-    // does check.
+    // check needs no values for an attachment without parameters, so it
+    // combines its requirements despite the ambiguous entry. Job creation
+    // stops the Step after the ambiguous entry (§7.4.1 step 3), so it
+    // reports the ambiguity alone.
     let jt = gpu_job("    amounts: [{name: amount.worker.gpu, max: 1}]\n").replace(
         "  hostRequirements:\n",
         "  dependencies: [{environment: Gpu}]\n  hostRequirements:\n",
@@ -1073,17 +1098,16 @@ fn an_ambiguous_attachment_without_parameters_still_combines_at_check() {
         "  envParameterDefinitions: [{name: N, type: INT, default: 2}]\n",
         "",
     );
-    check_err_same_as_apply(
+    let ambiguous = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
+                     Environment 'Gpu', which 2 attached Environment Templates define \
+                     (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                     exactly one (Template Schemas §3.2.1 item 3).";
+    check_err_and_apply_err(
         &jt,
         &[&att, &att],
-        &[
-            "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment \
-             'Gpu', which 2 attached Environment Templates define (EnvironmentTemplate[0], \
-             EnvironmentTemplate[1]); an entry must match exactly one (Template Schemas §3.2.1 \
-             item 3).",
-            // Both attachments are entered; the first sets the greatest min.
-            GPU_CONFLICT,
-        ],
+        // Both attachments are entered; the first sets the greatest min.
+        &[ambiguous, GPU_CONFLICT],
+        &[ambiguous],
     );
 }
 
@@ -1243,15 +1267,18 @@ fn a_second_steps_disabled_entry_is_noted_for_that_step() {
         "steps:\n- name: First\n  dependencies: [{environment: Conda, parameters: {Packages: y}}]\n  \
          script: {actions: {onRun: {command: x}}}\n- name: S\n",
     );
-    check_err_same_as_apply(
+    let disabled = always_entry_disabled(1, "S", "'Conda' (EnvironmentTemplate[0])");
+    check_err_and_apply_err(
         &src,
         &[&required_attached_always()],
         &[
-            &always_entry_disabled(1, "S", "'Conda' (EnvironmentTemplate[0])"),
+            &disabled,
             &attached_missing(DISABLED_NOTE).replace("steps[0]", "steps[1]"),
         ],
+        &[&disabled],
     );
-    // The expression form, decided at job creation, notes the second Step.
+    // The expression form, decided at job creation, names the second Step,
+    // which job creation then stops after §7.4.1 step 4.
     let src = entry_with_enable_if(r#""Param.Mode == 'on'""#).replace(
         "steps:\n- name: S\n",
         "steps:\n- name: First\n  dependencies: [{environment: Conda, parameters: {Packages: y}}]\n  \
@@ -1263,10 +1290,11 @@ fn a_second_steps_disabled_entry_is_noted_for_that_step() {
     assert_errors(
         &err.to_string(),
         "Submission",
-        &[
-            &always_entry_disabled(1, "S", "'Conda' (EnvironmentTemplate[0])"),
-            &attached_missing(DISABLED_NOTE).replace("steps[0]", "steps[1]"),
-        ],
+        &[&always_entry_disabled(
+            1,
+            "S",
+            "'Conda' (EnvironmentTemplate[0])",
+        )],
     );
 }
 

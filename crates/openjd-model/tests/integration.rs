@@ -37,6 +37,8 @@ mod test_env_params_disabled;
 mod test_env_params_empty_host_requirements;
 #[path = "integration/test_env_params_env_enable_if.rs"]
 mod test_env_params_env_enable_if;
+#[path = "integration/test_env_params_error_order.rs"]
+mod test_env_params_error_order;
 #[path = "integration/test_env_params_exclusive_group.rs"]
 mod test_env_params_exclusive_group;
 #[path = "integration/test_env_params_external.rs"]

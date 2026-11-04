@@ -73,7 +73,14 @@ impl Submission {
         let err = self
             .create()
             .expect_err("expected the submission to be rejected");
-        assert_errors(&err.to_string(), "Submission", expected);
+        // Shaped by the inputs: `Submission` with attachments, `JobTemplate`
+        // without.
+        let model = if self.envs.is_empty() {
+            "JobTemplate"
+        } else {
+            "Submission"
+        };
+        assert_errors(&err.to_string(), model, expected);
     }
 }
 
@@ -254,8 +261,8 @@ steps:
 #[test]
 fn a_required_entry_with_no_environment_is_rejected() {
     submission(REQUIRED, &[], &[]).apply_err(&[
-        "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).",
-        "JobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tnames Environment 'Docker', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).",
+        "steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Conda', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).",
+        "steps[0] -> dependencies[1] -> environment:\n\tnames Environment 'Docker', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry is required; set 'required: false' if the Step can run without the Environment (Template Schemas §3.2.1 item 2).",
     ]);
 }
 
@@ -289,7 +296,7 @@ fn an_optional_entry_with_no_environment_is_ignored_with_a_warning() {
     let (job, warnings) = s.combined();
     assert_eq!(
         warnings,
-        ["JobTemplate -> steps[0] -> dependencies[0] -> environment: names Environment 'Gpu', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry has 'required: false', so it has no effect."]
+        ["steps[0] -> dependencies[0] -> environment: names Environment 'Gpu', which is not a jobEnvironments entry of the Job Template, and no Environment Template is attached. The entry has 'required: false', so it has no effect."]
     );
     assert_eq!(job.steps[0].environment_parameters, None);
 }
@@ -314,7 +321,9 @@ fn an_ambiguous_entry_is_reported_once_without_contradicting_errors() {
     // Each copy has a parameter without default and one whose default
     // fails for a Step that takes it; the entry supplies both. Only the
     // ambiguity is reported, not "must supply" or "does not supply"
-    // errors for each copy.
+    // errors for each copy: it stops the Step after §7.4.1 step 4, and no
+    // other Step is known to enter the copies, so their unreachable errors
+    // are not reported either.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -336,15 +345,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let s = submission(jt, &[env, env, env], &[]);
-    let unreachable = |i: usize| {
-        format!(
-            "EnvironmentTemplate[{i}] -> environment -> envParameterDefinitions:\n\tEnvironment 'Q' is defined by 3 attached Environment Templates (EnvironmentTemplate[0], EnvironmentTemplate[1], EnvironmentTemplate[2]), so no 'environment:' dependency can reach it (Template Schemas §3.2.1 item 3), and it has parameters without a default that no Step can supply: R. Its activation is BY_DEFAULT, so every Session enters it, and the submission is rejected (§3.2.1)."
-        )
-    };
     s.apply_err(&[
-        &unreachable(0),
-        &unreachable(1),
-        &unreachable(2),
         "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames Environment 'Q', which 3 attached Environment Templates define (EnvironmentTemplate[0], EnvironmentTemplate[1], EnvironmentTemplate[2]); an entry must match exactly one (Template Schemas §3.2.1 item 3).",
     ]);
 }

@@ -948,9 +948,9 @@ pass 6:
   an entry is enabled is known here only when its `enableIf` is absent or a boolean scalar
   (§3.2, checked-at paragraph; §7.5 item 1): an entry whose `enableIf` is `false` supplies
   and requests nothing, and declines a `BY_DEFAULT` Environment, which then requires nothing of
-  the Step (§3.2 item 3.2); for an `ALWAYS` one it is an error (below), and the Environment is
-  still checked as entered, so its parameters then all need their
-  `default`s; an entry whose `enableIf` is an expression, even a constant one such as
+  the Step (§3.2 item 3.2); for an `ALWAYS` one it is an error (below), and template
+  validation still checks the Environment as entered, so its parameters then all need their
+  `default`s (job creation takes no later §7.4.1 step for the Step after the error); an entry whose `enableIf` is an expression, even a constant one such as
   `"true"`, defers the check for its Environment and Step to job creation. Reported once per Step, at the Step, listing the missing parameters by
   Environment (at most 50 names and 512 characters, counting the quotes, separators, and
   " of Environment" suffixes, then "and N more"; the first name is always listed, however

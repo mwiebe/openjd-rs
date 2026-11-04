@@ -444,8 +444,8 @@ fn an_absent_required_environment_rejects_the_job_before_any_session() {
         .expect("expected the submission to fail");
     assert_eq!(
         err,
-        "Model validation error: 1 validation error for Submission\n\
-         JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> dependencies[0] -> environment:\n\
          \tnames Environment 'Conda', which is not a jobEnvironments entry of the Job \
          Template, and no Environment Template is attached. The entry is required; set \
          'required: false' if the Step can run without the Environment (Template \
