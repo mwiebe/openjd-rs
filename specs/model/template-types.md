@@ -357,7 +357,8 @@ since a disabled Environment is simply left out of the Step's sets.
 at most one. For each Step, of the Environments its Sessions would enter that share a group
 and whose `enableIf` is not `false` for it, only the first in the Job's Environment order
 (attached ones first, then `jobEnvironments`; §1.1 item 7) is entered, and the others are
-*superseded*, which disables them for the Step (§3.2.2). It is a plain `String`, so pass 11
+*superseded*, which disables them for the Step (§3.2.2). Job creation takes them in that
+order and does not evaluate a superseded one's `enableIf` (§7.4.1 step 6). It is a plain `String`, so pass 11
 reports a value that is not an `<Identifier>` (§7.1, at most 64 characters, or 512 with
 `FEATURE_BUNDLE_1`) at its own path. Pass 11 also rejects it without ENV_PARAMS, on a
 `stepEnvironments` entry, and on an Environment whose `activation` is `ALWAYS` (constraint
@@ -369,8 +370,8 @@ Step's entry (`Known::Entered`, `NotEntered`, or `Undetermined`; the first three
 after §4 item 10), and `apply_exclusive_groups` applies the group bullet to one Step's
 Environments in Job order: a grouped one is entered only when it is entered by its own state
 and every earlier one of its group is known not to be, and is not entered when an earlier one
-is known to be entered (that one, or one before it, is then the group's first). No job type
-records the group: `Job.EnvNames` lists every Environment (§7.3.1), and a superseded one is
+would, by its own state, be known to be entered (that one, or one before it, is then the
+group's first). No job type records the group: `Job.EnvNames` lists every Environment (§7.3.1), and a superseded one is
 left out of the Step's sets like any disabled one (see
 [job-creation.md](job-creation.md#exclusive-groups-env_params)).
 

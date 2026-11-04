@@ -64,11 +64,13 @@ pub struct Environment {
     /// the Job's Environment order (§1.1 item 7) is entered; the others are
     /// *superseded* for the Step, which disables them for it (§3.2.2), so
     /// they are not held to constraint 7 and the Step's values for them are
-    /// not checked. Job creation applies the rule after every `enableIf` and
-    /// before those checks (§7.4.1 step 7). Template validation checks that
-    /// the value is an `<Identifier>` (§7.1), and rejects the field without
-    /// `ENV_PARAMS`, on a `stepEnvironments` entry, and on an Environment
-    /// with `activation: ALWAYS` (constraint 1).
+    /// not checked. Job creation takes them in that order, and once one is
+    /// entered, it does not evaluate the `enableIf` of the later ones for
+    /// the Step (§7.4.1 step 6, before the checks of step 7). Template
+    /// validation checks that the value is an `<Identifier>` (§7.1), and
+    /// rejects the field without `ENV_PARAMS`, on a `stepEnvironments`
+    /// entry, and on an Environment with `activation: ALWAYS` (constraint
+    /// 1).
     pub exclusive_group: Option<String>,
     pub script: Option<EnvironmentScript>,
     pub variables: Option<HashMap<String, FormatString>>,
@@ -177,8 +179,9 @@ pub(crate) enum Known {
 /// ([`Environment::known_state`], or a sharper one): one with a group is
 /// known to be entered only when, in addition, every earlier one of its
 /// group is known not to be entered, and is known not to be entered when an
-/// earlier one of its group is known to be entered, since that one, or one
-/// before it, is then the group's first. Any other one keeps its state.
+/// earlier one of its group would, by its state before the rule, be known
+/// to be entered, since that one, or one before it, is then the group's
+/// first. Any other one keeps its state.
 pub(crate) fn apply_exclusive_groups<'g>(
     states: impl IntoIterator<Item = (Option<&'g str>, Known)>,
 ) -> Vec<Known> {

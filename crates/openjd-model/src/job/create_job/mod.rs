@@ -150,20 +150,22 @@ pub fn create_job(
 ///    the Step declines, and every `ON_REQUEST` one an enabled entry
 ///    requests, and a disabled entry for an `ALWAYS` one is an error naming
 ///    the Step and the Environment; the Step gets its effective values for each
-///    of the Job Template's own, each Environment's own `enableIf` (§4 item
-///    6) is decided with the values that are known (a missing or
-///    unconvertible value is `unresolved[T]`; Template Schemas §3.2.2), one
-///    that is `false` is left out of the Step's set and values, or, for an
-///    `ALWAYS` one, is an error naming the Step (§3.2.2 item 6); of the
-///    ones left that share an `exclusiveGroup` (§4 item 7), only the first
-///    in written order is entered, and the others are superseded, which
-///    disables them for the Step (§7.4.1 step 7); and for the ones not
-///    disabled each value is checked against its definition and constraint
-///    7 is checked (step 8). The attached Environments come first in the
-///    Job's Environment order, so a Job Environment whose group an attached
-///    one shares is left to stage 4, which applies the group rule to the
-///    attached ones and then to it, and checks its values only if it is
-///    not superseded;
+///    of the Job Template's own; in written order, one whose
+///    `exclusiveGroup` (§4 item 7) an earlier one that remains in the
+///    Step's set already has is superseded, which disables it for the
+///    Step, and its own `enableIf` is not evaluated (§7.4.1 step 6); for
+///    any other, its own `enableIf` (§4 item 6) is decided with the values
+///    that are known (a missing or unconvertible value is `unresolved[T]`;
+///    Template Schemas §3.2.2), and one that is `false` is left out of the
+///    Step's set and values, or, for an `ALWAYS` one, is an error naming
+///    the Step (§3.2.2 item 6), while one it does not disable takes its
+///    group; and for the ones not disabled each value is checked against
+///    its definition and constraint 7 is checked (step 7). The attached
+///    Environments come first in the Job's Environment order, so a Job
+///    Environment whose group an attached one shares is left to stage 4,
+///    which applies the group rule to the attached ones and then to it,
+///    and decides its `enableIf` and checks its values only if it is not
+///    superseded;
 /// 4. the entries that name no Job Environment, enabled or disabled, are
 ///    resolved against `attached` (§3.2.1; a disabled one that matches no
 ///    attachment has no effect), the Step's attached Environments are

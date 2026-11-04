@@ -551,7 +551,7 @@ fn with_both_environments_attached_each_step_enters_the_first_attached() {
     // The Conda and Docker samples share `exclusiveGroup: SoftwareProvider`,
     // so each Step's Sessions enter only the first one attached that is
     // enabled for the Step; the other is superseded (Template Schemas §4
-    // item 7, §7.4.1 step 7). Every Step supplies Conda packages, so Conda's
+    // item 7, §7.4.1 step 6). Every Step supplies Conda packages, so Conda's
     // own enableIf is true for each.
     let conda = fixture("conda-env-params.yaml");
     let docker = fixture("docker-env-params.yaml");
