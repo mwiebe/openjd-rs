@@ -1892,3 +1892,151 @@ fn a_superseded_step_does_not_count_as_deciding_an_unreachable_attachment() {
         )
     );
 }
+
+/// Steps S0, which has no entries, and S1, whose entry for `env`
+/// supplies `params`.
+fn s0_and_s1_with(env: &str, params: &str) -> String {
+    format!(
+        "steps:\n- name: S0\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  dependencies: [{{environment: {env}, parameters: {{{params}}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    )
+}
+
+const FAILED_NOTE: &str = " (its own enableIf could not be evaluated for this Step, so the \
+                           Environment is checked as if it is not disabled)";
+
+/// `with_note` with the note before its final period.
+fn noted(message: &str, note: &str) -> String {
+    format!("{}{note}.", message.trim_end_matches('.'))
+}
+
+#[test]
+fn the_enable_if_notes_are_per_step() {
+    // S0 takes S's default, so the enableIf fails (or, reading Q, is
+    // unresolved) and its constraint 7 error carries the note. S1 supplies
+    // a value that makes it true, so its error carries none.
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let unresolved_with_p = "envParameterDefinitions: [{name: Q, type: STRING}, {name: P, \
+                             type: STRING}], enableIf: \"Env.Param.Q != ''\"";
+    let job = |body: &str| {
+        format!("{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, {body}, variables: {{V: b}}}}\n")
+    };
+    // A deferred Job Environment whose enableIf fails for S0.
+    create_err(
+        &format!("{}{}", job(FAILING_WITH_P), s0_and_s1_with("B", "S: '5'")),
+        &[&x],
+        "Submission",
+        &[
+            &noted(
+                &missing("JobTemplate -> steps[0]", true, "'B'"),
+                FAILED_NOTE,
+            ),
+            &missing("JobTemplate -> steps[1]", true, "'B'"),
+            &failing("JobTemplate -> jobEnvironments[0]").replace("Step 'S'", "Step 'S0'"),
+        ],
+    );
+    // A deferred Job Environment whose enableIf is unresolved for S0.
+    create_err(
+        &format!("{}{}", job(unresolved_with_p), s0_and_s1_with("B", "Q: q")),
+        &[&x],
+        "Submission",
+        &[
+            &noted(
+                &missing_named("JobTemplate -> steps[0]", true, "'B'", "Q', 'P"),
+                UNRESOLVED_NOTE,
+            ),
+            &missing("JobTemplate -> steps[1]", true, "'B'"),
+        ],
+    );
+    // The same for an attachment.
+    let y = |body: &str| env(&format!("name: Y, {body}"));
+    create_err(
+        &format!("{HEAD}{}", s0_and_s1_with("Y", "S: '5'")),
+        &[&y(FAILING_WITH_P)],
+        "Submission",
+        &[
+            &noted(
+                &missing(
+                    "JobTemplate -> steps[0]",
+                    false,
+                    "'Y' (EnvironmentTemplate[0])",
+                ),
+                FAILED_NOTE,
+            ),
+            &missing(
+                "JobTemplate -> steps[1]",
+                false,
+                "'Y' (EnvironmentTemplate[0])",
+            ),
+            &failing("EnvironmentTemplate[0] -> environment").replace("Step 'S'", "Step 'S0'"),
+        ],
+    );
+    create_err(
+        &format!("{HEAD}{}", s0_and_s1_with("Y", "Q: q")),
+        &[&y(unresolved_with_p)],
+        "Submission",
+        &[
+            &noted(
+                &missing_named(
+                    "JobTemplate -> steps[0]",
+                    false,
+                    "'Y' (EnvironmentTemplate[0])",
+                    "Q', 'P",
+                ),
+                UNRESOLVED_NOTE,
+            ),
+            &missing(
+                "JobTemplate -> steps[1]",
+                false,
+                "'Y' (EnvironmentTemplate[0])",
+            ),
+        ],
+    );
+}
+
+#[test]
+fn a_deferred_job_environments_values_are_kept_for_every_step() {
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: N, type: STRING, default: b}}], variables: {{V: b}}}}\n{}",
+        two_plain_steps()
+    );
+    let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G, enableIf: false")]);
+    for step in 0..2 {
+        assert_eq!(
+            rendered_values(&created.job.steps[step]),
+            ["JobTemplate/B: N=string:b"],
+            "step {step}"
+        );
+    }
+}
+
+#[test]
+fn within_a_step_the_attachments_errors_come_before_the_deferred_ones() {
+    // Y (group H) is attached and missing P; B, deferred behind the
+    // disabled X, has a value below its minimum and is missing P.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: N, type: INT, minValue: 5}}, {{name: P, type: STRING}}], variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: B, parameters: {{N: 1}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let y = env("name: Y, exclusiveGroup: H, envParameterDefinitions: [{name: P, type: STRING}]");
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let err = create(&jt, &[&y, &x]).expect_err("expected job creation to fail");
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "Model validation error: 3 validation errors for Submission\n{}\n\
+             JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': \
+             value 1 is less than minimum 5\n{}",
+            missing(
+                "JobTemplate -> steps[0]",
+                false,
+                "'Y' (EnvironmentTemplate[0])"
+            ),
+            missing("JobTemplate -> steps[0]", true, "'B'"),
+        )
+    );
+}

@@ -820,8 +820,9 @@ The last stage of `create_job_with_environment_templates` (Template Schemas §3.
 item 4), the crate-private `apply_environment_templates` in `job/create_job/external.rs`. A
 submission combines one Job Template with zero or more Environment Templates that the
 scheduler attaches, in its order. It takes the Job that job creation proper built from the
-Job Template, what job creation decided for each Step (its frozen entries, and which
-`jobEnvironments` entries its Sessions enter, after their own `enableIf`), the `Job.EnvNames`
+Job Template, what job creation decided for each Step (its frozen entries, which
+`jobEnvironments` entries its Sessions enter, after their own `enableIf`, and the ones whose
+`exclusiveGroup` an attachment shares, left undecided), the `Job.EnvNames`
 value, and the merged values
 `preprocess_job_parameters` produced with the same Environment Templates. `ctx` supplies the
 caller limits and the path policy; its profile is not read. Each attached template is
@@ -909,9 +910,11 @@ that has entries lists both.
    (a Session enters the attachments first), and each Step's `environment_parameters` becomes
    its values for the attachments followed by its own.
 6. Each Step's `environments` lists the combined Job Environments its Sessions enter after
-   every Environment's own `enableIf` (the Job Template's, decided by job creation proper; the
-   attachments', in step 3; see [Environment enableIf](#environment-enableif-env_params)), or
-   is `None` when it enters every one.
+   §7.4.1 step 6: each Environment's own `enableIf` and its `exclusiveGroup` (the Job
+   Template's, decided by job creation proper, except those whose group an attachment shares,
+   decided in step 3 after the attachments; the attachments', in step 3; see
+   [Environment enableIf](#environment-enableif-env_params) and
+   [Exclusive groups](#exclusive-groups-env_params)), or is `None` when it enters every one.
 7. The `WRAP_ACTIONS` single-layer rule (RFC 0008) is checked over each Step's final
    Environment set: the combined Job Environments it enters and its Step Environments. More
    than one Environment defining wrap hooks is an error at `JobTemplate -> steps[i]` naming
@@ -926,8 +929,10 @@ that has entries lists both.
 
 Every error is collected into one `ModelValidation` error for the model name `Submission`, in
 the order above (so a later Step's resolution error precedes an earlier Step's value error,
-the attachments' failed `enableIf` evaluations and then the unreachable attachments' errors
-of step 1 follow every Step's values, and host-requirement errors come last),
+the attachments' failed `enableIf` evaluations, then those of the Job Environments decided in
+step 3, and then the unreachable attachments' errors of step 1 follow every Step's values,
+and host-requirement errors come last; within a Step, the attachments' value checks and
+constraint 7 come before those of the Job Environments decided in step 3),
 and every path starts with the document: `JobTemplate`, `EnvironmentTemplate[i]`, or the
 attachment's label. The stage does not re-run the carried-forward resolved-value checks on
 the attachments' own format strings (the `SERVICE` prototype's submission function does).
