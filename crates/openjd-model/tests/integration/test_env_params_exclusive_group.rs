@@ -928,3 +928,72 @@ fn a_failed_entry_enable_if_still_takes_its_group() {
         ],
     );
 }
+
+#[test]
+fn check_decides_a_grouped_job_environment_as_template_validation_would() {
+    // With no attachment of its group, J is its group's first. Whether the
+    // Step enters it is decided from its enableIf and the Step's entry as
+    // written: entered when its enableIf is certainly unresolved (with the
+    // unresolved note), and undetermined when it is another expression or
+    // the entry's enableIf is one.
+    let jt = |enable_if: &str, deps: &str| {
+        format!(
+            "{HEAD}jobEnvironments:\n- {{name: C, variables: {{V: c}}}}\n- {{name: J, \
+             exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}, {{name: Q, \
+             type: STRING}}], enableIf: {enable_if}, variables: {{V: j}}}}\n\
+             steps:\n- name: S\n{deps}  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        )
+    };
+    // U is not entered (no entry requests it), so a wrong index into the
+    // Step's states would read a state other than J's.
+    let u = env("name: U, activation: ON_REQUEST");
+    let unresolved = jt("\"Env.Param.P != ''\"", "");
+    let err = check(&unresolved, &[&u]).expect_err("expected check to fail");
+    let names = "every jobEnvironments entry with activation ALWAYS, each one with activation \
+                 BY_DEFAULT that the Step does not decline, and each one with activation \
+                 ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7";
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&format!(
+            "JobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every \
+             parameter without a default of each Environment its Sessions enter ({names}); \
+             missing: 'P', 'Q' of Environment 'J'{UNRESOLVED_NOTE}."
+        )],
+    );
+    // The entry supplies P, so the enableIf is known to be true, which
+    // stays undetermined before job creation; job creation finds Q missing.
+    let known = jt(
+        "\"Env.Param.P != ''\"",
+        "  dependencies: [{environment: J, parameters: {P: x}}]\n",
+    );
+    check_ok(&known, &[&u]);
+    create_err(
+        &known,
+        &[&u],
+        "JobTemplate",
+        &[&missing_named("steps[0]", true, "'J'", "Q")],
+    );
+    // Another expression, or an entry whose enableIf is an expression.
+    check_ok(&jt("\"Job.Name == 'other'\"", ""), &[&u]);
+    check_ok(
+        &jt(
+            "\"Env.Param.P != ''\"",
+            "  dependencies: [{environment: J, enableIf: \"Job.Name == 'J'\"}]\n",
+        ),
+        &[&u],
+    );
+}
+
+#[test]
+fn disabled_environments_are_in_job_order() {
+    // S, superseded by the attachment X, is decided after D, which its own
+    // enableIf disables, but is listed first.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: S, exclusiveGroup: G, variables: {{V: s}}}}\n\
+         - {{name: D, enableIf: false, variables: {{V: d}}}}\n{STEP}"
+    );
+    let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G")]);
+    assert_eq!(entered(&created, 0), ["X@0"]);
+    assert_eq!(disabled(&created, 0), ["S", "D"]);
+}
