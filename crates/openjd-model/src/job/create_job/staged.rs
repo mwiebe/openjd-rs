@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! The errors of one job creation, in the order Template Schemas §7.4.1
-//! (`ENV_PARAMS`) takes its steps.
+//! takes its steps, for every Job Template, with or without `ENV_PARAMS`.
 //!
 //! Every error is filed under a key: the §7.4.1 step it belongs to, then
 //! the Step it is about (by index), then a position within the Step (the
@@ -68,33 +68,13 @@ pub(crate) const ANY: usize = usize::MAX;
 #[derive(Default)]
 pub(crate) struct StagedErrors {
     buckets: BTreeMap<(Stage, usize, usize), ValidationErrors>,
-    /// Whether every error goes in one bucket, in filing order, whatever
-    /// its key: for a Job Template without `ENV_PARAMS`, created as before
-    /// the extension ([`unordered`](Self::unordered)).
-    flat: bool,
 }
 
 impl StagedErrors {
-    /// Errors that are reported in the order they are filed, keys ignored:
-    /// the submission stage of a Job Template without `ENV_PARAMS`, whose
-    /// errors keep the order they had before the extension (§7.4.1 applies
-    /// with it).
-    pub(crate) fn unordered() -> Self {
-        Self {
-            buckets: BTreeMap::new(),
-            flat: true,
-        }
-    }
-
     /// The errors filed under `stage`, Step `step`, and position `at`, to
     /// add to.
     pub(crate) fn at(&mut self, stage: Stage, step: usize, at: usize) -> &mut ValidationErrors {
-        let key = if self.flat {
-            (Stage::Validation, 0, 0)
-        } else {
-            (stage, step, at)
-        };
-        self.buckets.entry(key).or_default()
+        self.buckets.entry((stage, step, at)).or_default()
     }
 
     /// Whether Step `step` has an error from §7.4.1 steps 1–4, so that
@@ -103,11 +83,6 @@ impl StagedErrors {
         self.buckets.iter().any(|((stage, s, _), errors)| {
             *s == step && (Stage::Step1..=Stage::Step4).contains(stage) && !errors.is_empty()
         })
-    }
-
-    /// Whether any error has been filed.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.buckets.values().all(ValidationErrors::is_empty)
     }
 
     /// File `other`'s errors after this one's, key by key, with `prefix`
@@ -222,14 +197,11 @@ mod tests {
     }
 
     #[test]
-    fn is_empty_ignores_empty_buckets() {
+    fn empty_buckets_are_no_error() {
         let mut staged = StagedErrors::default();
-        assert!(staged.is_empty());
+        assert!(StagedErrors::default().finish("M").is_ok());
         staged.at(Stage::Step8, 0, 0);
-        assert!(staged.is_empty());
+        staged.at(Stage::Step2, 1, 0);
         assert!(staged.finish("M").is_ok());
-        let mut staged = StagedErrors::default();
-        staged.at(Stage::Step8, 0, 0).add(&[], "x");
-        assert!(!staged.is_empty());
     }
 }

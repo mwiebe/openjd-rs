@@ -134,8 +134,8 @@ pub struct CreatedJob {
     /// Conditions to warn about, in the order found: an attached
     /// Environment named like a Job Environment, which no entry of the Job
     /// Template can reach (§3.2.1 item 4), when the Job Template lists
-    /// `ENV_PARAMS` (without it no entry exists, and the submission
-    /// behaves as before the extension); and an enabled `required: false`
+    /// `ENV_PARAMS` (without it no entry exists, and the submission gets
+    /// no warning it did not get before the extension); and an enabled `required: false`
     /// entry that resolves to no Environment (RFC "External Environments
     /// are named implicitly" item 3).
     pub warnings: Vec<SubmissionWarning>,
@@ -357,8 +357,8 @@ impl<'a> Attachments<'a> {
                 }
                 // Without ENV_PARAMS in the Job Template there are no
                 // entries to reach any attachment, and such a submission
-                // behaves as before the extension (RFC Backward
-                // compatibility), with no new warning.
+                // gets no warning it did not get before the extension (RFC
+                // Backward compatibility).
                 if job_lists_env_params {
                     warnings.push(SubmissionWarning {
                         path: path_field(&env_path, "name"),
@@ -613,8 +613,8 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// Each attachment named like a `jobEnvironments` entry is unreachable from
 /// the Job Template (§3.2.1 item 4). It gets a warning when the Job
 /// Template lists `ENV_PARAMS` (without it the Job Template has no entries
-/// that could name it, and the submission behaves as before the
-/// extension), and an error when its `activation` is `ALWAYS` or
+/// that could name it, and the submission gets no warning it did not get
+/// before the extension), and an error when its `activation` is `ALWAYS` or
 /// `BY_DEFAULT`, it has parameters without a `default`, and a Step's
 /// Sessions enter it.
 ///
@@ -720,16 +720,7 @@ pub(crate) fn apply_environment_templates(
         .map(|e| e.name.as_str())
         .collect();
 
-    // A Job Template without ENV_PARAMS is created as before the extension,
-    // its errors in the order they are found (§7.4.1 applies with it).
-    let mut staged = if job_template
-        .profile()
-        .has_extension(ModelExtension::EnvParams)
-    {
-        StagedErrors::default()
-    } else {
-        StagedErrors::unordered()
-    };
+    let mut staged = StagedErrors::default();
     let mut warnings = Vec::new();
     // `default`s resolve against the merged Job Parameters, without
     // `Job.Name` or `Job.EnvNames` (§4.5 item 1, §7.3.2; plan A21).

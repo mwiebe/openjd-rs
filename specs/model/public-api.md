@@ -367,22 +367,24 @@ requirement that resolves to nothing (an amount whose `min` and `max`
 both resolve to `null`, an attribute whose `anyOf` and `allOf`, written
 as one expression, both resolve to `null`) is discarded before
 combining and listed in `CreatedJob::discarded_host_requirements`, and a
-Step left with no requirements has `host_requirements: None` (§3.3). For a
-Job Template that lists ENV_PARAMS, it takes the §7.4.1 steps over the Job
-Template and the attachments in one pass and reports every check failure in one `ModelError::ModelValidation`,
+Step left with no requirements has `host_requirements: None` (§3.3). For
+every Job Template, whether or not it lists ENV_PARAMS, it takes the §7.4.1
+steps over the Job Template and the attachments in one pass and reports
+every check failure in one `ModelError::ModelValidation`,
 in §7.4.1 order: the template-validation-style checks first, then by
 step, then by Step, then by the Environment's place in the Job's
 Environment order; a Step with an error from steps 1–4 gets no checks
 from steps 5–8. The error is shaped by the inputs: for `JobTemplate`, at
 the Job Template's paths, without attachments, and for `Submission`, with
 every path starting at its document, with them; the warnings' paths
-follow the same rule. A Job Template without ENV_PARAMS is created as
-before, in two passes: its own errors are reported alone, for
-`JobTemplate`, and only then are the attachments applied, whose errors are
-for `Submission`. [`create_job`] is the same with no attachments, so
+follow the same rule. For a Job Template without ENV_PARAMS this is a change
+only when Environment Templates are attached: its own errors and the
+attachments' are now reported together, for `Submission`, where before its
+own were reported alone, for `JobTemplate`, and a caller limit is reported
+only when the attachments add no error. [`create_job`] is the same with no attachments, so
 its Job is complete: an enabled required entry naming no Job Environment
 is a `JobTemplate` error. See
-[job-creation.md](job-creation.md#error-order-env_params).
+[job-creation.md](job-creation.md#error-order).
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need
