@@ -404,9 +404,8 @@ without a `default`, when its `activation` is `ALWAYS`, or `BY_DEFAULT`
 with its own `enableIf` absent, `true`, or certainly unresolved, and some
 Step is known to enter it after the group rule), and the
 attachments' literal
-`default`s, the `WRAP_ACTIONS` single-layer rule for each Step whose
-Sessions certainly enter a wrapping attachment or a wrapping grouped Job
-Environment, and the §3.3.3 combination of
+`default`s, the `WRAP_ACTIONS` single-layer rule for each Step, and the
+§3.3.3 combination of
 each Step's literal host requirements with the literal ones of the
 Environments its Sessions certainly enter (with the group rule applied).
 It reports with the same

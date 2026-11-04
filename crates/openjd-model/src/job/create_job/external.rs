@@ -1441,10 +1441,10 @@ fn certainly_entered_per_step(
 ///   attachment of its `exclusiveGroup` supersedes or may supersede it for
 ///   every Step), reported after the Steps' values, as job creation orders
 ///   them;
-/// - the `WRAP_ACTIONS` single-layer rule (RFC 0008) for each Step whose
-///   Sessions certainly enter a wrapping attached Environment or a wrapping
-///   grouped Job Environment (template validation counts no grouped one),
-///   over the wrapping
+/// - the `WRAP_ACTIONS` single-layer rule (RFC 0008) for each Step (one
+///   whose only layers are the Job Template's own ungrouped ones passed
+///   template validation, which counts them the same way; it counts no
+///   grouped one), over the wrapping
 ///   Environments its Sessions certainly enter: attachments with `activation:
 ///   ALWAYS`, those with `BY_DEFAULT` that no entry of the Step disables or
 ///   may disable, and the `ON_REQUEST` ones an enabled entry resolved to,

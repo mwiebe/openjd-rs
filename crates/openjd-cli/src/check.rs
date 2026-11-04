@@ -87,7 +87,8 @@ pub fn execute(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// `openjd_model::check_environment_templates` (`ENV_PARAMS`, §3.2):
 /// `environment:` entries resolved by name, their keys, their literal
 /// values, every parameter without a `default` supplied, the `WRAP_ACTIONS`
-/// single-layer rule for Steps that enter a wrapping attachment, and the
+/// single-layer rule for each Step (its grouped Job Environments included),
+/// and the
 /// §3.3.3 combination of literal host requirements. The warnings go to
 /// stderr. Format-string values, non-literal `default`s and host
 /// requirements, and entries and Environments whose `enableIf` is an
