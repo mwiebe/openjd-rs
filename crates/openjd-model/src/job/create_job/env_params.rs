@@ -1446,7 +1446,16 @@ pub(crate) fn resolve_step_entries<'a>(
         .zip(&job_envs.positions)
         .enumerate()
     {
-        if !enters(de.name, de.activation) || failed.contains(de.name) {
+        if !enters(de.name, de.activation) {
+            continue;
+        }
+        if failed.contains(de.name) {
+            // The entry's failed `enableIf` fails job creation. The
+            // Environment still takes its group, as it may be entered, so
+            // the later ones of its group add no errors of their own.
+            if let Some(group) = de.env.group() {
+                taken.insert(group);
+            }
             continue;
         }
         let pending = de.values_for_step(
@@ -1456,22 +1465,19 @@ pub(crate) fn resolve_step_entries<'a>(
             errors,
         );
         let decision = de.decide(&pending, &st.name, &job_envs.enable_if_base, policy);
-        let group = de.env.group().filter(|_| decision != EnableIf::Disabled);
-        // An attached Environment of the group comes first and may
-        // supersede it, which only the submission stage knows.
-        if let Some(group) = group.filter(|g| job_envs.attached_groups.contains(*g)) {
-            if !taken.contains(group) {
+        if let Some(group) = de.env.group().filter(|_| decision != EnableIf::Disabled) {
+            // An attached Environment of the group comes first and may
+            // supersede it, which only the submission stage knows, so it
+            // decides every Job Environment of such a group, in order.
+            if job_envs.attached_groups.contains(group) {
                 deferred.push(DeferredJobEnvironment {
                     position,
                     environment: k,
                     pending,
                     decision,
                 });
-                taken.insert(group);
                 continue;
             }
-        }
-        if let Some(group) = group {
             if !taken.insert(group) {
                 // Superseded: disabled for the Step (§3.2.2).
                 env_disabled.push(position);

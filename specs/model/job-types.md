@@ -137,13 +137,14 @@ environment)` key `EnvironmentParameterValues` uses: every one with `activation:
 every one with `BY_DEFAULT` that no disabled `environment:` entry of the Step declines (§3.2
 item 3.2), and every one with `activation: ON_REQUEST` that an enabled `environment:` entry
 of the Step requests, less any whose own `enableIf` (§4 item 6) is `false` for the Step (for
-an `ALWAYS` one either is a job-creation error, so a created Job never leaves one out). The Step's own
+an `ALWAYS` one either is a job-creation error, so a created Job never leaves one out) and any
+that an earlier one of its `exclusiveGroup` supersedes (§4 item 7). The Step's own
 `step_environments`, entered after these, are in its Environment set too but are not listed;
 a Step Environment whose `enableIf` is `false` is left out of `step_environments` (`None` when
 none remain), and a disabled Environment has no `environment_parameters` entry. `enableIf` is
 not copied to `job::Environment` either (plan 3 Q11). `None` means every Job Environment,
 which is what every Step of a Job that uses no `ON_REQUEST` Environment, no Environment
-`enableIf`, and no disabled `environment:` entry (one declines a `BY_DEFAULT` Environment,
+`enableIf` or `exclusiveGroup`, and no disabled `environment:` entry (one declines a `BY_DEFAULT` Environment,
 Template Schemas §3.2 item 3.2) gets, so such a Job serializes as before; a created Job never holds
 `Some` of the full list, so the field compares directly. `Step::enters_environment(document,
 name)` answers for one Environment, and `Step::same_environments(&other)` compares the field

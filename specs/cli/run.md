@@ -250,7 +250,7 @@ Environments are entered and exited in a strict order:
 For each step, the `env_templates` and `job_envs` are only those the step enters (every one
 with `activation: ALWAYS`, every `BY_DEFAULT` one the step does not decline with a disabled
 `environment:` entry, and each `ON_REQUEST` one the step requests,
-less any whose own `enableIf` is `false` for it; see [One Session, re-entering
+less any whose own `enableIf` is `false` for it and any its `exclusiveGroup` supersedes; see [One Session, re-entering
 Environments between Steps](#one-session-re-entering-environments-between-steps)):
 
 ```
@@ -285,7 +285,8 @@ resolution. Job and template environments receive their own `resolved_symtab`, s
 Environment's scope from the table it is passed, not from the `Environment`'s field).
 
 **Single-wrap-layer check (RFC 0008).** Job creation checks every Step's Environment set
-— the attached and Job Environments it enters, by `activation` and `enableIf`, and its Step
+— the attached and Job Environments it enters, by `activation`, `enableIf`, and
+`exclusiveGroup`, and its Step
 Environments whose `enableIf` is not `false` —
 and rejects the Job if more than one environment in a set defines a wrap hook (see
 [../model/job-creation.md](../model/job-creation.md#the-submission-stage)). It checks every
@@ -336,7 +337,8 @@ Job Parameters). Its submission stage:
   (Template Schemas §3.2 item 3.2), and each `ON_REQUEST` one an enabled entry of the
   Step requests, less any whose own `enableIf` (Template Schemas §4 item 6) is `false` for
   the Step (for an `ALWAYS` one, that is an error naming the Step and the Environment, as is a
-  Step's disabled entry for one, and the Job is not run), which
+  Step's disabled entry for one, and the Job is not run), and less any that an earlier one of
+  its `exclusiveGroup` supersedes (Template Schemas §4 item 7), which
   the Step's Sessions then do not enter or exit and whose `variables` they do not set; a
   Step Environment whose `enableIf` is `false` is likewise left out of
   `job::Step::step_environments`, so `execute_step` does not enter it;
@@ -371,7 +373,8 @@ that way.
 Before each Step, `job_environment_targets` lists the combined job environments the Step
 enters (`job::Step::enters_environment`: every one with `activation: ALWAYS`, each
 `BY_DEFAULT` one it does not decline, each
-`ON_REQUEST` one it requests, less any whose own `enableIf` is `false` for it), in Job order,
+`ON_REQUEST` one it requests, less any whose own `enableIf` is `false` for it or that its
+`exclusiveGroup` supersedes), in Job order,
 each with the Step's values for it. `RunContext::move_to_job_environments` keeps the longest
 prefix of the entered environments whose every entry is the same environment (its index in
 `job_environments`, which names it by `(document, name)`) entered with values equal to the

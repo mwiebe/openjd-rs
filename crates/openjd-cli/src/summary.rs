@@ -112,7 +112,8 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     let mut the_job = created.job;
     // With `ENV_PARAMS`, each Step's Environment set (Template Schemas §4
     // item 4), from the combined Job before its listing is filtered.
-    // The Environments an `enableIf` disabled for each Step (§4 item 6)
+    // The Environments an `enableIf` disabled for each Step (§4 item 6),
+    // or an earlier one of their `exclusiveGroup` superseded (§4 item 7),
     // are listed too.
     let session_envs: Vec<StepEnvSets> = if lists_env_params(&the_job, &env_templates) {
         the_job
@@ -173,14 +174,15 @@ fn lists_env_params(
         })
 }
 
-/// A Step's Environment set, and the Environments an `enableIf` took out
-/// of it.
+/// A Step's Environment set, and the Environments an `enableIf` or an
+/// `exclusiveGroup` took out of it.
 struct StepEnvSets {
     /// The Environments its Sessions enter, in the order they enter them.
     entered: Vec<SessionEnvInfo>,
     /// The Environments its Sessions would otherwise have entered that an
     /// `enableIf` on the Environment disabled for it (Template Schemas §4
-    /// item 6): Job Environments in Job order, then Step Environments.
+    /// item 6), or an earlier one of their `exclusiveGroup` superseded (§4
+    /// item 7): Job Environments in Job order, then Step Environments.
     disabled: Vec<SessionEnvInfo>,
     /// The host requirements that resolved to nothing for it and were
     /// discarded (Template Schemas §3.3): its own first, then its
@@ -764,8 +766,9 @@ struct StepInfo<'a> {
 
 /// What the summary adds for a Step when the Job Template or an attached
 /// Environment Template lists `ENV_PARAMS`: the Environments its Sessions
-/// enter, the ones an `enableIf` disabled for it (Template Schemas §4 item
-/// 6), its combined host requirements (§3.3.3), and the requirements that
+/// enter, the ones an `enableIf` disabled or an `exclusiveGroup`
+/// superseded for it (Template Schemas §4 items 6 and 7), its combined host
+/// requirements (§3.3.3), and the requirements that
 /// resolved to nothing and were discarded (§3.3).
 struct EnvParamsDetails<'a> {
     session_envs: &'a [SessionEnvInfo],

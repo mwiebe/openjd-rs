@@ -508,7 +508,7 @@ permitted on every position), and an `exclusive_group: Option<String>` field
 (ENV_PARAMS, §4 item 7; an `<Identifier>`, not on a `stepEnvironments` entry or an
 `ALWAYS` Environment) between `description` and `script`. Adding
 `exclusive_group` is a breaking change for code that builds a
-`template::Environment` with a struct literal:
+`template::Environment` with a struct literal. Its methods:
 
 ```rust
 impl template::Environment {
@@ -1021,12 +1021,14 @@ pub struct job::Step {
     pub resolved_symtab: Option<SerializedSymbolTable>,
     /// ENV_PARAMS effective values, one entry per Environment the Step's
     /// Sessions enter that declares parameters (none for one its
-    /// `enableIf` disabled). Serde: default, skipped when `None`.
+    /// `enableIf` disabled or its group superseded). Serde: default,
+    /// skipped when `None`.
     pub environment_parameters: Option<Vec<EnvironmentParameterValues>>,
     /// ENV_PARAMS: the Job Environments the Step's Sessions enter, in
     /// `Job::job_environments` order, by `activation`, the Step's entries
     /// (an enabled one requests an `ON_REQUEST` Environment, a disabled one
-    /// declines a `BY_DEFAULT` one), and each Environment's own `enableIf`; `None` means every one, and a
+    /// declines a `BY_DEFAULT` one), each Environment's own `enableIf`, and
+    /// each `exclusiveGroup` (§4 item 7); `None` means every one, and a
     /// created Job never holds `Some` of the full list. Serde: default,
     /// skipped when `None`.
     pub environments: Option<Vec<EnvironmentRef>>,

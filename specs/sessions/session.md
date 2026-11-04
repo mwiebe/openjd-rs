@@ -215,8 +215,9 @@ Parameters): the combined `job::Job::job_environments` entries the Step enters
 (`job::Step::enters_environment`, from
 `job::Step::environments`; `None` means every one), in Job order, then the Step's
 `step_environments`. An `ON_REQUEST` Environment the Step does not request, a `BY_DEFAULT`
-Environment the Step declines with a disabled `environment:` entry (§3.2 item 3.2), and an
-Environment whose own `enableIf` (§4 item 6) is `false` for the Step, are not in the set
+Environment the Step declines with a disabled `environment:` entry (§3.2 item 3.2), an
+Environment whose own `enableIf` (§4 item 6) is `false` for the Step, and one an earlier
+Environment of its `exclusiveGroup` supersedes (§4 item 7), are not in the set
 (job creation leaves them out of `environments` and `step_environments`), so they are not
 entered and their `variables`, actions, and wrap hooks never apply to that Session. A Session may
 run a Step's Tasks only when the Environments it has entered and not exited are the Step's set,

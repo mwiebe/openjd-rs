@@ -17,7 +17,7 @@
 //! 10), so the Job Template alone, whose attachments are not known, never
 //! counts a grouped Job Environment as entered.
 
-use openjd_model::job::{Document, EnvironmentRef, Job};
+use openjd_model::job::{AttributeRequirement, Document, EnvironmentRef, HostRequirements, Job};
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
     check_environment_templates, create_job_with_environment_templates,
@@ -97,6 +97,10 @@ fn label(document: &Document, name: &str) -> String {
         Document::EnvironmentTemplate { index, .. } => format!("{name}@{index}"),
     }
 }
+
+const TYPED_ERROR: &str = "steps[0] -> dependencies[0] -> parameters -> N:\n\tcould not be \
+                           resolved as a value of type INT: Cannot convert 'x' to int: invalid \
+                           digit found in string";
 
 const HEAD: &str = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                     name: J\n";
@@ -296,7 +300,7 @@ fn template_validation_never_counts_a_grouped_job_environment_as_entered() {
          script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
     job_ok(&typed);
-    assert!(create(&typed, &[]).is_err());
+    create_err(&typed, &[], "JobTemplate", &[TYPED_ERROR]);
     // Ungrouped, the same mistake is reported at template validation.
     job_err(
         &first.replace("exclusiveGroup: G, ", ""),
@@ -320,7 +324,8 @@ fn values_of_a_superseded_job_environment_are_not_checked_but_its_keys_are() {
     };
     let created = create_ok(&jt("{N: '{{1}}'}"), &[]);
     assert_eq!(entered(&created, 0), ["A"]);
-    assert!(job_ok(&jt("{N: 1}")).steps.len() == 1);
+    let created = create_ok(&jt("{N: 1}"), &[]);
+    assert_eq!(entered(&created, 0), ["A"]);
     job_err(
         &jt("{Q: 1}"),
         &[
@@ -499,7 +504,17 @@ fn a_superseded_environments_host_requirements_are_not_combined() {
     let created = create_ok(&jt, &[&env(CONDA), &docker]);
     assert_eq!(created.job.steps[0].host_requirements, None);
     let created = create_ok(&jt, &[&docker, &env(CONDA)]);
-    assert!(created.job.steps[0].host_requirements.is_some());
+    assert_eq!(
+        created.job.steps[0].host_requirements,
+        Some(HostRequirements {
+            amounts: None,
+            attributes: Some(vec![AttributeRequirement {
+                name: "attr.worker.os.family".to_string(),
+                any_of: Some(vec!["linux".to_string()]),
+                all_of: None,
+            }]),
+        })
+    );
 }
 
 #[test]
@@ -517,8 +532,9 @@ fn a_superseded_unreachable_attachment_is_not_an_error() {
                        Environment 'U' has the same name as a jobEnvironments entry of the Job \
                        Template, so no 'environment:' dependency can reach it (Template Schemas \
                        §3.2.1 item 4), and it has parameters without a default that no Step can \
-                       supply: P. Its activation is BY_DEFAULT, so every Session enters it, and \
-                       the submission is rejected (§3.2.1).";
+                       supply: P. Its activation is BY_DEFAULT and an earlier Environment of its \
+                       exclusiveGroup does not supersede it, so Sessions enter it, and the \
+                       submission is rejected (§3.2.1).";
     check_err_same_as_create(&jt, &[&u, &x], &[unreachable]);
 }
 
@@ -618,6 +634,297 @@ fn the_single_layer_rule_counts_only_the_first_of_a_group() {
             "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define wrap \
            hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'A', 'B'. A Session may have \
            at most one Environment defining wrap hooks (RFC 0008).",
+        ],
+    );
+}
+
+// ── Audit round 1: the cases the first tests left out ──────────────
+
+#[test]
+fn an_attachment_the_step_does_not_enter_does_not_supersede() {
+    // Conda is ON_REQUEST and no entry requests it, so the Step's Sessions
+    // would not enter it, and Docker is its group's first: its Image is
+    // required, before job creation as at it.
+    let jt = format!("{HEAD}{STEP}");
+    let docker = env(&DOCKER.replace("activation: ON_REQUEST, ", ""));
+    check_err_same_as_create(
+        &jt,
+        &[&env(CONDA), &docker],
+        &[&missing_named(
+            "JobTemplate -> steps[0]",
+            false,
+            "'Docker' (EnvironmentTemplate[1])",
+            "Image",
+        )],
+    );
+}
+
+#[test]
+fn check_counts_a_grouped_job_environment_after_the_attachments() {
+    // W wraps and is attached; X is attached in group `x_group`; the Job
+    // Template's C does not wrap and B wraps in group G. B is superseded
+    // only when X shares its group, and it sits at index 1 of the Job
+    // Environments.
+    let jt = |x_group: &str| {
+        (
+            format!(
+                "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, \
+                 WRAP_ACTIONS, EXPR]\nname: J\njobEnvironments:\n- {{name: C, variables: {{V: \
+                 c}}}}\n- {{name: B, exclusiveGroup: G, {WRAP}}}\n{STEP}"
+            ),
+            env(&format!("name: X, exclusiveGroup: {x_group}")),
+        )
+    };
+    let w = wrapping_env("name: W");
+    let (shared, x) = jt("G");
+    check_ok(&shared, &[&w, &x]);
+    let created = create_ok(&shared, &[&w, &x]);
+    assert_eq!(entered(&created, 0), ["W@0", "X@1", "C"]);
+    let (other, x) = jt("H");
+    let layers = "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that \
+                  define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W' \
+                  (EnvironmentTemplate[0]), 'B'. A Session may have at most one Environment \
+                  defining wrap hooks (RFC 0008).";
+    check_err_same_as_create(&other, &[&w, &x], &[layers]);
+}
+
+#[test]
+fn check_follows_an_earlier_member_known_not_entered_or_undetermined() {
+    // A, B and C wrap; A and B are in group G. When A is known not to be
+    // entered, B is its group's first, so B and C make two layers. When an
+    // entry whose enableIf is an expression may request A, B is
+    // undetermined, and the rule is left to job creation.
+    let jt = format!("{HEAD}{STEP}");
+    let (b, c) = (
+        wrapping_env("name: B, exclusiveGroup: G"),
+        wrapping_env("name: C, exclusiveGroup: H"),
+    );
+    let layers = "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that \
+                  define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'B' \
+                  (EnvironmentTemplate[1]), 'C' (EnvironmentTemplate[2]). A Session may have \
+                  at most one Environment defining wrap hooks (RFC 0008).";
+    for a in [
+        "name: A, exclusiveGroup: G, enableIf: false",
+        "name: A, exclusiveGroup: G, activation: ON_REQUEST",
+    ] {
+        check_err_same_as_create(&jt, &[&wrapping_env(a), &b, &c], &[layers]);
+    }
+    let requests_a = format!(
+        "{HEAD}parameterDefinitions: [{{name: UseA, type: STRING, default: 'no'}}]\n\
+         steps:\n- name: S\n  dependencies: [{{environment: A, enableIf: \"Param.UseA == \
+         'yes'\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = wrapping_env("name: A, exclusiveGroup: G, activation: ON_REQUEST");
+    check_ok(&requests_a, &[&a, &b, &c]);
+    create_err(&requests_a, &[&a, &b, &c], "Submission", &[layers]);
+}
+
+#[test]
+fn a_job_environment_decided_by_the_submission_stage_reports_at_job_template_paths() {
+    // B shares group G with the attachment X, which is disabled, so the
+    // submission stage checks B's values and constraint 7, at the Job
+    // Template's paths, with the jobEnvironments wording and the
+    // unresolved note.
+    let x = env("name: X, exclusiveGroup: G, enableIf: false");
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: N, type: INT, minValue: 5}}], variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: B, parameters: {{N: 1}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    check_err_same_as_create(&jt, &[&x], &[DEFERRED_VALUE_ERROR]);
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: P, type: STRING}}], enableIf: \"Env.Param.P != ''\", variables: {{V: b}}}}\n\
+         {STEP}"
+    );
+    check_err_same_as_create(
+        &jt,
+        &[&x],
+        &[&format!(
+            "{}{UNRESOLVED_NOTE}.",
+            missing("JobTemplate -> steps[0]", true, "'B'").trim_end_matches('.')
+        )],
+    );
+}
+
+const DEFERRED_VALUE_ERROR: &str = "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> \
+                                    N:\n\tParameter 'N': value 1 is less than minimum 5";
+
+const UNRESOLVED_NOTE: &str = " (its own enableIf depends on a value that is missing or does \
+                               not convert, so it does not disable the Environment; Template \
+                               Schemas §3.2.2)";
+
+#[test]
+fn an_unresolved_enable_if_does_not_disable_so_it_supersedes() {
+    // §4 item 7: only an enableIf that is false lets the next one in. A's
+    // enableIf reads its Q, which has no value, so it is unresolved and A
+    // is entered: B is superseded and only A's Q is missing.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: A, exclusiveGroup: G, envParameterDefinitions: [{{name: Q, type: STRING}}], \
+         enableIf: \"Env.Param.Q != ''\", variables: {{V: a}}}}\n\
+         - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: STRING}}], \
+         variables: {{V: b}}}}\n{STEP}"
+    );
+    job_ok(&jt);
+    create_err(
+        &jt,
+        &[],
+        "JobTemplate",
+        &[&format!(
+            "{}{UNRESOLVED_NOTE}.",
+            missing_named("steps[0]", true, "'A'", "Q").trim_end_matches('.')
+        )],
+    );
+}
+
+#[test]
+fn an_ambiguous_attachment_takes_its_group() {
+    // Two attachments define Amb (§3.2.1 item 3); the entry naming it is
+    // rejected. Amb would be entered, so B, later in its group, is not
+    // checked either, and only the ambiguity is reported.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: Amb}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let amb = env("name: Amb, exclusiveGroup: G");
+    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let ambiguous = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
+                     Environment 'Amb', which 2 attached Environment Templates define \
+                     (EnvironmentTemplate[0], EnvironmentTemplate[1]); an entry must match \
+                     exactly one (Template Schemas §3.2.1 item 3).";
+    check_err_same_as_create(&jt, &[&amb, &amb, &b], &[ambiguous]);
+}
+
+#[test]
+fn a_literal_false_attachment_an_expression_entry_names_is_not_entered() {
+    // A's own enableIf is false, so it is not entered whatever the entry
+    // naming it resolves to, and B is its group's first.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: UseA, type: STRING, default: 'yes'}}]\n\
+         steps:\n- name: S\n  dependencies: [{{environment: A, enableIf: \"Param.UseA == \
+         'yes'\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let a = env("name: A, activation: ON_REQUEST, exclusiveGroup: G, enableIf: false");
+    let b = env("name: B, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    check_err_same_as_create(
+        &jt,
+        &[&a, &b],
+        &[&missing(
+            "JobTemplate -> steps[0]",
+            false,
+            "'B' (EnvironmentTemplate[1])",
+        )],
+    );
+}
+
+#[test]
+fn feature_bundle_1_raises_the_length_limit_to_512() {
+    // §7.1: an <Identifier> may be 512 characters with FEATURE_BUNDLE_1.
+    let jt = |group: &str| {
+        format!(
+            "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR, \
+             FEATURE_BUNDLE_1]\nname: J\njobEnvironments:\n- {{name: A, exclusiveGroup: \
+             '{group}', variables: {{V: x}}}}\n{STEP}"
+        )
+    };
+    job_ok(&jt(&"G".repeat(100)));
+    job_ok(&jt(&"G".repeat(512)));
+    let long = "G".repeat(513);
+    job_err(
+        &jt(&long),
+        &[&format!(
+            "jobEnvironments[0] -> exclusiveGroup:\n\t'{long}' is not a valid exclusiveGroup: \
+             it must match [A-Za-z_][A-Za-z0-9_]* and be at most 512 characters (Template \
+             Schemas §7.1)."
+        )],
+    );
+}
+
+#[test]
+fn a_grouped_job_environments_wrap_hooks_still_need_the_extension() {
+    let jt = format!("{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, {WRAP}}}\n{STEP}");
+    let gate = |hook: &str| {
+        format!(
+            "jobEnvironments[0] -> script -> actions -> {hook}:\n\t{hook} requires the \
+             WRAP_ACTIONS extension."
+        )
+    };
+    job_err(
+        &jt,
+        &[
+            &gate("onWrapEnvEnter"),
+            &gate("onWrapTaskRun"),
+            &gate("onWrapEnvExit"),
+        ],
+    );
+}
+
+#[test]
+fn check_holds_a_grouped_job_environment_first_in_its_group_to_constraint_7() {
+    // With the attachments known, J is its group's first unless X, attached
+    // in its group, comes first.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, envParameterDefinitions: \
+         [{{name: N, type: INT}}], variables: {{V: j}}}}\n{STEP}"
+    );
+    let u = env("name: U");
+    let err = check(&jt, &[&u]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&missing_named("JobTemplate -> steps[0]", true, "'J'", "N")],
+    );
+    // Job creation reports it from the Job Template, since no attachment
+    // shares its group.
+    create_err(
+        &jt,
+        &[&u],
+        "JobTemplate",
+        &[&missing_named("steps[0]", true, "'J'", "N")],
+    );
+    let x = env("name: X, exclusiveGroup: G");
+    check_ok(&jt, &[&x]);
+    create_ok(&jt, &[&x]);
+}
+
+#[test]
+fn check_reports_an_unreachable_attachment_first_of_its_group() {
+    // U is named like a Job Environment, so no entry reaches it. Off, of
+    // its group, is known not to be entered, so U is entered.
+    let jt = format!("{HEAD}jobEnvironments:\n- {{name: U, variables: {{V: u}}}}\n{STEP}");
+    let off = env("name: Off, exclusiveGroup: G, enableIf: false");
+    let u = env("name: U, exclusiveGroup: G, envParameterDefinitions: [{name: P, type: STRING}]");
+    let unreachable = "EnvironmentTemplate[1] -> environment -> envParameterDefinitions:\n\t\
+                       Environment 'U' has the same name as a jobEnvironments entry of the Job \
+                       Template, so no 'environment:' dependency can reach it (Template Schemas \
+                       §3.2.1 item 4), and it has parameters without a default that no Step can \
+                       supply: P. Its activation is BY_DEFAULT and an earlier Environment of its \
+                       exclusiveGroup does not supersede it, so Sessions enter it, and the \
+                       submission is rejected (§3.2.1).";
+    check_err_same_as_create(&jt, &[&off, &u], &[unreachable]);
+}
+
+#[test]
+fn a_failed_entry_enable_if_still_takes_its_group() {
+    // J1's entry's enableIf fails, which fails job creation. J1 may be
+    // entered, so J2, later in its group, adds no error of its own.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+         jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT}}], \
+         variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == \
+         1\"}}]\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    create_err(
+        &jt,
+        &[],
+        "JobTemplate",
+        &[
+            "steps[0] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of \
+           bounds for list of length 1",
         ],
     );
 }

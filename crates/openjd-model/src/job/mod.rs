@@ -155,8 +155,9 @@ pub struct Step {
     /// (`ENV_PARAMS`, Template Schemas §3.2.2): one entry for each
     /// Environment the Step's Sessions enter that declares
     /// `envParameterDefinitions`, in the order the Sessions enter them. An
-    /// Environment whose `enableIf` (§4 item 6) is `false` for the Step is
-    /// not entered, so it has no entry.
+    /// Environment whose `enableIf` (§4 item 6) is `false` for the Step, or
+    /// that an earlier one of its `exclusiveGroup` supersedes (§4 item 7),
+    /// is not entered, so it has no entry.
     /// `None` when there is none, so a Job without Environment parameters
     /// serializes exactly as before. Compare two Steps' values with
     /// [`Step::environment_values_equal`], not with `==`.
@@ -170,13 +171,14 @@ pub struct Step {
     /// `activation: ON_REQUEST` that an enabled entry of the Step requests,
     /// less any whose own
     /// `enableIf` (§4 item 6) is `false` for the Step (for an `ALWAYS` one,
-    /// that is a job-creation error, §3.2.2 item 6). Each names an entry of
-    /// `Job::job_environments` by `(document, environment)`.
+    /// that is a job-creation error, §3.2.2 item 6) and any that an earlier
+    /// one of its `exclusiveGroup` supersedes (§4 item 7). Each names an
+    /// entry of `Job::job_environments` by `(document, environment)`.
     ///
     /// `None` means every Job Environment, which is every Step of a Job
     /// whose documents use no `activation: ON_REQUEST`, no Environment
-    /// `enableIf`, and no disabled `environment:` entry, so such a Job
-    /// serializes exactly as before. A Job from
+    /// `enableIf` or `exclusiveGroup`, and no disabled `environment:` entry,
+    /// so such a Job serializes exactly as before. A Job from
     /// [`create_job`](crate::create_job()) never holds `Some` of the full
     /// list, so [`Step::same_environments`] can compare the field directly.
     /// The Step's own `step_environments` are also in its Environment set,
