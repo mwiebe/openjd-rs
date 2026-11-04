@@ -1450,3 +1450,84 @@ fn an_expression_entry_in_one_step_leaves_another_step_known() {
         )],
     );
 }
+
+// ── Audit round 5 ──────────────────────────────────────────────────
+
+#[test]
+fn a_later_member_does_not_clear_what_an_earlier_one_decided() {
+    // A is entered (or undetermined); B, disabled, comes between it and C.
+    // C stays superseded (or undetermined), so check does not hold it to
+    // constraint 7, and job creation enters A.
+    for a in ["", "enableIf: \"Job.Name == 'J'\", "] {
+        let jt = format!(
+            "{HEAD}jobEnvironments:\n- {{name: A, exclusiveGroup: G, {a}variables: {{V: a}}}}\n\
+             - {{name: B, exclusiveGroup: G, enableIf: false, variables: {{V: b}}}}\n\
+             - {{name: C, exclusiveGroup: G, envParameterDefinitions: [{{name: P, type: \
+             STRING}}], variables: {{V: c}}}}\n{STEP}"
+        );
+        check_ok(&jt, &[]);
+        let created = create_ok(&jt, &[]);
+        assert_eq!(entered(&created, 0), ["A"]);
+        assert_eq!(disabled(&created, 0), ["B", "C"]);
+    }
+}
+
+#[test]
+fn a_deferred_job_environments_values_follow_earlier_ones() {
+    // B, decided by the submission stage, is written after A and C, whose
+    // values the create_job body computed.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: A, envParameterDefinitions: [{{name: Q, type: STRING, default: a}}], \
+         variables: {{V: a}}}}\n\
+         - {{name: C, envParameterDefinitions: [{{name: R, type: STRING, default: c}}], \
+         variables: {{V: c}}}}\n\
+         - {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: STRING, \
+         default: b}}], variables: {{V: b}}}}\n{STEP}"
+    );
+    let created = create_ok(&jt, &[&env("name: X, exclusiveGroup: G, enableIf: false")]);
+    assert_eq!(
+        rendered_values(&created.job.steps[0]),
+        [
+            "JobTemplate/A: Q=string:a",
+            "JobTemplate/C: R=string:c",
+            "JobTemplate/B: N=string:b"
+        ]
+    );
+}
+
+#[test]
+fn check_decides_each_steps_job_environments_with_its_own_entries() {
+    // S1 requests the Job Environment B; S0 does not. Only S1's Sessions
+    // enter B, so only S1 has two wrap layers and only S1 misses B's P.
+    let two_steps = "steps:\n- name: S0\n  script: {actions: {onRun: {command: x}}}\n\
+                     - name: S1\n  dependencies: [{environment: B}]\n  script: {actions: \
+                     {onRun: {command: x}}}\n";
+    let jt = format!(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, WRAP_ACTIONS, \
+         EXPR]\nname: J\njobEnvironments:\n- {{name: B, activation: ON_REQUEST, {WRAP}}}\n\
+         {two_steps}"
+    );
+    let layers = "JobTemplate -> steps[1]:\n\tits Sessions would enter 2 Environments that \
+                  define wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'W' \
+                  (EnvironmentTemplate[0]), 'B'. A Session may have at most one Environment \
+                  defining wrap hooks (RFC 0008).";
+    check_err_same_as_create(&jt, &[&wrapping_env("name: W")], &[layers]);
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: B, activation: ON_REQUEST, exclusiveGroup: G, \
+         envParameterDefinitions: [{{name: P, type: STRING}}], variables: {{V: b}}}}\n\
+         {two_steps}"
+    );
+    let err = check(&jt, &[]).expect_err("expected check to fail");
+    assert_errors(
+        &err.to_string(),
+        "Submission",
+        &[&missing("JobTemplate -> steps[1]", true, "'B'")],
+    );
+    create_err(
+        &jt,
+        &[],
+        "JobTemplate",
+        &[&missing("steps[1]", true, "'B'")],
+    );
+}

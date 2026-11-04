@@ -1161,8 +1161,10 @@ Templates can check constraints 5–7 early; prototype plan A9). Also in
 the attachment index (`Attachments`), the name resolution of an entry (`match_entry`), and the
 sorting of a Step's missing parameters (`sort_missing`), so they report the same conditions
 with the same messages and paths, in the same order, except as items 4 and 5 say for the
-wrap-layer rule and host requirements, and as item 3 says for a grouped Job Environment's
-errors (job creation reports them in its `JobTemplate` error, and stops there, when no
+wrap-layer rule and host requirements, as item 3 says for a Step's constraint 7 error (it
+leaves out the Environments it cannot know the Step enters, such as one an earlier
+undetermined one of its group may supersede, so job creation's message can list more), and
+for a grouped Job Environment's errors (job creation reports them in its `JobTemplate` error, and stops there, when no
 attachment shares the group). Within entry resolution, job creation resolves a Step's
 disabled entries before its enabled ones, so errors of the two can come in a different order:
 
