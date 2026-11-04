@@ -52,9 +52,11 @@ pub struct Environment {
     /// for a Job Environment or an Environment Template, exactly its
     /// `hostRequirements` scope; for a Step
     /// Environment, the Step's template scope. Job creation resolves it once
-    /// for each Step whose Sessions would otherwise enter the Environment,
-    /// with that Step's effective values, and a Step for which it is `false`
-    /// does not enter it; see [`literal_enabled`](Self::literal_enabled).
+    /// for each Step whose Sessions would otherwise enter the Environment
+    /// and for which no earlier Environment of its `exclusiveGroup`
+    /// supersedes it, with that Step's effective values, and a Step for
+    /// which it is `false` does not enter it; see
+    /// [`literal_enabled`](Self::literal_enabled).
     #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
     pub enable_if: Option<ExprField>,
     /// §4 item 7 `exclusiveGroup` (`ENV_PARAMS` extension): a name shared

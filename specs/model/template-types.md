@@ -349,7 +349,8 @@ scope (see [validation.md](validation.md#environment-enableif-env_params)). `lit
 `Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
 scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
 what template validation may count as entered or not (§4, after item 10; §7.5 item 1). Job
-creation resolves it once per Step whose Sessions would otherwise enter the Environment (see
+creation resolves it once per Step whose Sessions would otherwise enter the Environment and
+for which it is not superseded (see
 [job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,
 since a disabled Environment is simply left out of the Step's sets.
 

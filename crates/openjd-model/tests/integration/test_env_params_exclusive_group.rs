@@ -2040,3 +2040,50 @@ fn within_a_step_the_attachments_errors_come_before_the_deferred_ones() {
         )
     );
 }
+
+#[test]
+fn a_failed_entry_enable_if_takes_its_group_for_every_step() {
+    // As a_failed_entry_enable_if_still_takes_its_group, for two Steps:
+    // neither Step reports J2's missing N.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+         jobEnvironments:\n- {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         - {{name: J2, exclusiveGroup: G, envParameterDefinitions: [{{name: N, type: INT}}], \
+         variables: {{V: b}}}}\nsteps:\n\
+         - name: S0\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  dependencies: [{{environment: J1, enableIf: \"Param.L[4] == 1\"}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let failed = |step: usize| {
+        format!(
+            "steps[{step}] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out \
+             of bounds for list of length 1"
+        )
+    };
+    create_err(&jt, &[], "JobTemplate", &[&failed(0), &failed(1)]);
+}
+
+#[test]
+fn a_deferred_job_environments_failed_default_names_the_step_that_takes_it() {
+    // B is deferred behind the disabled X. N's default fails; S0 supplies
+    // N and S1 takes the default, so the error names S1.
+    let jt = format!(
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+         jobEnvironments:\n- {{name: B, exclusiveGroup: G, envParameterDefinitions: [{{name: N, \
+         type: INT, default: '{{{{Param.L[4]}}}}'}}], variables: {{V: b}}}}\nsteps:\n\
+         - name: S0\n  dependencies: [{{environment: B, parameters: {{N: 1}}}}]\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: S1\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    create_err(
+        &jt,
+        &[&env("name: X, exclusiveGroup: G, enableIf: false")],
+        "Submission",
+        &[
+            "JobTemplate -> jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tfor \
+           Step 'S1', which does not supply this parameter: could not be resolved as a value of \
+           type INT: Index 4 out of bounds for list of length 1",
+        ],
+    );
+}
