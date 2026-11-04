@@ -196,10 +196,10 @@ pub fn create_job(
 /// requirements or parameter space aborts job creation immediately instead.
 /// A step-level `let` binding that fails leaves its step uninstantiable:
 /// the other steps are still checked, the attachments are not applied, and
-/// the errors found so far are reported. The caller limits are checked
-/// after the Job Template's own steps, before the attachments are applied,
-/// only when those found no error, and abort job creation. The errors are
-/// in this order:
+/// the errors found so far are reported. The caller limits abort job
+/// creation, but only when no other error was found, after the submission
+/// stage. These aborts keep their own forms, which the shape rule below
+/// does not cover. The errors are in this order:
 ///
 /// - first the checks job creation makes in the template-validation style:
 ///   the resolved-value re-checks on the Job Environments' carried-forward
@@ -283,6 +283,10 @@ pub(super) struct Body<'a> {
     /// The errors of §7.4.1's steps found so far, at paths relative to the
     /// Job Template.
     pub(super) staged: staged::StagedErrors,
+    /// The caller limits' result, which the submission stage reports only
+    /// when it and job creation proper found no error (always `Ok` for a
+    /// Job Template without ENV_PARAMS, which checks them itself).
+    pub(super) limits: Result<(), ModelError>,
 }
 
 /// Report every error of one job creation in §7.4.1 order: the
@@ -574,21 +578,69 @@ fn create_job_from_template<'a>(
     };
     let (steps, selections): (Vec<job::Step>, Vec<env_params::StepSelection<'a>>) =
         built.into_iter().unzip();
-    // The caller limits below abort job creation alone. With errors
-    // already found the Job is rejected anyway, so they are not checked,
-    // and the submission stage reports every error.
-    let limits_apply = check_errors.is_empty() && staged.is_empty();
-    if !one_pass && !limits_apply {
-        finish_errors(check_errors, staged, staged::StagedErrors::default(), false)?;
-        return Err(ModelError::DecodeValidation(
-            "internal error: errors were found but not reported".to_string(),
-        ));
+    let job_environments: Option<Vec<job::Environment>> =
+        job_template.job_environments.as_ref().map(|envs| {
+            envs.iter()
+                .map(|e| instantiate::convert_environment_with_symtab(e, Some(&symtab)))
+                .collect()
+        });
+    // The caller limits abort job creation alone, and only when no other
+    // error was found. Without ENV_PARAMS that is decided here, as before
+    // the extension: the Job Template's own errors are reported alone,
+    // before any Environment Template is applied. With it, the submission
+    // stage finds more errors, so it checks the limits after them.
+    let mut limits = check_caller_limits(&steps, job_environments.as_deref(), ctx);
+    if !one_pass {
+        if !(check_errors.is_empty() && staged.is_empty()) {
+            finish_errors(check_errors, staged, staged::StagedErrors::default(), false)?;
+            return Err(ModelError::DecodeValidation(
+                "internal error: errors were found but not reported".to_string(),
+            ));
+        }
+        std::mem::replace(&mut limits, Ok(()))?;
     }
 
-    // Caller-imposed total task count limit across all steps
-    if let Some(max_task_count) = ctx.caller_limits.max_task_count.filter(|_| limits_apply) {
+    // job_template.extensions is `Option<Vec<ExtensionName>>` where every
+    // entry has already passed decode-time recognition: any string that
+    // isn't a valid ModelExtension would have been rejected in parse.rs.
+    // Map into the typed Job.extensions form; in the unexpected case that
+    // an entry doesn't parse (e.g. directly-constructed JobTemplate
+    // bypassing decode), skip it — the decode path is the single source
+    // of truth for extension recognition.
+    let extensions = job_template.extensions.as_ref().map(|exts| {
+        exts.iter()
+            .filter_map(|e| std::str::FromStr::from_str(e.as_str()).ok())
+            .collect()
+    });
+
+    Ok(Body {
+        job: job::Job {
+            name: job_name,
+            description: job_template.description.as_ref().map(|d| d.0.clone()),
+            extensions,
+            parameters,
+            steps,
+            job_environments,
+        },
+        selections,
+        job_envs,
+        check_errors,
+        staged,
+        limits,
+    })
+}
+
+/// The caller limits (`ctx.caller_limits`): the total task count across
+/// all steps, each step script's size, and each Job and Step Environment's
+/// size (JSON-encoded bytes). The first one exceeded is the error.
+fn check_caller_limits(
+    steps: &[job::Step],
+    job_environments: Option<&[job::Environment]>,
+    ctx: &ValidationContext,
+) -> Result<(), ModelError> {
+    if let Some(max_task_count) = ctx.caller_limits.max_task_count {
         let mut total: u64 = 0;
-        for step in &steps {
+        for step in steps {
             let step_tasks = step
                 .parameter_space
                 .as_ref()
@@ -608,33 +660,8 @@ fn create_job_from_template<'a>(
             ));
         }
     }
-
-    let job_environments = job_template.job_environments.as_ref().map(|envs| {
-        envs.iter()
-            .map(|e| instantiate::convert_environment_with_symtab(e, Some(&symtab)))
-            .collect()
-    });
-
-    // job_template.extensions is `Option<Vec<ExtensionName>>` where every
-    // entry has already passed decode-time recognition: any string that
-    // isn't a valid ModelExtension would have been rejected in parse.rs.
-    // Map into the typed Job.extensions form; in the unexpected case that
-    // an entry doesn't parse (e.g. directly-constructed JobTemplate
-    // bypassing decode), skip it — the decode path is the single source
-    // of truth for extension recognition.
-    let extensions = job_template.extensions.as_ref().map(|exts| {
-        exts.iter()
-            .filter_map(|e| std::str::FromStr::from_str(e.as_str()).ok())
-            .collect()
-    });
-
-    // Caller-imposed step script size limit (JSON-encoded bytes)
-    if let Some(max) = ctx
-        .caller_limits
-        .max_step_script_size
-        .filter(|_| limits_apply)
-    {
-        for step in &steps {
+    if let Some(max) = ctx.caller_limits.max_step_script_size {
+        for step in steps {
             let size = serde_json::to_string(&step.script)
                 .map(|s| s.len())
                 .unwrap_or(0);
@@ -648,17 +675,11 @@ fn create_job_from_template<'a>(
             }
         }
     }
-
-    // Caller-imposed environment size limit (JSON-encoded bytes)
-    if let Some(max) = ctx
-        .caller_limits
-        .max_environment_size
-        .filter(|_| limits_apply)
-    {
+    if let Some(max) = ctx.caller_limits.max_environment_size {
         let all_envs = steps
             .iter()
             .flat_map(|s| s.step_environments.iter().flatten())
-            .chain(job_environments.iter().flatten());
+            .chain(job_environments.into_iter().flatten());
         for env in all_envs {
             let size = serde_json::to_string(env).map(|s| s.len()).unwrap_or(0);
             if size > max {
@@ -671,19 +692,5 @@ fn create_job_from_template<'a>(
             }
         }
     }
-
-    Ok(Body {
-        job: job::Job {
-            name: job_name,
-            description: job_template.description.as_ref().map(|d| d.0.clone()),
-            extensions,
-            parameters,
-            steps,
-            job_environments,
-        },
-        selections,
-        job_envs,
-        check_errors,
-        staged,
-    })
+    Ok(())
 }
