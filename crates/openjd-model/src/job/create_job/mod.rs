@@ -224,9 +224,10 @@ pub fn create_job(
 /// attached Environment Templates applied, whose errors are for
 /// `Submission`, with every path starting at its document.
 ///
-/// The error is shaped by the inputs. Without attached Environment
-/// Templates it is for `JobTemplate`, at paths relative to the Job
-/// Template, as job creation's other errors are. With them it is for
+/// With `ENV_PARAMS` in the Job Template, the error is shaped by the
+/// inputs. Without attached Environment Templates it is for `JobTemplate`,
+/// at paths relative to the Job Template, as job creation's other errors
+/// are. With them it is for
 /// `Submission`, and every path starts with its document (`JobTemplate`,
 /// `EnvironmentTemplate[i]`, or the attachment's label). The warnings
 /// ([`CreatedJob::warnings`]) have the same paths.
@@ -482,12 +483,12 @@ fn create_job_from_template<'a>(
     // submission, not on the worker.
     //
     // Every check failure across the whole template accumulates into
-    // this one collection and is reported together as a single
-    // `ModelValidation` error, in pass 8's order: `jobEnvironments`
-    // first, then each step in turn (step `let`, script, step
-    // environments). Resolution failures that leave a step
-    // uninstantiable (host requirements, parameter space) are not
-    // checks: they abort immediately, reported alone.
+    // this one collection, in pass 8's order: `jobEnvironments` first,
+    // then each step in turn (step `let`, script, step environments). It
+    // is reported first, with the §7.4.1 steps' errors (`finish_errors`).
+    // Resolution failures that leave a step uninstantiable (host
+    // requirements, parameter space) are not checks: they abort
+    // immediately, reported alone.
     let mut check_errors = crate::error::ValidationErrors::default();
     if let Some(envs) = &job_template.job_environments {
         for (i, env) in envs.iter().enumerate() {
