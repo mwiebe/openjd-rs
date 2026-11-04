@@ -54,6 +54,7 @@ src/
     │   ├── env_params.rs     # ENV_PARAMS effective values (shared by both stages)
     │   ├── external.rs       # ENV_PARAMS submission stage, check_environment_templates
     │   ├── host_requirements.rs # Host requirement resolution; ENV_PARAMS combined host requirements
+    │   ├── staged.rs         # ENV_PARAMS errors filed by §7.4.1 step, Step and position
     │   └── ranges.rs         # Range expression evaluation
     ├── step_param_space.rs   # Lazy parameter space iteration
     └── step_dependency_graph.rs # Step dependency graph

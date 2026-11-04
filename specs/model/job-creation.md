@@ -614,10 +614,12 @@ A supplied value that fails is reported at `steps[i] -> dependencies[j] -> param
 A parameter with neither a supplied value nor a `default`, of an Environment in the Step's set
 that is not disabled for it, is reported once per Step at `steps[i]` (constraint 7); template
 validation already rejects that for a decoded template whose entries' and Environments'
-`enableIf` are absent or a boolean scalar. When the Step's
-entry for the Environment was disabled by its `enableIf`, the message says so after the
-Environment's name, as at template validation; the submission stage does the same for an
-attachment whose entry was disabled (`StepSelection::disabled` carries the names). When the
+`enableIf` are absent or a boolean scalar. (Template validation and
+`check_environment_templates` note an entry its `enableIf` disabled; job creation never
+needs to, since such an entry for an `ALWAYS` Environment is a step 4 error that stops the
+Step, and one for any other declines or does not request it. `StepSelection::disabled`
+carries the disabled entries to the submission stage, which resolves them against the
+attachments.) When the
 Environment's own `enableIf` was unresolved for the Step, its group adds "(its own enableIf
 depends on a value that is missing or does not convert, so it does not disable the
 Environment; Template Schemas §3.2.2)", since a reader who expected it to be `false` would
@@ -982,9 +984,11 @@ requirements, and `finish_errors` drops anything job creation proper filed for i
 So a Step's value and constraint 7 errors appear only once its step 1–4 errors are fixed.
 Resolving a Step's own host requirements or parameter space still aborts job creation at
 once. A step-level `let` binding that fails leaves its Step uninstantiable: the other Steps
-get only the checks job creation proper makes (steps 1 and 2, and template-validation style
-errors), the submission stage does not run, so no entry is resolved (step 3) and nothing
-after it is checked, and the errors found so far are reported in the same order and shape. The caller limits (task count, script and Environment
+get only the checks job creation proper makes (template-validation style errors, steps 1 and
+2, steps 4 and 5 for their Job Environment entries, and step 6 for their Step Environments),
+the submission stage does not run, so no entry for an attachment is resolved (step 3) and no
+check of steps 6–8 on the Job or attached Environments is made, and the errors found so far
+are reported in the same order and shape. The caller limits (task count, script and Environment
 sizes, measured on the Job Template's own Environments and Steps) abort job creation too, but
 only when no other error was found: they are checked after the submission stage, so a Job
 Environment's error, now found there, or an unresolved entry's, is reported in place of a

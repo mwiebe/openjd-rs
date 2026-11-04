@@ -1370,7 +1370,7 @@ fn the_environment_size_limit_applies_to_step_environments() {
 }
 
 #[test]
-fn an_uninstantiable_step_leaves_the_other_steps_with_steps_1_and_2() {
+fn an_uninstantiable_step_leaves_the_attachments_unapplied() {
     // S0's let binding fails, so the submission stage does not run: S1's
     // unresolved entry (step 3) is not reported, its failing entry enableIf
     // (step 2) is.
@@ -1386,5 +1386,129 @@ fn an_uninstantiable_step_leaves_the_other_steps_with_steps_1_and_2() {
     assert_eq!(
         err_text(&src("{environment: Missing, enableIf: \"Param.L[4] == 1\"}"), &[], &[]),
         "Model validation error: 2 validation errors for JobTemplate\nsteps[0] -> let[0]:\n\tInvalid expression in let binding 'z': Index 5 out of bounds for list of length 1\n  z = Param.L[5]\n      ~~~~~~~^~~\nsteps[1] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~"
+    );
+}
+
+// ── Round 5 ──────────────────────────────────────────────────────────
+
+#[test]
+fn an_attachments_value_error_precedes_its_own_constraint_7_error() {
+    // A's N is below its minimum and its Y is missing: both at A's
+    // position, the value (found first) before the constraint 7 error, and
+    // both before the later B's value.
+    let jt = format!(
+        "{HEAD}steps:\n- name: S\n  dependencies: [{{environment: A, parameters: {{N: 1}}}}, \
+         {{environment: B, parameters: {{N: 1}}}}]\n  script: {{actions: {{onRun: {{command: \
+         x}}}}}}\n"
+    );
+    let a = env(
+        "name: A, activation: ON_REQUEST, envParameterDefinitions: [{name: N, type: INT, \
+         minValue: 5}, {name: Y, type: STRING}]",
+    );
+    let b = env(
+        "name: B, activation: ON_REQUEST, envParameterDefinitions: [{name: N, type: INT, \
+         minValue: 5}]",
+    );
+    assert_eq!(err_text(&jt, &[&a, &b], &[]), "Model validation error: 3 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Y' of Environment 'A' (EnvironmentTemplate[0]).\nJobTemplate -> steps[0] -> dependencies[1] -> parameters -> N:\n\tParameter 'N': value 1 is less than minimum 5");
+}
+
+#[test]
+fn a_job_template_without_env_params_does_not_stop_a_step_on_an_attachments_definition_error() {
+    // X's literal default, edited below its minimum, fails its definition;
+    // B, ALWAYS, misses P for S. Both are reported, as before.
+    let jt = job_ok(
+        "specificationVersion: jobtemplate-2023-09\nname: J\nsteps:\n- name: S\n  script: \
+         {actions: {onRun: {command: x}}}\n",
+    );
+    let mut x = env_ok(&env(
+        "name: X, envParameterDefinitions: [{name: N, type: INT, minValue: 5, default: 5}]",
+    ));
+    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = env_ok(&env(
+        "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
+    ))
+    .environment
+    .env_parameter_definitions
+    .unwrap()[0]
+        .default
+        .clone();
+    let b = env_ok(&env(
+        "name: B, activation: ALWAYS, envParameterDefinitions: [{name: P, type: STRING}]",
+    ));
+    let envs = [x, b];
+    let values = job_params_with(&jt, &[], &envs);
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    let err = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+        .expect_err("expected job creation to fail");
+    assert_eq!(err.to_string(), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of Environment 'B' (EnvironmentTemplate[1]).");
+}
+
+#[test]
+fn a_value_equal_to_a_caller_limit_is_within_it() {
+    let jt = job_ok(&format!(
+        "{HEAD}jobEnvironments:\n- {{name: E, variables: {{V: e}}}}\nsteps:\n- name: S\n  \
+         stepEnvironments:\n  - {{name: SE, variables: {{V: s}}}}\n  parameterSpace:\n    \
+         taskParameterDefinitions: [{{name: T, type: INT, range: \"1-3\"}}]\n  script: \
+         {{actions: {{onRun: {{command: x}}}}}}\n"
+    ));
+    let values = job_params_with(&jt, &[], &[]);
+    let with = |limits: openjd_model::CallerLimits| {
+        openjd_model::create_job(&jt, &values, &posix_ctx(&jt).with_caller_limits(limits))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    // Each size, measured by a limit of 1.
+    let size = |message: Result<(), String>| -> usize {
+        let m = message.expect_err("expected an error");
+        let n = m.rsplit(" size (").next().unwrap();
+        n[..n.find(' ').unwrap()].parse().unwrap()
+    };
+    let script = size(with(openjd_model::CallerLimits {
+        max_step_script_size: Some(1),
+        ..Default::default()
+    }));
+    let se = size(with(openjd_model::CallerLimits {
+        max_environment_size: Some(1),
+        ..Default::default()
+    }));
+    // SE at its size is within the limit, so the larger E is reported.
+    let e_message = with(openjd_model::CallerLimits {
+        max_environment_size: Some(se),
+        ..Default::default()
+    });
+    assert!(e_message
+        .as_ref()
+        .unwrap_err()
+        .contains("Environment 'E' size"));
+    let e = size(e_message);
+    for limits in [
+        openjd_model::CallerLimits {
+            max_task_count: Some(3),
+            ..Default::default()
+        },
+        openjd_model::CallerLimits {
+            max_step_script_size: Some(script),
+            ..Default::default()
+        },
+        openjd_model::CallerLimits {
+            max_environment_size: Some(e),
+            ..Default::default()
+        },
+    ] {
+        assert_eq!(with(limits), Ok(()));
+    }
+    assert_eq!(
+        with(openjd_model::CallerLimits {
+            max_task_count: Some(2),
+            ..Default::default()
+        }),
+        Err("Model validation error: 1 validation error for Template\nTemplate: Total task count (3) exceeds caller limit of 2.".to_string())
+    );
+    // Both Environments exceed 1 byte: the Step Environment is reported.
+    assert_eq!(
+        with(openjd_model::CallerLimits {
+            max_environment_size: Some(1),
+            ..Default::default()
+        }),
+        Err(format!("Model validation error: 1 validation error for Template\nTemplate: Environment 'SE' size ({se} bytes) exceeds caller limit of 1 bytes."))
     );
 }

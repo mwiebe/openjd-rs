@@ -208,7 +208,7 @@ submission, except that a single-layer or host-requirement error names only what
 can know without Job Parameter values (the layers a Session certainly enters, the literal
 requirements), so `openjd run` may count or name more, and that `check` reports every
 violation it is certain of, where `openjd run` reports a Step's value errors only once its
-entries resolve (Template Schemas §7.4.1; see
+§7.4.1 step 1–4 errors are fixed (Template Schemas §7.4.1; see
 [job-creation.md](../model/job-creation.md#error-order-env_params)): errors are one
 `Submission` validation error whose paths start with the document (`JobTemplate`, or the
 Environment Template's path), and warnings go to stderr.
