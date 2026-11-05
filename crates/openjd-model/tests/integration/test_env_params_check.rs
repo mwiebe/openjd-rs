@@ -1342,7 +1342,8 @@ fn the_sample_docker_requirements_combine_per_step() {
 /// `check_environment_templates` and job creation accept, in every
 /// submission path format, a literal `default` a Step takes, a literal
 /// `default` no Step takes, and a Step's literal entry value, each
-/// absolute in some path format but not every one.
+/// absolute in some path format but not every one, as a PATH value and as
+/// LIST[PATH] elements.
 #[test]
 fn an_attachments_paths_absolute_in_any_format_pass_check_and_job_creation() {
     let env = r#"
@@ -1354,13 +1355,17 @@ environment:
   - {name: Taken, type: PATH, default: 'C:\tools'}
   - {name: Unused, type: PATH, default: '\\srv\share'}
   - {name: Supplied, type: PATH}
+  - {name: List, type: "LIST[PATH]", default: ['C:\x', '/y', '\\srv\s']}
+  - {name: SuppliedList, type: "LIST[PATH]"}
   variables: {D: "{{Env.Param.Taken}}"}
 "#;
     for (unused, supplied) in [("/opt/u", r"C:\x"), (r"D:/u", "/x")] {
         let jt = job_ok(&steps_naming(
             "E",
             true,
-            &format!("{{Unused: '{unused}', Supplied: '{supplied}'}}"),
+            &format!(
+                "{{Unused: '{unused}', Supplied: '{supplied}', SuppliedList: ['{supplied}', '{unused}']}}"
+            ),
         ));
         let envs = [env_ok(env)];
         let values = job_params_with(&jt, &[], &envs);

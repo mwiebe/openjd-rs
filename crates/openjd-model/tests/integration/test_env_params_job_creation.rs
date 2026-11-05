@@ -663,6 +663,28 @@ fn a_path_expression_still_uses_the_submission_path_format() {
         rendered_values(&job.steps[0]),
         [r#"JobTemplate/E: L=list[path]:[], P=path:/data/x"#]
     );
+    // A multi-segment format string resolves to a string, but its path
+    // operations still use the evaluator's format.
+    let mixed = job_ok(
+        &PATHS
+            .replace(
+                "  - {name: L, type: \"LIST[PATH]\", default: []}",
+                "  - {name: L, type: \"LIST[PATH]\", default: []}\n  - {name: D, type: PATH, default: \"{{ path('C:/d') / 'e' }}/f\"}",
+            )
+            .replace("P: VALUE_P", r#"P: "{{ path('C:/a') / 'b' }}/x""#)
+            .replace("L: VALUE_L", "L: []"),
+    );
+    let mixed_params = job_params(&mixed, &[]);
+    let job = create_job(&mixed, &mixed_params, &windows).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r"JobTemplate/E: D=path:C:\d\e/f, L=list[path]:[], P=path:C:\a\b/x"]
+    );
+    let job = create_job(&mixed, &mixed_params, &posix_ctx(&mixed)).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: D=path:C:/d/e/f, L=list[path]:[], P=path:C:/a/b/x"]
+    );
     // A Windows drive path keeps its drive, so it is accepted in both,
     // joined with each format's separator (POSIX treats `\` as a filename
     // character).
