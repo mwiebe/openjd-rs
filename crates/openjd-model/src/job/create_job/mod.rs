@@ -192,7 +192,7 @@ pub fn create_job(
 /// requirements or parameter space aborts job creation immediately instead.
 /// A step-level `let` binding that fails leaves its step uninstantiable:
 /// the other steps get only the checks made before the attachments are
-/// applied (§7.4.1 steps 1 and 2, steps 4 and 5 for their Job Environment
+/// applied (§7.4.1 step 2, steps 4 and 5 for their Job Environment
 /// entries, step 6 for their Step Environments), the attachments are not
 /// applied, and
 /// the errors found so far are reported. The caller limits abort job
@@ -326,7 +326,7 @@ pub(super) fn finish_errors(
     })
 }
 
-/// Job creation from the Job Template alone (§7.4.1 steps 1 and 2, steps
+/// Job creation from the Job Template alone (§7.4.1 step 2, steps
 /// 4 and 5 for the Job Environments, and step 6 for the Step Environments,
 /// of
 /// [`create_job_with_environment_templates`]): the Job, without the

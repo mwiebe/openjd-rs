@@ -851,7 +851,8 @@ the `jobEnvironments` entries its Sessions would enter by their `activation`, wi
 for them, undecided), the errors job creation found, the `Job.EnvNames` value, and the merged
 values
 `preprocess_job_parameters` produced with the same Environment Templates. `ctx` supplies the
-caller limits; its profile is not read. Each attached template is
+caller limits, and its profile is the Job Template's (job creation checked that), which the
+Job Environments' host requirements read. Each attached template is
 evaluated under its own profile (`EnvironmentTemplate::profile()`), since an extension applies
 to the document that lists it (§1.2 item 3): an attachment that lists `ENV_PARAMS` lists `EXPR`
 too, so its `default`s may use `EXPR` when the Job Template lists neither, and a Job Template
