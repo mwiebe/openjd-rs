@@ -1510,3 +1510,97 @@ steps:
         );
     }
 }
+
+/// §4.5 item 3 for the format-string forms at an attached Environment's
+/// sites: an empty, a URI and a relative result of a multi-segment or
+/// single-expression `default` or entry value are used as given.
+#[test]
+fn an_attachments_format_string_values_of_any_form_are_used_as_given() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: ME, type: PATH, default: "{{ '' }}{{ '' }}"}
+  - {name: MU, type: PATH, default: "s3://b/{{ 'k' }}"}
+  - {name: MR, type: PATH, default: "rel/{{ 'k' }}"}
+  - {name: OL, type: "LIST[PATH]", default: "{{ ['', 's3://b/x', 'rel/y'] }}"}
+  - {name: EOE, type: PATH}
+  - {name: EOU, type: PATH}
+  - {name: EME, type: PATH}
+  - {name: EMU, type: PATH}
+  variables: {D: "{{Env.Param.ME}}"}
+"#;
+    let jt = job_ok(&steps_naming(
+        "E",
+        true,
+        r#"{EOE: "{{ '' }}", EOU: "{{ 's3://b/e' }}", EME: "{{ '' }}{{ '' }}", EMU: "s3://b/{{ 'm' }}"}"#,
+    ));
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+        [[
+            r#"EnvironmentTemplate[0]/E: EME=path:, EMU=path:s3://b/m, EOE=path:, EOU=path:s3://b/e, ME=path:, MR=path:rel/k, MU=path:s3://b/k, OL=list[path]:["","s3://b/x","rel/y"]"#
+        ]]
+    );
+}
+
+/// `check_environment_templates` decides an attached Environment's
+/// `enableIf` from the literal values a Step supplies, of any form
+/// (§4.5 item 3): with each value read as given the `enableIf` is `false`,
+/// so the Environment is disabled and its unsupplied `Q` is no error,
+/// as at job creation.
+#[test]
+fn check_reads_literal_path_values_of_any_form_in_an_enable_if() {
+    for value in ["''", "'s3://b/k'", "'rel/x'", "'C:/x'"] {
+        let env = format!(
+            r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {{name: P, type: PATH}}
+  - {{name: L, type: "LIST[PATH]"}}
+  - {{name: Q, type: STRING}}
+  enableIf: "Env.RawParam.P != {value} or Env.RawParam.L != [{value}]"
+  variables: {{D: "{{{{Env.Param.Q}}}}"}}
+"#
+        );
+        let jt = job_ok(&steps_naming(
+            "E",
+            true,
+            &format!("{{P: {value}, L: [{value}]}}"),
+        ));
+        assert_eq!(
+            check_ok_and_apply_ok(&jt, &[env_ok(&env)]),
+            [Vec::<String>::new()],
+            "{value}"
+        );
+    }
+}
+
+/// The converse: when the literal value as given leaves the `enableIf`
+/// to a value that stays unknown, `check_environment_templates` reports
+/// the missing parameter, as job creation does.
+#[test]
+fn check_reports_a_missing_parameter_an_enable_if_on_a_literal_path_leaves_unresolved() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: P, type: PATH}
+  - {name: Q, type: STRING}
+  enableIf: "Env.RawParam.P != 'C:/x' or Env.Param.Q == 'z'"
+  variables: {D: "{{Env.Param.Q}}"}
+"#;
+    let jt = job_ok(&steps_naming("E", true, "{P: 'C:/x'}"));
+    let envs = [env_ok(env)];
+    let checked = check(&jt, &envs).expect_err("expected check to reject the submission");
+    let applied = apply(&jt, &envs, &[]).expect_err("expected job creation to reject it");
+    for err in [checked.to_string(), applied.to_string()] {
+        assert!(err.contains("missing: 'Q' of Environment 'E'"), "{err}");
+    }
+}

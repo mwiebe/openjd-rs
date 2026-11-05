@@ -808,6 +808,96 @@ steps:
     assert_eq!(attrs[0].any_of, Some(vec!["n1".to_string()]));
 }
 
+/// §4.5 item 3 for the format-string forms at a Job Environment's sites:
+/// an empty, a URI and a relative result of a multi-segment `default`, a
+/// single-expression LIST[PATH] `default`, and a multi-segment entry value
+/// are used as given.
+#[test]
+fn a_job_environments_format_string_values_of_any_form_are_used_as_given() {
+    let job = create_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: ME, type: PATH, default: "{{ '' }}{{ '' }}"}
+  - {name: MU, type: PATH, default: "s3://b/{{ 'k' }}"}
+  - {name: MR, type: PATH, default: "rel/{{ 'k' }}"}
+  - {name: OL, type: "LIST[PATH]", default: "{{ ['', 's3://b/x', 'rel/y'] }}"}
+  - {name: X, type: PATH, default: /x}
+  variables: {V: v}
+steps:
+- name: A
+  script: {actions: {onRun: {command: x}}}
+- name: B
+  dependencies: [{environment: E, parameters: {X: "{{ '' }}{{ '' }}"}}]
+  script: {actions: {onRun: {command: x}}}
+"#,
+        &[],
+    );
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [
+            r#"JobTemplate/E: ME=path:, MR=path:rel/k, MU=path:s3://b/k, OL=list[path]:["","s3://b/x","rel/y"], X=path:/x"#
+        ]
+    );
+    assert_eq!(
+        rendered_values(&job.steps[1]),
+        [
+            r#"JobTemplate/E: ME=path:, MR=path:rel/k, MU=path:s3://b/k, OL=list[path]:["","s3://b/x","rel/y"], X=path:"#
+        ]
+    );
+}
+
+/// §3.2.2 compares PATH values by their unmapped strings, and since the
+/// values are kept as written, `C:\x`, `C:/x` and `c:\X` are three
+/// different values: neither separators nor letter case are normalized.
+#[test]
+fn path_values_written_differently_are_different_values() {
+    let job = create_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: P, type: PATH, default: /p}
+  - {name: L, type: "LIST[PATH]", default: [/a]}
+  variables: {V: v}
+steps:
+- name: Back
+  dependencies: [{environment: E, parameters: {P: 'C:\x'}}]
+  script: {actions: {onRun: {command: x}}}
+- name: Fwd
+  dependencies: [{environment: E, parameters: {P: 'C:/x'}}]
+  script: {actions: {onRun: {command: x}}}
+- name: Case
+  dependencies: [{environment: E, parameters: {P: 'c:\X'}}]
+  script: {actions: {onRun: {command: x}}}
+- name: List
+  dependencies: [{environment: E, parameters: {L: ['\a']}}]
+  script: {actions: {onRun: {command: x}}}
+- name: Same
+  dependencies: [{environment: E, parameters: {P: 'C:\x'}}]
+  script: {actions: {onRun: {command: x}}}
+- name: Default
+  script: {actions: {onRun: {command: x}}}
+"#,
+        &[],
+    );
+    let s = &job.steps;
+    assert!(!s[0].environment_values_equal(&s[1]), "separators");
+    assert!(!s[0].environment_values_equal(&s[2]), "letter case");
+    assert!(
+        !s[3].environment_values_equal(&s[5]),
+        "list element separators"
+    );
+    assert!(s[0].environment_values_equal(&s[4]), "the same text");
+}
+
 #[test]
 fn a_uri_path_value_is_used_as_given() {
     // A URI is one more form of value: no caller policy applies to it.
