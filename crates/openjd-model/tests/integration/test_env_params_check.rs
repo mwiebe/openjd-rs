@@ -18,7 +18,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_ok, job_ok, job_params_with, posix_ctx, rendered_values,
+    assert_errors, env_ok, job_ok, job_params_with, rendered_values, template_ctx,
 };
 
 const CONDA: &str = include_str!("../fixtures/env_params/conda-env-params.yaml");
@@ -30,7 +30,7 @@ fn attach(envs: &[EnvironmentTemplate]) -> Vec<AttachedEnvironmentTemplate<'_>> 
 }
 
 fn check(jt: &JobTemplate, envs: &[EnvironmentTemplate]) -> Result<Vec<String>, ModelError> {
-    check_environment_templates(jt, &attach(envs), &posix_ctx(jt))
+    check_environment_templates(jt, &attach(envs), &template_ctx(jt))
         .map(|w| w.iter().map(SubmissionWarning::to_string).collect())
 }
 
@@ -42,7 +42,7 @@ fn apply(
     params: &[(&str, &str)],
 ) -> Result<Vec<String>, ModelError> {
     let values = job_params_with(jt, params, envs);
-    let ctx = posix_ctx(jt);
+    let ctx = template_ctx(jt);
     create_job_with_environment_templates(jt, &attach(envs), &values, &ctx).map(|c| {
         c.warnings
             .iter()
@@ -231,8 +231,9 @@ fn a_literal_of_the_wrong_type_is_rejected() {
 fn check_ok_and_apply_ok(jt: &JobTemplate, envs: &[EnvironmentTemplate]) -> Vec<Vec<String>> {
     check(jt, envs).unwrap_or_else(|e| panic!("check rejected the submission:\n{e}"));
     let values = job_params_with(jt, &[], envs);
-    let created = create_job_with_environment_templates(jt, &attach(envs), &values, &posix_ctx(jt))
-        .unwrap_or_else(|e| panic!("job creation rejected the submission:\n{e}"));
+    let created =
+        create_job_with_environment_templates(jt, &attach(envs), &values, &template_ctx(jt))
+            .unwrap_or_else(|e| panic!("job creation rejected the submission:\n{e}"));
     created.job.steps.iter().map(rendered_values).collect()
 }
 
@@ -459,7 +460,7 @@ fn labels_name_the_attachments() {
     let jt = job_ok(&steps_naming("Conda", false, "{Bogus: y}"));
     let envs = [env_ok(CONDA)];
     let attached = [AttachedEnvironmentTemplate::new(&envs[0]).with_label("conda.yaml")];
-    let err = check_environment_templates(&jt, &attached, &posix_ctx(&jt)).unwrap_err();
+    let err = check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "Submission",
@@ -1308,7 +1309,7 @@ fn the_sample_docker_requirements_combine_per_step() {
     let envs = [env_ok(DOCKER)];
     let values = job_params_with(&jt, &[], &envs);
     let created =
-        create_job_with_environment_templates(&jt, &attach(&envs), &values, &posix_ctx(&jt))
+        create_job_with_environment_templates(&jt, &attach(&envs), &values, &template_ctx(&jt))
             .unwrap();
     // For a Step with no Gpus value the GPU amount's min resolves to None,
     // so the amount is discarded (Template Schemas §3.3).
@@ -1414,5 +1415,40 @@ steps:
     assert_eq!(
         check_ok_and_apply_ok(&jt, &envs),
         [[r"JobTemplate/J: Taken=path:tools\bin, Unused=path:rel"]]
+    );
+}
+
+/// §4.5 item 3 (spec af53020) at every attached site: an empty value and a
+/// URI, as a literal `default`, a format-string `default`, a Step's
+/// literal entry value and a Step's format-string entry value, pass
+/// `check_environment_templates` and job creation, and are stored
+/// unchanged.
+#[test]
+fn an_attachments_empty_and_uri_values_are_used_as_given_at_every_site() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: LitEmpty, type: PATH, default: ''}
+  - {name: LitUri, type: PATH, default: 's3://b/lit'}
+  - {name: FsEmpty, type: PATH, default: "{{ '' }}"}
+  - {name: FsUri, type: PATH, default: "{{ 's3://b/fs' }}"}
+  - {name: EntryEmpty, type: PATH}
+  - {name: EntryUri, type: PATH}
+  - {name: EntryFs, type: "LIST[PATH]"}
+  variables: {D: "{{Env.Param.LitEmpty}}"}
+"#;
+    let jt = job_ok(&steps_naming(
+        "E",
+        true,
+        r#"{EntryEmpty: '', EntryUri: 's3://b/entry', EntryFs: "{{ ['', 's3://b/l'] }}"}"#,
+    ));
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+        [[
+            r#"EnvironmentTemplate[0]/E: EntryEmpty=path:, EntryFs=list[path]:["","s3://b/l"], EntryUri=path:s3://b/entry, FsEmpty=path:, FsUri=path:s3://b/fs, LitEmpty=path:, LitUri=path:s3://b/lit"#
+        ]]
     );
 }

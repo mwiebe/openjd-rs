@@ -331,7 +331,9 @@ Each entry `{name, type, value}` is bound twice (§4.5; HJAR Environment Paramet
 
 The PATH strings are stored as resolved (model plan A22), of any form, relative ones included,
 or URIs (Template Schemas §4.5 item 3 at spec `af53020`), in any mix of formats. A value no
-rule matches, a relative one for example, is bound in `Env.Param.<name>` unchanged. A rule maps a value when the value
+rule matches, a relative one for example, is bound in `Env.Param.<name>` as a host-format
+`path` of the same text, so on a Windows host its `/` separators become `\`; in
+`Env.RawParam.<name>` it is unchanged on every host. A rule maps a value when the value
 matches its `source_path` in its `source_path_format`, as for `Param.*`.
 
 **Scope.** The symbols are layered onto this Environment's own scope only: its

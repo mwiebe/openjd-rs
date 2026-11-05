@@ -23,7 +23,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_ok, job_err, job_ok, job_params_with, posix_ctx, rendered_values,
+    assert_errors, env_ok, job_err, job_ok, job_params_with, rendered_values, template_ctx,
 };
 
 fn create(
@@ -36,7 +36,7 @@ fn create(
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
 }
 
 fn create_ok(jt_src: &str, env_srcs: &[&str], params: &[(&str, &str)]) -> CreatedJob {
@@ -60,7 +60,7 @@ fn check(jt_src: &str, env_srcs: &[&str]) -> Result<(), ModelError> {
     let envs: Vec<EnvironmentTemplate> = env_srcs.iter().map(|s| env_ok(s)).collect();
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    check_environment_templates(&jt, &attached, &posix_ctx(&jt)).map(|_| ())
+    check_environment_templates(&jt, &attached, &template_ctx(&jt)).map(|_| ())
 }
 
 // ── Template validation (§3.2 checked-at paragraph, §7.5 rule 5) ────

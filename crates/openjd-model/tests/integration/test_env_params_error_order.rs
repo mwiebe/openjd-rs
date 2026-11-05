@@ -27,7 +27,7 @@ use openjd_model::{
     create_job_with_environment_templates, AttachedEnvironmentTemplate, CreatedJob, ModelError,
 };
 
-use crate::env_params_common::{env_ok, job_ok, job_params_with, posix_ctx};
+use crate::env_params_common::{env_ok, job_ok, job_params_with, template_ctx};
 
 /// Create the Job from `jt_src` with `env_srcs` attached, in order, and
 /// Job Parameter values `params`.
@@ -41,7 +41,7 @@ fn create(
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    let result = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt));
+    let result = create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt));
     // Every error order test is also a test of a Job Template without
     // ENV_PARAMS: the one-pass order applies to every Job Template, so with
     // ENV_PARAMS removed in code the template's errors are the same.
@@ -57,7 +57,7 @@ fn create(
                 &plain,
                 &attached,
                 &values,
-                &posix_ctx(&plain),
+                &template_ctx(&plain),
             );
             assert_eq!(
                 twin.err().map(|e| e.to_string()),
@@ -427,7 +427,7 @@ fn the_caller_limits_are_checked_only_when_no_error_was_found() {
         )
     };
     let ctx = |jt: &openjd_model::template::JobTemplate| {
-        posix_ctx(jt).with_caller_limits(openjd_model::CallerLimits {
+        template_ctx(jt).with_caller_limits(openjd_model::CallerLimits {
             max_task_count: Some(0),
             ..Default::default()
         })
@@ -540,7 +540,6 @@ fn a_job_template_without_env_params_reports_its_errors_with_the_attachments_in_
 // Each test below has errors whose filing order differs from their report
 // order, so it pins one key of the order.
 
-/// Run `jt` with `envs` attached and return the error's text.
 /// An attached Environment `name` whose INT `N` (at least 5) has its
 /// literal `default` edited after decoding to 1, so job creation's
 /// template-validation-style check of the default rejects it.
@@ -565,11 +564,12 @@ fn err_text_envs(jt: &str, envs: &[EnvironmentTemplate]) -> String {
     let jt = job_ok(jt);
     let values = job_params_with(&jt, &[], envs);
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail")
         .to_string()
 }
 
+/// Run `jt` with `envs` attached and return the error's text.
 fn err_text(jt: &str, envs: &[&str], params: &[(&str, &str)]) -> String {
     create(jt, envs, params)
         .expect_err("expected job creation to fail")
@@ -786,7 +786,7 @@ fn the_caller_limits_are_not_checked_after_a_template_validation_style_error() {
          - name: S\n  script: {{actions: {{onRun: {{command: x, args: ['{{{{Param.L[4]}}}}']}}}}}}\n"
     ));
     let values = job_params_with(&jt, &[], &[]);
-    let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+    let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
         max_task_count: Some(0),
         ..Default::default()
     });
@@ -904,7 +904,7 @@ fn order_literal_defaults_of_edited_templates() {
     x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = one;
     let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
     let attached = [AttachedEnvironmentTemplate::new(&x)];
-    let err = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    let err = create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 3 validation errors for Submission\nJobTemplate -> jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every jobEnvironments entry with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2 constraint 7); missing: 'P' of Environment 'J'.");
 }
@@ -1014,7 +1014,7 @@ fn order_the_validation_and_step_2_stages() {
             jt,
             &[AttachedEnvironmentTemplate::new(&x)],
             &values,
-            &posix_ctx(jt),
+            &template_ctx(jt),
         )
         .expect_err("expected job creation to fail")
         .to_string()
@@ -1061,7 +1061,7 @@ fn order_step_2_by_entry_index_in_an_edited_template() {
     let e = deps[0].clone();
     deps.insert(2, e);
     let values = job_params_with(&jt, &[], &[]);
-    let err = openjd_model::create_job(&jt, &values, &posix_ctx(&jt))
+    let err = openjd_model::create_job(&jt, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 3 validation errors for JobTemplate\nsteps[0] -> dependencies[1] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~\nsteps[0] -> dependencies[2] -> environment:\n\tduplicate environment dependency 'E'.\nsteps[0] -> dependencies[3] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
 }
@@ -1167,7 +1167,7 @@ fn the_caller_limits_wait_for_the_job_environments_and_the_submission_stage() {
     let limited = |src: &str| {
         let jt = job_ok(src);
         let values = job_params_with(&jt, &[], &[]);
-        let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+        let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
             max_task_count: Some(2),
             ..Default::default()
         });
@@ -1202,7 +1202,7 @@ fn the_script_and_environment_size_limits_wait_for_the_errors() {
             ..Default::default()
         },
     ] {
-        let ctx = posix_ctx(&jt).with_caller_limits(limits);
+        let ctx = template_ctx(&jt).with_caller_limits(limits);
         let err = openjd_model::create_job(&jt, &values, &ctx).expect_err("expected an error");
         assert_eq!(
             err.to_string(),
@@ -1399,7 +1399,7 @@ fn a_later_steps_step_2_to_4_error_stops_that_step_not_the_first() {
     let f = deps[1].clone();
     deps.push(f);
     let values = job_params_with(&jt, &[], &[]);
-    let err = openjd_model::create_job(&jt, &values, &posix_ctx(&jt))
+    let err = openjd_model::create_job(&jt, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 2 validation errors for JobTemplate\nsteps[1] -> dependencies[2] -> environment:\n\tduplicate environment dependency 'F'.\nsteps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 1 is less than minimum 5");
 }
@@ -1454,7 +1454,7 @@ fn a_job_template_without_env_params_reports_a_caller_limit_only_when_there_is_n
     let limited = |a: &str| {
         let a = env_ok(&env(a));
         let values = job_params_with(&jt, &[], std::slice::from_ref(&a));
-        let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+        let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
             max_task_count: Some(2),
             ..Default::default()
         });
@@ -1480,7 +1480,7 @@ fn the_environment_size_limit_applies_to_step_environments() {
              {{command: x}}}}}}\n"
         ));
         let values = job_params_with(&jt, &[], &[]);
-        let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+        let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
             max_environment_size: Some(20),
             ..Default::default()
         });
@@ -1557,7 +1557,7 @@ fn a_job_template_without_env_params_does_not_stop_a_step_on_an_attachments_defi
     let envs = [x, b];
     let values = job_params_with(&jt, &[], &envs);
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    let err = create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    let err = create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'P' of Environment 'B' (EnvironmentTemplate[1]).");
 }
@@ -1572,7 +1572,7 @@ fn a_value_equal_to_a_caller_limit_is_within_it() {
     ));
     let values = job_params_with(&jt, &[], &[]);
     let with = |limits: openjd_model::CallerLimits| {
-        openjd_model::create_job(&jt, &values, &posix_ctx(&jt).with_caller_limits(limits))
+        openjd_model::create_job(&jt, &values, &template_ctx(&jt).with_caller_limits(limits))
             .map(|_| ())
             .map_err(|e| e.to_string())
     };
@@ -1674,12 +1674,12 @@ fn a_job_template_without_env_params_reports_its_own_staged_error_for_the_submis
         &jt,
         &[AttachedEnvironmentTemplate::new(&x)],
         &values,
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 1 validation error for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tduplicate environment dependency 'E'.");
     let values = job_params_with(&jt, &[], &[]);
-    let err = create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt))
+    let err = create_job_with_environment_templates(&jt, &[], &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 1 validation error for JobTemplate\nsteps[0] -> dependencies[1] -> environment:\n\tduplicate environment dependency 'E'.");
 }
@@ -1756,7 +1756,7 @@ fn a_job_template_without_env_params_and_without_attachments_reports_as_before()
     let limited = |src: &str| {
         let jt = job_ok(src);
         let values = job_params_with(&jt, &[], &[]);
-        let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+        let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
             max_task_count: Some(2),
             ..Default::default()
         });
@@ -1816,7 +1816,7 @@ fn a_stopped_step_of_a_job_template_without_env_params_does_not_stop_the_others(
         &jt,
         &[AttachedEnvironmentTemplate::new(&b)],
         &values,
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> dependencies[1] -> environment:\n\tduplicate environment dependency 'E'.\nEnvironmentTemplate[0] -> environment -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Step 'S1'.\n  Env.Param.L[4]\n  ~~~~~~~~~~~^~~");
@@ -2002,7 +2002,7 @@ fn edited(
     let envs: Vec<EnvironmentTemplate> = envs.iter().map(|s| env_ok(s)).collect();
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
         .expect_err("expected job creation to fail")
         .to_string()
 }
@@ -2134,7 +2134,7 @@ fn limited_err(jt: &str, envs: &[&str], limits: openjd_model::CallerLimits) -> S
     let envs: Vec<EnvironmentTemplate> = envs.iter().map(|s| env_ok(s)).collect();
     let values = job_params_with(&jt, &[], &envs);
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    let ctx = posix_ctx(&jt).with_caller_limits(limits);
+    let ctx = template_ctx(&jt).with_caller_limits(limits);
     create_job_with_environment_templates(&jt, &attached, &values, &ctx)
         .expect_err("expected job creation to fail")
         .to_string()
@@ -2193,7 +2193,7 @@ fn a_job_template_built_without_extensions_stops_a_step_as_with_env_params() {
             let envs: Vec<EnvironmentTemplate> = envs.iter().map(|s| env_ok(s)).collect();
             let values = job_params_with(&jt, &[], &envs);
             let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-            create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+            create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
                 .expect_err("expected job creation to fail")
                 .to_string()
         };

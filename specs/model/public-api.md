@@ -309,8 +309,7 @@ template is reported together in one `ModelError::ModelValidation`),
 runs the final task-count
 limit from [`CallerLimits`], and returns the complete [`job::Job`]. The
 `ctx` it takes is a full [`ValidationContext`] — i.e. revision +
-extensions + caller limits + the submission path policy that
-`ENV_PARAMS` values use — and callers commonly get one from
+extensions + caller limits, with no path policy — and callers commonly get one from
 [`JobTemplate::default_validation_context`]. The context's revision
 must match the template's and its extensions must cover every
 extension the template declares (enabling more is allowed);

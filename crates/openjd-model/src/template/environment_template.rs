@@ -59,7 +59,7 @@ impl EnvironmentTemplate {
 
     /// [`profile`](Self::profile) wrapped in a
     /// [`ValidationContext`](crate::types::ValidationContext) with default
-    /// caller limits and path policy.
+    /// caller limits.
     pub fn default_validation_context(&self) -> crate::types::ValidationContext {
         crate::types::ValidationContext::from_profile(self.profile())
     }

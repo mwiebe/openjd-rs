@@ -180,8 +180,8 @@ Full template instantiation pipeline. `create_job` is
 the Job; both run every stage below, including [the submission
 stage](#the-submission-stage), so the Job `create_job` returns is complete. Environment templates should
 already be merged into `job_parameter_values` via `preprocess_job_parameters` before
-calling this function. `ctx` carries the model profile, the
-and the `CallerLimits` that apply to this job instance (it has no path policy: every
+calling this function. `ctx` carries the model profile and the `CallerLimits` that apply to
+this job instance (it has no path policy: every
 TEMPLATE-scope field evaluates with POSIX semantics, Expression Language §1.2.1). Its revision must
 match the template's and its extensions must cover every extension the
 template declares — enforced with a `Compatibility` error, since a
@@ -510,7 +510,8 @@ stage](#the-submission-stage):
   forms follow the extensions of the document that holds it) has no case left to decide (plan
   6); its second half, the caller's URI policy, is gone: a URI is one more form of PATH value
   (§4.5 item 3 at spec `af53020`).
-- **Format-string values** are TEMPLATE-scope fields (§7.3.2), so they resolve with POSIX
+- **Format-string values** are TEMPLATE-scope fields resolved at Job creation (§7.3.2, and §7.4's
+  Job creation row: "expressions in TEMPLATE scope are fully evaluated"), so they resolve with POSIX
   semantics on every host, as every other job-creation field does (Expression Language §1.2.1,
   "In TEMPLATE scope contexts, POSIX semantics are used for consistency"): `path(RawParam.Dir) /
   'sub'` joins with `/` and reads `\` as a filename character, under the caller's evaluation
@@ -850,7 +851,7 @@ the `jobEnvironments` entries its Sessions would enter by their `activation`, wi
 for them, undecided), the errors job creation found, the `Job.EnvNames` value, and the merged
 values
 `preprocess_job_parameters` produced with the same Environment Templates. `ctx` supplies the
-caller limits and the path policy; its profile is not read. Each attached template is
+caller limits; its profile is not read. Each attached template is
 evaluated under its own profile (`EnvironmentTemplate::profile()`), since an extension applies
 to the document that lists it (§1.2 item 3): an attachment that lists `ENV_PARAMS` lists `EXPR`
 too, so its `default`s may use `EXPR` when the Job Template lists neither, and a Job Template
@@ -1417,7 +1418,7 @@ reports only once the Step's step 1–4 errors are fixed):
    to every list of an `attr.worker.os.family` or `attr.worker.cpu.arch` requirement. A
    Step with no literal Environment requirement is skipped.
 
-`ctx` supplies the caller limits and the path policy, as for job creation. A submission that passes can still be
+`ctx` supplies the caller limits, as for job creation. A submission that passes can still be
 rejected at job creation, for a format-string value or non-literal `default` that does not
 resolve to a valid value with the submitted Job Parameters, for an entry or an Environment
 whose `enableIf` is an expression (and the Environments it may bring into a Step's set), or

@@ -236,7 +236,7 @@ struct Attachments<'a> {
     /// are caller-supplied and may be long.
     doc_names: Vec<String>,
     /// Each attachment's own validation context: its profile, with the
-    /// caller's limits and submission path policy.
+    /// caller's limits.
     contexts: Vec<ValidationContext>,
     declaring: Vec<DeclaringEnvironment<'a>>,
     by_name: HashMap<&'a str, Vec<usize>>,
@@ -603,8 +603,8 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// far. `env_names` is the Job's `Job.EnvNames`, bound for attached
 /// Environments whose document lists `EXPR`. `attached` is in the
 /// scheduler's order. `job_parameter_values` are the merged values. `ctx`
-/// supplies the caller limits and the submission path policy, applied to
-/// every document; its profile is not read. Each attached template is
+/// supplies the caller limits, applied to every document; its profile is
+/// not read. Each attached template is
 /// evaluated under its own profile ([`EnvironmentTemplate::profile`]): an
 /// extension applies to the document that lists it.
 ///

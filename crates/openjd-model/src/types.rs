@@ -753,7 +753,8 @@ impl Default for ModelProfile {
 /// It has no path policy. Job creation evaluates every TEMPLATE-scope
 /// field, `ENV_PARAMS` Environment parameter values and the Step `let`
 /// bindings they read included, with POSIX semantics on every host
-/// (Expression Language §1.2.1; Template Schemas §7.3.2, §7.5), and uses
+/// (Expression Language §1.2.1; Template Schemas §7.4, the Job creation
+/// row, with §7.3.2 for the scope of these values), and uses
 /// a PATH or LIST\[PATH\] Environment parameter value as given, with no
 /// check of its form (§4.5 item 3). Job Parameter paths have their own
 /// policy, [`PathParameterOptions`](crate::PathParameterOptions).

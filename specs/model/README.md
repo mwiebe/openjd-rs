@@ -73,11 +73,13 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
-  `af53020`. Its changes since `87be017` are to Template Schemas §4.5 item 3 and the sentence
-  after the §7.4.1 steps: `2892d96` accepts a PATH or LIST[PATH] value absolute in any path
-  format, and `af53020` uses it as given, with no check of its form. The prototype also
+  `af53020`. Its changes since `87be017` are to Template Schemas §4.5 item 3, the NOTE after
+  §4.5's items, the sentence after the §7.4.1 steps, and §7.5's sentence on `path` semantics
+  ("whatever path format the Job's paths have"): `2892d96` accepts a PATH or LIST[PATH] value
+  absolute in any path format, and `af53020` uses it as given, with no check of its form. The prototype also
   evaluates every Environment parameter value, and the Step `let` bindings it reads, with POSIX
-  semantics, as TEMPLATE scope requires (Expression Language §1.2.1; §7.3.2), so
+  semantics, as TEMPLATE scope requires (Expression Language §1.2.1; §7.4, the Job creation row,
+  and §7.3.2), so
   `ValidationContext` no longer has `submission_path_format` or `allow_uri_path_values` (see
   [job-creation.md](job-creation.md#environment-parameter-values-env_params)). Its `ENV_PARAMS`
   changes from `26ef74f` to `87be017` are the statement that each of a merged

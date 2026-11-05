@@ -843,6 +843,7 @@ describe("createJob", () => {
     // Template Schemas §4.5 item 3 (spec af53020): a PATH value need not
     // be absolute, and Environment parameter format strings evaluate with
     // POSIX semantics (Expression Language §1.2.1), whatever pathFormat is.
+    // allowUriPathValues stays false: it applies to Job Parameters only.
     const doc = JSON.stringify({
       specificationVersion: "jobtemplate-2023-09",
       extensions: ["ENV_PARAMS", "EXPR"],
@@ -854,6 +855,8 @@ describe("createJob", () => {
             { name: "Rel", type: "PATH", default: "tools\\bin" },
             { name: "Joined", type: "PATH", default: "{{ path('C:/a') / 'b' }}" },
             { name: "Mixed", type: "LIST[PATH]", default: ["/x", "C:y", "\\z"] },
+            { name: "Empty", type: "PATH", default: "" },
+            { name: "Uri", type: "PATH", default: "s3://b/k" },
           ],
           variables: { V: "{{Env.Param.Rel}}" },
         },
@@ -873,9 +876,11 @@ describe("createJob", () => {
       const job = mod.createJob(template, {}, opts);
       const [entry] = job.toJSON().steps[0].environmentParameters;
       expect(entry.values.map((e) => Object.fromEntries(e))).toEqual([
+        { name: "Empty", type: "path", value: "" },
         { name: "Joined", type: "path", value: "C:/a/b" },
         { name: "Mixed", type: "list[path]", value: ["/x", "C:y", "\\z"] },
         { name: "Rel", type: "path", value: "tools\\bin" },
+        { name: "Uri", type: "path", value: "s3://b/k" },
       ]);
       job.free();
       opts.free();

@@ -20,7 +20,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_ok, job_err, job_err_with, job_ok, job_params_with, posix_ctx,
+    assert_errors, env_ok, job_err, job_err_with, job_ok, job_params_with, template_ctx,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ fn create(
 ) -> Result<CreatedJob, ModelError> {
     let values = job_params_with(jt, params, envs);
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(jt, &attached, &values, &posix_ctx(jt))
+    create_job_with_environment_templates(jt, &attached, &values, &template_ctx(jt))
 }
 
 /// Create the Job from `src` with `params`; it must succeed.
@@ -909,7 +909,7 @@ fn an_attached_environments_requirements_are_discarded_and_checked() {
         let c = create(&t, &envs, &[]).unwrap_or_else(|e| panic!("{hr}:\n{e}"));
         assert_eq!(c.job.steps[0].host_requirements, None, "{hr}");
         let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-        check_environment_templates(&t, &attached, &posix_ctx(&t))
+        check_environment_templates(&t, &attached, &template_ctx(&t))
             .unwrap_or_else(|e| panic!("{hr}:\n{e}"));
     }
     let envs = [et(
