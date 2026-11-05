@@ -756,7 +756,13 @@ impl Default for ModelProfile {
 /// `submission_path_format`. A PATH value must be absolute in some path
 /// format (a POSIX path, a Windows drive path, or a UNC path), whatever
 /// `submission_path_format` is, or, with `allow_uri_path_values` set, a
-/// URI (§4.5 item 3). The same context applies to the
+/// URI (§4.5 item 3).
+/// That check reads no format, but it sees the value as resolved: a value
+/// written as a single `{{ }}` expression becomes a `path` in
+/// `submission_path_format` first, so in WINDOWS `{{RawParam.Dir}}` with
+/// `/data` is `\data`, absolute in no format, and is rejected, while the
+/// literal `/data` is accepted.
+/// The same context applies to the
 /// Environment Templates
 /// [`create_job_with_environment_templates`](crate::create_job_with_environment_templates)
 /// attaches. Template validation does not read them.
@@ -772,7 +778,9 @@ pub struct ValidationContext {
     /// strings, and the Step `let` bindings they read, evaluate in, so
     /// path operations such as `path(RawParam.Dir) / 'x'` follow its rules.
     /// It does not decide whether a PATH value is absolute: any path
-    /// format's absolute paths are accepted (§4.5 item 3). Default:
+    /// format's absolute paths are accepted (§4.5 item 3). It can change a
+    /// single-expression value before that check, as the type docs say.
+    /// Default:
     /// [`PathFormat::host()`](openjd_expr::path_mapping::PathFormat::host),
     /// what `openjd run` passes to
     /// [`preprocess_job_parameters`](crate::preprocess_job_parameters).

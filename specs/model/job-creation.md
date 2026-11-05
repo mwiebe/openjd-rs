@@ -539,8 +539,12 @@ stage](#the-submission-stage):
   or `C:/proj`), or a UNC path (`\\server\share\proj`); the check is the union of
   `openjd_expr::functions::path::is_absolute` for POSIX and for WINDOWS. A drive-relative
   `C:dir`, a drive-less rooted `\dir`, and a relative path in either style (`rel/dir`,
-  `rel\dir`) are rejected. `ctx.submission_path_format` does not change the result, so a
-  Windows path is accepted in a POSIX submission and a POSIX path in a WINDOWS one. A URI is
+  `rel\dir`) are rejected. The check reads no format, so a literal Windows path is accepted
+  in a POSIX submission and a literal POSIX path in a WINDOWS one. It sees the resolved value,
+  though, and a single `{{ }}` expression's result becomes a `path` in
+  `ctx.submission_path_format` (below), so in WINDOWS `{{RawParam.Dir}}` with `/data` resolves
+  to `\data`, absolute in no format, and is rejected; `{{RawParam.Dir}}/x` stays the string
+  `/data/x` and is accepted. A URI is
   classified first, so a URI that the caller does not permit is reported as a URI. The
   message names the three forms and not a format. The value is stored as resolved (plan A22): a literal or
   a multi-segment format string as written; a single `{{ }}` expression as the string of its

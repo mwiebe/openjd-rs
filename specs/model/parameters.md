@@ -208,8 +208,10 @@ The two path fields apply to `ENV_PARAMS` Environment parameter values (Template
 §4.5), of every type: job creation evaluates them in `submission_path_format` (see below), a
 PATH value of an Environment that is not disabled for the Step (§3.2.2) must be a non-empty
 path absolute in some path format (POSIX, a Windows drive path, or a UNC path; §4.5 item 3),
-whatever `submission_path_format` is, or, with `allow_uri_path_values` set, a URI, and the same
-context applies to the attached
+whatever `submission_path_format` is, or, with `allow_uri_path_values` set, a URI (the check
+sees the resolved value, and a single `{{ }}` value is converted to `path` in
+`submission_path_format` first, so in WINDOWS `{{RawParam.Dir}}` with `/data` becomes `\data`
+and is rejected; see job-creation.md), and the same context applies to the attached
 Environment Templates in `create_job_with_environment_templates`. They mean the same as the
 `PathParameterOptions` fields `path_format` and `allow_uri_path_values`, and a caller that
 creates `ENV_PARAMS` Jobs should pass the same two values to both. openjd-for-js's `createJob`

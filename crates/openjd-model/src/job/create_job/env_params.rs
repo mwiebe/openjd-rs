@@ -1697,12 +1697,13 @@ mod tests {
                     "{s} in {format:?}"
                 );
             }
-            for s in RELATIVE {
+            // A relative path is rejected whether or not URIs are allowed.
+            for (s, uri) in RELATIVE.into_iter().flat_map(|s| [(s, false), (s, true)]) {
                 let v = ExprValue::String(s.to_string());
                 assert_eq!(
-                    check(JobParameterType::Path, v, format, false),
+                    check(JobParameterType::Path, v, format, uri),
                     [not_absolute("", s)],
-                    "{s} in {format:?}"
+                    "{s} in {format:?}, URIs allowed: {uri}"
                 );
             }
         }
@@ -1729,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn a_uri_is_classified_before_absoluteness_in_every_format() {
+    fn a_uri_follows_the_callers_uri_policy_in_every_format() {
         for format in FORMATS {
             let uri = || ExprValue::String("s3://bucket/key".to_string());
             assert_eq!(

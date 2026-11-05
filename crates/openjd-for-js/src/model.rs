@@ -684,7 +684,10 @@ pub fn decode_environment_template_from_object(
 /// policy for `ENV_PARAMS` Environment parameter values: format strings
 /// evaluate in `pathFormat`, and `allowUriPathValues` decides whether a
 /// URI is accepted as a PATH value. A PATH value is accepted when it is
-/// absolute in any path format, whatever `pathFormat` is.
+/// absolute in any path format; the check reads no format, but a value
+/// written as a single `{{ }}` expression is converted to `path` in
+/// `pathFormat` first (in WINDOWS, `/data` becomes `\data` and is
+/// rejected).
 ///
 /// `createJob` takes no Environment Templates, so with `ENV_PARAMS` an
 /// `environment:` dependency that names no Job Environment makes it throw
