@@ -1510,6 +1510,40 @@ async fn every_list_path_element_is_mapped() {
     assert_eq!(out.trim(), "/dst/a /dst/b /dst/c /mnt/src/b /mnt/src/c");
 }
 
+/// A value is used as given (Template Schemas §4.5 item 3): a LIST[PATH]
+/// element and a PATH value that no rule matches, a relative one or one
+/// with a backslash, are bound unchanged in `Env.RawParam`, and the
+/// `string` text of each is kept (its `count('\\')` is pinned, so a
+/// separator rewrite would show).
+#[cfg(not(windows))]
+#[tokio::test]
+async fn an_unmatched_value_with_a_backslash_is_bound_as_given() {
+    let tmp = TempDir::new().unwrap();
+    let mut session = Session::new_for_test(tmp.path().to_path_buf())
+        .with_path_mapping(vec![rule("/mnt/src", "/dst")])
+        .unwrap();
+    let e = env(
+        "E",
+        on_enter(echo(
+            "{{ Env.RawParam.Dirs[1].count('\\\\') }} {{ Env.RawParam.Dirs[2].count('\\\\') }} \
+             {{ Env.RawParam.Dir.count('\\\\') }} {{ string(Env.Param.Dir).count('\\\\') }} \
+             {{ Env.Param.Dirs[0] }} {{ Env.RawParam.Dirs[2] }}",
+        )),
+    );
+    let v = values(
+        "E",
+        serde_json::json!([
+            {"name": "Dir", "type": "path", "value": "C:\\a\\b"},
+            {"name": "Dirs", "type": "list[path]", "value": ["/mnt/src/a", "C:\\x\\y", "rel/z"]}
+        ]),
+    );
+    let (_, out) = session
+        .enter_environment_with_parameters(&e, None, Some(&v), None, None)
+        .await
+        .unwrap();
+    assert_eq!(out.trim(), "2 0 2 2 /dst/a rel/z");
+}
+
 /// When an outer wrap hook replaces an Environment's onEnter or onExit,
 /// that Environment's own `let` bindings and embedded files, which the
 /// wrapped action uses, still read its own values.
