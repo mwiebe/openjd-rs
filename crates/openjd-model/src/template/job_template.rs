@@ -105,7 +105,9 @@ impl JobTemplate {
     /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits),
     /// [`with_submission_path_format`](crate::types::ValidationContext::with_submission_path_format),
     /// and [`with_allow_uri_path_values`](crate::types::ValidationContext::with_allow_uri_path_values)
-    /// (the last two matter for `ENV_PARAMS` PATH values, and should match
+    /// (the last two matter for `ENV_PARAMS` values: the format their
+    /// format strings evaluate in, and whether a URI PATH value is accepted;
+    /// they should match
     /// the [`PathParameterOptions`](crate::PathParameterOptions) given to
     /// `preprocess_job_parameters`), or build a `ValidationContext`
     /// explicitly; note that this

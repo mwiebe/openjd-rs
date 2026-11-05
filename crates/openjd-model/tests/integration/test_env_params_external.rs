@@ -570,7 +570,7 @@ steps:
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value 0 is less than minimum 1",
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> On:\n\tis not a valid BOOL value: Invalid bool value: 'maybe'",
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Mounts:\n\ta LIST[PATH] parameter has no string form, so a format-string value for it must be a single '{{ }}' expression.",
-        "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'relative'.",
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'relative'.",
         "JobTemplate -> steps[1] -> dependencies[0] -> parameters -> N:\n\tcould not be resolved as a value of type INT: Cannot convert 'abc' to int: invalid digit found in string",
         "JobTemplate -> steps[1] -> dependencies[0] -> parameters -> Mounts[0]:\n\tthe elements of a list literal are literals, not format strings. Write the whole value as one '{{ }}' expression, for example '{{ [RawParam.Dir] }}'.",
     ]);
@@ -593,7 +593,7 @@ steps:
     assert_errors(
         &err.to_string(),
         "Submission",
-        &["typed.yaml -> environment -> envParameterDefinitions[3] -> default:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'opt/tool'."],
+        &["typed.yaml -> environment -> envParameterDefinitions[3] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'opt/tool'."],
     );
 }
 
@@ -795,7 +795,7 @@ environment:
   name: E
   envParameterDefinitions:
   - {name: Big, type: STRING, default: "{{ 'ab' * 50 }}"}
-  - {name: P, type: PATH, default: 'C:\tools'}
+  - {name: P, type: PATH, default: "{{ path('C:/tools') / 'bin' }}"}
   variables: {V: v}
 "#;
     let jt = r#"
@@ -806,22 +806,26 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let s = submission(jt, &[env], &[]);
+    // The attachment's format strings evaluate in the caller's path
+    // format: WINDOWS joins with `\`, POSIX with `/`. The result is
+    // absolute in either.
     let windows = posix_ctx(&s.jt)
         .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
     let job = s.create_with(&[], &windows).unwrap().job;
     assert_eq!(
         rendered_values(&job.steps[0]),
         [format!(
-            "EnvironmentTemplate[0]/E: Big=string:{}, P=path:C:\\tools",
+            "EnvironmentTemplate[0]/E: Big=string:{}, P=path:C:\\tools\\bin",
             "ab".repeat(50)
         )]
     );
-    // POSIX: the Windows path is relative.
-    let err = s.create().unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &["EnvironmentTemplate[0] -> environment -> envParameterDefinitions[1] -> default:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'C:\\tools'."],
+    let job = s.create().unwrap().job;
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [format!(
+            "EnvironmentTemplate[0]/E: Big=string:{}, P=path:C:/tools/bin",
+            "ab".repeat(50)
+        )]
     );
     // The caller's evaluation budget applies to the attachment.
     let limits = openjd_model::CallerLimits {
@@ -834,12 +838,17 @@ steps:
     assert_errors(
         &err.to_string(),
         "Submission",
-        &["EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tfor Step 'S', which does not supply this parameter: could not be resolved as a value of type STRING: Expression memory usage (72 bytes) exceeded limit (10 bytes)\n  'ab' * 50\n  ^~~~"],
+        &[
+            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tfor Step 'S', which does not supply this parameter: could not be resolved as a value of type STRING: Expression memory usage (72 bytes) exceeded limit (10 bytes)\n  'ab' * 50\n  ^~~~",
+            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[1] -> default:\n\tfor Step 'S', which does not supply this parameter: could not be resolved as a value of type PATH: Expression memory usage (72 bytes) exceeded limit (10 bytes)\n  path('C:/tools') / 'bin'\n       ^~~~~~~~~~",
+        ],
     );
 }
 
+/// §4.5 item 3 (spec 2892d96): a WINDOWS submission accepts a POSIX path,
+/// and its message for a relative path names no path format.
 #[test]
-fn a_windows_submission_names_its_format_in_the_message() {
+fn a_windows_submission_accepts_a_posix_path() {
     let env = TYPED_ENV.replace("default: /opt/tool", "default: 'C:\\tool'");
     let jt = r#"
 specificationVersion: jobtemplate-2023-09
@@ -853,11 +862,14 @@ steps:
     let s = submission(jt, &[&env], &[]);
     let windows = posix_ctx(&s.jt)
         .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
+    s.create_with(&[], &windows)
+        .expect("a POSIX path is absolute in some path format");
+    let s = submission(&jt.replace("Dir: /posix", "Dir: 'rel\\dir'"), &[&env], &[]);
     let err = s.create_with(&[], &windows).unwrap_err();
     assert_errors(
         &err.to_string(),
         "Submission",
-        &["JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in the submission path format (WINDOWS), since an Environment parameter has no directory to be relative to; got '/posix'."],
+        &["JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel\\dir'."],
     );
 }
 

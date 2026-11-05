@@ -987,12 +987,8 @@ fn a_relative_path_is_not_checked_where_the_environment_is_disabled() {
         &[("U", "yes")],
         "JobTemplate",
         &[
-            "steps[0] -> dependencies[0] -> parameters -> D:\n\tmust be an absolute path in the \
-             submission path format (POSIX), since an Environment parameter has no directory to \
-             be relative to; got 'relative/dir'.",
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path \
-             in the submission path format (POSIX), since an Environment parameter has no \
-             directory to be relative to; got 'rel'.",
+            "steps[0] -> dependencies[0] -> parameters -> D:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'relative/dir'.",
+            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
         ],
     );
 }
@@ -1153,8 +1149,7 @@ fn a_literal_default_is_checked_when_its_environment_is_disabled_for_every_step(
     // §4.5 item 2 (plan 4 A42): a literal `default` is a property of the
     // definition, so a relative PATH `default` is an error even where the
     // Environment is disabled, for a Job Environment and an attachment.
-    let relative = "must be an absolute path in the submission path format (POSIX), since an \
-                    Environment parameter has no directory to be relative to; got 'rel'.";
+    let relative = "must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.";
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               jobEnvironments:\n- name: E\n  enableIf: false\n  envParameterDefinitions: [{name: \
               P, type: PATH, default: rel}]\n  variables: {V: x}\n\

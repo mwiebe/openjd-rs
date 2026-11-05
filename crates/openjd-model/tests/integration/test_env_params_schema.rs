@@ -707,8 +707,9 @@ steps:
 
 #[test]
 fn relative_literal_path_default_is_not_a_template_validation_error() {
-    // Absoluteness depends on the submission path format and is checked
-    // at job creation (§4.5 items 2 and 3).
+    // Absoluteness is checked at job creation, the stage RFC 0010's error
+    // table gives it (§4.5 items 2 and 3), although since spec 2892d96 it
+    // no longer depends on the submission path format.
     job_ok(
         r#"
 specificationVersion: jobtemplate-2023-09

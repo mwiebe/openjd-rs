@@ -238,9 +238,7 @@ environment:
         &steps_naming("E", true, "{Dir: rel/dir}"),
         &[env],
         &[
-            "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an \
-           absolute path in the submission path format (POSIX), since an Environment parameter \
-           has no directory to be relative to; got 'rel/dir'.",
+            "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/dir'.",
         ],
     );
 }
@@ -416,9 +414,7 @@ environment:
          steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
         &[env],
         &[
-            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tmust \
-           be an absolute path in the submission path format (POSIX), since an Environment \
-           parameter has no directory to be relative to; got 'rel'.",
+            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
         ],
     );
 }

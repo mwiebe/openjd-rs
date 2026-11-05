@@ -753,8 +753,10 @@ impl Default for ModelProfile {
 /// The two path fields apply to `ENV_PARAMS` Environment parameter values
 /// (Template Schemas §4.5). Job creation evaluates every such value, of
 /// any type, and the Step `let` bindings it reads, in
-/// `submission_path_format`; a PATH value must be absolute in it or, with
-/// `allow_uri_path_values` set, a URI. The same context applies to the
+/// `submission_path_format`. A PATH value must be absolute in some path
+/// format (a POSIX path, a Windows drive path, or a UNC path), whatever
+/// `submission_path_format` is, or, with `allow_uri_path_values` set, a
+/// URI (§4.5 item 3). The same context applies to the
 /// Environment Templates
 /// [`create_job_with_environment_templates`](crate::create_job_with_environment_templates)
 /// attaches. Template validation does not read them.
@@ -766,8 +768,11 @@ impl Default for ModelProfile {
 pub struct ValidationContext {
     pub profile: ModelProfile,
     pub caller_limits: CallerLimits,
-    /// The path format of the Job's PATH values, which path mapping rules
-    /// for the Job are keyed on (`source_path_format`). Default:
+    /// The path format that `ENV_PARAMS` Environment parameter format
+    /// strings, and the Step `let` bindings they read, evaluate in, so
+    /// path operations such as `path(RawParam.Dir) / 'x'` follow its rules.
+    /// It does not decide whether a PATH value is absolute: any path
+    /// format's absolute paths are accepted (§4.5 item 3). Default:
     /// [`PathFormat::host()`](openjd_expr::path_mapping::PathFormat::host),
     /// what `openjd run` passes to
     /// [`preprocess_job_parameters`](crate::preprocess_job_parameters).

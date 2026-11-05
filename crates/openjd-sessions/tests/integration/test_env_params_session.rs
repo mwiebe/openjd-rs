@@ -779,9 +779,9 @@ async fn a_value_that_does_not_decode_is_rejected() {
     );
 }
 
-/// A PATH value is stored in the submission path format (plan A22), so a
-/// WINDOWS-submitted value reaches a POSIX worker as written: mapped by a
-/// WINDOWS-source rule in `Env.Param`, unchanged in `Env.RawParam`.
+/// A PATH value is stored as written (plan A22), so a Windows path value
+/// reaches a POSIX worker unchanged: mapped by a WINDOWS-source rule in
+/// `Env.Param`, unchanged in `Env.RawParam`.
 #[tokio::test]
 async fn a_windows_submitted_path_is_mapped_by_a_windows_rule() {
     let tmp = TempDir::new().unwrap();

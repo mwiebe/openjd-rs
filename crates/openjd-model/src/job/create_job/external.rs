@@ -1467,8 +1467,8 @@ fn certainly_entered_per_step(
 ///   `enableIf` is absent or `true`, or certainly
 ///   unresolved for the Step (it reads only values that stay unknown; see
 ///   `enable_if_certainly_unresolved`), constraint 6 for literal values
-///   (including PATH absoluteness in
-///   [`ValidationContext::submission_path_format`]) and the
+///   (including that a PATH value is absolute in some path format, §4.5
+///   item 3) and the
 ///   single-expression rule for a list-typed parameter;
 /// - constraint 7 over every Step and every reachable attached
 ///   Environment it enters that is `ALWAYS` or whose own `enableIf` is
