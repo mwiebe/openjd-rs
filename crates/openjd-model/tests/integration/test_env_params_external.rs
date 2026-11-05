@@ -1271,3 +1271,49 @@ fn serde_form_of_documents() {
         r#"{"kind":"EnvironmentTemplate","index":0}"#
     );
 }
+
+/// §4.5 item 3, for a Step's format-string value for an attached
+/// Environment: a multi-segment result absolute only in WINDOWS or only in
+/// POSIX (it stays a string, so no format rewrites it) is accepted in every
+/// submission path format.
+#[test]
+fn an_attached_format_string_value_absolute_in_any_format_is_accepted() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions: [{name: P, type: PATH}]
+  variables: {V: v}
+"#;
+    for (value, stored) in [(r#""{{ 'C:' }}/x""#, "C:/x"), (r#""{{ '/' }}x""#, "/x")] {
+        let jt = format!(
+            r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+steps:
+- name: S
+  dependencies: [{{environment: E, parameters: {{P: {value}}}}}]
+  script: {{actions: {{onRun: {{command: x}}}}}}
+"#
+        );
+        let s = submission(&jt, &[env], &[]);
+        for format in [
+            openjd_expr::path_mapping::PathFormat::Posix,
+            openjd_expr::path_mapping::PathFormat::Windows,
+            openjd_expr::path_mapping::PathFormat::Uri,
+        ] {
+            let ctx = posix_ctx(&s.jt).with_submission_path_format(format);
+            let job = s
+                .create_with(&[], &ctx)
+                .unwrap_or_else(|e| panic!("{value} in {format:?}: {e}"))
+                .job;
+            assert_eq!(
+                rendered_values(&job.steps[0]),
+                [format!("EnvironmentTemplate[0]/E: P=path:{stored}")],
+                "{value} in {format:?}"
+            );
+        }
+    }
+}

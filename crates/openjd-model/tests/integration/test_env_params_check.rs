@@ -1374,10 +1374,12 @@ environment:
     }
 }
 
-/// §4.5 item 3, for a Job Environment's literal `default`s when Environment
-/// Templates are attached: `check_environment_templates` and
-/// `create_job_with_environment_templates` accept them in every submission
-/// path format.
+/// §4.5 item 3, for a Job Environment when Environment Templates are
+/// attached: `create_job_with_environment_templates` accepts its literal
+/// `default`s, and both it and `check_environment_templates` accept a
+/// Step's literal value for it, in every submission path format.
+/// (`check_environment_templates` does not examine Job Environment
+/// `default`s; `specs/cli/check.md`.)
 #[test]
 fn a_job_environments_literal_defaults_absolute_in_any_format_pass_with_an_attachment() {
     let jt = job_ok(
