@@ -91,7 +91,9 @@ for the other types (below).
 > rule. `check_constraints` on a string checks the string, and under `AsWrittenAndCanonical` its
 > canonical form; `preprocess_job_parameters` checks the written string before parsing it and
 > the canonical form after, against the merged lengths of the definitions whose document lists
-> `ENV_PARAMS` (see [Job Creation](job-creation.md), merge rules).
+> `ENV_PARAMS`, since each merged definition keeps its own document's rule (§1.2.1, §2.10; see
+> [Job Creation](job-creation.md), merge rules). The conformance tests `ENV_PARAMS` JB-155 and
+> JB-156 (`2.10--range-expr-merged-length-*`) cover the merge.
 
 These are two distinct operations:
 

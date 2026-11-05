@@ -599,6 +599,48 @@ fn order_step_6_by_environment_order() {
 }
 
 #[test]
+fn order_step_6_two_step_environments_of_one_step_by_their_order() {
+    // Both Step Environments of Step S fail their enableIf (§7.4.1 step 6),
+    // so both errors are reported, in the Step's stepEnvironments order (the
+    // Job's Environment order, §7.4.1), whichever fails which way. A Step
+    // Environment declares no parameters, so each enableIf reads a Job
+    // Parameter.
+    let se_t = "{name: ST, enableIf: \"int(Param.T) > 0\", variables: {V: a}}";
+    let se_l = "{name: SL, enableIf: \"Param.L[4] == 1\", variables: {V: b}}";
+    let t_err = |i: usize| {
+        format!(
+            "steps[0] -> stepEnvironments[{i}] -> enableIf:\n\tcould not be evaluated: Cannot \
+             convert 'abc' to int\n  int(Param.T) > 0\n  ^~~~~~~~~~~~"
+        )
+    };
+    let l_err = |i: usize| {
+        format!(
+            "steps[0] -> stepEnvironments[{i}] -> enableIf:\n\tcould not be evaluated: Index 4 \
+             out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~"
+        )
+    };
+    for (first, second, errors) in [
+        (se_t, se_l, [t_err(0), l_err(1)]),
+        (se_l, se_t, [l_err(0), t_err(1)]),
+    ] {
+        let jt = format!(
+            "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}, {{name: \
+             T, type: STRING, default: abc}}]\nsteps:\n- name: S\n  stepEnvironments:\n  - \
+             {first}\n  - {second}\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+        );
+        create_err(
+            &jt,
+            &[],
+            &[],
+            &format!(
+                "Model validation error: 2 validation errors for JobTemplate\n{}",
+                errors.join("\n")
+            ),
+        );
+    }
+}
+
+#[test]
 fn order_step_7_by_environment_order() {
     // J1 misses P, which is found after the Step's values; J2's value is
     // below its minimum, found while they are computed; the attachment X,

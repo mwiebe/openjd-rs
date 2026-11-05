@@ -73,7 +73,11 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
-  `26ef74f`, which stops a group at its first entered member, so a superseded Environment's
+  `87be017`. Its changes since `26ef74f` are the statement that a merged RANGE_EXPR Job
+  Parameter's `minLength` and `maxLength` keep the rule of the document that contains each
+  definition (§1.2.1, §2.10; `c12a76e`), which the prototype already followed, and
+  non-normative text (the Environment Name Conventions wiki page and the RFC's open questions).
+  `26ef74f` stops a group at its first entered member, so a superseded Environment's
   `enableIf` is not evaluated (§7.4.1 step 6), and `e0a9e44` before it, which adds an
   Environment's `exclusiveGroup` (§4 item 7; no separate plan; see
   [template-types.md](template-types.md#environment-4) and
@@ -127,7 +131,7 @@ Currently implements `2023-09` with extensions:
   a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
   the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). The section citations in the
-  code, tests, and specs follow the numbering of the spec at `26ef74f`, where §7.4.1 has
+  code, tests, and specs follow the numbering of the spec at `87be017` (unchanged since `26ef74f`), where §7.4.1 has
   steps 1–8 (step 6 Environment `enableIf` and groups, step 7 the checks over a Step's set),
   §3.2's *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3,
   the scope table is §7.3.2, and §4's *script*, *variables*, and at-least-one rule are items
