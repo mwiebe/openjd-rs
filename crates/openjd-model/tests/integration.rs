@@ -27,6 +27,8 @@ mod test_create_job;
 mod test_embedded;
 #[path = "integration/test_env_params_activation.rs"]
 mod test_env_params_activation;
+#[path = "integration/test_env_params_as_written.rs"]
+mod test_env_params_as_written;
 #[path = "integration/test_env_params_check.rs"]
 mod test_env_params_check;
 #[path = "integration/test_env_params_decline.rs"]
