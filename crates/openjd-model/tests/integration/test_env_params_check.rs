@@ -1373,3 +1373,39 @@ environment:
         }
     }
 }
+
+/// §4.5 item 3, for a Job Environment's literal `default`s when Environment
+/// Templates are attached: `check_environment_templates` and
+/// `create_job_with_environment_templates` accept them in every submission
+/// path format.
+#[test]
+fn a_job_environments_literal_defaults_absolute_in_any_format_pass_with_an_attachment() {
+    let jt = job_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: J
+  envParameterDefinitions:
+  - {name: Taken, type: PATH, default: 'C:\tools'}
+  - {name: Unused, type: PATH, default: '/opt/u'}
+  variables: {V: v}
+steps:
+- name: S
+  dependencies: [{environment: J, parameters: {Unused: '\\srv\share'}}]
+  script: {actions: {onRun: {command: x}}}
+"#,
+    );
+    let envs = [env_ok(
+        "specificationVersion: environment-2023-09\nenvironment:\n  name: A\n  variables: {V: v}\n",
+    )];
+    let values = job_params_with(&jt, &[], &envs);
+    for format in [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri] {
+        let ctx = posix_ctx(&jt).with_submission_path_format(format);
+        check_environment_templates(&jt, &attach(&envs), &ctx)
+            .unwrap_or_else(|e| panic!("check in {format:?}: {e}"));
+        create_job_with_environment_templates(&jt, &attach(&envs), &values, &ctx)
+            .unwrap_or_else(|e| panic!("create in {format:?}: {e}"));
+    }
+}

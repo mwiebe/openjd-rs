@@ -493,6 +493,48 @@ steps:
     }
 }
 
+/// §4.5 item 3, for a Job Environment's format-string `default`s: a
+/// result absolute only in WINDOWS and one absolute only in POSIX are
+/// accepted in every submission path format. (`{{ '/opt' }}/bin` is
+/// multi-segment, so it stays a string and keeps its `/` in WINDOWS.)
+#[test]
+fn a_job_environment_format_string_default_absolute_in_any_format_is_accepted() {
+    let jt = job_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: Win, type: PATH, default: "{{ path('C:/tools') / 'bin' }}"}
+  - {name: Posix, type: PATH, default: "{{ '/opt' }}/bin"}
+  variables: {V: v}
+steps:
+- name: S
+  script: {actions: {onRun: {command: x}}}
+"#,
+    );
+    for (format, win) in [
+        (PathFormat::Posix, "C:/tools/bin"),
+        (PathFormat::Windows, r"C:\tools\bin"),
+        (PathFormat::Uri, "C:/tools/bin"),
+    ] {
+        let ctx = jt
+            .default_validation_context()
+            .with_submission_path_format(format);
+        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
+            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        assert_eq!(
+            rendered_values(&job.steps[0]),
+            [format!(
+                "JobTemplate/E: Posix=path:/opt/bin, Win=path:{win}"
+            )],
+            "{format:?}"
+        );
+    }
+}
+
 /// §4.5 item 3: each LIST[PATH] element is checked on its own, so a list
 /// that mixes POSIX, Windows drive and UNC paths is accepted.
 #[test]
@@ -582,6 +624,44 @@ fn a_path_expression_still_uses_the_submission_path_format() {
             "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\y'.",
             "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\x'.",
         ],
+    );
+    // A single `{{ }}` value is converted to `path` in the evaluator's
+    // format too: in WINDOWS `{{RawParam.Dir}}` is `\data`, rejected,
+    // while the multi-segment `{{RawParam.Dir}}/x` stays a string.
+    let single = PATHS
+        .replace(
+            r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
+            "parameterDefinitions: [{name: Dir, type: PATH}]",
+        )
+        .replace("P: VALUE_P", r#"P: "{{RawParam.Dir}}""#)
+        .replace("L: VALUE_L", "L: []");
+    let single = job_ok(&single);
+    let single_params = job_params(&single, &[("Dir", "/data")]);
+    let job = create_job(&single, &single_params, &posix_ctx(&single)).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:[], P=path:/data"#]
+    );
+    let err = create_job(&single, &single_params, &windows).unwrap_err();
+    assert_errors(
+        &err.to_string(),
+        "JobTemplate",
+        &["steps[0] -> dependencies[0] -> parameters -> P:
+	must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data'."],
+    );
+    let multi = job_ok(
+        &PATHS
+            .replace(
+                r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
+                "parameterDefinitions: [{name: Dir, type: PATH}]",
+            )
+            .replace("P: VALUE_P", r#"P: "{{RawParam.Dir}}/x""#)
+            .replace("L: VALUE_L", "L: []"),
+    );
+    let job = create_job(&multi, &job_params(&multi, &[("Dir", "/data")]), &windows).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:[], P=path:/data/x"#]
     );
     // A Windows drive path keeps its drive, so it is accepted in both,
     // joined with each format's separator (POSIX treats `\` as a filename

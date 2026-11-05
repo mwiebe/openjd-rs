@@ -355,8 +355,9 @@ disabled one out of the Step's `environments`, `step_environments`, and
 ALWAYS`, which cannot be disabled, a `false` result is instead an error at
 its `enableIf` naming every such Step, §3.2.2 item 6); checks each value of an
 Environment that is not disabled for the Step against its definition, and
-that each PATH value is absolute in some path format (whatever
-`ctx.submission_path_format` is) or a URI `ctx.allow_uri_path_values`
+that each resolved PATH value is absolute in some path format (the
+check reads no format, though a single `{{ }}` value is converted in
+`ctx.submission_path_format` first) or a URI `ctx.allow_uri_path_values`
 permits, and that the Step supplies every parameter
 without a `default` (constraint 7); checks
 the `WRAP_ACTIONS` single-layer rule over each Step's final set; and last
@@ -1349,7 +1350,8 @@ pub struct ValidationContext {
     /// Path format Environment parameter format strings, and the Step
     /// `let` bindings they read, evaluate in. It does not decide whether
     /// a PATH value is absolute: any path format's absolute paths are
-    /// accepted (§4.5 item 3). Default `PathFormat::host()`.
+    /// accepted (§4.5 item 3), though a single `{{ }}` value is converted
+    /// to `path` in it first. Default `PathFormat::host()`.
     pub submission_path_format: openjd_expr::path_mapping::PathFormat,
     /// Accept a URI as an Environment parameter PATH value. Default
     /// `false`.
