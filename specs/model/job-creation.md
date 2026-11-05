@@ -1000,8 +1000,8 @@ requirements, and `finish_errors` drops anything job creation proper filed for i
 So a Step's value and constraint 7 errors appear only once its step 1–4 errors are fixed.
 Resolving a Step's own host requirements or parameter space still aborts job creation at
 once. A step-level `let` binding that fails leaves its Step uninstantiable: the other Steps
-get only the checks job creation proper makes (template-validation style errors, steps 1 and
-2, steps 4 and 5 for their Job Environment entries, and step 6 for their Step Environments),
+get only the checks job creation proper makes (template-validation style errors, step 2,
+steps 4 and 5 for their Job Environment entries, and step 6 for their Step Environments),
 the submission stage does not run, so no entry for an attachment is resolved (step 3) and no
 check of steps 6–8 on the Job or attached Environments is made, and the errors found so far
 are reported in the same order and shape. The caller limits (task count, script and Environment

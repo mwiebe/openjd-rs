@@ -2855,8 +2855,9 @@ impl Session {
     ///
     /// Each transport entry is `{name, type, value}` with a bare parameter
     /// name, and each is decoded on its own so an error names its
-    /// parameter. A `path` value is the unmapped string in the submission
-    /// path format: `Env.RawParam` gets it unchanged as a `string`, and
+    /// parameter. A `path` value is the unmapped string as the Job stores
+    /// it, of any form (Template Schemas §4.5 item 3): `Env.RawParam` gets
+    /// it unchanged as a `string`, and
     /// `Env.Param` gets it path-mapped with the Session's rules as a `path`
     /// in the host format, as `Param.*` does for a PATH Job Parameter. A
     /// `list[path]` value is handled the same way element by element

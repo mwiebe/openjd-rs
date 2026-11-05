@@ -542,8 +542,8 @@ steps:
     );
 }
 
-/// Expression Language §1.2.1: TEMPLATE-scope fields (§7.3.2) evaluate
-/// with POSIX semantics, so a Job Environment's format-string `default`
+/// Expression Language §1.2.1: TEMPLATE-scope fields (§7.3.2, §7.4)
+/// evaluate with POSIX semantics, so a Job Environment's format-string `default`
 /// joins paths with `/`, a Windows drive path included.
 #[test]
 fn a_job_environment_format_string_default_evaluates_with_posix_paths() {
@@ -775,6 +775,37 @@ fn path_operations_in_a_multi_segment_value_use_posix_semantics() {
         rendered_values(&job.steps[0]),
         ["JobTemplate/E: D=path:C:/d/e/f, L=list[path]:[], P=path:C:/a/b/x"]
     );
+}
+
+/// Every job-creation evaluation has POSIX semantics, a Step's
+/// `hostRequirements` expressions included: `a\b` is one POSIX path name,
+/// so its `parts` has one element in the `anyOf` list form and in a
+/// capability name (a Windows reading would give 2).
+#[test]
+fn host_requirement_expressions_evaluate_with_posix_semantics() {
+    let job = create_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{name: S, type: STRING, default: 'a\b'}]
+steps:
+- name: A
+  hostRequirements:
+    attributes:
+    - {name: "attr.custom.n{{ len(path(Param.S).parts) }}", anyOf: "{{ ['n' + string(len(path(Param.S).parts))] }}"}
+  script: {actions: {onRun: {command: x}}}
+"#,
+        &[],
+    );
+    let attrs = job.steps[0]
+        .host_requirements
+        .as_ref()
+        .and_then(|h| h.attributes.clone())
+        .unwrap();
+    assert_eq!(attrs.len(), 1);
+    assert_eq!(attrs[0].name, "attr.custom.n1");
+    assert_eq!(attrs[0].any_of, Some(vec!["n1".to_string()]));
 }
 
 #[test]

@@ -4262,6 +4262,42 @@ steps:
         );
     }
 
+    /// `summary` creates the Job with `common::submission_context`, which
+    /// carries the CLI's caller limits: an argument that only the Job
+    /// Parameter values make too long is rejected at job creation.
+    #[test]
+    fn summary_applies_the_cli_caller_limits_at_job_creation() {
+        let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
+        write!(
+            f,
+            r#"specificationVersion: "jobtemplate-2023-09"
+extensions: [EXPR]
+name: test
+parameterDefinitions: [{{name: N, type: INT, default: 1}}]
+steps:
+  - name: s1
+    script:
+      actions:
+        onRun:
+          command: echo
+          args: ["{{{{ 'A' * Param.N }}}}"]
+"#
+        )
+        .unwrap();
+        let path = f.path().to_str().unwrap();
+        let (code, _stdout, stderr) = run_cli(&["summary", path, "-p", "N=40000"]);
+        assert_ne!(code, 0, "over-cap arg must fail summary");
+        let expected = format!(
+            "steps[0] -> script -> actions -> onRun -> args[0]:\n\tresolves to at least 40000 characters, exceeding the maximum of {DEFAULT_MAX_ARG_LEN}."
+        );
+        assert!(
+            stderr.contains(&expected),
+            "expected {expected:?} in stderr:\n{stderr}"
+        );
+        let (code, _stdout, stderr) = run_cli(&["summary", path, "-p", "N=4"]);
+        assert_eq!(code, 0, "{stderr}");
+    }
+
     #[test]
     fn check_accepts_arg_under_default_cap() {
         let f = template_with_arg("{{ 'A' * 1000 }}");

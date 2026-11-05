@@ -221,7 +221,7 @@ and caller-supported extensions, and by callers of `create_job` from
 It has no path policy. `ENV_PARAMS` Environment parameter values (Template Schemas §4.5) are
 resolved at Job creation, after submission, so no submitting workstation's path format applies
 to them: their format strings, and the Step `let` bindings they read, are TEMPLATE-scope
-fields (§7.3.2) and evaluate with POSIX semantics, as every other job-creation evaluation does
+fields resolved at Job creation (§7.3.2, and §7.4's Job creation row) and evaluate with POSIX semantics, as every other job-creation evaluation does
 (Expression Language §1.2.1), and a PATH or LIST[PATH] value is used as given, with no check
 of its form (§4.5 item 3 at spec `af53020`; see job-creation.md). The `PathParameterOptions`
 fields `path_format` and `allow_uri_path_values` apply to Job Parameters only. (Earlier
