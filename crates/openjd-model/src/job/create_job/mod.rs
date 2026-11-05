@@ -123,8 +123,8 @@ pub fn create_job(
 /// says" context is [`JobTemplate::default_validation_context`], with
 /// [`with_caller_limits`](crate::types::ValidationContext::with_caller_limits)
 /// layered on for caller policy (e.g. "enforce stricter caller limits
-/// on this queue"). The caller limits and path policy also apply to every
-/// attached document, each evaluated under its own profile.
+/// on this queue"). The caller limits also apply to every attached
+/// document, each evaluated under its own profile.
 ///
 /// When `ctx.caller_limits.max_task_count` is set, the total task count
 /// across all steps is checked after parameter spaces are resolved.

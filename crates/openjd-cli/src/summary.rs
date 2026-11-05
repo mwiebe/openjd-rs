@@ -92,8 +92,8 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
 
     // Derive the context from the template itself — `create_job`
     // requires the context's revision/extensions to cover the
-    // template's — and carry the CLI's caller limits and submission path
-    // policy, as `openjd run` does.
+    // template's — and carry the CLI's caller limits, as `openjd run`
+    // does.
     let ctx = crate::common::submission_context(&job_template);
 
     // Attach the --environment templates as `openjd run` does, so each

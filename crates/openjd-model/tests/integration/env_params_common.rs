@@ -136,7 +136,7 @@ pub fn job_params_with(
 }
 
 /// The context the job-creation tests use: the template's own profile.
-pub fn posix_ctx(jt: &JobTemplate) -> openjd_model::ValidationContext {
+pub fn template_ctx(jt: &JobTemplate) -> openjd_model::ValidationContext {
     jt.default_validation_context()
 }
 

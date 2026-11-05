@@ -515,7 +515,8 @@ Counts assume Linux (3 Windows-only tests skipped). base, EXPR, and WRAP_ACTIONS
   `resolve_step_entries`, sharing their scope. Every `enableIf` (an entry's, a Step, Job, or attached
   Environment's) is a TEMPLATE-scope expression field and resolves with POSIX paths whatever the submission path
   format; the submission-path-format re-evaluation of `let` bindings applies only to entry parameter values (a
-  change to PR 3's entry `enableIf`, by the user's decision). A Job or attached Environment's is decided by
+  change to PR 3's entry `enableIf`, by the user's decision; *superseded at spec `af53020`: there is no
+  re-evaluation, and entry values evaluate with POSIX semantics too*). A Job or attached Environment's is decided by
   `apply_environment_enable_if` in the
   submission stage, between the effective values and the single-layer rule, grouped by values as host
   requirements are; an error leaves the Environment out of those Steps' sets. Every set-dependent check made

@@ -593,7 +593,7 @@ environment:
     let job = openjd_model::create_job(
         &jt,
         &crate::env_params_common::job_params(&jt, &[]),
-        &crate::env_params_common::posix_ctx(&jt),
+        &crate::env_params_common::template_ctx(&jt),
     )
     .unwrap();
     assert!(job.parameters.is_empty());

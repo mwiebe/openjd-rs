@@ -64,9 +64,9 @@ execute(args)
   ├── create_job_with_environment_templates() with the --environment
   │     templates, as `openjd run` does → Job; print its warnings to stderr.
   │     context: common::submission_context(&job_template), the same one
-  │     `openjd run` uses: the caller limits the decode ran under and the
-  │     CLI's submission path policy (see run.md § Session Configuration /
-  │     check.md § Caller-Limits Policy). Each Step's
+  │     `openjd run` uses: the caller limits the decode ran under (see
+  │     run.md § Session Configuration / check.md § Caller-Limits
+  │     Policy). Each Step's
   │     environment_parameters covers the attached Environments. The
   │     Job's job_environments are filtered back to the Job Template's own
   │     (by CreatedJob::environment_documents), so the environment listings

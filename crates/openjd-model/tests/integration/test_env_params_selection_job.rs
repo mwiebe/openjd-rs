@@ -16,7 +16,8 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_ok, job_err, job_ok, job_params, job_params_with, posix_ctx, rendered_values,
+    assert_errors, env_ok, job_err, job_ok, job_params, job_params_with, rendered_values,
+    template_ctx,
 };
 
 /// Create the Job from `jt_src` with `env_srcs` attached, in order.
@@ -30,7 +31,7 @@ fn create(
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
 }
 
 fn create_ok(jt_src: &str, env_srcs: &[&str], params: &[(&str, &str)]) -> Job {
@@ -412,7 +413,7 @@ fn an_enable_if_that_resolves_to_another_type_is_an_error() {
     let mut jt = job_ok(&ENABLE_IF.replace("SCOPE", "ALWAYS"));
     jt.steps[0].dependencies.as_mut().unwrap()[0].enable_if =
         Some(openjd_model::template::ExprField::Expression("1".into()));
-    let err = create_job(&jt, &job_params(&jt, &[]), &posix_ctx(&jt))
+    let err = create_job(&jt, &job_params(&jt, &[]), &template_ctx(&jt))
         .unwrap_err()
         .to_string();
     assert_errors(
@@ -494,10 +495,10 @@ fn enable_if_is_evaluated_with_posix_paths() {
     // `\` (§7.5), as for an entry's parameter values (Expression Language
     // §1.2.1).
     let jt = job_ok(&ENABLE_IF_CONTEXT.replace("ENABLE", r#""path(Param.P).name == 'b.txt'""#));
-    let job = create_job(&jt, &job_params(&jt, &[]), &posix_ctx(&jt)).unwrap();
+    let job = create_job(&jt, &job_params(&jt, &[]), &template_ctx(&jt)).unwrap();
     assert_eq!(job.steps[0].environments, Some(vec![]));
     let jt = job_ok(&ENABLE_IF_CONTEXT.replace("ENABLE", r#""path(Param.P).name == Param.P""#));
-    let job = create_job(&jt, &job_params(&jt, &[]), &posix_ctx(&jt)).unwrap();
+    let job = create_job(&jt, &job_params(&jt, &[]), &template_ctx(&jt)).unwrap();
     // Enabled, the entry requests E, so the Step enters every Job
     // Environment.
     assert_eq!(job.steps[0].environments, None);
@@ -525,7 +526,7 @@ fn enable_if_is_evaluated_within_the_caller_budgets() {
         &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Expression operation count (1003) exceeded limit (50)\n  sum([1] * 1000) > 0\n      ~~~~^~~~~~"],
     );
     let jt = job_ok(&src);
-    let ctx = posix_ctx(&jt).with_caller_limits(limits);
+    let ctx = template_ctx(&jt).with_caller_limits(limits);
     let err = create_job(&jt, &job_params(&jt, &[]), &ctx)
         .unwrap_err()
         .to_string();
@@ -556,7 +557,7 @@ fn enable_if_is_evaluated_within_the_caller_memory_budget() {
         &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Expression memory usage (100136 bytes) exceeded limit (1000 bytes)\n  len('x' * 100000) > 0\n      ~~~~^~~~~~~~"],
     );
     let jt = job_ok(&src);
-    let ctx = posix_ctx(&jt).with_caller_limits(limits);
+    let ctx = template_ctx(&jt).with_caller_limits(limits);
     let err = create_job(&jt, &job_params(&jt, &[]), &ctx)
         .unwrap_err()
         .to_string();
@@ -706,7 +707,7 @@ fn wrap_layers_are_checked_over_the_resolved_set() {
         wrap("W2")
     );
     let jt = job_ok(&src);
-    let ctx = posix_ctx(&jt);
+    let ctx = template_ctx(&jt);
     create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap();
     let err = create_job(&jt, &job_params(&jt, &[("Both", "yes")]), &ctx)
         .unwrap_err()
@@ -801,7 +802,7 @@ steps:
     let envs = [env_ok(&dup), env_ok(&dup)];
     let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
     assert_eq!(
-        check_environment_templates(&jt, &attached, &posix_ctx(&jt)).unwrap(),
+        check_environment_templates(&jt, &attached, &template_ctx(&jt)).unwrap(),
         []
     );
 }
@@ -815,7 +816,7 @@ fn the_early_check_holds_a_requesting_step_to_an_on_request_attachment() {
     let err = check_environment_templates(
         &jt,
         &[AttachedEnvironmentTemplate::new(&only)],
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .unwrap_err()
     .to_string();
@@ -848,7 +849,7 @@ steps:
 "#,
     );
     let only = env_ok(&ext("ON_REQUEST"));
-    let ctx = posix_ctx(&jt);
+    let ctx = template_ctx(&jt);
     // Plain does not enter Ext; Disabled's entry names no attachment, so it
     // has no effect (§3.2.1); Deferred's
     // entries are checked at job creation.

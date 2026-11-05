@@ -19,7 +19,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_err, env_ok, job_err, job_err_with, job_ok, job_params_with, posix_ctx,
+    assert_errors, env_err, env_ok, job_err, job_err_with, job_ok, job_params_with, template_ctx,
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ impl Submission {
             &self.jt,
             &attached,
             &self.params,
-            &posix_ctx(&self.jt),
+            &template_ctx(&self.jt),
         )
     }
 
@@ -73,7 +73,7 @@ impl Submission {
             .iter()
             .map(AttachedEnvironmentTemplate::new)
             .collect();
-        check_environment_templates(&self.jt, &attached, &posix_ctx(&self.jt))
+        check_environment_templates(&self.jt, &attached, &template_ctx(&self.jt))
             .unwrap_or_else(|e| panic!("check_environment_templates failed:\n{e}"));
         job
     }

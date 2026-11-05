@@ -14,7 +14,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_ok, job_ok, job_params_with, posix_ctx, rendered_values,
+    assert_errors, env_ok, job_ok, job_params_with, rendered_values, template_ctx,
 };
 
 const CONDA: &str = include_str!("../fixtures/env_params/conda-env-params.yaml");
@@ -58,7 +58,7 @@ impl Submission {
     }
 
     fn create(&self) -> Result<CreatedJob, ModelError> {
-        self.create_with(&[], &posix_ctx(&self.jt))
+        self.create_with(&[], &template_ctx(&self.jt))
     }
 
     fn combined(&self) -> (Job, Vec<String>) {
@@ -277,7 +277,7 @@ fn a_missing_environment_names_the_attached_documents() {
         &[],
     );
     let err = s
-        .create_with(&[None, Some("queue/other.yaml")], &posix_ctx(&s.jt))
+        .create_with(&[None, Some("queue/other.yaml")], &template_ctx(&s.jt))
         .unwrap_err();
     assert_errors(
         &err.to_string(),
@@ -307,7 +307,7 @@ fn an_optional_entry_with_no_environment_is_ignored_with_a_warning() {
 fn an_entry_naming_an_ambiguous_environment_is_rejected() {
     let s = submission(STEPS_FOR_CONDA, &[CONDA, CONDA], &[]);
     let err = s
-        .create_with(&[Some("a.yaml"), None], &posix_ctx(&s.jt))
+        .create_with(&[Some("a.yaml"), None], &template_ctx(&s.jt))
         .unwrap_err();
     assert_errors(
         &err.to_string(),
@@ -588,7 +588,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let s = submission(unused, &[&env], &[]);
-    s.create_with(&[Some("typed.yaml")], &posix_ctx(&s.jt))
+    s.create_with(&[Some("typed.yaml")], &template_ctx(&s.jt))
         .unwrap();
     let taken = r#"
 specificationVersion: jobtemplate-2023-09
@@ -697,7 +697,7 @@ steps:
     assert_eq!(job.steps[0].environments, None);
     assert_eq!(
         job,
-        openjd_model::create_job(&s.jt, &s.params, &posix_ctx(&s.jt)).unwrap()
+        openjd_model::create_job(&s.jt, &s.params, &template_ctx(&s.jt)).unwrap()
     );
 }
 
@@ -754,7 +754,7 @@ fn an_attachments_label_names_its_document_everywhere() {
     let jt = STEPS_FOR_CONDA.replace("{Packages: \"colmap=3.11\"}", "{Nope: x}");
     let s = submission(&jt, &[CONDA], &[]);
     let err = s
-        .create_with(&[Some("q.yaml")], &posix_ctx(&s.jt))
+        .create_with(&[Some("q.yaml")], &template_ctx(&s.jt))
         .unwrap_err();
     assert_errors(
         &err.to_string(),
@@ -762,7 +762,9 @@ fn an_attachments_label_names_its_document_everywhere() {
         &["JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Nope:\n\tEnvironment 'Conda' (q.yaml) declares no parameter 'Nope'. Declared: Packages, Channels."],
     );
     let s = submission(STEPS_FOR_CONDA, &[CONDA], &[]);
-    let applied = s.create_with(&[Some("q.yaml")], &posix_ctx(&s.jt)).unwrap();
+    let applied = s
+        .create_with(&[Some("q.yaml")], &template_ctx(&s.jt))
+        .unwrap();
     let labelled = Document::environment_template(0, Some("q.yaml"));
     assert_eq!(
         applied.environment_documents,
@@ -824,7 +826,7 @@ steps:
         ..Default::default()
     };
     let err = s
-        .create_with(&[], &posix_ctx(&s.jt).with_caller_limits(limits))
+        .create_with(&[], &template_ctx(&s.jt).with_caller_limits(limits))
         .unwrap_err();
     assert_errors(
         &err.to_string(),
@@ -994,7 +996,7 @@ steps:
 "#;
     let s = submission(jt, &[CONDA, CONDA, CONDA], &[]);
     let refs: Vec<Option<&str>> = labels.iter().map(|l| Some(l.as_str())).collect();
-    let err = s.create_with(&refs, &posix_ctx(&s.jt)).unwrap_err();
+    let err = s.create_with(&refs, &template_ctx(&s.jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "Submission",
@@ -1084,7 +1086,7 @@ steps:
     let params = job_params_with(&jt_dec, &[], &envs);
     let attached = [AttachedEnvironmentTemplate::new(&envs[0])];
     let job =
-        create_job_with_environment_templates(&jt_dec, &attached, &params, &posix_ctx(&jt_dec))
+        create_job_with_environment_templates(&jt_dec, &attached, &params, &template_ctx(&jt_dec))
             .unwrap()
             .job;
     assert_eq!(
@@ -1209,7 +1211,7 @@ steps:
 "#;
     let s = submission(jt, &[env, env], &[]);
     let err = s
-        .create_with(&[Some("a.yaml"), Some("b.yaml")], &posix_ctx(&s.jt))
+        .create_with(&[Some("a.yaml"), Some("b.yaml")], &template_ctx(&s.jt))
         .unwrap_err();
     let msg = |doc: &str| {
         format!(
@@ -1224,7 +1226,7 @@ steps:
 }
 
 #[test]
-fn an_external_entry_reads_a_path_let_binding_in_a_posix_submission() {
+fn an_external_entry_reads_a_posix_path_let_binding() {
     // The frozen table keeps the POSIX `let` values.
     let env = r#"
 specificationVersion: environment-2023-09

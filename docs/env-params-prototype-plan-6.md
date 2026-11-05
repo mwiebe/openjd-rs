@@ -82,4 +82,5 @@ Numbered after plan 5's A54.
 * **Plan 4 A48** (a value a document without `EXPR` may not supply is unknown to the `enableIf`) has no case left, and
   neither has the first half of **plan 1 A12** (whose `EXPR` admits a URI PATH value; a value's forms follow the
   document that holds it): every document that holds a value lists `EXPR`. A12's second half, that the caller's
-  `ValidationContext::allow_uri_path_values` decides whether a URI is accepted, still holds.
+  `ValidationContext::allow_uri_path_values` decides whether a URI is accepted, still holds. *Superseded (spec
+  `af53020`): a PATH value is used as given, a URI included, and the field is removed.*

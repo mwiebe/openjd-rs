@@ -990,7 +990,7 @@ pass 6:
 An entry that names no `jobEnvironments` entry names an external Environment, whose
 definitions are unknown until the Job is created, so only the checks above that do not
 need them apply. Job creation keeps such an entry, when enabled, without checking its
-values (it does re-check constraint 3 and the Step `let` bindings the values read), and its
+values (it does re-check constraint 3), and its
 submission stage resolves it against the attached Environment Templates and checks
 constraints 5–7 and its resolved format-string values for it.
 For an entry that names a `jobEnvironments` entry, for every literal Job Environment

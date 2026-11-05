@@ -30,7 +30,7 @@
 //!   (the template-validation decoder, so the messages match);
 //! - a format string resolves in the scope its position allows (§3.2,
 //!   §4.5 item 1), with POSIX semantics, as every TEMPLATE-scope field
-//!   does (§7.3.2, Expression Language §1.2.1). A single `{{ }}`
+//!   does (§7.3.2, §7.4, Expression Language §1.2.1). A single `{{ }}`
 //!   expression evaluates with the parameter's type as its target type;
 //!   any other format string resolves to a string, which converts as
 //!   a submitted Job Parameter value of that type would, with no directory
@@ -782,9 +782,10 @@ fn resolve_value(
             if errors.len() > before {
                 return (None, false);
             }
-            // Format strings are TEMPLATE-scope fields (§7.3.2), so they
-            // evaluate with POSIX semantics, as every other job-creation
-            // field does (Expression Language §1.2.1): path operations
+            // Format strings are TEMPLATE-scope fields, resolved at Job
+            // creation (§7.3.2, §7.4), so they evaluate with POSIX
+            // semantics, as every other job-creation field does
+            // (Expression Language §1.2.1): path operations
             // (`path(RawParam.Dir) / 'sub'`) use POSIX rules on every host.
             let opts = policy.budgets.fs_options();
             let resolved = if fs.segment_count() == 1 {

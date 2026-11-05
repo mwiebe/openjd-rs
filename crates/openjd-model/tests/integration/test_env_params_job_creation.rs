@@ -11,13 +11,12 @@ use openjd_expr::path_mapping::PathFormat;
 use openjd_model::job::{Document, Job};
 use openjd_model::{create_job, ModelError};
 
-use crate::env_params_common::{assert_errors, job_ok, job_params, posix_ctx, rendered_values};
+use crate::env_params_common::{assert_errors, job_ok, job_params, rendered_values, template_ctx};
 
-/// Create the Job with the template's own context (POSIX submission
-/// paths).
+/// Create the Job with the template's own context.
 fn create(jt_src: &str, params: &[(&str, &str)]) -> Result<Job, ModelError> {
     let jt = job_ok(jt_src);
-    create_job(&jt, &job_params(&jt, params), &posix_ctx(&jt))
+    create_job(&jt, &job_params(&jt, params), &template_ctx(&jt))
 }
 
 fn create_ok(jt_src: &str, params: &[(&str, &str)]) -> Job {
@@ -503,6 +502,46 @@ steps:
     );
 }
 
+/// §4.5 item 3 (spec af53020) for a Job Environment's `default`s: an
+/// empty value and a URI, as a literal and as a format string, a Step
+/// takes and no Step takes, are used as given.
+#[test]
+fn a_job_environments_empty_and_uri_defaults_are_used_as_given() {
+    let src = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: LitEmpty, type: PATH, default: ''}
+  - {name: LitUri, type: PATH, default: 's3://b/lit'}
+  - {name: FsEmpty, type: PATH, default: "{{ '' }}"}
+  - {name: FsUri, type: PATH, default: "{{ 's3://b/fs' }}"}
+  - {name: L, type: "LIST[PATH]", default: ['', 's3://b/l']}
+  variables: {V: v}
+steps:
+- name: Takes
+  script: {actions: {onRun: {command: x}}}
+- name: Supplies
+  dependencies: [{environment: E, parameters: {LitEmpty: /a, LitUri: /b, FsEmpty: /c, FsUri: /d, L: [/e]}}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+    let job = create_ok(src, &[]);
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [
+            r#"JobTemplate/E: FsEmpty=path:, FsUri=path:s3://b/fs, L=list[path]:["","s3://b/l"], LitEmpty=path:, LitUri=path:s3://b/lit"#
+        ]
+    );
+    assert_eq!(
+        rendered_values(&job.steps[1]),
+        [
+            r#"JobTemplate/E: FsEmpty=path:/c, FsUri=path:/d, L=list[path]:["/e"], LitEmpty=path:/a, LitUri=path:/b"#
+        ]
+    );
+}
+
 /// Expression Language §1.2.1: TEMPLATE-scope fields (§7.3.2) evaluate
 /// with POSIX semantics, so a Job Environment's format-string `default`
 /// joins paths with `/`, a Windows drive path included.
@@ -631,7 +670,7 @@ fn a_single_expression_string_result_is_the_value_as_written() {
         let jt = job_ok(&RAW.replace("LITERAL", &lit));
         let params = params_in_with(&jt, &[("Dir", dir)], &[("Mounts", mounts)], format);
         let job =
-            create_job(&jt, &params, &posix_ctx(&jt)).unwrap_or_else(|e| panic!("{dir}: {e}"));
+            create_job(&jt, &params, &template_ctx(&jt)).unwrap_or_else(|e| panic!("{dir}: {e}"));
         assert_eq!(
             rendered_values(&job.steps[0]),
             [format!(
@@ -710,7 +749,7 @@ fn a_path_expression_evaluates_with_posix_semantics() {
         let job = create_job(
             &jt,
             &params_in(&jt, &[("Dir", dir)], format),
-            &posix_ctx(&jt),
+            &template_ctx(&jt),
         )
         .unwrap_or_else(|e| panic!("{dir}: {e}"));
         assert_eq!(rendered_values(&job.steps[0]), [expected], "{dir}");
@@ -795,7 +834,7 @@ environment:
         &jt,
         &attached,
         &params,
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .unwrap_or_else(|e| panic!("job creation failed:\n{e}"));
     assert_eq!(
@@ -1009,7 +1048,7 @@ steps:
     let map = &mut deps[0].parameters.as_mut().unwrap().0;
     let need = map.remove("Need").unwrap();
     map.insert("Other".to_string(), need);
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
+    let err = create_job(&jt, &params, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
@@ -1103,7 +1142,7 @@ steps:
     );
     let params = job_params(&jt, &[]);
     jt.job_environments.as_mut().unwrap()[0].env_parameter_definitions = None;
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
+    let err = create_job(&jt, &params, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
@@ -1141,7 +1180,7 @@ steps:
         ))
         .unwrap(),
     );
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
+    let err = create_job(&jt, &params, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
@@ -1173,7 +1212,7 @@ steps:
             .unwrap(),
     );
     envs.push(second);
-    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
+    let job = create_job(&jt, &params, &template_ctx(&jt)).unwrap();
     assert_eq!(
         rendered_values(&job.steps[0]),
         ["JobTemplate/E: X=string:first"]
@@ -1396,7 +1435,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let jt = job_ok(src);
-    let ctx = posix_ctx(&jt);
+    let ctx = template_ctx(&jt);
     let err = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap_err();
     // `{{Param.D}} ` is the string 'C:/a/b ', which is not allowed.
     assert_errors(
@@ -1499,7 +1538,7 @@ steps:
     deps.push(x);
     // The duplicates are §7.4.1 step 2 errors; the first Ext entry is still
     // resolved, in step 3, and names no Environment.
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
+    let err = create_job(&jt, &params, &template_ctx(&jt)).unwrap_err();
     assert_eq!(
         err.to_string(),
         "Model validation error: 3 validation errors for JobTemplate\n\

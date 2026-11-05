@@ -24,7 +24,7 @@ use openjd_model::{
 };
 
 use crate::env_params_common::{
-    assert_errors, env_err, env_ok, job_err, job_ok, job_params_with, posix_ctx, rendered_values,
+    assert_errors, env_err, env_ok, job_err, job_ok, job_params_with, rendered_values, template_ctx,
 };
 
 const NOT_FIT_INT: &str = "the integer scalar 1 does not fit type bool: an expression field of \
@@ -42,7 +42,7 @@ fn create(
     let values = job_params_with(&jt, params, &envs);
     let attached: Vec<AttachedEnvironmentTemplate<'_>> =
         envs.iter().map(AttachedEnvironmentTemplate::new).collect();
-    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+    create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt))
 }
 
 fn create_ok(jt_src: &str, env_srcs: &[&str], params: &[(&str, &str)]) -> CreatedJob {
@@ -1013,7 +1013,7 @@ fn check_environment_templates_counts_only_certainly_entered_layers() {
         check_environment_templates(
             &jt,
             &[AttachedEnvironmentTemplate::new(&env)],
-            &posix_ctx(&jt),
+            &template_ctx(&jt),
         )
         .map_err(|e| e.to_string())
     };
@@ -1052,7 +1052,7 @@ fn check_environment_templates_skips_a_disabled_environments_literal_requirement
             check_environment_templates(
                 &jt,
                 &[AttachedEnvironmentTemplate::new(&e)],
-                &posix_ctx(&jt)
+                &template_ctx(&jt)
             )
             .is_ok(),
             "{enable_if}"
@@ -1062,7 +1062,7 @@ fn check_environment_templates_skips_a_disabled_environments_literal_requirement
     let err = check_environment_templates(
         &jt,
         &[AttachedEnvironmentTemplate::new(&e)],
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .unwrap_err();
     assert_errors(
@@ -1080,7 +1080,7 @@ fn check_environment_templates_skips_a_disabled_environments_literal_requirement
         &jt,
         &[AttachedEnvironmentTemplate::new(&e)],
         &values,
-        &posix_ctx(&jt),
+        &template_ctx(&jt),
     )
     .unwrap();
     assert_eq!(created.job.steps[0].environments, Some(vec![]));
@@ -1127,7 +1127,7 @@ fn check_environment_templates_skips_disabled_job_and_step_environment_layers() 
         check_environment_templates(
             jt,
             &[AttachedEnvironmentTemplate::new(&att)],
-            &posix_ctx(jt),
+            &template_ctx(jt),
         )
         .map_err(|e| e.to_string())
     };
@@ -1173,7 +1173,7 @@ fn check_environment_templates_skips_a_disabled_job_environments_literal_require
         check_environment_templates(
             jt,
             &[AttachedEnvironmentTemplate::new(&att)],
-            &posix_ctx(jt),
+            &template_ctx(jt),
         )
         .map_err(|e| e.to_string())
     };
@@ -1334,7 +1334,7 @@ fn constraint_7_for_an_attachment_follows_its_enable_if() {
         let checked = check_environment_templates(
             &jt,
             &[AttachedEnvironmentTemplate::new(&e)],
-            &posix_ctx(&jt),
+            &template_ctx(&jt),
         );
         match enable_if {
             "true" | "\"Env.Param.P != ''\"" => {
@@ -1415,7 +1415,7 @@ fn a_job_environments_enable_if_runs_under_the_caller_budgets() {
          steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
     );
     let values = job_params_with(&jt, &[], &[]);
-    let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+    let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
         max_eval_operations: Some(50),
         ..Default::default()
     });
@@ -1430,7 +1430,7 @@ fn a_job_environments_enable_if_runs_under_the_caller_budgets() {
     );
     // With the default budgets it evaluates.
     let created =
-        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap();
+        create_job_with_environment_templates(&jt, &[], &values, &template_ctx(&jt)).unwrap();
     assert_eq!(created.job.steps[0].environments, None);
 }
 
@@ -1469,7 +1469,7 @@ fn a_certain_single_layer_violation_is_reported_before_job_creation() {
             AttachedEnvironmentTemplate::new(&att),
             AttachedEnvironmentTemplate::new(&maybe),
         ],
-        &posix_ctx(&own),
+        &template_ctx(&own),
     )
     .unwrap_err();
     assert_errors(
@@ -1494,7 +1494,7 @@ fn a_certain_single_layer_violation_is_reported_before_job_creation() {
                 AttachedEnvironmentTemplate::new(&one),
                 AttachedEnvironmentTemplate::new(&maybe),
             ],
-            &posix_ctx(&own),
+            &template_ctx(&own),
         )
         .map_err(|e| e.to_string()),
         Ok(vec![])
@@ -1595,7 +1595,7 @@ fn check_environment_templates_ignores_an_on_request_environment_a_disabled_entr
         check_environment_templates(
             &wrap,
             &[AttachedEnvironmentTemplate::new(&att)],
-            &posix_ctx(&wrap)
+            &template_ctx(&wrap)
         )
         .map_err(|e| e.to_string()),
         Ok(vec![])
@@ -1616,7 +1616,7 @@ fn check_environment_templates_ignores_an_on_request_environment_a_disabled_entr
         check_environment_templates(
             &gpu,
             &[AttachedEnvironmentTemplate::new(&other)],
-            &posix_ctx(&gpu)
+            &template_ctx(&gpu)
         )
         .map_err(|e| e.to_string()),
         Ok(vec![])
@@ -1632,7 +1632,7 @@ fn a_job_environments_enable_if_runs_under_the_caller_memory_budget() {
          steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
     );
     let values = job_params_with(&jt, &[], &[]);
-    let ctx = posix_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
+    let ctx = template_ctx(&jt).with_caller_limits(openjd_model::CallerLimits {
         max_eval_memory_bytes: Some(2000),
         ..Default::default()
     });
@@ -1692,7 +1692,7 @@ fn an_entry_whose_enable_if_fails_is_one_error() {
     );
     let values = job_params_with(&jt, &[], &[]);
     let err =
-        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap_err();
+        create_job_with_environment_templates(&jt, &[], &values, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
@@ -1724,7 +1724,7 @@ fn a_duplicate_entrys_values_are_ignored() {
     .unwrap();
     std::mem::swap(&mut deps[1], &mut bad);
     let err =
-        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap_err();
+        create_job_with_environment_templates(&jt, &[], &values, &template_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
