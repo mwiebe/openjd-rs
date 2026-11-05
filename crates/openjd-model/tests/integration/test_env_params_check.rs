@@ -399,7 +399,10 @@ fn an_attachments_uri_default_is_used_as_given() {
         "specificationVersion: jobtemplate-2023-09\nname: J\n\
          steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
     );
-    check_ok_and_apply_ok(&jt, &[env_ok(env)]);
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+        [["EnvironmentTemplate[0]/Data: Where=path:s3://bucket/key"]]
+    );
 }
 
 #[test]

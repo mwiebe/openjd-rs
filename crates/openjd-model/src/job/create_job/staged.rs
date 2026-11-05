@@ -143,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn a_step_is_stopped_by_an_error_of_steps_1_to_4_only() {
+    fn a_step_is_stopped_by_an_error_of_steps_2_to_4_only() {
         let mut staged = StagedErrors::default();
         staged.at(Stage::Validation, 0, 0).add(&[], "v");
         staged.at(Stage::Step5, 0, 0).add(&[], "5");

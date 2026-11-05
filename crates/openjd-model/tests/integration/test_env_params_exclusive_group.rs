@@ -1203,7 +1203,7 @@ fn check_accepts_a_grouped_list_path_value_of_any_form() {
         .replace("{name: D, type: PATH}", "{name: D, type: \"LIST[PATH]\"}")
         .replace(
             "D: 'X'",
-            r"D: ['C:\x', '/y', '\\srv\s', 'rel', 'C:z', '\w']",
+            r"D: ['C:\x', '/y', '\\srv\s', 'rel', 'C:z', '\w', '', 's3://b/k']",
         );
     check(&src, &[]).unwrap();
     create_with(&src, &[], |c| c).unwrap();
@@ -1213,9 +1213,9 @@ fn check_accepts_a_grouped_list_path_value_of_any_form() {
 fn check_applies_the_value_checks_to_a_grouped_job_environment() {
     // As job creation does: the definition's constraints and the caller's
     // limits, and the error at the entry's own index. No form of PATH value
-    // is an error (§4.5 item 3): a relative path, a drive-relative one and
-    // a URI pass both.
-    for value in ["relative/x", "C:x", "s3://bucket/key", r"C:\x"] {
+    // is an error (§4.5 item 3): a relative path, a drive-relative one, an
+    // empty one and a URI pass both.
+    for value in ["relative/x", "C:x", "s3://bucket/key", r"C:\x", ""] {
         check(&grouped_path(value), &[]).unwrap_or_else(|e| panic!("{value}: {e}"));
         create_with(&grouped_path(value), &[], |c| c).unwrap_or_else(|e| panic!("{value}: {e}"));
     }
