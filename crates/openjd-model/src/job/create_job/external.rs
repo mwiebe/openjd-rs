@@ -1530,7 +1530,10 @@ fn certainly_entered_per_step(
 /// checked by template validation and are not checked again.
 ///
 /// `ctx` supplies the caller limits and the submission path policy, as for
-/// job creation; its profile is not read.
+/// job creation; its profile is not read. Of the path policy only
+/// `allow_uri_path_values` affects the result, since nothing checked here
+/// is evaluated in `submission_path_format` and the PATH check reads no
+/// format (§4.5 item 3).
 ///
 /// Returns the warnings, or one `ModelValidation` error holding every
 /// violation, shaped as job creation's is: for `Submission`, with every

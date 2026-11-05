@@ -779,7 +779,7 @@ async fn a_value_that_does_not_decode_is_rejected() {
     );
 }
 
-/// A PATH value is stored as written (plan A22), so a Windows path value
+/// A PATH value is stored as resolved (plan A22), so a Windows path value
 /// reaches a POSIX worker unchanged: mapped by a WINDOWS-source rule in
 /// `Env.Param`, unchanged in `Env.RawParam`.
 #[tokio::test]
