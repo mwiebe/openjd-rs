@@ -456,6 +456,43 @@ fn a_path_absolute_in_any_format_is_accepted_in_every_submission_path_format() {
     }
 }
 
+/// §4.5 item 3, for a Job Environment's literal `default`s: one a Step
+/// takes and one no Step takes, each absolute in only one path format, are
+/// accepted in every submission path format.
+#[test]
+fn a_job_environment_literal_default_absolute_in_any_format_is_accepted() {
+    let jt = job_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: Taken, type: PATH, default: 'C:\tools'}
+  - {name: Unused, type: PATH, default: '\\srv\share'}
+  - {name: Posix, type: PATH, default: '/opt/tool'}
+  variables: {V: v}
+steps:
+- name: S
+  dependencies: [{environment: E, parameters: {Unused: /u}}]
+  script: {actions: {onRun: {command: x}}}
+"#,
+    );
+    for format in FORMATS {
+        let ctx = jt
+            .default_validation_context()
+            .with_submission_path_format(format);
+        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
+            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        assert_eq!(
+            rendered_values(&job.steps[0]),
+            [r"JobTemplate/E: Posix=path:/opt/tool, Taken=path:C:\tools, Unused=path:/u"],
+            "{format:?}"
+        );
+    }
+}
+
 /// §4.5 item 3: each LIST[PATH] element is checked on its own, so a list
 /// that mixes POSIX, Windows drive and UNC paths is accepted.
 #[test]

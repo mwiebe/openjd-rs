@@ -551,7 +551,8 @@ Not prototype work; recorded so the RFC author can decide.
 * **`enableIf` is evaluated in TEMPLATE scope, not host context (PR 4).** Every `enableIf` (an `environment:` entry's,
   and a Job, Step, or attached Environment's) resolves with POSIX paths, whatever the submission path format, and
   reads `let` bindings with the values job creation computed; only an entry's parameter values follow the
-  submission path format (§4.5). The spec could say so in §3.2 item 5 and §4 item 6 (or in §7.5 for every expression
+  submission path format (an implementation choice; since spec `2892d96`, §4.5 no longer names a submission path
+  format). The spec could say so in §3.2 item 5 and §4 item 6 (or in §7.5 for every expression
   field resolved at job creation).
 * **ExprLang §1.2.2 still disagrees with Schemas §7.3.1** (plan 2): "every template can also read" `Job.EnvNames`,
   "in entry order", without §7.3.1's exclusions or its order wording. The delta did not touch that row.
