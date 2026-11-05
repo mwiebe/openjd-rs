@@ -733,8 +733,9 @@ pub fn create_job_with_map(
     // requires the context's revision/extensions to cover the
     // template's — layering on the caller-supplied limits and the same
     // path policy the Job Parameters were resolved with, so Environment
-    // parameter PATH values (ENV_PARAMS) are checked against the
-    // caller's path format rather than wasm32's POSIX host default.
+    // parameter format strings (ENV_PARAMS) evaluate in the caller's path
+    // format rather than wasm32's POSIX host default, and the caller's URI
+    // policy applies to their PATH values.
     let ctx = template
         .inner
         .default_validation_context()

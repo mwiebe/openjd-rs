@@ -1212,6 +1212,9 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
         "JobTemplate",
         &[&not_absolute("relative/x")],
     );
+    // `check` makes no evaluation that reads the submission path format,
+    // so neither result below depends on it: `C:\x` passes and `C:x`
+    // fails in POSIX and in WINDOWS alike, as at job creation.
     let windows = |c: ValidationContext| {
         c.with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows)
     };
@@ -1219,8 +1222,13 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     create_with(&grouped_path("C:\\x"), &[], windows).unwrap();
     check(&grouped_path("C:\\x"), &[]).unwrap();
     create_with(&grouped_path("C:\\x"), &[], |c| c).unwrap();
-    let err = check_with(&grouped_path("C:x"), &[], windows).expect_err("expected check to fail");
-    assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:x")]);
+    for err in [
+        check(&grouped_path("C:x"), &[]),
+        check_with(&grouped_path("C:x"), &[], windows),
+    ] {
+        let err = err.expect_err("expected check to fail");
+        assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:x")]);
+    }
     let uri = |c: ValidationContext| c.with_allow_uri_path_values(true);
     check_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
     create_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();

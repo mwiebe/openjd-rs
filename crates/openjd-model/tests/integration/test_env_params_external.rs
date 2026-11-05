@@ -1030,9 +1030,10 @@ fn attaching_by_from_has_no_label() {
 
 #[test]
 fn path_operations_follow_the_submission_path_format() {
-    // §4.5: PATH values are in the submission path format, so with a
-    // Windows submission `path(...) / 'sub'` and `.parent` use Windows
-    // rules, in a default and in an external entry's value alike.
+    // Environment parameter format strings evaluate in the submission
+    // path format, so with a Windows submission `path(...) / 'sub'` and
+    // `.parent` use Windows rules, in a default and in an external entry's
+    // value alike.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]

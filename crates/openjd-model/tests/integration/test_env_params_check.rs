@@ -11,6 +11,7 @@
 //! `create_job_with_environment_templates` reports for the same submission,
 //! so `openjd check --environment` and `openjd run` give the same messages.
 
+use openjd_expr::path_mapping::PathFormat;
 use openjd_model::template::{EnvironmentTemplate, JobTemplate};
 use openjd_model::{
     check_environment_templates, create_job_with_environment_templates,
@@ -1335,4 +1336,40 @@ fn the_sample_docker_requirements_combine_per_step() {
             "amount.worker.gpu"
         )]
     );
+}
+
+/// §4.5 item 3 (spec 2892d96), for an attached Environment Template:
+/// `check_environment_templates` and job creation accept, in every
+/// submission path format, a literal `default` a Step takes, a literal
+/// `default` no Step takes, and a Step's literal entry value, each
+/// absolute in some path format but not every one.
+#[test]
+fn an_attachments_paths_absolute_in_any_format_pass_check_and_job_creation() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: Taken, type: PATH, default: 'C:\tools'}
+  - {name: Unused, type: PATH, default: '\\srv\share'}
+  - {name: Supplied, type: PATH}
+  variables: {D: "{{Env.Param.Taken}}"}
+"#;
+    for (unused, supplied) in [("/opt/u", r"C:\x"), (r"D:/u", "/x")] {
+        let jt = job_ok(&steps_naming(
+            "E",
+            true,
+            &format!("{{Unused: '{unused}', Supplied: '{supplied}'}}"),
+        ));
+        let envs = [env_ok(env)];
+        let values = job_params_with(&jt, &[], &envs);
+        for format in [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri] {
+            let ctx = posix_ctx(&jt).with_submission_path_format(format);
+            check_environment_templates(&jt, &attach(&envs), &ctx)
+                .unwrap_or_else(|e| panic!("check in {format:?}: {e}"));
+            create_job_with_environment_templates(&jt, &attach(&envs), &values, &ctx)
+                .unwrap_or_else(|e| panic!("create in {format:?}: {e}"));
+        }
+    }
 }
