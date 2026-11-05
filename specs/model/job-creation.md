@@ -33,8 +33,9 @@ and its source template.
 - `maxLength`/`maxValue`: takes the minimum (most restrictive)
 - PATH-specific: `objectType` and `dataFlow` must be identical across definitions
 - Default value: last template to define one wins
-- RANGE_EXPR `minLength`/`maxLength`: each document's extensions apply to its own definitions
-  (Template Schemas §1.2 item 3). Every definition's lengths constrain the value as written; only
+- RANGE_EXPR `minLength`/`maxLength`: each definition's lengths keep the rule of the document that
+  contains it (Template Schemas §1.2.1 and §2.10, which state it since spec `c12a76e`; before, it
+  followed from §1.2 item 3). Every definition's lengths constrain the value as written; only
   the definitions whose document lists `ENV_PARAMS` constrain its canonical form (§2.10). The
   merge keeps these as two pairs of bounds, so a value is accepted exactly when it satisfies every
   definition under its own document's rule. With an EXPR-only Job Template declaring

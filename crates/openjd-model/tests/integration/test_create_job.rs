@@ -3952,8 +3952,9 @@ fn test_preprocess_range_expr_merged_default_length_as_written_without_env_param
 
 #[test]
 fn test_preprocess_range_expr_merged_length_follows_each_documents_extensions() {
-    // Each document's extensions apply to its own parameter definitions
-    // (Template Schemas §1.2 item 3), so a merged RANGE_EXPR value is
+    // Each definition's minLength and maxLength keep the rule of the
+    // document that contains it (Template Schemas §1.2.1, §2.10; conformance
+    // ENV_PARAMS JB-155, JB-156), so a merged RANGE_EXPR value is
     // checked in canonical form against the minLength and maxLength of the
     // definitions whose document lists ENV_PARAMS, and as written against
     // every definition's (§2.10, §1.2.1). "1-3:2" is 5 characters, and its
