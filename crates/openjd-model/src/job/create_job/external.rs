@@ -603,8 +603,8 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// far. `env_names` is the Job's `Job.EnvNames`, bound for attached
 /// Environments whose document lists `EXPR`. `attached` is in the
 /// scheduler's order. `job_parameter_values` are the merged values. `ctx`
-/// supplies the caller limits, applied to every document; its profile is
-/// not read. Each attached template is
+/// supplies the caller limits, applied to every document, and the Job
+/// Template's profile, for its own Environments. Each attached template is
 /// evaluated under its own profile ([`EnvironmentTemplate::profile`]): an
 /// extension applies to the document that lists it.
 ///
@@ -1526,8 +1526,8 @@ fn certainly_entered_per_step(
 /// ungrouped `jobEnvironments` entry were
 /// checked by template validation and are not checked again.
 ///
-/// `ctx` supplies the caller limits, as for job creation; its profile is
-/// not read.
+/// `ctx` supplies the caller limits, as for job creation; the attachments
+/// are checked under their own profiles.
 ///
 /// Returns the warnings, or one `ModelValidation` error holding every
 /// violation, shaped as job creation's is: for `Submission`, with every

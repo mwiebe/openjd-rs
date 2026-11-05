@@ -3896,11 +3896,11 @@ steps:
         );
     }
 
-    /// `summary` creates the Job with `common::submission_context`, which
-    /// carries the CLI's caller limits: an argument that only the Job
+    /// `summary` and `run` create the Job with `common::submission_context`,
+    /// which carries the CLI's caller limits: an argument that only the Job
     /// Parameter values make too long is rejected at job creation.
     #[test]
-    fn summary_applies_the_cli_caller_limits_at_job_creation() {
+    fn summary_and_run_apply_the_cli_caller_limits_at_job_creation() {
         let mut f = NamedTempFile::with_suffix(".yaml").unwrap();
         write!(
             f,
@@ -3930,6 +3930,13 @@ steps:
         );
         let (code, _stdout, stderr) = run_cli(&["summary", path, "-p", "N=4"]);
         assert_eq!(code, 0, "{stderr}");
+        let (code, stdout, stderr) = run_cli(&["run", path, "-p", "N=40000"]);
+        assert_ne!(code, 0, "over-cap arg must fail run");
+        assert!(
+            stderr.contains(&expected),
+            "expected {expected:?} in stderr:\n{stderr}\nstdout:\n{stdout}"
+        );
+        assert!(!stdout.contains("Session start"), "{stdout}");
     }
 
     #[test]

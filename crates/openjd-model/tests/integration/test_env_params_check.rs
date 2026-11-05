@@ -1455,3 +1455,58 @@ environment:
         ]]
     );
 }
+
+/// Rules 1 and 2 at the attached sites. A single expression's string or
+/// `list[string]` result is the text as written (a non-POSIX conversion
+/// would turn `/` into `\`); literal LIST[PATH] elements of any form are
+/// used as given; and the path operations inside a multi-segment value
+/// have POSIX semantics. Each holds for an attached `default` and for a
+/// Step's entry value, which the submission stage resolves from the
+/// frozen Step scope.
+#[test]
+fn an_attachments_values_are_the_text_as_written_with_posix_path_operations() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: E
+  envParameterDefinitions:
+  - {name: DefP, type: PATH, default: "{{ '/d/p' }}"}
+  - {name: DefL, type: "LIST[PATH]", default: "{{ ['/d/l', 'C:/x'] }}"}
+  - {name: DefLit, type: "LIST[PATH]", default: ['', 's3://b/d', 'rel/d']}
+  - {name: DefMulti, type: PATH, default: "{{ path('C:/d') / 'e' }}/f"}
+  - {name: EntP, type: PATH}
+  - {name: EntL, type: "LIST[PATH]"}
+  - {name: EntLit, type: "LIST[PATH]"}
+  - {name: EntMulti, type: PATH}
+  variables: {D: "{{Env.Param.DefP}}"}
+"#;
+    for dir in ["/r/dir", r"C:\x", "C:/y", r"\\server\share"] {
+        let jt = job_ok(&format!(
+            r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{{name: Dir, type: STRING, default: '{dir}'}}]
+steps:
+- name: S
+  dependencies:
+  - environment: E
+    parameters:
+      EntP: "{{{{ Param.Dir }}}}"
+      EntL: "{{{{ [Param.Dir, 'rel/l'] }}}}"
+      EntLit: ['', 's3://b/e', 'rel/e']
+      EntMulti: "{{{{ path('C:/a') / 'b' }}}}/x"
+  script: {{actions: {{onRun: {{command: x}}}}}}
+"#
+        ));
+        let json = serde_json::to_string(dir).unwrap();
+        assert_eq!(
+            check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+            [[format!(
+                r#"EnvironmentTemplate[0]/E: DefL=list[path]:["/d/l","C:/x"], DefLit=list[path]:["","s3://b/d","rel/d"], DefMulti=path:C:/d/e/f, DefP=path:/d/p, EntL=list[path]:[{json},"rel/l"], EntLit=list[path]:["","s3://b/e","rel/e"], EntMulti=path:C:/a/b/x, EntP=path:{dir}"#
+            )]],
+            "{dir}"
+        );
+    }
+}
