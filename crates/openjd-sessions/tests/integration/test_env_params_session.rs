@@ -57,7 +57,6 @@ fn environment_template(s: &str) -> EnvironmentTemplate {
 
 fn ctx(jt: &JobTemplate) -> ValidationContext {
     jt.default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Posix)
 }
 
 fn job_parameters(jt: &JobTemplate, envs: &[EnvironmentTemplate]) -> JobParameterValues {

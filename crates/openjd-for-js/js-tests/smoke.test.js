@@ -629,6 +629,50 @@ describe("createJob", () => {
     template.free();
   });
 
+  it("uses ENV_PARAMS PATH values as given, with POSIX path operations", () => {
+    // Template Schemas §4.5 item 3 (spec af53020): a PATH value need not
+    // be absolute, and Environment parameter format strings evaluate with
+    // POSIX semantics (Expression Language §1.2.1), whatever pathFormat is.
+    const doc = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["ENV_PARAMS", "EXPR"],
+      name: "J",
+      jobEnvironments: [
+        {
+          name: "E",
+          envParameterDefinitions: [
+            { name: "Rel", type: "PATH", default: "tools\\bin" },
+            { name: "Joined", type: "PATH", default: "{{ path('C:/a') / 'b' }}" },
+            { name: "Mixed", type: "LIST[PATH]", default: ["/x", "C:y", "\\z"] },
+          ],
+          variables: { V: "{{Env.Param.Rel}}" },
+        },
+      ],
+      steps: [{ name: "S", script: { actions: { onRun: { command: "x" } } } }],
+    });
+    const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json, undefined, [
+      "ENV_PARAMS",
+      "EXPR",
+    ]);
+    for (const [format, dir, cwd] of [
+      [mod.PathFormat.Posix, "/tmpl", "/cwd"],
+      [mod.PathFormat.Windows, "C:\\tmpl", "C:\\cwd"],
+    ]) {
+      const opts = new mod.PathParameterOptions(dir, cwd);
+      opts.pathFormat = format;
+      const job = mod.createJob(template, {}, opts);
+      const [entry] = job.toJSON().steps[0].environmentParameters;
+      expect(entry.values.map((e) => Object.fromEntries(e))).toEqual([
+        { name: "Joined", type: "path", value: "C:/a/b" },
+        { name: "Mixed", type: "list[path]", value: ["/x", "C:y", "\\z"] },
+        { name: "Rel", type: "path", value: "tools\\bin" },
+      ]);
+      job.free();
+      opts.free();
+    }
+    template.free();
+  });
+
   it("decodes ENV_PARAMS activation, hostRequirements, and enableIf", () => {
     const doc = JSON.stringify(ENV_PARAMS_JOB);
     const template = mod.decodeJobTemplate(doc, mod.DocumentType.Json);

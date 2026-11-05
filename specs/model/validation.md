@@ -374,8 +374,8 @@ supplies the parameter (prototype plan A17). Static evaluation folds constant
 sub-expressions, as it does for every other EXPR-typed field (an action `timeout` of
 `{{ 'abc' }}` fails the same way), so a constant expression whose value cannot convert
 (`{{ 'abc' }}` for an INT) is also an error here. A value check that depends on what an
-expression reads (a `Param.*` string that does not parse as an INT, a constraint, PATH
-absoluteness) is left to job creation. The target type is known for a `default` and for an entry that names a
+expression reads (a `Param.*` string that does not parse as an INT, a constraint) is left
+to job creation. The target type is known for a `default` and for an entry that names a
 `jobEnvironments` entry. An entry for an external Environment is checked with no target
 type, since its definitions are not known until the Job is created; so is an entry for a
 `jobEnvironments` entry whose own `enableIf` is not absent or `true`, since a Step's values
@@ -876,10 +876,9 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   `default` must be a string and an INT one an integer or `<intstring>`), coerces it with
   `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
   `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
-  Job Parameter `default`), and calls `check_constraints` with `AsWrittenAndCanonical`. Absoluteness of a
-  PATH value is left to job creation, the stage the RFC's error table gives it, although it no
-  longer depends on the submission path format (§4.5 item 3, spec `2892d96`): a relative literal
-  `default` is rejected there, even when every Step supplies the parameter. An
+  Job Parameter `default`), and calls `check_constraints` with `AsWrittenAndCanonical`. A PATH
+  value of any form, a relative literal `default` included, is used as given at every stage
+  (§4.5 item 3 at spec `af53020`). An
   object or `null`, at any depth, is rejected; so is a list element containing `{{`
   (plan A14: list-literal elements are literals).
 - A format-string `default` of a list type must be a single `{{ }}` expression (§4.5
@@ -993,7 +992,7 @@ definitions are unknown until the Job is created, so only the checks above that 
 need them apply. Job creation keeps such an entry, when enabled, without checking its
 values (it does re-check constraint 3 and the Step `let` bindings the values read), and its
 submission stage resolves it against the attached Environment Templates and checks
-constraints 5–7, its resolved format-string values, and PATH absoluteness for it.
+constraints 5–7 and its resolved format-string values for it.
 For an entry that names a `jobEnvironments` entry, for every literal Job Environment
 `default`, and for every non-literal one a Step takes, `create_job` makes those checks (see
 [job-creation.md](job-creation.md#environment-parameter-values-env_params)).

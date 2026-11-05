@@ -1194,81 +1194,40 @@ fn grouped_path(value: &str) -> String {
     )
 }
 
-/// §4.5 item 3 for a grouped Job Environment's LIST[PATH] literal value
-/// under `check_environment_templates`: elements absolute in some path
-/// format pass in every submission path format, and a relative one fails.
+/// §4.5 item 3 (spec af53020) for a grouped Job Environment's LIST[PATH]
+/// literal value under `check_environment_templates`: elements of any
+/// form, relative ones included, pass, as at job creation.
 #[test]
-fn check_accepts_a_grouped_list_path_value_absolute_in_any_format() {
-    let grouped_list = |value: &str| {
-        grouped_path("X")
-            .replace("{name: D, type: PATH}", "{name: D, type: \"LIST[PATH]\"}")
-            .replace("D: 'X'", &format!("D: {value}"))
-    };
-    for format in [
-        openjd_expr::path_mapping::PathFormat::Posix,
-        openjd_expr::path_mapping::PathFormat::Windows,
-        openjd_expr::path_mapping::PathFormat::Uri,
-    ] {
-        let fmt = |c: ValidationContext| c.with_submission_path_format(format);
-        check_with(&grouped_list(r"['C:\x', '/y', '\\srv\s']"), &[], fmt)
-            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
-        let err = check_with(&grouped_list("['/y', 'rel']"), &[], fmt)
-            .expect_err("expected check to fail");
-        assert_errors(
-            &err.to_string(),
-            "JobTemplate",
-            &[&not_absolute("rel").replace("\n\tmust", "\n\titem[1] must")],
+fn check_accepts_a_grouped_list_path_value_of_any_form() {
+    let src = grouped_path("X")
+        .replace("{name: D, type: PATH}", "{name: D, type: \"LIST[PATH]\"}")
+        .replace(
+            "D: 'X'",
+            r"D: ['C:\x', '/y', '\\srv\s', 'rel', 'C:z', '\w']",
         );
-    }
+    check(&src, &[]).unwrap();
+    create_with(&src, &[], |c| c).unwrap();
 }
 
 #[test]
-fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
-    // As job creation does: URI values and the caller's limits, and the
-    // error at the entry's own index. A PATH value absolute in any path
-    // format passes whatever the submission path format (§4.5 item 3).
-    let relative = grouped_path("relative/x");
-    let err = check(&relative, &[]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[&not_absolute("relative/x")],
-    );
-    create_err(
-        &relative,
-        &[],
-        "JobTemplate",
-        &[&not_absolute("relative/x")],
-    );
-    // `check` makes no evaluation that reads the submission path format,
-    // so neither result below depends on it: `C:\x` passes and `C:x`
-    // fails in POSIX and in WINDOWS alike, as at job creation.
-    let windows = |c: ValidationContext| {
-        c.with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows)
-    };
-    check_with(&grouped_path("C:\\x"), &[], windows).unwrap();
-    create_with(&grouped_path("C:\\x"), &[], windows).unwrap();
-    check(&grouped_path("C:\\x"), &[]).unwrap();
-    create_with(&grouped_path("C:\\x"), &[], |c| c).unwrap();
-    for err in [
-        check(&grouped_path("C:x"), &[]),
-        check_with(&grouped_path("C:x"), &[], windows),
-    ] {
-        let err = err.expect_err("expected check to fail");
-        assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:x")]);
+fn check_applies_the_value_checks_to_a_grouped_job_environment() {
+    // As job creation does: the definition's constraints and the caller's
+    // limits, and the error at the entry's own index. No form of PATH value
+    // is an error (§4.5 item 3): a relative path, a drive-relative one and
+    // a URI pass both.
+    for value in ["relative/x", "C:x", "s3://bucket/key", r"C:\x"] {
+        check(&grouped_path(value), &[]).unwrap_or_else(|e| panic!("{value}: {e}"));
+        create_with(&grouped_path(value), &[], |c| c).unwrap_or_else(|e| panic!("{value}: {e}"));
     }
-    let uri = |c: ValidationContext| c.with_allow_uri_path_values(true);
-    check_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
-    create_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
-    let err = check(&grouped_path("s3://bucket/key"), &[]).expect_err("expected check to fail");
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[
-            "steps[0] -> dependencies[1] -> parameters -> D:\n\tis a URI \
-           ('s3://bucket/key'), and URI path values are not permitted for this submission.",
-        ],
+    let constrained = grouped_path("relative/x").replace(
+        "{name: D, type: PATH}",
+        "{name: D, type: PATH, allowedValues: [/ok]}",
     );
+    let not_allowed = "steps[0] -> dependencies[1] -> parameters -> D:\n\tParameter 'D': value \
+                       'relative/x' is not in allowed values";
+    let err = check(&constrained, &[]).expect_err("expected check to fail");
+    assert_errors(&err.to_string(), "JobTemplate", &[not_allowed]);
+    create_err(&constrained, &[], "JobTemplate", &[not_allowed]);
     // An enableIf whose evaluation exceeds the caller's limit is not
     // certainly unresolved, so J is not known to be entered.
     let jt = format!(
@@ -1292,14 +1251,6 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
             missing("steps[0]", true, "'J'").trim_end_matches('.')
         )],
     );
-}
-
-/// The error for a PATH value `value` of J's `D` that is absolute in no
-/// path format.
-fn not_absolute(value: &str) -> String {
-    format!(
-        "steps[0] -> dependencies[1] -> parameters -> D:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{value}'."
-    )
 }
 
 // ── Audit round 3 ──────────────────────────────────────────────────

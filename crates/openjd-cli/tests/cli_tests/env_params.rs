@@ -786,7 +786,8 @@ fn check_with_environments_reports_a_job_parameter_conflict() {
 }
 
 #[test]
-fn check_with_environments_allows_uri_path_values_as_run_does() {
+fn check_and_run_use_a_uri_path_value_as_given() {
+    // A URI is one more form of PATH value (Template Schemas §4.5 item 3).
     let docker = fixture("docker-env-params.yaml");
     let dir = tempfile::tempdir().unwrap();
     let job = dir.path().join("uri.yaml");
@@ -2657,4 +2658,71 @@ fn run_and_summary_report_a_job_template_without_env_params_with_its_attachments
             "{command}: {stderr}"
         );
     }
+}
+
+/// `openjd run` maps `Env.Param.<name>` with the Session's rules and leaves
+/// `Env.RawParam.<name>` as given (§4.5 item 3 at spec af53020). A value
+/// written as a single `{{ }}` expression is the string as written, so the
+/// rule for `/src` maps it; a relative value and a Windows drive path match
+/// no POSIX rule and pass through unchanged in both.
+#[cfg(not(windows))]
+#[test]
+fn run_maps_env_param_and_leaves_env_raw_param_as_given() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = write_file(
+        &dir,
+        "paths.yaml",
+        r#"specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{name: Dir, type: PATH}]
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: D, type: PATH}
+  - {name: Rel, type: PATH, default: rel/dir}
+  - {name: Win, type: PATH, default: 'C:\x'}
+  - {name: L, type: "LIST[PATH]"}
+  script:
+    actions:
+      onEnter:
+        command: python
+        args:
+        - -c
+        - "print(r'D={{Env.Param.D}} RawD={{Env.RawParam.D}} Rel={{Env.Param.Rel}} RawRel={{Env.RawParam.Rel}} Win={{Env.Param.Win}}'); print('L=', {{repr_py(Env.Param.L)}}, 'RawL=', {{repr_py(Env.RawParam.L)}})"
+steps:
+- name: S
+  dependencies:
+  - environment: E
+    parameters: {D: "{{RawParam.Dir}}", L: "{{ [RawParam.Dir, 'rel/l'] }}"}
+  script: {actions: {onRun: {command: python, args: ["-c", "print('task')"]}}}
+"#,
+    );
+    let rules = serde_json::json!({
+        "version": "pathmapping-1.0",
+        "path_mapping_rules": [{
+            "source_path_format": "POSIX",
+            "source_path": "/src",
+            "destination_path": "/dst",
+        }]
+    })
+    .to_string();
+    let (code, stdout, stderr) = run_cli(&[
+        "run",
+        &job,
+        "-p",
+        "Dir=/src/proj",
+        "--path-mapping-rules",
+        &rules,
+    ]);
+    assert_eq!(code, 0, "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_in_order(
+        &stdout,
+        &[
+            r"D=/dst/proj RawD=/src/proj Rel=rel/dir RawRel=rel/dir Win=C:\x",
+            "L= ['/dst/proj', 'rel/l'] RawL= ['/src/proj', 'rel/l']",
+            "task",
+            "All actions completed successfully!",
+        ],
+    );
 }

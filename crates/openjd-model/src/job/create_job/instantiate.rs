@@ -66,13 +66,6 @@ pub(super) fn instantiate_step<'a>(
         )?;
     }
 
-    // The scope before the step-level `let` bindings, from which ENV_PARAMS
-    // evaluates the bindings its entry values read again, in the
-    // submission path format; kept only when that can happen.
-    let let_base = (ctx.submission_path_format != PathFormat::Posix
-        && st.let_bindings.as_ref().is_some_and(|b| !b.is_empty()))
-    .then(|| step_symtab.clone());
-
     // Evaluate step-level let bindings (TEMPLATE scope — no PATH Param.*,
     // no host context), reported at `steps[i] -> let[j]` like pass 8.
     let mut step_let_failed = false;
@@ -233,7 +226,6 @@ pub(super) fn instantiate_step<'a>(
         st,
         step_index,
         &step_symtab,
-        let_base.as_ref(),
         job_envs,
         super::env_params::ResolvePolicy::new(ctx),
         staged,

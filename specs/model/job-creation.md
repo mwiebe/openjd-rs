@@ -180,9 +180,8 @@ the Job; both run every stage below, including [the submission
 stage](#the-submission-stage), so the Job `create_job` returns is complete. Environment templates should
 already be merged into `job_parameter_values` via `preprocess_job_parameters` before
 calling this function. `ctx` carries the model profile, the
-`CallerLimits`, and the submission path policy (`submission_path_format`,
-`allow_uri_path_values`, read only for ENV_PARAMS values) that apply to this job
-instance. Its revision must
+and the `CallerLimits` that apply to this job instance (it has no path policy: every
+TEMPLATE-scope field evaluates with POSIX semantics, Expression Language §1.2.1). Its revision must
 match the template's and its extensions must cover every extension the
 template declares — enforced with a `Compatibility` error, since a
 context enabling fewer extensions would make every downstream
@@ -429,10 +428,10 @@ Step's `let` bindings and before the entry's name is resolved (§7.4.1). It is a
 field of type `bool` (§7.5), resolved by the expression-field checker's `resolve` (see
 [template-types.md](template-types.md#expression-fields-75)) in the Step's template scope
 (below), under the template-scope profile and library pass 8 checked it with, the caller's
-evaluation budgets, and POSIX paths whatever `ctx.submission_path_format` is: an `enableIf` is
+evaluation budgets, and POSIX paths: an `enableIf` is
 evaluated in template scope, not in a host context (Template Schemas §7.5, the
-paragraph after its rules; spec `5535230`), so unlike the entry's values it reads the `let` bindings with their
-template-scope values: a boolean scalar is its
+paragraph after its rules; spec `5535230`), and reads the `let` bindings with the values job
+creation computed for the Step, as the entry's values do: a boolean scalar is its
 value; an expression must resolve to `true` or `false`. A `null` result ("resolved to null,
 which does not fit type bool (Template Schemas §7.5)."), another type ("resolved to a value
 of type T, which does not fit type bool …"), or an evaluation failure ("could not be
@@ -504,52 +503,40 @@ stage](#the-submission-stage):
   so it lists `EXPR` (Template Schemas §1.1 item 3, checked at template validation), and every
   value is read with `EXPR`, whatever `ctx` enables. The first half of plan 1's A12 (a value's
   forms follow the extensions of the document that holds it) has no case left to decide (plan
-  6); its second half, the caller's URI policy, is below.
-- **Format-string values** resolve in `ctx.submission_path_format`, the evaluator's path
-  format, so `path(RawParam.Dir) / 'sub'` uses its rules, under the caller's evaluation
-  budgets. It does not decide which PATH results are accepted (see PATH values below). An entry value's scope, and an `enableIf`'s, is the Step's full template scope
+  6); its second half, the caller's URI policy, is gone: a URI is one more form of PATH value
+  (§4.5 item 3 at spec `af53020`).
+- **Format-string values** are TEMPLATE-scope fields (§7.3.2), so they resolve with POSIX
+  semantics on every host, as every other job-creation field does (Expression Language §1.2.1,
+  "In TEMPLATE scope contexts, POSIX semantics are used for consistency"): `path(RawParam.Dir) /
+  'sub'` joins with `/` and reads `\` as a filename character, under the caller's evaluation
+  budgets. An entry value's scope, and an `enableIf`'s, is the Step's full template scope
   (`Param.*` other than PATH and LIST[PATH], `RawParam.*`, `Job.Name`, `Job.EnvNames`,
-  `Step.Name`, and the Step's `let` bindings; §7.3.2). Job creation
-  evaluates the Step's `let` bindings in POSIX; when `submission_path_format` is another
-  format, the bindings that the Step's enabled entries' values read (every entry's `enableIf`
-  is decided first; a disabled entry supplies nothing, §3.2 item 3.2),
-  directly or through other bindings, are evaluated again in that format for the entry values,
-  so a `path` binding (`path(RawParam.Dir) / 'x'`, `.parent`) follows the same rules as the
-  value itself. Bindings no entry value reads are not evaluated again, so one that would fail
-  only in that format (and is read by the Step's script, which keeps the POSIX value) does not
-  reject the Job. A binding that is read and fails is reported at `steps[i] -> let[j]`, and the
-  Step's entry values are not computed; every entry's `enableIf` and duplicate check (constraint
-  3) has already been made, so their errors (§7.4.1 step 2) are reported with it, while the
-  binding's error (step 1) stops the Step, so its Step Environments' `enableIf` errors (step
-  6) are not; and an entry whose `enableIf`
-  failed adds nothing to the bindings evaluated again. An `enableIf` (an entry's or a Step Environment's) does not
-  take part: it is evaluated in template scope (Template Schemas §7.5, after its
-  rules; spec `5535230`), with POSIX paths in the scope as job creation built it, so a binding only an
-  `enableIf` or a disabled entry's value reads is not evaluated again. A
+  `Step.Name`, and the Step's `let` bindings; §7.3.2). Job creation evaluates the Step's `let`
+  bindings once, with POSIX semantics, and the Step's script, its entries' values and every
+  `enableIf` read the same values; a binding that fails is the Step's ordinary `let` error at
+  `steps[i] -> let[j]`, which leaves the Step uninstantiable (see [Error order](#error-order)).
+  (Before spec `af53020` this prototype evaluated the bindings an entry value read a second
+  time, in a caller-given submission path format.) A
   `default`'s scope is the merged Job Parameters alone, without `Job.Name` or `Job.EnvNames`
   (§4.5 item 1, §7.3.1; plan A21). A single `{{ }}` expression evaluates with the
   parameter's expression type as its target type, and the result is coerced to the
-  Job Parameter type (a `path` result becomes its string). Any other format string resolves to
+  Job Parameter type (a `path` result becomes its string). INT, FLOAT, BOOL, RANGE_EXPR and the
+  list types convert as the target type says. For PATH and LIST[PATH] a `string` (or
+  `list[string]`) result becomes a POSIX `path`, which keeps its text, so the value is the
+  string as written: `{{RawParam.Dir}}` with `C:\x` is `C:\x`, the same value the literal
+  `C:\x` and the multi-segment `{{RawParam.Dir}}{{ '' }}` give. Any other format string resolves to
   a string and is converted with `coerce_from_str`, as a submitted Job Parameter value would
   be, with no directory join. A list-typed value that is not a single expression is an error
   (template validation already rejects it for a Job Environment).
-- **PATH values**, and each LIST[PATH] element, must be non-empty (plan A16) and absolute in
-  some path format, or, with `ctx.allow_uri_path_values`, a URI (plan A12; §4.5 item 3, spec
-  `2892d96`). Absolute means a POSIX path that starts with `/`, a Windows drive path (`C:\proj`
-  or `C:/proj`), or a UNC path (`\\server\share\proj`); the check is the union of
-  `openjd_expr::functions::path::is_absolute` for POSIX and for WINDOWS. A drive-relative
-  `C:dir`, a drive-less rooted `\dir`, and a relative path in either style (`rel/dir`,
-  `rel\dir`) are rejected. The check reads no format, so a literal Windows path is accepted
-  in a POSIX submission and a literal POSIX path in a WINDOWS one. It sees the resolved value,
-  though, and a single `{{ }}` expression's result becomes a `path` in
-  `ctx.submission_path_format` (below), so in WINDOWS `{{RawParam.Dir}}` with `/data` resolves
-  to `\data`, absolute in no format, and is rejected; `{{RawParam.Dir}}/x` stays the string
-  `/data/x` and is accepted. A URI is
-  classified first, so a URI that the caller does not permit is reported as a URI. The
-  message names the three forms and not a format. The value is stored as resolved (plan A22): a literal or
-  a multi-segment format string as written; a single `{{ }}` expression as the string of its
-  result, which for a `path` result follows the submission format's rules (WINDOWS turns `/`
-  into `\`).
+- **PATH values**, and each LIST[PATH] element, are used as given (§4.5 item 3 at spec
+  `af53020`): never joined with a directory, and not checked against any form. A relative path,
+  a drive-relative `C:dir`, a drive-less rooted `\dir`, an empty string and a URI are values
+  like any other, and a relative literal `default` is no error. The value is stored as resolved
+  (plan A22): a literal or a multi-segment format string as written; a single `{{ }}`
+  expression as the string of its result, a `string` result unchanged and a `path` result as
+  POSIX path operations made it. Earlier prototypes required the value to be absolute in the
+  submission path format (plan A16 and decision 7), then, at spec `2892d96`, in some path
+  format, or a URI the caller allowed.
 - The definition's **constraints** are checked against that stored value (constraint 6,
   §4.5 item 2), using `JobParameterDefinition::check_constraints` with
   `RangeExprLengthCheck::AsWrittenAndCanonical`
@@ -574,7 +561,7 @@ reporting the checks that depend on the Environment's own `enableIf` (`PendingVa
 
 - reported at once, whatever the `enableIf`: constraint 5 (a key the Environment does not
   declare);
-- kept: each value's conversion and checks (type, constraints, PATH absoluteness, the
+- kept: each value's conversion and checks (type, constraints, the
   single-expression rule for a list type), a failed resolved `default`, and the parameters
   without a `default` the Step does not supply (constraint 7);
 - the value each definition has for the `enableIf`: the effective value when it converts to
@@ -648,8 +635,8 @@ not see. It is kept for the submission stage as a crate-private `FrozenEntry`: t
 entry's index in `dependencies`, `required` with its default applied, the values as written,
 and `symtab`, the symbols of the Step's full template scope that the values' format strings
 reference (with the `let` bindings as the entry values see them, above), copied with
-`FormatString::copy_used_symtab_values`. Both stages run in one call with one `ctx`, so the
-table's `path` values are always in the submission path format the values resolve in.
+`FormatString::copy_used_symtab_values`. Its `path` values are POSIX, as every value in it is
+computed with POSIX semantics.
 `Step::resolved_symtab` cannot serve here, because it holds only what the Step's host-side
 format strings reference. No returned Job holds frozen entries.
 
@@ -977,7 +964,6 @@ them in key order, and in the order they were filed within a key:
 | Key | Errors | Position |
 |-----|--------|----------|
 | `Validation` | the template-validation-style checks job creation makes: the Job Environments' carried-forward resolved-value checks, then their literal `default`s, then each Step's carried-forward checks and their `let` bindings, then the attachments' literal `default`s | the order they are made |
-| `Step1` | a Step's `let` binding that its entries' values read, evaluated again in the submission path format | — |
 | `Step2` | an entry's `enableIf` that fails; a duplicate entry | the entry's index |
 | `Step3` | an entry that names no Environment while required, or names several | the entry's index |
 | `Step4` | a disabled entry for an `ALWAYS` Environment | the entry's index |
@@ -1115,8 +1101,7 @@ decide it, by what the expression can read:
 - **A Step Environment** (§7.3.2) reads no effective values, so its `enableIf` is
   decided by `resolve_step_entries` (`job/create_job/env_params.rs`), with the entries'
   `enableIf`s, in the same scope, profile, library, and budgets, with POSIX paths (the Step's
-  full template scope as job creation built it; an `enableIf` is not host context, so the
-  submission path format does not apply to it). A disabled Step Environment is
+  full template scope as job creation built it; an `enableIf` is not host context). A disabled Step Environment is
   dropped from `job::Step::step_environments`; when that leaves none the field is `None`. An
   error (a `null` result: "resolved to null, which does not fit type bool (Template Schemas
   §7.5)."; another type; or an evaluation failure) is an error at
@@ -1294,7 +1279,7 @@ Step's own first, then each entered Environment's in Job order; Template Schemas
 branch). That branch's public `apply_environment_templates` takes `&CallerLimits` and
 returns a delta (`AppliedEnvironmentTemplates` with Services, requirement bindings, and the
 attached Environments) that `into_combined_job` folds into the Job; this stage is
-crate-private, takes `&ValidationContext` because it needs the submission path policy, and
+crate-private, takes `&ValidationContext` because it needs the caller limits, and
 returns the combined Job. Merging the two is a follow-up (prototype plan P1).
 
 ### check_environment_templates
@@ -1344,8 +1329,8 @@ reports only once the Step's step 1–4 errors are fixed):
    define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.5 rule 5);
 3. step 3 above, without resolving anything that needs Job Parameter values
    (`DeclaringEnvironment::check_step_statically`): constraint 5; for each supplied value, a
-   literal converted and checked as at submission (type, constraints, and that a PATH value is
-   absolute in some path format, which needs no Job Parameter values), and a format string checked only against the
+   literal converted and checked as at submission (type and constraints; a PATH value of any
+   form is used as given, §4.5 item 3), and a format string checked only against the
    single-expression rule for a list-typed parameter; and constraint 7, over the attachments
    the Step enters (every `ALWAYS` one, every `BY_DEFAULT` one it does not decline, and each
    `ON_REQUEST` one an enabled entry refers to). The value checks and constraint 7 are made only for an attachment with

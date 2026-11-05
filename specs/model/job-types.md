@@ -127,8 +127,9 @@ then the Job Environments. Environment names are unique only within a document, 
 `(document, environment)`; `Document` is the same type as on the `SERVICE` prototype branch.
 `values` has one entry per parameter, keyed by the bare parameter name, with the parameter's
 own expression type in `type` (`path` for PATH, `list[path]` for LIST[PATH], `int`, ...), so a
-Session knows which values to path-map. PATH values are the unmapped strings, each absolute in
-some path format or a URI (§4.5 item 3), stored as resolved (plan A22). A Session binds them as `Env.Param.<name>`
+Session knows which values to path-map. PATH values are the unmapped strings, of any form
+(relative, either path format, or a URI; §4.5 item 3 at spec `af53020`), stored as resolved
+(plan A22). A Session binds them as `Env.Param.<name>`
 (path-mapped) and `Env.RawParam.<name>` (unmapped).
 
 `Step::environments` lists the Job Environments the Step's Sessions enter (Template Schemas §4

@@ -195,8 +195,6 @@ two input modes:
 pub struct ValidationContext {
     pub profile: ModelProfile,               // revision + enabled extensions
     pub caller_limits: CallerLimits,
-    pub submission_path_format: PathFormat,  // default PathFormat::host()
-    pub allow_uri_path_values: bool,         // default false
 }
 ```
 
@@ -204,23 +202,15 @@ Constructed during template decoding from the intersection of template-requested
 and caller-supported extensions, and by callers of `create_job` from
 `JobTemplate::default_validation_context()` plus `with_caller_limits`.
 
-The two path fields apply to `ENV_PARAMS` Environment parameter values (Template Schemas
-§4.5), of every type: job creation evaluates them in `submission_path_format` (see below), a
-PATH value of an Environment that is not disabled for the Step (§3.2.2) must be a non-empty
-path absolute in some path format (POSIX, a Windows drive path, or a UNC path; §4.5 item 3),
-whatever `submission_path_format` is, or, with `allow_uri_path_values` set, a URI (the check
-sees the resolved value, and a single `{{ }}` value is converted to `path` in
-`submission_path_format` first, so in WINDOWS `{{RawParam.Dir}}` with `/data` becomes `\data`
-and is rejected; see job-creation.md), and the same context applies to the attached
-Environment Templates in `create_job_with_environment_templates`. They mean the same as the
-`PathParameterOptions` fields `path_format` and `allow_uri_path_values`, and a caller that
-creates `ENV_PARAMS` Jobs should pass the same two values to both. openjd-for-js's `createJob`
-does, from its `PathParameterOptions`, and so do `openjd run`, `openjd summary`, and
-`openjd check --environment`, with the host format and `true`. Job creation evaluates Environment parameter format strings in
-`submission_path_format`, so path operations in them use that format's rules, and evaluates the
-Step `let` bindings those values read again in that format for them; every other job-creation
-evaluation stays in `PathFormat::Posix`. Template validation does not read the
-path fields.
+It has no path policy. `ENV_PARAMS` Environment parameter values (Template Schemas §4.5) are
+resolved at Job creation, after submission, so no submitting workstation's path format applies
+to them: their format strings, and the Step `let` bindings they read, are TEMPLATE-scope
+fields (§7.3.2) and evaluate with POSIX semantics, as every other job-creation evaluation does
+(Expression Language §1.2.1), and a PATH or LIST[PATH] value is used as given, with no check
+of its form (§4.5 item 3 at spec `af53020`; see job-creation.md). The `PathParameterOptions`
+fields `path_format` and `allow_uri_path_values` apply to Job Parameters only. (Earlier
+prototypes had `ValidationContext::submission_path_format` and `allow_uri_path_values`, which
+only these values read.)
 
 Environment parameters are never merged with Job Parameters (§1.2.1 last paragraph):
 `merge_job_parameter_definitions` reads only each document's top-level `parameterDefinitions`.

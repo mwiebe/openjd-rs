@@ -326,8 +326,8 @@ impl std::fmt::Display for Document {
 /// parameter of the Environment, keyed by the bare parameter name. Each
 /// entry's `type` is the parameter's own expression type (`path` for PATH,
 /// `list[path]` for `LIST[PATH]`, `int` for INT, ...), so a Session can tell
-/// which values to path-map. PATH values are unmapped strings, each absolute
-/// in some path format or a URI (§4.5 item 3). A RANGE_EXPR value is its
+/// which values to path-map. PATH values are unmapped strings of any form,
+/// used as given (§4.5 item 3). A RANGE_EXPR value is its
 /// canonical form, so two values that denote the same integers have one
 /// transport form (§3.2.2);
 /// a Session parses it. A Session binds them as `Env.Param.<name>` (path-mapped) and

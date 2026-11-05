@@ -743,29 +743,24 @@ impl Default for ModelProfile {
     }
 }
 
-/// Context for validation, carrying a [`ModelProfile`], caller-policy
-/// [`CallerLimits`], and the submission's path policy as a single bundle.
+/// Context for validation, carrying a [`ModelProfile`] and caller-policy
+/// [`CallerLimits`] as a single bundle.
 ///
 /// Use this type when a function needs both the profile (revision +
 /// extensions) and the caller's policy overrides. When only the
 /// profile is needed, take `&ModelProfile` directly.
 ///
-/// The two path fields apply to `ENV_PARAMS` Environment parameter values
-/// (Template Schemas §4.5). Job creation evaluates every such value, of
-/// any type, and the Step `let` bindings it reads, in
-/// `submission_path_format`. A PATH value must be absolute in some path
-/// format (a POSIX path, a Windows drive path, or a UNC path), whatever
-/// `submission_path_format` is, or, with `allow_uri_path_values` set, a
-/// URI (§4.5 item 3).
-/// That check reads no format, but it sees the value as resolved: a value
-/// written as a single `{{ }}` expression becomes a `path` in
-/// `submission_path_format` first, so in WINDOWS `{{RawParam.Dir}}` with
-/// `/data` is `\data`, absolute in no format, and is rejected, while the
-/// literal `/data` is accepted.
+/// It has no path policy. Job creation evaluates every TEMPLATE-scope
+/// field, `ENV_PARAMS` Environment parameter values and the Step `let`
+/// bindings they read included, with POSIX semantics on every host
+/// (Expression Language §1.2.1; Template Schemas §7.3.2, §7.5), and uses
+/// a PATH or LIST\[PATH\] Environment parameter value as given, with no
+/// check of its form (§4.5 item 3). Job Parameter paths have their own
+/// policy, [`PathParameterOptions`](crate::PathParameterOptions).
 /// The same context applies to the
 /// Environment Templates
 /// [`create_job_with_environment_templates`](crate::create_job_with_environment_templates)
-/// attaches. Template validation does not read them.
+/// attaches.
 #[derive(Debug, Clone)]
 #[allow(
     missing_docs,
@@ -774,45 +769,27 @@ impl Default for ModelProfile {
 pub struct ValidationContext {
     pub profile: ModelProfile,
     pub caller_limits: CallerLimits,
-    /// The path format that `ENV_PARAMS` Environment parameter format
-    /// strings, and the Step `let` bindings they read, evaluate in, so
-    /// path operations such as `path(RawParam.Dir) / 'x'` follow its rules.
-    /// It does not decide whether a PATH value is absolute: any path
-    /// format's absolute paths are accepted (§4.5 item 3). It can change a
-    /// single-expression value before that check, as the type docs say.
-    /// Default:
-    /// [`PathFormat::host()`](openjd_expr::path_mapping::PathFormat::host),
-    /// what `openjd run` passes to
-    /// [`preprocess_job_parameters`](crate::preprocess_job_parameters).
-    pub submission_path_format: openjd_expr::path_mapping::PathFormat,
-    /// Whether a URI (`scheme://...`) is accepted as a PATH value, with the
-    /// same meaning as
-    /// [`PathParameterOptions::allow_uri_path_values`](crate::PathParameterOptions::allow_uri_path_values).
-    /// Default: `false`.
-    pub allow_uri_path_values: bool,
 }
 
 impl ValidationContext {
     /// Build a context for the given revision with no extensions and
-    /// default caller limits and path policy.
+    /// default caller limits.
     pub fn new(revision: SpecificationRevision) -> Self {
         Self::from_profile(ModelProfile::new(revision))
     }
 
     /// Build a context with the given revision + extensions and
-    /// default caller limits and path policy.
+    /// default caller limits.
     pub fn with_extensions(revision: SpecificationRevision, extensions: Extensions) -> Self {
         Self::from_profile(ModelProfile::new(revision).with_extensions(extensions))
     }
 
     /// Build a context from an existing [`ModelProfile`], with default
-    /// caller limits and path policy.
+    /// caller limits.
     pub fn from_profile(profile: ModelProfile) -> Self {
         Self {
             profile,
             caller_limits: CallerLimits::default(),
-            submission_path_format: openjd_expr::path_mapping::PathFormat::host(),
-            allow_uri_path_values: false,
         }
     }
 
@@ -820,25 +797,6 @@ impl ValidationContext {
     #[must_use]
     pub fn with_caller_limits(mut self, caller_limits: CallerLimits) -> Self {
         self.caller_limits = caller_limits;
-        self
-    }
-
-    /// Set [`submission_path_format`](Self::submission_path_format),
-    /// consuming and returning `self`.
-    #[must_use]
-    pub fn with_submission_path_format(
-        mut self,
-        format: openjd_expr::path_mapping::PathFormat,
-    ) -> Self {
-        self.submission_path_format = format;
-        self
-    }
-
-    /// Set [`allow_uri_path_values`](Self::allow_uri_path_values),
-    /// consuming and returning `self`.
-    #[must_use]
-    pub fn with_allow_uri_path_values(mut self, allow: bool) -> Self {
-        self.allow_uri_path_values = allow;
         self
     }
 }

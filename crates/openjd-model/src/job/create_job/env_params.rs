@@ -28,18 +28,19 @@
 //!
 //! - a literal is decoded as the Job Parameter `default` of its type is
 //!   (the template-validation decoder, so the messages match);
-//! - a format string resolves, in the submission path format, in the
-//!   scope its position allows (§3.2, §4.5 item 1). A single `{{ }}`
+//! - a format string resolves in the scope its position allows (§3.2,
+//!   §4.5 item 1), with POSIX semantics, as every TEMPLATE-scope field
+//!   does (§7.3.2, Expression Language §1.2.1). A single `{{ }}`
 //!   expression evaluates with the parameter's type as its target type;
 //!   any other format string resolves to a string, which converts as
 //!   a submitted Job Parameter value of that type would, with no directory
-//!   join;
-//! - a PATH value, and each element of a LIST[PATH] value, must be a
-//!   non-empty path that is absolute in some path format (POSIX, a Windows
-//!   drive path, or a UNC path), whatever
-//!   [`ValidationContext::submission_path_format`] is, or, with
-//!   [`ValidationContext::allow_uri_path_values`], a URI (§4.5 item 3;
-//!   prototype plan A12, whose caller-policy half still holds, and A16);
+//!   join. A PATH or LIST[PATH] value written as a single expression whose
+//!   result is a `string` (or a `list[string]`) keeps that text, so the
+//!   value is the same as the literal or a multi-segment format string
+//!   with the same text;
+//! - a PATH value, and each element of a LIST[PATH] value, is used as
+//!   given: it is never joined with a directory and need not be absolute
+//!   or have any one path format (§4.5 item 3 at spec af53020);
 //! - the definition's constraints are checked against the value
 //!   (constraint 6, §4.5 item 2);
 //! - a RANGE_EXPR value is stored as its `range_expr`, whose transport form
@@ -57,8 +58,6 @@
 //!
 //! [`create_job`]: super::create_job
 //! [`apply_environment_templates`]: super::external::apply_environment_templates
-//! [`ValidationContext::submission_path_format`]: crate::types::ValidationContext::submission_path_format
-//! [`ValidationContext::allow_uri_path_values`]: crate::types::ValidationContext::allow_uri_path_values
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -79,7 +78,7 @@ use super::parameters::coerce_from_str;
 use super::staged::{Stage, StagedErrors};
 use super::EvalBudgets;
 
-/// The submission policy every value conversion reads.
+/// The context and evaluation budgets every value conversion reads.
 #[derive(Clone, Copy)]
 pub(crate) struct ResolvePolicy<'a> {
     pub(crate) ctx: &'a ValidationContext,
@@ -624,7 +623,7 @@ impl<'a> DeclaringEnvironment<'a> {
     /// constraint 5 (keys); and, when `values_checked` (the Environment is certainly
     /// not disabled, so its own `enableIf` is absent or `true`), for each
     /// supplied value a literal converted and checked as `values_for_step`
-    /// does (type, constraints, PATH absoluteness) and a format string
+    /// does (type and constraints) and a format string
     /// checked only against the single-expression rule for a list-typed
     /// parameter, and constraint 7. `default`s are not resolved here (a
     /// literal one is checked by
@@ -746,9 +745,8 @@ pub(crate) fn report_missing(
 /// LIST[PATH]) when it converts to the parameter's type, `None` when it
 /// does not, and whether every check passed: a value that converts but
 /// breaks a constraint is returned with `false`, since it is known to an
-/// Environment's `enableIf` (§3.2.2). (A PATH value that is not absolute is
-/// returned the same way, though PATH values are outside the `enableIf`'s
-/// scope.)
+/// Environment's `enableIf` (§3.2.2). A PATH or LIST[PATH] value is used
+/// as given (§4.5 item 3): only its constraints are checked.
 fn resolve_value(
     def: &EnvironmentParameterDefinition,
     value: &EnvironmentParameterValue,
@@ -784,15 +782,19 @@ fn resolve_value(
             if errors.len() > before {
                 return (None, false);
             }
-            // Format strings evaluate in the submission path format, so
-            // path operations (`path(RawParam.Dir) / 'sub'`) use its rules.
-            // Whether a PATH result is absolute does not depend on it
-            // (`check_paths`, §4.5 item 3).
-            let opts = policy
-                .budgets
-                .fs_options()
-                .with_path_format(policy.ctx.submission_path_format);
+            // Format strings are TEMPLATE-scope fields (§7.3.2), so they
+            // evaluate with POSIX semantics, as every other job-creation
+            // field does (Expression Language §1.2.1): path operations
+            // (`path(RawParam.Dir) / 'sub'`) use POSIX rules on every host.
+            let opts = policy.budgets.fs_options();
             let resolved = if fs.segment_count() == 1 {
+                // A single expression evaluates with the parameter's type
+                // as its target type (INT, FLOAT, BOOL, RANGE_EXPR, ...
+                // convert as before). For PATH and LIST[PATH] a `string`
+                // result converts to a POSIX `path`, which keeps its text
+                // unchanged, so the value is the string as written:
+                // `{{RawParam.Dir}}` with `C:\x` stays `C:\x`, as the
+                // literal and any multi-segment format string give it.
                 let target = pt.expr_type();
                 fs.resolve_with(symtab, &opts.clone().with_target_type(&target))
                     .map_err(|e| e.to_string())
@@ -847,9 +849,6 @@ fn resolve_value(
             }
         }
     };
-    if !check_paths(pt, &value, policy.ctx, path, errors) {
-        return (Some(Effective { value }), false);
-    }
     // The constraints see the value that is stored (a literal's were
     // checked above by the template-validation check, as written), so every
     // effective value satisfies its definition (§4.5 item 2). A RANGE_EXPR
@@ -886,78 +885,6 @@ pub(super) fn paths_to_strings(v: ExprValue) -> ExprValue {
             .unwrap_or(ExprValue::Null)
         }
         other => other,
-    }
-}
-
-/// §4.5 item 3: each PATH value, and each LIST[PATH] element, is
-/// a non-empty path absolute in some path format
-/// ([`is_absolute_in_any_format`]) or, with the caller's permission, a URI.
-/// It is not checked against
-/// [`ValidationContext::submission_path_format`], whose value does not
-/// change the result.
-/// Reports every bad element. Returns `false` when it reported an error.
-fn check_paths(
-    pt: JobParameterType,
-    value: &ExprValue,
-    ctx: &ValidationContext,
-    path: &[PathElement],
-    errors: &mut ValidationErrors,
-) -> bool {
-    let before = errors.len();
-    let mut check = |s: &str, item: Option<usize>| {
-        let at = item.map(|i| format!("item[{i}] ")).unwrap_or_default();
-        let problem = if s.is_empty() {
-            Some("must not be an empty path".to_string())
-        } else if openjd_expr::uri_path::is_uri(s) {
-            (!ctx.allow_uri_path_values).then(|| {
-                format!(
-                    "is a URI ('{s}'), and URI path values are not permitted for this submission"
-                )
-            })
-        } else if !is_absolute_in_any_format(s) {
-            Some(format!(
-                "must be an absolute path in some path format (a POSIX path starting with \
-                 '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path \
-                 such as '\\\\server\\share'), since an Environment parameter has no \
-                 directory to be relative to; got '{s}'"
-            ))
-        } else {
-            None
-        };
-        if let Some(problem) = problem {
-            errors.add(path, format!("{at}{problem}."));
-        }
-    };
-    match (pt, value) {
-        (JobParameterType::Path, ExprValue::String(s)) => check(s, None),
-        (JobParameterType::ListPath, ExprValue::ListString(items, _)) => {
-            for (i, s) in items.iter().enumerate() {
-                check(s, Some(i));
-            }
-        }
-        _ => {}
-    }
-    errors.len() == before
-}
-
-/// Whether the non-URI string `s` is an absolute path in some path format
-/// (§4.5 item 3): a POSIX path that starts with `/`, a Windows drive path
-/// (`X:\` or `X:/`), or a UNC path (`\\server\share`). A drive-relative
-/// `C:dir`, a drive-less rooted `\dir`, and a relative path in either
-/// style are absolute in none. It is the union of
-/// [`openjd_expr::functions::path::is_absolute`] for POSIX and for
-/// WINDOWS, so it does not depend on the submission path format. Callers
-/// classify URIs first, since that function also counts a URI as absolute.
-fn is_absolute_in_any_format(s: &str) -> bool {
-    use openjd_expr::functions::path::is_absolute;
-    is_absolute(s, PathFormat::Posix) || is_absolute(s, PathFormat::Windows)
-}
-
-pub(crate) fn format_name(f: PathFormat) -> &'static str {
-    match f {
-        PathFormat::Posix => "POSIX",
-        PathFormat::Windows => "WINDOWS",
-        PathFormat::Uri => "URI",
     }
 }
 
@@ -1076,8 +1003,8 @@ impl<'a> JobEnvironments<'a> {
 /// external Environment's definitions are known, so they are kept as
 /// written, with `symtab`: the Step-scope symbols (non-PATH `Param.*`,
 /// `RawParam.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's
-/// `let` bindings, `path` values in the submission path
-/// format) that the values' format strings reference.
+/// `let` bindings, `path` values in POSIX) that the values' format
+/// strings reference.
 pub(crate) struct FrozenEntry {
     /// The Environment name the entry gives.
     pub(crate) environment: String,
@@ -1233,9 +1160,8 @@ fn resolve_enable_if(
 /// left to the submission stage, which knows the attached Environments
 /// that come before them ([`DeferredJobEnvironment`]).
 ///
-/// Each error is filed in `staged` under its §7.4.1 step: a `let` binding
-/// an entry's values read under step 1, an entry's `enableIf` and a
-/// duplicate entry under step 2, a disabled entry for an `ALWAYS` Job
+/// Each error is filed in `staged` under its §7.4.1 step: an entry's
+/// `enableIf` and a duplicate entry under step 2, a disabled entry for an `ALWAYS` Job
 /// Environment under step 4, an entry's undeclared key under step 5, and
 /// a Step Environment's failed `enableIf` under step 6.
 ///
@@ -1254,18 +1180,13 @@ fn resolve_enable_if(
 /// `step_symtab` is the Step's full template scope (`Param.*` other than
 /// PATH, `RawParam.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the
 /// Step's `let` bindings), the scope of an entry's
-/// format strings and `enableIf` (§7.3.2). An `enableIf` (an
-/// entry's or a Step Environment's) resolves in it as it is, with POSIX
-/// paths: it is a TEMPLATE-scope expression field, not host context.
-/// `let_base` is that scope before the `let` bindings, from which
-/// [`entry_scope`] evaluates the bindings the entries' parameter values
-/// read in the submission path format; `None` when there is nothing to
-/// evaluate again (a POSIX submission, or a Step without `let` bindings).
+/// format strings and `enableIf` (§7.3.2). Both resolve in it as it is,
+/// with POSIX paths: they are TEMPLATE-scope fields, not host context
+/// (Expression Language §1.2.1, §7.5).
 pub(crate) fn resolve_step_entries<'a>(
     st: &template::StepTemplate,
     step_index: usize,
     step_symtab: &SymbolTable,
-    let_base: Option<&SymbolTable>,
     job_envs: &JobEnvironments<'a>,
     policy: ResolvePolicy<'_>,
     staged: &mut StagedErrors,
@@ -1273,19 +1194,6 @@ pub(crate) fn resolve_step_entries<'a>(
     let step_path = path_index(&path_field(&[], "steps"), step_index);
     let deps_path = path_field(&step_path, "dependencies");
     let empty = BTreeMap::new();
-    let entered_by_scope = || {
-        job_envs
-            .all
-            .iter()
-            .map(|(_, scope)| *scope != template::EnvironmentActivation::OnRequest)
-            .collect()
-    };
-    // `enableIf` is a TEMPLATE-scope expression field, not host context:
-    // it resolves in the Step's template scope as job creation built it,
-    // with POSIX paths, whatever the submission path format. Only the
-    // entries' parameter values use the scope `entry_scope` builds.
-    let template_symtab = step_symtab;
-
     // §4 item 6: each Step Environment's own `enableIf`, in the Step's
     // template scope, the scope of an entry's `enableIf` (§7.3.2).
     // It reads no effective values, so it is decided here, with the
@@ -1296,7 +1204,7 @@ pub(crate) fn resolve_step_entries<'a>(
         let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
         let enabled = resolve_enable_if(
             env.enable_if.as_ref(),
-            template_symtab,
+            step_symtab,
             policy,
             &env_path,
             // Step Environments come after every Job Environment in the
@@ -1314,10 +1222,9 @@ pub(crate) fn resolve_step_entries<'a>(
     }
 
     // Decide every `environment:` entry first (§7.4.1: `enableIf` before the
-    // entry's name is resolved), in the template scope, so that
-    // `entry_scope` re-evaluates only the bindings that enabled entries'
-    // values read: a disabled entry supplies nothing (§3.2 item 3.2). `None`
-    // for a dependency that is not a decided entry.
+    // entry's name is resolved), in the template scope: a disabled entry
+    // supplies nothing (§3.2 item 3.2). `None` for a dependency that is not
+    // a decided entry.
     let mut seen: HashSet<&str> = HashSet::new();
     // Names of entries their `enableIf` disabled, for the constraint 7
     // message, and of those whose `enableIf` failed (reported): their
@@ -1344,7 +1251,7 @@ pub(crate) fn resolve_step_entries<'a>(
                 return None;
             }
             let errors = staged.at(Stage::Step2, step_index, j);
-            match entry_enabled(dep, template_symtab, policy, &entry_path, errors) {
+            match entry_enabled(dep, step_symtab, policy, &entry_path, errors) {
                 Some(true) => Some(true),
                 Some(false) => {
                     // §3.2 item 3.2: no Step can leave out an `ALWAYS`
@@ -1368,30 +1275,6 @@ pub(crate) fn resolve_step_entries<'a>(
             }
         })
         .collect();
-
-    let Some(step_symtab) = entry_scope(
-        st,
-        &decisions,
-        step_symtab,
-        let_base,
-        policy,
-        &step_path,
-        staged.at(Stage::Step1, step_index, 0),
-    ) else {
-        return StepEntries {
-            selection: StepSelection {
-                discarded_host_requirements: Vec::new(),
-                frozen: Vec::new(),
-                job_environments_entered: entered_by_scope(),
-                disabled_job_environments: Vec::new(),
-                deferred: Vec::new(),
-                disabled: Vec::new(),
-                disabled_step_environments,
-            },
-            step_environments_enabled,
-        };
-    };
-    let step_symtab = &*step_symtab;
 
     let mut supplied: HashMap<&str, Supplied<'_>> = HashMap::new();
     // Job Environments an enabled entry requests.
@@ -1500,250 +1383,5 @@ pub(crate) fn resolve_step_entries<'a>(
             disabled_step_environments,
         },
         step_environments_enabled,
-    }
-}
-
-/// The scope a Step's entry parameter values resolve in.
-///
-/// Job creation evaluates the Step's `let` bindings once, in POSIX, for
-/// every field of the Step. When the submission path format is another,
-/// the bindings an enabled entry's value reads (`decisions[j]` is
-/// `Some(true)` for an enabled entry `j`), directly or through other bindings,
-/// are evaluated again from `let_base` (the scope before them) in that
-/// format, so a `path` binding (`path(RawParam.Dir) / 'x'`,
-/// `.parent`) follows the rules the value itself resolves with. Bindings
-/// nothing there reads are not evaluated again (and not in the scope), so
-/// one that would fail only in that format does not reject the Job. A
-/// binding that is read and fails is reported at `steps[i] -> let[j]`, and
-/// the Step's entry values are not computed (`None`); job creation fails
-/// on the error, a §7.4.1 step 1 error, which stops the Step. The
-/// entries' `enableIf`s and duplicate checks (step 2) were made before
-/// this and are reported with it; the Step Environments' `enableIf`s
-/// (step 6) are not.
-#[allow(clippy::too_many_arguments)]
-fn entry_scope<'s>(
-    st: &template::StepTemplate,
-    decisions: &[Option<bool>],
-    step_symtab: &'s SymbolTable,
-    let_base: Option<&SymbolTable>,
-    policy: ResolvePolicy<'_>,
-    step_path: &[PathElement],
-    errors: &mut ValidationErrors,
-) -> Option<std::borrow::Cow<'s, SymbolTable>> {
-    use std::borrow::Cow;
-    let format = policy.ctx.submission_path_format;
-    let (true, Some(bindings), Some(let_base)) =
-        (format != PathFormat::Posix, &st.let_bindings, let_base)
-    else {
-        return Some(Cow::Borrowed(step_symtab));
-    };
-    let profile = policy
-        .ctx
-        .profile
-        .to_expr_profile(openjd_expr::HostContext::None);
-    // The names the enabled entries' values read (`decisions`, index for
-    // index with the Step's dependencies). A disabled entry has no effect
-    // (§3.2 item 3.2), and an `enableIf` resolves in template scope (§7.5),
-    // so neither adds names here.
-    let mut needed: HashSet<String> = st
-        .dependencies
-        .iter()
-        .flatten()
-        .zip(decisions)
-        .filter(|(_, decision)| **decision == Some(true))
-        .flat_map(|(d, _)| {
-            d.parameters
-                .iter()
-                .flat_map(|p| p.iter())
-                .filter_map(|(_, v)| v.as_format_string())
-                .flat_map(|fs| fs.accessed_symbols())
-        })
-        .collect();
-    // Each binding as (name, expression source), and whether an entry
-    // value reads it, directly or through a later binding that is read.
-    let parsed: Vec<Option<(&str, &str)>> = bindings
-        .iter()
-        .map(|b| {
-            let (name, expr) = b.split_once('=')?;
-            Some((name.trim(), expr.trim()))
-        })
-        .collect();
-    let mut read = vec![false; bindings.len()];
-    for (j, entry) in parsed.iter().enumerate().rev() {
-        let Some((name, expr)) = entry else { continue };
-        let reads_name = needed
-            .iter()
-            .any(|s| s == name || s.starts_with(&format!("{name}.")));
-        if reads_name {
-            read[j] = true;
-            if let Ok(p) = openjd_expr::ParsedExpression::new(expr) {
-                needed.extend(p.accessed_symbols().iter().cloned());
-            }
-        }
-    }
-    if !read.contains(&true) {
-        return Some(Cow::Borrowed(step_symtab));
-    }
-    let lib = openjd_expr::FunctionLibrary::for_profile(&profile);
-    // Only the read bindings are evaluated: a read binding refers only to
-    // names the reverse pass marked read (or to the scope before the
-    // bindings), and the entries read only those names.
-    let mut scope = let_base.clone();
-    for (j, binding) in bindings.iter().enumerate() {
-        if !read[j] {
-            continue;
-        }
-        match super::evaluate_let_bindings(
-            std::slice::from_ref(binding),
-            &scope,
-            Some(&lib),
-            format,
-            policy.budgets.memory,
-            policy.budgets.operations,
-        ) {
-            Ok(t) => scope = t,
-            Err(e) => {
-                errors.add(
-                    &path_index(&path_field(step_path, "let"), j),
-                    format!(
-                        "in the submission path format ({}), which this Step's Environment \
-                         parameter values resolve in: {e}",
-                        format_name(format)
-                    ),
-                );
-                return None;
-            }
-        }
-    }
-    Some(Cow::Owned(scope))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::SpecificationRevision;
-
-    /// Every `submission_path_format` value.
-    const FORMATS: [PathFormat; 3] = [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri];
-
-    /// Absolute in some path format (§4.5 item 3): POSIX, Windows drive
-    /// (either separator, either letter case) and UNC (either separator).
-    const ABSOLUTE: [&str; 10] = [
-        "/",
-        "/mnt/proj",
-        r"C:\proj",
-        "C:/proj",
-        r"z:\",
-        "z:/",
-        r"\\server\share\proj",
-        r"\\server",
-        "//server/share",
-        r"/mixed\sep",
-    ];
-
-    /// Absolute in no path format: relative in either style, drive-relative,
-    /// a bare drive, drive-less rooted, and a non-letter "drive".
-    const RELATIVE: [&str; 10] = [
-        "rel",
-        "rel/dir",
-        r"relative\dir",
-        "C:dir",
-        "C:",
-        r"\dir",
-        "./x",
-        "~/x",
-        "1:/x",
-        r":\x",
-    ];
-
-    #[test]
-    fn the_classifier_accepts_every_absolute_form_and_no_relative_one() {
-        for s in ABSOLUTE {
-            assert!(is_absolute_in_any_format(s), "{s}");
-        }
-        for s in RELATIVE {
-            assert!(!is_absolute_in_any_format(s), "{s}");
-        }
-    }
-
-    fn check(pt: JobParameterType, value: ExprValue, format: PathFormat, uri: bool) -> Vec<String> {
-        let ctx = ValidationContext::new(SpecificationRevision::V2023_09)
-            .with_submission_path_format(format)
-            .with_allow_uri_path_values(uri);
-        let mut errors = ValidationErrors::default();
-        let ok = check_paths(pt, &value, &ctx, &[], &mut errors);
-        let messages: Vec<String> = errors.errors.into_iter().map(|e| e.message).collect();
-        assert_eq!(ok, messages.is_empty());
-        messages
-    }
-
-    fn not_absolute(at: &str, s: &str) -> String {
-        format!(
-            "{at}must be an absolute path in some path format (a POSIX path starting with '/', \
-             a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as \
-             '\\\\server\\share'), since an Environment parameter has no directory to be \
-             relative to; got '{s}'."
-        )
-    }
-
-    #[test]
-    fn a_path_value_is_checked_the_same_in_every_submission_path_format() {
-        for format in FORMATS {
-            for s in ABSOLUTE {
-                let v = ExprValue::String(s.to_string());
-                assert_eq!(
-                    check(JobParameterType::Path, v, format, false),
-                    Vec::<String>::new(),
-                    "{s} in {format:?}"
-                );
-            }
-            // A relative path is rejected whether or not URIs are allowed.
-            for (s, uri) in RELATIVE.into_iter().flat_map(|s| [(s, false), (s, true)]) {
-                let v = ExprValue::String(s.to_string());
-                assert_eq!(
-                    check(JobParameterType::Path, v, format, uri),
-                    [not_absolute("", s)],
-                    "{s} in {format:?}, URIs allowed: {uri}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn each_list_path_element_is_checked_on_its_own_in_every_format() {
-        let items: Vec<ExprValue> = ["/a", r"D:\b", "rel", r"\\srv\s", "C:x", ""]
-            .into_iter()
-            .map(|s| ExprValue::String(s.to_string()))
-            .collect();
-        let list = ExprValue::make_list(items, ExprType::STRING).unwrap();
-        for format in FORMATS {
-            assert_eq!(
-                check(JobParameterType::ListPath, list.clone(), format, false),
-                [
-                    not_absolute("item[2] ", "rel"),
-                    not_absolute("item[4] ", "C:x"),
-                    "item[5] must not be an empty path.".to_string(),
-                ],
-                "{format:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_uri_follows_the_callers_uri_policy_in_every_format() {
-        for format in FORMATS {
-            let uri = || ExprValue::String("s3://bucket/key".to_string());
-            assert_eq!(
-                check(JobParameterType::Path, uri(), format, true),
-                Vec::<String>::new()
-            );
-            assert_eq!(
-                check(JobParameterType::Path, uri(), format, false),
-                [
-                    "is a URI ('s3://bucket/key'), and URI path values are not permitted for this \
-                  submission."
-                ]
-            );
-        }
     }
 }

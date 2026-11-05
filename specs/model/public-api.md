@@ -354,11 +354,9 @@ disabled one out of the Step's `environments`, `step_environments`, and
 `CreatedJob::disabled_environments` (for an Environment with `activation:
 ALWAYS`, which cannot be disabled, a `false` result is instead an error at
 its `enableIf` naming every such Step, §3.2.2 item 6); checks each value of an
-Environment that is not disabled for the Step against its definition, and
-that each resolved PATH value is absolute in some path format (the
-check reads no format, though a single `{{ }}` value is converted in
-`ctx.submission_path_format` first) or a URI `ctx.allow_uri_path_values`
-permits, and that the Step supplies every parameter
+Environment that is not disabled for the Step against its definition (a
+PATH value of any form is used as given, §4.5 item 3), and that the Step
+supplies every parameter
 without a `default` (constraint 7); checks
 the `WRAP_ACTIONS` single-layer rule over each Step's final set; and last
 resolves each Environment's `hostRequirements` for each Step whose
@@ -400,8 +398,7 @@ or whose own `enableIf` is absent or `true`, or certainly unresolved for the Ste
 with an expression is undetermined, Template Schemas §3.2.2, §7.5 rule 5),
 and that no earlier attachment of its `exclusiveGroup` supersedes or may
 supersede (§4 item 7),
-constraint 6 for literal values (with PATH values absolute in some
-path format), the single-expression rule, and
+constraint 6 for literal values, the single-expression rule, and
 constraint 7 over the attachments each Step enters (every `ALWAYS` one,
 every `BY_DEFAULT` one it does not decline with a disabled entry, and
 each `ON_REQUEST` one it requests); the same value checks and
@@ -1330,25 +1327,18 @@ pub struct CallerLimits {
 }
 
 /// The thing every validation and instantiation function takes — a
-/// `ModelProfile`, `CallerLimits`, and the submission path policy
-/// (`submission_path_format`, `allow_uri_path_values`), which only job
-/// creation of `ENV_PARAMS` values reads (for the attached Environment
-/// Templates, the limits and path policy but not the profile). Most callers construct one via
+/// `ModelProfile` and `CallerLimits` (for the attached Environment
+/// Templates, the limits but not the profile). It has no path policy:
+/// job creation evaluates every TEMPLATE-scope field, `ENV_PARAMS`
+/// values included, with POSIX semantics, and uses a PATH Environment
+/// parameter value as given (Expression Language §1.2.1; Template
+/// Schemas §4.5 item 3). Most callers construct one via
 /// `JobTemplate::default_validation_context` or
 /// `ValidationContext::new(revision)`.
 #[derive(Debug, Clone)]
 pub struct ValidationContext {
     pub profile: ModelProfile,
     pub caller_limits: CallerLimits,
-    /// Path format Environment parameter format strings, and the Step
-    /// `let` bindings they read, evaluate in. It does not decide whether
-    /// a PATH value is absolute: any path format's absolute paths are
-    /// accepted (§4.5 item 3), though a single `{{ }}` value is converted
-    /// to `path` in it first. Default `PathFormat::host()`.
-    pub submission_path_format: openjd_expr::path_mapping::PathFormat,
-    /// Accept a URI as an Environment parameter PATH value. Default
-    /// `false`.
-    pub allow_uri_path_values: bool,
 }
 
 impl ValidationContext {
@@ -1356,8 +1346,6 @@ impl ValidationContext {
     pub fn with_extensions(revision: SpecificationRevision, extensions: Extensions) -> Self;
     pub fn from_profile(profile: ModelProfile) -> Self;
     #[must_use] pub fn with_caller_limits(self, caller_limits: CallerLimits) -> Self;
-    #[must_use] pub fn with_submission_path_format(self, format: openjd_expr::path_mapping::PathFormat) -> Self;
-    #[must_use] pub fn with_allow_uri_path_values(self, allow: bool) -> Self;
 }
 ```
 

@@ -1256,34 +1256,23 @@ fn disabled_environments_name_each_environments_document() {
 
 #[test]
 fn a_step_environment_reads_its_let_with_posix_paths() {
-    // An enableIf is not host context: the `let` binding it reads keeps
-    // the value job creation computed with POSIX paths, whatever the
-    // submission path format.
-    let jt = job_ok(
+    // An enableIf is a TEMPLATE-scope field (§7.5): the `let` binding it
+    // reads has the value job creation computed with POSIX paths.
+    let created = create_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          steps:\n- name: S\n  let: [\"p = string(path('/a') / 'b')\"]\n  \
          stepEnvironments:\n  - {name: Posix, enableIf: \"p == '/a/b'\", variables: {V: x}}\n  \
          script: {actions: {onRun: {command: x}}}\n",
+        &[],
+        &[],
     );
-    let values = job_params_with(&jt, &[], &[]);
-    for format in [
-        openjd_expr::path_mapping::PathFormat::Posix,
-        openjd_expr::path_mapping::PathFormat::Windows,
-    ] {
-        let ctx = jt
-            .default_validation_context()
-            .with_submission_path_format(format);
-        let names: Vec<String> = create_job_with_environment_templates(&jt, &[], &values, &ctx)
-            .unwrap()
-            .job
-            .steps[0]
-            .step_environments
-            .iter()
-            .flatten()
-            .map(|e| e.name.clone())
-            .collect();
-        assert_eq!(names, ["Posix"], "{format:?}");
-    }
+    let names: Vec<String> = created.job.steps[0]
+        .step_environments
+        .iter()
+        .flatten()
+        .map(|e| e.name.clone())
+        .collect();
+    assert_eq!(names, ["Posix"]);
 }
 
 // ── Round 3 audit: the constraint 7 note ────────────────────────────
@@ -1380,28 +1369,19 @@ fn literal_enabled_is_known_only_for_an_absent_field_or_a_boolean_scalar() {
 #[test]
 fn a_job_environments_enable_if_evaluates_paths_in_posix_form() {
     // A Job or attached Environment's enableIf has its hostRequirements
-    // scope and resolves as they do, with POSIX paths, whatever the
-    // submission path format.
-    let jt = job_ok(
+    // scope and resolves as they do, with POSIX paths (§7.5).
+    let created = create_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-         jobEnvironments:\n- {name: E, enableIf: \"string(path('/a') / 'b') == '/a/b'\", \
+         jobEnvironments:\n- {name: E, enableIf: \"string(path('C:\\\\a') / 'b') == 'C:\\\\a/b'\", \
          variables: {V: x}}\nsteps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
+        &[],
+        &[],
     );
-    let values = job_params_with(&jt, &[], &[]);
-    for format in [
-        openjd_expr::path_mapping::PathFormat::Posix,
-        openjd_expr::path_mapping::PathFormat::Windows,
-    ] {
-        let ctx = jt
-            .default_validation_context()
-            .with_submission_path_format(format);
-        let created = create_job_with_environment_templates(&jt, &[], &values, &ctx).unwrap();
-        assert_eq!(created.job.steps[0].environments, None, "{format:?}");
-        assert_eq!(
-            created.disabled_environments,
-            [StepDisabledEnvironments::default()]
-        );
-    }
+    assert_eq!(created.job.steps[0].environments, None);
+    assert_eq!(
+        created.disabled_environments,
+        [StepDisabledEnvironments::default()]
+    );
 }
 
 // ── Round 5 audit ───────────────────────────────────────────────────
@@ -1452,32 +1432,6 @@ fn a_job_environments_enable_if_runs_under_the_caller_budgets() {
     let created =
         create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap();
     assert_eq!(created.job.steps[0].environments, None);
-}
-
-#[test]
-fn a_let_read_only_by_an_enable_if_is_not_evaluated_in_the_submission_path_format() {
-    // `r` fails in WINDOWS form, but only an enableIf reads it, so it is
-    // not evaluated again in the submission path format, and its POSIX
-    // value enables the Step Environment. An entry's parameter value that
-    // read it would be reported (test_env_params_job_creation).
-    let jt = job_ok(
-        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-         steps:\n- name: S\n  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  \
-         stepEnvironments:\n  - {name: SE, enableIf: \"r == 'b'\", variables: {V: x}}\n  \
-         script: {actions: {onRun: {command: x}}}\n",
-    );
-    let values = job_params_with(&jt, &[], &[]);
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let created = create_job_with_environment_templates(&jt, &[], &values, &ctx).unwrap();
-    assert_eq!(
-        created.job.steps[0]
-            .step_environments
-            .as_ref()
-            .map(Vec::len),
-        Some(1)
-    );
 }
 
 // ── A set-dependent check fails early only when the failure is certain ──
@@ -1549,58 +1503,56 @@ fn a_certain_single_layer_violation_is_reported_before_job_creation() {
 
 // ── Round 6 audit ───────────────────────────────────────────────────
 
-/// A Step with a `let` binding `r` that fails only in WINDOWS form, and an
-/// entry for ON_REQUEST `R` whose value reads it, with `enable_if`.
-fn windows_let_entry(enable_if: &str) -> openjd_model::template::JobTemplate {
-    job_ok(&format!(
+/// A Step whose `let` binding `r` fails (`/a/b` is not relative to
+/// `/c`), and an entry for ON_REQUEST `R` whose value reads it, with
+/// `enable_if`.
+fn failing_let_entry(enable_if: &str) -> String {
+    format!(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+         parameterDefinitions: [{{name: Root, type: STRING, default: /a/b}}, \
+         {{name: Base, type: STRING, default: /c}}]\n\
          jobEnvironments:\n- {{name: R, activation: ON_REQUEST, \
          envParameterDefinitions: [{{name: P, type: STRING, default: d}}], variables: {{V: x}}}}\n\
-         steps:\n- name: S\n  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  \
+         steps:\n- name: S\n  let: [\"r = string(path(Param.Root).relative_to(Param.Base))\"]\n  \
          dependencies: [{{environment: R, enableIf: {enable_if}, parameters: {{P: \"{{{{r}}}}\"}}}}]\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n"
-    ))
-}
-
-fn windows_ctx(jt: &openjd_model::template::JobTemplate) -> openjd_model::ValidationContext {
-    jt.default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows)
-}
-
-const WINDOWS_LET_ERROR: &str = "steps[0] -> let[0]:\n\tin the submission path format (WINDOWS), \
-     which this Step's Environment parameter values resolve in: Expression error: Error \
-     evaluating let binding 'r': relative_to failed: '\\a\\b' is not relative to '/a'\n  \
-     r = string(path('/a/b').relative_to('/a'))\n             ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~";
-
-#[test]
-fn a_disabled_entrys_values_do_not_reevaluate_let_bindings() {
-    // A disabled entry supplies nothing (§3.2 item 3.2), so the
-    // binding only its value reads is not evaluated again in WINDOWS form,
-    // whether its enableIf is the scalar false or an expression.
-    for enable_if in ["false", "\"Step.Name == 'Q'\""] {
-        let jt = windows_let_entry(enable_if);
-        let values = job_params_with(&jt, &[], &[]);
-        let job = create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt))
-            .unwrap_or_else(|e| panic!("{enable_if}: {e}"))
-            .job;
-        assert_eq!(job.steps[0].environments, Some(vec![]), "{enable_if}");
-    }
-    // Enabled, the value reads it, and it fails in WINDOWS form.
-    for enable_if in ["true", "\"Step.Name == 'S'\""] {
-        let jt = windows_let_entry(enable_if);
-        let values = job_params_with(&jt, &[], &[]);
-        let err = create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt))
-            .unwrap_err();
-        assert_errors(&err.to_string(), "JobTemplate", &[WINDOWS_LET_ERROR]);
-    }
+    )
 }
 
 #[test]
-fn enable_ifs_use_the_template_scope_when_an_entry_value_reads_the_same_let() {
-    // `p` is read by an entry value (evaluated again in WINDOWS form) and
-    // by a Step Environment's and the entry's enableIfs (template scope,
-    // POSIX), so each gets its own value.
-    let jt = job_ok(
+fn a_failing_let_is_one_error_whatever_reads_it() {
+    // The Step's `let` bindings are evaluated once, with POSIX semantics
+    // (§7.3.2, Expression Language §1.2.1), for every field of the Step, so
+    // a binding that fails is the same one error whether the entry whose
+    // value reads it is enabled, disabled by the scalar `false`, or
+    // disabled by an expression.
+    let mut errors = Vec::new();
+    for enable_if in [
+        "false",
+        "\"Step.Name == 'Q'\"",
+        "true",
+        "\"Step.Name == 'S'\"",
+    ] {
+        let err = create(&failing_let_entry(enable_if), &[], &[])
+            .expect_err(enable_if)
+            .to_string();
+        errors.push(err);
+    }
+    assert_errors(&errors[0], "JobTemplate", &[FAILING_LET_ERROR]);
+    assert!(errors.iter().all(|e| *e == errors[0]), "{errors:#?}");
+}
+
+const FAILING_LET_ERROR: &str = "steps[0] -> let[0]:\n\tInvalid expression in let binding \
+     'r': relative_to failed: '/a/b' is not relative to '/c'\n  r = \
+     string(path(Param.Root).relative_to(Param.Base))\n             \
+     ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~";
+
+#[test]
+fn enable_ifs_and_entry_values_read_the_same_let_value() {
+    // `p` is read by an entry value and by a Step Environment's and the
+    // entry's enableIfs. All are TEMPLATE-scope fields, so each reads the
+    // one POSIX value.
+    let created = create_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          jobEnvironments:\n- {name: E, activation: ON_REQUEST, \
          envParameterDefinitions: [{name: N, type: STRING}], variables: {V: x}}\n\
@@ -1608,11 +1560,10 @@ fn enable_ifs_use_the_template_scope_when_an_entry_value_reads_the_same_let() {
          dependencies: [{environment: E, enableIf: \"p == '/a/b'\", parameters: {N: \"{{ p }}\"}}]\n  \
          stepEnvironments:\n  - {name: Posix, enableIf: \"p == '/a/b'\", variables: {V: x}}\n  \
          script: {actions: {onRun: {command: x}}}\n",
+        &[],
+        &[],
     );
-    let values = job_params_with(&jt, &[], &[]);
-    let job = create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt))
-        .unwrap()
-        .job;
+    let job = created.job;
     let names: Vec<&str> = job.steps[0]
         .step_environments
         .iter()
@@ -1622,29 +1573,7 @@ fn enable_ifs_use_the_template_scope_when_an_entry_value_reads_the_same_let() {
     assert_eq!(names, ["Posix"]);
     assert_eq!(
         rendered_values(&job.steps[0]),
-        ["JobTemplate/E: N=string:\\a\\b"]
-    );
-}
-
-#[test]
-fn an_entrys_enable_if_names_are_not_evaluated_again() {
-    // `r` fails in WINDOWS form, but only the entry's enableIf reads it
-    // (its value is a literal), so the Job is created.
-    let jt = job_ok(
-        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-         jobEnvironments:\n- {name: E, activation: ON_REQUEST, \
-         envParameterDefinitions: [{name: N, type: STRING}], variables: {V: x}}\n\
-         steps:\n- name: S\n  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  \
-         dependencies: [{environment: E, enableIf: \"r == 'b'\", parameters: {N: lit}}]\n  \
-         script: {actions: {onRun: {command: x}}}\n",
-    );
-    let values = job_params_with(&jt, &[], &[]);
-    let job = create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt))
-        .unwrap()
-        .job;
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        ["JobTemplate/E: N=string:lit"]
+        ["JobTemplate/E: N=string:/a/b"]
     );
 }
 
@@ -1719,26 +1648,23 @@ fn a_job_environments_enable_if_runs_under_the_caller_memory_budget() {
 }
 
 #[test]
-fn a_step_environments_enable_if_error_is_not_reported_when_entry_scope_fails() {
-    // The entry value's binding fails in WINDOWS form (§7.4.1 step 1),
-    // which stops the Step after step 4, so the Step Environment's failing
-    // enableIf (step 6) is not reported; it is once the binding is fixed.
-    let jt = job_ok(
+fn a_step_environments_enable_if_error_is_not_reported_when_the_steps_let_fails() {
+    // A Step's `let` binding that fails leaves the Step uninstantiable, so
+    // the Step Environment's failing enableIf (§7.4.1 step 6) is not
+    // reported; it is once the binding is fixed.
+    let src =
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
-         parameterDefinitions: [{name: S, type: STRING, default: x}]\n\
+         parameterDefinitions: [{name: S, type: STRING, default: x}, \
+         {name: Root, type: STRING, default: /a/b}, {name: Base, type: STRING, default: /c}]\n\
          jobEnvironments:\n- {name: R, activation: ON_REQUEST, \
          envParameterDefinitions: [{name: P, type: STRING}], variables: {V: x}}\n\
-         steps:\n- name: S\n  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  \
+         steps:\n- name: S\n  let: [\"r = string(path(Param.Root).relative_to(Param.Base))\"]\n  \
          dependencies: [{environment: R, parameters: {P: \"{{r}}\"}}]\n  \
          stepEnvironments:\n  - {name: SE, enableIf: \"int(Param.S) > 0\", variables: {V: x}}\n  \
-         script: {actions: {onRun: {command: x}}}\n",
-    );
-    let values = job_params_with(&jt, &[], &[]);
-    let err =
-        create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt)).unwrap_err();
-    assert_errors(&err.to_string(), "JobTemplate", &[WINDOWS_LET_ERROR]);
-    let err =
-        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap_err();
+         script: {actions: {onRun: {command: x}}}\n";
+    let err = create(src, &[], &[]).unwrap_err();
+    assert_errors(&err.to_string(), "JobTemplate", &[FAILING_LET_ERROR]);
+    let err = create(src, &[], &[("Root", "/a/b"), ("Base", "/a")]).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
@@ -1752,10 +1678,9 @@ fn a_step_environments_enable_if_error_is_not_reported_when_entry_scope_fails() 
 // ── Round 7 audit ───────────────────────────────────────────────────
 
 #[test]
-fn an_entry_whose_enable_if_fails_does_not_reevaluate_let_bindings() {
-    // The entry's enableIf fails, so its value is not computed and the
-    // binding only that value reads is not evaluated again in WINDOWS
-    // form: the one mistake is reported once, with no `let[0]` error.
+fn an_entry_whose_enable_if_fails_is_one_error() {
+    // The entry's enableIf fails, so its value is not computed: the one
+    // mistake is reported once.
     let jt = job_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          parameterDefinitions: [{name: I, type: INT, default: 5}]\n\
@@ -1767,7 +1692,7 @@ fn an_entry_whose_enable_if_fails_does_not_reevaluate_let_bindings() {
     );
     let values = job_params_with(&jt, &[], &[]);
     let err =
-        create_job_with_environment_templates(&jt, &[], &values, &windows_ctx(&jt)).unwrap_err();
+        create_job_with_environment_templates(&jt, &[], &values, &posix_ctx(&jt)).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
