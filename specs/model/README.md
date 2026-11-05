@@ -73,15 +73,19 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
-  `87be017`. Its changes since `26ef74f` are the statement that a merged RANGE_EXPR Job
-  Parameter's `minLength` and `maxLength` keep the rule of the document that contains each
-  definition (§1.2.1, §2.10; `c12a76e`), which the prototype already followed, and
-  non-normative text (the Environment Name Conventions wiki page and the RFC's open questions).
-  `26ef74f` stops a group at its first entered member, so a superseded Environment's
-  `enableIf` is not evaluated (§7.4.1 step 6), and `e0a9e44` before it, which adds an
-  Environment's `exclusiveGroup` (§4 item 7; no separate plan; see
-  [template-types.md](template-types.md#environment-4) and
-  [job-creation.md](job-creation.md#exclusive-groups-env_params)). That includes `e1b7e8c`, which splits `activation: ALWAYS` into a strict
+  `87be017`. Its `ENV_PARAMS` changes since `26ef74f` are the statement that each of a merged
+  RANGE_EXPR Job Parameter's definitions keeps the `minLength` and `maxLength` rule of the
+  document that contains it (§1.2.1, §2.10; `c12a76e`), which the prototype already followed,
+  and non-normative text (the Environment Name Conventions wiki page and the RFC's open
+  questions). `87be017` is also rebased onto upstream spec mainline `936c28c`, whose base and
+  `EXPR` rules for format strings and `null` in task parameter `range` lists (Template Schemas
+  §3.4.2, Expression Language §1.3.2 and §1.3.12) this branch does not implement: openjd-rs
+  `main` lacks them too, and they are upstream openjd-rs PR #486. The spec at `26ef74f` stops a
+  group at its first entered member, so a superseded Environment's `enableIf` is not evaluated
+  (§7.4.1 step 6), and the spec at `e0a9e44` before it adds an Environment's `exclusiveGroup`
+  (§4 item 7; no separate plan; see [template-types.md](template-types.md#environment-4) and
+  [job-creation.md](job-creation.md#exclusive-groups-env_params)). The prototype also includes
+  `e1b7e8c`, which splits `activation: ALWAYS` into a strict
   `ALWAYS` and `BY_DEFAULT`, the default (no separate plan; see
   [template-types.md](template-types.md#environment-4)); `6c23a08` through `4a5d353`:
   empty and discarded host requirements, and an `anyOf` or `allOf` written as one
@@ -131,7 +135,8 @@ Currently implements `2023-09` with extensions:
   a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
   the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). The section citations in the
-  code, tests, and specs follow the numbering of the spec at `87be017` (unchanged since `26ef74f`), where §7.4.1 has
+  code, tests, and specs follow the numbering of the spec at `87be017`, the same as at `26ef74f`,
+  where §7.4.1 has
   steps 1–8 (step 6 Environment `enableIf` and groups, step 7 the checks over a Step's set),
   §3.2's *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3,
   the scope table is §7.3.2, and §4's *script*, *variables*, and at-least-one rule are items

@@ -601,10 +601,12 @@ fn order_step_6_by_environment_order() {
 #[test]
 fn order_step_6_two_step_environments_of_one_step_by_their_order() {
     // Both Step Environments of Step S fail their enableIf (§7.4.1 step 6),
-    // so both errors are reported, in the Step's stepEnvironments order (the
-    // Job's Environment order, §7.4.1), whichever fails which way. A Step
-    // Environment declares no parameters, so each enableIf reads a Job
-    // Parameter.
+    // so both errors are reported, in the Step's stepEnvironments order,
+    // whichever fails which way. Template Schemas §1.1 item 7's Job's
+    // Environment order covers only the attached and Job Environments; the
+    // prototype files a Step's Step Environments after all of them, in
+    // their written order. A Step Environment declares no parameters, so
+    // each enableIf reads a Job Parameter.
     let se_t = "{name: ST, enableIf: \"int(Param.T) > 0\", variables: {V: a}}";
     let se_l = "{name: SL, enableIf: \"Param.L[4] == 1\", variables: {V: b}}";
     let t_err = |i: usize| {

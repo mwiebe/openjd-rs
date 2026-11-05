@@ -25,11 +25,11 @@ use crate::types::{
 /// Type conflicts are errors. Defaults come from the last template that defines one.
 ///
 /// Each template's own extensions apply to the definitions it declares
-/// (Template Schemas §1.2 item 3), and a merged RANGE_EXPR definition's
-/// `minLength` and `maxLength` keep the rule of the document that contains
-/// it (§1.2.1, §2.10). Those from every template constrain the value as
-/// written; those from a template that lists `ENV_PARAMS` also constrain its
-/// canonical form.
+/// (Template Schemas §1.2 item 3), and each of a merged RANGE_EXPR's
+/// definitions keeps the `minLength` and `maxLength` rule of the document
+/// that contains it (§1.2.1, §2.10). Those from every template constrain the
+/// value as written; those from a template that lists `ENV_PARAMS` also
+/// constrain its canonical form.
 pub fn merge_job_parameter_definitions(
     job_template: &JobTemplate,
     environment_templates: &[EnvironmentTemplate],
