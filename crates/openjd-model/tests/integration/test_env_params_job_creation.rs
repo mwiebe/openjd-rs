@@ -472,6 +472,7 @@ jobEnvironments:
   - {name: Taken, type: PATH, default: 'C:\tools'}
   - {name: Unused, type: PATH, default: '\\srv\share'}
   - {name: Posix, type: PATH, default: '/opt/tool'}
+  - {name: L, type: "LIST[PATH]", default: ['C:\x', '/y', '\\srv\s']}
   variables: {V: v}
 steps:
 - name: S
@@ -487,7 +488,9 @@ steps:
             .unwrap_or_else(|e| panic!("{format:?}: {e}"));
         assert_eq!(
             rendered_values(&job.steps[0]),
-            [r"JobTemplate/E: Posix=path:/opt/tool, Taken=path:C:\tools, Unused=path:/u"],
+            [
+                r#"JobTemplate/E: L=list[path]:["C:\\x","/y","\\\\srv\\s"], Posix=path:/opt/tool, Taken=path:C:\tools, Unused=path:/u"#
+            ],
             "{format:?}"
         );
     }
@@ -509,16 +512,17 @@ jobEnvironments:
   envParameterDefinitions:
   - {name: Win, type: PATH, default: "{{ path('C:/tools') / 'bin' }}"}
   - {name: Posix, type: PATH, default: "{{ '/opt' }}/bin"}
+  - {name: L, type: "LIST[PATH]", default: "{{ [path('C:/x')] }}"}
   variables: {V: v}
 steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#,
     );
-    for (format, win) in [
-        (PathFormat::Posix, "C:/tools/bin"),
-        (PathFormat::Windows, r"C:\tools\bin"),
-        (PathFormat::Uri, "C:/tools/bin"),
+    for (format, win, list) in [
+        (PathFormat::Posix, "C:/tools/bin", r#"["C:/x"]"#),
+        (PathFormat::Windows, r"C:\tools\bin", r#"["C:\\x"]"#),
+        (PathFormat::Uri, "C:/tools/bin", r#"["C:/x"]"#),
     ] {
         let ctx = jt
             .default_validation_context()
@@ -528,7 +532,7 @@ steps:
         assert_eq!(
             rendered_values(&job.steps[0]),
             [format!(
-                "JobTemplate/E: Posix=path:/opt/bin, Win=path:{win}"
+                "JobTemplate/E: L=list[path]:{list}, Posix=path:/opt/bin, Win=path:{win}"
             )],
             "{format:?}"
         );

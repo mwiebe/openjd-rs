@@ -1194,6 +1194,34 @@ fn grouped_path(value: &str) -> String {
     )
 }
 
+/// §4.5 item 3 for a grouped Job Environment's LIST[PATH] literal value
+/// under `check_environment_templates`: elements absolute in some path
+/// format pass in every submission path format, and a relative one fails.
+#[test]
+fn check_accepts_a_grouped_list_path_value_absolute_in_any_format() {
+    let grouped_list = |value: &str| {
+        grouped_path("X")
+            .replace("{name: D, type: PATH}", "{name: D, type: \"LIST[PATH]\"}")
+            .replace("D: 'X'", &format!("D: {value}"))
+    };
+    for format in [
+        openjd_expr::path_mapping::PathFormat::Posix,
+        openjd_expr::path_mapping::PathFormat::Windows,
+        openjd_expr::path_mapping::PathFormat::Uri,
+    ] {
+        let fmt = |c: ValidationContext| c.with_submission_path_format(format);
+        check_with(&grouped_list(r"['C:\x', '/y', '\\srv\s']"), &[], fmt)
+            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        let err = check_with(&grouped_list("['/y', 'rel']"), &[], fmt)
+            .expect_err("expected check to fail");
+        assert_errors(
+            &err.to_string(),
+            "JobTemplate",
+            &[&not_absolute("rel").replace("\n\tmust", "\n\titem[1] must")],
+        );
+    }
+}
+
 #[test]
 fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     // As job creation does: URI values and the caller's limits, and the

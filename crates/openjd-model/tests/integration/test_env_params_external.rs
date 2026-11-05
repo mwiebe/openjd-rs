@@ -1105,6 +1105,45 @@ steps:
     );
 }
 
+/// The Step `let` bindings an entry value reads are evaluated again in the
+/// URI submission path format too, not as WINDOWS: `/out` keeps its `/`.
+#[test]
+fn an_external_entry_reads_a_path_let_binding_in_the_uri_submission_path_format() {
+    let env = r#"
+specificationVersion: environment-2023-09
+extensions: [ENV_PARAMS, EXPR]
+environment:
+  name: Ext
+  envParameterDefinitions: [{name: A, type: PATH}]
+  variables: {V: v}
+"#;
+    let jt = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{name: Root, type: STRING, default: /out}]
+steps:
+- name: S
+  let: ["p = path(Param.Root) / 'r'"]
+  dependencies: [{environment: Ext, parameters: {A: "{{ p.parent / 'y' }}/z"}}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+    let jt_dec = job_ok(jt);
+    let envs = vec![env_ok(env)];
+    let params = job_params_with(&jt_dec, &[], &envs);
+    let uri = jt_dec
+        .default_validation_context()
+        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Uri);
+    let attached = [AttachedEnvironmentTemplate::new(&envs[0])];
+    let job = create_job_with_environment_templates(&jt_dec, &attached, &params, &uri)
+        .unwrap()
+        .job;
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["EnvironmentTemplate[0]/Ext: A=path:/out/y/z"]
+    );
+}
+
 #[test]
 fn an_unreachable_attachment_with_a_required_parameter_is_reported_once_at_the_attachment() {
     // §3.2.1 item 4: the name resolves to the Job Environment, so no entry
@@ -1283,7 +1322,10 @@ specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
 environment:
   name: E
-  envParameterDefinitions: [{name: P, type: PATH}]
+  envParameterDefinitions:
+  - {name: P, type: PATH}
+  - {name: L, type: "LIST[PATH]", default: "{{ [path('C:/x')] }}"}
+  - {name: M, type: "LIST[PATH]"}
   variables: {V: v}
 "#;
     for (value, stored) in [(r#""{{ 'C:' }}/x""#, "C:/x"), (r#""{{ '/' }}x""#, "/x")] {
@@ -1294,15 +1336,27 @@ extensions: [ENV_PARAMS, EXPR]
 name: J
 steps:
 - name: S
-  dependencies: [{{environment: E, parameters: {{P: {value}}}}}]
+  dependencies: [{{environment: E, parameters: {{P: {value}, M: "{{{{ [path('D:/m')] }}}}"}}}}]
   script: {{actions: {{onRun: {{command: x}}}}}}
 "#
         );
         let s = submission(&jt, &[env], &[]);
-        for format in [
-            openjd_expr::path_mapping::PathFormat::Posix,
-            openjd_expr::path_mapping::PathFormat::Windows,
-            openjd_expr::path_mapping::PathFormat::Uri,
+        for (format, l, m) in [
+            (
+                openjd_expr::path_mapping::PathFormat::Posix,
+                r#"["C:/x"]"#,
+                r#"["D:/m"]"#,
+            ),
+            (
+                openjd_expr::path_mapping::PathFormat::Windows,
+                r#"["C:\\x"]"#,
+                r#"["D:\\m"]"#,
+            ),
+            (
+                openjd_expr::path_mapping::PathFormat::Uri,
+                r#"["C:/x"]"#,
+                r#"["D:/m"]"#,
+            ),
         ] {
             let ctx = posix_ctx(&s.jt).with_submission_path_format(format);
             let job = s
@@ -1311,7 +1365,9 @@ steps:
                 .job;
             assert_eq!(
                 rendered_values(&job.steps[0]),
-                [format!("EnvironmentTemplate[0]/E: P=path:{stored}")],
+                [format!(
+                    "EnvironmentTemplate[0]/E: L=list[path]:{l}, M=list[path]:{m}, P=path:{stored}"
+                )],
                 "{value} in {format:?}"
             );
         }
