@@ -35,10 +35,11 @@
 //!   a submitted Job Parameter value of that type would, with no directory
 //!   join;
 //! - a PATH value, and each element of a LIST[PATH] value, must be a
-//!   non-empty path that is absolute in
-//!   [`ValidationContext::submission_path_format`], or, with
-//!   [`ValidationContext::allow_uri_path_values`], a URI (§4.5; prototype
-//!   plan A12, whose caller-policy half still holds, and A16);
+//!   non-empty path that is absolute in some path format (POSIX, a Windows
+//!   drive path, or a UNC path), whatever
+//!   [`ValidationContext::submission_path_format`] is, or, with
+//!   [`ValidationContext::allow_uri_path_values`], a URI (§4.5 item 3;
+//!   prototype plan A12, whose caller-policy half still holds, and A16);
 //! - the definition's constraints are checked against the value
 //!   (constraint 6, §4.5 item 2);
 //! - a RANGE_EXPR value is stored as its `range_expr`, whose transport form
@@ -783,8 +784,10 @@ fn resolve_value(
             if errors.len() > before {
                 return (None, false);
             }
-            // Paths are in the submission path format (§4.5), so path
-            // operations (`path(RawParam.Dir) / 'sub'`) use its rules.
+            // Format strings evaluate in the submission path format, so
+            // path operations (`path(RawParam.Dir) / 'sub'`) use its rules.
+            // Whether a PATH result is absolute does not depend on it
+            // (`check_paths`, §4.5 item 3).
             let opts = policy
                 .budgets
                 .fs_options()
@@ -887,8 +890,11 @@ pub(super) fn paths_to_strings(v: ExprValue) -> ExprValue {
 }
 
 /// §4.5 item 3: each PATH value, and each LIST[PATH] element, is
-/// a non-empty path absolute in the submission path format or, with the
-/// caller's permission, a URI.
+/// a non-empty path absolute in some path format
+/// ([`is_absolute_in_any_format`]) or, with the caller's permission, a URI.
+/// It is not checked against
+/// [`ValidationContext::submission_path_format`], whose value does not
+/// change the result.
 /// Reports every bad element. Returns `false` when it reported an error.
 fn check_paths(
     pt: JobParameterType,
@@ -908,11 +914,12 @@ fn check_paths(
                     "is a URI ('{s}'), and URI path values are not permitted for this submission"
                 )
             })
-        } else if !is_absolute_in(s, ctx.submission_path_format) {
+        } else if !is_absolute_in_any_format(s) {
             Some(format!(
-                "must be an absolute path in the submission path format ({}), since an \
-                 Environment parameter has no directory to be relative to; got '{s}'",
-                format_name(ctx.submission_path_format)
+                "must be an absolute path in some path format (a POSIX path starting with \
+                 '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path \
+                 such as '\\\\server\\share'), since an Environment parameter has no \
+                 directory to be relative to; got '{s}'"
             ))
         } else {
             None
@@ -933,16 +940,17 @@ fn check_paths(
     errors.len() == before
 }
 
-/// Whether `s` is an absolute path in `format`. In POSIX only a leading
-/// `/` makes a path absolute: a backslash is an ordinary filename
-/// character, so `\\srv\share` is relative there, although
-/// `openjd_expr::functions::path::is_absolute` treats a leading `\\` as a
-/// UNC path in every format.
-fn is_absolute_in(s: &str, format: PathFormat) -> bool {
-    match format {
-        PathFormat::Posix => s.starts_with('/'),
-        _ => openjd_expr::functions::path::is_absolute(s, format),
-    }
+/// Whether the non-URI string `s` is an absolute path in some path format
+/// (§4.5 item 3): a POSIX path that starts with `/`, a Windows drive path
+/// (`X:\` or `X:/`), or a UNC path (`\\server\share`). A drive-relative
+/// `C:dir`, a drive-less rooted `\dir`, and a relative path in either
+/// style are absolute in none. It is the union of
+/// [`openjd_expr::functions::path::is_absolute`] for POSIX and for
+/// WINDOWS, so it does not depend on the submission path format. Callers
+/// classify URIs first, since that function also counts a URI as absolute.
+fn is_absolute_in_any_format(s: &str) -> bool {
+    use openjd_expr::functions::path::is_absolute;
+    is_absolute(s, PathFormat::Posix) || is_absolute(s, PathFormat::Windows)
 }
 
 pub(crate) fn format_name(f: PathFormat) -> &'static str {
@@ -1608,4 +1616,133 @@ fn entry_scope<'s>(
         }
     }
     Some(Cow::Owned(scope))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::SpecificationRevision;
+
+    /// Every `submission_path_format` value.
+    const FORMATS: [PathFormat; 3] = [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri];
+
+    /// Absolute in some path format (§4.5 item 3): POSIX, Windows drive
+    /// (either separator, either letter case) and UNC (either separator).
+    const ABSOLUTE: [&str; 10] = [
+        "/",
+        "/mnt/proj",
+        r"C:\proj",
+        "C:/proj",
+        r"z:\",
+        "z:/",
+        r"\\server\share\proj",
+        r"\\server",
+        "//server/share",
+        r"/mixed\sep",
+    ];
+
+    /// Absolute in no path format: relative in either style, drive-relative,
+    /// a bare drive, drive-less rooted, and a non-letter "drive".
+    const RELATIVE: [&str; 10] = [
+        "rel",
+        "rel/dir",
+        r"relative\dir",
+        "C:dir",
+        "C:",
+        r"\dir",
+        "./x",
+        "~/x",
+        "1:/x",
+        r":\x",
+    ];
+
+    #[test]
+    fn the_classifier_accepts_every_absolute_form_and_no_relative_one() {
+        for s in ABSOLUTE {
+            assert!(is_absolute_in_any_format(s), "{s}");
+        }
+        for s in RELATIVE {
+            assert!(!is_absolute_in_any_format(s), "{s}");
+        }
+    }
+
+    fn check(pt: JobParameterType, value: ExprValue, format: PathFormat, uri: bool) -> Vec<String> {
+        let ctx = ValidationContext::new(SpecificationRevision::V2023_09)
+            .with_submission_path_format(format)
+            .with_allow_uri_path_values(uri);
+        let mut errors = ValidationErrors::default();
+        let ok = check_paths(pt, &value, &ctx, &[], &mut errors);
+        let messages: Vec<String> = errors.errors.into_iter().map(|e| e.message).collect();
+        assert_eq!(ok, messages.is_empty());
+        messages
+    }
+
+    fn not_absolute(at: &str, s: &str) -> String {
+        format!(
+            "{at}must be an absolute path in some path format (a POSIX path starting with '/', \
+             a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as \
+             '\\\\server\\share'), since an Environment parameter has no directory to be \
+             relative to; got '{s}'."
+        )
+    }
+
+    #[test]
+    fn a_path_value_is_checked_the_same_in_every_submission_path_format() {
+        for format in FORMATS {
+            for s in ABSOLUTE {
+                let v = ExprValue::String(s.to_string());
+                assert_eq!(
+                    check(JobParameterType::Path, v, format, false),
+                    Vec::<String>::new(),
+                    "{s} in {format:?}"
+                );
+            }
+            for s in RELATIVE {
+                let v = ExprValue::String(s.to_string());
+                assert_eq!(
+                    check(JobParameterType::Path, v, format, false),
+                    [not_absolute("", s)],
+                    "{s} in {format:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_list_path_element_is_checked_on_its_own_in_every_format() {
+        let items: Vec<ExprValue> = ["/a", r"D:\b", "rel", r"\\srv\s", "C:x", ""]
+            .into_iter()
+            .map(|s| ExprValue::String(s.to_string()))
+            .collect();
+        let list = ExprValue::make_list(items, ExprType::STRING).unwrap();
+        for format in FORMATS {
+            assert_eq!(
+                check(JobParameterType::ListPath, list.clone(), format, false),
+                [
+                    not_absolute("item[2] ", "rel"),
+                    not_absolute("item[4] ", "C:x"),
+                    "item[5] must not be an empty path.".to_string(),
+                ],
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_uri_is_classified_before_absoluteness_in_every_format() {
+        for format in FORMATS {
+            let uri = || ExprValue::String("s3://bucket/key".to_string());
+            assert_eq!(
+                check(JobParameterType::Path, uri(), format, true),
+                Vec::<String>::new()
+            );
+            assert_eq!(
+                check(JobParameterType::Path, uri(), format, false),
+                [
+                    "is a URI ('s3://bucket/key'), and URI path values are not permitted for this \
+                  submission."
+                ]
+            );
+        }
+    }
 }

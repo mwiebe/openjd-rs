@@ -326,7 +326,9 @@ attaches, in the order given (Template Schemas §3.2.1), labeled with its path a
 messages name it. It calls `openjd_model::create_job_with_environment_templates` with them,
 the merged Job Parameters, and `common::submission_context` (the template's profile, the
 CLI's caller limits, the host submission path format, and URI path values allowed, as for
-Job Parameters). Its submission stage:
+Job Parameters). The host path format is the one Environment parameter format strings
+evaluate in; a PATH value is accepted when it is absolute in any path format (Template
+Schemas §4.5 item 3). Its submission stage:
 
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
   the attached Environments by name. A missing `required` Environment, an ambiguous name, an

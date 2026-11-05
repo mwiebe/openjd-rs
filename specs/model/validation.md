@@ -877,7 +877,9 @@ With it, for each environment's `envParameterDefinitions` (§4 item 3, §4.5):
   `coerce_json_to_job_parameter_type` on the decoder's canonical form (so the trimming
   `FlexInt` / `FlexFloat` do applies, and `" 3 "` is a valid INT literal here as it is for a
   Job Parameter `default`), and calls `check_constraints` with `AsWrittenAndCanonical`. Absoluteness of a
-  PATH value depends on the submission path format and is left to job creation. An
+  PATH value is left to job creation, the stage the RFC's error table gives it, although it no
+  longer depends on the submission path format (§4.5 item 3, spec `2892d96`): a relative literal
+  `default` is rejected there, even when every Step supplies the parameter. An
   object or `null`, at any depth, is rejected; so is a list element containing `{{`
   (plan A14: list-literal elements are literals).
 - A format-string `default` of a list type must be a single `{{ }}` expression (§4.5

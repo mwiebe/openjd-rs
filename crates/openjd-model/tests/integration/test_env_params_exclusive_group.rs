@@ -1196,8 +1196,9 @@ fn grouped_path(value: &str) -> String {
 
 #[test]
 fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
-    // As job creation does: the path format, URI values, and the caller's
-    // limits, and the error at the entry's own index.
+    // As job creation does: URI values and the caller's limits, and the
+    // error at the entry's own index. A PATH value absolute in any path
+    // format passes whatever the submission path format (§4.5 item 3).
     let relative = grouped_path("relative/x");
     let err = check(&relative, &[]).expect_err("expected check to fail");
     assert_errors(
@@ -1216,8 +1217,10 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     };
     check_with(&grouped_path("C:\\x"), &[], windows).unwrap();
     create_with(&grouped_path("C:\\x"), &[], windows).unwrap();
-    let err = check(&grouped_path("C:\\x"), &[]).expect_err("expected check to fail");
-    assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:\\x")]);
+    check(&grouped_path("C:\\x"), &[]).unwrap();
+    create_with(&grouped_path("C:\\x"), &[], |c| c).unwrap();
+    let err = check_with(&grouped_path("C:x"), &[], windows).expect_err("expected check to fail");
+    assert_errors(&err.to_string(), "JobTemplate", &[&not_absolute("C:x")]);
     let uri = |c: ValidationContext| c.with_allow_uri_path_values(true);
     check_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
     create_with(&grouped_path("s3://bucket/key"), &[], uri).unwrap();
@@ -1255,13 +1258,11 @@ fn check_applies_the_submission_policy_to_a_grouped_job_environment() {
     );
 }
 
-/// The error for a PATH value `value` of J's `D` that is not absolute in
-/// the POSIX submission path format.
+/// The error for a PATH value `value` of J's `D` that is absolute in no
+/// path format.
 fn not_absolute(value: &str) -> String {
     format!(
-        "steps[0] -> dependencies[1] -> parameters -> D:\n\tmust be an absolute path in the \
-         submission path format (POSIX), since an Environment parameter has no directory to be \
-         relative to; got '{value}'."
+        "steps[0] -> dependencies[1] -> parameters -> D:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{value}'."
     )
 }
 

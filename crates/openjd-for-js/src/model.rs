@@ -723,7 +723,10 @@ pub fn decode_environment_template_from_object(
 /// `pathOptions` controls how `PATH` parameters are resolved. Construct
 /// with `new PathParameterOptions(jobTemplateDir, currentWorkingDir)`.
 /// Its `pathFormat` and `allowUriPathValues` are also the submission path
-/// policy for `ENV_PARAMS` Environment parameter PATH values.
+/// policy for `ENV_PARAMS` Environment parameter values: format strings
+/// evaluate in `pathFormat`, and `allowUriPathValues` decides whether a
+/// URI is accepted as a PATH value. A PATH value is accepted when it is
+/// absolute in any path format, whatever `pathFormat` is.
 ///
 /// `createJob` takes no Environment Templates, so with `ENV_PARAMS` an
 /// `environment:` dependency that names no Job Environment makes it throw

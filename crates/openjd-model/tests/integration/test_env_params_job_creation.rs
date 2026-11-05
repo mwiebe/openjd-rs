@@ -372,7 +372,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#,
         &[],
-        &["jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'rel/dir'."],
+        &["jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/dir'."],
     );
 }
 
@@ -406,8 +406,8 @@ fn relative_and_empty_paths_are_errors() {
         &[],
         &[
             "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[1] must not be an empty path.",
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[2] must be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'x/y'.",
-            "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'rel'.",
+            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[2] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'x/y'.",
+            "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
         ],
     );
 }
@@ -422,29 +422,151 @@ fn an_empty_path_from_a_job_parameter_is_an_error() {
     );
 }
 
+/// Every `submission_path_format` value, so a test can show a result does
+/// not depend on it.
+const FORMATS: [PathFormat; 3] = [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri];
+
+/// §4.5 item 3 (spec 2892d96): a PATH value absolute in any path format is
+/// accepted, and stored as written, whatever the submission path format.
 #[test]
-fn absoluteness_follows_the_submission_path_format() {
-    let jt = job_ok(&paths(r#"'C:\data'"#, r#"['D:\x']"#));
-    let params = job_params(&jt, &[]);
+fn a_path_absolute_in_any_format_is_accepted_in_every_submission_path_format() {
+    // (YAML single-quoted value, the stored string.)
+    let accepted = [
+        ("'/mnt/proj'", "/mnt/proj"),
+        (r"'C:\proj'", r"C:\proj"),
+        ("'C:/proj'", "C:/proj"),
+        (r"'d:\x'", r"d:\x"),
+        (r"'\\server\share\proj'", r"\\server\share\proj"),
+        ("'//server/share'", "//server/share"),
+    ];
+    for format in FORMATS {
+        for (value, stored) in accepted {
+            let jt = job_ok(&paths(value, "[]"));
+            let ctx = jt
+                .default_validation_context()
+                .with_submission_path_format(format);
+            let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
+                .unwrap_or_else(|e| panic!("{value} in {format:?}: {e}"));
+            assert_eq!(
+                rendered_values(&job.steps[0]),
+                [format!("JobTemplate/E: L=list[path]:[], P=path:{stored}")],
+                "{value} in {format:?}"
+            );
+        }
+    }
+}
+
+/// §4.5 item 3: each LIST[PATH] element is checked on its own, so a list
+/// that mixes POSIX, Windows drive and UNC paths is accepted.
+#[test]
+fn a_list_path_value_may_mix_path_formats() {
+    let jt = job_ok(&paths(
+        "/p",
+        r#"['/mnt/a', 'D:\b', 'E:/c', '\\server\share\d']"#,
+    ));
+    for format in FORMATS {
+        let ctx = jt
+            .default_validation_context()
+            .with_submission_path_format(format);
+        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
+            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        assert_eq!(
+            rendered_values(&job.steps[0]),
+            [
+                r#"JobTemplate/E: L=list[path]:["/mnt/a","D:\\b","E:/c","\\\\server\\share\\d"], P=path:/p"#
+            ],
+            "{format:?}"
+        );
+    }
+}
+
+/// §4.5 item 3: a path absolute in no format is rejected with the same
+/// message whatever the submission path format, which the message does
+/// not name.
+#[test]
+fn a_path_absolute_in_no_format_is_rejected_in_every_submission_path_format() {
+    let rejected = [
+        ("'rel/dir'", "rel/dir"),
+        (r"'relative\dir'", r"relative\dir"),
+        ("'C:dir'", "C:dir"),
+        ("'C:'", "C:"),
+        (r"'\dir'", r"\dir"),
+        ("'./x'", "./x"),
+        ("'~/x'", "~/x"),
+        ("'1:/x'", "1:/x"),
+    ];
+    for format in FORMATS {
+        for (value, got) in rejected {
+            let jt = job_ok(&paths(value, &format!("[{value}]")));
+            let ctx = jt
+                .default_validation_context()
+                .with_submission_path_format(format);
+            let err = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap_err();
+            assert_errors(
+                &err.to_string(),
+                "JobTemplate",
+                &[
+                    &format!("steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{got}'."),
+                    &format!("steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{got}'."),
+                ],
+            );
+        }
+    }
+}
+
+/// Spec 2892d96 leaves expressions evaluated at Job creation in the
+/// evaluator's path format: `path(RawParam.Dir) / 'x'` joins with that
+/// format's separator. A POSIX value evaluated in WINDOWS becomes the
+/// drive-less rooted `\data\x`, which is absolute in no format.
+#[test]
+fn a_path_expression_still_uses_the_submission_path_format() {
+    let src = PATHS
+        .replace(
+            r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
+            "parameterDefinitions: [{name: Dir, type: PATH}]",
+        )
+        .replace("P: VALUE_P", r#"P: "{{ path(RawParam.Dir) / 'x' }}""#)
+        .replace("L: VALUE_L", r#"L: "{{ [path(RawParam.Dir) / 'y'] }}""#);
+    let jt = job_ok(&src);
+    let params = job_params(&jt, &[("Dir", "/data")]);
+    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:["/data/y"], P=path:/data/x"#]
+    );
     let windows = jt
         .default_validation_context()
         .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &params, &windows).unwrap();
-    // The value is stored exactly as written, not rewritten to POSIX.
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:["D:\\x"], P=path:C:\data"#]
-    );
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
+    let err = create_job(&jt, &params, &windows).unwrap_err();
     assert_errors(
         &err.to_string(),
         "JobTemplate",
         &[
-            r"steps[0] -> dependencies[0] -> parameters -> L:
-	item[0] must be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'D:\x'.",
-            r"steps[0] -> dependencies[0] -> parameters -> P:
-	must be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'C:\data'.",
+            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\y'.",
+            "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\x'.",
         ],
+    );
+    // A Windows drive path keeps its drive, so it is accepted in both,
+    // joined with each format's separator (POSIX treats `\` as a filename
+    // character).
+    let input: openjd_model::JobParameterInputValues = [(
+        "Dir".to_string(),
+        openjd_expr::ExprValue::String(r"C:\data".to_string()),
+    )]
+    .into_iter()
+    .collect();
+    let mut opts = openjd_model::PathParameterOptions::new(r"C:\templates", r"C:\work");
+    opts.path_format = PathFormat::Windows;
+    let params = openjd_model::preprocess_job_parameters(&jt, &input, &[], &opts).unwrap();
+    let job = create_job(&jt, &params, &windows).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:["C:\\data\\y"], P=path:C:\data\x"#]
+    );
+    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:["C:\\data/y"], P=path:C:\data/x"#]
     );
 }
 
@@ -694,8 +816,8 @@ steps:
 "#,
         &[],
         &[
-            "jobEnvironments[1] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'rel'.",
-            "steps[1] -> dependencies[1] -> parameters -> Q:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'also-rel'.",
+            "jobEnvironments[1] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
+            "steps[1] -> dependencies[1] -> parameters -> Q:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'also-rel'.",
         ],
     );
 }
@@ -1150,43 +1272,6 @@ steps:
 }
 
 #[test]
-fn a_leading_double_backslash_is_relative_in_posix() {
-    // In POSIX a backslash is an ordinary filename character, so
-    // `\\srv\share` is relative there; in WINDOWS it is a UNC path.
-    let src = r#"
-specificationVersion: jobtemplate-2023-09
-extensions: [ENV_PARAMS, EXPR]
-name: J
-jobEnvironments:
-- name: E
-  envParameterDefinitions: [{name: P, type: PATH, default: '\\srv\share'}]
-  variables: {V: v}
-steps:
-- name: S
-  script: {actions: {onRun: {command: x}}}
-"#;
-    let jt = job_ok(src);
-    let params = job_params(&jt, &[]);
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[
-            r"jobEnvironments[0] -> envParameterDefinitions[0] -> default:
-	must be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got '\\srv\share'.",
-        ],
-    );
-    let windows = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &params, &windows).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r"JobTemplate/E: P=path:\\srv\share"]
-    );
-}
-
-#[test]
 fn equality_matches_several_environments_of_one_document_in_any_order() {
     let job = create_ok(
         r#"
@@ -1236,7 +1321,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#,
         &[],
-        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in the submission path format (POSIX), since an Environment parameter has no directory to be relative to; got 'rel'."],
+        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'."],
     );
 }
 

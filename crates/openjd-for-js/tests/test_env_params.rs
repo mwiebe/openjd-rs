@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `createJob` with `ENV_PARAMS` templates: the caller's path options
-//! reach the Environment parameter PATH checks, the returned Job has no
+//! reach the Environment parameter values (the format they evaluate in,
+//! and the URI policy; a PATH value's absoluteness does not depend on the
+//! format), the returned Job has no
 //! unresolved `environment:` entries, since `createJob` takes no
 //! Environment Templates, and Environment `hostRequirements` combine with
 //! a Step's.
@@ -37,20 +39,42 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
 
+/// A PATH value absolute in any path format is accepted whatever
+/// `pathFormat` is (Template Schemas §4.5 item 3), and a relative one is
+/// rejected with a message that names no format.
 #[test]
-fn the_path_format_option_is_the_submission_path_format() {
-    let mut opts = JsPathParameterOptions::new("C:\\tmpl", "C:\\cwd");
-    opts.set_path_format(JsPathFormat::Windows);
-    create(WINDOWS_PATH, &opts).expect("a Windows path is absolute for a Windows submission");
-
+fn a_path_value_is_checked_in_no_one_path_format() {
+    let mut windows = JsPathParameterOptions::new("C:\\tmpl", "C:\\cwd");
+    windows.set_path_format(JsPathFormat::Windows);
     let posix = JsPathParameterOptions::new("/tmpl", "/cwd");
-    let err = create(WINDOWS_PATH, &posix).unwrap_err();
+    let relative = WINDOWS_PATH.replace(r"'C:\tools'", "'tools'");
+    for opts in [&windows, &posix] {
+        create(WINDOWS_PATH, opts).expect("a Windows path is absolute in some path format");
+        create(&WINDOWS_PATH.replace(r"'C:\tools'", "/tools"), opts)
+            .expect("a POSIX path is absolute in some path format");
+        assert_eq!(
+            create(&relative, opts).unwrap_err(),
+            "Model validation error: 1 validation error for JobTemplate\n\
+             jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\
+             \tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'tools'."
+        );
+    }
+}
+
+/// `pathFormat` is still the format Environment parameter format strings
+/// evaluate in: `path('/a') / 'b'` is `/a/b` in POSIX, and the drive-less
+/// rooted `\a\b`, absolute in no format, in WINDOWS.
+#[test]
+fn the_path_format_option_is_the_format_values_evaluate_in() {
+    let template = WINDOWS_PATH.replace(r"'C:\tools'", r#""{{ path('/a') / 'b' }}""#);
+    create(&template, &JsPathParameterOptions::new("/tmpl", "/cwd")).expect("POSIX joins with /");
+    let mut windows = JsPathParameterOptions::new("C:\\tmpl", "C:\\cwd");
+    windows.set_path_format(JsPathFormat::Windows);
     assert_eq!(
-        err,
+        create(&template, &windows).unwrap_err(),
         "Model validation error: 1 validation error for JobTemplate\n\
          jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\
-         \tmust be an absolute path in the submission path format (POSIX), since an Environment \
-         parameter has no directory to be relative to; got 'C:\\tools'."
+         \tfor Step 'S', which does not supply this parameter: must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\a\\b'."
     );
 }
 

@@ -510,9 +510,9 @@ stage](#the-submission-stage):
   value is read with `EXPR`, whatever `ctx` enables. The first half of plan 1's A12 (a value's
   forms follow the extensions of the document that holds it) has no case left to decide (plan
   6); its second half, the caller's URI policy, is below.
-- **Format-string values** resolve in `ctx.submission_path_format` (§4.5: the values are paths
-  in that format, so `path(RawParam.Dir) / 'sub'` uses its rules) under the caller's evaluation
-  budgets. An entry value's scope, and an `enableIf`'s, is the Step's full template scope
+- **Format-string values** resolve in `ctx.submission_path_format`, the evaluator's path
+  format, so `path(RawParam.Dir) / 'sub'` uses its rules, under the caller's evaluation
+  budgets. It does not decide which PATH results are accepted (see PATH values below). An entry value's scope, and an `enableIf`'s, is the Step's full template scope
   (`Param.*` other than PATH and LIST[PATH], `RawParam.*`, `Job.Name`, `Job.EnvNames`,
   `Step.Name`, and the Step's `let` bindings; §7.3.2). Job creation
   evaluates the Step's `let` bindings in POSIX; when `submission_path_format` is another
@@ -539,9 +539,15 @@ stage](#the-submission-stage):
   be, with no directory join. A list-typed value that is not a single expression is an error
   (template validation already rejects it for a Job Environment).
 - **PATH values**, and each LIST[PATH] element, must be non-empty (plan A16) and absolute in
-  `ctx.submission_path_format`, or, with `ctx.allow_uri_path_values`, a URI (plan A12; §4.5 item
-  3). In POSIX only a leading `/` is absolute (a backslash is an ordinary filename character,
-  so `\\srv\share` is relative there). The value is stored as resolved (plan A22): a literal or
+  some path format, or, with `ctx.allow_uri_path_values`, a URI (plan A12; §4.5 item 3, spec
+  `2892d96`). Absolute means a POSIX path that starts with `/`, a Windows drive path (`C:\proj`
+  or `C:/proj`), or a UNC path (`\\server\share\proj`); the check is the union of
+  `openjd_expr::functions::path::is_absolute` for POSIX and for WINDOWS. A drive-relative
+  `C:dir`, a drive-less rooted `\dir`, and a relative path in either style (`rel/dir`,
+  `rel\dir`) are rejected. `ctx.submission_path_format` does not change the result, so a
+  Windows path is accepted in a POSIX submission and a POSIX path in a WINDOWS one. A URI is
+  classified first, so a URI that the caller does not permit is reported as a URI. The
+  message names the three forms and not a format. The value is stored as resolved (plan A22): a literal or
   a multi-segment format string as written; a single `{{ }}` expression as the string of its
   result, which for a `path` result follows the submission format's rules (WINDOWS turns `/`
   into `\`).
@@ -1348,8 +1354,8 @@ reports only once the Step's step 1–4 errors are fixed):
    define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.5 rule 5);
 3. step 3 above, without resolving anything that needs Job Parameter values
    (`DeclaringEnvironment::check_step_statically`): constraint 5; for each supplied value, a
-   literal converted and checked as at submission (type, constraints, and PATH absoluteness
-   in `ctx.submission_path_format`, which needs no Job Parameter values), and a format string checked only against the
+   literal converted and checked as at submission (type, constraints, and that a PATH value is
+   absolute in some path format, which needs no Job Parameter values), and a format string checked only against the
    single-expression rule for a list-typed parameter; and constraint 7, over the attachments
    the Step enters (every `ALWAYS` one, every `BY_DEFAULT` one it does not decline, and each
    `ON_REQUEST` one an enabled entry refers to). The value checks and constraint 7 are made only for an attachment with
