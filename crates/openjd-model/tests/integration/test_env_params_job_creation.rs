@@ -717,6 +717,27 @@ fn a_path_expression_evaluates_with_posix_semantics() {
     }
 }
 
+/// Rule 2 for a multi-segment format string: its result is a string, but
+/// the path operations inside it still use POSIX semantics, in an entry
+/// value and in a `default` alike.
+#[test]
+fn path_operations_in_a_multi_segment_value_use_posix_semantics() {
+    let job = create_ok(
+        &PATHS
+            .replace(
+                "  - {name: L, type: \"LIST[PATH]\", default: []}",
+                "  - {name: L, type: \"LIST[PATH]\", default: []}\n  - {name: D, type: PATH, default: \"{{ path('C:/d') / 'e' }}/f\"}",
+            )
+            .replace("P: VALUE_P", r#"P: "{{ path('C:/a') / 'b' }}/x""#)
+            .replace("L: VALUE_L", "L: []"),
+        &[],
+    );
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: D=path:C:/d/e/f, L=list[path]:[], P=path:C:/a/b/x"]
+    );
+}
+
 #[test]
 fn a_uri_path_value_is_used_as_given() {
     // A URI is one more form of value: no caller policy applies to it.
