@@ -2162,17 +2162,13 @@ pub fn openjd_model::types::TaskParameterValue::clone(&self) -> openjd_model::ty
 impl core::fmt::Debug for openjd_model::types::TaskParameterValue
 pub fn openjd_model::types::TaskParameterValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::types::ValidationContext
-pub openjd_model::types::ValidationContext::allow_uri_path_values: bool
 pub openjd_model::types::ValidationContext::caller_limits: openjd_model::types::CallerLimits
 pub openjd_model::types::ValidationContext::profile: openjd_model::types::ModelProfile
-pub openjd_model::types::ValidationContext::submission_path_format: openjd_expr::path_mapping::PathFormat
 impl openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::from_profile(openjd_model::types::ModelProfile) -> Self
 pub fn openjd_model::types::ValidationContext::new(openjd_model::types::SpecificationRevision) -> Self
-pub fn openjd_model::types::ValidationContext::with_allow_uri_path_values(self, bool) -> Self
 pub fn openjd_model::types::ValidationContext::with_caller_limits(self, openjd_model::types::CallerLimits) -> Self
 pub fn openjd_model::types::ValidationContext::with_extensions(openjd_model::types::SpecificationRevision, openjd_model::types::Extensions) -> Self
-pub fn openjd_model::types::ValidationContext::with_submission_path_format(self, openjd_expr::path_mapping::PathFormat) -> Self
 impl core::clone::Clone for openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::clone(&self) -> openjd_model::types::ValidationContext
 impl core::fmt::Debug for openjd_model::types::ValidationContext
@@ -2632,17 +2628,13 @@ pub fn openjd_model::types::TaskParameterValue::clone(&self) -> openjd_model::ty
 impl core::fmt::Debug for openjd_model::types::TaskParameterValue
 pub fn openjd_model::types::TaskParameterValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::ValidationContext
-pub openjd_model::ValidationContext::allow_uri_path_values: bool
 pub openjd_model::ValidationContext::caller_limits: openjd_model::types::CallerLimits
 pub openjd_model::ValidationContext::profile: openjd_model::types::ModelProfile
-pub openjd_model::ValidationContext::submission_path_format: openjd_expr::path_mapping::PathFormat
 impl openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::from_profile(openjd_model::types::ModelProfile) -> Self
 pub fn openjd_model::types::ValidationContext::new(openjd_model::types::SpecificationRevision) -> Self
-pub fn openjd_model::types::ValidationContext::with_allow_uri_path_values(self, bool) -> Self
 pub fn openjd_model::types::ValidationContext::with_caller_limits(self, openjd_model::types::CallerLimits) -> Self
 pub fn openjd_model::types::ValidationContext::with_extensions(openjd_model::types::SpecificationRevision, openjd_model::types::Extensions) -> Self
-pub fn openjd_model::types::ValidationContext::with_submission_path_format(self, openjd_expr::path_mapping::PathFormat) -> Self
 impl core::clone::Clone for openjd_model::types::ValidationContext
 pub fn openjd_model::types::ValidationContext::clone(&self) -> openjd_model::types::ValidationContext
 impl core::fmt::Debug for openjd_model::types::ValidationContext

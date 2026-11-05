@@ -565,35 +565,45 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     // Reported Step by Step, and within an entry in the Environment's
-    // definition order.
+    // definition order. The relative `Dir` is no error (§4.5 item 3).
     submission(jt, &[TYPED_ENV], &[]).apply_err(&[
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> N:\n\tParameter 'N': value 0 is less than minimum 1",
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> On:\n\tis not a valid BOOL value: Invalid bool value: 'maybe'",
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Mounts:\n\ta LIST[PATH] parameter has no string form, so a format-string value for it must be a single '{{ }}' expression.",
-        "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'relative'.",
         "JobTemplate -> steps[1] -> dependencies[0] -> parameters -> N:\n\tcould not be resolved as a value of type INT: Cannot convert 'abc' to int: invalid digit found in string",
         "JobTemplate -> steps[1] -> dependencies[0] -> parameters -> Mounts[0]:\n\tthe elements of a list literal are literals, not format strings. Write the whole value as one '{{ }}' expression, for example '{{ [RawParam.Dir] }}'.",
     ]);
 }
 
 #[test]
-fn an_attached_literal_default_is_checked_even_when_unused() {
+fn an_attached_relative_literal_default_is_used_as_given() {
+    // §4.5 item 3 (spec af53020): an unused relative literal `default` is
+    // no error, and a Step that takes it gets it unchanged.
     let env = TYPED_ENV.replace("default: /opt/tool", "default: opt/tool");
-    let jt = r#"
+    let unused = r#"
 specificationVersion: jobtemplate-2023-09
 name: J
 steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#;
-    let s = submission(jt, &[&env], &[]);
-    let err = s
-        .create_with(&[Some("typed.yaml")], &posix_ctx(&s.jt))
-        .unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &["typed.yaml -> environment -> envParameterDefinitions[3] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'opt/tool'."],
+    let s = submission(unused, &[&env], &[]);
+    s.create_with(&[Some("typed.yaml")], &posix_ctx(&s.jt))
+        .unwrap();
+    let taken = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+steps:
+- name: S
+  dependencies: [{environment: Typed}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+    let (job, _) = submission(taken, &[&env], &[]).combined();
+    assert!(
+        rendered_values(&job.steps[0])[0].contains("Dir=path:opt/tool"),
+        "{:?}",
+        rendered_values(&job.steps[0])
     );
 }
 
@@ -618,19 +628,11 @@ steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#;
-    let s = submission(jt, &[env], &[]);
-    let ctx = posix_ctx(&s.jt).with_allow_uri_path_values(true);
-    let job = s.create_with(&[], &ctx).unwrap().job;
+    // A URI PATH value is used as given (§4.5 item 3).
+    let job = submission(jt, &[env], &[]).create().unwrap().job;
     assert_eq!(
         rendered_values(&job.steps[0]),
         ["EnvironmentTemplate[0]/E: Twice=int:8, Uri=path:s3://b/k"]
-    );
-    // Without the caller's permission the URI is rejected.
-    let err = s.create().unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &["EnvironmentTemplate[0] -> environment -> envParameterDefinitions[1] -> default:\n\tis a URI ('s3://b/k'), and URI path values are not permitted for this submission."],
     );
 }
 
@@ -787,7 +789,7 @@ fn an_attachments_label_names_its_document_everywhere() {
 }
 
 #[test]
-fn an_attachment_is_evaluated_under_the_callers_limits_and_path_format() {
+fn an_attachment_is_evaluated_with_posix_paths_under_the_callers_limits() {
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -806,19 +808,8 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let s = submission(jt, &[env], &[]);
-    // The attachment's format strings evaluate in the caller's path
-    // format: WINDOWS joins with `\`, POSIX with `/`. The result is
-    // absolute in either.
-    let windows = posix_ctx(&s.jt)
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let job = s.create_with(&[], &windows).unwrap().job;
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [format!(
-            "EnvironmentTemplate[0]/E: Big=string:{}, P=path:C:\\tools\\bin",
-            "ab".repeat(50)
-        )]
-    );
+    // The attachment's format strings are TEMPLATE-scope fields, so they
+    // evaluate with POSIX semantics (Expression Language §1.2.1): `/` joins.
     let job = s.create().unwrap().job;
     assert_eq!(
         rendered_values(&job.steps[0]),
@@ -833,7 +824,7 @@ steps:
         ..Default::default()
     };
     let err = s
-        .create_with(&[], &windows.with_caller_limits(limits))
+        .create_with(&[], &posix_ctx(&s.jt).with_caller_limits(limits))
         .unwrap_err();
     assert_errors(
         &err.to_string(),
@@ -845,10 +836,10 @@ steps:
     );
 }
 
-/// §4.5 item 3 (spec 2892d96): a WINDOWS submission accepts a POSIX path,
-/// and its message for a relative path names no path format.
+/// §4.5 item 3 (spec af53020): an attached Environment's PATH parameter
+/// takes a value of any form, POSIX, Windows or relative, unchanged.
 #[test]
-fn a_windows_submission_accepts_a_posix_path() {
+fn an_attached_path_value_of_any_form_is_used_as_given() {
     let env = TYPED_ENV.replace("default: /opt/tool", "default: 'C:\\tool'");
     let jt = r#"
 specificationVersion: jobtemplate-2023-09
@@ -856,21 +847,21 @@ extensions: [ENV_PARAMS, EXPR]
 name: J
 steps:
 - name: S
-  dependencies: [{environment: Typed, parameters: {Dir: /posix}}]
+  dependencies: [{environment: Typed, parameters: {Dir: VALUE}}]
   script: {actions: {onRun: {command: x}}}
 "#;
-    let s = submission(jt, &[&env], &[]);
-    let windows = posix_ctx(&s.jt)
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    s.create_with(&[], &windows)
-        .expect("a POSIX path is absolute in some path format");
-    let s = submission(&jt.replace("Dir: /posix", "Dir: 'rel\\dir'"), &[&env], &[]);
-    let err = s.create_with(&[], &windows).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "Submission",
-        &["JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel\\dir'."],
-    );
+    for (value, text) in [
+        ("/posix", "/posix"),
+        (r"'rel\dir'", r"rel\dir"),
+        ("'C:x'", "C:x"),
+    ] {
+        let (job, _) = submission(&jt.replace("VALUE", value), &[&env], &[]).combined();
+        let rendered = rendered_values(&job.steps[0]);
+        assert!(
+            rendered[0].contains(&format!("Dir=path:{text},")),
+            "{rendered:?}"
+        );
+    }
 }
 
 #[test]
@@ -1029,11 +1020,11 @@ fn attaching_by_from_has_no_label() {
 }
 
 #[test]
-fn path_operations_follow_the_submission_path_format() {
-    // Environment parameter format strings evaluate in the submission
-    // path format, so with a Windows submission `path(...) / 'sub'` and
-    // `.parent` use Windows rules, in a default and in an external entry's
-    // value alike.
+fn path_operations_use_posix_semantics() {
+    // Environment parameter format strings are TEMPLATE-scope fields, so
+    // `path(...) / 'sub'` and `.parent` use POSIX rules (Expression
+    // Language §1.2.1), in a default and in an external entry's value
+    // alike: a Windows drive path is one POSIX path name.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1056,20 +1047,19 @@ steps:
   dependencies: [{environment: Ext, parameters: {Given: "{{ path(Param.Base) / 'run' }}"}}]
   script: {actions: {onRun: {command: x}}}
 "#;
-    let s = submission(jt, &[env], &[]);
-    let windows = posix_ctx(&s.jt)
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let job = s.create_with(&[], &windows).unwrap().job;
+    let job = submission(jt, &[env], &[]).create().unwrap().job;
     assert_eq!(
         rendered_values(&job.steps[0]),
         [
-            r"EnvironmentTemplate[0]/Ext: Given=path:D:\out\run, Sub=path:C:\data\proj\sub, Up=path:C:\data"
+            r"EnvironmentTemplate[0]/Ext: Given=path:D:\out/run, Sub=path:C:\data\proj/sub, Up=path:."
         ]
     );
 }
 
 #[test]
-fn an_external_entry_reads_a_path_let_binding_in_the_submission_path_format() {
+fn an_external_entry_reads_a_path_let_binding_with_posix_semantics() {
+    // The frozen Step scope keeps the `let` values job creation computed
+    // once, with POSIX semantics.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1092,55 +1082,14 @@ steps:
     let jt_dec = job_ok(jt);
     let envs = vec![env_ok(env)];
     let params = job_params_with(&jt_dec, &[], &envs);
-    let windows = jt_dec
-        .default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
     let attached = [AttachedEnvironmentTemplate::new(&envs[0])];
-    let job = create_job_with_environment_templates(&jt_dec, &attached, &params, &windows)
-        .unwrap()
-        .job;
+    let job =
+        create_job_with_environment_templates(&jt_dec, &attached, &params, &posix_ctx(&jt_dec))
+            .unwrap()
+            .job;
     assert_eq!(
         rendered_values(&job.steps[0]),
-        [r"EnvironmentTemplate[0]/Ext: A=path:D:\out\y"]
-    );
-}
-
-/// The Step `let` bindings an entry value reads are evaluated again in the
-/// URI submission path format too, not as WINDOWS: `/out` keeps its `/`.
-#[test]
-fn an_external_entry_reads_a_path_let_binding_in_the_uri_submission_path_format() {
-    let env = r#"
-specificationVersion: environment-2023-09
-extensions: [ENV_PARAMS, EXPR]
-environment:
-  name: Ext
-  envParameterDefinitions: [{name: A, type: PATH}]
-  variables: {V: v}
-"#;
-    let jt = r#"
-specificationVersion: jobtemplate-2023-09
-extensions: [ENV_PARAMS, EXPR]
-name: J
-parameterDefinitions: [{name: Root, type: STRING, default: /out}]
-steps:
-- name: S
-  let: ["p = path(Param.Root) / 'r'"]
-  dependencies: [{environment: Ext, parameters: {A: "{{ p.parent / 'y' }}/z"}}]
-  script: {actions: {onRun: {command: x}}}
-"#;
-    let jt_dec = job_ok(jt);
-    let envs = vec![env_ok(env)];
-    let params = job_params_with(&jt_dec, &[], &envs);
-    let uri = jt_dec
-        .default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Uri);
-    let attached = [AttachedEnvironmentTemplate::new(&envs[0])];
-    let job = create_job_with_environment_templates(&jt_dec, &attached, &params, &uri)
-        .unwrap()
-        .job;
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        ["EnvironmentTemplate[0]/Ext: A=path:/out/y/z"]
+        [r"EnvironmentTemplate[0]/Ext: A=path:D:\out/y"]
     );
 }
 
@@ -1276,7 +1225,7 @@ steps:
 
 #[test]
 fn an_external_entry_reads_a_path_let_binding_in_a_posix_submission() {
-    // The frozen table is read in the submission path format, POSIX here.
+    // The frozen table keeps the POSIX `let` values.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1311,12 +1260,11 @@ fn serde_form_of_documents() {
     );
 }
 
-/// §4.5 item 3, for a Step's format-string value for an attached
-/// Environment: a multi-segment result absolute only in WINDOWS or only in
-/// POSIX (it stays a string, so no format rewrites it) is accepted in every
-/// submission path format.
+/// §4.5 item 3 (spec af53020): an attached Environment's PATH and
+/// LIST[PATH] values written as format strings are used as given,
+/// evaluated with POSIX semantics, whatever their form.
 #[test]
-fn an_attached_format_string_value_absolute_in_any_format_is_accepted() {
+fn an_attached_format_string_value_of_any_form_is_used_as_given() {
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1328,7 +1276,12 @@ environment:
   - {name: M, type: "LIST[PATH]"}
   variables: {V: v}
 "#;
-    for (value, stored) in [(r#""{{ 'C:' }}/x""#, "C:/x"), (r#""{{ '/' }}x""#, "/x")] {
+    for (value, stored) in [
+        (r#""{{ 'C:' }}/x""#, "C:/x"),
+        (r#""{{ '/' }}x""#, "/x"),
+        (r#""{{ 'rel' }}\\x""#, r"rel\x"),
+        (r#""{{ 'C:' }}""#, "C:"),
+    ] {
         let jt = format!(
             r#"
 specificationVersion: jobtemplate-2023-09
@@ -1336,40 +1289,20 @@ extensions: [ENV_PARAMS, EXPR]
 name: J
 steps:
 - name: S
-  dependencies: [{{environment: E, parameters: {{P: {value}, M: "{{{{ [path('D:/m')] }}}}"}}}}]
+  dependencies: [{{environment: E, parameters: {{P: {value}, M: "{{{{ [string(path('D:\\m') / 'n'), 'rel'] }}}}"}}}}]
   script: {{actions: {{onRun: {{command: x}}}}}}
 "#
         );
-        let s = submission(&jt, &[env], &[]);
-        for (format, l, m) in [
-            (
-                openjd_expr::path_mapping::PathFormat::Posix,
-                r#"["C:/x"]"#,
-                r#"["D:/m"]"#,
-            ),
-            (
-                openjd_expr::path_mapping::PathFormat::Windows,
-                r#"["C:\\x"]"#,
-                r#"["D:\\m"]"#,
-            ),
-            (
-                openjd_expr::path_mapping::PathFormat::Uri,
-                r#"["C:/x"]"#,
-                r#"["D:/m"]"#,
-            ),
-        ] {
-            let ctx = posix_ctx(&s.jt).with_submission_path_format(format);
-            let job = s
-                .create_with(&[], &ctx)
-                .unwrap_or_else(|e| panic!("{value} in {format:?}: {e}"))
-                .job;
-            assert_eq!(
-                rendered_values(&job.steps[0]),
-                [format!(
-                    "EnvironmentTemplate[0]/E: L=list[path]:{l}, M=list[path]:{m}, P=path:{stored}"
-                )],
-                "{value} in {format:?}"
-            );
-        }
+        let job = submission(&jt, &[env], &[])
+            .create()
+            .unwrap_or_else(|e| panic!("{value}: {e}"))
+            .job;
+        assert_eq!(
+            rendered_values(&job.steps[0]),
+            [format!(
+                r#"EnvironmentTemplate[0]/E: L=list[path]:["C:/x"], M=list[path]:["D:\\m/n","rel"], P=path:{stored}"#
+            )],
+            "{value}"
+        );
     }
 }

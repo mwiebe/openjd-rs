@@ -135,9 +135,8 @@ stage that needs no Job Parameter values:
 - for a resolved entry, every key names a declared parameter (constraint 5); and, when the
   attached Environment's own `enableIf` is absent or `true`, or is certainly unresolved for the
   Step (it reads only values that stay unknown, see [validation.md](../model/validation.md)),
-  every literal value converts and satisfies its definition, including that a PATH value is
-  absolute in some path format, whatever the host's (constraint 6; Template Schemas §4.5
-  item 3), and a
+  every literal value converts and satisfies its definition (constraint 6; a PATH value of
+  any form, relative ones included, is used as given, Template Schemas §4.5 item 3), and a
   value for a list-typed parameter that is a format string is one `{{ }}` expression;
 - every Step supplies every parameter without a `default` of every reachable attached
   Environment its Sessions enter that has `activation: ALWAYS` or whose own `enableIf` is

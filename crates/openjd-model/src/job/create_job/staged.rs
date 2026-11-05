@@ -40,8 +40,6 @@ pub(crate) enum Stage {
     /// The template-validation-style checks job creation makes before
     /// step 1.
     Validation,
-    /// Step 1: the Step's `let` bindings that its entries read.
-    Step1,
     /// Step 2: each entry's `enableIf`.
     Step2,
     /// Step 3: the entries that name no Job Environment, resolved against
@@ -81,7 +79,7 @@ impl StagedErrors {
     /// steps 5–8 are not taken for it.
     pub(crate) fn stopped(&self, step: usize) -> bool {
         self.buckets.iter().any(|((stage, s, _), errors)| {
-            *s == step && (Stage::Step1..=Stage::Step4).contains(stage) && !errors.is_empty()
+            *s == step && (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
         })
     }
 
@@ -104,7 +102,7 @@ impl StagedErrors {
             .buckets
             .iter()
             .filter(|((stage, _, _), errors)| {
-                (Stage::Step1..=Stage::Step4).contains(stage) && !errors.is_empty()
+                (Stage::Step2..=Stage::Step4).contains(stage) && !errors.is_empty()
             })
             .map(|((_, step, _), _)| *step)
             .collect();
@@ -152,7 +150,7 @@ mod tests {
         // An empty bucket stops nothing.
         staged.at(Stage::Step2, 0, 0);
         assert!(!staged.stopped(0));
-        for (i, stage) in [Stage::Step1, Stage::Step2, Stage::Step3, Stage::Step4]
+        for (i, stage) in [Stage::Step2, Stage::Step3, Stage::Step4]
             .into_iter()
             .enumerate()
         {

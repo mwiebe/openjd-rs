@@ -110,10 +110,7 @@ pub fn create_job(
 /// accepted whatever its length (§2.10).
 ///
 /// The `ctx` parameter carries the specification revision, enabled
-/// extensions, caller limits, and submission path policy
-/// ([`submission_path_format`](ValidationContext::submission_path_format),
-/// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
-/// that apply to this job instance. Its
+/// extensions, and caller limits that apply to this job instance. Its
 /// revision must match the template's, and it must enable every
 /// extension the template declares (enabling more is allowed — extra
 /// extensions only add symbols and functions the template never
@@ -188,9 +185,7 @@ pub fn create_job(
 /// `job.extensions` is left as the Job Template declared it: an extension
 /// applies to the document that lists it (§1.2 item 3). Every document
 /// that holds an Environment parameter value lists `ENV_PARAMS` and so
-/// `EXPR` (§1.1 item 3), so a single `{{ }}` expression value is typed and
-/// a URI is a PATH value (with
-/// [`allow_uri_path_values`](ValidationContext::allow_uri_path_values))
+/// `EXPR` (§1.1 item 3), so a single `{{ }}` expression value is typed
 /// whatever `ctx` enables.
 ///
 /// Every check failure is reported in one `ModelError::ModelValidation`. Resolving a step's own host

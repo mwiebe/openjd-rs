@@ -722,14 +722,10 @@ pub fn decode_environment_template_from_object(
 /// `params` is a JS object mapping parameter names to string values.
 /// `pathOptions` controls how `PATH` parameters are resolved. Construct
 /// with `new PathParameterOptions(jobTemplateDir, currentWorkingDir)`.
-/// Its `pathFormat` and `allowUriPathValues` are also the submission path
-/// policy for `ENV_PARAMS` Environment parameter values: format strings
-/// evaluate in `pathFormat`, and `allowUriPathValues` decides whether a
-/// URI is accepted as a PATH value. A PATH value is accepted when it is
-/// absolute in any path format; the check reads no format, but a value
-/// written as a single `{{ }}` expression is converted to `path` in
-/// `pathFormat` first (in WINDOWS, `/data` becomes `\data` and is
-/// rejected).
+/// It applies to Job Parameters only: `ENV_PARAMS` Environment parameter
+/// values evaluate with POSIX semantics (Expression Language §1.2.1), and
+/// a PATH value of any form is used as given (Template Schemas §4.5
+/// item 3).
 ///
 /// `createJob` takes no Environment Templates, so with `ENV_PARAMS` an
 /// `environment:` dependency that names no Job Environment makes it throw
@@ -776,17 +772,14 @@ pub fn create_job_with_map(
 
     // Derive the context from the template itself — `create_job`
     // requires the context's revision/extensions to cover the
-    // template's — layering on the caller-supplied limits and the same
-    // path policy the Job Parameters were resolved with, so Environment
-    // parameter format strings (ENV_PARAMS) evaluate in the caller's path
-    // format rather than wasm32's POSIX host default, and the caller's URI
-    // policy applies to their PATH values.
+    // template's — layering on the caller-supplied limits. The path
+    // options apply to the Job Parameters only: Environment parameter
+    // values (ENV_PARAMS) evaluate with POSIX semantics and are used as
+    // given (Template Schemas §4.5 item 3).
     let ctx = template
         .inner
         .default_validation_context()
-        .with_caller_limits(rust_limits)
-        .with_submission_path_format(rust_opts.path_format)
-        .with_allow_uri_path_values(rust_opts.allow_uri_path_values);
+        .with_caller_limits(rust_limits);
 
     // createJob takes no Environment Templates, so `create_job` resolves
     // the Job against none: an enabled `environment:` entry naming no Job

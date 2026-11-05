@@ -326,9 +326,7 @@ impl<'a> Attachments<'a> {
             let att_ctx = att
                 .template
                 .default_validation_context()
-                .with_caller_limits(ctx.caller_limits.clone())
-                .with_submission_path_format(ctx.submission_path_format)
-                .with_allow_uri_path_values(ctx.allow_uri_path_values);
+                .with_caller_limits(ctx.caller_limits.clone());
             let env_path = path_field(&docs.path(Some(doc)), "environment");
             if job_env_names.contains(env.name.as_str()) {
                 // No entry can supply a parameter of this attachment, so
@@ -1467,8 +1465,7 @@ fn certainly_entered_per_step(
 ///   `enableIf` is absent or `true`, or certainly
 ///   unresolved for the Step (it reads only values that stay unknown; see
 ///   `enable_if_certainly_unresolved`), constraint 6 for literal values
-///   (including that a PATH value is absolute in some path format, §4.5
-///   item 3) and the
+///   (a PATH value of any form is used as given, §4.5 item 3) and the
 ///   single-expression rule for a list-typed parameter;
 /// - constraint 7 over every Step and every reachable attached
 ///   Environment it enters that is `ALWAYS` or whose own `enableIf` is
@@ -1529,11 +1526,8 @@ fn certainly_entered_per_step(
 /// ungrouped `jobEnvironments` entry were
 /// checked by template validation and are not checked again.
 ///
-/// `ctx` supplies the caller limits and the submission path policy, as for
-/// job creation; its profile is not read. Of the path policy only
-/// `allow_uri_path_values` affects the result, since nothing checked here
-/// is evaluated in `submission_path_format` and the PATH check reads no
-/// format (§4.5 item 3).
+/// `ctx` supplies the caller limits, as for job creation; its profile is
+/// not read.
 ///
 /// Returns the warnings, or one `ModelValidation` error holding every
 /// violation, shaped as job creation's is: for `Submission`, with every
@@ -1725,9 +1719,7 @@ pub fn check_environment_templates(
     let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
     let job_ctx = job_template
         .default_validation_context()
-        .with_caller_limits(ctx.caller_limits.clone())
-        .with_submission_path_format(ctx.submission_path_format)
-        .with_allow_uri_path_values(ctx.allow_uri_path_values);
+        .with_caller_limits(ctx.caller_limits.clone());
     let grouped_job_envs: Vec<(usize, DeclaringEnvironment<'_>)> = own_envs
         .iter()
         .enumerate()

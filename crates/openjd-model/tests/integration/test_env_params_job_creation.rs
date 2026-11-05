@@ -356,9 +356,11 @@ fn a_non_literal_default_is_reported_once_naming_the_first_step_that_takes_it() 
 }
 
 #[test]
-fn a_relative_literal_path_default_is_an_error_even_when_every_step_supplies_it() {
-    create_err(
-        r#"
+fn a_relative_literal_path_default_is_used_as_given() {
+    // §4.5 item 3 (spec af53020): a PATH value need not be absolute, so a
+    // relative literal `default` is no error, even when a Step supplies
+    // the parameter, and a Step that takes it gets it unchanged.
+    let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
 name: J
@@ -370,13 +372,21 @@ steps:
 - name: A
   dependencies: [{environment: E, parameters: {P: /abs}}]
   script: {actions: {onRun: {command: x}}}
-"#,
-        &[],
-        &["jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/dir'."],
+- name: B
+  script: {actions: {onRun: {command: x}}}
+"#;
+    let job = create_ok(src, &[]);
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: P=path:/abs"]
+    );
+    assert_eq!(
+        rendered_values(&job.steps[1]),
+        ["JobTemplate/E: P=path:rel/dir"]
     );
 }
 
-// ── PATH values (§4.5 item 3; plan A16) ────────────────────────────
+// ── PATH values (§4.5 item 3 at spec af53020) ──────────────────────
 
 const PATHS: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -399,69 +409,73 @@ fn paths(p: &str, l: &str) -> String {
     PATHS.replace("VALUE_P", p).replace("VALUE_L", l)
 }
 
-#[test]
-fn relative_and_empty_paths_are_errors() {
-    create_err(
-        &paths("rel", r#"["/ok", "", "x/y"]"#),
-        &[],
-        &[
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[1] must not be an empty path.",
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[2] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'x/y'.",
-            "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
-        ],
-    );
-}
+/// Every form a PATH value can be written in, as a YAML single-quoted
+/// value and the text it stands for: absolute in POSIX, in WINDOWS (drive
+/// with either separator, UNC with either separator), relative in either
+/// style, drive-relative, drive-less rooted, and a URI.
+const FORMS: [(&str, &str); 13] = [
+    ("'/mnt/proj'", "/mnt/proj"),
+    (r"'C:\proj'", r"C:\proj"),
+    ("'C:/proj'", "C:/proj"),
+    (r"'\\server\share\proj'", r"\\server\share\proj"),
+    ("'//server/share'", "//server/share"),
+    ("'rel/dir'", "rel/dir"),
+    (r"'relative\dir'", r"relative\dir"),
+    ("'C:dir'", "C:dir"),
+    (r"'\dir'", r"\dir"),
+    ("'./x'", "./x"),
+    ("'~/x'", "~/x"),
+    ("'s3://bucket/key'", "s3://bucket/key"),
+    ("''", ""),
+];
 
+/// §4.5 item 3 (spec af53020): a PATH value, and each LIST[PATH] element,
+/// is used as given, whatever its form, relative and empty included. It
+/// is the same value whether it is written as a literal, a single `{{ }}`
+/// expression whose result is a string, or a multi-segment format string.
 #[test]
-fn an_empty_path_from_a_job_parameter_is_an_error() {
-    // Plan A16: an optional, empty PATH Job Parameter does not pass through.
-    create_err(
-        &paths(r#""{{RawParam.Opt}}""#, "[]"),
-        &[],
-        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tmust not be an empty path."],
-    );
-}
-
-/// Every `submission_path_format` value, so a test can show a result does
-/// not depend on it.
-const FORMATS: [PathFormat; 3] = [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri];
-
-/// §4.5 item 3 (spec 2892d96): a PATH value absolute in any path format is
-/// accepted, and stored as written, whatever the submission path format.
-#[test]
-fn a_path_absolute_in_any_format_is_accepted_in_every_submission_path_format() {
-    // (YAML single-quoted value, the stored string.)
-    let accepted = [
-        ("'/mnt/proj'", "/mnt/proj"),
-        (r"'C:\proj'", r"C:\proj"),
-        ("'C:/proj'", "C:/proj"),
-        (r"'d:\x'", r"d:\x"),
-        (r"'\\server\share\proj'", r"\\server\share\proj"),
-        ("'//server/share'", "//server/share"),
-    ];
-    for format in FORMATS {
-        for (value, stored) in accepted {
-            let jt = job_ok(&paths(value, "[]"));
-            let ctx = jt
-                .default_validation_context()
-                .with_submission_path_format(format);
-            let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-                .unwrap_or_else(|e| panic!("{value} in {format:?}: {e}"));
+fn every_path_form_is_used_as_given() {
+    for (value, text) in FORMS {
+        // The text as an expression-language string literal, then each
+        // value in a YAML single-quoted scalar, where `'` doubles.
+        let expr = format!("'{}'", text.replace('\\', "\\\\"));
+        let yaml = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        for (p, l) in [
+            (value.to_string(), format!("[{value}]")),
+            (
+                yaml(&format!("{{{{ {expr} }}}}")),
+                yaml(&format!("{{{{ [{expr}] }}}}")),
+            ),
+            (yaml(&format!("{{{{ '' }}}}{text}")), format!("[{value}]")),
+        ] {
+            let job = create(&paths(&p, &l), &[]).unwrap_or_else(|e| panic!("{p}: {e}"));
+            let json = serde_json::to_string(text).unwrap();
             assert_eq!(
                 rendered_values(&job.steps[0]),
-                [format!("JobTemplate/E: L=list[path]:[], P=path:{stored}")],
-                "{value} in {format:?}"
+                [format!(
+                    "JobTemplate/E: L=list[path]:[{json}], P=path:{text}"
+                )],
+                "{p}"
             );
         }
     }
 }
 
-/// §4.5 item 3, for a Job Environment's literal `default`s: one a Step
-/// takes and one no Step takes, each absolute in only one path format, are
-/// accepted in every submission path format.
 #[test]
-fn a_job_environment_literal_default_absolute_in_any_format_is_accepted() {
-    let jt = job_ok(
+fn an_empty_path_from_a_job_parameter_is_used_as_given() {
+    // An optional, empty PATH Job Parameter passes through unchanged.
+    let job = create_ok(&paths(r#""{{RawParam.Opt}}""#, "[]"), &[]);
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        ["JobTemplate/E: L=list[path]:[], P=path:"]
+    );
+}
+
+/// §4.5 item 3, for a Job Environment's literal `default`s: one a Step
+/// takes and one no Step takes, of any form, are used as given.
+#[test]
+fn a_job_environment_literal_default_of_any_form_is_used_as_given() {
+    let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -470,39 +484,31 @@ jobEnvironments:
 - name: E
   envParameterDefinitions:
   - {name: Taken, type: PATH, default: 'C:\tools'}
-  - {name: Unused, type: PATH, default: '\\srv\share'}
-  - {name: Posix, type: PATH, default: '/opt/tool'}
-  - {name: L, type: "LIST[PATH]", default: ['C:\x', '/y', '\\srv\s']}
+  - {name: Unused, type: PATH, default: 'rel\share'}
+  - {name: Rel, type: PATH, default: 'tools/bin'}
+  - {name: L, type: "LIST[PATH]", default: ['C:\x', 'y', '\\srv\s', 'C:z']}
   variables: {V: v}
 steps:
 - name: S
   dependencies: [{environment: E, parameters: {Unused: /u}}]
   script: {actions: {onRun: {command: x}}}
 "#,
+        &[],
     );
-    for format in FORMATS {
-        let ctx = jt
-            .default_validation_context()
-            .with_submission_path_format(format);
-        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
-        assert_eq!(
-            rendered_values(&job.steps[0]),
-            [
-                r#"JobTemplate/E: L=list[path]:["C:\\x","/y","\\\\srv\\s"], Posix=path:/opt/tool, Taken=path:C:\tools, Unused=path:/u"#
-            ],
-            "{format:?}"
-        );
-    }
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [
+            r#"JobTemplate/E: L=list[path]:["C:\\x","y","\\\\srv\\s","C:z"], Rel=path:tools/bin, Taken=path:C:\tools, Unused=path:/u"#
+        ]
+    );
 }
 
-/// §4.5 item 3, for a Job Environment's format-string `default`s: a
-/// result absolute only in WINDOWS and one absolute only in POSIX are
-/// accepted in every submission path format. (`{{ '/opt' }}/bin` is
-/// multi-segment, so it stays a string and keeps its `/` in WINDOWS.)
+/// Expression Language §1.2.1: TEMPLATE-scope fields (§7.3.2) evaluate
+/// with POSIX semantics, so a Job Environment's format-string `default`
+/// joins paths with `/`, a Windows drive path included.
 #[test]
-fn a_job_environment_format_string_default_absolute_in_any_format_is_accepted() {
-    let jt = job_ok(
+fn a_job_environment_format_string_default_evaluates_with_posix_paths() {
+    let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -512,226 +518,212 @@ jobEnvironments:
   envParameterDefinitions:
   - {name: Win, type: PATH, default: "{{ path('C:/tools') / 'bin' }}"}
   - {name: Posix, type: PATH, default: "{{ '/opt' }}/bin"}
-  - {name: L, type: "LIST[PATH]", default: "{{ [path('C:/x')] }}"}
+  - {name: L, type: "LIST[PATH]", default: "{{ [path('C:/x') / 'y', path('rel') / 'z'] }}"}
   variables: {V: v}
 steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#,
+        &[],
     );
-    for (format, win, list) in [
-        (PathFormat::Posix, "C:/tools/bin", r#"["C:/x"]"#),
-        (PathFormat::Windows, r"C:\tools\bin", r#"["C:\\x"]"#),
-        (PathFormat::Uri, "C:/tools/bin", r#"["C:/x"]"#),
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [
+            r#"JobTemplate/E: L=list[path]:["C:/x/y","rel/z"], Posix=path:/opt/bin, Win=path:C:/tools/bin"#
+        ]
+    );
+}
+
+/// §4.5 item 3: a LIST[PATH] value may mix forms.
+#[test]
+fn a_list_path_value_may_mix_path_forms() {
+    let job = create_ok(
+        &paths(
+            "/p",
+            r#"['/mnt/a', 'D:\b', 'E:/c', '\\server\share\d', 'rel', 'C:e', '\f']"#,
+        ),
+        &[],
+    );
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [
+            r#"JobTemplate/E: L=list[path]:["/mnt/a","D:\\b","E:/c","\\\\server\\share\\d","rel","C:e","\\f"], P=path:/p"#
+        ]
+    );
+}
+
+/// Job Parameter values preprocessed in `format`, with directories of
+/// that format, so a value absolute in that format is kept as given.
+fn params_in(
+    jt: &openjd_model::template::JobTemplate,
+    params: &[(&str, &str)],
+    format: PathFormat,
+) -> openjd_model::JobParameterValues {
+    params_in_with(jt, params, &[], format)
+}
+
+/// [`params_in`] with list values too.
+fn params_in_with(
+    jt: &openjd_model::template::JobTemplate,
+    params: &[(&str, &str)],
+    lists: &[(&str, &[&str])],
+    format: PathFormat,
+) -> openjd_model::JobParameterValues {
+    let input: openjd_model::JobParameterInputValues = params
+        .iter()
+        .map(|(k, v)| (k.to_string(), openjd_expr::ExprValue::String(v.to_string())))
+        .chain(lists.iter().map(|(k, v)| {
+            (
+                k.to_string(),
+                openjd_expr::ExprValue::ListString(v.iter().map(|s| s.to_string()).collect(), 0),
+            )
+        }))
+        .collect();
+    let (dir, cwd) = match format {
+        PathFormat::Windows => (r"C:\templates", r"C:\work"),
+        _ => ("/templates", "/work"),
+    };
+    let mut opts = openjd_model::PathParameterOptions::new(dir, cwd);
+    opts.path_format = format;
+    openjd_model::preprocess_job_parameters(jt, &input, &[], &opts)
+        .unwrap_or_else(|e| panic!("preprocess_job_parameters failed:\n{e}"))
+}
+
+const RAW: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions:
+- {name: Dir, type: PATH}
+- {name: Mounts, type: "LIST[PATH]"}
+jobEnvironments:
+- name: E
+  envParameterDefinitions:
+  - {name: P, type: PATH}
+  - {name: L, type: "LIST[PATH]"}
+  - {name: Lit, type: PATH, default: LITERAL}
+  - {name: Multi, type: PATH, default: "{{RawParam.Dir}}{{ '' }}"}
+  variables: {V: v}
+steps:
+- name: A
+  dependencies: [{environment: E, parameters: {P: "{{RawParam.Dir}}", L: "{{RawParam.Mounts}}"}}]
+  script: {actions: {onRun: {command: x}}}
+"#;
+
+/// Rule 1: a PATH or LIST[PATH] value written as a single `{{ }}`
+/// expression whose result is a `string` (`RawParam.<PATH>`) or a
+/// `list[string]` keeps that text: `{{RawParam.Dir}}` with `/data`,
+/// `C:\x` or `\\server\share` is exactly that string, as the literal and
+/// a multi-segment format string with the same text are. Job creation has
+/// no path format to convert it in.
+#[test]
+fn a_single_expression_string_result_is_the_value_as_written() {
+    for (format, dir, mounts) in [
+        (PathFormat::Posix, "/data", &["/a", "/b/c"][..]),
+        (PathFormat::Windows, r"C:\x", &[r"C:\a", r"D:\b"][..]),
+        (
+            PathFormat::Windows,
+            r"\\server\share",
+            &[r"\\srv\a", r"E:\b"][..],
+        ),
     ] {
-        let ctx = jt
-            .default_validation_context()
-            .with_submission_path_format(format);
-        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
+        let lit = format!("'{dir}'");
+        let jt = job_ok(&RAW.replace("LITERAL", &lit));
+        let params = params_in_with(&jt, &[("Dir", dir)], &[("Mounts", mounts)], format);
+        let job =
+            create_job(&jt, &params, &posix_ctx(&jt)).unwrap_or_else(|e| panic!("{dir}: {e}"));
         assert_eq!(
             rendered_values(&job.steps[0]),
             [format!(
-                "JobTemplate/E: L=list[path]:{list}, Posix=path:/opt/bin, Win=path:{win}"
+                "JobTemplate/E: L=list[path]:{}, Lit=path:{dir}, Multi=path:{dir}, P=path:{dir}",
+                serde_json::to_string(mounts).unwrap()
             )],
-            "{format:?}"
+            "{dir}"
         );
     }
 }
 
-/// §4.5 item 3: each LIST[PATH] element is checked on its own, so a list
-/// that mixes POSIX, Windows drive and UNC paths is accepted.
+/// Rule 1 for a `list[string]` result: each element is kept as written,
+/// whatever its form, a mix of forms included.
 #[test]
-fn a_list_path_value_may_mix_path_formats() {
-    let jt = job_ok(&paths(
-        "/p",
-        r#"['/mnt/a', 'D:\b', 'E:/c', '\\server\share\d']"#,
-    ));
-    for format in FORMATS {
-        let ctx = jt
-            .default_validation_context()
-            .with_submission_path_format(format);
-        let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-            .unwrap_or_else(|e| panic!("{format:?}: {e}"));
-        assert_eq!(
-            rendered_values(&job.steps[0]),
-            [
-                r#"JobTemplate/E: L=list[path]:["/mnt/a","D:\\b","E:/c","\\\\server\\share\\d"], P=path:/p"#
-            ],
-            "{format:?}"
-        );
-    }
+fn a_single_expression_list_of_strings_is_kept_element_by_element() {
+    let job = create_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions:
+- {name: Mounts, type: "LIST[STRING]", default: ['/a', 'C:\b', '\\srv\c', 'rel\d', 'C:e']}
+jobEnvironments:
+- name: E
+  envParameterDefinitions: [{name: L, type: "LIST[PATH]"}]
+  variables: {V: v}
+steps:
+- name: A
+  dependencies: [{environment: E, parameters: {L: "{{Param.Mounts}}"}}]
+  script: {actions: {onRun: {command: x}}}
+"#,
+        &[],
+    );
+    assert_eq!(
+        rendered_values(&job.steps[0]),
+        [r#"JobTemplate/E: L=list[path]:["/a","C:\\b","\\\\srv\\c","rel\\d","C:e"]"#]
+    );
 }
 
-/// §4.5 item 3: a path absolute in no format is rejected with the same
-/// message whatever the submission path format, which the message does
-/// not name.
+/// Rule 2: a `path` result evaluates with POSIX semantics (Expression
+/// Language §1.2.1): `path(RawParam.Dir) / 'x'` joins with `/` and treats
+/// `\` as a filename character, whatever format the Job Parameter was
+/// given in. Nothing in the context selects another format, so the
+/// result is the same on every host (this test has no `cfg`, and CI runs
+/// it on Linux, macOS and Windows).
 #[test]
-fn a_path_absolute_in_no_format_is_rejected_in_every_submission_path_format() {
-    let rejected = [
-        ("'rel/dir'", "rel/dir"),
-        (r"'relative\dir'", r"relative\dir"),
-        ("'C:dir'", "C:dir"),
-        ("'C:'", "C:"),
-        (r"'\dir'", r"\dir"),
-        ("'./x'", "./x"),
-        ("'~/x'", "~/x"),
-        ("'1:/x'", "1:/x"),
-    ];
-    for format in FORMATS {
-        for (value, got) in rejected {
-            let jt = job_ok(&paths(value, &format!("[{value}]")));
-            let ctx = jt
-                .default_validation_context()
-                .with_submission_path_format(format);
-            let err = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap_err();
-            assert_errors(
-                &err.to_string(),
-                "JobTemplate",
-                &[
-                    &format!("steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{got}'."),
-                    &format!("steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '{got}'."),
-                ],
-            );
-        }
-    }
-}
-
-/// Spec 2892d96 leaves expressions evaluated at Job creation in the
-/// evaluator's path format: `path(RawParam.Dir) / 'x'` joins with that
-/// format's separator. A POSIX value evaluated in WINDOWS becomes the
-/// drive-less rooted `\data\x`, which is absolute in no format.
-#[test]
-fn a_path_expression_still_uses_the_submission_path_format() {
+fn a_path_expression_evaluates_with_posix_semantics() {
     let src = PATHS
         .replace(
             r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
             "parameterDefinitions: [{name: Dir, type: PATH}]",
         )
         .replace("P: VALUE_P", r#"P: "{{ path(RawParam.Dir) / 'x' }}""#)
-        .replace("L: VALUE_L", r#"L: "{{ [path(RawParam.Dir) / 'y'] }}""#);
-    let jt = job_ok(&src);
-    let params = job_params(&jt, &[("Dir", "/data")]);
-    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:["/data/y"], P=path:/data/x"#]
-    );
-    let windows = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let err = create_job(&jt, &params, &windows).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &[
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\y'.",
-            "steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data\\x'.",
-        ],
-    );
-    // A single `{{ }}` value is converted to `path` in the evaluator's
-    // format too: in WINDOWS `{{RawParam.Dir}}` is `\data`, rejected,
-    // while the multi-segment `{{RawParam.Dir}}/x` stays a string.
-    let single = PATHS
         .replace(
-            r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
-            "parameterDefinitions: [{name: Dir, type: PATH}]",
+            "L: VALUE_L",
+            r#"L: "{{ [path(RawParam.Dir) / 'y', path(RawParam.Dir).parent] }}""#,
+        );
+    let jt = job_ok(&src);
+    for (format, dir, expected) in [
+        (
+            PathFormat::Posix,
+            "/data/in",
+            r#"JobTemplate/E: L=list[path]:["/data/in/y","/data"], P=path:/data/in/x"#,
+        ),
+        (
+            PathFormat::Windows,
+            r"C:\data\in",
+            r#"JobTemplate/E: L=list[path]:["C:\\data\\in/y","."], P=path:C:\data\in/x"#,
+        ),
+        (
+            PathFormat::Windows,
+            "C:/data/in",
+            r#"JobTemplate/E: L=list[path]:["C:/data/in/y","C:/data"], P=path:C:/data/in/x"#,
+        ),
+    ] {
+        let job = create_job(
+            &jt,
+            &params_in(&jt, &[("Dir", dir)], format),
+            &posix_ctx(&jt),
         )
-        .replace("P: VALUE_P", r#"P: "{{RawParam.Dir}}""#)
-        .replace("L: VALUE_L", "L: []");
-    let single = job_ok(&single);
-    let single_params = job_params(&single, &[("Dir", "/data")]);
-    let job = create_job(&single, &single_params, &posix_ctx(&single)).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:[], P=path:/data"#]
-    );
-    let err = create_job(&single, &single_params, &windows).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &["steps[0] -> dependencies[0] -> parameters -> P:
-	must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\data'."],
-    );
-    let multi = job_ok(
-        &PATHS
-            .replace(
-                r#"parameterDefinitions: [{name: Opt, type: PATH, default: ""}]"#,
-                "parameterDefinitions: [{name: Dir, type: PATH}]",
-            )
-            .replace("P: VALUE_P", r#"P: "{{RawParam.Dir}}/x""#)
-            .replace("L: VALUE_L", "L: []"),
-    );
-    let job = create_job(&multi, &job_params(&multi, &[("Dir", "/data")]), &windows).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:[], P=path:/data/x"#]
-    );
-    // A multi-segment format string resolves to a string, but its path
-    // operations still use the evaluator's format.
-    let mixed = job_ok(
-        &PATHS
-            .replace(
-                "  - {name: L, type: \"LIST[PATH]\", default: []}",
-                "  - {name: L, type: \"LIST[PATH]\", default: []}\n  - {name: D, type: PATH, default: \"{{ path('C:/d') / 'e' }}/f\"}",
-            )
-            .replace("P: VALUE_P", r#"P: "{{ path('C:/a') / 'b' }}/x""#)
-            .replace("L: VALUE_L", "L: []"),
-    );
-    let mixed_params = job_params(&mixed, &[]);
-    let job = create_job(&mixed, &mixed_params, &windows).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r"JobTemplate/E: D=path:C:\d\e/f, L=list[path]:[], P=path:C:\a\b/x"]
-    );
-    let job = create_job(&mixed, &mixed_params, &posix_ctx(&mixed)).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        ["JobTemplate/E: D=path:C:/d/e/f, L=list[path]:[], P=path:C:/a/b/x"]
-    );
-    // A Windows drive path keeps its drive, so it is accepted in both,
-    // joined with each format's separator (POSIX treats `\` as a filename
-    // character).
-    let input: openjd_model::JobParameterInputValues = [(
-        "Dir".to_string(),
-        openjd_expr::ExprValue::String(r"C:\data".to_string()),
-    )]
-    .into_iter()
-    .collect();
-    let mut opts = openjd_model::PathParameterOptions::new(r"C:\templates", r"C:\work");
-    opts.path_format = PathFormat::Windows;
-    let params = openjd_model::preprocess_job_parameters(&jt, &input, &[], &opts).unwrap();
-    let job = create_job(&jt, &params, &windows).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:["C:\\data\\y"], P=path:C:\data\x"#]
-    );
-    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:["C:\\data/y"], P=path:C:\data/x"#]
-    );
+        .unwrap_or_else(|e| panic!("{dir}: {e}"));
+        assert_eq!(rendered_values(&job.steps[0]), [expected], "{dir}");
+    }
 }
 
 #[test]
-fn a_uri_is_accepted_only_with_the_callers_permission() {
-    let jt = job_ok(&paths("s3://bucket/key", "[]"));
-    let params = job_params(&jt, &[]);
-    let err = create_job(&jt, &params, &posix_ctx(&jt)).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tis a URI ('s3://bucket/key'), and URI path values are not permitted for this submission."],
-    );
-    let job = create_job(
-        &jt,
-        &params,
-        &posix_ctx(&jt).with_allow_uri_path_values(true),
-    )
-    .unwrap();
+fn a_uri_path_value_is_used_as_given() {
+    // A URI is one more form of value: no caller policy applies to it.
+    let job = create_ok(&paths("s3://bucket/key", "['s3://b/k', 'rel']"), &[]);
     assert_eq!(
         rendered_values(&job.steps[0]),
-        ["JobTemplate/E: L=list[path]:[], P=path:s3://bucket/key"]
+        [r#"JobTemplate/E: L=list[path]:["s3://b/k","rel"], P=path:s3://bucket/key"#]
     );
 }
 
@@ -948,19 +940,23 @@ jobEnvironments:
   envParameterDefinitions: [{name: X, type: STRING, default: x}]
   variables: {V: v}
 - name: E1
-  envParameterDefinitions: [{name: P, type: PATH, default: rel}, {name: Q, type: PATH, default: /q}]
+  envParameterDefinitions:
+  - {name: P, type: PATH, allowedValues: [/p], default: "{{ 'rel' }}"}
+  - {name: Q, type: PATH, allowedValues: [/q], default: /q}
   variables: {V: v}
 steps:
 - name: A
   script: {actions: {onRun: {command: x}}}
 - name: B
-  dependencies: [{environment: E0, parameters: {X: y}}, {environment: E1, parameters: {Q: also-rel}}]
+  dependencies: [{environment: E0, parameters: {X: y}}, {environment: E1, parameters: {Q: "{{ 'also-rel' }}"}}]
   script: {actions: {onRun: {command: x}}}
 "#,
         &[],
         &[
-            "jobEnvironments[1] -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
-            "steps[1] -> dependencies[1] -> parameters -> Q:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'also-rel'.",
+            "jobEnvironments[1] -> envParameterDefinitions[0] -> default:\n\tfor Step 'A', which \
+             does not supply this parameter: Parameter 'P': value 'rel' is not in allowed values",
+            "steps[1] -> dependencies[1] -> parameters -> Q:\n\tParameter 'Q': value 'also-rel' \
+             is not in allowed values",
         ],
     );
 }
@@ -1164,8 +1160,11 @@ steps:
 }
 
 #[test]
-fn a_job_environment_default_uses_the_submission_path_format_for_path_operations() {
-    let jt = job_ok(
+fn a_job_environment_default_uses_posix_for_path_operations() {
+    // Expression Language §1.2.1: TEMPLATE scope has POSIX semantics, so a
+    // Windows-looking string is one POSIX path name: `/` joins it, and its
+    // `name` is the whole string.
+    let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1181,18 +1180,15 @@ steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 "#,
+        &[],
     );
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap();
     assert_eq!(
         rendered_values(&job.steps[0]),
-        [r"JobTemplate/E: Name=string:proj, Sub=path:C:\data\proj\sub"]
+        [r"JobTemplate/E: Name=string:C:\data\proj, Sub=path:C:\data\proj/sub"]
     );
 }
 
-// ── Step `let` bindings in the submission path format ───────────────
+// ── Step `let` bindings, evaluated once with POSIX semantics ─────────
 
 const PATH_LET: &str = r#"
 specificationVersion: jobtemplate-2023-09
@@ -1214,58 +1210,58 @@ steps:
 "#;
 
 #[test]
-fn a_path_let_binding_follows_the_submission_path_format() {
-    let jt = job_ok(PATH_LET);
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-        .unwrap_or_else(|e| panic!("create_job failed:\n{e}"));
+fn a_path_let_binding_evaluates_with_posix_semantics() {
+    // §7.3.2: an entry's values read the Step's `let` bindings, which job
+    // creation evaluates once, with POSIX semantics (Expression Language
+    // §1.2.1), as for every other field of the Step.
+    let job = create_ok(PATH_LET, &[]);
     assert_eq!(
         rendered_values(&job.steps[0]),
-        [r"JobTemplate/E: A=path:C:\data\proj\sub, B=path:C:\data\proj\x, N=string:proj"]
+        [r"JobTemplate/E: A=path:C:\data\proj/sub, B=path:C:\data\proj/x, N=string:C:\data\proj"]
     );
 }
 
 #[test]
-fn a_let_binding_that_fails_only_in_the_submission_path_format_is_reported() {
+fn a_let_binding_that_fails_with_posix_semantics_is_reported_once() {
+    // The Step's `let` bindings are evaluated once, with POSIX semantics, so
+    // a failing one is the Step's ordinary `let` error, reported once.
     let src = PATH_LET
         .replace(
+            "parameterDefinitions: [{name: Root, type: STRING, default: 'C:\\data\\proj'}]",
+            "parameterDefinitions: [{name: Root, type: STRING}, {name: Base, type: STRING}]",
+        )
+        .replace(
             r#"let: ["p = path(Param.Root) / 'sub'", "q = p.parent"]"#,
-            r#"let: ["r = path('/a/b').relative_to('/a')"]"#,
+            r#"let: ["r = path(Param.Root).relative_to(Param.Base)"]"#,
         )
         .replace(
             r#"{A: "{{ p }}", B: "{{ q / 'x' }}", N: "{{ q.name }}"}"#,
             r#"{N: "{{ r }}"}"#,
         )
         .replace("  - {name: A, type: PATH, default: 'C:\\a'}\n  - {name: B, type: PATH, default: 'C:\\b'}\n", "");
-    let jt = job_ok(&src);
-    let params = job_params(&jt, &[]);
-    // POSIX: '/a/b' is relative to '/a'.
-    let job = create_job(&jt, &params, &posix_ctx(&jt)).unwrap();
+    let job = create_ok(&src, &[("Root", "/a/b"), ("Base", "/a")]);
     assert_eq!(
         rendered_values(&job.steps[0]),
         ["JobTemplate/E: N=string:b"]
     );
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let err = create_job(&jt, &params, &ctx).unwrap_err();
-    assert_errors(
-        &err.to_string(),
-        "JobTemplate",
-        &["steps[0] -> let[0]:\n\tin the submission path format (WINDOWS), which this Step's Environment parameter values resolve in: Expression error: Error evaluating let binding 'r': relative_to failed: '\\a\\b' is not relative to '/a'\n  r = path('/a/b').relative_to('/a')\n      ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~"],
+    create_err(
+        &src,
+        &[("Root", "/a/b"), ("Base", "/c")],
+        &[
+            "steps[0] -> let[0]:\n\tInvalid expression in let binding 'r': relative_to failed: \
+           '/a/b' is not relative to '/c'\n  r = path(Param.Root).relative_to(Param.Base)\n      \
+           ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~",
+        ],
     );
 }
 
 #[test]
-fn a_path_value_is_stored_as_resolved() {
+fn a_path_value_is_the_same_however_it_is_written() {
     // Plan A22: §3.2.2 compares PATH values by their unmapped strings, and
-    // the prototype does not rewrite them. A single expression evaluates
-    // to a `path` in the submission format, whose `/` the WINDOWS rules
-    // turn into `\`; a literal or a multi-segment format string is a string
-    // and is kept as written. So in a WINDOWS submission `C:/data\proj`
-    // written those ways gives different strings, which are unequal.
+    // the prototype does not rewrite them. A single expression's string
+    // result, a multi-segment format string and a literal with the same
+    // text give the same value, a mix of separators included, so the two
+    // Steps' values are equal.
     let src = r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1281,23 +1277,17 @@ steps:
 - name: S
   script: {actions: {onRun: {command: x}}}
 - name: T
-  dependencies: [{environment: E, parameters: {P: "{{Param.Root}}\\x", L: ['C:/data\proj']}}]
+  dependencies: [{environment: E, parameters: {P: "{{Param.Root}}{{ '' }}", L: ['C:/data\proj']}}]
   script: {actions: {onRun: {command: x}}}
 "#;
-    let jt = job_ok(src);
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        [r#"JobTemplate/E: L=list[path]:["C:\\data\\proj"], P=path:C:\data\proj"#]
-    );
-    assert_eq!(
-        rendered_values(&job.steps[1]),
-        [r#"JobTemplate/E: L=list[path]:["C:/data\\proj"], P=path:C:/data\proj\x"#]
-    );
-    assert!(!job.steps[0].environment_values_equal(&job.steps[1]));
+    let job = create_ok(src, &[]);
+    for step in &job.steps {
+        assert_eq!(
+            rendered_values(step),
+            [r#"JobTemplate/E: L=list[path]:["C:/data\\proj"], P=path:C:/data\proj"#]
+        );
+    }
+    assert!(job.steps[0].environment_values_equal(&job.steps[1]));
 }
 
 #[test]
@@ -1330,12 +1320,12 @@ steps:
 }
 
 #[test]
-fn a_let_binding_no_entry_reads_is_not_evaluated_again() {
-    // `k` fails in the Windows format (`D:\out` has 2 parts there, 1 in
-    // POSIX), but only the script reads it, so a Windows submission is not
-    // rejected. `m`, which the entry reads, and `base`, which `m` reads,
-    // are evaluated again.
-    let jt = job_ok(
+fn the_script_and_the_entries_read_the_same_let_values() {
+    // The Step's `let` bindings are evaluated once, with POSIX semantics,
+    // and the script and the entries read the same values: `D:\out` is one
+    // POSIX path name, so `k` evaluates, and `m.parent / 'x'` joins with
+    // `/`.
+    let job = create_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -1351,15 +1341,11 @@ steps:
   dependencies: [{environment: E, parameters: {P: "{{ m.parent / 'x' }}"}}]
   script: {actions: {onRun: {command: "{{ k }}"}}}
 "#,
+        &[],
     );
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
-    let job = create_job(&jt, &job_params(&jt, &[]), &ctx)
-        .unwrap_or_else(|e| panic!("create_job failed:\n{e}"));
     assert_eq!(
         rendered_values(&job.steps[0]),
-        [r"JobTemplate/E: P=path:D:\out\x"]
+        [r"JobTemplate/E: P=path:D:\out/x"]
     );
 }
 
@@ -1389,18 +1375,16 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
     let jt = job_ok(src);
-    let ctx = jt
-        .default_validation_context()
-        .with_submission_path_format(PathFormat::Windows);
+    let ctx = posix_ctx(&jt);
     let err = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap_err();
-    // `{{Param.D}} ` is the string 'C:/a/b ', which is not allowed; the
-    // single expression is the path C:\a\b, which is.
+    // `{{Param.D}} ` is the string 'C:/a/b ', which is not allowed.
     assert_errors(
         &err.to_string(),
         "JobTemplate",
         &["steps[1] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 'C:/a/b ' is not in allowed values"],
     );
-    // `{{Param.D}}` alone is a single expression too.
+    // The single expression `{{ Param.D }}` keeps the string as written,
+    // 'C:/a/b', as the literal does.
     let jt = job_ok(&src.replace("{P: '{{Param.D}} '}", "{P: '{{Param.D}}'}"));
     let job = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap();
     let values: Vec<_> = job.steps.iter().map(rendered_values).collect();
@@ -1408,8 +1392,8 @@ steps:
         values,
         [
             ["JobTemplate/E: P=path:C:/a/b"],
-            [r"JobTemplate/E: P=path:C:\a\b"],
-            [r"JobTemplate/E: P=path:C:\a\b"]
+            ["JobTemplate/E: P=path:C:/a/b"],
+            ["JobTemplate/E: P=path:C:/a/b"]
         ]
     );
 }
@@ -1447,7 +1431,9 @@ steps:
 }
 
 #[test]
-fn a_path_value_that_fails_its_path_check_is_not_also_checked_against_constraints() {
+fn a_relative_path_value_is_checked_only_against_its_constraints() {
+    // §4.5 item 3 (spec af53020): no form check, so only `allowedValues`
+    // rejects it, against the unmapped value.
     create_err(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -1464,7 +1450,7 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#,
         &[],
-        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'."],
+        &["steps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 'rel' is not in allowed values"],
     );
 }
 

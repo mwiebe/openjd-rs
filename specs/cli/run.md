@@ -324,11 +324,11 @@ and not exited.
 `openjd run` treats each `--environment` file as an Environment Template the scheduler
 attaches, in the order given (Template Schemas §3.2.1), labeled with its path as given so
 messages name it. It calls `openjd_model::create_job_with_environment_templates` with them,
-the merged Job Parameters, and `common::submission_context` (the template's profile, the
-CLI's caller limits, the host submission path format, and URI path values allowed, as for
-Job Parameters). The host path format is the one Environment parameter format strings
-evaluate in; a PATH value is accepted when it is absolute in any path format (Template
-Schemas §4.5 item 3). Its submission stage:
+the merged Job Parameters, and `common::submission_context` (the template's profile and the
+CLI's caller limits). Environment parameter format strings evaluate with POSIX semantics on
+every host (Expression Language §1.2.1), and a PATH value of any form is used as given
+(Template Schemas §4.5 item 3); the Session maps `Env.Param.<name>` with the host's rules and
+leaves `Env.RawParam.<name>` as given. Its submission stage:
 
 - resolves each `environment:` dependency that names no `jobEnvironments` entry against
   the attached Environments by name. A missing `required` Environment, an ambiguous name, an
@@ -475,8 +475,7 @@ lower bound), `create_job` carries the same limits on its
 and the session mirrors them via `SessionConfig::limits` (the
 authoritative check on final values). As its job-creation context the CLI passes
 `common::submission_context(&job_template)`: `default_validation_context()`
-with those caller limits, the host submission path format, and URI path
-values allowed.
+with those caller limits.
 
 ## Result Output
 

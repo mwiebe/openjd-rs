@@ -351,30 +351,6 @@ fn a_literal_false_entry_requests_nothing_at_job_creation() {
 }
 
 #[test]
-fn a_windows_submission_keeps_the_template_scope_for_enable_if() {
-    // `entry_scope` evaluates again, in the submission path format, only
-    // the bindings the enabled entries' values read (`w`). The entry's
-    // `enableIf` reads `on`, which it gets from the template scope
-    // (Template Schemas §7.5, spec 5535230), so it still resolves.
-    let jt = job_ok(
-        &ENABLE_IF
-            .replace("SCOPE", "ON_REQUEST")
-            .replace(
-                "let: [\"on = Param.Mode == 'on'\"]",
-                "let: [\"on = Param.Mode == 'on'\", \"w = 'x'\"]",
-            )
-            .replace("{Packages: ffmpeg}", "{Packages: \"{{ w }}\"}"),
-    );
-    let ctx =
-        posix_ctx(&jt).with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let job = create_job(&jt, &job_params(&jt, &[]), &ctx).unwrap();
-    assert_eq!(
-        rendered_values(&job.steps[0]),
-        ["JobTemplate/Conda: Packages=string:x"]
-    );
-}
-
-#[test]
 fn a_disabled_entry_naming_no_attachment_has_no_effect() {
     // A required entry naming no Environment is no error while disabled
     // (§3.2.1: item 2 does not apply to a disabled entry).
@@ -512,19 +488,19 @@ steps:
 "#;
 
 #[test]
-fn enable_if_is_evaluated_with_posix_paths_whatever_the_submission_path_format() {
+fn enable_if_is_evaluated_with_posix_paths() {
     // An `enableIf` is a TEMPLATE-scope expression field, not host
     // context: path operations use POSIX paths, so `.name` never splits on
-    // `\`, even for a Windows submission (unlike an entry's parameter
-    // values, §4.5).
+    // `\` (§7.5), as for an entry's parameter values (Expression Language
+    // §1.2.1).
     let jt = job_ok(&ENABLE_IF_CONTEXT.replace("ENABLE", r#""path(Param.P).name == 'b.txt'""#));
-    let values = job_params(&jt, &[]);
-    let posix = create_job(&jt, &values, &posix_ctx(&jt)).unwrap();
-    assert_eq!(posix.steps[0].environments, Some(vec![]));
-    let windows =
-        posix_ctx(&jt).with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let windows = create_job(&jt, &values, &windows).unwrap();
-    assert_eq!(windows.steps[0].environments, Some(vec![]));
+    let job = create_job(&jt, &job_params(&jt, &[]), &posix_ctx(&jt)).unwrap();
+    assert_eq!(job.steps[0].environments, Some(vec![]));
+    let jt = job_ok(&ENABLE_IF_CONTEXT.replace("ENABLE", r#""path(Param.P).name == Param.P""#));
+    let job = create_job(&jt, &job_params(&jt, &[]), &posix_ctx(&jt)).unwrap();
+    // Enabled, the entry requests E, so the Step enters every Job
+    // Environment.
+    assert_eq!(job.steps[0].environments, None);
 }
 
 #[test]

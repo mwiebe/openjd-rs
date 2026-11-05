@@ -971,25 +971,33 @@ fn a_literal_that_breaks_a_constraint_is_known_to_the_enable_if() {
 }
 
 #[test]
-fn a_relative_path_is_not_checked_where_the_environment_is_disabled() {
-    // §4.5 item 3: absoluteness is checked only for an Environment
-    // that is not disabled for the Step.
+fn a_path_constraint_is_not_checked_where_the_environment_is_disabled() {
+    // §3.2.2: the value checks apply only where the Environment is not
+    // disabled for the Step. A PATH value is checked only against its
+    // constraints (§4.5 items 2-3), so a relative value is no error in
+    // either case and one outside `allowedValues` is one only where the
+    // Environment is enabled.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               parameterDefinitions: [{name: U, type: STRING, default: 'no'}]\n\
-              jobEnvironments:\n- name: E\n  envParameterDefinitions: [{name: D, type: PATH}, \
-              {name: L, type: 'LIST[PATH]', default: []}]\n  enableIf: \"Param.U == 'yes'\"\n  \
+              jobEnvironments:\n- name: E\n  envParameterDefinitions: [{name: D, type: PATH, \
+              allowedValues: [/ok, relative/dir]}, {name: L, type: 'LIST[PATH]', default: []}]\n  \
+              enableIf: \"Param.U == 'yes'\"\n  \
               variables: {V: x}\nsteps:\n- name: S\n  dependencies: [{environment: E, parameters: \
-              {D: relative/dir, L: [rel]}}]\n  script: {actions: {onRun: {command: x}}}\n";
-    create_ok(jt, &[], &[]);
+              {D: DVALUE, L: [rel]}}]\n  script: {actions: {onRun: {command: x}}}\n";
+    let relative = jt.replace("DVALUE", "relative/dir");
+    let outside = jt.replace("DVALUE", "/other");
+    create_ok(&outside, &[], &[]);
+    let created = create_ok(&relative, &[], &[("U", "yes")]);
+    assert_eq!(
+        rendered_values(&created.job.steps[0]),
+        [r#"JobTemplate/E: D=path:relative/dir, L=list[path]:["rel"]"#]
+    );
     create_err(
-        jt,
+        &outside,
         &[],
         &[("U", "yes")],
         "JobTemplate",
-        &[
-            "steps[0] -> dependencies[0] -> parameters -> D:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'relative/dir'.",
-            "steps[0] -> dependencies[0] -> parameters -> L:\n\titem[0] must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
-        ],
+        &["steps[0] -> dependencies[0] -> parameters -> D:\n\tParameter 'D': value '/other' is not in allowed values"],
     );
 }
 
@@ -1145,35 +1153,25 @@ fn an_attachment_reads_job_names_whatever_the_job_template_lists() {
 }
 
 #[test]
-fn a_literal_default_is_checked_when_its_environment_is_disabled_for_every_step() {
-    // §4.5 item 2 (plan 4 A42): a literal `default` is a property of the
-    // definition, so a relative PATH `default` is an error even where the
-    // Environment is disabled, for a Job Environment and an attachment.
-    let relative = "must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.";
+fn a_relative_literal_default_is_accepted_when_its_environment_is_disabled_for_every_step() {
+    // §4.5 item 2 (plan 4 A42) checks a literal `default` even where the
+    // Environment is disabled, but since spec af53020 §4.5 item 3 has no
+    // form check, so a relative PATH `default` is no error there, for a Job
+    // Environment and for an attachment, at job creation and in `check`.
     let jt = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
               jobEnvironments:\n- name: E\n  enableIf: false\n  envParameterDefinitions: [{name: \
               P, type: PATH, default: rel}]\n  variables: {V: x}\n\
               steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n";
-    create_err(
-        jt,
-        &[],
-        &[],
-        "JobTemplate",
-        &[&format!(
-            "jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\t{relative}"
-        )],
-    );
+    let created = create_ok(jt, &[], &[]);
+    assert_eq!(created.job.steps[0].environments, Some(vec![]));
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: A\n  enableIf: false\n  envParameterDefinitions: [{name: P, \
                type: PATH, default: rel}]\n  variables: {V: x}\n";
     let plain = "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                  name: J\nsteps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n";
-    let expected = format!(
-        "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\t{relative}"
-    );
-    create_err(plain, &[env], &[], "Submission", &[&expected]);
-    let err = check(plain, &[env]).unwrap_err();
-    assert_errors(&err.to_string(), "Submission", &[&expected]);
+    let created = create_ok(plain, &[env], &[]);
+    assert_eq!(created.job.steps[0].environments, Some(vec![]));
+    check(plain, &[env]).unwrap();
 }
 
 #[test]

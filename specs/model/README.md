@@ -73,7 +73,14 @@ Currently implements `2023-09` with extensions:
   run (needed to resolve `Env.File.*` inside `onWrapTaskRun` scripts) is a
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
-  `87be017`. Its `ENV_PARAMS` changes since `26ef74f` are the statement that each of a merged
+  `af53020`. Its changes since `87be017` are to Template Schemas §4.5 item 3 and the sentence
+  after the §7.4.1 steps: `2892d96` accepts a PATH or LIST[PATH] value absolute in any path
+  format, and `af53020` uses it as given, with no check of its form. The prototype also
+  evaluates every Environment parameter value, and the Step `let` bindings it reads, with POSIX
+  semantics, as TEMPLATE scope requires (Expression Language §1.2.1; §7.3.2), so
+  `ValidationContext` no longer has `submission_path_format` or `allow_uri_path_values` (see
+  [job-creation.md](job-creation.md#environment-parameter-values-env_params)). Its `ENV_PARAMS`
+  changes from `26ef74f` to `87be017` are the statement that each of a merged
   RANGE_EXPR Job Parameter's definitions keeps the `minLength` and `maxLength` rule of the
   document that contains it (§1.2.1, §2.10; `c12a76e`), which the prototype already followed,
   and non-normative text (the Environment Name Conventions wiki page and the RFC's open
@@ -135,7 +142,8 @@ Currently implements `2023-09` with extensions:
   a document that lists `ENV_PARAMS`, spec `8a2803a`),
   and [`docs/env-params-prototype-plan-6.md`](../../docs/env-params-prototype-plan-6.md) for
   the update to `2491d6e` (`ENV_PARAMS` requires `EXPR`). The section citations in the
-  code, tests, and specs follow the numbering of the spec at `87be017`, the same as at `26ef74f`,
+  code, tests, and specs follow the numbering of the spec at `af53020`, the same as at `87be017`
+  and `26ef74f`,
   where §7.4.1 has
   steps 1–8 (step 6 Environment `enableIf` and groups, step 7 the checks over a Step's set),
   §3.2's *environment* form is item 3 with *required*, *enableIf*, and *parameters* as items 3.1–3.3,

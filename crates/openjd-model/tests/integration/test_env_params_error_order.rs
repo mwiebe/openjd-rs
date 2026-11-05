@@ -541,6 +541,35 @@ fn a_job_template_without_env_params_reports_its_errors_with_the_attachments_in_
 // order, so it pins one key of the order.
 
 /// Run `jt` with `envs` attached and return the error's text.
+/// An attached Environment `name` whose INT `N` (at least 5) has its
+/// literal `default` edited after decoding to 1, so job creation's
+/// template-validation-style check of the default rejects it.
+fn below_minimum_default(name: &str) -> EnvironmentTemplate {
+    let mut x = env_ok(&env(&format!(
+        "name: {name}, envParameterDefinitions: [{{name: N, type: INT, minValue: 5, default: 5}}]"
+    )));
+    x.environment.env_parameter_definitions.as_mut().unwrap()[0].default = env_ok(&env(
+        "name: O, envParameterDefinitions: [{name: N, type: INT, default: 1}]",
+    ))
+    .environment
+    .env_parameter_definitions
+    .unwrap()[0]
+        .default
+        .clone();
+    x
+}
+
+/// Create `jt` with the decoded (and maybe edited) `envs` attached; the
+/// error's text.
+fn err_text_envs(jt: &str, envs: &[EnvironmentTemplate]) -> String {
+    let jt = job_ok(jt);
+    let values = job_params_with(&jt, &[], envs);
+    let attached: Vec<_> = envs.iter().map(AttachedEnvironmentTemplate::new).collect();
+    create_job_with_environment_templates(&jt, &attached, &values, &posix_ctx(&jt))
+        .expect_err("expected job creation to fail")
+        .to_string()
+}
+
 fn err_text(jt: &str, envs: &[&str], params: &[(&str, &str)]) -> String {
     create(jt, envs, params)
         .expect_err("expected job creation to fail")
@@ -952,18 +981,19 @@ fn an_always_error_naming_two_steps_is_filed_under_the_first() {
 }
 
 #[test]
-fn order_the_validation_step_1_and_step_2_stages() {
-    // WINDOWS submission path format. S1's let binding, read by its entry's
-    // value, fails only there (step 1); S0's entry enableIf fails (step 2);
-    // the attachment X's literal default, edited below its minimum, fails
-    // its definition (template-validation style).
+fn order_the_validation_and_step_2_stages() {
+    // S0's entry enableIf fails (step 2); the attachment X's literal
+    // default, edited below its minimum, fails its definition
+    // (template-validation style), which comes first. S1's entry value
+    // reads its `let` binding, evaluated once with POSIX semantics.
     let jt = job_ok(&format!(
-        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}]\n\
+        "{HEAD}parameterDefinitions: [{{name: L, type: 'LIST[INT]', default: [1]}}, {{name: Root, \
+         type: STRING, default: /a/b}}, {{name: Base, type: STRING, default: /a}}]\n\
          jobEnvironments:\n- {{name: R, activation: ON_REQUEST, envParameterDefinitions: \
          [{{name: P, type: STRING}}], variables: {{V: r}}}}\nsteps:\n\
          - name: S0\n  dependencies: [{{environment: R, enableIf: \"Param.L[4] == 1\"}}]\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n\
-         - name: S1\n  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  dependencies: \
+         - name: S1\n  let: [\"r = string(path(Param.Root).relative_to(Param.Base))\"]\n  dependencies: \
          [{{environment: R, parameters: {{P: \"{{{{r}}}}\"}}}}]\n  script: {{actions: {{onRun: \
          {{command: x}}}}}}\n"
     ));
@@ -978,17 +1008,22 @@ fn order_the_validation_step_1_and_step_2_stages() {
     .unwrap()[0]
         .default
         .clone();
-    let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
-    let ctx =
-        posix_ctx(&jt).with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let err = create_job_with_environment_templates(
-        &jt,
-        &[AttachedEnvironmentTemplate::new(&x)],
-        &values,
-        &ctx,
-    )
-    .expect_err("expected job creation to fail");
-    assert_eq!(err.to_string(), "Model validation error: 3 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[1] -> let[0]:\n\tin the submission path format (WINDOWS), which this Step's Environment parameter values resolve in: Expression error: Error evaluating let binding 'r': relative_to failed: '\\a\\b' is not relative to '/a'\n  r = string(path('/a/b').relative_to('/a'))\n             ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~\nJobTemplate -> steps[0] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
+    let create = |jt: &openjd_model::template::JobTemplate, params: &[(&str, &str)]| {
+        let values = job_params_with(jt, params, std::slice::from_ref(&x));
+        create_job_with_environment_templates(
+            jt,
+            &[AttachedEnvironmentTemplate::new(&x)],
+            &values,
+            &posix_ctx(jt),
+        )
+        .expect_err("expected job creation to fail")
+        .to_string()
+    };
+    assert_eq!(create(&jt, &[]), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nJobTemplate -> steps[0] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
+    // When S1's binding fails, S1 is uninstantiable and the attachments
+    // are not applied (`create_job_with_environment_templates`), so only
+    // the Job Template's own checks are reported, in Step order.
+    assert_eq!(create(&jt, &[("Base", "/c")]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[1] -> let[0]:\n\tInvalid expression in let binding 'r': relative_to failed: '/a/b' is not relative to '/c'\n  r = string(path(Param.Root).relative_to(Param.Base))\n             ~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~\nJobTemplate -> steps[0] -> dependencies[0] -> enableIf:\n\tcould not be evaluated: Index 4 out of bounds for list of length 1\n  Param.L[4] == 1\n  ~~~~~~~^~~");
 }
 
 #[test]
@@ -1338,7 +1373,7 @@ fn s0_s1(s0: &str, s1: &str) -> String {
 const R_BAD: &str = "{environment: R, parameters: {P: \"{{Param.N}}\"}}";
 
 #[test]
-fn a_later_steps_step_1_to_4_error_stops_that_step_not_the_first() {
+fn a_later_steps_step_2_to_4_error_stops_that_step_not_the_first() {
     // S0's only error is its R value (step 7). S1 has an error from one of
     // steps 1–4 and its own R value: S1 is stopped, S0 is not.
     let s0 = format!("  dependencies: [{R_BAD}]\n");
@@ -1367,29 +1402,6 @@ fn a_later_steps_step_1_to_4_error_stops_that_step_not_the_first() {
     let err = openjd_model::create_job(&jt, &values, &posix_ctx(&jt))
         .expect_err("expected job creation to fail");
     assert_eq!(err.to_string(), "Model validation error: 2 validation errors for JobTemplate\nsteps[1] -> dependencies[2] -> environment:\n\tduplicate environment dependency 'F'.\nsteps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 1 is less than minimum 5");
-    // Step 1: S1's let binding, read by its entry's value, fails in the
-    // WINDOWS submission path format.
-    let jt = job_ok(&s0_s1(
-        &s0,
-        &format!(
-            "  let: [\"r = string(path('/a/b').relative_to('/a'))\"]\n  dependencies: [{R_BAD}, \
-             {{environment: X, parameters: {{W: \"{{{{r}}}}\"}}}}]\n"
-        ),
-    ));
-    let x = env_ok(&env(
-        "name: X, activation: ON_REQUEST, envParameterDefinitions: [{name: W, type: STRING}]",
-    ));
-    let values = job_params_with(&jt, &[], std::slice::from_ref(&x));
-    let ctx =
-        posix_ctx(&jt).with_submission_path_format(openjd_expr::path_mapping::PathFormat::Windows);
-    let err = create_job_with_environment_templates(
-        &jt,
-        &[AttachedEnvironmentTemplate::new(&x)],
-        &values,
-        &ctx,
-    )
-    .expect_err("expected job creation to fail");
-    assert_eq!(err.to_string(), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[1] -> let[0]:\n\tin the submission path format (WINDOWS), which this Step's Environment parameter values resolve in: Expression error: Error evaluating let binding 'r': relative_to failed: '\\a\\b' is not relative to '/a'\n  r = string(path('/a/b').relative_to('/a'))\n             ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~\nJobTemplate -> steps[0] -> dependencies[0] -> parameters -> P:\n\tParameter 'P': value 1 is less than minimum 5");
 }
 
 #[test]
@@ -2044,14 +2056,15 @@ fn an_edited_job_template_without_env_params_files_an_undeclared_key_at_step_5()
 #[test]
 fn without_env_params_the_job_templates_validation_errors_precede_the_attachments_defaults() {
     // Both are template-validation-style checks: the Job Template's
-    // timeout, then the attachment's relative PATH default.
+    // timeout, then the attachment's literal default, edited below its
+    // minimum.
     let jt = plain(
         "EXPR, FEATURE_BUNDLE_1",
         "parameterDefinitions: [{name: T, type: INT, default: 0}]\nsteps:\n- name: S\n  \
          script: {actions: {onRun: {command: x, timeout: '{{Param.T}}'}}}\n",
     );
-    let a = env("name: A, envParameterDefinitions: [{name: P, type: PATH, default: rel/x}]");
-    assert_eq!(err_text(&jt, &[&a], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/x'.");
+    let a = below_minimum_default("A");
+    assert_eq!(err_text_envs(&jt, &[a]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0] -> script -> actions -> onRun -> timeout:\n\ttimeout must be > 0.\nEnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5");
 }
 
 #[test]
@@ -2151,7 +2164,7 @@ fn a_job_template_without_extensions_keeps_the_keys() {
     // step 8, Validation before step 6, and an attachment's host
     // requirements under the first Step, before that Step's conflict.
     let s = bare(&format!("steps:\n{}", step("S", "")));
-    let rel = env("name: R, envParameterDefinitions: [{name: P, type: PATH, default: rel/x}]");
+    let rel = below_minimum_default("R");
     let d = env("name: D, hostRequirements: {amounts: [{name: amount.custom, min: 4}]}");
     let two = bare(&format!(
         "steps:\n{}{}",
@@ -2162,7 +2175,7 @@ fn a_job_template_without_extensions_keeps_the_keys() {
         step("S1", "")
     ));
     assert_eq!(err_text(&s, &[&failing_host("H"), &missing_q("Y")], &[]), "Model validation error: 2 validation errors for Submission\nJobTemplate -> steps[0]:\n\tmust supply, in an 'environment:' dependency, every parameter without a default of each Environment its Sessions enter (every attached Environment with activation ALWAYS, each one with activation BY_DEFAULT that the Step does not decline, and each one with activation ON_REQUEST that the Step requests; Template Schemas §3.2.1); missing: 'Q' of Environment 'Y' (EnvironmentTemplate[1]).\nEnvironmentTemplate[0] -> environment -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Step 'S'.\n  Env.Param.L[4]\n  ~~~~~~~~~~~^~~");
-    assert_eq!(err_text(&s, &[&failing_enable_if("E"), &rel], &[]), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/x'.\nEnvironmentTemplate[0] -> environment -> enableIf:\n\tcould not be evaluated: Division by zero. Resolved for Step 'S'.\n  Env.Param.X / (Env.Param.X - Env.Param.X) > 0\n  ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
+    assert_eq!(err_text_envs(&s, &[env_ok(&failing_enable_if("E")), rel]), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[1] -> environment -> envParameterDefinitions[0] -> default:\n\tParameter 'N': value 1 is less than minimum 5\nEnvironmentTemplate[0] -> environment -> enableIf:\n\tcould not be evaluated: Division by zero. Resolved for Step 'S'.\n  Env.Param.X / (Env.Param.X - Env.Param.X) > 0\n  ~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~");
     assert_eq!(err_text(&two, &[&failing_host("H"), &d], &[]), "Model validation error: 2 validation errors for Submission\nEnvironmentTemplate[0] -> environment -> hostRequirements -> amounts[0] -> min:\n\tFormat string error: hostRequirements amount min: Index 4 out of bounds for list of length 1. Resolved for Steps 'S0' and 'S1'.\n  Env.Param.L[4]\n  ~~~~~~~~~~~^~~\nJobTemplate -> steps[0]:\n\tStep 'S0': no host can satisfy the combined host requirements for amount 'amount.custom': EnvironmentTemplate[1] -> environment -> hostRequirements (Environment 'D') requires min 4, and JobTemplate -> steps[0] -> hostRequirements requires max 2. Template Schemas §3.3.3.");
 }
 

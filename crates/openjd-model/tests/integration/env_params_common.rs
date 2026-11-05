@@ -135,12 +135,9 @@ pub fn job_params_with(
         .unwrap_or_else(|e| panic!("preprocess_job_parameters failed:\n{e}"))
 }
 
-/// The context the job-creation tests use: the template's own profile,
-/// with a POSIX submission path format so results do not depend on the
-/// host.
+/// The context the job-creation tests use: the template's own profile.
 pub fn posix_ctx(jt: &JobTemplate) -> openjd_model::ValidationContext {
     jt.default_validation_context()
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::Posix)
 }
 
 /// A Step's effective Environment parameter values, one line per

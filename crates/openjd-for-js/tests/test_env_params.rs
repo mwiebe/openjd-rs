@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! `createJob` with `ENV_PARAMS` templates: the caller's path options
-//! reach the Environment parameter values (the format they evaluate in,
-//! and the URI policy; a PATH value's absoluteness does not depend on the
-//! format), the returned Job has no
+//! apply to Job Parameters only, never to Environment parameter values,
+//! which evaluate with POSIX semantics and are used as given; the
+//! returned Job has no
 //! unresolved `environment:` entries, since `createJob` takes no
 //! Environment Templates, and Environment `hostRequirements` combine with
 //! a Step's.
@@ -39,59 +39,51 @@ steps:
   script: {actions: {onRun: {command: x}}}
 "#;
 
-/// A PATH value absolute in any path format is accepted whatever
-/// `pathFormat` is (Template Schemas §4.5 item 3), and a relative one is
-/// rejected with a message that names no format.
+/// A PATH value of any form, relative ones included, is used as given
+/// whatever `pathFormat` is (Template Schemas §4.5 item 3 at spec af53020).
 #[test]
-fn a_path_value_is_checked_in_no_one_path_format() {
+fn a_path_value_of_any_form_is_accepted_whatever_the_path_format() {
     let mut windows = JsPathParameterOptions::new("C:\\tmpl", "C:\\cwd");
     windows.set_path_format(JsPathFormat::Windows);
     let posix = JsPathParameterOptions::new("/tmpl", "/cwd");
-    let relative = WINDOWS_PATH.replace(r"'C:\tools'", "'tools'");
     for opts in [&windows, &posix] {
-        create(WINDOWS_PATH, opts).expect("a Windows path is absolute in some path format");
-        create(&WINDOWS_PATH.replace(r"'C:\tools'", "/tools"), opts)
-            .expect("a POSIX path is absolute in some path format");
-        assert_eq!(
-            create(&relative, opts).unwrap_err(),
-            "Model validation error: 1 validation error for JobTemplate\n\
-             jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\
-             \tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'tools'."
-        );
+        for value in [
+            r"'C:\tools'",
+            "/tools",
+            "'tools'",
+            "'C:tools'",
+            r"'\tools'",
+            r"'\\srv\s'",
+        ] {
+            create(&WINDOWS_PATH.replace(r"'C:\tools'", value), opts)
+                .unwrap_or_else(|e| panic!("{value}: {e}"));
+        }
     }
 }
 
-/// `pathFormat` is still the format Environment parameter format strings
-/// evaluate in: `path('/a') / 'b'` is `/a/b` in POSIX, and the drive-less
-/// rooted `\a\b`, absolute in no format, in WINDOWS.
+/// `pathFormat` applies to Job Parameters only: Environment parameter
+/// format strings are TEMPLATE-scope fields and evaluate with POSIX
+/// semantics (Expression Language §1.2.1), so `path('/a') / 'b'` is
+/// `/a/b` with either option. (The value itself is checked from JS, in
+/// `js-tests/smoke.test.js`.)
 #[test]
-fn the_path_format_option_is_the_format_values_evaluate_in() {
+fn the_path_format_option_does_not_reach_environment_parameters() {
     let template = WINDOWS_PATH.replace(r"'C:\tools'", r#""{{ path('/a') / 'b' }}""#);
     create(&template, &JsPathParameterOptions::new("/tmpl", "/cwd")).expect("POSIX joins with /");
     let mut windows = JsPathParameterOptions::new("C:\\tmpl", "C:\\cwd");
     windows.set_path_format(JsPathFormat::Windows);
-    assert_eq!(
-        create(&template, &windows).unwrap_err(),
-        "Model validation error: 1 validation error for JobTemplate\n\
-         jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\
-         \tfor Step 'S', which does not supply this parameter: must be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got '\\a\\b'."
-    );
+    create(&template, &windows).expect("WINDOWS evaluates the same");
 }
 
+/// A URI PATH value is used as given, whatever `allowUriPathValues` is,
+/// which applies to Job Parameters only.
 #[test]
-fn the_allow_uri_option_reaches_environment_parameters() {
+fn a_uri_environment_parameter_value_is_accepted_whatever_the_uri_option() {
     let template = WINDOWS_PATH.replace(r"'C:\tools'", "'s3://bucket/key'");
     let mut opts = JsPathParameterOptions::new("/tmpl", "/cwd");
-    let err = create(&template, &opts).unwrap_err();
-    assert_eq!(
-        err,
-        "Model validation error: 1 validation error for JobTemplate\n\
-         jobEnvironments[0] -> envParameterDefinitions[0] -> default:\n\
-         \tis a URI ('s3://bucket/key'), and URI path values are not permitted for this \
-         submission."
-    );
+    create(&template, &opts).expect("a URI is used as given");
     opts.set_allow_uri_path_values(true);
-    create(&template, &opts).expect("URIs are permitted");
+    create(&template, &opts).expect("a URI is used as given");
 }
 
 const EXTERNAL: &str = r#"

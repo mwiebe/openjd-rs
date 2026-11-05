@@ -232,18 +232,14 @@ pub fn parse_extensions(arg: &Option<String>) -> Result<Vec<String>, String> {
 }
 
 /// The validation context for creating a Job from `job_template` and
-/// applying Environment Templates to it: the template's own profile, the
-/// CLI's caller limits, and the CLI's submission path policy, which is the
-/// one it applies to Job Parameters (`PathParameterOptions` in `run` and
-/// `summary`): the host path format, with URI path values allowed.
+/// applying Environment Templates to it: the template's own profile and
+/// the CLI's caller limits.
 pub fn submission_context(
     job_template: &openjd_model::template::JobTemplate,
 ) -> openjd_model::ValidationContext {
     job_template
         .default_validation_context()
         .with_caller_limits(caller_limits())
-        .with_submission_path_format(openjd_expr::path_mapping::PathFormat::host())
-        .with_allow_uri_path_values(true)
 }
 
 /// Read and decode each `--environment` Environment Template, in order.

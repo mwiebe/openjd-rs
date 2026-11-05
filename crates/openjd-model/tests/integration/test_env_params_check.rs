@@ -11,14 +11,15 @@
 //! `create_job_with_environment_templates` reports for the same submission,
 //! so `openjd check --environment` and `openjd run` give the same messages.
 
-use openjd_expr::path_mapping::PathFormat;
 use openjd_model::template::{EnvironmentTemplate, JobTemplate};
 use openjd_model::{
     check_environment_templates, create_job_with_environment_templates,
     AttachedEnvironmentTemplate, ModelError, SubmissionWarning,
 };
 
-use crate::env_params_common::{assert_errors, env_ok, job_ok, job_params_with, posix_ctx};
+use crate::env_params_common::{
+    assert_errors, env_ok, job_ok, job_params_with, posix_ctx, rendered_values,
+};
 
 const CONDA: &str = include_str!("../fixtures/env_params/conda-env-params.yaml");
 const DOCKER: &str = include_str!("../fixtures/env_params/docker-env-params.yaml");
@@ -225,8 +226,21 @@ fn a_literal_of_the_wrong_type_is_rejected() {
     assert_errors(&applied.to_string(), "Submission", &[wrong_type]);
 }
 
+/// `check` accepts the submission, and job creation creates it; returns
+/// each Step's effective values ([`rendered_values`]) and the warnings.
+fn check_ok_and_apply_ok(jt: &JobTemplate, envs: &[EnvironmentTemplate]) -> Vec<Vec<String>> {
+    check(jt, envs).unwrap_or_else(|e| panic!("check rejected the submission:\n{e}"));
+    let values = job_params_with(jt, &[], envs);
+    let created = create_job_with_environment_templates(jt, &attach(envs), &values, &posix_ctx(jt))
+        .unwrap_or_else(|e| panic!("job creation rejected the submission:\n{e}"));
+    created.job.steps.iter().map(rendered_values).collect()
+}
+
 #[test]
-fn a_relative_literal_path_is_rejected() {
+fn a_relative_literal_path_is_accepted_by_check_and_job_creation() {
+    // §4.5 item 3 (spec af53020): a PATH value is used as given, so `check`
+    // and job creation agree that a Step's relative literal is no error,
+    // and the value is stored unchanged.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -235,12 +249,10 @@ environment:
   envParameterDefinitions: [{name: Dir, type: PATH, default: /d}]
   variables: {D: "{{Env.Param.Dir}}"}
 "#;
-    check_err_same_as_apply(
-        &steps_naming("E", true, "{Dir: rel/dir}"),
-        &[env],
-        &[
-            "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Dir:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel/dir'.",
-        ],
+    let jt = job_ok(&steps_naming("E", true, "{Dir: rel/dir}"));
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+        [["EnvironmentTemplate[0]/E: Dir=path:rel/dir"]]
     );
 }
 
@@ -376,32 +388,23 @@ fn an_attachment_shadowed_by_a_job_environment_warns_when_the_job_lists_env_para
 }
 
 #[test]
-fn an_attachments_uri_default_needs_the_callers_permission() {
-    // A URI is a PATH value (§4.5 item 3) when the caller permits
-    // URI path values, whatever the Job Template lists.
+fn an_attachments_uri_default_is_used_as_given() {
+    // A URI is one more form of PATH value (§4.5 item 3), with no caller
+    // policy, whatever the Job Template lists.
     let env = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
                environment:\n  name: Data\n  envParameterDefinitions: [{name: Where, type: PATH, \
                default: \"s3://bucket/key\"}]\n  variables: {W: \"{{Env.Param.Where}}\"}\n";
-    let jt = "specificationVersion: jobtemplate-2023-09\nname: J\n\
-              steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n";
-    check_err_same_as_apply(
-        jt,
-        &[env],
-        &[
-            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tis a \
-           URI ('s3://bucket/key'), and URI path values are not permitted for this submission.",
-        ],
+    let jt = job_ok(
+        "specificationVersion: jobtemplate-2023-09\nname: J\n\
+         steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
     );
-    let jt = job_ok(jt);
-    let envs = [env_ok(env)];
-    let ctx = posix_ctx(&jt).with_allow_uri_path_values(true);
-    assert!(check_environment_templates(&jt, &attach(&envs), &ctx).is_ok());
+    check_ok_and_apply_ok(&jt, &[env_ok(env)]);
 }
 
 #[test]
-fn a_bad_literal_default_of_an_attachment_is_rejected() {
-    // Valid at template validation (any string is a PATH there); relative
-    // in every submission path format.
+fn an_attachments_relative_literal_default_is_used_as_given() {
+    // Valid at template validation, and at job creation since spec af53020:
+    // the Step that takes it gets it unchanged.
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
@@ -410,13 +413,14 @@ environment:
   envParameterDefinitions: [{name: Dir, type: PATH, default: rel}]
   variables: {D: "{{Env.Param.Dir}}"}
 "#;
-    check_err_same_as_apply(
-        "specificationVersion: jobtemplate-2023-09\nname: J\n\
-         steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
-        &[env],
-        &[
-            "EnvironmentTemplate[0] -> environment -> envParameterDefinitions[0] -> default:\n\tmust be an absolute path in some path format (a POSIX path starting with '/', a Windows drive path such as 'C:\\dir' or 'C:/dir', or a UNC path such as '\\\\server\\share'), since an Environment parameter has no directory to be relative to; got 'rel'.",
-        ],
+    let jt = job_ok(
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+         steps:\n- name: S\n  dependencies: [{environment: E}]\n  \
+         script: {actions: {onRun: {command: x}}}\n",
+    );
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+        [["EnvironmentTemplate[0]/E: Dir=path:rel"]]
     );
 }
 
@@ -1338,28 +1342,28 @@ fn the_sample_docker_requirements_combine_per_step() {
     );
 }
 
-/// §4.5 item 3 (spec 2892d96), for an attached Environment Template:
-/// `check_environment_templates` and job creation accept, in every
-/// submission path format, a literal `default` a Step takes, a literal
-/// `default` no Step takes, and a Step's literal entry value, each
-/// absolute in some path format but not every one, as a PATH value and as
-/// LIST[PATH] elements.
+/// §4.5 item 3 (spec af53020), for an attached Environment Template:
+/// `check_environment_templates` and job creation accept a literal
+/// `default` a Step takes, a literal `default` no Step takes, and a Step's
+/// literal entry value, of any form, relative ones included, as a PATH
+/// value and as LIST[PATH] elements, and job creation stores each
+/// unchanged.
 #[test]
-fn an_attachments_paths_absolute_in_any_format_pass_check_and_job_creation() {
+fn an_attachments_paths_of_any_form_pass_check_and_job_creation() {
     let env = r#"
 specificationVersion: environment-2023-09
 extensions: [ENV_PARAMS, EXPR]
 environment:
   name: E
   envParameterDefinitions:
-  - {name: Taken, type: PATH, default: 'C:\tools'}
-  - {name: Unused, type: PATH, default: '\\srv\share'}
+  - {name: Taken, type: PATH, default: 'C:tools'}
+  - {name: Unused, type: PATH, default: 'rel\share'}
   - {name: Supplied, type: PATH}
-  - {name: List, type: "LIST[PATH]", default: ['C:\x', '/y', '\\srv\s']}
+  - {name: List, type: "LIST[PATH]", default: ['C:\x', 'y', '\\srv\s', '\z']}
   - {name: SuppliedList, type: "LIST[PATH]"}
   variables: {D: "{{Env.Param.Taken}}"}
 "#;
-    for (unused, supplied) in [("/opt/u", r"C:\x"), (r"D:/u", "/x")] {
+    for (unused, supplied) in [("/opt/u", r"C:\x"), ("u/v", r"\x"), ("D:u", "./x")] {
         let jt = job_ok(&steps_naming(
             "E",
             true,
@@ -1367,26 +1371,26 @@ environment:
                 "{{Unused: '{unused}', Supplied: '{supplied}', SuppliedList: ['{supplied}', '{unused}']}}"
             ),
         ));
-        let envs = [env_ok(env)];
-        let values = job_params_with(&jt, &[], &envs);
-        for format in [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri] {
-            let ctx = posix_ctx(&jt).with_submission_path_format(format);
-            check_environment_templates(&jt, &attach(&envs), &ctx)
-                .unwrap_or_else(|e| panic!("check in {format:?}: {e}"));
-            create_job_with_environment_templates(&jt, &attach(&envs), &values, &ctx)
-                .unwrap_or_else(|e| panic!("create in {format:?}: {e}"));
-        }
+        let json = |s: &str| serde_json::to_string(s).unwrap();
+        assert_eq!(
+            check_ok_and_apply_ok(&jt, &[env_ok(env)]),
+            [[format!(
+                r#"EnvironmentTemplate[0]/E: List=list[path]:["C:\\x","y","\\\\srv\\s","\\z"], Supplied=path:{supplied}, SuppliedList=list[path]:[{},{}], Taken=path:C:tools, Unused=path:{unused}"#,
+                json(supplied),
+                json(unused)
+            )]]
+        );
     }
 }
 
 /// §4.5 item 3, for a Job Environment when Environment Templates are
-/// attached: `create_job_with_environment_templates` accepts its literal
-/// `default`s, and both it and `check_environment_templates` accept a
-/// Step's literal value for it, in every submission path format.
+/// attached: `create_job_with_environment_templates` keeps its literal
+/// `default`s of any form, and both it and `check_environment_templates`
+/// accept a Step's relative literal value for it.
 /// (`check_environment_templates` does not examine Job Environment
 /// `default`s; `specs/cli/check.md`.)
 #[test]
-fn a_job_environments_literal_defaults_absolute_in_any_format_pass_with_an_attachment() {
+fn a_job_environments_literal_paths_of_any_form_pass_with_an_attachment() {
     let jt = job_ok(
         r#"
 specificationVersion: jobtemplate-2023-09
@@ -1395,24 +1399,20 @@ name: J
 jobEnvironments:
 - name: J
   envParameterDefinitions:
-  - {name: Taken, type: PATH, default: 'C:\tools'}
+  - {name: Taken, type: PATH, default: 'tools\bin'}
   - {name: Unused, type: PATH, default: '/opt/u'}
   variables: {V: v}
 steps:
 - name: S
-  dependencies: [{environment: J, parameters: {Unused: '\\srv\share'}}]
+  dependencies: [{environment: J, parameters: {Unused: 'rel'}}]
   script: {actions: {onRun: {command: x}}}
 "#,
     );
     let envs = [env_ok(
         "specificationVersion: environment-2023-09\nenvironment:\n  name: A\n  variables: {V: v}\n",
     )];
-    let values = job_params_with(&jt, &[], &envs);
-    for format in [PathFormat::Posix, PathFormat::Windows, PathFormat::Uri] {
-        let ctx = posix_ctx(&jt).with_submission_path_format(format);
-        check_environment_templates(&jt, &attach(&envs), &ctx)
-            .unwrap_or_else(|e| panic!("check in {format:?}: {e}"));
-        create_job_with_environment_templates(&jt, &attach(&envs), &values, &ctx)
-            .unwrap_or_else(|e| panic!("create in {format:?}: {e}"));
-    }
+    assert_eq!(
+        check_ok_and_apply_ok(&jt, &envs),
+        [[r"JobTemplate/J: Taken=path:tools\bin, Unused=path:rel"]]
+    );
 }
