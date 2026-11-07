@@ -1611,8 +1611,10 @@ async fn a_wrapped_environments_let_and_embedded_files_read_its_values() {
 /// An empty or relative PATH value is bound as given (Template Schemas
 /// §4.5 item 3), so a path join onto it follows pathlib (Expression
 /// Language §2.1.5): an empty operand gives the other operand, and two
-/// give `.`. A LIST[PATH] element behaves the same way. A rule that
-/// matches neither leaves them unmapped.
+/// give `.` (checked for the PATH value). Empty and relative LIST[PATH]
+/// elements join the same way. A rule that matches neither leaves them
+/// unmapped, while the element it matches is mapped, and `Env.RawParam`
+/// keeps the empty value empty.
 #[cfg(not(windows))]
 #[tokio::test]
 async fn a_join_onto_an_empty_or_relative_value_follows_pathlib() {
