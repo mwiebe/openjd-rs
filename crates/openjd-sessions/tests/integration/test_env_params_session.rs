@@ -1607,3 +1607,43 @@ async fn a_wrapped_environments_let_and_embedded_files_read_its_values() {
         .unwrap();
     assert_eq!(out.trim(), "exit file=21 let=42");
 }
+
+/// An empty or relative PATH value is bound as given (Template Schemas
+/// §4.5 item 3), so a path join onto it follows pathlib (Expression
+/// Language §2.1.5): an empty operand gives the other operand, and two
+/// give `.`. A LIST[PATH] element behaves the same way. A rule that
+/// matches neither leaves them unmapped.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn a_join_onto_an_empty_or_relative_value_follows_pathlib() {
+    let tmp = TempDir::new().unwrap();
+    let mut session = Session::new_for_test(tmp.path().to_path_buf())
+        .with_path_mapping(vec![rule("/mnt/src", "/dst")])
+        .unwrap();
+    let e = env(
+        "E",
+        on_enter(echo(
+            "[{{ Env.Param.Dir / 'k' }}] [{{ path('k') / Env.Param.Dir }}] \
+             [{{ Env.Param.Dir / '' }}] [{{ Env.Param.Rel / 'k' }}] \
+             [{{ path('k') / Env.Param.Rel }}] [{{ Env.Param.Dirs[0] / 'k' }}] \
+             [{{ path('k') / Env.Param.Dirs[0] }}] [{{ Env.Param.Dirs[1] / 'k' }}] \
+             [{{ Env.Param.Dirs[2] / 'k' }}] [{{ Env.RawParam.Dir }}]",
+        )),
+    );
+    let v = values(
+        "E",
+        serde_json::json!([
+            {"name": "Dir", "type": "path", "value": ""},
+            {"name": "Rel", "type": "path", "value": "rel"},
+            {"name": "Dirs", "type": "list[path]", "value": ["", "rel", "/mnt/src/a"]}
+        ]),
+    );
+    let (_, out) = session
+        .enter_environment_with_parameters(&e, None, Some(&v), None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        out.trim(),
+        "[k] [k] [.] [rel/k] [k/rel] [k] [k] [rel/k] [/dst/a/k] []"
+    );
+}
