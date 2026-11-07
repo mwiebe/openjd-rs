@@ -1148,6 +1148,30 @@ fn without_control_flow_a_flattened_int_list_literal_is_capped() {
 }
 
 #[test]
+fn without_control_flow_a_flattened_float_string_or_path_list_literal_is_capped() {
+    // RFC 0011 §Range length: with CONTROL_FLOW the 1024 cap applies to a
+    // list literal's items as written, so one item that flattens to 2000
+    // values is accepted for every type, not only INT.
+    for (ty, item) in [
+        ("FLOAT", "{{[0.5] * 2000}}"),
+        ("STRING", "{{[\"a\"] * 2000}}"),
+        ("PATH", "{{[\"a\"] * 2000}}"),
+    ] {
+        let x = format!("{{name: X, type: {ty}, range: ['{item}']}}");
+        let err = Fixture::new(&one_param(EXPR_ONLY, "", &x), &[])
+            .create()
+            .expect_err("over 1024");
+        assert_eq!(
+            err.to_string(),
+            "Validation error: Task parameter 'X' range exceeds 1024 elements (2000 elements)",
+            "{ty}"
+        );
+        let job = Fixture::new(&one_param(CF, "", &x), &[]).job();
+        assert_eq!(step(&job, "S").tasks_known(), Some(2000), "{ty}");
+    }
+}
+
+#[test]
 fn a_step_with_exactly_the_per_step_limit_is_accepted() {
     for ext in [CF, EXPR_ONLY] {
         let template = one_param(ext, "", "{name: X, type: INT, range: [1, 2, 3]}");

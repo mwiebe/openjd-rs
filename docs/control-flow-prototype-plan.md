@@ -1552,17 +1552,20 @@ RFC 0013 §Limits items 2 and 4; those three items are not yet updated here.
   `list[list[T]]` (RFC 0011 §Reductions item 4), and `repr_sh` has no signature for nested lists, while `repr_py`,
   `repr_json`, and `flatten` do. A short note in RFC 0011 §Reductions ("`flatten` first for shell use") would spare
   authors a validation error.
-* **A14. Flattening of list-valued items in `INT` and `FLOAT` range lists.** RFC 0011 §Empty parameter spaces says
+* ~~**A14. Flattening of list-valued items in `INT` and `FLOAT` range lists.**~~ Resolved by upstream #486 (see the
+  end of this item). RFC 0011 §Empty parameter spaces says
   that after a list literal's items are evaluated, "EXPR flattens a list-valued item", which matches the Expression
   Language's list item rule (EXPR §1.3.2: target type `T? | list[T]`, and a list result "is flattened inline").
   When this plan was written, openjd-rs did this only for `STRING` and `PATH` ranges. An `INT` list literal accepted
   only integers, so `range: ["{{Param.L}}"]` with a `LIST[INT]` parameter failed `openjd check` with
   `Cannot parse '{{Param.L}}' as integer`, and a `FLOAT` list literal parsed each item's text as one float, so with a
-  `LIST[FLOAT]` parameter it failed `openjd run` with `Cannot parse '[1.5, 2.5]' as float`. PR 4 (`66c69fa`) fixed
-  that gap in openjd-rs (M4 item 6), with or without `CONTROL_FLOW`: an `INT` or `FLOAT` list literal now flattens a
-  list-valued item inline, as the `STRING` and `PATH` ones do. What remains is editorial: RFC 0011 should still say
-  explicitly that range list items follow EXPR §1.3.2, because the EXPR §1.3.12 table types the `INT` range as
-  `list[int | FormatString] | RangeString` and doesn't say that an item may be a list.
+  `LIST[FLOAT]` parameter it failed `openjd run` with `Cannot parse '[1.5, 2.5]' as float`. PR 4 fixed that gap in
+  the prototype (M4 item 6). Upstream openjd-rs then fixed it too, in #486, and the 2026-11-07 nightly rebase replaced
+  the prototype's implementation with upstream's: with `EXPR`, with or without `CONTROL_FLOW`, an `INT`,
+  `CHUNK[INT]` or `FLOAT` list literal flattens a list-valued item inline, as the `STRING` and `PATH` ones do, and
+  only the `CONTROL_FLOW` rules for empty and long lists remain prototype code (`ranges::RangeRules`). The upstream
+  Expression Language now says that range list items follow §1.3.2 (§1.3.12), which answers the editorial point this
+  item raised.
 * ~~**A15. Is a directive line logged?**~~ Resolved in `1e89748`, refined in `61f27ee` (now RFC 0012 §The
   `openjd_output_var` directive): like the other messages, the line appears in the log by default; a runtime option
   to hide recognized messages may hide a valid directive, but an invalid one always stays in the log with its error.

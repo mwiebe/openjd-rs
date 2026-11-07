@@ -629,8 +629,9 @@ creation), and a `StepInputs`:
      are evaluated names both, and each symbol it reads that is `null`:
      `'1-{{Steps.P.Output.V}}' resolved to '1-' ('Steps.P.Output.V' is null),
      which is not a range expression: Unexpected end of expression: '1-'`.
-     A FLOAT list item whose typed resolution and text parse both fail keeps
-     the typed resolution's message (its type and caret). The paths: a range or `chunks` error at
+     A list item of the wrong type is reported with the coercion error of its
+     list-item target, its type and caret (see the parameter space ranges
+     above), as without `CONTROL_FLOW`. The paths: a range or `chunks` error at
      `steps[i] -> parameterSpace -> taskParameterDefinitions[k] -> range` (or
      `-> chunks`), with the expression and caret where evaluating one failed;
      a combination error at `steps[i] -> parameterSpace`; a Task-count limit

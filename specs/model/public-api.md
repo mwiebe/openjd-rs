@@ -840,8 +840,8 @@ pub struct StepParameterSpaceDefinition {
 
 `IntOrFormatString` is an integer or a format string. It is the element
 type of `IntRange::List` (Template Schemas §3.4.1.1 `<IntRangeList>`, used
-by both `INT` and `CHUNK[INT]`) and the type of the two `ChunksDefinition`
-count fields. A JSON integer, an integer-valued float, or a string that
+by both `INT` and `CHUNK[INT]`), the type of the two `ChunksDefinition`
+count fields, and with `CONTROL_FLOW` the type of `LoopDefinition::max_iterations`. A JSON integer, an integer-valued float, or a string that
 parses as a base-10 integer (surrounding whitespace allowed) decodes to
 `Int`. A string containing `{{` decodes to `FormatString`, which is
 resolved at job creation, or fails to decode when it is not a valid

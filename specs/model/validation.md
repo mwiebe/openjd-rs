@@ -405,9 +405,10 @@ ordinary `Undefined variable`.
 
 A format-string item of an `INT`, `CHUNK[INT]` or `FLOAT` range list (a string
 containing `{{`, `template::IntOrFormatString::FormatString` or
-`template::FloatRangeItem::FormatString`) is checked at `range[k]` with the list-item
-target from the table above, and with the same `Steps.*` scope as the Step's other
-TEMPLATE-scope fields.
+`template::FloatRangeItem::FormatString`) is checked at `range[k]` with its list-item
+target (the "task param INT/CHUNK[INT]/FLOAT range list elements" row of the table in
+[Spec-Mandated Resolved-Value Constraints](#spec-mandated-resolved-value-constraints)),
+and with the same `Steps.*` scope as the Step's other TEMPLATE-scope fields.
 
 Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
 `FLOAT` Task parameter: it is checked only when job creation resolves it, a gap that
