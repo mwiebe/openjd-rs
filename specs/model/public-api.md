@@ -78,7 +78,7 @@ and its 5 per-variant inner struct types
 `template::JobParameterDefinition` and its 12 per-variant inner
 struct types (`JobStringParameterDefinition`, …,
 `JobListListIntParameterDefinition`), `template::RangeConstraint`,
-`template::IntRange`, `template::IntRangeItem`, `template::FloatRange`, `template::StringRange`,
+`template::IntRange`, `template::FloatRange`, `template::StringRange`,
 `template::FloatRangeItem`, `template::IntOrFormatString`,
 `template::ChunksDefinition`, `template::FlexInt`, `template::FlexFloat`,
 the 11 `*UserInterface` struct types (`StringUserInterface`,
@@ -797,20 +797,8 @@ These appear as fields on the `TaskParameterDefinition::*` variants:
 
 ```rust
 pub enum IntRange {
-    List(Vec<IntRangeItem>),  // a list of integers and format strings
-    Expression(FormatString), // a range expression string to evaluate
-}
-
-/// An `<IntRangeList>` item: an `<integer>` or `<intstring>`, or a string
-/// containing `{{` (a `<TaskParameterStringValue>`, resolved at job
-/// creation with target type `int? | list[int]` under EXPR).
-pub enum IntRangeItem {
-    Int(i64),
-    FormatString(FormatString),
-}
-
-impl IntRangeItem {
-    pub fn as_int(&self) -> Option<i64>;
+    List(Vec<IntOrFormatString>), // an <IntRangeList>: integers and format strings
+    Expression(FormatString),     // a range expression string to evaluate
 }
 
 pub enum StringRange {
@@ -849,6 +837,17 @@ pub struct StepParameterSpaceDefinition {
     pub combination: Option<String>,
 }
 ```
+
+`IntOrFormatString` is an integer or a format string. It is the element
+type of `IntRange::List` (Template Schemas §3.4.1.1 `<IntRangeList>`, used
+by both `INT` and `CHUNK[INT]`) and the type of the two `ChunksDefinition`
+count fields. A JSON integer, an integer-valued float, or a string that
+parses as a base-10 integer (surrounding whitespace allowed) decodes to
+`Int`. A string containing `{{` decodes to `FormatString`, which is
+resolved at job creation, or fails to decode when it is not a valid
+format string. Decoding also fails for any other string, a non-integral
+float, a boolean, `null`, an array or an object. `as_i64()` returns the integer of
+an `Int`, or `None` for a `FormatString`.
 
 `FlexInt` and `FlexFloat` are coercion-permissive newtypes around
 `i64` and `f64` respectively — they accept either a JSON number or
@@ -2416,7 +2415,6 @@ value kinds the constraint properties take), and `outputs::OutputDirective`
 (RFC 0012's two directive forms), `job::GroupState` and `job::GroupReport`
 (the two states of a group), `job::JobOutputValue` (a value or `null`), `job::ProducerState` and `job::LoopProducerState` (the states a producer
 contributes inputs in, including `Given`, the state of a producer a caller simulates
-with some of its outputs), and `template::IntRangeItem` (the two forms of an
-`<IntRangeList>` item). A change to the RFCs that adds
+with some of its outputs). A change to the RFCs that adds
 a variant is a breaking change to these, which the crate's pre-1.0 version
 allows, as does a new producer state a caller such as `openjd run` needs.

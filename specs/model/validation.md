@@ -403,16 +403,17 @@ name (`Steps.P.RawOutput.F.name`); the path-type message names only the four-par
 symbol order. Without `CONTROL_FLOW` none of this applies, and a `Steps.*` reference is an
 ordinary `Undefined variable`.
 
-A format-string item of an `INT` or `CHUNK[INT]` range list (a string containing `{{`,
-`template::IntRangeItem::FormatString`) is checked at `range[k]` like an `INT` range
-expression: its symbols and expression, with no target type.
+A format-string item of an `INT`, `CHUNK[INT]` or `FLOAT` range list (a string
+containing `{{`, `template::IntOrFormatString::FormatString` or
+`template::FloatRangeItem::FormatString`) is checked at `range[k]` with the list-item
+target from the table above, and with the same `Steps.*` scope as the Step's other
+TEMPLATE-scope fields.
 
 Pass 8 does not evaluate a whole-field expression `range` of a `STRING`, `PATH`, or
-`FLOAT` Task parameter, nor a format-string item of a `FLOAT` range list: they are
-checked only when job creation resolves them, a gap that predates `CONTROL_FLOW` (a
-`range: "{{Param.Nope}}"` passes `openjd check`). For those fields pass 8 runs the
-reference scan alone, so the `Steps.*` scope rules hold there, but their expressions are
-not type-checked.
+`FLOAT` Task parameter: it is checked only when job creation resolves it, a gap that
+predates `CONTROL_FLOW` (a `range: "{{Param.Nope}}"` passes `openjd check`). For those
+fields pass 8 runs the reference scan alone, so the `Steps.*` scope rules hold there, but
+their expressions are not type-checked.
 
 **`enableIf`.** A Step's `enableIf` is checked against a table of its own: `Param.*`
 (minus `PATH` types), `RawParam.*`, `Job.Name`, `Step.Name`, and the TEMPLATE-scope

@@ -345,8 +345,9 @@ enum ResolvedConstraint<'a> {
         forbid_control_chars: bool,
         forbid_empty: bool,
     },
-    /// A list-item string field (task-parameter range elements,
-    /// Template Schemas §3.4.2). Per Expression Language §1.3.2 a
+    /// A list-item string field (STRING and PATH task-parameter range
+    /// elements, Template Schemas §3.4.2; INT, CHUNK[INT] and FLOAT
+    /// elements of a template with EXPR use [`Self::NumericListItem`]). Per Expression Language §1.3.2 a
     /// whole-field expression targets `string? | list[string]`: `null`
     /// skips the element, a list flattens inline, and `max_len` applies
     /// to each resulting element. `forbid_empty` applies §3.4.2's
@@ -354,6 +355,18 @@ enum ResolvedConstraint<'a> {
     /// reference implementation, which accepts empty STRING elements
     /// (see `resolve_string_range` in create_job/ranges.rs).
     TextListItem { max_len: usize, forbid_empty: bool },
+    /// A format string element of an INT, CHUNK[INT] or FLOAT range list
+    /// (Template Schemas §3.4.1.1, §3.4.1.2) with the EXPR extension, with
+    /// the list-item `target` from
+    /// [`TaskParameterType::range_list_item_target`]: `null` skips the
+    /// element and a list flattens. Static typing against the target is
+    /// the whole check here. A value that only fails once known, such as a
+    /// string that does not parse as a number, fails at job creation.
+    /// Without EXPR these elements resolve to strings and have no
+    /// constraint.
+    ///
+    /// [`TaskParameterType::range_list_item_target`]: crate::types::TaskParameterType::range_list_item_target
+    NumericListItem { target: ExprType },
     /// A `hostRequirements` attribute value (§3.3.2.2): 100-char
     /// identifier-like values, or membership in the allowed set for a
     /// standard capability. Also a list item, with the same
@@ -448,11 +461,10 @@ impl ResolvedConstraint<'_> {
     fn target_type(&self) -> Option<ExprType> {
         match self {
             Self::Text { .. } | Self::CapabilityName { .. } => Some(ExprType::STRING),
-            Self::TextListItem { .. } | Self::AttributeValue { .. } => Some(ExprType::union(vec![
-                ExprType::NULLTYPE,
-                ExprType::STRING,
-                ExprType::list(ExprType::STRING),
-            ])),
+            Self::TextListItem { .. } | Self::AttributeValue { .. } => {
+                Some(crate::types::string_list_item_target())
+            }
+            Self::NumericListItem { target } => Some(target.clone()),
             Self::Float { .. } => Some(ExprType::union(vec![ExprType::FLOAT, ExprType::NULLTYPE])),
             Self::Int { nullable, .. } => {
                 if *nullable {
@@ -578,6 +590,8 @@ fn check_resolved_constraint(
             // creation re-checks that the list is non-empty after all
             // skips are applied.
         }
+        // Static typing already ran with the target. See the variant doc.
+        ResolvedConstraint::NumericListItem { .. } => {}
         ResolvedConstraint::ResolvedString { max_len } => {
             // `resolve_string_with` renders every value inline into one
             // string, so the display-form bound is a true lower bound on
@@ -973,6 +987,44 @@ fn validate_fs(
     validate_fs_with(fs, symtab, ev, path, None, errors);
 }
 
+/// Validate the format strings in an INT or CHUNK[INT] `range` at
+/// `range_path`: the whole-field `<IntRangeExpr>`, or each
+/// `<TaskParameterStringValue>` element of an `<IntRangeList>` (Template
+/// Schemas §3.4.1.1) at `range_path[k]`. A list element is checked with
+/// `item_constraint`, which carries the target `resolve_int_range` resolves
+/// it with (none without EXPR). The expression has no target:
+/// `resolve_int_range` evaluates it untyped and then, failing a range or
+/// list result, resolves it to a string. Literal elements were checked at
+/// decode.
+fn validate_int_range_fs(
+    range: &crate::template::IntRange,
+    item_constraint: Option<&ResolvedConstraint<'_>>,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    range_path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    match range {
+        crate::template::IntRange::Expression(expr) => {
+            validate_fs(expr, symtab, ev, range_path, errors);
+        }
+        crate::template::IntRange::List(items) => {
+            for (k, item) in items.iter().enumerate() {
+                if let crate::template::IntOrFormatString::FormatString(fs) = item {
+                    validate_fs_with(
+                        fs,
+                        symtab,
+                        ev,
+                        &path_index(range_path, k),
+                        item_constraint,
+                        errors,
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A `hostRequirements` capability name whose value template validation
 /// knows: a literal, or a format string that is fully static.
 struct KnownCapabilityName {
@@ -1355,26 +1407,9 @@ fn validate_step_script_format_strings(
     }
 }
 
-/// Validate the format-string items of an `INT` or `CHUNK[INT]`
-/// `<IntRangeList>`, each at `range[k]`. Integer items need no check.
-fn validate_int_range_items(
-    items: &[crate::template::IntRangeItem],
-    symtab: &SymbolTable,
-    ev: &FsEval<'_>,
-    range_path: &[PathElement],
-    errors: &mut ValidationErrors,
-) {
-    for (k, item) in items.iter().enumerate() {
-        if let crate::template::IntRangeItem::FormatString(fs) = item {
-            validate_fs(fs, symtab, ev, &path_index(range_path, k), errors);
-        }
-    }
-}
-
 /// Report the unavailable `Steps.*` references of a format string that
 /// pass 8 does not otherwise evaluate: a whole-field expression `range` of a
-/// `STRING`, `PATH`, or `FLOAT` Task parameter, and a format-string item of
-/// a `FLOAT` range list. Those fields are checked only when job creation
+/// `STRING`, `PATH`, or `FLOAT` Task parameter. Those fields are checked only when job creation
 /// resolves them, a gap that predates `CONTROL_FLOW`; RFC 0011's `Steps.*`
 /// scope rules are still enforced on them here.
 fn check_steps_refs_only(
@@ -2027,6 +2062,10 @@ pub fn validate_format_strings(
     errors: &mut ValidationErrors,
 ) {
     let expr_active = ctx.profile.has_extension(ModelExtension::Expr);
+    // Whether the template itself enables EXPR, for the numeric range list
+    // element target. `create_job` takes it from the template too, since its
+    // context may enable more extensions than the template declares.
+    let template_expr = jt.profile().has_extension(ModelExtension::Expr);
     let fb1_active = ctx.profile.has_extension(ModelExtension::FeatureBundle1);
     // CONTROL_FLOW (RFC 0011): each Step's fields see the `Steps.*` symbols
     // of its direct dependencies, and a reference that is not available is
@@ -2447,25 +2486,26 @@ pub fn validate_format_strings(
                     max_len: limits.max_task_param_string_len,
                     forbid_empty: true,
                 };
+                // INT, CHUNK[INT] and FLOAT elements are typed with the
+                // target job creation resolves them with, which depends on
+                // whether the template enables EXPR (see
+                // `TaskParameterType::range_list_item_target`).
+                let numeric_item_constraint = tp
+                    .task_param_type()
+                    .range_list_item_target(template_expr)
+                    .map(|target| ResolvedConstraint::NumericListItem { target });
+                let numeric_item_constraint = numeric_item_constraint.as_ref();
                 match tp {
-                    TaskParameterDefinition::INT(t) => match &t.range {
-                        crate::template::IntRange::Expression(expr) => validate_fs(
-                            expr,
+                    TaskParameterDefinition::INT(t) => {
+                        validate_int_range_fs(
+                            &t.range,
+                            numeric_item_constraint,
                             &range_symtab,
                             &step_template_ev,
                             &path_field(&p_path, "range"),
                             errors,
-                        ),
-                        crate::template::IntRange::List(items) => {
-                            validate_int_range_items(
-                                items,
-                                &range_symtab,
-                                &step_template_ev,
-                                &path_field(&p_path, "range"),
-                                errors,
-                            );
-                        }
-                    },
+                        );
+                    }
                     TaskParameterDefinition::STRING(t) => match &t.range {
                         crate::template::StringRange::List(items) => {
                             for (k, item) in items.iter().enumerate() {
@@ -2508,21 +2548,26 @@ pub fn validate_format_strings(
                             errors,
                         ),
                     },
-                    // Pass 8 does not evaluate FLOAT range format strings
-                    // (see `check_steps_refs_only`).
                     TaskParameterDefinition::FLOAT(t) => match &t.range {
+                        // §3.4.1.2: a format string element is checked with
+                        // the target `resolve_float_range` resolves it with.
+                        // Literal elements are skipped by `validate_fs_with`.
                         crate::template::FloatRange::List(items) => {
                             for (k, item) in items.iter().enumerate() {
                                 if let crate::template::FloatRangeItem::FormatString(fs) = item {
-                                    check_steps_refs_only(
+                                    validate_fs_with(
                                         fs,
+                                        &range_symtab,
                                         &step_template_ev,
                                         &path_index(&path_field(&p_path, "range"), k),
+                                        numeric_item_constraint,
                                         errors,
                                     );
                                 }
                             }
                         }
+                        // Pass 8 does not evaluate a whole-field expression
+                        // range (see `check_steps_refs_only`).
                         crate::template::FloatRange::Expression(expr) => check_steps_refs_only(
                             expr,
                             &step_template_ev,
@@ -2531,22 +2576,14 @@ pub fn validate_format_strings(
                         ),
                     },
                     TaskParameterDefinition::CHUNK_INT(t) => {
-                        match &t.range {
-                            crate::template::IntRange::Expression(expr) => validate_fs(
-                                expr,
-                                &range_symtab,
-                                &step_template_ev,
-                                &path_field(&p_path, "range"),
-                                errors,
-                            ),
-                            crate::template::IntRange::List(items) => validate_int_range_items(
-                                items,
-                                &range_symtab,
-                                &step_template_ev,
-                                &path_field(&p_path, "range"),
-                                errors,
-                            ),
-                        }
+                        validate_int_range_fs(
+                            &t.range,
+                            numeric_item_constraint,
+                            &range_symtab,
+                            &step_template_ev,
+                            &path_field(&p_path, "range"),
+                            errors,
+                        );
                         // TASK_CHUNKING chunks fields are `<intstring>`
                         // format strings resolved at job creation; their
                         // literal forms are checked in the task-chunking

@@ -488,7 +488,6 @@ fn expression_ranges_that_pass_8_does_not_evaluate_still_check_steps() {
         - {name: S, type: STRING, range: '{{Steps.Nope.Output.A}}'}
         - {name: D, type: PATH, range: '{{Steps.P.Output.Fs}}'}
         - {name: X, type: FLOAT, range: '{{Steps.Q.Output.Nope}}'}
-        - {name: W, type: FLOAT, range: [1.5, '{{Steps.Q.TaskParam.Nope}}']}
     script: {actions: {onRun: {command: echo}}}
 ",
         ),
@@ -505,11 +504,24 @@ fn expression_ranges_that_pass_8_does_not_evaluate_still_check_steps() {
                 "steps[3] -> parameterSpace -> taskParameterDefinitions[2] -> range",
                 "'Steps.Q.Output.Nope': Step 'Q' has no output variable 'Nope'.",
             ),
-            (
-                "steps[3] -> parameterSpace -> taskParameterDefinitions[3] -> range[1]",
-                "'Steps.Q.TaskParam.Nope': Step 'Q' has no Task parameter 'Nope'.",
-            ),
         ],
+    );
+}
+
+#[test]
+fn a_float_range_list_item_checks_steps() {
+    assert_errs(
+        &template(
+            "    parameterSpace:
+      taskParameterDefinitions:
+        - {name: W, type: FLOAT, range: [1.5, '{{Steps.Q.TaskParam.Nope}}']}
+    script: {actions: {onRun: {command: echo}}}
+",
+        ),
+        &[(
+            "steps[3] -> parameterSpace -> taskParameterDefinitions[0] -> range[1]",
+            "'Steps.Q.TaskParam.Nope': Step 'Q' has no Task parameter 'Nope'.",
+        )],
     );
 }
 

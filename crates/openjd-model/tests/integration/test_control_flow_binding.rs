@@ -116,7 +116,7 @@ fn an_int_list_item_format_string_without_expr() {
         .expect_err("x is no integer");
     assert_eq!(
         err.to_string(),
-        "Expression error: Cannot parse 'x' as integer"
+        "Expression error: Task parameter 'X' range[1]: value 'x' is not an integer"
     );
 }
 
@@ -1716,16 +1716,16 @@ fn a_float_list_item_of_the_wrong_type_keeps_the_typed_message() {
         err.to_string(),
         expected(&[(
             "steps[0] -> parameterSpace -> taskParameterDefinitions[0] -> range",
-            "Cannot coerce list[string] to float | list[float] | nulltype\n  Param.L\n  ~~~~~~^",
+            "Task parameter 'X' range[0]: Cannot coerce list[string] to float | int | list[float] | nulltype\n  Param.L\n  ~~~~~~^",
         )])
     );
-    // Without CONTROL_FLOW the earlier message is kept.
+    // Without CONTROL_FLOW the message is the same typed one.
     let err = Fixture::new(&one_param(EXPR_ONLY, params, x), &[])
         .create()
         .expect_err("strings are not floats");
     assert_eq!(
         err.to_string(),
-        "Expression error: Cannot parse '[\"a\"]' as float"
+        "Expression error: Task parameter 'X' range[0]: Cannot coerce list[string] to float | int | list[float] | nulltype\n  Param.L\n  ~~~~~~^"
     );
 }
 

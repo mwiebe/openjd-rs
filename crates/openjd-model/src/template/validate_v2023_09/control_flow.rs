@@ -537,7 +537,7 @@ fn check_chunk_values_distinct(
         let mut repeated = BTreeSet::new();
         // A format-string item is checked once it is evaluated, with the
         // computed ranges (job creation or step input binding).
-        for value in items.iter().filter_map(|item| item.as_int()) {
+        for value in items.iter().filter_map(|item| item.as_i64()) {
             if !seen.insert(value) {
                 repeated.insert(value);
             }

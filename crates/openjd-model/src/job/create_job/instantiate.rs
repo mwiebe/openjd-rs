@@ -20,6 +20,10 @@ use openjd_expr::ExpressionError;
 
 use super::ranges;
 
+/// Template Schemas §3.3.2: an attribute's `anyOf` or `allOf` holds at
+/// most 50 values.
+const MAX_ATTRIBUTE_VALUES: usize = 50;
+
 /// Instantiate a StepTemplate into a Step, for a template without
 /// `CONTROL_FLOW` (a `CONTROL_FLOW` template goes through step input binding,
 /// in `binding.rs`).
@@ -43,6 +47,7 @@ pub(super) fn instantiate_step(
     st: &template::StepTemplate,
     symtab: &SymbolTable,
     has_expr: bool,
+    template_expr: bool,
     limits: &EffectiveLimits,
     ctx: &crate::types::ValidationContext,
     step_index: usize,
@@ -124,7 +129,7 @@ pub(super) fn instantiate_step(
                 limits,
                 budgets,
                 ranges::RangeRules {
-                    expr: has_expr,
+                    expr: template_expr,
                     control_flow: false,
                 },
             )
@@ -550,15 +555,13 @@ pub(super) fn build_env_check_symtab(
 pub(super) fn task_parameter_format_strings(
     tp: &template::TaskParameterDefinition,
 ) -> Vec<&openjd_expr::FormatString> {
-    use template::{
-        FloatRange, FloatRangeItem, IntOrFormatString, IntRange, IntRangeItem, StringRange,
-    };
+    use template::{FloatRange, FloatRangeItem, IntOrFormatString, IntRange, StringRange};
     fn int_range<'a>(range: &'a IntRange, out: &mut Vec<&'a openjd_expr::FormatString>) {
         match range {
             IntRange::Expression(fs) => out.push(fs),
             IntRange::List(items) => out.extend(items.iter().filter_map(|i| match i {
-                IntRangeItem::FormatString(fs) => Some(fs),
-                IntRangeItem::Int(_) => None,
+                IntOrFormatString::FormatString(fs) => Some(fs),
+                IntOrFormatString::Int(_) => None,
             })),
         }
     }
@@ -785,16 +788,23 @@ pub(super) fn resolve_host_requirements(
                 .zip(names)
                 .enumerate()
                 .map(|(attr_index, (a, name))| {
-                    let any_of = a
-                        .any_of
-                        .as_ref()
-                        .map(|vals| ranges::resolve_string_list(vals, symtab, budgets))
-                        .transpose()?;
-                    let all_of = a
-                        .all_of
-                        .as_ref()
-                        .map(|vals| ranges::resolve_string_list(vals, symtab, budgets))
-                        .transpose()?;
+                    // §3.3.2 allows at most 50 values. Resolution stops as
+                    // soon as a list would go past that, so a template cannot
+                    // make job creation build a long list just to reject it.
+                    let resolve = |field: &str,
+                                   vals: &Option<Vec<openjd_expr::FormatString>>|
+                     -> Result<Option<Vec<String>>, ModelError> {
+                        let Some(vals) = vals else { return Ok(None) };
+                        ranges::resolve_string_list(vals, symtab, budgets, MAX_ATTRIBUTE_VALUES)?
+                            .map(Some)
+                            .ok_or_else(|| {
+                                ModelError::DecodeValidation(format!(
+                                    "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: exceeds {MAX_ATTRIBUTE_VALUES} elements after resolution"
+                                ))
+                            })
+                    };
+                    let any_of = resolve("anyOf", &a.any_of)?;
+                    let all_of = resolve("allOf", &a.all_of)?;
                     let attr_lower = name.to_lowercase();
                     let is_single_valued = attr_lower == "attr.worker.os.family"
                         || attr_lower == "attr.worker.cpu.arch";
@@ -805,17 +815,11 @@ pub(super) fn resolve_host_requirements(
                             // flattens a list inline (Expression Language
                             // §1.3.2), so the resolved count is unrelated
                             // to the count decode saw. Re-apply the rules
-                            // on the resolved list, like the emptiness
-                            // check below and the range-element cap in
-                            // resolve_string_range.
+                            // on the resolved list (the 50-value maximum
+                            // is applied while resolving, above).
                             if values.is_empty() {
                                 return Err(ModelError::DecodeValidation(format!(
                                     "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: has no elements after resolution"
-                                )));
-                            }
-                            if values.len() > 50 {
-                                return Err(ModelError::DecodeValidation(format!(
-                                    "{at} -> hostRequirements -> attributes[{attr_index}] -> {field}: exceeds 50 elements after resolution"
                                 )));
                             }
                             if is_single_valued && field == "allOf" && values.len() > 1 {

@@ -343,7 +343,7 @@ Ranges accept either a list of values or a range expression string:
 
 ```rust
 pub enum IntRange {
-    List(Vec<IntRangeItem>),
+    List(Vec<IntOrFormatString>),
     Expression(FormatString),
 }
 
@@ -358,6 +358,13 @@ pub enum FloatRange {
 }
 ```
 
+`IntRange::List` holds `IntOrFormatString` elements (Template Schemas §3.4.1.1
+`<IntRangeList>`, shared by `CHUNK[INT]`): a YAML integer, an integer-valued float, or a
+string that parses as an integer becomes `Int`; a string containing `{{` becomes a
+`FormatString` (a `<TaskParameterStringValue>`), resolved at job creation, and a
+malformed one is a decode error. Any other string is a decode error
+(`Cannot parse 'abc' as integer`).
+
 `FloatRange::List` uses `FloatRangeItem` — an enum that accepts either a plain `f64` or
 a `FormatString` — to handle YAML float edge cases and format string interpolation in
 float ranges:
@@ -365,20 +372,6 @@ float ranges:
 ```rust
 pub enum FloatRangeItem {
     Float(f64),
-    FormatString(FormatString),
-}
-```
-
-`IntRange::List` uses `IntRangeItem` the same way. Template Schemas §3.4.1.1 allows an
-`<IntRangeList>` item to be an `<integer>`, an `<intstring>`, or a
-`<TaskParameterStringValue>` that resolves to an integer. A number, or a string without
-`{{`, is read as `FlexInt` reads it and becomes `Int` (`'two'` is `Cannot parse 'two' as
-integer`); a string containing `{{` is a `FormatString`, resolved at job creation (with
-`EXPR` as a list item, so it may flatten a list):
-
-```rust
-pub enum IntRangeItem {
-    Int(i64),
     FormatString(FormatString),
 }
 ```

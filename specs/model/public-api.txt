@@ -1388,24 +1388,13 @@ impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::IntOrForm
 pub fn openjd_model::template::IntOrFormatString::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum openjd_model::template::IntRange
 pub openjd_model::template::IntRange::Expression(openjd_expr::format_string::FormatString)
-pub openjd_model::template::IntRange::List(alloc::vec::Vec<openjd_model::template::IntRangeItem>)
+pub openjd_model::template::IntRange::List(alloc::vec::Vec<openjd_model::template::IntOrFormatString>)
 impl core::clone::Clone for openjd_model::template::IntRange
 pub fn openjd_model::template::IntRange::clone(&self) -> openjd_model::template::IntRange
 impl core::fmt::Debug for openjd_model::template::IntRange
 pub fn openjd_model::template::IntRange::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::IntRange
 pub fn openjd_model::template::IntRange::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
-pub enum openjd_model::template::IntRangeItem
-pub openjd_model::template::IntRangeItem::FormatString(openjd_expr::format_string::FormatString)
-pub openjd_model::template::IntRangeItem::Int(i64)
-impl openjd_model::template::IntRangeItem
-pub fn openjd_model::template::IntRangeItem::as_int(&self) -> core::option::Option<i64>
-impl core::clone::Clone for openjd_model::template::IntRangeItem
-pub fn openjd_model::template::IntRangeItem::clone(&self) -> openjd_model::template::IntRangeItem
-impl core::fmt::Debug for openjd_model::template::IntRangeItem
-pub fn openjd_model::template::IntRangeItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl<'de> serde_core::de::Deserialize<'de> for openjd_model::template::IntRangeItem
-pub fn openjd_model::template::IntRangeItem::deserialize<D: serde_core::de::Deserializer<'de>>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
 pub enum openjd_model::template::JobParameterDefinition
 pub openjd_model::template::JobParameterDefinition::BOOL(openjd_model::template::JobBoolParameterDefinition)
 pub openjd_model::template::JobParameterDefinition::FLOAT(openjd_model::template::JobFloatParameterDefinition)
