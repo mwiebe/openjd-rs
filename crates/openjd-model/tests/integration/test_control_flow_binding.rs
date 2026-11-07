@@ -1148,7 +1148,7 @@ fn without_control_flow_a_flattened_int_list_literal_is_capped() {
 }
 
 #[test]
-fn without_control_flow_a_flattened_float_string_or_path_list_literal_is_capped() {
+fn a_flattened_float_string_or_path_list_literal_is_capped_only_without_control_flow() {
     // RFC 0011 §Range length: with CONTROL_FLOW the 1024 cap applies to a
     // list literal's items as written, so one item that flattens to 2000
     // values is accepted for every type, not only INT.
@@ -1472,6 +1472,37 @@ fn without_control_flow_a_null_range_keeps_its_message() {
         .create()
         .expect_err("null range");
     assert_eq!(err.to_string(), "Expression error: Empty expression");
+    for (ty, list, message) in [
+        (
+            "FLOAT",
+            "[1.5]",
+            "Float range expression must evaluate to a list",
+        ),
+        (
+            "STRING",
+            "['a']",
+            "String range expression must evaluate to a list",
+        ),
+        (
+            "PATH",
+            "['a']",
+            "String range expression must evaluate to a list",
+        ),
+    ] {
+        let template = one_param(
+            EXPR_ONLY,
+            "  - {name: B, type: BOOL, default: false}\n",
+            &format!("{{name: X, type: {ty}, range: \"{{{{{list} if Param.B else null}}}}\"}}"),
+        );
+        let err = Fixture::new(&template, &[])
+            .create()
+            .expect_err("null range");
+        assert_eq!(
+            err.to_string(),
+            format!("Expression error: {message}"),
+            "{ty}"
+        );
+    }
 }
 
 #[test]
@@ -1730,7 +1761,7 @@ fn a_null_in_a_range_string_is_named() {
 }
 
 #[test]
-fn a_float_list_item_of_the_wrong_type_keeps_the_typed_message() {
+fn a_float_list_item_of_the_wrong_type_gets_the_list_item_coercion_error() {
     let params = "  - {name: L, type: 'LIST[STRING]', default: [a]}\n";
     let x = "{name: X, type: FLOAT, range: ['{{Param.L}}']}";
     let err = Fixture::new(&one_param(CF, params, x), &[])
