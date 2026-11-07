@@ -7306,7 +7306,7 @@ fn test_create_job_attr_value_evaluation_error() {
     );
     assert_eq!(
         err,
-        "Format string error: Cannot convert 'abc' to int\n  string(int(Param.OS))\n         ^~~~~~~~~~~~~"
+        "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: Cannot convert 'abc' to int\n  string(int(Param.OS))\n         ^~~~~~~~~~~~~"
     );
 }
 
@@ -7426,7 +7426,7 @@ fn test_create_job_attr_values_accumulate_past_50_rejected() {
             let err = parse_and_create_err(&template(field, values), &[]);
             assert_eq!(
                 err,
-                format!("Validation error: steps[0] -> hostRequirements -> attributes[0] -> {field}: exceeds 50 elements after resolution"),
+                format!("Validation error: steps[0] -> hostRequirements -> attributes[0] -> {field}: attribute 'attr.custom.tag' of Step 'S' has more than 50 {field} values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2)"),
                 "{field} {values}"
             );
         }
@@ -7457,7 +7457,7 @@ fn test_create_job_attr_values_past_50_error_location() {
     );
     assert_eq!(
         err,
-        "Validation error: steps[1] -> hostRequirements -> attributes[1] -> allOf: exceeds 50 elements after resolution"
+        "Validation error: steps[1] -> hostRequirements -> attributes[1] -> allOf: attribute 'attr.custom.b' of Step 'B' has more than 50 allOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2)"
     );
 }
 
@@ -7478,7 +7478,7 @@ fn test_create_job_attr_flatten_past_50_elements_rejected() {
     );
     assert_eq!(
         err,
-        "Validation error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: attribute 'attr.custom.tag' of Step 'S' has 51 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2)"
+        "Validation error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: attribute 'attr.custom.tag' of Step 'S' has more than 50 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2)"
     );
 }
 

@@ -1374,7 +1374,7 @@ fn an_environments_resolved_lists_are_checked_at_its_field() {
         &[],
         &[],
     )
-    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has 51 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2). Resolved for Step 'A'."]);
+    .err(&["jobEnvironments[0] -> hostRequirements -> attributes[0] -> anyOf:\n\tattribute 'custom:attr.e' of Environment 'E' has more than 50 anyOf values after resolution, exceeding the maximum of 50 (Template Schemas §3.3.2). Resolved for Step 'A'."]);
     submission(
         &template(
             "{name: L, type: \"LIST[STRING]\", default: [x]}",
