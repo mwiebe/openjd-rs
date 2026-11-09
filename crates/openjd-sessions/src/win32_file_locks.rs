@@ -2,13 +2,15 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Find the processes holding files open, via the Windows Restart Manager.
+//! Find which files cannot be deleted, and the processes holding files open
+//! via the Windows Restart Manager.
 //!
 //! Used only to explain a failed cleanup in the log, so every failure here is
 //! reported to the caller as a string and never stops the cleanup.
 
 use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::os::windows::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_MORE_DATA, ERROR_SUCCESS};
@@ -21,6 +23,50 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::tempdir::FileHolder;
+
+/// `ERROR_ACCESS_DENIED`.
+const ACCESS_DENIED: i32 = 5;
+/// `ERROR_SHARING_VIOLATION`.
+const SHARING_VIOLATION: i32 = 32;
+/// `ERROR_LOCK_VIOLATION`.
+const LOCK_VIOLATION: i32 = 33;
+/// The `DELETE` access right.
+const DELETE: u32 = 0x0001_0000;
+/// The `FILE_WRITE_DATA` access right.
+const FILE_WRITE_DATA: u32 = 0x0002;
+/// `FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE`.
+const SHARE_ALL: u32 = 0x7;
+/// `FILE_FLAG_OPEN_REPARSE_POINT`: open a link itself, never its target.
+const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// Whether deleting the file at `path` would fail now. Only opens it, and
+/// never deletes or changes anything.
+///
+/// Opening for `DELETE` fails with a sharing violation when another handle
+/// does not share deletion, and with access denied when the file's ACL does
+/// not allow deleting it. A running program's image accepts `DELETE` but
+/// cannot be deleted; opening it for writing as well fails with a sharing
+/// violation. A read-only file fails that second open with access denied,
+/// but can be deleted, so access denied there does not count.
+pub(crate) fn cannot_delete_now(path: &Path) -> bool {
+    let refused = |access: u32| {
+        std::fs::OpenOptions::new()
+            .access_mode(access)
+            .share_mode(SHARE_ALL)
+            .custom_flags(OPEN_REPARSE_POINT)
+            .open(path)
+            .err()
+            .and_then(|e| e.raw_os_error())
+    };
+    match refused(DELETE) {
+        Some(SHARING_VIOLATION | LOCK_VIOLATION | ACCESS_DENIED) => true,
+        Some(_) => false,
+        None => matches!(
+            refused(DELETE | FILE_WRITE_DATA),
+            Some(SHARING_VIOLATION | LOCK_VIOLATION)
+        ),
+    }
+}
 
 /// Returns the processes that hold any of `files` open.
 pub(crate) fn processes_holding(files: &[PathBuf]) -> Result<Vec<FileHolder>, String> {
@@ -134,10 +180,102 @@ mod tests {
             .open(&path)
             .unwrap();
         let holders = processes_holding(&[path]).unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_name().unwrap().to_string_lossy().into_owned();
         assert!(
-            holders.iter().any(|h| h.pid == std::process::id()),
-            "expected this process in {holders:?}"
+            holders.contains(&FileHolder {
+                pid: std::process::id(),
+                name
+            }),
+            "expected this process, by image name, in {holders:?}"
         );
+    }
+
+    /// With no process to query, the name falls back to the Restart
+    /// Manager's application name, up to its NUL.
+    #[test]
+    fn holder_name_falls_back_to_the_app_name() {
+        let mut info = RM_PROCESS_INFO::default();
+        // Pid 0 is the System Idle Process, which OpenProcess always refuses.
+        info.Process.dwProcessId = 0;
+        for (slot, c) in info.strAppName.iter_mut().zip("app\0junk".encode_utf16()) {
+            *slot = c;
+        }
+        assert_eq!(
+            holder_from(&info),
+            FileHolder {
+                pid: 0,
+                name: "app".to_string()
+            }
+        );
+    }
+
+    fn open_with_share(path: &Path, share: u32) -> std::fs::File {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(share)
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn cannot_delete_now_flags_only_files_whose_deletion_would_fail() {
+        let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
+        let free = dir.path().join("free.bin");
+        std::fs::write(&free, b"x").unwrap();
+        assert!(!cannot_delete_now(&free), "a file nobody holds");
+
+        let read_only = dir.path().join("read_only.bin");
+        std::fs::write(&read_only, b"x").unwrap();
+        let mut perms = std::fs::metadata(&read_only).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&read_only, perms).unwrap();
+        assert!(
+            !cannot_delete_now(&read_only),
+            "remove_file deletes read-only files"
+        );
+
+        let shared = dir.path().join("shared.bin");
+        let _shared = open_with_share(&shared, SHARE_ALL);
+        assert!(!cannot_delete_now(&shared), "a holder that shares deletion");
+
+        let held = dir.path().join("held.bin");
+        let _held = open_with_share(&held, 0);
+        assert!(cannot_delete_now(&held), "a holder that shares nothing");
+
+        let rw = dir.path().join("rw.bin");
+        let _rw = open_with_share(&rw, 0x1 | 0x2);
+        assert!(
+            cannot_delete_now(&rw),
+            "a holder that shares reading and writing only"
+        );
+
+        assert!(!cannot_delete_now(&dir.path().join("missing.bin")));
+    }
+
+    /// A running program's image accepts `DELETE` access but cannot be deleted.
+    #[test]
+    fn cannot_delete_now_flags_a_running_program() {
+        use std::os::windows::process::CommandExt;
+        let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
+        let exe = dir.path().join("ping.exe");
+        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
+        // CREATE_NO_WINDOW, so the test opens no console.
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let flagged = cannot_delete_now(&exe);
+        let removed = std::fs::remove_file(&exe);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(removed.is_err(), "the running image was deleted");
+        assert!(flagged);
     }
 
     #[test]

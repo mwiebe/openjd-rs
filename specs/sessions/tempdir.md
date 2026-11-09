@@ -177,24 +177,46 @@ been terminated can still hold handles in the directory for a while, and Windows
 not delete a file while a handle to it is open. `NotFound` on a retry counts as
 success, because the attempt that failed may still have removed the directory.
 `NotFound` on the first attempt is still an error. Other platforms do not retry: a
-failure there is a permission problem that waiting will not fix. This matches Python's
-`TempDir.cleanup`.
+failure there is a permission problem that waiting will not fix. The delays, and when
+a retry happens, match Python's `TempDir.cleanup`.
 
 Each failed Windows attempt is logged as a warning (`FILE_PATH | PROCESS_CONTROL |
-EXCEPTION_INFO`) that names up to three of the files left, and the processes holding
-any of the first 256 of them open, found with the Restart Manager
+EXCEPTION_INFO`). It names up to three of the files that could not be deleted, and the
+processes holding any of the first 256 of them open, found with the Restart Manager
 (`RmGetList`). It ends with the next delay, or "Giving up." after the last attempt.
 For example:
 
 ```
 Could not delete temporary directory C:\ProgramData\Amazon\OpenJD\c46tnxjh: The process
-cannot access the file because it is being used by another process. (os error 32). 3
-file(s) remain, including locked.bin, locked.bin.ready, pathmapping_14bf....json. Files
-are still locked open by: powershell.exe (pid 3604). Retrying in 4 s.
+cannot access the file because it is being used by another process. 1 file(s) could not
+be deleted, including locked.bin. Files are still locked open by: powershell.exe
+(pid 3604). Retrying in 4 s.
 ```
 
-A failed holder lookup is reported in the same line instead of the process list.
+`remove_dir_all` stops at the first file it cannot delete and leaves everything else in
+place, so the files left are not the ones to report. Instead, the warning checks each
+regular file left, up to 10 000 of them, by opening it for `DELETE` with all sharing
+allowed. The file is reported when that open fails with a sharing, lock, or access
+error. A running program's image accepts `DELETE` but cannot be deleted, so a file
+that opens is also opened for `DELETE` and writing, and is reported when that fails
+with a sharing or lock error. This only opens files: it deletes nothing, and does not
+follow symbolic links or junctions. Checking 10 000 files takes about 1.5 s. When
+either limit is reached, the count reads "At least N".
+
+A failed holder lookup is reported in the same line instead of the process list. When
+no file is reported, for instance because only a directory is held open, the line
+names no files or processes.
+
+This differs from Python's `TempDir.cleanup` in one way. Python's `shutil.rmtree`
+keeps going past a file it cannot delete and reports the paths that failed. So after
+the last attempt, Python leaves only the files that could not be deleted, while Rust
+can leave other files that were still to be removed. For a file held open without
+sharing deletion, both name the same file and the same holders, including when it
+sits in a subdirectory behind hundreds of other files. The line's text matches
+Python's: `std::io::Error` text ends with ` (os error N)` and, on Windows, a full
+stop, and the warning removes both, so the reason reads as Python's `strerror` does.
 
 `Session::cleanup()` removes only the working directory, which contains the embedded
 files directory, so a lock inside the latter is waited out once. It logs each directory
-it could not remove at error level, with the path and the reason, and continues.
+it could not remove at error level (`EXCEPTION_INFO | FILE_PATH`), with the path and
+the reason, and continues.

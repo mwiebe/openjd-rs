@@ -12,6 +12,7 @@ mod summary;
 
 use clap::{Parser, Subcommand};
 use log::{LevelFilter, Log, Metadata, Record};
+use openjd_sessions::LogContent;
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -43,8 +44,18 @@ fn format_log_timestamp() -> String {
     }
 }
 
-/// Logger that prints subprocess COMMAND_OUTPUT lines to stdout with timestamps.
+/// Logger that prints subprocess command output, and openjd's warnings and
+/// errors about the session, to stdout with timestamps.
 struct SessionLogger;
+
+/// Whether `SessionLogger` prints a record with this `openjd_log_content` and
+/// level: command output, plus warnings and errors openjd reports about the
+/// session itself, such as a working directory it could not delete.
+fn prints_session_record(bits: u64, level: log::Level) -> bool {
+    let has = |flag: LogContent| bits & u64::from(flag.bits()) != 0;
+    has(LogContent::COMMAND_OUTPUT)
+        || (has(LogContent::EXCEPTION_INFO) && level <= log::Level::Warn)
+}
 
 impl Log for SessionLogger {
     fn enabled(&self, _metadata: &Metadata) -> bool {
@@ -70,11 +81,7 @@ impl Log for SessionLogger {
         let mut v = Visitor { bits: None };
         let _ = record.key_values().visit(&mut v);
         if let Some(bits) = v.bits {
-            // Command output, plus warnings and errors openjd reports about the
-            // session itself, such as a working directory it could not delete.
-            let is_output = bits & 8 != 0;
-            let is_problem = bits & 16 != 0 && record.level() <= log::Level::Warn;
-            if is_output || is_problem {
+            if prints_session_record(bits, record.level()) {
                 let ts = format_log_timestamp();
                 println!("{ts}\t{}", record.args());
             }
@@ -133,5 +140,35 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("ERROR: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod session_logger_tests {
+    use super::*;
+    use log::Level;
+
+    #[test]
+    fn prints_command_output_at_any_level() {
+        let output = u64::from(LogContent::COMMAND_OUTPUT.bits());
+        for level in [Level::Error, Level::Warn, Level::Info, Level::Debug] {
+            assert!(prints_session_record(output, level), "{level}");
+        }
+    }
+
+    #[test]
+    fn prints_exception_info_only_at_warn_or_error() {
+        let problem = u64::from((LogContent::EXCEPTION_INFO | LogContent::FILE_PATH).bits());
+        assert!(prints_session_record(problem, Level::Error));
+        assert!(prints_session_record(problem, Level::Warn));
+        assert!(!prints_session_record(problem, Level::Info));
+        assert!(!prints_session_record(problem, Level::Debug));
+    }
+
+    #[test]
+    fn does_not_print_other_content() {
+        let other = u64::from((LogContent::FILE_PATH | LogContent::PROCESS_CONTROL).bits());
+        assert!(!prints_session_record(other, Level::Error));
+        assert!(!prints_session_record(0, Level::Error));
     }
 }

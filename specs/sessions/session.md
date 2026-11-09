@@ -464,9 +464,15 @@ collects the cleanup and teardown guarantees in one place.
 
 `cleanup()` is the primary teardown API. It:
 1. Shuts down the cross-user helper (if active) via the `"shutdown"` protocol message
-2. For cross-user sessions: runs `sudo rm -rf` as the session user to remove files
-   owned by that user, then `remove_dir_all` as the process user for any remainder
-3. For same-user sessions: `remove_dir_all` on the working directory
+2. For cross-user sessions on POSIX: runs `sudo rm -rf` as the session user to remove
+   files owned by that user
+3. For every session: `remove_dir_all` as the process user on the working directory,
+   which also removes the embedded files directory inside it. On Windows a failed
+   removal is retried for up to about 31 s, logging a warning for each failed attempt
+   that names the files still held open and the processes holding them (see
+   [tempdir.md § Cleanup retries on Windows](tempdir.md#cleanup-retries-on-windows)).
+   A directory that still cannot be removed is logged at error level, and cleanup
+   continues
 4. Sets state to `Ended`
 5. Skips directory removal if `retain_working_dir` is `true`
 

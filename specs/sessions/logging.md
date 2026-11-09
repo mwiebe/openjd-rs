@@ -103,6 +103,9 @@ to provide visual structure in log output.
 | `session.rs` | `HOST_INFO` | Version, platform, architecture at init |
 | `session.rs` | `FILE_PATH` | Working directory, files directory paths |
 | `session.rs` | `BANNER` | Section banners for enter/exit/run/cleanup |
+| `session.rs` | `EXCEPTION_INFO` | "Action failed to run" errors |
+| `session.rs` | `EXCEPTION_INFO \| FILE_PATH` | Error naming a directory cleanup could not remove, and why |
+| `tempdir.rs` | `FILE_PATH \| PROCESS_CONTROL \| EXCEPTION_INFO` | Warning per failed Windows cleanup attempt: undeletable files, their holders, next delay |
 | `subprocess.rs` | `PROCESS_CONTROL` | PID start, SIGTERM, SIGKILL, exit code, spawn failures |
 | `subprocess.rs` | `COMMAND_OUTPUT` | Stdout/stderr lines from the subprocess |
 | `subprocess.rs` | `BANNER` | Output header banner |

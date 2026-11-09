@@ -187,6 +187,12 @@ fn format_exit_code(code: Option<i32>) -> String {
     }
 }
 
+/// The content of the error logged when `Session::cleanup` could not delete a
+/// directory. It includes `EXCEPTION_INFO`, which `openjd run` prints and the
+/// worker agent routes to its own log.
+const CLEANUP_FAILURE_LOG_CONTENT: LogContent =
+    LogContent::EXCEPTION_INFO.union(LogContent::FILE_PATH);
+
 /// Log a temporary directory that `Session::cleanup` could not delete. Cleanup
 /// continues, so without this the directory is left on disk with no trace.
 fn log_cleanup_failure(session_id: &str, path: &Path, err: &SessionError) {
@@ -197,7 +203,7 @@ fn log_cleanup_failure(session_id: &str, path: &Path, err: &SessionError) {
     session_log!(
         error,
         session_id,
-        LogContent::EXCEPTION_INFO | LogContent::FILE_PATH,
+        CLEANUP_FAILURE_LOG_CONTENT,
         "Files within temporary directory {} could not be deleted: {}",
         path.display(),
         reason
@@ -3531,10 +3537,18 @@ mod cleanup_failure_log_tests {
         testing_logger::validate(|logs| {
             assert_eq!(logs.len(), 1);
             assert_eq!(logs[0].level, log::Level::Error);
-            assert!(logs[0]
-                .body
-                .contains("session-dir could not be deleted: file in use"));
+            assert_eq!(
+                logs[0].body,
+                "Files within temporary directory session-dir could not be deleted: file in use"
+            );
         });
+    }
+
+    /// Written as a literal so a changed flag fails here.
+    #[test]
+    fn cleanup_failure_log_content_is_exception_info_and_file_path() {
+        // FILE_PATH | EXCEPTION_INFO
+        assert_eq!(CLEANUP_FAILURE_LOG_CONTENT.bits(), 0b0001_0010);
     }
 }
 
