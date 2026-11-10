@@ -29,6 +29,7 @@ pub use external::{
     check_environment_templates, AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement,
     EnvironmentScope, EnvironmentStatus, HostRequirementKind, OptionalEntryNotFound,
     StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses, SubmissionWarning,
+    SupersedingEnvironment,
 };
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,

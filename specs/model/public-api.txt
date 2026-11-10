@@ -171,9 +171,11 @@ pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Format
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
 pub struct openjd_model::create_job::StepEnvironmentStatus
 pub openjd_model::create_job::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::create_job::StepEnvironmentStatus::exclusive_group: core::option::Option<alloc::string::String>
 pub openjd_model::create_job::StepEnvironmentStatus::name: alloc::string::String
 pub openjd_model::create_job::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
 pub openjd_model::create_job::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+pub openjd_model::create_job::StepEnvironmentStatus::superseded_by: core::option::Option<openjd_model::SupersedingEnvironment>
 impl core::clone::Clone for openjd_model::StepEnvironmentStatus
 pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
 impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
@@ -210,6 +212,20 @@ pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::fmt::Display for openjd_model::SubmissionWarning
 pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
+pub struct openjd_model::create_job::SupersedingEnvironment
+pub openjd_model::create_job::SupersedingEnvironment::document: openjd_model::job::Document
+pub openjd_model::create_job::SupersedingEnvironment::name: alloc::string::String
+pub openjd_model::create_job::SupersedingEnvironment::scope: openjd_model::EnvironmentScope
+impl core::clone::Clone for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::clone(&self) -> openjd_model::SupersedingEnvironment
+impl core::cmp::Eq for openjd_model::SupersedingEnvironment
+impl core::cmp::PartialEq for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::eq(&self, &openjd_model::SupersedingEnvironment) -> bool
+impl core::fmt::Debug for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::SupersedingEnvironment
 pub fn openjd_model::create_job::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::check_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::ValidationContext) -> core::result::Result<alloc::vec::Vec<openjd_model::SubmissionWarning>, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
@@ -458,9 +474,11 @@ pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Format
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
 pub struct openjd_model::job::create_job::StepEnvironmentStatus
 pub openjd_model::job::create_job::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::job::create_job::StepEnvironmentStatus::exclusive_group: core::option::Option<alloc::string::String>
 pub openjd_model::job::create_job::StepEnvironmentStatus::name: alloc::string::String
 pub openjd_model::job::create_job::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
 pub openjd_model::job::create_job::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+pub openjd_model::job::create_job::StepEnvironmentStatus::superseded_by: core::option::Option<openjd_model::SupersedingEnvironment>
 impl core::clone::Clone for openjd_model::StepEnvironmentStatus
 pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
 impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
@@ -497,6 +515,20 @@ pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::fmt::Display for openjd_model::SubmissionWarning
 pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
+pub struct openjd_model::job::create_job::SupersedingEnvironment
+pub openjd_model::job::create_job::SupersedingEnvironment::document: openjd_model::job::Document
+pub openjd_model::job::create_job::SupersedingEnvironment::name: alloc::string::String
+pub openjd_model::job::create_job::SupersedingEnvironment::scope: openjd_model::EnvironmentScope
+impl core::clone::Clone for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::clone(&self) -> openjd_model::SupersedingEnvironment
+impl core::cmp::Eq for openjd_model::SupersedingEnvironment
+impl core::cmp::PartialEq for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::eq(&self, &openjd_model::SupersedingEnvironment) -> bool
+impl core::fmt::Debug for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::SupersedingEnvironment
 pub fn openjd_model::job::create_job::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::check_environment_templates(&openjd_model::template::JobTemplate, &[openjd_model::AttachedEnvironmentTemplate<'_>], &openjd_model::types::ValidationContext) -> core::result::Result<alloc::vec::Vec<openjd_model::SubmissionWarning>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::convert_environment(&openjd_model::template::Environment) -> openjd_model::job::Environment
@@ -2781,9 +2813,11 @@ pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Format
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
 pub struct openjd_model::StepEnvironmentStatus
 pub openjd_model::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::StepEnvironmentStatus::exclusive_group: core::option::Option<alloc::string::String>
 pub openjd_model::StepEnvironmentStatus::name: alloc::string::String
 pub openjd_model::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
 pub openjd_model::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+pub openjd_model::StepEnvironmentStatus::superseded_by: core::option::Option<openjd_model::SupersedingEnvironment>
 impl core::clone::Clone for openjd_model::StepEnvironmentStatus
 pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
 impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
@@ -2839,6 +2873,20 @@ pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>
 impl core::fmt::Display for openjd_model::SubmissionWarning
 pub fn openjd_model::SubmissionWarning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::SubmissionWarning
+pub struct openjd_model::SupersedingEnvironment
+pub openjd_model::SupersedingEnvironment::document: openjd_model::job::Document
+pub openjd_model::SupersedingEnvironment::name: alloc::string::String
+pub openjd_model::SupersedingEnvironment::scope: openjd_model::EnvironmentScope
+impl core::clone::Clone for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::clone(&self) -> openjd_model::SupersedingEnvironment
+impl core::cmp::Eq for openjd_model::SupersedingEnvironment
+impl core::cmp::PartialEq for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::eq(&self, &openjd_model::SupersedingEnvironment) -> bool
+impl core::fmt::Debug for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::SupersedingEnvironment
+pub fn openjd_model::SupersedingEnvironment::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::SupersedingEnvironment
 pub struct openjd_model::TaskParameterValue
 pub openjd_model::TaskParameterValue::param_type: openjd_model::types::TaskParameterType
 pub openjd_model::TaskParameterValue::value: openjd_expr::value::ExprValue

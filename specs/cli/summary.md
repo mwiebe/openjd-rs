@@ -147,7 +147,9 @@ a count.
    both and give Conda packages, the one attached second;
    the `Disabled` and `Superseded` items of `CreatedJob::environment_statuses`: combined Job
    Environments in Job order with their document, then Step Environments marked
-   `stepEnvironments`), each line ending `: disabled` or `: superseded` to say which, and is
+   `stepEnvironments`), each line ending `: disabled` or, for a superseded one,
+   `: superseded by Name (document)`, naming the member of its group the Step enters
+   (`StepEnvironmentStatus::superseded_by`), and is
    omitted when there are none. An Environment with `activation: ALWAYS` is never listed: it
    cannot be disabled, and an `enableIf` that is `false` for a Step makes job creation, and so
    `summary`, fail with an error naming the Step and the Environment (Template Schemas §3.2.2
@@ -230,7 +232,9 @@ objects whose `values` are `{"name", "type", "value"}` objects, with the same st
 human-readable form. With `ENV_PARAMS`, each Step also has `session_environments`, an array
 of `{"name", "source"}` objects (`source` is the declaring document, or `stepEnvironments`),
 when an `enableIf` disabled or an `exclusiveGroup` superseded any, `disabled_environments`,
-`{"name", "source", "status"}` objects with `status` `disabled` or `superseded`, when it
+`{"name", "source", "status"}` objects with `status` `disabled` or `superseded`, plus
+`"exclusive_group"` when the Environment has one and, on a superseded one, `"superseded_by"`,
+`{"name", "source"}` of the group member the Step enters, when it
 declined any, `declined_environments` in the `session_environments` form, when an optional
 entry named nothing, `optional_entries_not_found`, `{"dependency_index", "environment"}`
 objects,
@@ -285,6 +289,8 @@ struct StepEnvSets {                     // per Step, with ENV_PARAMS
 struct DisabledEnvInfo {
     env: SessionEnvInfo,
     status: &'static str,                // `disabled` or `superseded`
+    exclusive_group: Option<String>,     // its exclusiveGroup
+    superseded_by: Option<SessionEnvInfo>, // for a superseded one, the group member entered
 }
 
 struct StepInfo<'a> {

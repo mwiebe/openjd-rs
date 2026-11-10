@@ -86,7 +86,7 @@ The crate re-exports a curated public API from `lib.rs`:
 - `MergedParameterDefinition` — Merged parameter from multiple templates
 - `PathParameterOptions` — Options for PATH parameter resolution
 - `AttachedEnvironmentTemplate`, `CreatedJob`, `StepDisabledEnvironments`,
-  `StepEnvironmentStatuses`, `StepEnvironmentStatus`, `EnvironmentScope`,
+  `StepEnvironmentStatuses`, `StepEnvironmentStatus`, `SupersedingEnvironment`, `EnvironmentScope`,
   `EnvironmentStatus`, `OptionalEntryNotFound`, `DiscardedHostRequirement`,
   `HostRequirementKind`, `SubmissionWarning` — inputs and outputs of
   `create_job_with_environment_templates`

@@ -162,7 +162,8 @@ participate in the derived `PartialEq` and `Hash` of `Step`.
 The Job records only which Environments a Step enters, not why the others are left out. That
 belongs to job creation, which returns it beside the Job in `CreatedJob::environment_statuses`
 (see [public-api.md](public-api.md)): per Step, every Environment it considered in the Job's
-Environment order, each `Entered`, `Declined`, `Disabled` or `Superseded`, and its
+Environment order, each `Entered`, `Declined`, `Disabled` or `Superseded` (with its
+`exclusiveGroup`, and for a superseded one the group member entered instead), and its
 `required: false` entries that named nothing. It is not a `Step` field because it describes the
 decisions of one submission and no Session needs it, and keeping it out leaves the Job's
 serialized form unchanged.

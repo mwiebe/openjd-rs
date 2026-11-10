@@ -18,13 +18,15 @@
 //!   evaluated, so a `false` one still gives `Superseded`.
 //!
 //! An `ON_REQUEST` Environment the Step does not request is not listed.
+//! Each item carries its `exclusiveGroup`, and a `Superseded` one the
+//! group member the Step enters (`superseded_by`).
 
 use openjd_model::job::Document;
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
     create_job, create_job_with_environment_templates, AttachedEnvironmentTemplate, CreatedJob,
     EnvironmentScope, EnvironmentStatus, OptionalEntryNotFound, StepDisabledEnvironments,
-    StepEnvironmentStatus,
+    StepEnvironmentStatus, SupersedingEnvironment,
 };
 
 use crate::env_params_common::{env_ok, job_ok, job_params_with, template_ctx};
@@ -71,24 +73,41 @@ fn create(jt_src: &str, env_srcs: &[&str]) -> CreatedJob {
     create_labelled(jt_src, env_srcs, &[])
 }
 
-/// Step `step`'s statuses, one `scope name@document: status` string each.
+fn scope_name(scope: EnvironmentScope) -> &'static str {
+    match scope {
+        EnvironmentScope::Attached => "attached",
+        EnvironmentScope::Job => "job",
+        EnvironmentScope::Step => "step",
+    }
+}
+
+/// Step `step`'s statuses, one `scope name@document: status` string each,
+/// with ` [group]` after the document for one with an `exclusiveGroup`
+/// and ` by scope name@document` after a superseded one's status.
 fn statuses(created: &CreatedJob, step: usize) -> Vec<String> {
     created.environment_statuses[step]
         .environments
         .iter()
         .map(|s| {
-            let scope = match s.scope {
-                EnvironmentScope::Attached => "attached",
-                EnvironmentScope::Job => "job",
-                EnvironmentScope::Step => "step",
-            };
             let status = match s.status {
                 EnvironmentStatus::Entered => "entered",
                 EnvironmentStatus::Declined => "declined",
                 EnvironmentStatus::Disabled => "disabled",
                 EnvironmentStatus::Superseded => "superseded",
             };
-            format!("{scope} {}@{}: {status}", s.name, s.document)
+            let group = s
+                .exclusive_group
+                .as_ref()
+                .map_or(String::new(), |g| format!(" [{g}]"));
+            let by = s.superseded_by.as_ref().map_or(String::new(), |w| {
+                format!(" by {} {}@{}", scope_name(w.scope), w.name, w.document)
+            });
+            format!(
+                "{} {}@{}{group}: {status}{by}",
+                scope_name(s.scope),
+                s.name,
+                s.document
+            )
         })
         .collect()
 }
@@ -139,12 +158,43 @@ fn check_invariants(created: &CreatedJob) {
             .map(|s| s.name.as_str())
             .collect();
         assert_eq!(step_envs, step_entered, "Step {}", step.name);
-        for st in &s.environments {
+        for (k, st) in s.environments.iter().enumerate() {
             assert_eq!(
                 st.scope == EnvironmentScope::Attached,
                 !st.document.is_job_template(),
                 "{st:?}"
             );
+            // A Step Environment has no group; only a superseded one names
+            // the Environment that superseded it.
+            if st.scope == EnvironmentScope::Step {
+                assert_eq!(st.exclusive_group, None, "{st:?}");
+            }
+            assert_eq!(
+                st.superseded_by.is_some(),
+                st.status == EnvironmentStatus::Superseded,
+                "{st:?}"
+            );
+            // The winner is the first Entered member of the group, before
+            // the superseded one in the Job's Environment order.
+            if let Some(w) = &st.superseded_by {
+                let group = st
+                    .exclusive_group
+                    .as_ref()
+                    .expect("a superseded one has a group");
+                let first = s.environments[..k]
+                    .iter()
+                    .find(|e| {
+                        e.status == EnvironmentStatus::Entered
+                            && e.exclusive_group.as_ref() == Some(group)
+                    })
+                    .unwrap_or_else(|| panic!("no entered member before {st:?}"));
+                assert_eq!(
+                    (&first.name, &first.document, first.scope),
+                    (&w.name, &w.document, w.scope),
+                    "Step {}: {st:?}",
+                    step.name
+                );
+            }
         }
     }
     let derived: Vec<StepDisabledEnvironments> = created
@@ -231,8 +281,8 @@ fn without_env_params_an_attached_environment_can_still_be_left_out() {
         statuses(&created, 0),
         [
             "attached Q1@EnvironmentTemplate[0]: disabled",
-            "attached Q2@EnvironmentTemplate[1]: entered",
-            "attached Q3@EnvironmentTemplate[2]: superseded",
+            "attached Q2@EnvironmentTemplate[1] [G]: entered",
+            "attached Q3@EnvironmentTemplate[2] [G]: superseded by attached Q2@EnvironmentTemplate[1]",
             "job A@JobTemplate: entered",
             "job B@JobTemplate: entered",
             "step L@JobTemplate: entered",
@@ -242,8 +292,8 @@ fn without_env_params_an_attached_environment_can_still_be_left_out() {
         statuses(&created, 1),
         [
             "attached Q1@EnvironmentTemplate[0]: disabled",
-            "attached Q2@EnvironmentTemplate[1]: entered",
-            "attached Q3@EnvironmentTemplate[2]: superseded",
+            "attached Q2@EnvironmentTemplate[1] [G]: entered",
+            "attached Q3@EnvironmentTemplate[2] [G]: superseded by attached Q2@EnvironmentTemplate[1]",
             "job A@JobTemplate: entered",
             "job B@JobTemplate: entered",
         ]
@@ -289,8 +339,8 @@ fn job_and_step_environments_get_each_status() {
             "job Def@JobTemplate: declined",
             "job Req@JobTemplate: entered",
             "job Off@JobTemplate: entered",
-            "job G1@JobTemplate: entered",
-            "job G2@JobTemplate: superseded",
+            "job G1@JobTemplate [G]: entered",
+            "job G2@JobTemplate [G]: superseded by job G1@JobTemplate",
             "step L@JobTemplate: entered",
         ]
     );
@@ -302,8 +352,8 @@ fn job_and_step_environments_get_each_status() {
         [
             "job Def@JobTemplate: entered",
             "job Off@JobTemplate: disabled",
-            "job G1@JobTemplate: disabled",
-            "job G2@JobTemplate: entered",
+            "job G1@JobTemplate [G]: disabled",
+            "job G2@JobTemplate [G]: entered",
             "step L@JobTemplate: disabled",
             "step M@JobTemplate: entered",
         ]
@@ -323,8 +373,8 @@ fn a_superseded_environment_with_a_false_enable_if_is_superseded() {
     assert_eq!(
         statuses(&create(&jt, &[]), 0),
         [
-            "job G1@JobTemplate: entered",
-            "job G2@JobTemplate: superseded"
+            "job G1@JobTemplate [G]: entered",
+            "job G2@JobTemplate [G]: superseded by job G1@JobTemplate"
         ]
     );
 }
@@ -344,8 +394,8 @@ fn a_declined_environment_with_a_false_enable_if_is_declined() {
     assert_eq!(
         statuses(&create(&jt, &[]), 0),
         [
-            "job G1@JobTemplate: declined",
-            "job G2@JobTemplate: entered"
+            "job G1@JobTemplate [G]: declined",
+            "job G2@JobTemplate [G]: entered"
         ]
     );
 }
@@ -400,15 +450,15 @@ fn a_group_spans_an_attachment_and_a_job_environment() {
     assert_eq!(
         statuses(&created, 0),
         [
-            "attached Docker@queue/docker.yaml: entered",
-            "job Conda@JobTemplate: superseded",
+            "attached Docker@queue/docker.yaml [Soft]: entered",
+            "job Conda@JobTemplate [Soft]: superseded by attached Docker@queue/docker.yaml",
         ]
     );
     assert_eq!(
         statuses(&created, 1),
         [
-            "attached Docker@queue/docker.yaml: disabled",
-            "job Conda@JobTemplate: entered",
+            "attached Docker@queue/docker.yaml [Soft]: disabled",
+            "job Conda@JobTemplate [Soft]: entered",
         ]
     );
     assert_eq!(
@@ -447,8 +497,8 @@ fn attached_environments_get_each_status() {
             "attached Q2@EnvironmentTemplate[1]: declined",
             "attached Q3@EnvironmentTemplate[2]: entered",
             "attached Q4@EnvironmentTemplate[3]: entered",
-            "attached Q5@EnvironmentTemplate[4]: entered",
-            "attached Q6@EnvironmentTemplate[5]: superseded",
+            "attached Q5@EnvironmentTemplate[4] [G]: entered",
+            "attached Q6@EnvironmentTemplate[5] [G]: superseded by attached Q5@EnvironmentTemplate[4]",
         ]
     );
     assert_eq!(
@@ -457,8 +507,8 @@ fn attached_environments_get_each_status() {
             "attached Q1@EnvironmentTemplate[0]: entered",
             "attached Q2@EnvironmentTemplate[1]: entered",
             "attached Q4@EnvironmentTemplate[3]: disabled",
-            "attached Q5@EnvironmentTemplate[4]: entered",
-            "attached Q6@EnvironmentTemplate[5]: superseded",
+            "attached Q5@EnvironmentTemplate[4] [G]: entered",
+            "attached Q6@EnvironmentTemplate[5] [G]: superseded by attached Q5@EnvironmentTemplate[4]",
         ]
     );
 }
@@ -476,8 +526,8 @@ fn job_and_step_environments_are_disabled_with_attachments_present() {
             "attached Q@queue/q.yaml: entered",
             "job Def@JobTemplate: entered",
             "job Off@JobTemplate: disabled",
-            "job G1@JobTemplate: disabled",
-            "job G2@JobTemplate: entered",
+            "job G1@JobTemplate [G]: disabled",
+            "job G2@JobTemplate [G]: entered",
             "step L@JobTemplate: disabled",
             "step M@JobTemplate: entered",
         ]
@@ -489,8 +539,8 @@ fn job_and_step_environments_are_disabled_with_attachments_present() {
             "job Def@JobTemplate: declined",
             "job Req@JobTemplate: entered",
             "job Off@JobTemplate: entered",
-            "job G1@JobTemplate: entered",
-            "job G2@JobTemplate: superseded",
+            "job G1@JobTemplate [G]: entered",
+            "job G2@JobTemplate [G]: superseded by job G1@JobTemplate",
             "step L@JobTemplate: entered",
         ]
     );
@@ -510,9 +560,9 @@ fn a_disabled_attachment_does_not_supersede_the_next() {
     assert_eq!(
         statuses(&created, 0),
         [
-            "attached Q1@EnvironmentTemplate[0]: disabled",
-            "attached Q2@EnvironmentTemplate[1]: entered",
-            "attached Q3@EnvironmentTemplate[2]: superseded",
+            "attached Q1@EnvironmentTemplate[0] [G]: disabled",
+            "attached Q2@EnvironmentTemplate[1] [G]: entered",
+            "attached Q3@EnvironmentTemplate[2] [G]: superseded by attached Q2@EnvironmentTemplate[1]",
         ]
     );
 }
@@ -535,6 +585,167 @@ fn every_part_of_the_job_environment_order_is_in_order() {
             "job J1@JobTemplate: entered",
             "step S2@JobTemplate: entered",
             "step S1@JobTemplate: entered",
+        ]
+    );
+}
+
+// ── exclusiveGroup and superseded_by ────────────────────────────────
+
+#[test]
+fn each_group_in_the_job_template_names_its_own_winner() {
+    // Two interleaved groups and an ungrouped Environment. Step S enters
+    // the first of each group, A1 and B1, and every later member names the
+    // first of its own group. Step T turns off A1, so A2 wins G and A3
+    // names A2, while H is unchanged.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: A1, exclusiveGroup: G, {TOGGLE}, variables: {{V: a}}}}\n\
+         - {{name: B1, exclusiveGroup: H, variables: {{V: b}}}}\n\
+         - {{name: U, variables: {{V: u}}}}\n\
+         - {{name: A2, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         - {{name: B2, exclusiveGroup: H, variables: {{V: b}}}}\n\
+         - {{name: A3, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         steps:\n\
+         - name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: T\n  dependencies:\n  - {{environment: A1, parameters: {{On: 0}}}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(&jt, &[]);
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "job A1@JobTemplate [G]: entered",
+            "job B1@JobTemplate [H]: entered",
+            "job U@JobTemplate: entered",
+            "job A2@JobTemplate [G]: superseded by job A1@JobTemplate",
+            "job B2@JobTemplate [H]: superseded by job B1@JobTemplate",
+            "job A3@JobTemplate [G]: superseded by job A1@JobTemplate",
+        ]
+    );
+    assert_eq!(
+        statuses(&created, 1),
+        [
+            "job A1@JobTemplate [G]: disabled",
+            "job B1@JobTemplate [H]: entered",
+            "job U@JobTemplate: entered",
+            "job A2@JobTemplate [G]: entered",
+            "job B2@JobTemplate [H]: superseded by job B1@JobTemplate",
+            "job A3@JobTemplate [G]: superseded by job A2@JobTemplate",
+        ]
+    );
+    // The fields themselves, for an ungrouped one, a disabled one, and a
+    // superseded one.
+    let t = &created.environment_statuses[1].environments;
+    assert_eq!((&t[2].exclusive_group, &t[2].superseded_by), (&None, &None));
+    assert_eq!(
+        (&t[0].exclusive_group, &t[0].superseded_by),
+        (&Some("G".to_string()), &None)
+    );
+    assert_eq!(t[5].exclusive_group.as_deref(), Some("G"));
+    assert_eq!(
+        t[5].superseded_by,
+        Some(SupersedingEnvironment {
+            name: "A2".into(),
+            document: Document::JobTemplate,
+            scope: EnvironmentScope::Job,
+        })
+    );
+}
+
+#[test]
+fn a_group_whose_first_member_is_disabled_supersedes_nothing() {
+    // §4 item 7: a member its own enableIf disables takes no group, so the
+    // next one is entered and no member is superseded.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: G1, exclusiveGroup: G, enableIf: false, variables: {{V: a}}}}\n\
+         - {{name: G2, exclusiveGroup: G, variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(&jt, &[]);
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "job G1@JobTemplate [G]: disabled",
+            "job G2@JobTemplate [G]: entered"
+        ]
+    );
+    assert!(created.environment_statuses[0]
+        .environments
+        .iter()
+        .all(|s| s.superseded_by.is_none()));
+}
+
+#[test]
+fn the_winner_is_told_apart_from_a_job_environment_of_the_same_name() {
+    // An attachment named like a Job Environment is unreachable by entries
+    // (§3.2.1 item 4, a warning), but it is still an Environment of the
+    // Job. Here it shares the Job Environment's group and comes first, so
+    // the Job Template's Conda is superseded by the attached Conda, and
+    // `superseded_by` says which by document and scope. A third member,
+    // in the Job Template after an ungrouped one, names the same winner.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: Conda, exclusiveGroup: Soft, variables: {{V: c}}}}\n\
+         - {{name: U, variables: {{V: u}}}}\n\
+         - {{name: Pip, exclusiveGroup: Soft, variables: {{V: p}}}}\n\
+         steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create_labelled(
+        &jt,
+        &[&env("name: Conda, exclusiveGroup: Soft")],
+        &["queue/conda.yaml"],
+    );
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached Conda@queue/conda.yaml [Soft]: entered",
+            "job Conda@JobTemplate [Soft]: superseded by attached Conda@queue/conda.yaml",
+            "job U@JobTemplate: entered",
+            "job Pip@JobTemplate [Soft]: superseded by attached Conda@queue/conda.yaml",
+        ]
+    );
+    let winner = SupersedingEnvironment {
+        name: "Conda".into(),
+        document: Document::environment_template(0, Some("queue/conda.yaml")),
+        scope: EnvironmentScope::Attached,
+    };
+    let s = &created.environment_statuses[0].environments;
+    assert_eq!(s[1].superseded_by.as_ref(), Some(&winner));
+    assert_ne!(
+        (&s[1].document, s[1].scope),
+        (&winner.document, winner.scope)
+    );
+    assert_eq!(s[3].superseded_by.as_ref(), Some(&winner));
+}
+
+#[test]
+fn a_job_environment_supersedes_a_later_one_after_a_disabled_attachment() {
+    // The group spans two attachments and two Job Environments. The first
+    // attachment is disabled and the second declined, so the first Job
+    // Environment wins and supersedes the second, at its position in the
+    // Job's Environment order after the attachments.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n\
+         - {{name: J1, exclusiveGroup: G, variables: {{V: a}}}}\n\
+         - {{name: J2, exclusiveGroup: G, variables: {{V: b}}}}\n\
+         steps:\n- name: S\n  dependencies:\n  - {{environment: Q2, enableIf: false}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(
+        &jt,
+        &[
+            &env("name: Q1, exclusiveGroup: G, enableIf: false"),
+            &env("name: Q2, exclusiveGroup: G"),
+        ],
+    );
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached Q1@EnvironmentTemplate[0] [G]: disabled",
+            "attached Q2@EnvironmentTemplate[1] [G]: declined",
+            "job J1@JobTemplate [G]: entered",
+            "job J2@JobTemplate [G]: superseded by job J1@JobTemplate",
         ]
     );
 }

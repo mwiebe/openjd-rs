@@ -35,7 +35,7 @@ pub use job::create_job::{
     AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement, EnvironmentScope,
     EnvironmentStatus, HostRequirementKind, MergedParameterDefinition, OptionalEntryNotFound,
     PathParameterOptions, StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses,
-    SubmissionWarning,
+    SubmissionWarning, SupersedingEnvironment,
 };
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;

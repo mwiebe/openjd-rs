@@ -304,6 +304,15 @@ pub struct StepEnvironmentStatus {
     pub document: job::Document,      // EnvironmentTemplate exactly for Attached
     pub scope: EnvironmentScope,
     pub status: EnvironmentStatus,
+    pub exclusive_group: Option<String>, // its exclusiveGroup, whatever the status
+    pub superseded_by: Option<SupersedingEnvironment>, // Some exactly when Superseded
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SupersedingEnvironment {
+    pub name: String,
+    pub document: job::Document,
+    pub scope: EnvironmentScope,      // Attached or Job
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -441,6 +450,16 @@ still `Superseded`), `Disabled` for one its own `enableIf` turns off (step
 `Job` are exactly `job::Step::environments` (all of the Job's when that is
 `None`), those of scope `Step` are `job::Step::step_environments`, and
 `disabled_environments` is the `Disabled` and `Superseded` items.
+Each item also carries the Environment's `exclusive_group` (`None` for one
+without, and for every Step Environment, where the field is not permitted),
+and a `Superseded` item carries `superseded_by`, the [`SupersedingEnvironment`]
+the Step's Sessions enter instead: the earliest member of the group in the
+Job's Environment order that remains in the Step's set (§7.4.1 step 6). It
+gives the winner's `name`, `document` and `scope`, so an attached Environment
+and a Job Environment of the same name are told apart. `superseded_by` is
+`None` for every other status. A group whose first member is disabled by its
+`enableIf` is won by the next, and the disabled one is `Disabled` with no
+`superseded_by`.
 `StepEnvironmentStatuses::not_found` lists the enabled `required: false`
 entries that resolved to no Environment (each also a warning); a disabled
 entry that names nothing has no effect and is not listed. For a Job
@@ -451,7 +470,8 @@ a caller that wants the statuses calls
 [`create_job_with_environment_templates`] with no attachments, which is
 what `create_job` does. `CreatedJob` has public fields and is not `#[non_exhaustive]`, so
 adding `environment_statuses` breaks code outside the crate that builds a `CreatedJob` with a
-struct literal or destructures it without `..`; reading its fields is unaffected.
+struct literal or destructures it without `..`; reading its fields is unaffected. The same holds
+for `StepEnvironmentStatus`, which gained `exclusive_group` and `superseded_by`.
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need

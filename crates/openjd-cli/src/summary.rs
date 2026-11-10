@@ -236,6 +236,10 @@ impl From<&openjd_model::DiscardedHostRequirement> for DiscardedInfo {
 struct DisabledEnvInfo {
     env: SessionEnvInfo,
     status: &'static str,
+    /// Its `exclusiveGroup`, if it has one.
+    exclusive_group: Option<String>,
+    /// For a superseded one, the member of its group the Step enters.
+    superseded_by: Option<SessionEnvInfo>,
 }
 
 /// The [`SessionEnvInfo`] of one item of a Step's statuses: its declaring
@@ -268,6 +272,11 @@ fn disabled_env_infos(statuses: &openjd_model::StepEnvironmentStatuses) -> Vec<D
             Some(DisabledEnvInfo {
                 env: status_env_info(s),
                 status,
+                exclusive_group: s.exclusive_group.clone(),
+                superseded_by: s.superseded_by.as_ref().map(|w| SessionEnvInfo {
+                    name: w.name.clone(),
+                    source: w.document.to_string(),
+                }),
             })
         })
         .collect()
@@ -860,11 +869,21 @@ impl EnvParamsDetails<'_> {
                 serde_json::json!(self
                     .disabled_envs
                     .iter()
-                    .map(|d| serde_json::json!({
-                        "name": d.env.name,
-                        "source": d.env.source,
-                        "status": d.status,
-                    }))
+                    .map(|d| {
+                        let mut o = serde_json::json!({
+                            "name": d.env.name,
+                            "source": d.env.source,
+                            "status": d.status,
+                        });
+                        if let Some(group) = &d.exclusive_group {
+                            o["exclusive_group"] = serde_json::json!(group);
+                        }
+                        if let Some(w) = &d.superseded_by {
+                            o["superseded_by"] =
+                                serde_json::json!({"name": w.name, "source": w.source});
+                        }
+                        o
+                    })
                     .collect::<Vec<_>>()),
             );
         }
@@ -908,7 +927,8 @@ impl EnvParamsDetails<'_> {
 
     /// `Session environments:` with one `- Name (source)` line each (or
     /// `(none)`), then, when there are any, `Disabled environments:` in the
-    /// same form with `: disabled` or `: superseded` after each,
+    /// same form with `: disabled` or `: superseded by Name (source)` after
+    /// each,
     /// `Declined environments:` in the same form, and `Optional entries not
     /// found:` with one `- dependencies[i]: Name` line each, then `Host
     /// requirements:` with one line per requirement,
@@ -926,11 +946,15 @@ impl EnvParamsDetails<'_> {
         if !self.disabled_envs.is_empty() {
             writeln!(f, "{indent}Disabled environments:")?;
             for d in self.disabled_envs {
-                writeln!(
+                write!(
                     f,
                     "{indent}  - {} ({}): {}",
                     d.env.name, d.env.source, d.status
                 )?;
+                if let Some(w) = &d.superseded_by {
+                    write!(f, " by {} ({})", w.name, w.source)?;
+                }
+                writeln!(f)?;
             }
         }
         if !self.declined_envs.is_empty() {

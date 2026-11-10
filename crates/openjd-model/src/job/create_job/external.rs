@@ -259,6 +259,31 @@ pub struct StepEnvironmentStatus {
     pub scope: EnvironmentScope,
     /// Whether the Step's Sessions enter it, or why not.
     pub status: EnvironmentStatus,
+    /// The Environment's `exclusiveGroup` (Template Schemas §4 item 7),
+    /// whatever its `status`; `None` for one without, which includes every
+    /// Step Environment (the field is not permitted there).
+    pub exclusive_group: Option<String>,
+    /// For a `Superseded` one, the member of its `exclusiveGroup` the Step's
+    /// Sessions enter: the earliest one in the Job's Environment order that
+    /// remains in the Step's set (§7.4.1 step 6). `None` for every other
+    /// `status`.
+    pub superseded_by: Option<SupersedingEnvironment>,
+}
+
+/// The Environment that superseded another for a Step
+/// ([`StepEnvironmentStatus::superseded_by`]): an attached or Job
+/// Environment, since a Step Environment has no `exclusiveGroup`. `name`,
+/// `document` and `scope` identify it among the Job's Environments, also
+/// when an attached Environment and a Job Environment share a name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SupersedingEnvironment {
+    /// The Environment's `name`.
+    pub name: String,
+    /// The document that declares it, as in
+    /// [`StepEnvironmentStatus::document`].
+    pub document: job::Document,
+    /// Its part of the Job's Environment order: `Attached` or `Job`.
+    pub scope: EnvironmentScope,
 }
 
 /// An enabled `environment:` entry with `required: false` that resolved to
@@ -972,6 +997,11 @@ pub(crate) fn apply_environment_templates(
     // which of the two.
     let mut left_out_job_environments: Vec<Vec<(usize, EnvironmentStatus)>> =
         Vec::with_capacity(job.steps.len());
+    // Per Step, by position in the Job's Environment order (the
+    // attachments, then `jobEnvironments`): for a superseded one, the
+    // position of the member of its group the Step's Sessions enter.
+    let combined_count = own_at(job_envs.all.len());
+    let mut superseded_by: Vec<Vec<Option<usize>>> = Vec::with_capacity(job.steps.len());
     let mut step_environment_parameters = Vec::with_capacity(job.steps.len());
     // §7.4.1: a Step with an error from steps 1–4 has no fixed set of
     // Environments, so steps 5–8 are not taken for it.
@@ -981,6 +1011,7 @@ pub(crate) fn apply_environment_templates(
     for (i, step) in job.steps.iter().enumerate() {
         if stopped[i] {
             attached_statuses.push(vec![None; set.declaring.len()]);
+            superseded_by.push(vec![None; combined_count]);
             step_environment_parameters.push(Vec::new());
             left_out_job_environments.push(Vec::new());
             deferred_values.push(Vec::new());
@@ -1003,8 +1034,10 @@ pub(crate) fn apply_environment_templates(
             .collect();
         // §4 item 7, §7.4.1 step 6: the groups an Environment the Step's
         // Sessions enter already has, in the Job's Environment order, so
-        // the later ones of each are superseded.
-        let mut taken: HashSet<&str> = HashSet::new();
+        // the later ones of each are superseded, each with the position of
+        // that Environment, the group's first that remains in the set.
+        let mut taken: HashMap<&str, usize> = HashMap::new();
+        let mut step_superseded_by = vec![None; combined_count];
         // The first attachment in `missing`, to file the Step's constraint
         // 7 error under.
         let mut first_missing = None;
@@ -1047,14 +1080,15 @@ pub(crate) fn apply_environment_templates(
             // Superseded by an earlier one of its group: disabled for the
             // Step (§3.2.2), so its values are not checked, and its own
             // `enableIf` is not evaluated (§4 item 7, §7.4.1 step 6).
-            if de.env.group().is_some_and(|group| taken.contains(group)) {
+            if let Some(&winner) = de.env.group().and_then(|group| taken.get(group)) {
                 statuses.push(Some(EnvironmentStatus::Superseded));
+                step_superseded_by[doc] = Some(winner);
                 continue;
             }
             let decision = de.decide(&pending, &step.name, &base, policy);
             decided_by_some_step[doc] |= decision != EnableIf::Failed;
             if let Some(group) = de.env.group().filter(|_| decision != EnableIf::Disabled) {
-                taken.insert(group);
+                taken.insert(group, doc);
             }
             // A failed `enableIf` is checked as if it does not disable the
             // Environment, so the Step's other mistakes are reported too.
@@ -1126,8 +1160,9 @@ pub(crate) fn apply_environment_templates(
                 // `taken` holds the attachments' groups, then those of the
                 // earlier deferred ones. A superseded one's own `enableIf`
                 // is not evaluated (§4 item 7, §7.4.1 step 6).
-                if de.env.group().is_some_and(|group| taken.contains(group)) {
+                if let Some(&winner) = de.env.group().and_then(|group| taken.get(group)) {
                     step_left_out.push((d.position, EnvironmentStatus::Superseded));
+                    step_superseded_by[own_at(d.position)] = Some(winner);
                     continue;
                 }
                 let decision = de.decide(
@@ -1141,7 +1176,7 @@ pub(crate) fn apply_environment_templates(
                     continue;
                 }
                 if let Some(group) = de.env.group() {
-                    taken.insert(group);
+                    taken.insert(group, own_at(d.position));
                 }
                 let mut scratch = ValidationErrors::default();
                 let (v, m) = de.commit(d.pending, &step.name, &mut scratch);
@@ -1167,6 +1202,7 @@ pub(crate) fn apply_environment_templates(
             }
         }
         left_out_job_environments.push(step_left_out);
+        superseded_by.push(step_superseded_by);
         report_missing(
             &step_path,
             &job_missing,
@@ -1296,13 +1332,22 @@ pub(crate) fn apply_environment_templates(
     }
     let mut disabled_environments = Vec::with_capacity(job.steps.len());
     let mut environment_statuses = Vec::with_capacity(job.steps.len());
-    for ((((step, selection), entered), statuses), not_found) in job
+    // The scope an Environment of the Job has, from its document.
+    let scope_of = |document: &job::Document| {
+        if document.is_job_template() {
+            EnvironmentScope::Job
+        } else {
+            EnvironmentScope::Attached
+        }
+    };
+    for (((((step, selection), entered), statuses), not_found), superseded_by) in job
         .steps
         .iter_mut()
         .zip(&selections)
         .zip(&entered_per_step)
         .zip(&statuses_per_step)
         .zip(not_found)
+        .zip(&superseded_by)
     {
         step.environments = (!entered.iter().all(|e| *e)).then(|| {
             environments
@@ -1320,16 +1365,26 @@ pub(crate) fn apply_environment_templates(
             .iter()
             .zip(&environment_documents)
             .zip(statuses)
-            .filter_map(|((env, document), status)| {
+            .zip(&sources)
+            .zip(superseded_by)
+            .filter_map(|((((env, document), status), source), winner)| {
+                let status = (*status)?;
+                debug_assert_eq!(
+                    winner.is_some(),
+                    status == EnvironmentStatus::Superseded,
+                    "a winner is recorded exactly for a superseded Environment"
+                );
                 Some(StepEnvironmentStatus {
                     name: env.name.clone(),
                     document: document.clone(),
-                    scope: if document.is_job_template() {
-                        EnvironmentScope::Job
-                    } else {
-                        EnvironmentScope::Attached
-                    },
-                    status: (*status)?,
+                    scope: scope_of(document),
+                    status,
+                    exclusive_group: source.environment.exclusive_group.clone(),
+                    superseded_by: winner.map(|w| SupersedingEnvironment {
+                        name: environments[w].name.clone(),
+                        document: environment_documents[w].clone(),
+                        scope: scope_of(&environment_documents[w]),
+                    }),
                 })
             })
             .chain(selection.step_environments.iter().map(|(name, enabled)| {
@@ -1342,6 +1397,10 @@ pub(crate) fn apply_environment_templates(
                     } else {
                         EnvironmentStatus::Disabled
                     },
+                    // Template validation rejects `exclusiveGroup` on a
+                    // `stepEnvironments` entry, so none is superseded.
+                    exclusive_group: None,
+                    superseded_by: None,
                 }
             }))
             .collect();

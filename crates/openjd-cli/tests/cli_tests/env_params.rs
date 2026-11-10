@@ -1327,13 +1327,14 @@ fn summary_of_one_step_lists_each_environment_in_session_order() {
     // Docker is attached first, and the two samples share an
     // exclusiveGroup, so the Step enters Docker and Conda is superseded,
     // which disables it for the Step (Template Schemas §4 item 7, §3.2.2):
-    // it is listed as disabled, with the reason.
+    // it is listed as disabled, with the reason and the Environment that
+    // superseded it.
     // The host requirements combine the Step's own GPU amount with
     // Docker's GPU amount (resolved with the Step's Gpus value) and its os
     // family (Template Schemas §3.3.3).
     let expected = format!(
         "\nSession environments:\n  - Docker ({docker})\nDisabled environments:\n  - \
-         Conda ({conda}): superseded\nHost requirements:\n  - \
+         Conda ({conda}): superseded by Docker ({docker})\nHost requirements:\n  - \
          amount.worker.gpu: min 1\n  - \
          attr.worker.os.family: anyOf linux\n\nEnvironment parameters:\n  Docker ({docker}):\n    \
          - Gpus (STRING): all\n    - Image (STRING): docker.io/colmap/colmap:latest\n    - \
@@ -1988,7 +1989,7 @@ fn summary_says_why_each_environment_is_not_entered() {
     assert_eq!(code, 0, "stderr: {stderr}");
     let expected = format!(
         "Session environments:\n  - Att ({env})\nDisabled environments:\n  \
-         - G2 (JobTemplate): superseded\n  - Off (JobTemplate): disabled\n  \
+         - G2 (JobTemplate): superseded by Att ({env})\n  - Off (JobTemplate): disabled\n  \
          - L (stepEnvironments): disabled\nDeclined environments:\n  - Def (JobTemplate)\n\
          Optional entries not found:\n  - dependencies[1]: Gpu\n"
     );
@@ -2021,7 +2022,8 @@ fn summary_says_why_each_environment_is_not_entered() {
     assert_eq!(
         json["disabled_environments"],
         serde_json::json!([
-            {"name": "G2", "source": "JobTemplate", "status": "superseded"},
+            {"name": "G2", "source": "JobTemplate", "status": "superseded",
+             "exclusive_group": "G", "superseded_by": {"name": "Att", "source": env}},
             {"name": "Off", "source": "JobTemplate", "status": "disabled"},
             {"name": "L", "source": "stepEnvironments", "status": "disabled"},
         ])
