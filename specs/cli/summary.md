@@ -145,14 +145,20 @@ a count.
    the Step, or that an earlier Environment of their `exclusiveGroup` superseded (§4 item 7;
    with the Conda and Docker samples both attached to the video sample, whose Steps request
    both and give Conda packages, the one attached second;
-   `CreatedJob::disabled_environments`: combined Job Environments in Job order with
-   their document, then Step Environments marked `stepEnvironments`), and is omitted when
-   there are none. The listing does not say which of the two disabled an Environment. An Environment with `activation: ALWAYS` is never listed: it cannot be
-   disabled, and an `enableIf` that is `false` for a Step makes job creation, and so
+   the `Disabled` and `Superseded` items of `CreatedJob::environment_statuses`: combined Job
+   Environments in Job order with their document, then Step Environments marked
+   `stepEnvironments`), each line ending `: disabled` or `: superseded` to say which, and is
+   omitted when there are none. An Environment with `activation: ALWAYS` is never listed: it
+   cannot be disabled, and an `enableIf` that is `false` for a Step makes job creation, and so
    `summary`, fail with an error naming the Step and the Environment (Template Schemas §3.2.2
    item 6). A `BY_DEFAULT` Environment the Step declines with a disabled `environment:`
-   entry (§3.2 item 3.2) is not listed either: its own `enableIf` is not evaluated for the
-   Step; and
+   entry (§3.2 item 3.2) is not listed there, since its own `enableIf` is not evaluated for
+   the Step; `Declined environments:` lists those, in the same form without a suffix (the
+   `Declined` items), and is omitted when there are none. `Optional entries not found:` lists
+   the Step's enabled `required: false` entries that named no Environment (§3.2.1 item 2,
+   `StepEnvironmentStatuses::not_found`), one `- dependencies[i]: Name` line each, and is
+   omitted when there are none; each also prints its warning on stderr, as for every
+   subcommand; and
    `Host requirements:` lists `job::Step::host_requirements`, which job creation has combined
    from the Step's own and its entered Environments' (Template Schemas §3.3.3), one line per
    requirement (`name: min 1, max 2`, `name: anyOf a, b`, `name: allOf a, b`), omitted when the
@@ -223,8 +229,11 @@ empty. `environment_parameters` is an array of `{"environment", "document", "val
 objects whose `values` are `{"name", "type", "value"}` objects, with the same strings as the
 human-readable form. With `ENV_PARAMS`, each Step also has `session_environments`, an array
 of `{"name", "source"}` objects (`source` is the declaring document, or `stepEnvironments`),
-when an `enableIf` disabled or an `exclusiveGroup` superseded any, `disabled_environments` in
-the same form,
+when an `enableIf` disabled or an `exclusiveGroup` superseded any, `disabled_environments`,
+`{"name", "source", "status"}` objects with `status` `disabled` or `superseded`, when it
+declined any, `declined_environments` in the `session_environments` form, when an optional
+entry named nothing, `optional_entries_not_found`, `{"dependency_index", "environment"}`
+objects,
 and, when it has any, `host_requirements`, `{"amounts": [{"name", "min"?, "max"?}],
 "attributes": [{"name", "anyOf"?, "allOf"?}]}` with each list present when non-empty and
 amounts as numbers, and, when any were discarded, `discarded_host_requirements`, an array of
@@ -246,10 +255,13 @@ code, so they are always in sync.
 - Parameter definitions (name and type)
 - Environments (name, parent step, description)
 - With `ENV_PARAMS`, the Step's Environment set, the Environments an `enableIf` disabled or
-  an `exclusiveGroup` superseded for it, its combined host requirements, and its discarded host requirements, as in the job
-  summary, under `Session environments:`, `Disabled environments:`, `Host requirements:`,
-  and `Discarded host requirements:` headings and in the JSON `session_environments`,
-  `disabled_environments`, `host_requirements`, and `discarded_host_requirements` fields
+  an `exclusiveGroup` superseded for it, the ones it declined, its optional entries that named
+  nothing, its combined host requirements, and its discarded host requirements, as in the job
+  summary, under `Session environments:`, `Disabled environments:`, `Declined environments:`,
+  `Optional entries not found:`, `Host requirements:`, and `Discarded host requirements:`
+  headings and in the JSON `session_environments`, `disabled_environments`,
+  `declined_environments`, `optional_entries_not_found`, `host_requirements`, and
+  `discarded_host_requirements` fields
 - Environment parameters (`ENV_PARAMS`), as in the job summary, under an
   `Environment parameters:` heading and in the JSON `environment_parameters` field
 
@@ -258,13 +270,20 @@ an error is returned with the job name for context.
 
 ## Internal Types
 
-Eight private structs organize the collected summary data:
+Nine private structs organize the collected summary data:
 
 ```rust
 struct StepEnvSets {                     // per Step, with ENV_PARAMS
     entered: Vec<SessionEnvInfo>,        // the Environments its Sessions enter
-    disabled: Vec<SessionEnvInfo>,       // disabled by an enableIf or superseded (§4 items 6, 7)
+    disabled: Vec<DisabledEnvInfo>,      // disabled by an enableIf or superseded (§4 items 6, 7)
+    declined: Vec<SessionEnvInfo>,       // declined by a disabled entry (§3.2 item 3.2)
+    not_found: Vec<(usize, String)>,     // optional entries that named nothing (§3.2.1 item 2)
     discarded: Vec<DiscardedInfo>,       // resolved to nothing (§3.3)
+}
+
+struct DisabledEnvInfo {
+    env: SessionEnvInfo,
+    status: &'static str,                // `disabled` or `superseded`
 }
 
 struct StepInfo<'a> {
@@ -280,7 +299,9 @@ struct StepInfo<'a> {
 
 struct EnvParamsDetails<'a> {
     session_envs: &'a [SessionEnvInfo],               // the Step's Environment set
-    disabled_envs: &'a [SessionEnvInfo],              // disabled by an enableIf or superseded (§4 items 6, 7)
+    disabled_envs: &'a [DisabledEnvInfo],             // disabled by an enableIf or superseded (§4 items 6, 7)
+    declined_envs: &'a [SessionEnvInfo],              // declined by a disabled entry (§3.2 item 3.2)
+    not_found: &'a [(usize, String)],                 // optional entries that named nothing
     host_requirements: Option<&'a job::HostRequirements>, // combined (§3.3.3)
     discarded: &'a [DiscardedInfo],                   // resolved to nothing (§3.3)
 }

@@ -32,8 +32,10 @@ pub use job::create_job::{
     build_symbol_table, check_environment_templates, convert_environment,
     convert_environment_with_symtab, create_job, create_job_with_environment_templates,
     evaluate_let_bindings, merge_job_parameter_definitions, preprocess_job_parameters,
-    AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement, HostRequirementKind,
-    MergedParameterDefinition, PathParameterOptions, StepDisabledEnvironments, SubmissionWarning,
+    AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement, EnvironmentScope,
+    EnvironmentStatus, HostRequirementKind, MergedParameterDefinition, OptionalEntryNotFound,
+    PathParameterOptions, StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses,
+    SubmissionWarning,
 };
 pub use step_dependency_graph::StepDependencyGraph;
 pub use step_param_space::StepParameterSpaceIterator;

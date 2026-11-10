@@ -99,7 +99,8 @@ by such an entry (an attached one only when exactly one attachment has the name 
 Environment shadows it), and each of its own Step Environments. A Step whose entry for a
 `BY_DEFAULT` Environment has `enableIf: false` declines it (Template Schemas §3.2 item 3.2): the
 Environment's own `enableIf` is not evaluated for that Step, so it is not listed for it, as
-`openjd summary` does not list it under "Disabled environments". An Environment with `activation: ALWAYS` cannot be disabled:
+`openjd summary` does not list it under "Disabled environments" (it lists it under "Declined
+environments"). An Environment with `activation: ALWAYS` cannot be disabled:
 template validation rejects one with `enableIf: false` before this list is made (Template
 Schemas §3.2.2 item 6). An Environment or entry whose `enableIf` is an expression (even a
 constant one) is decided when the Job is created, so it is not listed; `openjd summary`

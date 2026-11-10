@@ -27,7 +27,8 @@ use crate::types::{JobParameterValues, ValidationContext};
 // Re-exports — preserve the existing public API
 pub use external::{
     check_environment_templates, AttachedEnvironmentTemplate, CreatedJob, DiscardedHostRequirement,
-    HostRequirementKind, StepDisabledEnvironments, SubmissionWarning,
+    EnvironmentScope, EnvironmentStatus, HostRequirementKind, OptionalEntryNotFound,
+    StepDisabledEnvironments, StepEnvironmentStatus, StepEnvironmentStatuses, SubmissionWarning,
 };
 pub use instantiate::{
     convert_environment, convert_environment_with_symtab, evaluate_let_bindings,
@@ -181,7 +182,11 @@ pub fn create_job(
 /// first; Template Schemas §1.1 item 7), and records on each Step
 /// the Job Environments its Sessions enter ([`job::Step::environments`]);
 /// [`CreatedJob::disabled_environments`] lists, per Step, the ones an
-/// `enableIf` disabled or a group superseded.
+/// `enableIf` disabled or a group superseded, and
+/// [`CreatedJob::environment_statuses`] every Environment each Step
+/// considered with whether its Sessions enter it or which decision left it
+/// out (declined at step 4, superseded or disabled at step 6), and its
+/// `required: false` entries that named nothing.
 /// `job.extensions` is left as the Job Template declared it: an extension
 /// applies to the document that lists it (§1.2 item 3). Every document
 /// that holds an Environment parameter value lists `ENV_PARAMS` and so

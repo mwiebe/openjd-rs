@@ -1053,20 +1053,19 @@ pub(crate) struct StepSelection<'a> {
     /// The Step's enabled entries that name no Job Environment.
     pub(crate) frozen: Vec<FrozenEntry>,
     /// For each `jobEnvironments` entry, index for index, whether the
-    /// Step's Sessions enter it: job creation sets whether they would by
-    /// its `activation` (`ALWAYS`; `BY_DEFAULT` and no disabled entry of
-    /// the Step declines it; or `ON_REQUEST` and an enabled entry of the
-    /// Step requests it), and the submission stage clears it for one its
-    /// own `enableIf` (§4 item 6) disables or an earlier Environment of its
-    /// `exclusiveGroup` supersedes (§4 item 7). (One whose `enableIf`
-    /// failed, or an `ALWAYS` one whose `enableIf` is `false`, is left in:
-    /// the error fails job creation, so the list is not read.)
-    pub(crate) job_environments_entered: Vec<bool>,
-    /// The `jobEnvironments` entries, by index, that the Step's Sessions
-    /// would otherwise enter and that their own `enableIf` disabled for
-    /// the Step, or that an earlier Environment of their `exclusiveGroup`
-    /// superseded (§4 item 7); filled by the submission stage.
-    pub(crate) disabled_job_environments: Vec<usize>,
+    /// Step considered it and whether its Sessions enter it. Job creation
+    /// sets `Entered` for one they would enter by its `activation`
+    /// (`ALWAYS`; `BY_DEFAULT` and no disabled entry of the Step declines
+    /// it; or `ON_REQUEST` and an enabled entry of the Step requests it),
+    /// `Declined` for a `BY_DEFAULT` one a disabled entry declines, and
+    /// `None` for an `ON_REQUEST` one the Step does not request. The
+    /// submission stage changes `Entered` to `Disabled` for one its own
+    /// `enableIf` (§4 item 6) disables, and to `Superseded` for one an
+    /// earlier Environment of its `exclusiveGroup` supersedes (§4 item 7).
+    /// (One whose `enableIf` failed, or an `ALWAYS` one whose `enableIf` is
+    /// `false`, is left `Entered`: the error fails job creation, so the
+    /// list is not read.)
+    pub(crate) job_environment_statuses: Vec<Option<super::EnvironmentStatus>>,
     /// The Job Environments the Step's Sessions would enter by their
     /// `activation`, in written order, with the Step's values for them, for
     /// the submission stage to decide.
@@ -1078,9 +1077,10 @@ pub(crate) struct StepSelection<'a> {
     /// `ON_REQUEST` one, and is an error for an `ALWAYS` one; one that
     /// names no attachment has no effect.
     pub(crate) disabled: Vec<DisabledEntry>,
-    /// The names of the Step's `stepEnvironments` entries whose own
-    /// `enableIf` (§4 item 6) is `false`, in written order.
-    pub(crate) disabled_step_environments: Vec<String>,
+    /// The names of the Step's `stepEnvironments` entries, in written
+    /// order, each with whether its own `enableIf` (§4 item 6) lets the
+    /// Step's Sessions enter it ([`StepEntries::step_environments_enabled`]).
+    pub(crate) step_environments: Vec<(String, bool)>,
     /// The Step's own host requirements that resolved to nothing and were
     /// discarded (§3.3), in written order with amounts first; set by
     /// `instantiate_step` once they are resolved.
@@ -1200,7 +1200,7 @@ pub(crate) fn resolve_step_entries<'a>(
     // It reads no effective values, so it is decided here, with the
     // entries (plan 3 Q7).
     let mut step_environments_enabled = Vec::new();
-    let mut disabled_step_environments = Vec::new();
+    let mut step_environments = Vec::new();
     for (j, env) in st.step_environments.iter().flatten().enumerate() {
         let env_path = path_index(&path_field(&step_path, "stepEnvironments"), j);
         let enabled = resolve_enable_if(
@@ -1216,9 +1216,7 @@ pub(crate) fn resolve_step_entries<'a>(
                 job_envs.attached_count + job_envs.all.len() + j,
             ),
         );
-        if enabled == Some(false) {
-            disabled_step_environments.push(env.name.clone());
-        }
+        step_environments.push((env.name.clone(), enabled != Some(false)));
         step_environments_enabled.push(enabled != Some(false));
     }
 
@@ -1374,14 +1372,23 @@ pub(crate) fn resolve_step_entries<'a>(
                     })
                 })
                 .collect(),
-            job_environments_entered: job_envs
+            job_environment_statuses: job_envs
                 .all
                 .iter()
-                .map(|(name, scope)| enters(name, *scope))
+                .map(|(name, scope)| {
+                    if enters(name, *scope) {
+                        Some(super::EnvironmentStatus::Entered)
+                    } else if *scope == template::EnvironmentActivation::ByDefault {
+                        // §3.2 item 3.2: only a disabled entry keeps a
+                        // Step's Sessions out of a `BY_DEFAULT` one here.
+                        Some(super::EnvironmentStatus::Declined)
+                    } else {
+                        None
+                    }
+                })
                 .collect(),
-            disabled_job_environments: Vec::new(),
             deferred,
-            disabled_step_environments,
+            step_environments,
         },
         step_environments_enabled,
     }

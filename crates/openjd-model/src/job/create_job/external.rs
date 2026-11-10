@@ -148,6 +148,14 @@ pub struct CreatedJob {
     /// [`step_environments`](job::Step::step_environments). For display;
     /// empty for a Step with none.
     pub disabled_environments: Vec<StepDisabledEnvironments>,
+    /// For each Step of `job`, index for index, every Environment the Step
+    /// considered, in the Job's Environment order, with whether its
+    /// Sessions enter it or which decision left it out (declined,
+    /// disabled, superseded), and the Step's `required: false` entries that
+    /// named no Environment. A superset of
+    /// [`disabled_environments`](Self::disabled_environments), which is its
+    /// `Disabled` and `Superseded` items.
+    pub environment_statuses: Vec<StepEnvironmentStatuses>,
     /// For each Step of `job`, index for index, the host requirements that
     /// resolved to nothing for that Step and were discarded (`ENV_PARAMS`,
     /// Template Schemas §3.3): the Step's own first, then each entered
@@ -194,6 +202,8 @@ impl From<crate::template::validate_v2023_09::helpers::CapabilityKind> for HostR
 /// The Environments disabled for one Step of a [`CreatedJob`]: by their
 /// `enableIf` (Template Schemas §4 item 6), or, for a Job Environment, by
 /// being superseded by an earlier one of its `exclusiveGroup` (§4 item 7).
+/// It is the `Disabled` and `Superseded` items of the Step's
+/// [`StepEnvironmentStatuses`], which also says which of the two each is.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepDisabledEnvironments {
     /// Job Environments of the combined Job (attached ones first, then the
@@ -202,6 +212,88 @@ pub struct StepDisabledEnvironments {
     /// The names of the Step's own `stepEnvironments` entries, in written
     /// order.
     pub step_environments: Vec<String>,
+}
+
+/// Whether one Step's Sessions enter an Environment they considered, and
+/// if not, which decision of Template Schemas §7.4.1 left it out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentStatus {
+    /// The Step's Sessions enter it.
+    Entered,
+    /// A `BY_DEFAULT` Environment that a disabled `environment:` entry of
+    /// the Step declines (§3.2 item 3.2, §7.4.1 step 4). Its own `enableIf`
+    /// is not evaluated for the Step.
+    Declined,
+    /// Its own `enableIf` (§4 item 6) is `false` for the Step (§7.4.1 step
+    /// 6).
+    Disabled,
+    /// An earlier Environment of its `exclusiveGroup` remains in the Step's
+    /// set (§4 item 7, §7.4.1 step 6). Its own `enableIf` is not evaluated
+    /// for the Step.
+    Superseded,
+}
+
+/// Where an Environment of a Job comes from, the three parts of the Job's
+/// Environment order (Template Schemas §1.1 item 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentScope {
+    /// An attached Environment Template's `environment`.
+    Attached,
+    /// A `jobEnvironments` entry of the Job Template.
+    Job,
+    /// A `stepEnvironments` entry of the Step.
+    Step,
+}
+
+/// One Environment a Step's Sessions considered, and whether they enter it
+/// ([`StepEnvironmentStatuses`]).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StepEnvironmentStatus {
+    /// The Environment's `name`.
+    pub name: String,
+    /// The document that declares it: [`job::Document::EnvironmentTemplate`]
+    /// for an attached one, else [`job::Document::JobTemplate`].
+    pub document: job::Document,
+    /// Its part of the Job's Environment order. `Attached` exactly when
+    /// `document` is an Environment Template.
+    pub scope: EnvironmentScope,
+    /// Whether the Step's Sessions enter it, or why not.
+    pub status: EnvironmentStatus,
+}
+
+/// An enabled `environment:` entry with `required: false` that resolved to
+/// no Environment (Template Schemas §3.2.1 item 2), so it has no effect.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OptionalEntryNotFound {
+    /// The entry's 0-based position in the Step's `dependencies` list.
+    pub dependency_index: usize,
+    /// The Environment name the entry gives.
+    pub environment: String,
+}
+
+/// Every Environment one Step of a [`CreatedJob`] considered, with whether
+/// its Sessions enter it, and its optional entries that named nothing.
+///
+/// An Environment is *considered* by a Step when the Step's Sessions would
+/// enter it by its `activation` (Template Schemas §4 item 4): every
+/// `ALWAYS` and `BY_DEFAULT` Environment, every `ON_REQUEST` one an enabled
+/// `environment:` entry of the Step requests, and every Step Environment of
+/// the Step. An `ON_REQUEST` Environment the Step does not request is not
+/// listed. A Job Template without `ENV_PARAMS` has neither `activation`,
+/// `enableIf` nor `exclusiveGroup`, so its own Environments are all
+/// `Entered`; only attached ones can be otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepEnvironmentStatuses {
+    /// The considered Environments in the Job's Environment order: attached
+    /// ones in attachment order, then the Job Template's `jobEnvironments`,
+    /// then the Step's `stepEnvironments`, each in written order. The
+    /// `Entered` ones, in this order, are the Environments the Step's
+    /// Sessions enter.
+    pub environments: Vec<StepEnvironmentStatus>,
+    /// The Step's enabled `required: false` entries that named no
+    /// Environment, in `dependencies` order. Each also produced a
+    /// [`SubmissionWarning`].
+    pub not_found: Vec<OptionalEntryNotFound>,
 }
 
 /// The documents of a submission, for naming them in paths.
@@ -666,6 +758,15 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// combined with the Step's own (see
 /// `host_requirements::combine_step_host_requirements`).
 ///
+/// Each decision is kept per Step as an [`EnvironmentStatus`] for every
+/// Environment the Step considered, the attachments' made here and the Job
+/// Environments' started by job creation and finished here, with the Step
+/// Environments' from job creation. `Step::environments`, the entered flags
+/// the later checks read, and `CreatedJob::disabled_environments` are all
+/// derived from them, and they are returned in
+/// `CreatedJob::environment_statuses`, with each Step's `required: false`
+/// entries that matched nothing.
+///
 /// Every violation, with job creation's own, is reported in one
 /// `ModelValidation` error in §7.4.1 order, as
 /// [`finish_errors`](super::finish_errors) describes: for `Submission`,
@@ -750,6 +851,9 @@ pub(crate) fn apply_environment_templates(
     // Per Step: the `BY_DEFAULT` attachments a disabled entry declines
     // (§3.2 item 3.2).
     let mut declined: Vec<HashSet<usize>> = Vec::with_capacity(selections.len());
+    // Per Step: its enabled `required: false` entries that matched no
+    // attachment (§3.2.1 item 2).
+    let mut not_found: Vec<Vec<OptionalEntryNotFound>> = Vec::with_capacity(selections.len());
     for (i, selection) in selections.iter().enumerate() {
         let deps_path = path_field(
             &path_index(&path_field(&job_path, "steps"), i),
@@ -757,6 +861,7 @@ pub(crate) fn apply_environment_templates(
         );
         let mut step_resolved = Vec::new();
         let mut step_declined = HashSet::new();
+        let mut step_not_found = Vec::new();
         // A disabled entry is resolved too, to learn the `activation` that
         // decides what it means (§3.2.1, §3.2 item 3.2). It supplies nothing,
         // so constraints 5 and 6 are not checked for it, and one that
@@ -812,7 +917,15 @@ pub(crate) fn apply_environment_templates(
                 staged.at(Stage::Step3, i, entry.dependency_index),
                 &mut warnings,
             ) {
-                EntryMatch::Absent => {}
+                // With `required: true` it is an error (reported).
+                EntryMatch::Absent => {
+                    if !entry.required {
+                        step_not_found.push(OptionalEntryNotFound {
+                            dependency_index: entry.dependency_index,
+                            environment: entry.environment.clone(),
+                        });
+                    }
+                }
                 EntryMatch::One(doc) => step_resolved.push((doc, entry, entry_path)),
                 // An ambiguous name (reported) stops the Step after §7.4.1
                 // step 4, so no value of its is computed and the rejected
@@ -823,6 +936,7 @@ pub(crate) fn apply_environment_templates(
         }
         resolved.push(step_resolved);
         declined.push(step_declined);
+        not_found.push(step_not_found);
     }
 
     // ── Each Step's attached Environments, and its values for them ──
@@ -839,7 +953,11 @@ pub(crate) fn apply_environment_templates(
     let mut base = default_symtab.clone();
     base.set("Job.Name", ExprValue::String(job.name.clone()))?;
     base.set("Job.EnvNames", env_names_value(env_names))?;
-    let mut attached_entered: Vec<Vec<bool>> = Vec::with_capacity(job.steps.len());
+    // Per Step, index for index with the attachments: whether the Step
+    // considered each and whether its Sessions enter it (`None` for an
+    // `ON_REQUEST` one it does not request).
+    let mut attached_statuses: Vec<Vec<Option<EnvironmentStatus>>> =
+        Vec::with_capacity(job.steps.len());
     // Per attachment: whether its `enableIf` did not disable it for some
     // Step.
     let mut entered_by_some_step = vec![false; set.declaring.len()];
@@ -850,9 +968,10 @@ pub(crate) fn apply_environment_templates(
     let mut deferred_values: Vec<Vec<job::EnvironmentParameterValues>> =
         Vec::with_capacity(job.steps.len());
     // Per Step: the indices in `jobEnvironments` of the ones decided here
-    // that are superseded or that their own `enableIf` disables.
-    let mut left_out_job_environments: Vec<Vec<usize>> = Vec::with_capacity(job.steps.len());
-    let mut attached_disabled: Vec<Vec<usize>> = Vec::with_capacity(job.steps.len());
+    // that are superseded or that their own `enableIf` disables, each with
+    // which of the two.
+    let mut left_out_job_environments: Vec<Vec<(usize, EnvironmentStatus)>> =
+        Vec::with_capacity(job.steps.len());
     let mut step_environment_parameters = Vec::with_capacity(job.steps.len());
     // §7.4.1: a Step with an error from steps 1–4 has no fixed set of
     // Environments, so steps 5–8 are not taken for it.
@@ -861,8 +980,7 @@ pub(crate) fn apply_environment_templates(
         .collect();
     for (i, step) in job.steps.iter().enumerate() {
         if stopped[i] {
-            attached_entered.push(vec![false; set.declaring.len()]);
-            attached_disabled.push(Vec::new());
+            attached_statuses.push(vec![None; set.declaring.len()]);
             step_environment_parameters.push(Vec::new());
             left_out_job_environments.push(Vec::new());
             deferred_values.push(Vec::new());
@@ -872,8 +990,7 @@ pub(crate) fn apply_environment_templates(
             continue;
         }
         let step_path = path_index(&path_field(&job_path, "steps"), i);
-        let mut entered = Vec::with_capacity(set.declaring.len());
-        let mut disabled_docs = Vec::new();
+        let mut statuses = Vec::with_capacity(set.declaring.len());
         let mut values = Vec::new();
         let mut missing = Vec::new();
         let mut unresolved = HashSet::new();
@@ -908,7 +1025,11 @@ pub(crate) fn apply_environment_templates(
                 EnvironmentActivation::OnRequest => entry.is_some(),
             };
             if !enters {
-                entered.push(false);
+                // Only a declined `BY_DEFAULT` one is considered.
+                statuses.push(
+                    (de.activation == EnvironmentActivation::ByDefault)
+                        .then_some(EnvironmentStatus::Declined),
+                );
                 continue;
             }
             let supplied = entry.map(|(_, e, path)| Supplied {
@@ -927,8 +1048,7 @@ pub(crate) fn apply_environment_templates(
             // Step (§3.2.2), so its values are not checked, and its own
             // `enableIf` is not evaluated (§4 item 7, §7.4.1 step 6).
             if de.env.group().is_some_and(|group| taken.contains(group)) {
-                entered.push(false);
-                disabled_docs.push(doc);
+                statuses.push(Some(EnvironmentStatus::Superseded));
                 continue;
             }
             let decision = de.decide(&pending, &step.name, &base, policy);
@@ -940,9 +1060,13 @@ pub(crate) fn apply_environment_templates(
             // Environment, so the Step's other mistakes are reported too.
             let not_disabled = decision != EnableIf::Disabled;
             entered_by_some_step[doc] |= not_disabled;
-            entered.push(not_disabled);
+            statuses.push(Some(if not_disabled {
+                EnvironmentStatus::Entered
+            } else {
+                EnvironmentStatus::Disabled
+            }));
             match decision {
-                EnableIf::Disabled => disabled_docs.push(doc),
+                EnableIf::Disabled => {}
                 EnableIf::Enabled | EnableIf::Unresolved | EnableIf::Failed => {
                     let (v, m) = de.commit(pending, &step.name, staged.at(Stage::Step7, i, doc));
                     values.extend(v);
@@ -1003,7 +1127,7 @@ pub(crate) fn apply_environment_templates(
                 // earlier deferred ones. A superseded one's own `enableIf`
                 // is not evaluated (§4 item 7, §7.4.1 step 6).
                 if de.env.group().is_some_and(|group| taken.contains(group)) {
-                    step_left_out.push(d.position);
+                    step_left_out.push((d.position, EnvironmentStatus::Superseded));
                     continue;
                 }
                 let decision = de.decide(
@@ -1013,7 +1137,7 @@ pub(crate) fn apply_environment_templates(
                     ResolvePolicy::new(ctx),
                 );
                 if decision == EnableIf::Disabled {
-                    step_left_out.push(d.position);
+                    step_left_out.push((d.position, EnvironmentStatus::Disabled));
                     continue;
                 }
                 if let Some(group) = de.env.group() {
@@ -1053,15 +1177,13 @@ pub(crate) fn apply_environment_templates(
             staged.at(Stage::Step7, i, first_job_missing.map_or(ANY, own_at)),
         );
         deferred_values.push(step_deferred_values);
-        attached_entered.push(entered);
-        attached_disabled.push(disabled_docs);
+        attached_statuses.push(statuses);
         step_environment_parameters.push(values);
     }
     drop(resolved);
     for (selection, left_out) in selections.iter_mut().zip(left_out_job_environments) {
-        for position in left_out {
-            selection.job_environments_entered[position] = false;
-            selection.disabled_job_environments.push(position);
+        for (position, status) in left_out {
+            selection.job_environment_statuses[position] = Some(status);
         }
     }
     // §7.4.1 step 6: a failed `enableIf` is reported once for all the
@@ -1147,9 +1269,17 @@ pub(crate) fn apply_environment_templates(
     let mut per_step = step_environment_parameters.into_iter();
     let mut deferred_per_step = deferred_values.into_iter();
     let mut entered_per_step = Vec::with_capacity(job.steps.len());
-    for ((step, selection), attached_entered) in
-        job.steps.iter_mut().zip(&selections).zip(&attached_entered)
-    {
+    // Each Step's status for every Environment of the Job, by index into
+    // `environments`: the attached ones, then the Job Template's.
+    let statuses_per_step: Vec<Vec<Option<EnvironmentStatus>>> = attached_statuses
+        .into_iter()
+        .zip(&selections)
+        .map(|(mut statuses, selection)| {
+            statuses.extend(&selection.job_environment_statuses);
+            statuses
+        })
+        .collect();
+    for ((step, statuses), stopped) in job.steps.iter_mut().zip(&statuses_per_step).zip(&stopped) {
         // The attachments' values, then the Job Environments', which were
         // committed in written order. Job creation proper sets no values.
         debug_assert!(step.environment_parameters.is_none());
@@ -1158,36 +1288,21 @@ pub(crate) fn apply_environment_templates(
         step.environment_parameters = (!values.is_empty()).then_some(values);
         // A Step stopped after §7.4.1 step 4 has no fixed set; it is
         // counted as entering none, so steps 7 and 8 leave it alone.
-        let entered: Vec<bool> = attached_entered
+        let entered: Vec<bool> = statuses
             .iter()
-            .chain(&selection.job_environments_entered)
-            .map(|e| *e && !stopped[entered_per_step.len()])
+            .map(|s| *s == Some(EnvironmentStatus::Entered) && !stopped)
             .collect();
         entered_per_step.push(entered);
     }
-    // Each Step's disabled Environments, by index into `environments`:
-    // the attached ones, then the Job Template's.
-    let disabled: Vec<Vec<usize>> = attached_disabled
-        .into_iter()
-        .zip(&selections)
-        .map(|(mut docs, selection)| {
-            docs.extend(
-                selection
-                    .disabled_job_environments
-                    .iter()
-                    .map(|k| attached.len() + k),
-            );
-            docs.sort_unstable();
-            docs
-        })
-        .collect();
     let mut disabled_environments = Vec::with_capacity(job.steps.len());
-    for (((step, selection), entered), disabled) in job
+    let mut environment_statuses = Vec::with_capacity(job.steps.len());
+    for ((((step, selection), entered), statuses), not_found) in job
         .steps
         .iter_mut()
         .zip(&selections)
         .zip(&entered_per_step)
-        .zip(disabled)
+        .zip(&statuses_per_step)
+        .zip(not_found)
     {
         step.environments = (!entered.iter().all(|e| *e)).then(|| {
             environments
@@ -1201,15 +1316,61 @@ pub(crate) fn apply_environment_templates(
                 })
                 .collect()
         });
+        let considered: Vec<StepEnvironmentStatus> = environments
+            .iter()
+            .zip(&environment_documents)
+            .zip(statuses)
+            .filter_map(|((env, document), status)| {
+                Some(StepEnvironmentStatus {
+                    name: env.name.clone(),
+                    document: document.clone(),
+                    scope: if document.is_job_template() {
+                        EnvironmentScope::Job
+                    } else {
+                        EnvironmentScope::Attached
+                    },
+                    status: (*status)?,
+                })
+            })
+            .chain(selection.step_environments.iter().map(|(name, enabled)| {
+                StepEnvironmentStatus {
+                    name: name.clone(),
+                    document: job::Document::JobTemplate,
+                    scope: EnvironmentScope::Step,
+                    status: if *enabled {
+                        EnvironmentStatus::Entered
+                    } else {
+                        EnvironmentStatus::Disabled
+                    },
+                }
+            }))
+            .collect();
+        let left_out = |s: &&StepEnvironmentStatus| {
+            matches!(
+                s.status,
+                EnvironmentStatus::Disabled | EnvironmentStatus::Superseded
+            )
+        };
         disabled_environments.push(StepDisabledEnvironments {
-            environments: disabled
-                .into_iter()
-                .map(|e| job::EnvironmentRef {
-                    document: environment_documents[e].clone(),
-                    environment: environments[e].name.clone(),
+            environments: considered
+                .iter()
+                .filter(|s| s.scope != EnvironmentScope::Step)
+                .filter(left_out)
+                .map(|s| job::EnvironmentRef {
+                    document: s.document.clone(),
+                    environment: s.name.clone(),
                 })
                 .collect(),
-            step_environments: selection.disabled_step_environments.clone(),
+            step_environments: considered
+                .iter()
+                .filter(|s| s.scope == EnvironmentScope::Step)
+                .filter(left_out)
+                .map(|s| s.name.clone())
+                .collect(),
+        });
+        environment_statuses.push(StepEnvironmentStatuses {
+            environments: considered,
+            not_found,
         });
     }
     check_wrap_layers(
@@ -1248,6 +1409,7 @@ pub(crate) fn apply_environment_templates(
         environment_documents,
         warnings,
         disabled_environments,
+        environment_statuses,
         discarded_host_requirements,
     })
 }

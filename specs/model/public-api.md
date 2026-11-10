@@ -255,6 +255,12 @@ pub struct CreatedJob {
     /// on the Environment (§4 item 6) disabled for it, or an earlier one
     /// of its `exclusiveGroup` superseded (§4 item 7), for display.
     pub disabled_environments: Vec<StepDisabledEnvironments>,
+    /// Per Step of `job`, index for index, every Environment the Step
+    /// considered, in the Job's Environment order, with whether its
+    /// Sessions enter it or why not, and its `required: false` entries
+    /// that named no Environment. `disabled_environments` is its
+    /// `Disabled` and `Superseded` items.
+    pub environment_statuses: Vec<StepEnvironmentStatuses>,
     /// Per Step of `job`, index for index, the host requirements that
     /// resolved to nothing and were discarded (ENV_PARAMS, §3.3): the
     /// Step's own first, then each entered Environment's, in Job order.
@@ -279,6 +285,37 @@ pub struct StepDisabledEnvironments {
     pub environments: Vec<job::EnvironmentRef>,
     /// The Step's own `stepEnvironments`, by name, in written order.
     pub step_environments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StepEnvironmentStatuses {
+    /// Attached Environments in attachment order, then `jobEnvironments`,
+    /// then the Step's `stepEnvironments`, each in written order; only the
+    /// ones the Step considered.
+    pub environments: Vec<StepEnvironmentStatus>,
+    /// Enabled `required: false` entries that resolved to no Environment,
+    /// in `dependencies` order.
+    pub not_found: Vec<OptionalEntryNotFound>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StepEnvironmentStatus {
+    pub name: String,
+    pub document: job::Document,      // EnvironmentTemplate exactly for Attached
+    pub scope: EnvironmentScope,
+    pub status: EnvironmentStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentScope { Attached, Job, Step }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnvironmentStatus { Entered, Declined, Disabled, Superseded }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct OptionalEntryNotFound {
+    pub dependency_index: usize,      // 0-based, in the Step's `dependencies`
+    pub environment: String,          // the name the entry gives
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -386,6 +423,33 @@ reported only when the attachments add no error. [`create_job`] is the same with
 its Job is complete: an enabled required entry naming no Job Environment
 is a `JobTemplate` error. See
 [job-creation.md](job-creation.md#error-order).
+
+`CreatedJob::environment_statuses` records, for each Step, which
+Environments it considered and the §7.4.1 decision about each, so a caller
+such as a scheduler can show why a Step's Sessions do not enter one. A Step
+considers every Environment its Sessions would enter by `activation` (every
+`ALWAYS` and `BY_DEFAULT` one, each `ON_REQUEST` one an enabled entry
+requests) and each of its own Step Environments; an `ON_REQUEST` one it does
+not request is not listed. They are listed in the Job's Environment order
+(`StepEnvironmentStatus::scope` `Attached`, then `Job`, then `Step`), each
+with one [`EnvironmentStatus`]: `Declined` for a `BY_DEFAULT` one a disabled
+entry declines (step 4; its `enableIf` is not evaluated), `Superseded` for
+one an earlier member of its `exclusiveGroup` that remains in the set
+supersedes (step 6; its `enableIf` is not evaluated, so a `false` one is
+still `Superseded`), `Disabled` for one its own `enableIf` turns off (step
+6), and `Entered` otherwise. The `Entered` items of scope `Attached` and
+`Job` are exactly `job::Step::environments` (all of the Job's when that is
+`None`), those of scope `Step` are `job::Step::step_environments`, and
+`disabled_environments` is the `Disabled` and `Superseded` items.
+`StepEnvironmentStatuses::not_found` lists the enabled `required: false`
+entries that resolved to no Environment (each also a warning); a disabled
+entry that names nothing has no effect and is not listed. For a Job
+Template without ENV_PARAMS every one of its own Environments is
+`Entered`; an attached Environment Template that lists ENV_PARAMS can
+still be `Disabled` or `Superseded`. [`create_job`] returns only the Job;
+a caller that wants the statuses calls
+[`create_job_with_environment_templates`] with no attachments, which is
+what `create_job` does.
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need

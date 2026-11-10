@@ -1203,17 +1203,20 @@ fn summary_shows_each_steps_effective_values() {
     let (code, stdout, stderr) = run_cli(&["summary", &video, "--environment", &conda]);
     assert_eq!(code, 0, "stderr: {stderr}");
     // Each Step's Sessions enter Conda; SolveSfM's own GPU requirement is
-    // its combined host requirements.
-    let block = |step: &str, tasks: usize, packages: &str, channels: &str| {
+    // its combined host requirements. Docker is not attached, so each
+    // Step's optional Docker entry named nothing (Template Schemas §3.2.1
+    // item 2).
+    let block = |step: &str, tasks: usize, packages: &str, channels: &str, docker: usize| {
         format!(
             "'{step}' ({tasks} total Tasks)\n  Session environments:\n    - Conda ({conda})\n  \
+             Optional entries not found:\n    - dependencies[{docker}]: Docker\n  \
              Environment parameters:\n    Conda ({conda}):\n      \
              - Channels (STRING): {channels}\n      - Packages (STRING): {packages}\n"
         )
     };
     for expected in [
-        block("DecodeFrames", 1, "ffmpeg=7", "conda-forge"),
-        block("SolveSfM", 1, "colmap=3.11", "conda-forge")
+        block("DecodeFrames", 1, "ffmpeg=7", "conda-forge", 1),
+        block("SolveSfM", 1, "colmap=3.11", "conda-forge", 2)
             .replace("Tasks)\n", "Tasks)\n  1 dependencies\n")
             .replace(
                 "  Environment parameters:",
@@ -1224,12 +1227,13 @@ fn summary_shows_each_steps_effective_values() {
             24,
             "maya=2025 mtoa",
             "studio-internal conda-forge",
+            2,
         )
         .replace(
             "Tasks)\n",
             "Tasks)\n  Task parameters:\n    - StartFrame (INT)\n  1 dependencies\n",
         ),
-        block("EncodeVideo", 1, "ffmpeg=7", "conda-forge")
+        block("EncodeVideo", 1, "ffmpeg=7", "conda-forge", 2)
             .replace("Tasks)\n", "Tasks)\n  1 dependencies\n"),
     ] {
         assert!(
@@ -1323,13 +1327,13 @@ fn summary_of_one_step_lists_each_environment_in_session_order() {
     // Docker is attached first, and the two samples share an
     // exclusiveGroup, so the Step enters Docker and Conda is superseded,
     // which disables it for the Step (Template Schemas §4 item 7, §3.2.2):
-    // it is listed as disabled.
+    // it is listed as disabled, with the reason.
     // The host requirements combine the Step's own GPU amount with
     // Docker's GPU amount (resolved with the Step's Gpus value) and its os
     // family (Template Schemas §3.3.3).
     let expected = format!(
         "\nSession environments:\n  - Docker ({docker})\nDisabled environments:\n  - \
-         Conda ({conda})\nHost requirements:\n  - \
+         Conda ({conda}): superseded\nHost requirements:\n  - \
          amount.worker.gpu: min 1\n  - \
          attr.worker.os.family: anyOf linux\n\nEnvironment parameters:\n  Docker ({docker}):\n    \
          - Gpus (STRING): all\n    - Image (STRING): docker.io/colmap/colmap:latest\n    - \
@@ -1807,10 +1811,16 @@ fn check_and_summary_agree_that_a_declined_environment_is_not_disabled() {
     let (declines, plain) = stdout.split_once("2. 'Plain'").expect(&stdout);
     assert!(declines.contains("1. 'Declines'"), "{stdout}");
     assert!(!declines.contains("Disabled environments"), "{stdout}");
+    // It is listed as declined instead (§3.2 item 3.2).
     assert!(
-        plain.contains("Disabled environments:\n    - Docker (JobTemplate)\n"),
+        declines.contains("Declined environments:\n    - Docker (JobTemplate)\n"),
         "{stdout}"
     );
+    assert!(
+        plain.contains("Disabled environments:\n    - Docker (JobTemplate): disabled\n"),
+        "{stdout}"
+    );
+    assert!(!plain.contains("Declined environments"), "{stdout}");
 
     // The same for an attached `BY_DEFAULT` Environment.
     let env = write_file(
@@ -1893,7 +1903,9 @@ fn check_says_a_shadowed_attachment_is_disabled_for_a_step_that_declines_the_job
     let (code, stdout, stderr) = run_cli(&["summary", &job, "--environment", &env]);
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
-        stdout.contains("Disabled environments:\n    - X ("),
+        stdout.contains(&format!(
+            "Disabled environments:\n    - X ({env}): disabled\n"
+        )),
         "{stdout}"
     );
 }
@@ -1923,8 +1935,9 @@ fn summary_lists_the_environments_enable_if_disabled_for_each_step() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
         stdout.contains(
-            "Session environments:\n  (none)\nDisabled environments:\n  - Off (JobTemplate)\n  \
-             - Later (JobTemplate)\n  - Scratch (stepEnvironments)\n"
+            "Session environments:\n  (none)\nDisabled environments:\n  - Off (JobTemplate): \
+             disabled\n  - Later (JobTemplate): disabled\n  - Scratch (stepEnvironments): \
+             disabled\n"
         ),
         "{stdout}"
     );
@@ -1940,10 +1953,110 @@ fn summary_lists_the_environments_enable_if_disabled_for_each_step() {
     assert_eq!(
         json["disabled_environments"],
         serde_json::json!([
-            {"name": "Off", "source": "JobTemplate"},
-            {"name": "Scratch", "source": "stepEnvironments"},
+            {"name": "Off", "source": "JobTemplate", "status": "disabled"},
+            {"name": "Scratch", "source": "stepEnvironments", "status": "disabled"},
         ])
     );
+}
+
+#[test]
+fn summary_says_why_each_environment_is_not_entered() {
+    // One Step with each reason: Def is declined, G2 superseded by the
+    // attached Att of its group (whose enableIf is false), Off disabled by
+    // its enableIf, the Step Environment L disabled, and an optional entry
+    // for Gpu names nothing (CreatedJob::environment_statuses).
+    let dir = tempfile::tempdir().unwrap();
+    let env = write_file(
+        &dir,
+        "att.yaml",
+        "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+         environment: {name: Att, exclusiveGroup: G, variables: {V: x}}\n",
+    );
+    let job = write_file(
+        &dir,
+        "job.yaml",
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+         jobEnvironments:\n- {name: Def, variables: {V: x}}\n\
+         - {name: G2, exclusiveGroup: G, enableIf: false, variables: {V: x}}\n\
+         - {name: Off, enableIf: false, variables: {V: x}}\n\
+         steps:\n- name: S\n  dependencies:\n  - {environment: Def, enableIf: false}\n  \
+         - {environment: Gpu, required: false}\n  \
+         stepEnvironments:\n  - {name: L, enableIf: false, variables: {V: x}}\n  \
+         script: {actions: {onRun: {command: x}}}\n",
+    );
+    let (code, stdout, stderr) = run_cli(&["summary", &job, "--environment", &env, "--step", "S"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let expected = format!(
+        "Session environments:\n  - Att ({env})\nDisabled environments:\n  \
+         - G2 (JobTemplate): superseded\n  - Off (JobTemplate): disabled\n  \
+         - L (stepEnvironments): disabled\nDeclined environments:\n  - Def (JobTemplate)\n\
+         Optional entries not found:\n  - dependencies[1]: Gpu\n"
+    );
+    assert!(
+        stdout.contains(&expected),
+        "expected:\n{expected}\nin:\n{stdout}"
+    );
+    // The entry's warning still goes to stderr.
+    assert!(
+        stderr.contains("dependencies[1] -> environment"),
+        "{stderr}"
+    );
+    let (code, stdout, stderr) = run_cli(&[
+        "summary",
+        &job,
+        "--environment",
+        &env,
+        "--step",
+        "S",
+        "--output",
+        "json",
+    ]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(
+        json["disabled_environments"],
+        serde_json::json!([
+            {"name": "G2", "source": "JobTemplate", "status": "superseded"},
+            {"name": "Off", "source": "JobTemplate", "status": "disabled"},
+            {"name": "L", "source": "stepEnvironments", "status": "disabled"},
+        ])
+    );
+    assert_eq!(
+        json["declined_environments"],
+        serde_json::json!([{"name": "Def", "source": "JobTemplate"}])
+    );
+    assert_eq!(
+        json["optional_entries_not_found"],
+        serde_json::json!([{"dependency_index": 1, "environment": "Gpu"}])
+    );
+    // A Step with none of them has none of the keys.
+    let (code, stdout, stderr) = run_cli(&["summary", &plain_job(&dir), "--output", "json"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let step = &json["steps"][0];
+    assert_eq!(
+        step["session_environments"],
+        serde_json::json!([{"name": "E", "source": "JobTemplate"}])
+    );
+    for key in [
+        "disabled_environments",
+        "declined_environments",
+        "optional_entries_not_found",
+    ] {
+        assert!(step.get(key).is_none(), "{key} in {step}");
+    }
+}
+
+/// A Job Template with ENV_PARAMS whose one Step enters its one Job
+/// Environment.
+fn plain_job(dir: &tempfile::TempDir) -> String {
+    write_file(
+        dir,
+        "plain.yaml",
+        "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
+         jobEnvironments:\n- {name: E, variables: {V: x}}\n\
+         steps:\n- name: S\n  script: {actions: {onRun: {command: x}}}\n",
+    )
 }
 
 #[test]
@@ -2015,15 +2128,16 @@ fn job_summary_lists_each_steps_disabled_environments() {
     assert!(
         stdout.contains(
             "1. 'S' (1 total Tasks)\n  Session environments:\n    (none)\n  Disabled \
-             environments:\n    - Off (JobTemplate)\n    - Later (JobTemplate)\n    - Scratch \
-             (stepEnvironments)\n"
+             environments:\n    - Off (JobTemplate): disabled\n    - Later (JobTemplate): \
+             disabled\n    - Scratch (stepEnvironments): disabled\n"
         ),
         "{stdout}"
     );
     assert!(
         stdout.contains(
             "2. 'T' (1 total Tasks)\n  Session environments:\n    (none)\n  Disabled \
-             environments:\n    - Off (JobTemplate)\n    - Later (JobTemplate)\n"
+             environments:\n    - Off (JobTemplate): disabled\n    - Later (JobTemplate): \
+             disabled\n"
         ),
         "{stdout}"
     );
@@ -2146,7 +2260,8 @@ fn a_disabled_environment_needs_no_values() {
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(
         stdout.contains(
-            "Session environments:\n  (none)\nDisabled environments:\n  - Lic (JobTemplate)\n"
+            "Session environments:\n  (none)\nDisabled environments:\n  - Lic (JobTemplate): \
+             disabled\n"
         ),
         "{stdout}"
     );

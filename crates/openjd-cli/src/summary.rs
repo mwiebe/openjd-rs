@@ -114,16 +114,23 @@ pub fn execute(args: SummaryArgs) -> Result<(), Box<dyn std::error::Error>> {
     // item 4), from the combined Job before its listing is filtered.
     // The Environments an `enableIf` disabled for each Step (§4 item 6),
     // or an earlier one of their `exclusiveGroup` superseded (§4 item 7),
-    // are listed too.
+    // each with which, the ones it declined, and its optional entries
+    // that named nothing, are listed too.
     let session_envs: Vec<StepEnvSets> = if lists_env_params(&the_job, &env_templates) {
         the_job
             .steps
             .iter()
-            .zip(&created.disabled_environments)
+            .zip(&created.environment_statuses)
             .zip(&created.discarded_host_requirements)
-            .map(|((s, disabled), discarded)| StepEnvSets {
+            .map(|((s, statuses), discarded)| StepEnvSets {
                 entered: session_env_infos(&the_job, &created.environment_documents, s),
-                disabled: disabled_env_infos(disabled),
+                disabled: disabled_env_infos(statuses),
+                declined: declined_env_infos(statuses),
+                not_found: statuses
+                    .not_found
+                    .iter()
+                    .map(|n| (n.dependency_index, n.environment.clone()))
+                    .collect(),
                 discarded: discarded.iter().map(DiscardedInfo::from).collect(),
             })
             .collect()
@@ -182,8 +189,15 @@ struct StepEnvSets {
     /// The Environments its Sessions would otherwise have entered that an
     /// `enableIf` on the Environment disabled for it (Template Schemas §4
     /// item 6), or an earlier one of their `exclusiveGroup` superseded (§4
-    /// item 7): Job Environments in Job order, then Step Environments.
-    disabled: Vec<SessionEnvInfo>,
+    /// item 7), each with which: Job Environments in Job order, then Step
+    /// Environments.
+    disabled: Vec<DisabledEnvInfo>,
+    /// The `BY_DEFAULT` Environments a disabled `environment:` entry of the
+    /// Step declined (§3.2 item 3.2), in Job order.
+    declined: Vec<SessionEnvInfo>,
+    /// Its enabled `required: false` entries that named no Environment, as
+    /// (index in `dependencies`, name given), in `dependencies` order.
+    not_found: Vec<(usize, String)>,
     /// The host requirements that resolved to nothing for it and were
     /// discarded (Template Schemas §3.3): its own first, then its
     /// Environments'.
@@ -217,24 +231,55 @@ impl From<&openjd_model::DiscardedHostRequirement> for DiscardedInfo {
     }
 }
 
-/// The [`SessionEnvInfo`]s of `disabled`, Job Environments first.
-fn disabled_env_infos(disabled: &openjd_model::StepDisabledEnvironments) -> Vec<SessionEnvInfo> {
-    disabled
+/// An Environment disabled for a Step, with `disabled` (by its `enableIf`)
+/// or `superseded` (by an earlier one of its `exclusiveGroup`).
+struct DisabledEnvInfo {
+    env: SessionEnvInfo,
+    status: &'static str,
+}
+
+/// The [`SessionEnvInfo`] of one item of a Step's statuses: its declaring
+/// document, or `stepEnvironments` for the Step's own.
+fn status_env_info(s: &openjd_model::StepEnvironmentStatus) -> SessionEnvInfo {
+    SessionEnvInfo {
+        name: s.name.clone(),
+        source: match s.scope {
+            openjd_model::EnvironmentScope::Step => "stepEnvironments".to_string(),
+            openjd_model::EnvironmentScope::Attached | openjd_model::EnvironmentScope::Job => {
+                s.document.to_string()
+            }
+        },
+    }
+}
+
+/// The Environments disabled or superseded for a Step, in Job order (Job
+/// Environments, then Step Environments), each with which.
+fn disabled_env_infos(statuses: &openjd_model::StepEnvironmentStatuses) -> Vec<DisabledEnvInfo> {
+    statuses
         .environments
         .iter()
-        .map(|r| SessionEnvInfo {
-            name: r.environment.clone(),
-            source: r.document.to_string(),
+        .filter_map(|s| {
+            let status = match s.status {
+                openjd_model::EnvironmentStatus::Disabled => "disabled",
+                openjd_model::EnvironmentStatus::Superseded => "superseded",
+                openjd_model::EnvironmentStatus::Entered
+                | openjd_model::EnvironmentStatus::Declined => return None,
+            };
+            Some(DisabledEnvInfo {
+                env: status_env_info(s),
+                status,
+            })
         })
-        .chain(
-            disabled
-                .step_environments
-                .iter()
-                .map(|name| SessionEnvInfo {
-                    name: name.clone(),
-                    source: "stepEnvironments".to_string(),
-                }),
-        )
+        .collect()
+}
+
+/// The Environments a Step declined, in Job order.
+fn declined_env_infos(statuses: &openjd_model::StepEnvironmentStatuses) -> Vec<SessionEnvInfo> {
+    statuses
+        .environments
+        .iter()
+        .filter(|s| s.status == openjd_model::EnvironmentStatus::Declined)
+        .map(status_env_info)
         .collect()
 }
 
@@ -357,6 +402,8 @@ fn output_job_summary(
                 env_params_details: session_envs.next().map(|envs| EnvParamsDetails {
                     session_envs: &envs.entered,
                     disabled_envs: &envs.disabled,
+                    declined_envs: &envs.declined,
+                    not_found: &envs.not_found,
                     host_requirements: s.host_requirements.as_ref(),
                     discarded: &envs.discarded,
                 }),
@@ -475,6 +522,8 @@ fn output_step_summary(
         env_params_details: session_envs.get(step_index).map(|envs| EnvParamsDetails {
             session_envs: &envs.entered,
             disabled_envs: &envs.disabled,
+            declined_envs: &envs.declined,
+            not_found: &envs.not_found,
             host_requirements: step.host_requirements.as_ref(),
             discarded: &envs.discarded,
         }),
@@ -779,20 +828,24 @@ struct StepInfo<'a> {
 /// What the summary adds for a Step when the Job Template or an attached
 /// Environment Template lists `ENV_PARAMS`: the Environments its Sessions
 /// enter, the ones an `enableIf` disabled or an `exclusiveGroup`
-/// superseded for it (Template Schemas §4 items 6 and 7), its combined host
-/// requirements (§3.3.3), and the requirements that
-/// resolved to nothing and were discarded (§3.3).
+/// superseded for it (Template Schemas §4 items 6 and 7), the ones it
+/// declined (§3.2 item 3.2), its `required: false` entries that named
+/// nothing (§3.2.1 item 2), its combined host requirements (§3.3.3), and
+/// the requirements that resolved to nothing and were discarded (§3.3).
 struct EnvParamsDetails<'a> {
     session_envs: &'a [SessionEnvInfo],
-    disabled_envs: &'a [SessionEnvInfo],
+    disabled_envs: &'a [DisabledEnvInfo],
+    declined_envs: &'a [SessionEnvInfo],
+    not_found: &'a [(usize, String)],
     host_requirements: Option<&'a job::HostRequirements>,
     discarded: &'a [DiscardedInfo],
 }
 
 impl EnvParamsDetails<'_> {
     /// Add `session_environments` and, when there are any,
-    /// `disabled_environments`, `host_requirements`, and
-    /// `discarded_host_requirements` to `m`.
+    /// `disabled_environments` (each with its `status`),
+    /// `declined_environments`, `optional_entries_not_found`,
+    /// `host_requirements`, and `discarded_host_requirements` to `m`.
     fn insert_json(&self, m: &mut serde_json::Map<String, serde_json::Value>) {
         let list = |envs: &[SessionEnvInfo]| {
             serde_json::json!(envs
@@ -802,7 +855,34 @@ impl EnvParamsDetails<'_> {
         };
         m.insert("session_environments".into(), list(self.session_envs));
         if !self.disabled_envs.is_empty() {
-            m.insert("disabled_environments".into(), list(self.disabled_envs));
+            m.insert(
+                "disabled_environments".into(),
+                serde_json::json!(self
+                    .disabled_envs
+                    .iter()
+                    .map(|d| serde_json::json!({
+                        "name": d.env.name,
+                        "source": d.env.source,
+                        "status": d.status,
+                    }))
+                    .collect::<Vec<_>>()),
+            );
+        }
+        if !self.declined_envs.is_empty() {
+            m.insert("declined_environments".into(), list(self.declined_envs));
+        }
+        if !self.not_found.is_empty() {
+            m.insert(
+                "optional_entries_not_found".into(),
+                serde_json::json!(self
+                    .not_found
+                    .iter()
+                    .map(|(i, name)| serde_json::json!({
+                        "dependency_index": i,
+                        "environment": name,
+                    }))
+                    .collect::<Vec<_>>()),
+            );
         }
         if let Some(hr) = self.host_requirements {
             m.insert("host_requirements".into(), host_requirements_json(hr));
@@ -828,7 +908,10 @@ impl EnvParamsDetails<'_> {
 
     /// `Session environments:` with one `- Name (source)` line each (or
     /// `(none)`), then, when there are any, `Disabled environments:` in the
-    /// same form, then `Host requirements:` with one line per requirement,
+    /// same form with `: disabled` or `: superseded` after each,
+    /// `Declined environments:` in the same form, and `Optional entries not
+    /// found:` with one `- dependencies[i]: Name` line each, then `Host
+    /// requirements:` with one line per requirement,
     /// then, when there are any, `Discarded host requirements:` with one
     /// `- kind name (Step)` or `- kind name (Environment Name, source)` line
     /// each, indented by `indent`.
@@ -842,8 +925,24 @@ impl EnvParamsDetails<'_> {
         }
         if !self.disabled_envs.is_empty() {
             writeln!(f, "{indent}Disabled environments:")?;
-            for e in self.disabled_envs {
+            for d in self.disabled_envs {
+                writeln!(
+                    f,
+                    "{indent}  - {} ({}): {}",
+                    d.env.name, d.env.source, d.status
+                )?;
+            }
+        }
+        if !self.declined_envs.is_empty() {
+            writeln!(f, "{indent}Declined environments:")?;
+            for e in self.declined_envs {
                 writeln!(f, "{indent}  - {} ({})", e.name, e.source)?;
+            }
+        }
+        if !self.not_found.is_empty() {
+            writeln!(f, "{indent}Optional entries not found:")?;
+            for (i, name) in self.not_found {
+                writeln!(f, "{indent}  - dependencies[{i}]: {name}")?;
             }
         }
         if let Some(hr) = self.host_requirements {

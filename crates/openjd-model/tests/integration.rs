@@ -57,6 +57,8 @@ mod test_env_params_scope;
 mod test_env_params_selection;
 #[path = "integration/test_env_params_selection_job.rs"]
 mod test_env_params_selection_job;
+#[path = "integration/test_env_params_statuses.rs"]
+mod test_env_params_statuses;
 #[path = "integration/test_environment_template.rs"]
 mod test_environment_template;
 #[path = "integration/test_error_messages.rs"]

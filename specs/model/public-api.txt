@@ -37,6 +37,37 @@ pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(
 pub fn openjd_model::create_job::parameters::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::parameters::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::create_job::parameters::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
+pub enum openjd_model::create_job::EnvironmentScope
+pub openjd_model::create_job::EnvironmentScope::Attached
+pub openjd_model::create_job::EnvironmentScope::Job
+pub openjd_model::create_job::EnvironmentScope::Step
+impl core::clone::Clone for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::clone(&self) -> openjd_model::EnvironmentScope
+impl core::cmp::Eq for openjd_model::EnvironmentScope
+impl core::cmp::PartialEq for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::eq(&self, &openjd_model::EnvironmentScope) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentScope
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentScope
+pub enum openjd_model::create_job::EnvironmentStatus
+pub openjd_model::create_job::EnvironmentStatus::Declined
+pub openjd_model::create_job::EnvironmentStatus::Disabled
+pub openjd_model::create_job::EnvironmentStatus::Entered
+pub openjd_model::create_job::EnvironmentStatus::Superseded
+impl core::clone::Clone for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::clone(&self) -> openjd_model::EnvironmentStatus
+impl core::cmp::Eq for openjd_model::EnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::eq(&self, &openjd_model::EnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentStatus
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentStatus
 pub enum openjd_model::create_job::HostRequirementKind
 pub openjd_model::create_job::HostRequirementKind::Amount
 pub openjd_model::create_job::HostRequirementKind::Attribute
@@ -68,6 +99,7 @@ pub struct openjd_model::create_job::CreatedJob
 pub openjd_model::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::create_job::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::create_job::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::create_job::CreatedJob::job: openjd_model::job::Job
 pub openjd_model::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
@@ -103,6 +135,19 @@ impl core::clone::Clone for openjd_model::job::create_job::parameters::MergedPar
 pub fn openjd_model::job::create_job::parameters::MergedParameterDefinition::clone(&self) -> openjd_model::job::create_job::parameters::MergedParameterDefinition
 impl core::fmt::Debug for openjd_model::job::create_job::parameters::MergedParameterDefinition
 pub fn openjd_model::job::create_job::parameters::MergedParameterDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::create_job::OptionalEntryNotFound
+pub openjd_model::create_job::OptionalEntryNotFound::dependency_index: usize
+pub openjd_model::create_job::OptionalEntryNotFound::environment: alloc::string::String
+impl core::clone::Clone for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::clone(&self) -> openjd_model::OptionalEntryNotFound
+impl core::cmp::Eq for openjd_model::OptionalEntryNotFound
+impl core::cmp::PartialEq for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::eq(&self, &openjd_model::OptionalEntryNotFound) -> bool
+impl core::fmt::Debug for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::OptionalEntryNotFound
 pub struct openjd_model::create_job::PathParameterOptions<'a>
 pub openjd_model::create_job::PathParameterOptions::allow_template_dir_walk_up: bool
 pub openjd_model::create_job::PathParameterOptions::allow_uri_path_values: bool
@@ -124,6 +169,34 @@ pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDi
 impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
 pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
+pub struct openjd_model::create_job::StepEnvironmentStatus
+pub openjd_model::create_job::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::create_job::StepEnvironmentStatus::name: alloc::string::String
+pub openjd_model::create_job::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
+pub openjd_model::create_job::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+impl core::clone::Clone for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::eq(&self, &openjd_model::StepEnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatus
+pub struct openjd_model::create_job::StepEnvironmentStatuses
+pub openjd_model::create_job::StepEnvironmentStatuses::environments: alloc::vec::Vec<openjd_model::StepEnvironmentStatus>
+pub openjd_model::create_job::StepEnvironmentStatuses::not_found: alloc::vec::Vec<openjd_model::OptionalEntryNotFound>
+impl core::clone::Clone for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::clone(&self) -> openjd_model::StepEnvironmentStatuses
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatuses
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::eq(&self, &openjd_model::StepEnvironmentStatuses) -> bool
+impl core::default::Default for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::default() -> openjd_model::StepEnvironmentStatuses
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatuses
 pub struct openjd_model::create_job::SubmissionWarning
 pub openjd_model::create_job::SubmissionWarning::message: alloc::string::String
 pub openjd_model::create_job::SubmissionWarning::path: alloc::vec::Vec<openjd_model::error::PathElement>
@@ -251,6 +324,37 @@ pub fn openjd_model::job::create_job::parameters::PathParameterOptions<'a>::new(
 pub fn openjd_model::job::create_job::parameters::build_symbol_table(&openjd_model::types::JobParameterValues) -> core::result::Result<openjd_expr::symbol_table::SymbolTable, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::parameters::merge_job_parameter_definitions(&openjd_model::template::JobTemplate, &[openjd_model::template::EnvironmentTemplate]) -> core::result::Result<alloc::vec::Vec<openjd_model::job::create_job::parameters::MergedParameterDefinition>, openjd_model::error::ModelError>
 pub fn openjd_model::job::create_job::parameters::preprocess_job_parameters(&openjd_model::template::JobTemplate, &openjd_model::types::JobParameterInputValues, &[openjd_model::template::EnvironmentTemplate], &openjd_model::job::create_job::parameters::PathParameterOptions<'_>) -> core::result::Result<openjd_model::types::JobParameterValues, openjd_model::error::ModelError>
+pub enum openjd_model::job::create_job::EnvironmentScope
+pub openjd_model::job::create_job::EnvironmentScope::Attached
+pub openjd_model::job::create_job::EnvironmentScope::Job
+pub openjd_model::job::create_job::EnvironmentScope::Step
+impl core::clone::Clone for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::clone(&self) -> openjd_model::EnvironmentScope
+impl core::cmp::Eq for openjd_model::EnvironmentScope
+impl core::cmp::PartialEq for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::eq(&self, &openjd_model::EnvironmentScope) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentScope
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentScope
+pub enum openjd_model::job::create_job::EnvironmentStatus
+pub openjd_model::job::create_job::EnvironmentStatus::Declined
+pub openjd_model::job::create_job::EnvironmentStatus::Disabled
+pub openjd_model::job::create_job::EnvironmentStatus::Entered
+pub openjd_model::job::create_job::EnvironmentStatus::Superseded
+impl core::clone::Clone for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::clone(&self) -> openjd_model::EnvironmentStatus
+impl core::cmp::Eq for openjd_model::EnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::eq(&self, &openjd_model::EnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentStatus
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentStatus
 pub enum openjd_model::job::create_job::HostRequirementKind
 pub openjd_model::job::create_job::HostRequirementKind::Amount
 pub openjd_model::job::create_job::HostRequirementKind::Attribute
@@ -282,6 +386,7 @@ pub struct openjd_model::job::create_job::CreatedJob
 pub openjd_model::job::create_job::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::job::create_job::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::job::create_job::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::job::create_job::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::job::create_job::CreatedJob::job: openjd_model::job::Job
 pub openjd_model::job::create_job::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
@@ -317,6 +422,19 @@ impl core::clone::Clone for openjd_model::job::create_job::parameters::MergedPar
 pub fn openjd_model::job::create_job::parameters::MergedParameterDefinition::clone(&self) -> openjd_model::job::create_job::parameters::MergedParameterDefinition
 impl core::fmt::Debug for openjd_model::job::create_job::parameters::MergedParameterDefinition
 pub fn openjd_model::job::create_job::parameters::MergedParameterDefinition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::job::create_job::OptionalEntryNotFound
+pub openjd_model::job::create_job::OptionalEntryNotFound::dependency_index: usize
+pub openjd_model::job::create_job::OptionalEntryNotFound::environment: alloc::string::String
+impl core::clone::Clone for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::clone(&self) -> openjd_model::OptionalEntryNotFound
+impl core::cmp::Eq for openjd_model::OptionalEntryNotFound
+impl core::cmp::PartialEq for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::eq(&self, &openjd_model::OptionalEntryNotFound) -> bool
+impl core::fmt::Debug for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::OptionalEntryNotFound
 pub struct openjd_model::job::create_job::PathParameterOptions<'a>
 pub openjd_model::job::create_job::PathParameterOptions::allow_template_dir_walk_up: bool
 pub openjd_model::job::create_job::PathParameterOptions::allow_uri_path_values: bool
@@ -338,6 +456,34 @@ pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDi
 impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
 pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
+pub struct openjd_model::job::create_job::StepEnvironmentStatus
+pub openjd_model::job::create_job::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::job::create_job::StepEnvironmentStatus::name: alloc::string::String
+pub openjd_model::job::create_job::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
+pub openjd_model::job::create_job::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+impl core::clone::Clone for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::eq(&self, &openjd_model::StepEnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatus
+pub struct openjd_model::job::create_job::StepEnvironmentStatuses
+pub openjd_model::job::create_job::StepEnvironmentStatuses::environments: alloc::vec::Vec<openjd_model::StepEnvironmentStatus>
+pub openjd_model::job::create_job::StepEnvironmentStatuses::not_found: alloc::vec::Vec<openjd_model::OptionalEntryNotFound>
+impl core::clone::Clone for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::clone(&self) -> openjd_model::StepEnvironmentStatuses
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatuses
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::eq(&self, &openjd_model::StepEnvironmentStatuses) -> bool
+impl core::default::Default for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::default() -> openjd_model::StepEnvironmentStatuses
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatuses
 pub struct openjd_model::job::create_job::SubmissionWarning
 pub openjd_model::job::create_job::SubmissionWarning::message: alloc::string::String
 pub openjd_model::job::create_job::SubmissionWarning::path: alloc::vec::Vec<openjd_model::error::PathElement>
@@ -2235,6 +2381,37 @@ impl serde_core::ser::Serialize for openjd_model::types::EndOfLine
 pub fn openjd_model::types::EndOfLine::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for openjd_model::types::EndOfLine
 pub fn openjd_model::types::EndOfLine::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+pub enum openjd_model::EnvironmentScope
+pub openjd_model::EnvironmentScope::Attached
+pub openjd_model::EnvironmentScope::Job
+pub openjd_model::EnvironmentScope::Step
+impl core::clone::Clone for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::clone(&self) -> openjd_model::EnvironmentScope
+impl core::cmp::Eq for openjd_model::EnvironmentScope
+impl core::cmp::PartialEq for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::eq(&self, &openjd_model::EnvironmentScope) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentScope
+pub fn openjd_model::EnvironmentScope::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentScope
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentScope
+pub enum openjd_model::EnvironmentStatus
+pub openjd_model::EnvironmentStatus::Declined
+pub openjd_model::EnvironmentStatus::Disabled
+pub openjd_model::EnvironmentStatus::Entered
+pub openjd_model::EnvironmentStatus::Superseded
+impl core::clone::Clone for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::clone(&self) -> openjd_model::EnvironmentStatus
+impl core::cmp::Eq for openjd_model::EnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::eq(&self, &openjd_model::EnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::EnvironmentStatus
+pub fn openjd_model::EnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openjd_model::EnvironmentStatus
+impl core::marker::StructuralPartialEq for openjd_model::EnvironmentStatus
 #[non_exhaustive] pub enum openjd_model::FileType
 pub openjd_model::FileType::Text
 impl core::clone::Clone for openjd_model::types::FileType
@@ -2479,6 +2656,7 @@ pub struct openjd_model::CreatedJob
 pub openjd_model::CreatedJob::disabled_environments: alloc::vec::Vec<openjd_model::StepDisabledEnvironments>
 pub openjd_model::CreatedJob::discarded_host_requirements: alloc::vec::Vec<alloc::vec::Vec<openjd_model::DiscardedHostRequirement>>
 pub openjd_model::CreatedJob::environment_documents: alloc::vec::Vec<openjd_model::job::Document>
+pub openjd_model::CreatedJob::environment_statuses: alloc::vec::Vec<openjd_model::StepEnvironmentStatuses>
 pub openjd_model::CreatedJob::job: openjd_model::job::Job
 pub openjd_model::CreatedJob::warnings: alloc::vec::Vec<openjd_model::SubmissionWarning>
 impl core::clone::Clone for openjd_model::CreatedJob
@@ -2554,6 +2732,19 @@ impl core::default::Default for openjd_model::types::ModelProfile
 pub fn openjd_model::types::ModelProfile::default() -> Self
 impl core::fmt::Debug for openjd_model::types::ModelProfile
 pub fn openjd_model::types::ModelProfile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct openjd_model::OptionalEntryNotFound
+pub openjd_model::OptionalEntryNotFound::dependency_index: usize
+pub openjd_model::OptionalEntryNotFound::environment: alloc::string::String
+impl core::clone::Clone for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::clone(&self) -> openjd_model::OptionalEntryNotFound
+impl core::cmp::Eq for openjd_model::OptionalEntryNotFound
+impl core::cmp::PartialEq for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::eq(&self, &openjd_model::OptionalEntryNotFound) -> bool
+impl core::fmt::Debug for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::OptionalEntryNotFound
+pub fn openjd_model::OptionalEntryNotFound::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::OptionalEntryNotFound
 pub struct openjd_model::PathParameterOptions<'a>
 pub openjd_model::PathParameterOptions::allow_template_dir_walk_up: bool
 pub openjd_model::PathParameterOptions::allow_uri_path_values: bool
@@ -2588,6 +2779,34 @@ pub fn openjd_model::StepDisabledEnvironments::default() -> openjd_model::StepDi
 impl core::fmt::Debug for openjd_model::StepDisabledEnvironments
 pub fn openjd_model::StepDisabledEnvironments::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for openjd_model::StepDisabledEnvironments
+pub struct openjd_model::StepEnvironmentStatus
+pub openjd_model::StepEnvironmentStatus::document: openjd_model::job::Document
+pub openjd_model::StepEnvironmentStatus::name: alloc::string::String
+pub openjd_model::StepEnvironmentStatus::scope: openjd_model::EnvironmentScope
+pub openjd_model::StepEnvironmentStatus::status: openjd_model::EnvironmentStatus
+impl core::clone::Clone for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::clone(&self) -> openjd_model::StepEnvironmentStatus
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatus
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::eq(&self, &openjd_model::StepEnvironmentStatus) -> bool
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openjd_model::StepEnvironmentStatus
+pub fn openjd_model::StepEnvironmentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatus
+pub struct openjd_model::StepEnvironmentStatuses
+pub openjd_model::StepEnvironmentStatuses::environments: alloc::vec::Vec<openjd_model::StepEnvironmentStatus>
+pub openjd_model::StepEnvironmentStatuses::not_found: alloc::vec::Vec<openjd_model::OptionalEntryNotFound>
+impl core::clone::Clone for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::clone(&self) -> openjd_model::StepEnvironmentStatuses
+impl core::cmp::Eq for openjd_model::StepEnvironmentStatuses
+impl core::cmp::PartialEq for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::eq(&self, &openjd_model::StepEnvironmentStatuses) -> bool
+impl core::default::Default for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::default() -> openjd_model::StepEnvironmentStatuses
+impl core::fmt::Debug for openjd_model::StepEnvironmentStatuses
+pub fn openjd_model::StepEnvironmentStatuses::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openjd_model::StepEnvironmentStatuses
 pub struct openjd_model::StepParameterSpaceIterator
 impl openjd_model::job::step_param_space::StepParameterSpaceIterator
 pub fn openjd_model::job::step_param_space::StepParameterSpaceIterator::chunks_adaptive(&self) -> bool

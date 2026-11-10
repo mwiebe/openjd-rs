@@ -452,7 +452,8 @@ and what it means depends on the `activation` of the Environment it names (§3.2
   evaluated for the Step, and neither the value checks, nor constraint 7, nor its
   `hostRequirements` apply to the Step. A declined Environment is not listed in
   `CreatedJob::disabled_environments`, which lists the ones an Environment's own `enableIf`
-  disabled or its `exclusiveGroup` superseded.
+  disabled or its `exclusiveGroup` superseded; `CreatedJob::environment_statuses` lists it as
+  `Declined` (see [Environment statuses](#environment-statuses-env_params)).
 - `ALWAYS`: an error at `steps[i] -> dependencies[j] -> enableIf`, "is false, so Step 'S'
   would decline Environment 'E', whose activation is ALWAYS: no Step can leave out an ALWAYS
   Environment (Template Schemas §3.2 item 3.2)." Template validation reports it for a literal
@@ -1168,7 +1169,9 @@ name, attached ones first, Step Environments by name), for display; an Environme
 would not have entered anyway (an `ON_REQUEST` one it does not request, or a `BY_DEFAULT` one
 it declines with a disabled entry, §3.2 item 3.2) is not listed, since
 its `enableIf` is never evaluated for that Step, and neither is one whose `enableIf` failed.
-A superseded Environment (next section) is listed too.
+A superseded Environment (next section) is listed too. `CreatedJob::environment_statuses`
+says which of the two each one is, and lists the declined ones as well (see [Environment
+statuses](#environment-statuses-env_params)).
 
 #### Exclusive groups (ENV_PARAMS)
 
@@ -1202,9 +1205,9 @@ the Job's Environment order with one set of taken groups:
   takes its group. A Step whose entry names an ambiguous attachment is stopped after step 4,
   so it decides no group; a Step that does not name it decides the attachment as any other;
 - then the Job Environments, in written order: one whose group an attachment or an earlier Job
-  Environment took is superseded, without its `enableIf` being evaluated, set not entered and
-  added to the Step's disabled list; any other has its `enableIf` decided, and one it disables
-  is set not entered and added to the disabled list in the same way, while one it does not
+  Environment took is superseded, without its `enableIf` being evaluated, and its status for
+  the Step set to `Superseded`; any other has its `enableIf` decided, and one it disables gets
+  the status `Disabled`, while one it does not
   disable takes its group and is committed, its errors at the Job Template's paths, its
   constraint 7 names reported in an error at `steps[i]` (`JobTemplate -> steps[i]` with
   attachments) with the jobEnvironments wording, and
@@ -1213,6 +1216,30 @@ the Job's Environment order with one set of taken groups:
 So a group's first is the same whichever documents its members come from, and a mistake of a
 grouped Job Environment is reported in the same form whether or not an attachment shares its
 group.
+
+#### Environment statuses (ENV_PARAMS)
+
+Each decision above is recorded where it is made, as an `EnvironmentStatus` per Step and per
+Environment, so `CreatedJob::environment_statuses` says why a Step's Sessions do not enter an
+Environment, not just that they do not:
+
+| Environment | Decided in | Status |
+| --- | --- | --- |
+| `ALWAYS`, or `BY_DEFAULT` that no disabled entry declines, or `ON_REQUEST` that an enabled entry requests | job creation proper (Job Environments, `StepSelection::job_environment_statuses`) or the submission stage (attached) | `Entered`, until step 6 changes it |
+| `BY_DEFAULT` that a disabled entry declines (§7.4.1 step 4) | the same | `Declined`; its `enableIf` is not evaluated and it takes no group |
+| `ON_REQUEST` that no enabled entry requests | the same | not listed |
+| An earlier one of its `exclusiveGroup` remains in the set (step 6) | the submission stage, in the Job's Environment order | `Superseded`; its `enableIf` is not evaluated |
+| Its own `enableIf` is `false` (step 6) | the submission stage; for a Step Environment, job creation proper (`StepSelection::step_environments`) | `Disabled` |
+
+The submission stage lists them per Step in the Job's Environment order, attached, then
+`jobEnvironments`, then the Step's `stepEnvironments`, and derives from the same statuses the
+entered list on `job::Step::environments`, the entered flags host requirements and the
+`WRAP_ACTIONS` rule read, and `CreatedJob::disabled_environments` (the `Disabled` and
+`Superseded` ones), so the four cannot disagree. A Step stopped by a §7.4.1 step 1–4 error has
+no fixed set and fails job creation, so no status of it is returned. It also lists in
+`StepEnvironmentStatuses::not_found` each enabled `required: false` entry that resolved to no
+attachment (§3.2.1 item 2), the case that records a warning; a disabled entry that names
+nothing has no effect and is not listed, and a required one that names nothing is an error.
 
 #### Combined host requirements (ENV_PARAMS)
 

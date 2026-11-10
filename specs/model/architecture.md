@@ -86,7 +86,10 @@ The crate re-exports a curated public API from `lib.rs`:
 - `MergedParameterDefinition` — Merged parameter from multiple templates
 - `PathParameterOptions` — Options for PATH parameter resolution
 - `AttachedEnvironmentTemplate`, `CreatedJob`, `StepDisabledEnvironments`,
-  `SubmissionWarning` — inputs and outputs of `create_job_with_environment_templates`
+  `StepEnvironmentStatuses`, `StepEnvironmentStatus`, `EnvironmentScope`,
+  `EnvironmentStatus`, `OptionalEntryNotFound`, `DiscardedHostRequirement`,
+  `HostRequirementKind`, `SubmissionWarning` — inputs and outputs of
+  `create_job_with_environment_templates`
 - `FormatString`, `SymbolTable` — Re-exported from `openjd-expr`
 - `format_string`, `symbol_table` — Modules re-exported wholesale from `openjd-expr`
 - From `types` module: `DataFlow`, `EndOfLine`, `Extensions`, `FileType`,
