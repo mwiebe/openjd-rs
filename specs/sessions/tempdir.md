@@ -232,9 +232,11 @@ So one failed attempt can take up to about 25 s, and a cleanup that gives up can
 31 s plus six times that.
 
 When a limit was reached, so there may be more files than were reported, the count
-reads "At least N". When none was found but not every file could be checked or asked
-about, the line says "No file that cannot be deleted was found, but not every file
-could be checked."
+reads "At least N". When none was found but a limit stopped the scan or the Restart
+Manager queries, the line says "No file that cannot be deleted was found, but not every
+file could be checked." A subdirectory that cannot be listed, for instance because its
+ACL denies listing, is skipped without that note; Python's line says nothing about it
+either.
 
 A failed holder lookup is reported in the same line instead of the process list. When
 no file is reported and every file was checked, for instance because only a directory

@@ -57,7 +57,7 @@ openjd_sessions                 — crate root (most public items re-exported he
 ```
 
 SubprocessResult is re-exported at the crate root. The `subprocess`,
-`action_filter`, `cross_user_helper`, `helper_binary`, `win32_locate`,
+`action_filter`, `cross_user_helper`, `helper_binary`, `win32_file_locks`, `win32_locate`,
 and (outside `test-utils`) `win32_permissions` modules are
 crate-internal.
 

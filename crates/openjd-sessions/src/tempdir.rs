@@ -1200,8 +1200,15 @@ mod tests {
         testing_logger::setup();
         let mut td = TempDir::new(None, None, None).unwrap();
         let dir = td.path().to_path_buf();
+        // The release thread can still hold the file if cleanup panics, so
+        // keep trying past its 500 ms hold.
         let _remove = OnDrop(move || {
-            let _ = std::fs::remove_dir_all(&dir);
+            for _ in 0..20 {
+                if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         });
         let held = std::fs::OpenOptions::new()
             .write(true)
