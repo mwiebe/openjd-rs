@@ -750,6 +750,59 @@ fn a_job_environment_supersedes_a_later_one_after_a_disabled_attachment() {
     );
 }
 
+#[test]
+fn every_later_member_names_the_first_attachment_of_its_group() {
+    // A group of three attachments and one Job Environment: the first
+    // attachment takes the group, and each later member, attached or Job,
+    // names it, not the member just before it.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, variables: {{V: j}}}}\n\
+         steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(
+        &jt,
+        &[
+            &env("name: A1, exclusiveGroup: G"),
+            &env("name: A2, exclusiveGroup: G"),
+            &env("name: A3, exclusiveGroup: G"),
+        ],
+    );
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached A1@EnvironmentTemplate[0] [G]: entered",
+            "attached A2@EnvironmentTemplate[1] [G]: superseded by attached A1@EnvironmentTemplate[0]",
+            "attached A3@EnvironmentTemplate[2] [G]: superseded by attached A1@EnvironmentTemplate[0]",
+            "job J@JobTemplate [G]: superseded by attached A1@EnvironmentTemplate[0]",
+        ]
+    );
+}
+
+#[test]
+fn an_on_request_member_takes_its_group_only_when_requested() {
+    // An ON_REQUEST member the Step does not request is not considered, so
+    // it takes no group and the next member wins; one it requests wins.
+    let jt = format!(
+        "{HEAD}jobEnvironments:\n- {{name: J, exclusiveGroup: G, variables: {{V: j}}}}\n\
+         steps:\n\
+         - name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: T\n  dependencies:\n  - {{environment: R}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(
+        &jt,
+        &[&env("name: R, activation: ON_REQUEST, exclusiveGroup: G")],
+    );
+    assert_eq!(statuses(&created, 0), ["job J@JobTemplate [G]: entered"]);
+    assert_eq!(
+        statuses(&created, 1),
+        [
+            "attached R@EnvironmentTemplate[0] [G]: entered",
+            "job J@JobTemplate [G]: superseded by attached R@EnvironmentTemplate[0]",
+        ]
+    );
+}
+
 // ── Optional entries that name nothing ─────────────────────────────
 
 /// Step S: an enabled optional entry for `Gpu` (index 0), a required one

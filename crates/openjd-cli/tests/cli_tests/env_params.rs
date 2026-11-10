@@ -1965,7 +1965,9 @@ fn summary_says_why_each_environment_is_not_entered() {
     // One Step with each reason: Def is declined, G2 superseded by the
     // attached Att of its group (whose enableIf is false), Off disabled by
     // its enableIf, the Step Environment L disabled, and an optional entry
-    // for Gpu names nothing (CreatedJob::environment_statuses).
+    // for Gpu names nothing (CreatedJob::environment_statuses). Off is the
+    // only member of its own group H, so its JSON item carries the group
+    // but no winner.
     let dir = tempfile::tempdir().unwrap();
     let env = write_file(
         &dir,
@@ -1979,7 +1981,7 @@ fn summary_says_why_each_environment_is_not_entered() {
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          jobEnvironments:\n- {name: Def, variables: {V: x}}\n\
          - {name: G2, exclusiveGroup: G, enableIf: false, variables: {V: x}}\n\
-         - {name: Off, enableIf: false, variables: {V: x}}\n\
+         - {name: Off, exclusiveGroup: H, enableIf: false, variables: {V: x}}\n\
          steps:\n- name: S\n  dependencies:\n  - {environment: Def, enableIf: false}\n  \
          - {environment: Gpu, required: false}\n  \
          stepEnvironments:\n  - {name: L, enableIf: false, variables: {V: x}}\n  \
@@ -2024,7 +2026,8 @@ fn summary_says_why_each_environment_is_not_entered() {
         serde_json::json!([
             {"name": "G2", "source": "JobTemplate", "status": "superseded",
              "exclusive_group": "G", "superseded_by": {"name": "Att", "source": env}},
-            {"name": "Off", "source": "JobTemplate", "status": "disabled"},
+            {"name": "Off", "source": "JobTemplate", "status": "disabled",
+             "exclusive_group": "H"},
             {"name": "L", "source": "stepEnvironments", "status": "disabled"},
         ])
     );
