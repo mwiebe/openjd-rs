@@ -464,6 +464,39 @@ fn attached_environments_get_each_status() {
 }
 
 #[test]
+fn job_and_step_environments_are_disabled_with_attachments_present() {
+    // The Job and Step Environments' statuses do not depend on whether
+    // Environment Templates are attached: Step T turns off Off and G1 and
+    // disables L with an attachment in front of them, which takes no part
+    // in their groups.
+    let created = create_labelled(&job(), &[&env("name: Q")], &["queue/q.yaml"]);
+    assert_eq!(
+        statuses(&created, 1),
+        [
+            "attached Q@queue/q.yaml: entered",
+            "job Def@JobTemplate: entered",
+            "job Off@JobTemplate: disabled",
+            "job G1@JobTemplate: disabled",
+            "job G2@JobTemplate: entered",
+            "step L@JobTemplate: disabled",
+            "step M@JobTemplate: entered",
+        ]
+    );
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached Q@queue/q.yaml: entered",
+            "job Def@JobTemplate: declined",
+            "job Req@JobTemplate: entered",
+            "job Off@JobTemplate: entered",
+            "job G1@JobTemplate: entered",
+            "job G2@JobTemplate: superseded",
+            "step L@JobTemplate: entered",
+        ]
+    );
+}
+
+#[test]
 fn a_disabled_attachment_does_not_supersede_the_next() {
     let jt = format!("{HEAD}steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n");
     let created = create(
@@ -533,7 +566,16 @@ fn an_optional_entry_that_names_nothing_is_not_found() {
         ["attached Docker@EnvironmentTemplate[0]: entered"]
     );
     // Each one also produced a warning.
-    assert_eq!(created.warnings.len(), 2);
+    let warning = |i: usize, name: &str| {
+        format!(
+            "JobTemplate -> steps[0] -> dependencies[{i}] -> environment: names Environment \
+             '{name}', which is not a jobEnvironments entry of the Job Template, and none of the \
+             attached Environment Templates (EnvironmentTemplate[0]) defines it. The entry has \
+             'required: false', so it has no effect."
+        )
+    };
+    let warnings: Vec<String> = created.warnings.iter().map(ToString::to_string).collect();
+    assert_eq!(warnings, [warning(0, "Gpu"), warning(3, "Cache")]);
     // An optional entry that names an attachment is not in the list, even
     // when the attachment is then disabled for the Step.
     let created = create(
@@ -571,5 +613,14 @@ fn an_optional_entry_names_nothing_with_no_attachment() {
     );
     let created = create(&jt, &[]);
     assert_eq!(not_found(&created, 0), [(1, "Gpu")]);
+    let warnings: Vec<String> = created.warnings.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        warnings,
+        [
+            "steps[0] -> dependencies[1] -> environment: names Environment 'Gpu', which is not a \
+          jobEnvironments entry of the Job Template, and no Environment Template is attached. The \
+          entry has 'required: false', so it has no effect."
+        ]
+    );
     assert_eq!(statuses(&created, 0), ["job A@JobTemplate: entered"]);
 }

@@ -154,6 +154,11 @@ Environment list. The `activation` itself is not copied to `job::Environment`: t
 not a property of the Environment, decides entry (plan P3 put it there for display; `openjd
 summary` shows each Step's set from this field instead, so it is not needed).
 
+Both fields are `#[serde(default, skip_serializing_if = "Option::is_none")]`, so a Job without
+Environment parameters, `ON_REQUEST` Environments, Environment `enableIf`s, or disabled
+`environment:` entries serializes exactly as before. They
+participate in the derived `PartialEq` and `Hash` of `Step`.
+
 The Job records only which Environments a Step enters, not why the others are left out. That
 belongs to job creation, which returns it beside the Job in `CreatedJob::environment_statuses`
 (see [public-api.md](public-api.md)): per Step, every Environment it considered in the Job's
@@ -161,11 +166,6 @@ Environment order, each `Entered`, `Declined`, `Disabled` or `Superseded`, and i
 `required: false` entries that named nothing. It is not a `Step` field because it describes the
 decisions of one submission and no Session needs it, and keeping it out leaves the Job's
 serialized form unchanged.
-
-Both fields are `#[serde(default, skip_serializing_if = "Option::is_none")]`, so a Job without
-Environment parameters, `ON_REQUEST` Environments, Environment `enableIf`s, or disabled
-`environment:` entries serializes exactly as before. They
-participate in the derived `PartialEq` and `Hash` of `Step`.
 
 **Equality.** A Session may run Tasks of two Steps without exiting and re-entering Job
 Environments between them only when they enter the same Job Environments

@@ -449,7 +449,9 @@ Template without ENV_PARAMS every one of its own Environments is
 still be `Disabled` or `Superseded`. [`create_job`] returns only the Job;
 a caller that wants the statuses calls
 [`create_job_with_environment_templates`] with no attachments, which is
-what `create_job` does.
+what `create_job` does. `CreatedJob` has public fields and is not `#[non_exhaustive]`, so
+adding `environment_statuses` breaks code outside the crate that builds a `CreatedJob` with a
+struct literal or destructures it without `..`; reading its fields is unaffected.
 
 [`check_environment_templates`] runs, on a decoded Job Template before
 any Job Parameter values exist, the submission-stage checks that need

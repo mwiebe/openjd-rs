@@ -1997,9 +1997,14 @@ fn summary_says_why_each_environment_is_not_entered() {
         "expected:\n{expected}\nin:\n{stdout}"
     );
     // The entry's warning still goes to stderr.
-    assert!(
-        stderr.contains("dependencies[1] -> environment"),
-        "{stderr}"
+    assert_eq!(
+        stderr,
+        format!(
+            "WARNING: JobTemplate -> steps[0] -> dependencies[1] -> environment: names \
+             Environment 'Gpu', which is not a jobEnvironments entry of the Job Template, and \
+             none of the attached Environment Templates ({env}) defines it. The entry has \
+             'required: false', so it has no effect.\n"
+        )
     );
     let (code, stdout, stderr) = run_cli(&[
         "summary",

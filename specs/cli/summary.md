@@ -270,7 +270,8 @@ an error is returned with the job name for context.
 
 ## Internal Types
 
-Nine private structs organize the collected summary data:
+These private structs organize the collected summary data (the result types that print
+it, `JobSummaryResult` and `StepSummaryResult`, are not shown):
 
 ```rust
 struct StepEnvSets {                     // per Step, with ENV_PARAMS

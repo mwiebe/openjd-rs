@@ -1310,11 +1310,14 @@ Environments and the attached ones are handled alike.
   before. Discarded requirements take no part in the combination (§3.3.3).
 
 The result, `CreatedJob { job, environment_documents, warnings, disabled_environments,
-discarded_host_requirements }`, holds the combined Job, the document of each of its
-`job_environments`, the warnings as `SubmissionWarning { path, message }`, for each Step the
-Environments an `enableIf` disabled or a group superseded (`StepDisabledEnvironments`; see
-[Environment enableIf](#environment-enableif-env_params) and
-[Exclusive groups](#exclusive-groups-env_params)), and for each Step the host
+environment_statuses, discarded_host_requirements }`, holds the combined Job, the document of
+each of its `job_environments`, the warnings as `SubmissionWarning { path, message }`, for
+each Step the Environments an `enableIf` disabled or a group superseded
+(`StepDisabledEnvironments`; see [Environment enableIf](#environment-enableif-env_params) and
+[Exclusive groups](#exclusive-groups-env_params)), for each Step every Environment it
+considered with its status and its optional entries that named nothing
+(`StepEnvironmentStatuses`; see [Environment statuses](#environment-statuses-env_params)),
+and for each Step the host
 requirements that resolved to nothing and were discarded (`DiscardedHostRequirement`, the
 Step's own first, then each entered Environment's in Job order; Template Schemas §3.3).
 
