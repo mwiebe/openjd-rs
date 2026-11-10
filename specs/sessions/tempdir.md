@@ -197,7 +197,7 @@ be deleted, including locked.bin. Files are still locked open by: powershell.exe
 `remove_dir_all` stops at the first file it cannot delete and leaves everything else in
 place, so the files left are not the ones to report. Instead, the warning checks each
 regular file left, up to 10 000 of them, with
-`win32_file_locks::cannot_delete_now`. That opens the file for `DELETE` with all
+`win32_file_locks::check_deletion`. That opens the file for `DELETE` with all
 sharing allowed, and reports it when the open fails with a sharing violation (a handle
 that does not share deletion) or access denied (ACLs that refuse deletion). A running
 program's image accepts `DELETE` but cannot be deleted. So a file that opens and starts
@@ -207,11 +207,12 @@ check, because any handle that does not share writing fails it, although the fil
 be deleted. A program file held open that way by something other than the loader, such
 as a scanner, is still reported. A program file that refuses writing, because it is
 read-only or its ACL denies writing, fails the second open with access denied whether
-or not it runs. Up to 16 such files are each asked about with the Restart Manager after
-the walk, and one is reported if a process has it open. More than 16 makes the count
-read "At least N". These queries are made one file at a time because the Restart
-Manager takes about 45 ms per read-only file whether it is asked about one or many.
-The check only opens and reads files: it deletes
+or not it runs. The first 16 such files are each asked about with the Restart Manager
+after the walk, and one is reported if a process has it open. Any after the first 16 are
+not asked about, so a running image among them goes unreported, and the warning says the
+list may be incomplete (see below). The Restart Manager takes about 45 ms per read-only
+file whether it is asked about one or many, so asking about them together would not be
+faster. The check only opens and reads files: it deletes
 nothing, and does not follow symbolic links or junctions.
 
 Working this out takes time on every failed attempt, on top of the delays:
@@ -219,16 +220,22 @@ Working this out takes time on every failed attempt, on top of the delays:
 - checking up to 10 000 files: a few seconds (1.5 to 3.5 s on the Windows machines it
   was measured on);
 - up to 16 Restart Manager queries for program files that refuse writing: up to about
-  0.7 s (2000 read-only program files plus one held file cost 2.3 s in total);
-- one Restart Manager query for the holders of up to 256 reported files: tens of
-  milliseconds, or about 45 ms per file when they are read-only, so up to about 12 s.
+  0.7 s (2000 read-only program files plus one held file took 1.3 to 2.3 s in total);
+- one Restart Manager query for the holders of up to 256 reported files: about 75 ms
+  per file a process holds open, and about 45 ms per read-only file, so up to about 19 s
+  (256 held files took 19 s). Python's lookup asks about as many files, so it costs the
+  same.
 
-So a cleanup that gives up can take 31 s plus six times that. When a limit is reached,
-the count reads "At least N".
+So a cleanup that gives up can take 31 s plus six times that.
+
+When a limit was reached, so there may be more files than were reported, the count
+reads "At least N". When none was found but not every file could be checked or asked
+about, the line says "No file that cannot be deleted was found, but not every file
+could be checked."
 
 A failed holder lookup is reported in the same line instead of the process list. When
-no file is reported, for instance because only a directory is held open, the line
-names no files or processes.
+no file is reported and every file was checked, for instance because only a directory
+is held open, the line names no files or processes.
 
 The removal itself stays with `std::fs::remove_dir_all` rather than a walk that keeps
 going past failures, as Python's does. The job's processes can write to the directory
@@ -252,17 +259,23 @@ stop, as Python's `strerror` text has neither.
    access denied, so it reports the file, retries for about 31 s, and fails.
 3. **Capped counts.** When 256 undeletable files are found, or 10 000 files have been
    checked, Rust says "At least N file(s)". Python, which keeps only the first 256
-   failed paths, says "256 file(s)".
-4. **Calling `cleanup()` again.** `TempDir` marks itself cleaned up before the first
+   failed paths, says "256 file(s)". When Rust finds none but could not check every
+   file, it says so; Python has no such case.
+4. **Running programs that refuse writing.** Python reports the paths `rmtree` failed
+   on, so it always names a running program whose file is read-only or denies writing.
+   Rust can tell such a file apart only by asking the Restart Manager, and asks about
+   the first 16 (see above), so with more than 16 such program files left in the
+   directory it can miss one.
+5. **Calling `cleanup()` again.** `TempDir` marks itself cleaned up before the first
    attempt, so a second call returns `Ok(())` without trying again, even if the first
    failed. Python's has no such flag and tries again. `Session::cleanup()` calls it
    once either way.
-5. **The error after giving up.** Rust's `Session::cleanup()` logs one line,
+6. **The error after giving up.** Rust's `Session::cleanup()` logs one line,
    `Files within temporary directory <dir> could not be deleted: <reason>`, with the
    last error's reason formatted as in the warnings. Python logs
    `Files within temporary directory <dir> could not be deleted.` followed by one line
    per failed path with its exception's `repr`, and a traceback.
-6. **A failed holder lookup.** Both say
+7. **A failed holder lookup.** Both say
    `The processes holding them open could not be determined: <reason>.` Python's reason
    starts with the exception's type, as in `OSError: RmGetList failed (5)`; Rust's is
    only the message, `RmGetList failed (5)`.

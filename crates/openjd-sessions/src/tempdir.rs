@@ -558,6 +558,10 @@ fn describe_failed_attempt(
             names.join(", ")
         ));
         msg.push_str(&describe_holders(holders));
+    } else if truncated {
+        msg.push_str(
+            " No file that cannot be deleted was found, but not every file could be checked.",
+        );
     }
     match retry_in {
         Some(d) => msg.push_str(&format!(" Retrying in {} s.", d.as_secs_f64())),
@@ -854,6 +858,12 @@ mod tests {
             "Could not delete temporary directory root: file in use. At least 1 file(s) \
              could not be deleted, including a. Giving up."
         );
+        let none_found = describe_failed_attempt(dir, &sharing_violation(), &[], true, None, None);
+        assert_eq!(
+            none_found,
+            "Could not delete temporary directory root: file in use. No file that cannot be \
+             deleted was found, but not every file could be checked. Giving up."
+        );
     }
 
     /// The reason drops std's ` (os error N)` suffix and a final full stop, as
@@ -976,6 +986,24 @@ mod tests {
         let (found, truncated) =
             undeletable_files(td.path(), 10, 2, check, |unknown| (unknown.to_vec(), false));
         assert_eq!(found.len(), 2, "settled files are capped at the limit too");
+        assert!(truncated);
+
+        // Undecided files met before the refused ones that reach the limit
+        // are not settled: the result is full already.
+        let td = TempDir::new(None, None, None).unwrap();
+        for name in ["a_undecided", "b_refused"] {
+            std::fs::write(td.path().join(name), b"x").unwrap();
+        }
+        let check = |p: &Path| {
+            if p.ends_with("b_refused") {
+                DeleteCheck::Refused
+            } else {
+                DeleteCheck::Unknown
+            }
+        };
+        let (found, truncated) =
+            undeletable_files(td.path(), 10, 1, check, |_| panic!("the limit was reached"));
+        assert_eq!(names(found), ["b_refused"]);
         assert!(truncated);
     }
 
@@ -1148,6 +1176,73 @@ mod tests {
                 .collect();
             assert_eq!(warns.len(), 1);
             assert_eq!(warns[0].body, expected);
+        });
+    }
+
+    /// A running program whose ACL denies writing cannot be told apart by
+    /// opening it, so cleanup asks the Restart Manager about it, and the
+    /// warning names it and its process.
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_names_a_running_program_that_refuses_writing() {
+        use std::os::windows::process::CommandExt;
+        let run_hidden = |program: &str, args: &[&std::ffi::OsStr]| {
+            // CREATE_NO_WINDOW, so the test opens no console.
+            let status = std::process::Command::new(program)
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .creation_flags(0x0800_0000)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{program} {args:?}");
+        };
+        testing_logger::setup();
+        let mut td = TempDir::new(None, None, None).unwrap();
+        let exe = td.path().join("ping.exe");
+        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
+        let everyone = "*S-1-1-0";
+        let deny = format!("{everyone}:(WD)");
+        run_hidden(
+            "icacls",
+            &[exe.as_os_str(), "/deny".as_ref(), deny.as_ref()],
+        );
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let result = td.cleanup_with_delays(Some("session-1"), &[]);
+        let _ = child.kill();
+        let _ = child.wait();
+        run_hidden(
+            "icacls",
+            &[exe.as_os_str(), "/remove:d".as_ref(), everyone.as_ref()],
+        );
+        std::fs::remove_dir_all(td.path()).unwrap();
+        assert!(result.is_err(), "the running image was deleted");
+        let start = format!(
+            "Could not delete temporary directory {}: Access is denied. 1 file(s) could not \
+             be deleted, including ping.exe. Files are still locked open by: ",
+            td.path().display()
+        );
+        let ping = format!("ping.exe (pid {pid})");
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            let body = &warns[0].body;
+            // Other holders can appear beside ping.exe, such as a scanner
+            // inspecting the new executable.
+            let holders = body
+                .strip_prefix(&start)
+                .and_then(|rest| rest.strip_suffix(". Giving up."))
+                .unwrap_or_else(|| panic!("unexpected warning: {body}"));
+            assert!(holders.split(", ").any(|h| h == ping), "{body}");
         });
     }
 

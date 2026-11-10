@@ -77,7 +77,7 @@ pub(crate) fn check_deletion(path: &Path) -> DeleteCheck {
 /// Restart Manager about each in turn, and whether there were more than
 /// `max` to ask about.
 ///
-/// A query takes about 45 ms for a read-only file, and the candidates are
+/// A query takes about 45 ms per read-only file, and the candidates are
 /// program files that refuse writing, many of them read-only, so `max`
 /// bounds the time. Asking about several at once does not help: the cost is
 /// per read-only file either way. A failed query counts as nobody holding
