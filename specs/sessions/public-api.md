@@ -918,7 +918,7 @@ impl TempDir {
     /// is retried after 1, 2, 4, 8 and 16 s, and each failed attempt is
     /// logged as a warning naming the files that cannot be deleted and
     /// the processes holding them open. Finding those can take seconds
-    /// per attempt (up to about 20 s with hundreds of held files), so a
+    /// per attempt (up to about 25 s with hundreds of held files), so a
     /// removal that keeps failing blocks for 31 s plus that time. Returns `SessionError::TempDir` with the
     /// last error when removal still fails, including `NotFound` when
     /// the directory was already gone before the first attempt. See

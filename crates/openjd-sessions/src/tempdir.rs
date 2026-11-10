@@ -338,18 +338,28 @@ pub(crate) const CLEANUP_RETRY_DELAYS: &[Duration] = &[
 #[cfg(not(windows))]
 pub(crate) const CLEANUP_RETRY_DELAYS: &[Duration] = &[];
 
-/// Most files a failed cleanup checks for one that cannot be deleted. Checking
-/// 10 000 files takes a few seconds on Windows.
-const MAX_FILES_TO_CHECK: usize = 10_000;
-/// Most undeletable files a failed cleanup passes to the holder lookup.
-const MAX_FILES_TO_INSPECT: usize = 256;
+/// How much a failed cleanup attempt looks at to find what blocks it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScanLimits {
+    /// Most files checked for one that cannot be deleted. Checking 10 000
+    /// files takes a few seconds on Windows.
+    check: usize,
+    /// Most undeletable files reported, and passed to the holder lookup.
+    report: usize,
+    /// Most program files that refuse writing asked about, one at a time,
+    /// to find which are running images. Each query takes about 45 ms for a
+    /// read-only file.
+    settle: usize,
+}
+
+/// The limits every failed cleanup attempt uses.
+const SCAN_LIMITS: ScanLimits = ScanLimits {
+    check: 10_000,
+    report: 256,
+    settle: 16,
+};
 /// Most undeletable file names a failed-attempt log line lists.
 const MAX_FILES_TO_NAME: usize = 3;
-/// Most program files that refuse writing a failed cleanup attempt asks the
-/// Restart Manager about, one at a time, to find which are running images.
-/// Each query takes about 45 ms for a read-only file.
-#[cfg(windows)]
-const MAX_UNDECIDED_TO_SETTLE: usize = 16;
 
 /// What opening a file says about whether deleting it would fail now.
 #[cfg_attr(not(windows), allow(dead_code, reason = "only Windows checks files"))]
@@ -425,17 +435,14 @@ fn log_failed_attempt(
     #[cfg(windows)]
     let (check, settle) = (
         crate::win32_file_locks::check_deletion,
-        |unknown: &[PathBuf]| {
-            crate::win32_file_locks::held_by_some_process(unknown, MAX_UNDECIDED_TO_SETTLE)
-        },
+        crate::win32_file_locks::held_by_some_process,
     );
     #[cfg(not(windows))]
     let (check, settle) = (
         |_: &Path| DeleteCheck::Allowed,
-        |_: &[PathBuf]| (Vec::new(), false),
+        |_: &[PathBuf], _: usize| (Vec::new(), false),
     );
-    let (stuck, truncated) =
-        undeletable_files(dir, MAX_FILES_TO_CHECK, MAX_FILES_TO_INSPECT, check, settle);
+    let (stuck, truncated) = undeletable_files(dir, SCAN_LIMITS, check, settle);
     #[cfg(windows)]
     let holders = (!stuck.is_empty()).then(|| crate::win32_file_locks::processes_holding(&stuck));
     #[cfg(not(windows))]
@@ -453,65 +460,71 @@ fn log_failed_attempt(
     }
 }
 
-/// The regular files under `dir` that cannot be deleted, at most `limit` of
-/// them, checking at most `scan_limit` files. The flag is true when there may
-/// be more: the scan or `settle` stopped early, or `limit` was reached.
+/// The regular files under `dir` that cannot be deleted, at most
+/// `limits.report` of them, checking at most `limits.check` files. The flag
+/// is true when there may be more: the scan or `settle` stopped early, or
+/// `limits.report` was reached.
 ///
 /// `check` looks at one file. The files it cannot decide on are passed to
-/// `settle` together, once, which returns those that cannot be deleted and
-/// whether it stopped early; asking about them together keeps the cost of a
-/// tree with many such files bounded.
+/// `settle` together, once, with `limits.settle`, and it returns those that
+/// cannot be deleted and whether it stopped early.
 ///
-/// A failed `remove_dir_all` stops at the first file it cannot delete and
-/// leaves the rest in place, so the files left are not the ones to report:
-/// each is checked instead. The walk only reads, and does not follow symbolic
-/// links or junctions, so a link swapped in while it runs can at worst change
-/// what is reported.
+/// The walk is depth-first in listing order, entering each subdirectory
+/// when it is listed, as `remove_dir_all` and Python's `rmtree` do, so the
+/// file that stopped `remove_dir_all` comes first. That matters because
+/// `remove_dir_all` stops at the first file it cannot delete and leaves the
+/// rest in place, so the files left are not the ones to report: each is
+/// checked instead. The walk only reads, and does not follow symbolic links
+/// or junctions, so a link swapped in while it runs can at worst change what
+/// is reported.
 fn undeletable_files(
     dir: &Path,
-    scan_limit: usize,
-    limit: usize,
+    limits: ScanLimits,
     mut check: impl FnMut(&Path) -> DeleteCheck,
-    settle: impl FnOnce(&[PathBuf]) -> (Vec<PathBuf>, bool),
+    settle: impl FnOnce(&[PathBuf], usize) -> (Vec<PathBuf>, bool),
 ) -> (Vec<PathBuf>, bool) {
     let mut found = Vec::new();
     let mut unknown = Vec::new();
     let mut checked = 0;
     let mut truncated = false;
-    let mut pending = vec![dir.to_path_buf()];
-    'walk: while let Some(d) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&d) else {
+    let mut open: Vec<std::fs::ReadDir> = std::fs::read_dir(dir).into_iter().collect();
+    'walk: while let Some(entries) = open.last_mut() {
+        let Some(entry) = entries.next() else {
+            open.pop();
             continue;
         };
-        for entry in entries.flatten() {
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                if checked == scan_limit || found.len() == limit {
-                    truncated = true;
-                    break 'walk;
-                }
-                checked += 1;
-                let path = entry.path();
-                match check(&path) {
-                    DeleteCheck::Refused => found.push(path),
-                    DeleteCheck::Unknown => unknown.push(path),
-                    DeleteCheck::Allowed => {}
-                }
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if let Ok(sub) = std::fs::read_dir(entry.path()) {
+                open.push(sub);
+            }
+        } else if kind.is_file() {
+            if checked == limits.check || found.len() == limits.report {
+                truncated = true;
+                break 'walk;
+            }
+            checked += 1;
+            let path = entry.path();
+            match check(&path) {
+                DeleteCheck::Refused => found.push(path),
+                DeleteCheck::Unknown => unknown.push(path),
+                DeleteCheck::Allowed => {}
             }
         }
     }
-    if found.len() < limit && !unknown.is_empty() {
-        let (held, stopped_early) = settle(&unknown);
+    if found.len() < limits.report && !unknown.is_empty() {
+        let (held, stopped_early) = settle(&unknown, limits.settle);
         truncated |= stopped_early;
         found.extend(held);
     }
-    if found.len() >= limit {
+    if found.len() >= limits.report {
         truncated = true;
-        found.truncate(limit);
+        found.truncate(limits.report);
     }
     (found, truncated)
 }
@@ -691,6 +704,17 @@ fn create_unique_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs a closure when dropped, also while a failing test unwinds, so a
+    /// test that fails does not leave its directory, process or ACL change
+    /// behind. The closure must not panic.
+    pub(crate) struct OnDrop<F: FnMut()>(pub(crate) F);
+
+    impl<F: FnMut()> Drop for OnDrop<F> {
+        fn drop(&mut self) {
+            (self.0)()
+        }
+    }
 
     #[test]
     fn tempdir_debug() {
@@ -883,6 +907,19 @@ mod tests {
         assert_eq!(error_reason(&ended), "file in use");
     }
 
+    /// Limits for the walk tests, with a `settle` limit the tests can spot.
+    fn limits(check: usize, report: usize) -> ScanLimits {
+        ScanLimits {
+            check,
+            report,
+            settle: 7,
+        }
+    }
+
+    fn no_settle(_: &[PathBuf], _: usize) -> (Vec<PathBuf>, bool) {
+        panic!("no file was undecided");
+    }
+
     /// Walks subdirectories, reports only the files the check refuses, and
     /// stops at either limit.
     #[test]
@@ -900,39 +937,26 @@ mod tests {
                 DeleteCheck::Allowed
             }
         };
-        let no_settle = |_: &[PathBuf]| -> (Vec<PathBuf>, bool) {
-            panic!("no file was undecided");
-        };
-        let (all, truncated) = undeletable_files(td.path(), 10, 10, flagged, no_settle);
+        let (all, truncated) = undeletable_files(td.path(), limits(10, 10), flagged, no_settle);
         assert_eq!(names(all), ["x1", "x2", "x3"]);
         assert!(!truncated);
-        let (two, truncated) = undeletable_files(td.path(), 10, 2, flagged, no_settle);
+        let (two, truncated) = undeletable_files(td.path(), limits(10, 2), flagged, no_settle);
         assert_eq!(two.len(), 2);
         assert!(truncated, "stopped at the reporting limit");
         let mut checked = 0;
-        let (_, truncated) = undeletable_files(
-            td.path(),
-            3,
-            10,
-            |_| {
-                checked += 1;
-                DeleteCheck::Allowed
-            },
-            no_settle,
-        );
+        let count = |_: &Path| {
+            checked += 1;
+            DeleteCheck::Allowed
+        };
+        let (_, truncated) = undeletable_files(td.path(), limits(3, 10), count, no_settle);
         assert_eq!(checked, 3);
         assert!(truncated, "stopped at the scan limit");
         let mut checked = 0;
-        let (none, truncated) = undeletable_files(
-            td.path(),
-            4,
-            10,
-            |_| {
-                checked += 1;
-                DeleteCheck::Allowed
-            },
-            no_settle,
-        );
+        let count = |_: &Path| {
+            checked += 1;
+            DeleteCheck::Allowed
+        };
+        let (none, truncated) = undeletable_files(td.path(), limits(4, 10), count, no_settle);
         assert_eq!((none.len(), checked, truncated), (0, 4, false));
     }
 
@@ -945,9 +969,58 @@ mod tests {
         n
     }
 
-    /// Undecided files go to `settle` together, once, after the walk; the
-    /// ones it returns are reported, and its stopping early marks the result
-    /// incomplete.
+    /// The walk enters each subdirectory where it is listed, as
+    /// `remove_dir_all` does, so files are reported in that order, and a
+    /// file in the first subdirectory is found even when a later one holds
+    /// more files than the scan checks. (NTFS lists names in order; other
+    /// file systems need not, so this runs on Windows only.)
+    #[cfg(windows)]
+    #[test]
+    fn undeletable_files_walks_in_listing_order() {
+        let td = TempDir::new(None, None, None).unwrap();
+        for sub in ["a", "b", "c", "d"] {
+            std::fs::create_dir(td.path().join(sub)).unwrap();
+            std::fs::write(td.path().join(sub).join(format!("{sub}.bin")), b"x").unwrap();
+        }
+        std::fs::write(td.path().join("z_root.bin"), b"x").unwrap();
+        let (found, _) = undeletable_files(
+            td.path(),
+            limits(10, 10),
+            |_| DeleteCheck::Refused,
+            no_settle,
+        );
+        let relative: Vec<PathBuf> = found
+            .iter()
+            .map(|p| p.strip_prefix(td.path()).unwrap().to_path_buf())
+            .collect();
+        let expected: Vec<PathBuf> = ["a/a.bin", "b/b.bin", "c/c.bin", "d/d.bin", "z_root.bin"]
+            .iter()
+            .map(PathBuf::from)
+            .collect();
+        assert_eq!(relative, expected);
+
+        let td = TempDir::new(None, None, None).unwrap();
+        std::fs::create_dir(td.path().join("a_sub")).unwrap();
+        std::fs::write(td.path().join("a_sub").join("locked.bin"), b"x").unwrap();
+        std::fs::create_dir(td.path().join("b_sub")).unwrap();
+        for i in 0..10 {
+            std::fs::write(td.path().join("b_sub").join(format!("{i}.bin")), b"x").unwrap();
+        }
+        let locked = |p: &Path| {
+            if p.ends_with("locked.bin") {
+                DeleteCheck::Refused
+            } else {
+                DeleteCheck::Allowed
+            }
+        };
+        let (found, truncated) = undeletable_files(td.path(), limits(3, 10), locked, no_settle);
+        assert_eq!(names(found), ["locked.bin"]);
+        assert!(truncated);
+    }
+
+    /// Undecided files go to `settle` together, once, after the walk, with
+    /// the settle limit; the ones it returns are reported, and its stopping
+    /// early marks the result incomplete.
     #[test]
     fn undeletable_files_settles_undecided_files_together() {
         let td = TempDir::new(None, None, None).unwrap();
@@ -960,31 +1033,36 @@ mod tests {
             _ => DeleteCheck::Allowed,
         };
         let mut asked = Vec::new();
-        let (found, truncated) = undeletable_files(td.path(), 10, 10, check, |unknown| {
-            asked.push(names(unknown.to_vec()));
-            let held = unknown
-                .iter()
-                .filter(|p| p.ends_with("u2"))
-                .cloned()
-                .collect();
-            (held, false)
-        });
-        assert_eq!(asked, [["u1", "u2", "u3"]]);
+        let (found, truncated) =
+            undeletable_files(td.path(), limits(10, 10), check, |unknown, max| {
+                asked.push((names(unknown.to_vec()), max));
+                let held = unknown
+                    .iter()
+                    .filter(|p| p.ends_with("u2"))
+                    .cloned()
+                    .collect();
+                (held, false)
+            });
+        let u = |s: &str| s.to_string();
+        assert_eq!(asked, [(vec![u("u1"), u("u2"), u("u3")], 7)]);
         assert_eq!(names(found), ["r1", "u2"]);
         assert!(!truncated);
 
         let (found, truncated) =
-            undeletable_files(td.path(), 10, 10, check, |_| (Vec::new(), true));
+            undeletable_files(td.path(), limits(10, 10), check, |_, _| (Vec::new(), true));
         assert_eq!(names(found), ["r1"]);
         assert!(truncated, "settle stopped early");
 
-        let (found, truncated) =
-            undeletable_files(td.path(), 10, 1, check, |_| panic!("the limit was reached"));
+        let (found, truncated) = undeletable_files(td.path(), limits(10, 1), check, |_, _| {
+            panic!("the limit was reached")
+        });
         assert_eq!(names(found), ["r1"]);
         assert!(truncated);
 
         let (found, truncated) =
-            undeletable_files(td.path(), 10, 2, check, |unknown| (unknown.to_vec(), false));
+            undeletable_files(td.path(), limits(10, 2), check, |unknown, _| {
+                (unknown.to_vec(), false)
+            });
         assert_eq!(found.len(), 2, "settled files are capped at the limit too");
         assert!(truncated);
 
@@ -1001,8 +1079,9 @@ mod tests {
                 DeleteCheck::Unknown
             }
         };
-        let (found, truncated) =
-            undeletable_files(td.path(), 10, 1, check, |_| panic!("the limit was reached"));
+        let (found, truncated) = undeletable_files(td.path(), limits(10, 1), check, |_, _| {
+            panic!("the limit was reached")
+        });
         assert_eq!(names(found), ["b_refused"]);
         assert!(truncated);
     }
@@ -1011,11 +1090,14 @@ mod tests {
     #[test]
     fn failed_attempt_limits_and_log_content() {
         assert_eq!(
-            (MAX_FILES_TO_CHECK, MAX_FILES_TO_INSPECT, MAX_FILES_TO_NAME),
-            (10_000, 256, 3)
+            SCAN_LIMITS,
+            ScanLimits {
+                check: 10_000,
+                report: 256,
+                settle: 16
+            }
         );
-        #[cfg(windows)]
-        assert_eq!(MAX_UNDECIDED_TO_SETTLE, 16);
+        assert_eq!(MAX_FILES_TO_NAME, 3);
         // FILE_PATH | EXCEPTION_INFO | PROCESS_CONTROL
         assert_eq!(FAILED_ATTEMPT_LOG_CONTENT.bits(), 0b0011_0010);
     }
@@ -1099,6 +1181,10 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
         testing_logger::setup();
         let mut td = TempDir::new(None, None, None).unwrap();
+        let dir = td.path().to_path_buf();
+        let _remove = OnDrop(move || {
+            let _ = std::fs::remove_dir_all(&dir);
+        });
         let held = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -1214,14 +1300,26 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
+        // Stops ping, lifts the deny and removes the directory, also if
+        // cleanup panics.
+        let (guard_exe, dir) = (exe.clone(), td.path().to_path_buf());
+        let restore = OnDrop(move || {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::process::Command::new("icacls")
+                .args([
+                    guard_exe.as_os_str(),
+                    "/remove:d".as_ref(),
+                    everyone.as_ref(),
+                ])
+                .stdout(std::process::Stdio::null())
+                .creation_flags(0x0800_0000)
+                .status();
+            let _ = std::fs::remove_dir_all(&dir);
+        });
         let result = td.cleanup_with_delays(Some("session-1"), &[]);
-        let _ = child.kill();
-        let _ = child.wait();
-        run_hidden(
-            "icacls",
-            &[exe.as_os_str(), "/remove:d".as_ref(), everyone.as_ref()],
-        );
-        std::fs::remove_dir_all(td.path()).unwrap();
+        drop(restore);
+        assert!(!td.path().exists(), "the directory was left behind");
         assert!(result.is_err(), "the running image was deleted");
         let start = format!(
             "Could not delete temporary directory {}: Access is denied. 1 file(s) could not \
@@ -1254,6 +1352,10 @@ mod tests {
         use std::os::windows::fs::OpenOptionsExt;
         testing_logger::setup();
         let mut td = TempDir::new(None, None, None).unwrap();
+        let dir = td.path().to_path_buf();
+        let _remove = OnDrop(move || {
+            let _ = std::fs::remove_dir_all(&dir);
+        });
         let held = std::fs::OpenOptions::new()
             .write(true)
             .create(true)

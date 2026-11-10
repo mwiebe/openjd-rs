@@ -196,7 +196,9 @@ be deleted, including locked.bin. Files are still locked open by: powershell.exe
 
 `remove_dir_all` stops at the first file it cannot delete and leaves everything else in
 place, so the files left are not the ones to report. Instead, the warning checks each
-regular file left, up to 10 000 of them, with
+regular file left, up to 10 000 of them, depth-first in listing order, entering each
+subdirectory where it is listed, as `remove_dir_all` does, so the file that stopped it
+is checked first. Each is checked with
 `win32_file_locks::check_deletion`. That opens the file for `DELETE` with all
 sharing allowed, and reports it when the open fails with a sharing violation (a handle
 that does not share deletion) or access denied (ACLs that refuse deletion). A running
@@ -222,11 +224,12 @@ Working this out takes time on every failed attempt, on top of the delays:
 - up to 16 Restart Manager queries for program files that refuse writing: up to about
   0.7 s (2000 read-only program files plus one held file took 1.3 to 2.3 s in total);
 - one Restart Manager query for the holders of up to 256 reported files: about 75 ms
-  per file a process holds open, and about 45 ms per read-only file, so up to about 19 s
-  (256 held files took 19 s). Python's lookup asks about as many files, so it costs the
-  same.
+  per file a process holds open, and about 45 ms per read-only file, so up to about 20 s
+  (256 held files took 19 to 20 s). Python's lookup asks about as many files, so it
+  costs the same.
 
-So a cleanup that gives up can take 31 s plus six times that.
+So one failed attempt can take up to about 25 s, and a cleanup that gives up can take
+31 s plus six times that.
 
 When a limit was reached, so there may be more files than were reported, the count
 reads "At least N". When none was found but not every file could be checked or asked
@@ -247,10 +250,12 @@ change what is reported.
 #### Differences from Python
 
 These differences from Python's `TempDir.cleanup` (openjd-sessions-for-python #376) are
-intentional. Everything else about the warning matches: for a file held open without
-sharing deletion, both name the same file and holders, including behind hundreds of
-other files, and the reason drops std's ` (os error N)` suffix and the Windows full
-stop, as Python's `strerror` text has neither.
+intentional. Everything else about the warning matches: both walk the directory in
+listing order, entering each subdirectory where it is listed, so for files held open
+without sharing deletion both name the same files in the same order, and the same
+holders, including behind hundreds of other files. The reason drops std's
+` (os error N)` suffix and the Windows full stop, as Python's `strerror` text has
+neither.
 
 1. **What is left after the last attempt.** Python's `shutil.rmtree` keeps going past a
    file it cannot delete, so it leaves only the files that could not be deleted. Rust
