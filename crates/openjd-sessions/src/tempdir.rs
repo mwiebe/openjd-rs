@@ -282,17 +282,12 @@ impl TempDir {
     /// [`SessionError::TempDir`] with the last error when removal still fails,
     /// including `NotFound` when the directory was gone before the first attempt.
     pub fn cleanup(&mut self) -> Result<(), SessionError> {
-        self.cleanup_logged(None)
+        self.cleanup_with_delays(None, CLEANUP_RETRY_DELAYS)
     }
 
-    /// [`Self::cleanup`], logging each failed attempt against `session_id`.
-    pub(crate) fn cleanup_logged(&mut self, session_id: Option<&str>) -> Result<(), SessionError> {
-        self.cleanup_with_delays(session_id, CLEANUP_RETRY_DELAYS)
-    }
-
-    /// [`Self::cleanup_logged`] with the given retry delays, so tests can
-    /// shorten them.
-    fn cleanup_with_delays(
+    /// [`Self::cleanup`], retrying a failed removal after each of `delays` and
+    /// logging each failed attempt against `session_id`.
+    pub(crate) fn cleanup_with_delays(
         &mut self,
         session_id: Option<&str>,
         delays: &[Duration],
@@ -344,7 +339,7 @@ pub(crate) const CLEANUP_RETRY_DELAYS: &[Duration] = &[
 pub(crate) const CLEANUP_RETRY_DELAYS: &[Duration] = &[];
 
 /// Most files a failed cleanup checks for one that cannot be deleted. Checking
-/// 10 000 files takes about 1.5 s on Windows.
+/// 10 000 files takes a few seconds on Windows.
 const MAX_FILES_TO_CHECK: usize = 10_000;
 /// Most undeletable files a failed cleanup passes to the holder lookup.
 const MAX_FILES_TO_INSPECT: usize = 256;
@@ -480,7 +475,7 @@ fn undeletable_files(
 
 /// `err`'s text as Python's `strerror` gives it: without std's ` (os error N)`
 /// suffix, or the full stop that ends Windows system messages.
-fn error_reason(err: &std::io::Error) -> String {
+pub(crate) fn error_reason(err: &std::io::Error) -> String {
     let text = err.to_string();
     let text = match err.raw_os_error() {
         Some(code) => text
@@ -976,7 +971,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(500));
             drop(held);
         });
-        let result = td.cleanup_logged(Some("session-1"));
+        let result = td.cleanup_with_delays(Some("session-1"), CLEANUP_RETRY_DELAYS);
         release.join().unwrap();
         result.unwrap();
         assert!(!td.path().exists());

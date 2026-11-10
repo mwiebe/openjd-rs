@@ -28,8 +28,6 @@ use crate::tempdir::FileHolder;
 const ACCESS_DENIED: i32 = 5;
 /// `ERROR_SHARING_VIOLATION`.
 const SHARING_VIOLATION: i32 = 32;
-/// `ERROR_LOCK_VIOLATION`.
-const LOCK_VIOLATION: i32 = 33;
 /// The `DELETE` access right.
 const DELETE: u32 = 0x0001_0000;
 /// The `FILE_WRITE_DATA` access right.
@@ -39,15 +37,18 @@ const SHARE_ALL: u32 = 0x7;
 /// `FILE_FLAG_OPEN_REPARSE_POINT`: open a link itself, never its target.
 const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
-/// Whether deleting the file at `path` would fail now. Only opens it, and
-/// never deletes or changes anything.
+/// Whether deleting the file at `path` would fail now. Only opens and reads
+/// it, and never deletes or changes anything.
 ///
 /// Opening for `DELETE` fails with a sharing violation when another handle
-/// does not share deletion, and with access denied when the file's ACL does
-/// not allow deleting it. A running program's image accepts `DELETE` but
-/// cannot be deleted; opening it for writing as well fails with a sharing
-/// violation. A read-only file fails that second open with access denied,
-/// but can be deleted, so access denied there does not count.
+/// does not share deletion, and with access denied when the ACLs do not allow
+/// deleting it. A running program's image accepts `DELETE` but cannot be
+/// deleted. For a program file (one starting with the `MZ` of a Windows
+/// executable), opening for `DELETE` and writing as well tells it apart: that
+/// fails with a sharing violation while the image is mapped. Other files skip
+/// that check, because any handle that does not share writing fails it too,
+/// although the file can be deleted. A program file held open that way by
+/// something other than the loader is still reported.
 pub(crate) fn cannot_delete_now(path: &Path) -> bool {
     let refused = |access: u32| {
         std::fs::OpenOptions::new()
@@ -59,13 +60,26 @@ pub(crate) fn cannot_delete_now(path: &Path) -> bool {
             .and_then(|e| e.raw_os_error())
     };
     match refused(DELETE) {
-        Some(SHARING_VIOLATION | LOCK_VIOLATION | ACCESS_DENIED) => true,
+        Some(SHARING_VIOLATION | ACCESS_DENIED) => true,
         Some(_) => false,
-        None => matches!(
-            refused(DELETE | FILE_WRITE_DATA),
-            Some(SHARING_VIOLATION | LOCK_VIOLATION)
-        ),
+        None => {
+            is_program_file(path) && refused(DELETE | FILE_WRITE_DATA) == Some(SHARING_VIOLATION)
+        }
     }
+}
+
+/// Whether the file starts with `MZ`, as every Windows executable image does.
+fn is_program_file(path: &Path) -> bool {
+    use std::io::Read;
+    let mut magic = [0u8; 2];
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(SHARE_ALL)
+        .custom_flags(OPEN_REPARSE_POINT)
+        .open(path)
+        .and_then(|mut f| f.read_exact(&mut magic))
+        .is_ok()
+        && magic == *b"MZ"
 }
 
 /// Returns the processes that hold any of `files` open.
@@ -252,10 +266,66 @@ mod tests {
             "a holder that shares reading and writing only"
         );
 
+        // A holder sharing reading and deletion but not writing does not stop
+        // deletion, so only a program file held that way is reported (see the
+        // doc comment).
+        let doc = dir.path().join("doc.txt");
+        std::fs::write(&doc, b"text").unwrap();
+        let _doc = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0x1 | 0x4)
+            .open(&doc)
+            .unwrap();
+        assert!(!cannot_delete_now(&doc), "a read holder sharing deletion");
+
         assert!(!cannot_delete_now(&dir.path().join("missing.bin")));
     }
 
+    fn run_hidden(program: &str, args: &[&std::ffi::OsStr]) {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW, so the test opens no console.
+        let status = std::process::Command::new(program)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{program} {args:?}");
+    }
+
+    /// A file whose ACLs refuse deletion: the file denies `DELETE` and its
+    /// directory denies deleting children, to everyone.
+    #[test]
+    fn cannot_delete_now_flags_a_file_the_acls_protect() {
+        let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
+        let sub = dir.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let file = sub.join("protected.bin");
+        std::fs::write(&file, b"x").unwrap();
+        let deny = |path: &Path, right: &str| {
+            let ace = format!("*S-1-1-0:({right})");
+            run_hidden(
+                "icacls",
+                &[path.as_os_str(), "/deny".as_ref(), ace.as_ref()],
+            )
+        };
+        deny(&file, "DE");
+        deny(&sub, "DC");
+        let flagged = cannot_delete_now(&file);
+        let removed = std::fs::remove_file(&file);
+        for path in [&sub, &file] {
+            run_hidden(
+                "icacls",
+                &[path.as_os_str(), "/remove:d".as_ref(), "*S-1-1-0".as_ref()],
+            );
+        }
+        assert!(removed.is_err(), "the protected file was deleted");
+        assert!(flagged);
+    }
+
     /// A running program's image accepts `DELETE` access but cannot be deleted.
+    /// The Restart Manager names its holder by image file name, not by the
+    /// program's description ("TCP/IP Ping Command").
     #[test]
     fn cannot_delete_now_flags_a_running_program() {
         use std::os::windows::process::CommandExt;
@@ -271,11 +341,21 @@ mod tests {
             .spawn()
             .unwrap();
         let flagged = cannot_delete_now(&exe);
+        let holders = processes_holding(std::slice::from_ref(&exe));
         let removed = std::fs::remove_file(&exe);
+        let pid = child.id();
         let _ = child.kill();
         let _ = child.wait();
         assert!(removed.is_err(), "the running image was deleted");
         assert!(flagged);
+        // Other holders can appear too, such as a scanner inspecting the new
+        // executable.
+        let holders = holders.unwrap();
+        let ping = FileHolder {
+            pid,
+            name: "ping.exe".to_string(),
+        };
+        assert!(holders.contains(&ping), "{holders:?}");
     }
 
     #[test]

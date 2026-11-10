@@ -197,7 +197,7 @@ const CLEANUP_FAILURE_LOG_CONTENT: LogContent =
 /// continues, so without this the directory is left on disk with no trace.
 fn log_cleanup_failure(session_id: &str, path: &Path, err: &SessionError) {
     let reason = match err {
-        SessionError::TempDir { source, .. } => source.to_string(),
+        SessionError::TempDir { source, .. } => crate::tempdir::error_reason(source),
         other => other.to_string(),
     };
     session_log!(
@@ -1155,6 +1155,12 @@ impl Session {
 
     /// Clean up the session. Deletes working directory if not retained.
     pub fn cleanup(&mut self) {
+        self.cleanup_with_delays(crate::tempdir::CLEANUP_RETRY_DELAYS);
+    }
+
+    /// [`Self::cleanup`], retrying a failed removal after each of `delays`, so
+    /// tests can shorten them.
+    fn cleanup_with_delays(&mut self, delays: &[std::time::Duration]) {
         if self.cleanup_called {
             return;
         }
@@ -1215,12 +1221,12 @@ impl Session {
                 if let Some(ref mut files_dir) = self._files_dir {
                     files_dir.mark_cleaned_up();
                 }
-                if let Err(e) = working_dir.cleanup_logged(Some(&self.session_id)) {
+                if let Err(e) = working_dir.cleanup_with_delays(Some(&self.session_id), delays) {
                     log_cleanup_failure(&self.session_id, working_dir.path(), &e);
                 }
             } else {
                 if let Some(ref mut files_dir) = self._files_dir {
-                    if let Err(e) = files_dir.cleanup_logged(Some(&self.session_id)) {
+                    if let Err(e) = files_dir.cleanup_with_delays(Some(&self.session_id), delays) {
                         log_cleanup_failure(&self.session_id, files_dir.path(), &e);
                     }
                 }
@@ -3544,11 +3550,108 @@ mod cleanup_failure_log_tests {
         });
     }
 
+    /// The reason reads like the failed-attempt warnings: without std's
+    /// ` (os error N)` suffix or the Windows full stop.
+    #[test]
+    fn cleanup_failure_reason_drops_the_os_error_code() {
+        testing_logger::setup();
+        let source = std::io::Error::from_raw_os_error(2);
+        let reason = crate::tempdir::error_reason(&source);
+        let err = SessionError::TempDir {
+            path: PathBuf::from("session-dir"),
+            source,
+        };
+        log_cleanup_failure("session-1", Path::new("session-dir"), &err);
+        testing_logger::validate(|logs| {
+            assert_eq!(
+                logs[0].body,
+                format!(
+                    "Files within temporary directory session-dir could not be deleted: {reason}"
+                )
+            );
+            assert!(!logs[0].body.contains("os error"), "{}", logs[0].body);
+        });
+    }
+
     /// Written as a literal so a changed flag fails here.
     #[test]
     fn cleanup_failure_log_content_is_exception_info_and_file_path() {
         // FILE_PATH | EXCEPTION_INFO
         assert_eq!(CLEANUP_FAILURE_LOG_CONTENT.bits(), 0b0001_0010);
+    }
+
+    /// A file held open in the embedded files directory for the whole
+    /// cleanup: only the working directory's removal is retried, each
+    /// attempt is warned about against the session, the directory that
+    /// could not be removed is logged as an error, and the session ends.
+    #[cfg(windows)]
+    #[test]
+    fn session_cleanup_logs_a_directory_it_cannot_remove() {
+        use std::os::windows::fs::OpenOptionsExt;
+        testing_logger::setup();
+        let root = tempfile::tempdir().unwrap();
+        let mut session = Session::with_config(SessionConfig {
+            limits: Default::default(),
+            session_id: "session-1".into(),
+            job_parameter_values: Default::default(),
+            session_root_directory: Some(root.path().to_path_buf()),
+            path_mapping_rules: None,
+            retain_working_dir: false,
+            callback: None,
+            os_env_vars: None,
+            user: None,
+            profile: None,
+            cancel_token: None,
+            debug_collect_stdout: false,
+            echo_openjd_directives: true,
+            sticky_bit_policy: crate::tempdir::StickyBitPolicy::Disabled,
+        })
+        .unwrap();
+        let wd = session.working_directory().to_path_buf();
+        let held_path = session.files_directory().join("locked.bin");
+        let held = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(&held_path)
+            .unwrap();
+        session.cleanup_with_delays(&[std::time::Duration::from_millis(10)]);
+        assert_eq!(session.state(), SessionState::Ended);
+        let exe = std::env::current_exe().unwrap();
+        let reason = "The process cannot access the file because it is being used by \
+                      another process";
+        let warning = |end: &str| {
+            format!(
+                "Could not delete temporary directory {}: {reason}. 1 file(s) could not be \
+                 deleted, including {}. Files are still locked open by: {} (pid {}). {end}",
+                wd.display(),
+                held_path.strip_prefix(&wd).unwrap().display(),
+                exe.file_name().unwrap().to_string_lossy(),
+                std::process::id()
+            )
+        };
+        let expected = [
+            (log::Level::Warn, warning("Retrying in 0.01 s.")),
+            (log::Level::Warn, warning("Giving up.")),
+            (
+                log::Level::Error,
+                format!(
+                    "Files within temporary directory {} could not be deleted: {reason}",
+                    wd.display()
+                ),
+            ),
+        ];
+        testing_logger::validate(|logs| {
+            let problems: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level <= log::Level::Warn)
+                .map(|l| (l.level, l.body.clone()))
+                .collect();
+            assert_eq!(problems, expected);
+        });
+        drop(held);
+        std::fs::remove_dir_all(&wd).unwrap();
     }
 }
 
