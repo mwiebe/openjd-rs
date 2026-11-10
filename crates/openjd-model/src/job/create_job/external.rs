@@ -272,9 +272,11 @@ pub struct StepEnvironmentStatus {
 
 /// The Environment that superseded another for a Step
 /// ([`StepEnvironmentStatus::superseded_by`]): an attached or Job
-/// Environment, since a Step Environment has no `exclusiveGroup`. `name`,
-/// `document` and `scope` identify it among the Job's Environments, also
-/// when an attached Environment and a Job Environment share a name.
+/// Environment, since a Step Environment has no `exclusiveGroup`. `name`
+/// and `document` identify it among the Job's Environments, also when an
+/// attached Environment and a Job Environment share a name; `scope`
+/// follows from `document` and is given so the winner's status item can
+/// be matched on the same three fields.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SupersedingEnvironment {
     /// The Environment's `name`.

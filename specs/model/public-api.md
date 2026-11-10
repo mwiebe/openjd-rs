@@ -455,8 +455,10 @@ without, and for every Step Environment, where the field is not permitted),
 and a `Superseded` item carries `superseded_by`, the [`SupersedingEnvironment`]
 the Step's Sessions enter instead: the earliest member of the group in the
 Job's Environment order that remains in the Step's set (§7.4.1 step 6). It
-gives the winner's `name`, `document` and `scope`, so an attached Environment
-and a Job Environment of the same name are told apart. `superseded_by` is
+gives the winner's `name`, `document` and `scope`; `document` tells an attached
+Environment and a Job Environment of the same name apart, and `scope`, which
+follows from it, lets the winner's own status item be matched on the same three
+fields. `superseded_by` is
 `None` for every other status. A group whose first member is disabled by its
 `enableIf` is won by the next, and the disabled one is `Disabled` with no
 `superseded_by`.

@@ -1248,7 +1248,7 @@ Environment whatever the status (template validation rejects the field on a `ste
 entry, so a Step Environment's is `None`), and a `Superseded` one carries `superseded_by`, the
 name, document and scope of the Environment at the recorded position. That Environment is
 always one the Step enters: a member takes its group only when its `enableIf` does not disable
-it, and a Step whose `enableIf` failed fails job creation.
+it, and an Environment whose `enableIf` failed for a Step fails job creation.
 
 #### Combined host requirements (ENV_PARAMS)
 
