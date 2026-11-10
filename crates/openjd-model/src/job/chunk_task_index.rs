@@ -49,7 +49,7 @@ pub struct ChunkTaskIndex {
     /// The per-Task iterator, walked as far as `walked`.
     tasks: StepParameterSpaceIterator,
     walked: usize,
-    task_count: usize,
+    task_count: u64,
 }
 
 impl std::fmt::Debug for ChunkTaskIndex {
@@ -85,8 +85,10 @@ impl ChunkTaskIndex {
         })
     }
 
-    /// The number of Tasks in the space, with chunking disabled.
-    pub fn task_count(&self) -> usize {
+    /// The number of Tasks in the space, with chunking disabled. A `u64`,
+    /// like [`StepParameterSpaceIterator::len`], so it is exact on every
+    /// target.
+    pub fn task_count(&self) -> u64 {
         self.task_count
     }
 

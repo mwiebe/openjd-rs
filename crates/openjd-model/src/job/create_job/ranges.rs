@@ -42,6 +42,7 @@ pub(super) fn resolve_to_f64(
             input: Some(fs.raw().to_string()),
             start: None,
             end: None,
+            source: Some(e),
         })?;
     let value = match resolved {
         openjd_expr::ExprValue::Null => return Ok(None),
@@ -266,6 +267,7 @@ pub(super) fn resolve_string_list(
                     input: Some(fs.raw().to_string()),
                     start: None,
                     end: None,
+                    source: Some(e),
                 })
             }
             Err(ListItemError::TooMany { .. }) => return Ok(None),
@@ -458,7 +460,8 @@ fn resolve_task_parameter(
                 }
             };
             let default_task_count = match &p.chunks.default_task_count {
-                template::IntOrFormatString::Int(n) => (*n).max(1) as usize,
+                // Non-negative after `max`, so `as u64` is exact.
+                template::IntOrFormatString::Int(n) => (*n).max(1) as u64,
                 template::IntOrFormatString::FormatString(fs) => {
                     let count = resolve_chunk_int(fs, "defaultTaskCount").map_err(on_chunks)?;
                     // §3.4.1.5 sets a minimum of 1. The bound cannot be applied
@@ -473,7 +476,8 @@ fn resolve_task_parameter(
                             ),
                         ))));
                     }
-                    count as usize
+                    // `count >= 1`, so `as u64` is exact.
+                    count as u64
                 }
             };
             let target_runtime_seconds = p
@@ -481,7 +485,7 @@ fn resolve_task_parameter(
                 .target_runtime_seconds
                 .as_ref()
                 .map(|v| match v {
-                    template::IntOrFormatString::Int(n) => Ok(Some((*n).max(0) as usize)),
+                    template::IntOrFormatString::Int(n) => Ok(Some((*n).max(0) as u64)),
                     template::IntOrFormatString::FormatString(fs) => {
                         // Optional field: target type `int?` — a
                         // whole-field null means "field omitted".
@@ -519,7 +523,8 @@ fn resolve_task_parameter(
                                 "chunks.targetRuntimeSeconds: resolved to {seconds}, but must be >= 0"
                             ))));
                         }
-                        Ok(Some(seconds as usize))
+                        // `seconds >= 0`, so `as u64` is exact.
+                        Ok(Some(seconds as u64))
                     }
                 })
                 .transpose()

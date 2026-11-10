@@ -2247,7 +2247,7 @@ impl ChunkTaskIndex {
     /// nothing yet.
     pub fn new(space: &job::StepParameterSpace) -> Result<Self, ModelError>;
     /// The number of Tasks, with chunking disabled.
-    pub fn task_count(&self) -> usize;
+    pub fn task_count(&self) -> u64;
     /// The space's `CHUNK[INT]` parameter, if any.
     pub fn chunk_parameter_name(&self) -> Option<&str>;
     /// The next unused index of the Task with `CHUNK[INT]` value `value`

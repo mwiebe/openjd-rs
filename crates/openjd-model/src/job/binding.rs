@@ -536,7 +536,7 @@ pub(crate) fn task_count(space: Option<&StepParameterSpace>) -> Result<u64, Mode
     match space {
         None => Ok(1),
         Some(space) => {
-            Ok(StepParameterSpaceIterator::new_with_chunk_override(space, Some(1))?.len() as u64)
+            Ok(StepParameterSpaceIterator::new_with_chunk_override(space, Some(1))?.len())
         }
     }
 }

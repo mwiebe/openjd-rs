@@ -1370,7 +1370,7 @@ mod tests {
             let mut filter = ActionFilter::new("s", true, false);
             let (tx, mut rx) = mpsc::unbounded_channel();
             let mut saw_fail = false;
-            process_line(line, &mut filter, "s", &tx, &mut saw_fail);
+            process_line(line, None, &mut filter, "s", &tx, &mut saw_fail);
             drop(tx);
             let mut messages = Vec::new();
             while let Ok(m) = rx.try_recv() {

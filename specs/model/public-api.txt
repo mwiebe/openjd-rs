@@ -686,7 +686,7 @@ impl openjd_model::ChunkTaskIndex
 pub fn openjd_model::ChunkTaskIndex::chunk_parameter_name(&self) -> core::option::Option<&str>
 pub fn openjd_model::ChunkTaskIndex::new(&openjd_model::job::StepParameterSpace) -> core::result::Result<Self, openjd_model::error::ModelError>
 pub fn openjd_model::ChunkTaskIndex::take(&mut self, &openjd_model::types::TaskParameterSet, core::option::Option<i64>) -> core::option::Option<usize>
-pub fn openjd_model::ChunkTaskIndex::task_count(&self) -> usize
+pub fn openjd_model::ChunkTaskIndex::task_count(&self) -> u64
 impl core::fmt::Debug for openjd_model::ChunkTaskIndex
 pub fn openjd_model::ChunkTaskIndex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::job::EmbeddedFile
@@ -2900,7 +2900,7 @@ impl openjd_model::ChunkTaskIndex
 pub fn openjd_model::ChunkTaskIndex::chunk_parameter_name(&self) -> core::option::Option<&str>
 pub fn openjd_model::ChunkTaskIndex::new(&openjd_model::job::StepParameterSpace) -> core::result::Result<Self, openjd_model::error::ModelError>
 pub fn openjd_model::ChunkTaskIndex::take(&mut self, &openjd_model::types::TaskParameterSet, core::option::Option<i64>) -> core::option::Option<usize>
-pub fn openjd_model::ChunkTaskIndex::task_count(&self) -> usize
+pub fn openjd_model::ChunkTaskIndex::task_count(&self) -> u64
 impl core::fmt::Debug for openjd_model::ChunkTaskIndex
 pub fn openjd_model::ChunkTaskIndex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct openjd_model::DiagnosticSpan
