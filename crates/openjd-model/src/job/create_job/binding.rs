@@ -327,13 +327,14 @@ pub(super) fn missing(symbols: &BTreeSet<String>, inputs: &StepInputs) -> Vec<St
 /// `prior` is the Step from an earlier call, whose known groups are kept
 /// rather than evaluated again; `None` at job creation. `committed_task_count`
 /// is the number of Tasks of the other Steps whose Tasks are known, for the
-/// Job-total Task-count limit.
+/// Job-total Task-count limit. It is a `u128`, like the total without
+/// `CONTROL_FLOW`, so that the total is compared and reported exactly.
 pub(super) fn bind_step(
     cx: &BindContext<'_>,
     site: &StepSite<'_>,
     prior: Option<&job::Step>,
     inputs: &StepInputs,
-    committed_task_count: u64,
+    committed_task_count: u128,
 ) -> Result<job::Step, GroupFailure> {
     use MaterializationGroup::*;
     let st = site.st;
@@ -592,7 +593,7 @@ fn enumerate_tasks(
     cx: &BindContext<'_>,
     site: &StepSite<'_>,
     step_symtab: &SymbolTable,
-    committed_task_count: u64,
+    committed_task_count: u128,
 ) -> Result<Option<job::StepParameterSpace>, ModelError> {
     let st = site.st;
     let step_path = &site.path;
@@ -698,17 +699,18 @@ fn check_chunk_values_distinct(space: &job::StepParameterSpace) -> Result<(), (u
 }
 
 /// The caller's Task-count limits, checked when a Step's Tasks become known
-/// (RFC 0011 §Limits item 1).
+/// (RFC 0011 §Limits item 1). The total is summed in `u128`, as without
+/// `CONTROL_FLOW`, so it is compared and reported exactly.
 pub(super) fn check_task_count(
     ctx: &ValidationContext,
     step: &str,
     task_count: u64,
-    committed_task_count: u64,
+    committed_task_count: u128,
 ) -> Result<(), ModelError> {
     check_step_task_count(ctx, step, task_count)?;
     if let Some(max) = ctx.caller_limits.max_task_count {
-        let total = committed_task_count.saturating_add(task_count);
-        if total > max {
+        let total = committed_task_count + u128::from(task_count);
+        if total > u128::from(max) {
             return Err(ModelError::ModelValidation(ValidationErrors::single(format!(
                 "Total task count ({total}) exceeds caller limit of {max}: Step '{step}' has {task_count} Tasks, and the Steps whose Tasks are known before it have {committed_task_count}."
             ))));
@@ -1091,8 +1093,14 @@ pub fn advance_step_binding(
         limits: &limits,
         budgets: EvalBudgets::from_ctx(ctx),
     };
-    bind_step(&cx, &site, Some(step), inputs, committed_task_count)
-        .map_err(|f| f.into_binding_error(&step.name))
+    bind_step(
+        &cx,
+        &site,
+        Some(step),
+        inputs,
+        u128::from(committed_task_count),
+    )
+    .map_err(|f| f.into_binding_error(&step.name))
 }
 
 /// Merge the concrete `Steps.*` values that bound Step `step`'s script and

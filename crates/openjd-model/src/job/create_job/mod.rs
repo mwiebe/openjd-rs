@@ -515,7 +515,8 @@ fn instantiate_steps_with_binding(
     let mut built: Vec<Option<binding::Built>> = vec![None; n];
     let mut step_errors: Vec<crate::error::ValidationErrors> =
         (0..n).map(|_| Default::default()).collect();
-    let mut committed: u64 = 0;
+    // u128, so the Job total is compared and reported exactly.
+    let mut committed: u128 = 0;
     for i in order {
         match &job_template.steps[i] {
             StepEntry::Step(st) => {
@@ -524,7 +525,7 @@ fn instantiate_steps_with_binding(
                 match binding::bind_step(&cx, &site, None, &inputs, committed) {
                     Ok(step) => {
                         if let Some(tasks) = step.tasks_known() {
-                            committed = committed.saturating_add(tasks);
+                            committed += u128::from(tasks);
                         }
                         built[i] = Some(binding::Built::Step(step));
                     }

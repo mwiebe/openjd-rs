@@ -2244,6 +2244,34 @@ fn start_iteration_counts_each_instance_toward_max_task_count() {
 }
 
 #[test]
+fn start_iteration_total_is_exact_beyond_u64() {
+    // R1 and R2 have (2^63 - 1) * 2 Tasks each, so their total, 2^65 - 4,
+    // is past u64::MAX; a saturating u64 total would pass a u64::MAX limit.
+    let r = |n: &str| {
+        format!("    - name: {n}\n      parameterSpace:\n        taskParameterDefinitions:\n        - {{name: A, type: INT, range: '1-9223372036854775807'}}\n        - {{name: B, type: INT, range: [1, 2]}}\n      script:\n        actions:\n          onRun:\n            command: echo\n")
+    };
+    let fx = Fixture::with_limits(
+        &body_loop(&format!("{}{}", r("R1"), r("R2"))),
+        &[],
+        CallerLimits {
+            max_task_count: Some(u64::MAX),
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        binding_error(start0(&fx).unwrap_err()),
+        (
+            "L[0].R2".to_string(),
+            MaterializationGroup::TaskEnumeration,
+            expected(&[(
+                "steps[0] -> loop -> steps[1]",
+                "Total task count (36893488147419103228) exceeds caller limit of 18446744073709551615: Step 'L[0].R2' has 18446744073709551614 Tasks, and the Steps whose Tasks are known before it have 18446744073709551614."
+            )])
+        )
+    );
+}
+
+#[test]
 fn body_step_host_requirement_errors_name_the_body_path() {
     let fx = Fixture::new(
         &template(

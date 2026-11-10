@@ -543,6 +543,41 @@ fn max_task_count_counts_the_steps_whose_tasks_are_known_at_creation() {
 }
 
 #[test]
+fn max_task_count_total_is_exact_beyond_u64_with_control_flow() {
+    // S1 and S2 have (2^63 - 1) * 2 Tasks each: the total, 2^65 - 4, is past
+    // u64::MAX, so a saturating u64 total would equal a u64::MAX limit and
+    // pass it. The total is compared and reported exactly, as without
+    // CONTROL_FLOW.
+    let space = "    parameterSpace:
+      taskParameterDefinitions:
+      - {name: A, type: INT, range: '1-9223372036854775807'}
+      - {name: B, type: INT, range: [1, 2]}
+";
+    let template = tpl(
+        CF,
+        "",
+        &format!("  - name: S1\n{space}{ECHO}  - name: S2\n{space}{ECHO}"),
+    );
+    let err = Fixture::with_limits(
+        &template,
+        &[],
+        CallerLimits {
+            max_task_count: Some(u64::MAX),
+            ..Default::default()
+        },
+    )
+    .create()
+    .expect_err("2^65 - 4 > u64::MAX");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[1]",
+            "Total task count (36893488147419103228) exceeds caller limit of 18446744073709551615: Step 'S2' has 18446744073709551614 Tasks, and the Steps whose Tasks are known before it have 18446744073709551614.",
+        )])
+    );
+}
+
+#[test]
 fn max_step_task_count_without_control_flow() {
     let template = one_param(EXPR_ONLY, "", "{name: X, type: INT, range: '1-5'}");
     let err = Fixture::with_limits(

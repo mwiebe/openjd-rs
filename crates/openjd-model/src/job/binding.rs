@@ -639,7 +639,9 @@ impl Step {
     /// The Step's Task count once its Tasks are known: bound, or pending
     /// with its Task enumeration group evaluated (one Task without a
     /// `parameterSpace`), and `Some(0)` when it is skipped. `None` while
-    /// its Tasks are not known.
+    /// its Tasks are not known, and also when the count does not fit a
+    /// `u64`, which only a Step created without `CONTROL_FLOW` can have
+    /// (with `CONTROL_FLOW`, `create_job` rejects such a Step).
     pub fn tasks_known(&self) -> Option<u64> {
         if matches!(self.binding, StepBinding::Skipped) {
             return Some(0);

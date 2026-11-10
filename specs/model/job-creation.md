@@ -705,7 +705,10 @@ task count (11) exceeds caller limit of 10: Step 'C' has 9 Tasks, and the
 Steps whose Tasks are known before it have 2.`). In `create_job` the
 committed count is the running total over the Steps processed before it
 whose Tasks are known (bound, or pending with `tasks: Known`); for
-`advance_step_binding` the caller passes it. Without `CONTROL_FLOW`,
+`advance_step_binding` the caller passes it. The total is summed in `u128`,
+as without `CONTROL_FLOW`, so it is compared and reported exactly: two Steps of
+18446744073709551614 Tasks each exceed a limit of `u64::MAX` with `Total task
+count (36893488147419103228) ...`. Without `CONTROL_FLOW`,
 `max_step_task_count` is checked for every Step after it is instantiated.
 
 #### advance_step_binding

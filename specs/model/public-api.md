@@ -973,7 +973,8 @@ pub struct job::Step {
 
 impl job::Step {
     /// CONTROL_FLOW: the Task count once Tasks are known (bound, or pending
-    /// with `tasks: Known`); `Some(0)` when skipped; `None` otherwise.
+    /// with `tasks: Known`); `Some(0)` when skipped; `None` otherwise,
+    /// and for a Step without CONTROL_FLOW whose count does not fit a u64.
     pub fn tasks_known(&self) -> Option<u64>;
     /// CONTROL_FLOW: what is known of a pending Step, per group; `None`
     /// for a bound or skipped Step.

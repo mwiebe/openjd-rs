@@ -931,7 +931,7 @@ pub fn start_iteration(
     let entry = job_loop.entry_index;
     let n = progress.iteration;
     let mut built: Vec<Option<job::Step>> = vec![None; l.body().len()];
-    let mut committed = committed_task_count;
+    let mut committed = u128::from(committed_task_count);
     for j in body_order(l) {
         let site = body_site(l, entry, j, n, &progress.values);
         let instance = job::step_loop_instance_name(&l.name, n, &site.st.name);
@@ -940,7 +940,7 @@ pub fn start_iteration(
         let step = binding::bind_step(&cx, &site, None, &step_inputs, committed)
             .map_err(|f| f.into_binding_error(&instance))?;
         if let Some(tasks) = step.tasks_known() {
-            committed = committed.saturating_add(tasks);
+            committed += u128::from(tasks);
         }
         built[j] = Some(step);
     }
@@ -1059,8 +1059,14 @@ pub fn advance_body_step_binding(
         iteration.index,
         &progress.values,
     );
-    binding::bind_step(&cx, &site, Some(step), inputs, committed_task_count)
-        .map_err(|f| f.into_binding_error(&instance))
+    binding::bind_step(
+        &cx,
+        &site,
+        Some(step),
+        inputs,
+        u128::from(committed_task_count),
+    )
+    .map_err(|f| f.into_binding_error(&instance))
 }
 
 // ── The iteration boundary ────────────────────────────────────────
