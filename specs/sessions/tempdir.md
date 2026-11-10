@@ -204,7 +204,10 @@ with `MZ`, as every Windows executable does, is opened again for `DELETE` and wr
 and is reported when that fails with a sharing violation. Other files skip that second
 check, because any handle that does not share writing fails it, although the file can
 be deleted. A program file held open that way by something other than the loader, such
-as a scanner, is still reported. The check only opens and reads files: it deletes
+as a scanner, is still reported. A read-only program file refuses the second open with
+access denied whether or not it runs, so for one the Restart Manager is asked whether
+any process has it open, and it is reported if one does. The check only opens and reads
+files: it deletes
 nothing, and does not follow symbolic links or junctions. Checking 10 000 files takes a
 few seconds (1.5 to 3.5 s on the Windows machines it was measured on), once per failed
 attempt. When either limit is reached, the count reads "At least N".
@@ -245,6 +248,10 @@ stop, as Python's `strerror` text has neither.
    last error's reason formatted as in the warnings. Python logs
    `Files within temporary directory <dir> could not be deleted.` followed by one line
    per failed path with its exception's `repr`, and a traceback.
+6. **A failed holder lookup.** Both say
+   `The processes holding them open could not be determined: <reason>.` Python's reason
+   starts with the exception's type, as in `OSError: RmGetList failed (5)`; Rust's is
+   only the message, `RmGetList failed (5)`.
 
 `Session::cleanup()` removes only the working directory, which contains the embedded
 files directory, so a lock inside the latter is waited out once. It logs each directory

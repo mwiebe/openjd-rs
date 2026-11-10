@@ -48,7 +48,9 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 /// fails with a sharing violation while the image is mapped. Other files skip
 /// that check, because any handle that does not share writing fails it too,
 /// although the file can be deleted. A program file held open that way by
-/// something other than the loader is still reported.
+/// something other than the loader is still reported. A read-only program
+/// file refuses writing with access denied before the image check, so for one
+/// the Restart Manager is asked whether any process has it open.
 pub(crate) fn cannot_delete_now(path: &Path) -> bool {
     let refused = |access: u32| {
         std::fs::OpenOptions::new()
@@ -62,10 +64,22 @@ pub(crate) fn cannot_delete_now(path: &Path) -> bool {
     match refused(DELETE) {
         Some(SHARING_VIOLATION | ACCESS_DENIED) => true,
         Some(_) => false,
-        None => {
-            is_program_file(path) && refused(DELETE | FILE_WRITE_DATA) == Some(SHARING_VIOLATION)
-        }
+        None if !is_program_file(path) => false,
+        None => match refused(DELETE | FILE_WRITE_DATA) {
+            Some(SHARING_VIOLATION) => true,
+            Some(ACCESS_DENIED) => {
+                is_read_only(path)
+                    && processes_holding(&[path.to_path_buf()]).is_ok_and(|h| !h.is_empty())
+            }
+            _ => false,
+        },
     }
+}
+
+/// Whether the file has the read-only attribute. Reads metadata without
+/// following a link.
+fn is_read_only(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.permissions().readonly())
 }
 
 /// Whether the file starts with `MZ`, as every Windows executable image does.
@@ -356,6 +370,34 @@ mod tests {
             name: "ping.exe".to_string(),
         };
         assert!(holders.contains(&ping), "{holders:?}");
+    }
+
+    /// A read-only program file: not reported while nothing runs it, since
+    /// `remove_file` deletes read-only files, and reported while it runs.
+    #[test]
+    fn cannot_delete_now_flags_a_running_read_only_program() {
+        use std::os::windows::process::CommandExt;
+        let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
+        let exe = dir.path().join("ping.exe");
+        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
+        let mut perms = std::fs::metadata(&exe).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&exe, perms).unwrap();
+        assert!(!cannot_delete_now(&exe), "a read-only program nothing runs");
+        // CREATE_NO_WINDOW, so the test opens no console.
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let flagged = cannot_delete_now(&exe);
+        let removed = std::fs::remove_file(&exe);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(removed.is_err(), "the running image was deleted");
+        assert!(flagged);
     }
 
     #[test]
