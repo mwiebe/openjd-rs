@@ -374,7 +374,10 @@ and every earlier one of its group is known not to be, and is not entered when a
 would, by its own state, be known to be entered (that one, or one before it, is then the
 group's first). No job type records the group: `Job.EnvNames` lists every Environment (§7.3.1), and a superseded one is
 left out of the Step's sets like any disabled one (see
-[job-creation.md](job-creation.md#exclusive-groups-env_params)).
+[job-creation.md](job-creation.md#exclusive-groups-env_params)). Job creation reports the group
+beside the Job instead, in each `StepEnvironmentStatus::exclusive_group` of
+`CreatedJob::environment_statuses`, with `superseded_by` naming the member a superseded one
+lost to (see [public-api.md](public-api.md)).
 
 ### EnvironmentScript (§4.1)
 

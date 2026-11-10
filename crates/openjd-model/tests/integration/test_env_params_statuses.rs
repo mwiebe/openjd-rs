@@ -779,6 +779,32 @@ fn every_later_member_names_the_first_attachment_of_its_group() {
 }
 
 #[test]
+fn two_attached_groups_each_name_their_own_winner() {
+    // The second group is taken after the first, by a later attachment, so
+    // its superseded member must name that attachment, not the first
+    // group's winner.
+    let jt = format!("{HEAD}steps:\n- name: S\n  script: {{actions: {{onRun: {{command: x}}}}}}\n");
+    let created = create(
+        &jt,
+        &[
+            &env("name: G1, exclusiveGroup: G"),
+            &env("name: H1, exclusiveGroup: H"),
+            &env("name: G2, exclusiveGroup: G"),
+            &env("name: H2, exclusiveGroup: H"),
+        ],
+    );
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached G1@EnvironmentTemplate[0] [G]: entered",
+            "attached H1@EnvironmentTemplate[1] [H]: entered",
+            "attached G2@EnvironmentTemplate[2] [G]: superseded by attached G1@EnvironmentTemplate[0]",
+            "attached H2@EnvironmentTemplate[3] [H]: superseded by attached H1@EnvironmentTemplate[1]",
+        ]
+    );
+}
+
+#[test]
 fn an_on_request_member_takes_its_group_only_when_requested() {
     // An ON_REQUEST member the Step does not request is not considered, so
     // it takes no group and the next member wins; one it requests wins.
