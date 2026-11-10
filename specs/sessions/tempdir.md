@@ -172,7 +172,8 @@ Both are stored in the `Session` struct and cleaned up by `Session::cleanup()`.
 ### Cleanup retries on Windows
 
 On Windows, `TempDir::cleanup()` retries a failed `remove_dir_all` after 1, 2, 4, 8 and
-16 s, so cleanup can block for about 31 s per directory. A process that has exited or
+16 s, so cleanup can block for about 31 s per directory, plus the time spent on each
+failed attempt to find what holds the files (see below). A process that has exited or
 been terminated can still hold handles in the directory for a while, and Windows will
 not delete a file while a handle to it is open. `NotFound` on a retry counts as
 success, because the attempt that failed may still have removed the directory.
@@ -204,13 +205,26 @@ with `MZ`, as every Windows executable does, is opened again for `DELETE` and wr
 and is reported when that fails with a sharing violation. Other files skip that second
 check, because any handle that does not share writing fails it, although the file can
 be deleted. A program file held open that way by something other than the loader, such
-as a scanner, is still reported. A read-only program file refuses the second open with
-access denied whether or not it runs, so for one the Restart Manager is asked whether
-any process has it open, and it is reported if one does. The check only opens and reads
-files: it deletes
-nothing, and does not follow symbolic links or junctions. Checking 10 000 files takes a
-few seconds (1.5 to 3.5 s on the Windows machines it was measured on), once per failed
-attempt. When either limit is reached, the count reads "At least N".
+as a scanner, is still reported. A program file that refuses writing, because it is
+read-only or its ACL denies writing, fails the second open with access denied whether
+or not it runs. Up to 16 such files are each asked about with the Restart Manager after
+the walk, and one is reported if a process has it open. More than 16 makes the count
+read "At least N". These queries are made one file at a time because the Restart
+Manager takes about 45 ms per read-only file whether it is asked about one or many.
+The check only opens and reads files: it deletes
+nothing, and does not follow symbolic links or junctions.
+
+Working this out takes time on every failed attempt, on top of the delays:
+
+- checking up to 10 000 files: a few seconds (1.5 to 3.5 s on the Windows machines it
+  was measured on);
+- up to 16 Restart Manager queries for program files that refuse writing: up to about
+  0.7 s (2000 read-only program files plus one held file cost 2.3 s in total);
+- one Restart Manager query for the holders of up to 256 reported files: tens of
+  milliseconds, or about 45 ms per file when they are read-only, so up to about 12 s.
+
+So a cleanup that gives up can take 31 s plus six times that. When a limit is reached,
+the count reads "At least N".
 
 A failed holder lookup is reported in the same line instead of the process list. When
 no file is reported, for instance because only a directory is held open, the line

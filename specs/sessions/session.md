@@ -468,7 +468,7 @@ collects the cleanup and teardown guarantees in one place.
    files owned by that user
 3. For every session: `remove_dir_all` as the process user on the working directory,
    which also removes the embedded files directory inside it. On Windows a failed
-   removal is retried for up to about 31 s, logging a warning for each failed attempt
+   removal is retried for 31 s or more, logging a warning for each failed attempt
    that names the files still held open and the processes holding them (see
    [tempdir.md § Cleanup retries on Windows](tempdir.md#cleanup-retries-on-windows)).
    A directory that still cannot be removed is logged at error level, and cleanup

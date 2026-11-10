@@ -22,7 +22,7 @@ use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
-use crate::tempdir::FileHolder;
+use crate::tempdir::{DeleteCheck, FileHolder};
 
 /// `ERROR_ACCESS_DENIED`.
 const ACCESS_DENIED: i32 = 5;
@@ -37,8 +37,8 @@ const SHARE_ALL: u32 = 0x7;
 /// `FILE_FLAG_OPEN_REPARSE_POINT`: open a link itself, never its target.
 const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 
-/// Whether deleting the file at `path` would fail now. Only opens and reads
-/// it, and never deletes or changes anything.
+/// How deleting the file at `path` would go now. Only opens and reads it, and
+/// never deletes or changes anything.
 ///
 /// Opening for `DELETE` fails with a sharing violation when another handle
 /// does not share deletion, and with access denied when the ACLs do not allow
@@ -48,10 +48,10 @@ const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
 /// fails with a sharing violation while the image is mapped. Other files skip
 /// that check, because any handle that does not share writing fails it too,
 /// although the file can be deleted. A program file held open that way by
-/// something other than the loader is still reported. A read-only program
-/// file refuses writing with access denied before the image check, so for one
-/// the Restart Manager is asked whether any process has it open.
-pub(crate) fn cannot_delete_now(path: &Path) -> bool {
+/// something other than the loader is still reported. A program file that
+/// refuses writing (read-only, or ACLs that deny it) fails that open with
+/// access denied whether or not it runs, so it is [`DeleteCheck::Unknown`].
+pub(crate) fn check_deletion(path: &Path) -> DeleteCheck {
     let refused = |access: u32| {
         std::fs::OpenOptions::new()
             .access_mode(access)
@@ -62,24 +62,34 @@ pub(crate) fn cannot_delete_now(path: &Path) -> bool {
             .and_then(|e| e.raw_os_error())
     };
     match refused(DELETE) {
-        Some(SHARING_VIOLATION | ACCESS_DENIED) => true,
-        Some(_) => false,
-        None if !is_program_file(path) => false,
+        Some(SHARING_VIOLATION | ACCESS_DENIED) => DeleteCheck::Refused,
+        Some(_) => DeleteCheck::Allowed,
+        None if !is_program_file(path) => DeleteCheck::Allowed,
         None => match refused(DELETE | FILE_WRITE_DATA) {
-            Some(SHARING_VIOLATION) => true,
-            Some(ACCESS_DENIED) => {
-                is_read_only(path)
-                    && processes_holding(&[path.to_path_buf()]).is_ok_and(|h| !h.is_empty())
-            }
-            _ => false,
+            Some(SHARING_VIOLATION) => DeleteCheck::Refused,
+            Some(ACCESS_DENIED) => DeleteCheck::Unknown,
+            _ => DeleteCheck::Allowed,
         },
     }
 }
 
-/// Whether the file has the read-only attribute. Reads metadata without
-/// following a link.
-fn is_read_only(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|m| m.permissions().readonly())
+/// Which of the first `max` `candidates` some process has open, asking the
+/// Restart Manager about each in turn, and whether there were more than
+/// `max` to ask about.
+///
+/// A query takes about 45 ms for a read-only file, and the candidates are
+/// program files that refuse writing, many of them read-only, so `max`
+/// bounds the time. Asking about several at once does not help: the cost is
+/// per read-only file either way. A failed query counts as nobody holding
+/// the file.
+pub(crate) fn held_by_some_process(candidates: &[PathBuf], max: usize) -> (Vec<PathBuf>, bool) {
+    let held = candidates
+        .iter()
+        .take(max)
+        .filter(|p| processes_holding(std::slice::from_ref(p)).is_ok_and(|h| !h.is_empty()))
+        .cloned()
+        .collect();
+    (held, candidates.len() > max)
 }
 
 /// Whether the file starts with `MZ`, as every Windows executable image does.
@@ -249,39 +259,48 @@ mod tests {
     }
 
     #[test]
-    fn cannot_delete_now_flags_only_files_whose_deletion_would_fail() {
+    fn check_deletion_refuses_only_files_whose_deletion_would_fail() {
+        use DeleteCheck::{Allowed, Refused};
         let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
         let free = dir.path().join("free.bin");
         std::fs::write(&free, b"x").unwrap();
-        assert!(!cannot_delete_now(&free), "a file nobody holds");
+        assert_eq!(check_deletion(&free), Allowed, "a file nobody holds");
 
         let read_only = dir.path().join("read_only.bin");
         std::fs::write(&read_only, b"x").unwrap();
-        let mut perms = std::fs::metadata(&read_only).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&read_only, perms).unwrap();
-        assert!(
-            !cannot_delete_now(&read_only),
+        set_read_only(&read_only);
+        assert_eq!(
+            check_deletion(&read_only),
+            Allowed,
             "remove_file deletes read-only files"
         );
 
         let shared = dir.path().join("shared.bin");
         let _shared = open_with_share(&shared, SHARE_ALL);
-        assert!(!cannot_delete_now(&shared), "a holder that shares deletion");
+        assert_eq!(
+            check_deletion(&shared),
+            Allowed,
+            "a holder that shares deletion"
+        );
 
         let held = dir.path().join("held.bin");
         let _held = open_with_share(&held, 0);
-        assert!(cannot_delete_now(&held), "a holder that shares nothing");
+        assert_eq!(
+            check_deletion(&held),
+            Refused,
+            "a holder that shares nothing"
+        );
 
         let rw = dir.path().join("rw.bin");
         let _rw = open_with_share(&rw, 0x1 | 0x2);
-        assert!(
-            cannot_delete_now(&rw),
+        assert_eq!(
+            check_deletion(&rw),
+            Refused,
             "a holder that shares reading and writing only"
         );
 
         // A holder sharing reading and deletion but not writing does not stop
-        // deletion, so only a program file held that way is reported (see the
+        // deletion, so only a program file held that way is refused (see the
         // doc comment).
         let doc = dir.path().join("doc.txt");
         std::fs::write(&doc, b"text").unwrap();
@@ -290,9 +309,19 @@ mod tests {
             .share_mode(0x1 | 0x4)
             .open(&doc)
             .unwrap();
-        assert!(!cannot_delete_now(&doc), "a read holder sharing deletion");
+        assert_eq!(
+            check_deletion(&doc),
+            Allowed,
+            "a read holder sharing deletion"
+        );
 
-        assert!(!cannot_delete_now(&dir.path().join("missing.bin")));
+        assert_eq!(check_deletion(&dir.path().join("missing.bin")), Allowed);
+    }
+
+    fn set_read_only(path: &Path) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(path, perms).unwrap();
     }
 
     fn run_hidden(program: &str, args: &[&std::ffi::OsStr]) {
@@ -307,61 +336,77 @@ mod tests {
         assert!(status.success(), "{program} {args:?}");
     }
 
+    /// Adds an ACE denying `rights` to everyone.
+    fn deny_everyone(path: &Path, rights: &str) {
+        let ace = format!("*S-1-1-0:({rights})");
+        run_hidden(
+            "icacls",
+            &[path.as_os_str(), "/deny".as_ref(), ace.as_ref()],
+        );
+    }
+
+    /// Removes every ACE denying anything to everyone.
+    fn undeny_everyone(path: &Path) {
+        run_hidden(
+            "icacls",
+            &[path.as_os_str(), "/remove:d".as_ref(), "*S-1-1-0".as_ref()],
+        );
+    }
+
     /// A file whose ACLs refuse deletion: the file denies `DELETE` and its
     /// directory denies deleting children, to everyone.
     #[test]
-    fn cannot_delete_now_flags_a_file_the_acls_protect() {
+    fn check_deletion_refuses_a_file_the_acls_protect() {
         let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
         let sub = dir.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         let file = sub.join("protected.bin");
         std::fs::write(&file, b"x").unwrap();
-        let deny = |path: &Path, right: &str| {
-            let ace = format!("*S-1-1-0:({right})");
-            run_hidden(
-                "icacls",
-                &[path.as_os_str(), "/deny".as_ref(), ace.as_ref()],
-            )
-        };
-        deny(&file, "DE");
-        deny(&sub, "DC");
-        let flagged = cannot_delete_now(&file);
+        deny_everyone(&file, "DE");
+        deny_everyone(&sub, "DC");
+        let checked = check_deletion(&file);
         let removed = std::fs::remove_file(&file);
-        for path in [&sub, &file] {
-            run_hidden(
-                "icacls",
-                &[path.as_os_str(), "/remove:d".as_ref(), "*S-1-1-0".as_ref()],
-            );
-        }
+        undeny_everyone(&sub);
+        undeny_everyone(&file);
         assert!(removed.is_err(), "the protected file was deleted");
-        assert!(flagged);
+        assert_eq!(checked, DeleteCheck::Refused);
+    }
+
+    /// A copy of `ping.exe` in `dir`, and a way to run it without a console.
+    fn copy_ping(dir: &Path) -> PathBuf {
+        let exe = dir.join("ping.exe");
+        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
+        exe
+    }
+
+    fn run_ping(exe: &Path) -> std::process::Child {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW, so the test opens no console.
+        std::process::Command::new(exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap()
     }
 
     /// A running program's image accepts `DELETE` access but cannot be deleted.
     /// The Restart Manager names its holder by image file name, not by the
     /// program's description ("TCP/IP Ping Command").
     #[test]
-    fn cannot_delete_now_flags_a_running_program() {
-        use std::os::windows::process::CommandExt;
+    fn check_deletion_refuses_a_running_program() {
         let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
-        let exe = dir.path().join("ping.exe");
-        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
-        // CREATE_NO_WINDOW, so the test opens no console.
-        let mut child = std::process::Command::new(&exe)
-            .args(["-n", "30", "127.0.0.1"])
-            .stdout(std::process::Stdio::null())
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .unwrap();
-        let flagged = cannot_delete_now(&exe);
+        let exe = copy_ping(dir.path());
+        let mut child = run_ping(&exe);
+        let checked = check_deletion(&exe);
         let holders = processes_holding(std::slice::from_ref(&exe));
         let removed = std::fs::remove_file(&exe);
         let pid = child.id();
         let _ = child.kill();
         let _ = child.wait();
         assert!(removed.is_err(), "the running image was deleted");
-        assert!(flagged);
+        assert_eq!(checked, DeleteCheck::Refused);
         // Other holders can appear too, such as a scanner inspecting the new
         // executable.
         let holders = holders.unwrap();
@@ -372,32 +417,62 @@ mod tests {
         assert!(holders.contains(&ping), "{holders:?}");
     }
 
-    /// A read-only program file: not reported while nothing runs it, since
-    /// `remove_file` deletes read-only files, and reported while it runs.
+    /// A program file that refuses writing, because it is read-only or its
+    /// ACL denies writing, cannot be told apart by opening it: it is
+    /// undecided whether or not it runs, and the Restart Manager finds it
+    /// held only while it runs.
     #[test]
-    fn cannot_delete_now_flags_a_running_read_only_program() {
-        use std::os::windows::process::CommandExt;
+    fn a_program_file_that_refuses_writing_is_settled_by_its_holders() {
+        for how in ["read-only", "ACL"] {
+            let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
+            let exe = copy_ping(dir.path());
+            match how {
+                "read-only" => set_read_only(&exe),
+                _ => deny_everyone(&exe, "WD"),
+            }
+            let idle = check_deletion(&exe);
+            let mut child = run_ping(&exe);
+            let running = check_deletion(&exe);
+            let running_held = held_by_some_process(std::slice::from_ref(&exe), 4);
+            let removed = std::fs::remove_file(&exe);
+            let _ = child.kill();
+            let _ = child.wait();
+            if how == "ACL" {
+                undeny_everyone(&exe);
+            }
+            assert!(removed.is_err(), "{how}: the running image was deleted");
+            // Whether anything holds the idle copy depends on scanners, which
+            // can briefly hold a new executable, so only the check is asserted.
+            assert_eq!(idle, DeleteCheck::Unknown, "{how}");
+            assert_eq!(running, DeleteCheck::Unknown, "{how}");
+            assert_eq!(running_held, (vec![exe.clone()], false), "{how}");
+        }
+    }
+
+    /// Only the first `max` candidates are asked about, and the result says
+    /// when there were more.
+    #[test]
+    fn held_by_some_process_asks_about_at_most_max_files() {
         let dir = crate::tempdir::TempDir::new(None, None, None).unwrap();
-        let exe = dir.path().join("ping.exe");
-        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
-        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
-        let mut perms = std::fs::metadata(&exe).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(&exe, perms).unwrap();
-        assert!(!cannot_delete_now(&exe), "a read-only program nothing runs");
-        // CREATE_NO_WINDOW, so the test opens no console.
-        let mut child = std::process::Command::new(&exe)
-            .args(["-n", "30", "127.0.0.1"])
-            .stdout(std::process::Stdio::null())
-            .creation_flags(0x0800_0000)
-            .spawn()
-            .unwrap();
-        let flagged = cannot_delete_now(&exe);
-        let removed = std::fs::remove_file(&exe);
-        let _ = child.kill();
-        let _ = child.wait();
-        assert!(removed.is_err(), "the running image was deleted");
-        assert!(flagged);
+        let files: Vec<PathBuf> = (0..6)
+            .map(|i| {
+                let p = dir.path().join(format!("f{i}.bin"));
+                std::fs::write(&p, b"x").unwrap();
+                p
+            })
+            .collect();
+        let _a = open_with_share(&files[1], 0);
+        let _b = open_with_share(&files[4], 0);
+        assert_eq!(
+            held_by_some_process(&files, 6),
+            (vec![files[1].clone(), files[4].clone()], false)
+        );
+        assert_eq!(
+            held_by_some_process(&files, 3),
+            (vec![files[1].clone()], true)
+        );
+        assert_eq!(held_by_some_process(&files[2..4], 6), (Vec::new(), false));
+        assert_eq!(held_by_some_process(&[], 0), (Vec::new(), false));
     }
 
     #[test]

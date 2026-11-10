@@ -345,6 +345,24 @@ const MAX_FILES_TO_CHECK: usize = 10_000;
 const MAX_FILES_TO_INSPECT: usize = 256;
 /// Most undeletable file names a failed-attempt log line lists.
 const MAX_FILES_TO_NAME: usize = 3;
+/// Most program files that refuse writing a failed cleanup attempt asks the
+/// Restart Manager about, one at a time, to find which are running images.
+/// Each query takes about 45 ms for a read-only file.
+#[cfg(windows)]
+const MAX_UNDECIDED_TO_SETTLE: usize = 16;
+
+/// What opening a file says about whether deleting it would fail now.
+#[cfg_attr(not(windows), allow(dead_code, reason = "only Windows checks files"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeleteCheck {
+    /// Deleting it would fail.
+    Refused,
+    /// Nothing seen stops deleting it.
+    Allowed,
+    /// A program file that refuses writing, so opening it cannot tell whether
+    /// it is a running image. Settled by asking which files a process has open.
+    Unknown,
+}
 
 /// The content of the warning logged for each failed cleanup attempt. It
 /// includes `EXCEPTION_INFO`, which `openjd run` prints and the worker agent
@@ -405,11 +423,19 @@ fn log_failed_attempt(
     retry_in: Option<Duration>,
 ) {
     #[cfg(windows)]
-    let cannot_delete = crate::win32_file_locks::cannot_delete_now;
+    let (check, settle) = (
+        crate::win32_file_locks::check_deletion,
+        |unknown: &[PathBuf]| {
+            crate::win32_file_locks::held_by_some_process(unknown, MAX_UNDECIDED_TO_SETTLE)
+        },
+    );
     #[cfg(not(windows))]
-    let cannot_delete = |_: &Path| false;
+    let (check, settle) = (
+        |_: &Path| DeleteCheck::Allowed,
+        |_: &[PathBuf]| (Vec::new(), false),
+    );
     let (stuck, truncated) =
-        undeletable_files(dir, MAX_FILES_TO_CHECK, MAX_FILES_TO_INSPECT, cannot_delete);
+        undeletable_files(dir, MAX_FILES_TO_CHECK, MAX_FILES_TO_INSPECT, check, settle);
     #[cfg(windows)]
     let holders = (!stuck.is_empty()).then(|| crate::win32_file_locks::processes_holding(&stuck));
     #[cfg(not(windows))]
@@ -427,9 +453,14 @@ fn log_failed_attempt(
     }
 }
 
-/// The regular files under `dir` for which `cannot_delete` is true, at most
-/// `limit` of them, checking at most `scan_limit` files. The flag is true when
-/// the scan stopped early, so there may be more.
+/// The regular files under `dir` that cannot be deleted, at most `limit` of
+/// them, checking at most `scan_limit` files. The flag is true when there may
+/// be more: the scan or `settle` stopped early, or `limit` was reached.
+///
+/// `check` looks at one file. The files it cannot decide on are passed to
+/// `settle` together, once, which returns those that cannot be deleted and
+/// whether it stopped early; asking about them together keeps the cost of a
+/// tree with many such files bounded.
 ///
 /// A failed `remove_dir_all` stops at the first file it cannot delete and
 /// leaves the rest in place, so the files left are not the ones to report:
@@ -440,12 +471,15 @@ fn undeletable_files(
     dir: &Path,
     scan_limit: usize,
     limit: usize,
-    mut cannot_delete: impl FnMut(&Path) -> bool,
+    mut check: impl FnMut(&Path) -> DeleteCheck,
+    settle: impl FnOnce(&[PathBuf]) -> (Vec<PathBuf>, bool),
 ) -> (Vec<PathBuf>, bool) {
     let mut found = Vec::new();
+    let mut unknown = Vec::new();
     let mut checked = 0;
+    let mut truncated = false;
     let mut pending = vec![dir.to_path_buf()];
-    while let Some(d) = pending.pop() {
+    'walk: while let Some(d) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else {
             continue;
         };
@@ -456,21 +490,30 @@ fn undeletable_files(
             if kind.is_dir() {
                 pending.push(entry.path());
             } else if kind.is_file() {
-                if checked == scan_limit {
-                    return (found, true);
+                if checked == scan_limit || found.len() == limit {
+                    truncated = true;
+                    break 'walk;
                 }
                 checked += 1;
                 let path = entry.path();
-                if cannot_delete(&path) {
-                    found.push(path);
-                    if found.len() == limit {
-                        return (found, true);
-                    }
+                match check(&path) {
+                    DeleteCheck::Refused => found.push(path),
+                    DeleteCheck::Unknown => unknown.push(path),
+                    DeleteCheck::Allowed => {}
                 }
             }
         }
     }
-    (found, false)
+    if found.len() < limit && !unknown.is_empty() {
+        let (held, stopped_early) = settle(&unknown);
+        truncated |= stopped_early;
+        found.extend(held);
+    }
+    if found.len() >= limit {
+        truncated = true;
+        found.truncate(limit);
+    }
+    (found, truncated)
 }
 
 /// `err`'s text as Python's `strerror` gives it: without std's ` (os error N)`
@@ -830,7 +873,7 @@ mod tests {
         assert_eq!(error_reason(&ended), "file in use");
     }
 
-    /// Walks subdirectories, reports only the files the check flags, and
+    /// Walks subdirectories, reports only the files the check refuses, and
     /// stops at either limit.
     #[test]
     fn undeletable_files_reports_only_flagged_files_and_caps() {
@@ -840,34 +883,100 @@ mod tests {
             std::fs::write(td.path().join(name), b"x").unwrap();
         }
         std::fs::write(td.path().join("sub").join("x3"), b"x").unwrap();
-        let flagged = |p: &Path| p.file_name().unwrap().to_string_lossy().starts_with('x');
-        let names = |found: Vec<PathBuf>| {
-            let mut n: Vec<String> = found
-                .iter()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-                .collect();
-            n.sort();
-            n
+        let flagged = |p: &Path| {
+            if p.file_name().unwrap().to_string_lossy().starts_with('x') {
+                DeleteCheck::Refused
+            } else {
+                DeleteCheck::Allowed
+            }
         };
-        let (all, truncated) = undeletable_files(td.path(), 10, 10, flagged);
+        let no_settle = |_: &[PathBuf]| -> (Vec<PathBuf>, bool) {
+            panic!("no file was undecided");
+        };
+        let (all, truncated) = undeletable_files(td.path(), 10, 10, flagged, no_settle);
         assert_eq!(names(all), ["x1", "x2", "x3"]);
         assert!(!truncated);
-        let (two, truncated) = undeletable_files(td.path(), 10, 2, flagged);
+        let (two, truncated) = undeletable_files(td.path(), 10, 2, flagged, no_settle);
         assert_eq!(two.len(), 2);
         assert!(truncated, "stopped at the reporting limit");
         let mut checked = 0;
-        let (_, truncated) = undeletable_files(td.path(), 3, 10, |_| {
-            checked += 1;
-            false
-        });
+        let (_, truncated) = undeletable_files(
+            td.path(),
+            3,
+            10,
+            |_| {
+                checked += 1;
+                DeleteCheck::Allowed
+            },
+            no_settle,
+        );
         assert_eq!(checked, 3);
         assert!(truncated, "stopped at the scan limit");
         let mut checked = 0;
-        let (none, truncated) = undeletable_files(td.path(), 4, 10, |_| {
-            checked += 1;
-            false
-        });
+        let (none, truncated) = undeletable_files(
+            td.path(),
+            4,
+            10,
+            |_| {
+                checked += 1;
+                DeleteCheck::Allowed
+            },
+            no_settle,
+        );
         assert_eq!((none.len(), checked, truncated), (0, 4, false));
+    }
+
+    fn names(found: Vec<PathBuf>) -> Vec<String> {
+        let mut n: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        n.sort();
+        n
+    }
+
+    /// Undecided files go to `settle` together, once, after the walk; the
+    /// ones it returns are reported, and its stopping early marks the result
+    /// incomplete.
+    #[test]
+    fn undeletable_files_settles_undecided_files_together() {
+        let td = TempDir::new(None, None, None).unwrap();
+        for name in ["r1", "u1", "u2", "u3", "ok"] {
+            std::fs::write(td.path().join(name), b"x").unwrap();
+        }
+        let check = |p: &Path| match p.file_name().unwrap().to_string_lossy().as_bytes()[0] {
+            b'r' => DeleteCheck::Refused,
+            b'u' => DeleteCheck::Unknown,
+            _ => DeleteCheck::Allowed,
+        };
+        let mut asked = Vec::new();
+        let (found, truncated) = undeletable_files(td.path(), 10, 10, check, |unknown| {
+            asked.push(names(unknown.to_vec()));
+            let held = unknown
+                .iter()
+                .filter(|p| p.ends_with("u2"))
+                .cloned()
+                .collect();
+            (held, false)
+        });
+        assert_eq!(asked, [["u1", "u2", "u3"]]);
+        assert_eq!(names(found), ["r1", "u2"]);
+        assert!(!truncated);
+
+        let (found, truncated) =
+            undeletable_files(td.path(), 10, 10, check, |_| (Vec::new(), true));
+        assert_eq!(names(found), ["r1"]);
+        assert!(truncated, "settle stopped early");
+
+        let (found, truncated) =
+            undeletable_files(td.path(), 10, 1, check, |_| panic!("the limit was reached"));
+        assert_eq!(names(found), ["r1"]);
+        assert!(truncated);
+
+        let (found, truncated) =
+            undeletable_files(td.path(), 10, 2, check, |unknown| (unknown.to_vec(), false));
+        assert_eq!(found.len(), 2, "settled files are capped at the limit too");
+        assert!(truncated);
     }
 
     /// Written as literals so a changed constant fails here.
@@ -877,6 +986,8 @@ mod tests {
             (MAX_FILES_TO_CHECK, MAX_FILES_TO_INSPECT, MAX_FILES_TO_NAME),
             (10_000, 256, 3)
         );
+        #[cfg(windows)]
+        assert_eq!(MAX_UNDECIDED_TO_SETTLE, 16);
         // FILE_PATH | EXCEPTION_INFO | PROCESS_CONTROL
         assert_eq!(FAILED_ATTEMPT_LOG_CONTENT.bits(), 0b0011_0010);
     }

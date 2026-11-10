@@ -222,7 +222,7 @@ impl Session {
     /// Remove the working directory and associated temp files.
     /// Called automatically on drop as a safety net, but callers
     /// should call it explicitly at the end of a session to surface
-    /// cleanup errors. On Windows it can block for about 31 s per
+    /// cleanup errors. On Windows it can block for 31 s or more per
     /// directory while it waits for other processes to release files
     /// (see `TempDir::cleanup`). A directory it cannot remove is logged
     /// at error level, not returned.
@@ -915,13 +915,14 @@ impl TempDir {
 
     /// Remove the directory and everything in it. Calling it again
     /// does nothing and returns `Ok(())`. On Windows a failed removal
-    /// is retried after 1, 2, 4, 8 and 16 s, so it can block for about
-    /// 31 s, and each failed attempt is logged as a warning naming the
-    /// files that cannot be deleted and the processes holding them
-    /// open. Returns `SessionError::TempDir` with the last error when
-    /// removal still fails, including `NotFound` when the directory was
-    /// already gone before the first attempt. See tempdir.md § Cleanup
-    /// retries on Windows.
+    /// is retried after 1, 2, 4, 8 and 16 s, and each failed attempt is
+    /// logged as a warning naming the files that cannot be deleted and
+    /// the processes holding them open. Finding those takes up to
+    /// seconds per attempt, so a removal that keeps failing blocks for
+    /// 31 s plus that time. Returns `SessionError::TempDir` with the
+    /// last error when removal still fails, including `NotFound` when
+    /// the directory was already gone before the first attempt. See
+    /// tempdir.md § Cleanup retries on Windows.
     pub fn cleanup(&mut self) -> Result<(), SessionError>;
 }
 

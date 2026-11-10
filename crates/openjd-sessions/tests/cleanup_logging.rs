@@ -110,6 +110,7 @@ fn config(root: &std::path::Path, session_id: &str) -> SessionConfig {
 /// `FILE_PATH | EXCEPTION_INFO`.
 const CLEANUP_ERROR_CONTENT: u64 = 0b0001_0010;
 /// `FILE_PATH | EXCEPTION_INFO | PROCESS_CONTROL`.
+#[cfg(windows)]
 const FAILED_ATTEMPT_CONTENT: u64 = 0b0011_0010;
 
 /// A working directory that is already gone: removal fails at once with
