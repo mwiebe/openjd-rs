@@ -470,8 +470,8 @@ fn log_failed_attempt(
 /// cannot be deleted and whether it stopped early.
 ///
 /// The walk is depth-first in listing order, entering each subdirectory
-/// when it is listed, as `remove_dir_all` and Python's `rmtree` do, so the
-/// file that stopped `remove_dir_all` comes first. That matters because
+/// when it is listed, as `remove_dir_all` does, so the file that stopped
+/// `remove_dir_all` comes first. That matters because
 /// `remove_dir_all` stops at the first file it cannot delete and leaves the
 /// rest in place, so the files left are not the ones to report: each is
 /// checked instead. The walk only reads, and does not follow symbolic links
@@ -708,8 +708,10 @@ mod tests {
     /// Runs a closure when dropped, also while a failing test unwinds, so a
     /// test that fails does not leave its directory, process or ACL change
     /// behind. The closure must not panic.
+    #[cfg(windows)]
     pub(crate) struct OnDrop<F: FnMut()>(pub(crate) F);
 
+    #[cfg(windows)]
     impl<F: FnMut()> Drop for OnDrop<F> {
         fn drop(&mut self) {
             (self.0)()
@@ -863,6 +865,22 @@ mod tests {
         assert_eq!(
             no_files,
             "Could not delete temporary directory root: file in use. Giving up."
+        );
+    }
+
+    /// At most three of the files are named; the count covers them all.
+    #[test]
+    fn failed_attempt_names_at_most_three_files() {
+        let dir = Path::new("root");
+        let stuck: Vec<PathBuf> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| dir.join(n))
+            .collect();
+        let msg = describe_failed_attempt(dir, &sharing_violation(), &stuck, false, None, None);
+        assert_eq!(
+            msg,
+            "Could not delete temporary directory root: file in use. 5 file(s) could not be \
+             deleted, including a, b, c. Giving up."
         );
     }
 
@@ -1262,6 +1280,73 @@ mod tests {
                 .collect();
             assert_eq!(warns.len(), 1);
             assert_eq!(warns[0].body, expected);
+        });
+    }
+
+    /// The holder lookup covers every file reported, not only the first: here
+    /// a file this process holds and, after it, a running program held by
+    /// its own process.
+    #[cfg(windows)]
+    #[test]
+    fn failed_attempt_names_the_holders_of_every_file() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::process::CommandExt;
+        testing_logger::setup();
+        let td = TempDir::new(None, None, None).unwrap();
+        let _held = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(td.path().join("a_locked.bin"))
+            .unwrap();
+        let exe = td.path().join("b_ping.exe");
+        let system = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+        std::fs::copy(Path::new(&system).join("System32").join("ping.exe"), &exe).unwrap();
+        // CREATE_NO_WINDOW, so the test opens no console.
+        let mut child = std::process::Command::new(&exe)
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let ping_pid = child.id();
+        let stop = OnDrop(move || {
+            let _ = child.kill();
+            let _ = child.wait();
+        });
+        let err = std::fs::remove_dir_all(td.path()).expect_err("held files block removal");
+        log_failed_attempt(Some("session-1"), td.path(), &err, None);
+        drop(stop);
+        let exe_name = std::env::current_exe().unwrap();
+        let this = format!(
+            "{} (pid {})",
+            exe_name.file_name().unwrap().to_string_lossy(),
+            std::process::id()
+        );
+        let ping = format!("b_ping.exe (pid {ping_pid})");
+        let start = format!(
+            "Could not delete temporary directory {}: The process cannot access the file \
+             because it is being used by another process. 2 file(s) could not be deleted, \
+             including a_locked.bin, b_ping.exe. Files are still locked open by: ",
+            td.path().display()
+        );
+        testing_logger::validate(|logs| {
+            let warns: Vec<_> = logs
+                .iter()
+                .filter(|l| l.level == log::Level::Warn)
+                .collect();
+            assert_eq!(warns.len(), 1);
+            let body = &warns[0].body;
+            let holders: Vec<&str> = body
+                .strip_prefix(&start)
+                .and_then(|rest| rest.strip_suffix(". Giving up."))
+                .unwrap_or_else(|| panic!("unexpected warning: {body}"))
+                .split(", ")
+                .collect();
+            // A scanner inspecting the new executable can appear too.
+            assert!(holders.contains(&this.as_str()), "{body}");
+            assert!(holders.contains(&ping.as_str()), "{body}");
         });
     }
 

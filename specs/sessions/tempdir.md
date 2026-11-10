@@ -250,37 +250,41 @@ change what is reported.
 #### Differences from Python
 
 These differences from Python's `TempDir.cleanup` (openjd-sessions-for-python #376) are
-intentional. Everything else about the warning matches: both walk the directory in
-listing order, entering each subdirectory where it is listed, so for files held open
-without sharing deletion both name the same files in the same order, and the same
-holders, including behind hundreds of other files. The reason drops std's
-` (os error N)` suffix and the Windows full stop, as Python's `strerror` text has
-neither.
+intentional. Everything else about the warning matches: for a file held open without
+sharing deletion, both name the same file and holders, including behind hundreds of
+other files, and the reason drops std's ` (os error N)` suffix and the Windows full
+stop, as Python's `strerror` text has neither.
 
-1. **What is left after the last attempt.** Python's `shutil.rmtree` keeps going past a
+1. **Order of the files named.** Rust walks in listing order, entering each
+   subdirectory where it is listed, as `remove_dir_all` does. Python's `rmtree` (3.12
+   to 3.14) reports a directory's subdirectories' files before the directory's own. So
+   with `a_root.bin` and `b_sub\held.bin` both held, Rust names
+   `a_root.bin, b_sub\held.bin` and Python `b_sub\held.bin, a_root.bin`. With more than
+   256 undeletable files, the two can also pass different files to the holder lookup.
+2. **What is left after the last attempt.** Python's `shutil.rmtree` keeps going past a
    file it cannot delete, so it leaves only the files that could not be deleted. Rust
    can leave other files that were still to be removed.
-2. **Read-only files.** `remove_dir_all` deletes them. Python's `rmtree` fails with
+3. **Read-only files.** `remove_dir_all` deletes them. Python's `rmtree` fails with
    access denied, so it reports the file, retries for about 31 s, and fails.
-3. **Capped counts.** When 256 undeletable files are found, or 10 000 files have been
+4. **Capped counts.** When 256 undeletable files are found, or 10 000 files have been
    checked, Rust says "At least N file(s)". Python, which keeps only the first 256
    failed paths, says "256 file(s)". When Rust finds none but could not check every
    file, it says so; Python has no such case.
-4. **Running programs that refuse writing.** Python reports the paths `rmtree` failed
+5. **Running programs that refuse writing.** Python reports the paths `rmtree` failed
    on, so it always names a running program whose file is read-only or denies writing.
    Rust can tell such a file apart only by asking the Restart Manager, and asks about
    the first 16 (see above), so with more than 16 such program files left in the
    directory it can miss one.
-5. **Calling `cleanup()` again.** `TempDir` marks itself cleaned up before the first
+6. **Calling `cleanup()` again.** `TempDir` marks itself cleaned up before the first
    attempt, so a second call returns `Ok(())` without trying again, even if the first
    failed. Python's has no such flag and tries again. `Session::cleanup()` calls it
    once either way.
-6. **The error after giving up.** Rust's `Session::cleanup()` logs one line,
+7. **The error after giving up.** Rust's `Session::cleanup()` logs one line,
    `Files within temporary directory <dir> could not be deleted: <reason>`, with the
    last error's reason formatted as in the warnings. Python logs
    `Files within temporary directory <dir> could not be deleted.` followed by one line
    per failed path with its exception's `repr`, and a traceback.
-7. **A failed holder lookup.** Both say
+8. **A failed holder lookup.** Both say
    `The processes holding them open could not be determined: <reason>.` Python's reason
    starts with the exception's type, as in `OSError: RmGetList failed (5)`; Rust's is
    only the message, `RmGetList failed (5)`.

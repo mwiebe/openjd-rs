@@ -19,6 +19,7 @@ use openjd_sessions::{Session, SessionConfig};
 
 struct Captured {
     level: log::Level,
+    target: String,
     body: String,
     content: Option<u64>,
     session_id: Option<String>,
@@ -60,6 +61,7 @@ impl log::Log for CapturingLogger {
         let _ = record.key_values().visit(&mut fields);
         RECORDS.lock().unwrap().push(Captured {
             level: record.level(),
+            target: record.target().to_string(),
             body: record.args().to_string(),
             content: fields.content,
             session_id: fields.session_id,
@@ -75,17 +77,28 @@ fn install_logger() {
     log::set_max_level(log::LevelFilter::Trace);
 }
 
+/// A warning or error's level, `openjd_log_content`, `session_id` and text.
+type Problem = (log::Level, Option<u64>, Option<String>, String);
+
 /// The warnings and errors whose text mentions `dir`. Tests run in parallel,
-/// so each picks out its own records by its directory.
-fn problems_about(dir: &std::path::Path) -> Vec<(log::Level, Option<u64>, Option<String>, String)> {
+/// so each picks out its own records by its directory. Each must have the
+/// `openjd.sessions` target, which log consumers filter on.
+fn problems_about(dir: &std::path::Path) -> Vec<Problem> {
     let dir = dir.display().to_string();
-    RECORDS
+    let matched: Vec<(String, Problem)> = RECORDS
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .filter(|r| r.level <= log::Level::Warn && r.body.contains(&dir))
-        .map(|r| (r.level, r.content, r.session_id.clone(), r.body.clone()))
-        .collect()
+        .map(|r| {
+            let fields = (r.level, r.content, r.session_id.clone(), r.body.clone());
+            (r.target.clone(), fields)
+        })
+        .collect();
+    for (target, (_, _, _, body)) in &matched {
+        assert_eq!(target, "openjd.sessions", "{body}");
+    }
+    matched.into_iter().map(|(_, fields)| fields).collect()
 }
 
 fn config(root: &std::path::Path, session_id: &str) -> SessionConfig {
