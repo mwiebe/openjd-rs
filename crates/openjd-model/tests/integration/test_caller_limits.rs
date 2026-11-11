@@ -947,12 +947,13 @@ fn max_step_environment_entries_checks_a_step_before_a_compliant_one() {
 
 #[test]
 fn max_step_environment_entries_counts_an_entry_that_also_has_another_form() {
-    // An entry with both `dependsOn` and `environment` is rejected by §3.2
-    // constraint 1, and it still counts: every entry with an `environment`
-    // key counts as written.
+    // An entry with `environment` and also `dependsOn` or `step` is
+    // rejected by §3.2 constraint 1, and it still counts: every entry with
+    // a non-null `environment` counts as written.
     let entries = [
         r#"{"environment": "E0", "required": false}"#,
         r#"{"dependsOn": "A", "environment": "E1"}"#,
+        r#"{"step": "A", "environment": "E2"}"#,
     ];
     let msg = decode_job_template(
         template_with_dependencies(&entries),
@@ -962,7 +963,7 @@ fn max_step_environment_entries_counts_an_entry_that_also_has_another_form() {
     .unwrap_err()
     .to_string();
     assert!(
-        msg.contains("steps[1] -> dependencies:\n\texceeds caller limit of 1 'environment' entries (2 entries)."),
+        msg.contains("steps[1] -> dependencies:\n\texceeds caller limit of 1 'environment' entries (3 entries)."),
         "{msg}"
     );
     assert!(
