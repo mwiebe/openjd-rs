@@ -258,6 +258,10 @@ pub struct JsCallerLimits {
     pub max_step_count: Option<usize>,
     #[serde(default)]
     pub max_env_count: Option<usize>,
+    /// Maximum number of `environment:` entries (`ENV_PARAMS`) in one
+    /// Step's `dependencies`, counted as written. JS key
+    /// `maxStepEnvironmentEntries`. Mirrors
+    /// [`openjd_model::CallerLimits::max_step_environment_entries`].
     #[serde(default)]
     pub max_step_environment_entries: Option<usize>,
     #[serde(default)]

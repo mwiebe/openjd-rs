@@ -1390,7 +1390,8 @@ pub struct CallerLimits {
     /// `dependencies`, counted as written (disabled and `required:
     /// false` entries count; `dependsOn` and `step` entries do not).
     /// Template Schemas §3 sets no maximum. Checked at template
-    /// validation only, at `steps[i] -> dependencies`.
+    /// validation only, at `steps[i] -> dependencies`, so it takes
+    /// effect only in the limits passed to decoding.
     pub max_step_environment_entries: Option<usize>,
     pub max_task_count: Option<u64>,
     pub max_step_script_size: Option<usize>,

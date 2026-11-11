@@ -876,20 +876,72 @@ fn max_step_environment_entries_does_not_count_step_entries() {
 
 #[test]
 fn max_step_environment_entries_counts_disabled_entries() {
+    // One entry disabled by a literal `false`, one by an expression that
+    // resolves to `false`: both count.
     let entries = [
         r#"{"environment": "E0", "required": false}"#,
         r#"{"environment": "E1", "required": false, "enableIf": false}"#,
+        r#"{"environment": "E2", "required": false, "enableIf": "1 == 2"}"#,
     ];
     let err = decode_job_template(
         template_with_dependencies(&entries),
         Some(ENV_PARAMS),
-        &step_env_entries_limits(Some(1)),
+        &step_env_entries_limits(Some(2)),
     )
     .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("exceeds caller limit of 1 'environment' entries (2 entries)."),
-        "a disabled entry counts: {err}"
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[1] -> dependencies:\n\
+         \texceeds caller limit of 2 'environment' entries (3 entries)."
+    );
+}
+
+#[test]
+fn max_step_environment_entries_reports_the_whole_count() {
+    // Well over the limit, the message gives the Step's whole count.
+    let entries = optional_environment_entries(5);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let err = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(2)),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[1] -> dependencies:\n\
+         \texceeds caller limit of 2 'environment' entries (5 entries)."
+    );
+}
+
+#[test]
+fn max_step_environment_entries_checks_a_step_before_a_compliant_one() {
+    // Step A (index 0) is over the limit and Step B after it is not: only
+    // A is reported.
+    let doc = yaml_val(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "ENV_PARAMS"],
+        "name": "Test",
+        "steps": [
+            {"name": "A", "dependencies": [
+                {"environment": "E0", "required": false}, {"environment": "E1", "required": false}
+             ],
+             "script": {"actions": {"onRun": {"command": "echo"}}}},
+            {"name": "B", "dependencies": [{"environment": "E0", "required": false}],
+             "script": {"actions": {"onRun": {"command": "echo"}}}}
+        ]
+    }"#,
+    );
+    let err =
+        decode_job_template(doc, Some(ENV_PARAMS), &step_env_entries_limits(Some(1))).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[0] -> dependencies:\n\
+         \texceeds caller limit of 1 'environment' entries (2 entries)."
     );
 }
 
@@ -958,10 +1010,11 @@ fn max_step_environment_entries_zero_rejects_any_entry() {
         &step_env_entries_limits(Some(0)),
     )
     .unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("steps[1] -> dependencies:\n\texceeds caller limit of 0 'environment' entries (1 entries)."),
-        "{err}"
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[1] -> dependencies:\n\
+         \texceeds caller limit of 0 'environment' entries (1 entries)."
     );
 }
 

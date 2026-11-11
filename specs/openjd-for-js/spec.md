@@ -167,7 +167,7 @@ Callers who want non-throwing validation use `try { decodeJobTemplate(...) } cat
 |-------|------|-------------|
 | `maxStepCount` | `number` | Max number of steps in a job template. |
 | `maxEnvCount` | `number` | Max number of environments (job + all step environments combined). |
-| `maxStepEnvironmentEntries` | `number` | Max number of `environment:` entries (`ENV_PARAMS`) in one Step's `dependencies`, counted as written: disabled and `required: false` entries count, `dependsOn` and `step` entries do not. Checked at template validation. |
+| `maxStepEnvironmentEntries` | `number` | Max number of `environment:` entries (`ENV_PARAMS`) in one Step's `dependencies`, counted as written: disabled and `required: false` entries count, `dependsOn` and `step` entries do not. Checked at template validation only, so `createJob` ignores it. |
 | `maxTaskCount` | `bigint` | Max total task count across all steps (checked after parameter spaces resolve). |
 | `maxStepScriptSize` | `number` | Max JSON-encoded size of a step script, in bytes. |
 | `maxEnvironmentSize` | `number` | Max JSON-encoded size of an environment, in bytes. |
