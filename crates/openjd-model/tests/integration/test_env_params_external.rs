@@ -228,18 +228,107 @@ fn undeclared_keys_are_rejected_whatever_required_says() {
     ]);
 }
 
-#[test]
-fn supplying_parameters_to_an_environment_that_declares_none_is_rejected() {
-    // §3.2.1 item 1: an Environment Template written before ENV_PARAMS.
-    let old = r#"
+/// An Environment Template written before ENV_PARAMS: an Environment
+/// named `Conda` that declares no parameters, configured by a Job
+/// Parameter.
+const OLD_CONDA: &str = r#"
 specificationVersion: environment-2023-09
+parameterDefinitions:
+- {name: CondaPackages, type: STRING, default: ""}
 environment:
   name: Conda
-  script: {actions: {onEnter: {command: x}}}
+  script: {actions: {onEnter: {command: x, args: ["{{Param.CondaPackages}}"]}}}
 "#;
-    let jt = STEPS_FOR_CONDA.replace("{Packages: \"colmap=3.11\"}", "{Packages: a, Channels: b}");
-    submission(&jt, &[old], &[]).apply_err(&[
+
+/// The warning for `STEPS_FOR_CONDA`'s entry when `OLD_CONDA` ignores its
+/// parameters, listing `keys`.
+fn ignored_warning(keys: &str) -> String {
+    format!(
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters: Environment 'Conda' \
+         (EnvironmentTemplate[0]) declares no parameters, and this entry has 'required: false', \
+         so its parameters are ignored: {keys}. The Step's Sessions get no values from it \
+         (Template Schemas §3.2.1 item 1)."
+    )
+}
+
+#[test]
+fn a_required_entry_supplying_parameters_to_an_environment_that_declares_none_is_rejected() {
+    // §3.2.1 item 1: only a `required: false` entry's parameters are
+    // ignored.
+    let jt = STEPS_FOR_CONDA
+        .replace("required: false", "required: true")
+        .replace("{Packages: \"colmap=3.11\"}", "{Packages: a, Channels: b}");
+    submission(&jt, &[OLD_CONDA], &[]).apply_err(&[
         "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment 'Conda' (EnvironmentTemplate[0]) declares no parameters, so this entry must not supply any; it supplies Channels, Packages.",
+    ]);
+    // `required` absent means `true`.
+    let jt = jt.replace("    required: true\n", "");
+    submission(&jt, &[OLD_CONDA], &[]).apply_err(&[
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment 'Conda' (EnvironmentTemplate[0]) declares no parameters, so this entry must not supply any; it supplies Channels, Packages.",
+    ]);
+}
+
+#[test]
+fn an_optional_entrys_parameters_are_ignored_by_an_environment_that_declares_none() {
+    // §3.2.1 item 1: the entry supplies no values, with one warning naming
+    // the entry, the Environment and the keys. Its values are not resolved
+    // and not checked (constraints 5 and 6), so an index out of range and
+    // a list for what would be a STRING are not errors. Every Step's
+    // Sessions still enter the Environment.
+    let jt = STEPS_FOR_CONDA.replace(
+        "name: J\n",
+        "name: J\nparameterDefinitions:\n- {name: L, type: \"LIST[INT]\", default: [1]}\n",
+    );
+    let jt = jt.replace(
+        "{Packages: \"colmap=3.11\"}",
+        "{Packages: \"{{ Param.L[5] }}\", Channels: [a, b], Zzz: 3}",
+    );
+    let s = submission(&jt, &[OLD_CONDA], &[]);
+    let created = s
+        .create()
+        .unwrap_or_else(|e| panic!("job creation failed:\n{e}"));
+    let warnings: Vec<String> = created.warnings.iter().map(ToString::to_string).collect();
+    assert_eq!(warnings, [ignored_warning("Channels, Packages, Zzz")]);
+    let job = &created.job;
+    assert_eq!(job.steps[0].environment_parameters, None);
+    // Both Steps' Sessions enter it; the entry is not "not found".
+    for i in 0..job.steps.len() {
+        assert_eq!(
+            created.environment_statuses[i].environments[0].status,
+            openjd_model::EnvironmentStatus::Entered,
+            "step {i}"
+        );
+        assert!(created.environment_statuses[i].not_found.is_empty());
+    }
+}
+
+#[test]
+fn an_optional_entry_without_parameters_gets_no_warning() {
+    let jt = STEPS_FOR_CONDA.replace("    parameters: {Packages: \"colmap=3.11\"}\n", "");
+    let (job, warnings) = submission(&jt, &[OLD_CONDA], &[]).combined();
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert_eq!(job.steps[0].environment_parameters, None);
+}
+
+#[test]
+fn an_optional_entry_enabled_by_an_expression_is_ignored_at_job_creation() {
+    // The entry's `enableIf` is decided when the Job is created; once it is
+    // `true`, the rule applies as for an entry without one.
+    let jt = STEPS_FOR_CONDA.replace(
+        "    required: false\n",
+        "    required: false\n    enableIf: \"Job.Name == 'J'\"\n",
+    );
+    let (_, warnings) = submission(&jt, &[OLD_CONDA], &[]).combined();
+    assert_eq!(warnings, [ignored_warning("Packages")]);
+}
+
+#[test]
+fn undeclared_keys_are_rejected_by_an_environment_that_declares_parameters() {
+    // §3.2.1 item 1: only an Environment that declares none ignores keys,
+    // even when every key of a `required: false` entry is undeclared.
+    let jt = STEPS_FOR_CONDA.replace("{Packages: \"colmap=3.11\"}", "{Pkgs: b}");
+    submission(&jt, &[CONDA], &[]).apply_err(&[
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Pkgs:\n\tEnvironment 'Conda' (EnvironmentTemplate[0]) declares no parameter 'Pkgs'. Declared: Packages, Channels.",
     ]);
 }
 

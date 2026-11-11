@@ -923,7 +923,9 @@ pass 6:
   entry whose `enableIf` is any other expression, even a constant one, may be disabled, so job
   creation checks it if it resolves to `true`, §7.5 rule 5; plan A28, decided 2026-11-03):
   constraint 5 (every key names a
-  declared parameter; an environment that declares none rejects an entry with any); and,
+  declared parameter; an environment that declares none rejects an entry with any, and a
+  `required: false` entry cannot name a Job Environment, constraint 8, so the exception for
+  an attachment that declares none, §3.2.1 item 1, does not arise here); and,
   only when the Environment's own `enableIf` is absent or `true`, or is **certainly
   unresolved** for the entry (below), constraint 6 against literal values, by the same check
   as a literal `default`, and the rule that a format-string value for a list-typed parameter

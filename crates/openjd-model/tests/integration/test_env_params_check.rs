@@ -189,6 +189,87 @@ fn an_undeclared_key_is_rejected() {
     );
 }
 
+/// An Environment Template written before ENV_PARAMS, declaring no
+/// parameters.
+const OLD_CONDA: &str = "specificationVersion: environment-2023-09\n\
+                         environment: {name: Conda, script: {actions: {onEnter: {command: x}}}}\n";
+
+#[test]
+fn an_optional_entrys_parameters_to_an_environment_that_declares_none_are_ignored() {
+    // §3.2.1 item 1: check and job creation both accept it, with the same
+    // one warning, and a wrong-typed literal in the ignored values is not
+    // checked.
+    let jt = job_ok(&steps_naming(
+        "Conda",
+        false,
+        "{Packages: [a, b], Channels: x}",
+    ));
+    let envs = vec![env_ok(OLD_CONDA)];
+    let expected = [
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters: Environment 'Conda' \
+                     (EnvironmentTemplate[0]) declares no parameters, and this entry has \
+                     'required: false', so its parameters are ignored: Channels, Packages. The \
+                     Step's Sessions get no values from it (Template Schemas §3.2.1 item 1).",
+    ];
+    assert_eq!(check(&jt, &envs).unwrap(), expected);
+    assert_eq!(apply(&jt, &envs, &[]).unwrap(), expected);
+}
+
+#[test]
+fn a_required_entrys_parameters_to_an_environment_that_declares_none_are_rejected() {
+    check_err_same_as_apply(
+        &steps_naming("Conda", true, "{Packages: x}"),
+        &[OLD_CONDA],
+        &[
+            "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment 'Conda' \
+           (EnvironmentTemplate[0]) declares no parameters, so this entry must not supply any; \
+           it supplies Packages.",
+        ],
+    );
+}
+
+#[test]
+fn an_ignored_entry_still_requests_an_on_request_environment() {
+    // §3.2.1 item 1: the entry still refers to the attachment, so the Step
+    // requests the ON_REQUEST `Lic`, and its literal host requirements
+    // combine with the Step's (§3.3.3). They conflict, which both `check`
+    // and job creation report.
+    let lic = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+               environment: {name: Lic, activation: ON_REQUEST, \
+               hostRequirements: {amounts: [{name: amount.worker.vcpu, min: 8}]}, \
+               script: {actions: {onEnter: {command: x}}}}\n";
+    let jt = steps_naming("Lic", false, "{Product: maya}").replace(
+        "  script:",
+        "  hostRequirements: {amounts: [{name: amount.worker.vcpu, max: 4}]}\n  script:",
+    );
+    let jt_t = job_ok(&jt);
+    let envs = vec![env_ok(lic)];
+    let checked = check(&jt_t, &envs).expect_err("expected a host requirements conflict");
+    let applied = apply(&jt_t, &envs, &[]).expect_err("expected a host requirements conflict");
+    assert_eq!(checked.to_string(), applied.to_string());
+    assert!(
+        checked.to_string().contains("amount.worker.vcpu"),
+        "{checked}"
+    );
+    // Without the conflict, both accept it with the warning, and the
+    // Step's Sessions enter `Lic`.
+    let jt_t = job_ok(&jt.replace("max: 4", "max: 16"));
+    let warnings = check(&jt_t, &envs).unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("Environment 'Lic' (EnvironmentTemplate[0]) declares no parameters"),
+        "{warnings:?}"
+    );
+    let values = job_params_with(&jt_t, &[], &envs);
+    let created =
+        create_job_with_environment_templates(&jt_t, &attach(&envs), &values, &template_ctx(&jt_t))
+            .unwrap();
+    assert_eq!(
+        created.environment_statuses[0].environments[0].status,
+        openjd_model::EnvironmentStatus::Entered
+    );
+}
+
 #[test]
 fn a_literal_of_the_wrong_type_is_rejected() {
     let wrong_type = "JobTemplate -> steps[0] -> dependencies[0] -> parameters -> Packages:\n\tis \

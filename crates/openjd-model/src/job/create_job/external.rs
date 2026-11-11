@@ -37,7 +37,9 @@ use crate::error::{
     path_field, path_index, path_to_string, ModelError, PathElement, ValidationErrors,
 };
 use crate::job;
-use crate::template::{EnvironmentTemplate, JobTemplate, StepDependency};
+use crate::template::{
+    EnvironmentParameterValue, EnvironmentTemplate, JobTemplate, StepDependency,
+};
 use crate::types::{JobParameterValues, ModelExtension, ValidationContext};
 
 use super::build_symbol_table;
@@ -135,9 +137,11 @@ pub struct CreatedJob {
     /// Environment named like a Job Environment, which no entry of the Job
     /// Template can reach (§3.2.1 item 4), when the Job Template lists
     /// `ENV_PARAMS` (without it no entry exists, and the submission gets
-    /// no warning it did not get before the extension); and an enabled `required: false`
+    /// no warning it did not get before the extension); an enabled `required: false`
     /// entry that resolves to no Environment (RFC "External Environments
-    /// are named implicitly" item 3).
+    /// are named implicitly" item 3); and an enabled `required: false`
+    /// entry whose `parameters` an attached Environment that declares none
+    /// ignores (§3.2.1 item 1).
     pub warnings: Vec<SubmissionWarning>,
     /// For each Step of `job`, index for index, the Environments disabled
     /// for that Step (Template Schemas §3.2.2): those its own `enableIf`
@@ -385,6 +389,20 @@ const ENTERED_ENABLE_IF: &str =
 const ENTERED_ENABLE_IF_FAILED: &str = "Its activation is BY_DEFAULT and its enableIf could not \
      be evaluated, so it is checked as if Sessions enter it";
 
+/// An enabled entry of a Step that resolved to exactly one attachment, in
+/// [`apply_environment_templates`].
+struct ResolvedEntry<'e> {
+    /// The attachment's index.
+    doc: usize,
+    /// The entry.
+    entry: &'e FrozenEntry,
+    /// The entry's full path.
+    path: Vec<PathElement>,
+    /// Whether the attachment ignores the entry's `parameters` (§3.2.1
+    /// item 1), so that it supplies none.
+    ignored: bool,
+}
+
 /// What one `environment:` entry naming no Job Environment resolves to.
 enum EntryMatch<'m> {
     /// No attachment has the name; the error or warning is reported.
@@ -573,6 +591,34 @@ impl<'a> Attachments<'a> {
         }
     }
 
+    /// §3.2.1 item 1: whether an enabled entry that resolved to attachment
+    /// `doc` has its `parameters` ignored, which is when the attachment
+    /// declares no `envParameterDefinitions`, the entry has
+    /// `required: false`, and it supplies parameters. An ignored entry
+    /// supplies no values: its values are not resolved, and constraints 5
+    /// and 6 do not apply to them. It still refers to the attachment, so it
+    /// still requests an `ON_REQUEST` one. Each ignored entry gets a
+    /// warning at its `parameters`, naming the Environment and the ignored
+    /// keys. `entry_path` is the entry's full path.
+    fn ignores_parameters(
+        &self,
+        doc: usize,
+        required: bool,
+        params: &BTreeMap<String, EnvironmentParameterValue>,
+        entry_path: &[PathElement],
+        warnings: &mut Vec<SubmissionWarning>,
+    ) -> bool {
+        let de = &self.declaring[doc];
+        if required || params.is_empty() || de.declares_parameters() {
+            return false;
+        }
+        warnings.push(SubmissionWarning {
+            path: path_field(entry_path, "parameters"),
+            message: ignored_parameters_message(&de.label, params),
+        });
+        true
+    }
+
     /// Resolve one entry naming `environment`, which is not a Job
     /// Environment, by name (§3.2.1 items 1–3), reporting a missing
     /// required Environment or an ambiguous name into `errors` and a
@@ -695,6 +741,21 @@ impl<'a> Attachments<'a> {
 }
 
 /// The names of `env`'s parameters without a `default`.
+/// The warning for an entry whose `parameters` an attachment that declares
+/// none ignores (§3.2.1 item 1), naming the Environment by `label` and the
+/// ignored keys, capped as the other name lists are.
+fn ignored_parameters_message(
+    label: &str,
+    params: &BTreeMap<String, EnvironmentParameterValue>,
+) -> String {
+    format!(
+        "Environment {label} declares no parameters, and this entry has 'required: false', so \
+         its parameters are ignored: {}. The Step's Sessions get no values from it (Template \
+         Schemas §3.2.1 item 1).",
+        capped_name_list(params.keys().map(String::as_str), params.len())
+    )
+}
+
 fn required_names(env: &crate::template::Environment) -> Vec<&str> {
     env.env_parameter_definitions
         .iter()
@@ -739,7 +800,11 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// entry order:
 ///
 /// 1. exactly one attached Environment with the entry's name: the entry
-///    refers to it, whatever `required` says;
+///    refers to it, whatever `required` says. When the Environment declares
+///    no parameters and the entry has `required: false`, its `parameters`
+///    are ignored, with a warning: it supplies no values and its values are
+///    not resolved or checked, but it still requests an `ON_REQUEST`
+///    Environment (§3.2.1 item 1);
 /// 2. none: with `required: true` (or `required` absent) the submission is
 ///    rejected, naming the entry and the Environment; with
 ///    `required: false` the entry is ignored and a warning is recorded;
@@ -873,8 +938,11 @@ pub(crate) fn apply_environment_templates(
     // ── Resolve each Step's frozen entries ──
     // Per Step: the attachment each resolved entry refers to, with the
     // entry.
-    let mut resolved: Vec<Vec<(usize, &FrozenEntry, Vec<PathElement>)>> =
-        Vec::with_capacity(selections.len());
+    // An entry whose `parameters` the attachment ignores (§3.2.1 item 1)
+    // is kept, flagged, so that it still requests an `ON_REQUEST`
+    // attachment, and supplies `no_parameters` instead.
+    let no_parameters = BTreeMap::new();
+    let mut resolved: Vec<Vec<ResolvedEntry<'_>>> = Vec::with_capacity(selections.len());
     // Per Step: the `BY_DEFAULT` attachments a disabled entry declines
     // (§3.2 item 3.2).
     let mut declined: Vec<HashSet<usize>> = Vec::with_capacity(selections.len());
@@ -953,7 +1021,21 @@ pub(crate) fn apply_environment_templates(
                         });
                     }
                 }
-                EntryMatch::One(doc) => step_resolved.push((doc, entry, entry_path)),
+                EntryMatch::One(doc) => {
+                    let ignored = set.ignores_parameters(
+                        doc,
+                        entry.required,
+                        &entry.parameters,
+                        &entry_path,
+                        &mut warnings,
+                    );
+                    step_resolved.push(ResolvedEntry {
+                        doc,
+                        entry,
+                        path: entry_path,
+                        ignored,
+                    });
+                }
                 // An ambiguous name (reported) stops the Step after §7.4.1
                 // step 4, so no value of its is computed and the rejected
                 // entry does not also produce "must supply" or "does not
@@ -1046,7 +1128,7 @@ pub(crate) fn apply_environment_templates(
         for (doc, (de, att_ctx)) in set.declaring.iter().zip(&set.contexts).enumerate() {
             let entry = resolved
                 .get(i)
-                .and_then(|r| r.iter().find(|(d, _, _)| *d == doc));
+                .and_then(|r| r.iter().find(|r| r.doc == doc));
             // §4 item 4, §3.2 item 3.2: every `ALWAYS` attachment, every
             // `BY_DEFAULT` one a disabled entry of the Step does not
             // decline, and each `ON_REQUEST` one an enabled entry of the
@@ -1067,10 +1149,14 @@ pub(crate) fn apply_environment_templates(
                 );
                 continue;
             }
-            let supplied = entry.map(|(_, e, path)| Supplied {
-                params: &e.parameters,
-                symtab: &e.symtab,
-                entry_path: path.clone(),
+            let supplied = entry.map(|r| Supplied {
+                params: if r.ignored {
+                    &no_parameters
+                } else {
+                    &r.entry.parameters
+                },
+                symtab: &r.entry.symtab,
+                entry_path: r.path.clone(),
             });
             let policy = ResolvePolicy::new(att_ctx);
             let pending = de.values_for_step(
@@ -1673,7 +1759,9 @@ fn certainly_entered_per_step(
 /// - each `environment:` entry that names no Job Environment and whose
 ///   `enableIf` is absent or the boolean scalar `true`, resolved by name
 ///   (§3.2.1 items 1–3), with a `required: false` entry that resolves to
-///   nothing reported as a warning. An entry whose `enableIf` is `false` is
+///   nothing reported as a warning, and one whose `parameters` an
+///   attachment that declares none ignores (§3.2.1 item 1) reported as a
+///   warning and checked as an entry with no `parameters`. An entry whose `enableIf` is `false` is
 ///   resolved too, but supplies nothing and has no effect when it matches
 ///   no attachment (§3.2.1): it declines a `BY_DEFAULT` attachment, which
 ///   the checks below then leave out for its Step, requests no
@@ -1912,14 +2000,30 @@ pub fn check_environment_templates(
                 &mut warnings,
             ) {
                 EntryMatch::Absent => {}
-                EntryMatch::One(doc) => step_resolved.push((
-                    doc,
-                    Supplied {
-                        params: dep.parameters.as_ref().map_or(&empty, |p| &p.0),
-                        symtab: &no_symbols,
-                        entry_path,
-                    },
-                )),
+                EntryMatch::One(doc) => {
+                    let params = dep.parameters.as_ref().map_or(&empty, |p| &p.0);
+                    // §3.2.1 item 1: the entry still refers to the
+                    // attachment, with no values.
+                    let params = if set.ignores_parameters(
+                        doc,
+                        dep.is_required(),
+                        params,
+                        &entry_path,
+                        &mut warnings,
+                    ) {
+                        &empty
+                    } else {
+                        params
+                    };
+                    step_resolved.push((
+                        doc,
+                        Supplied {
+                            params,
+                            symtab: &no_symbols,
+                            entry_path,
+                        },
+                    ));
+                }
                 EntryMatch::Many(many) => {
                     step_unapplied.extend(many.iter().copied());
                     step_ambiguous.extend(many.iter().copied());

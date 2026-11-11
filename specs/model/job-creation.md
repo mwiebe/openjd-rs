@@ -876,7 +876,15 @@ that has entries lists both.
    Step is not stopped (§3.2.1 item 4). One with `activation: ON_REQUEST` is never entered, since no entry can
    request it, so it is not an error. (Warnings are returned only with a successful result.)
 2. Each Step's frozen entries are matched to the attachments by `environment.name`:
-   - exactly one: the entry refers to it, whatever `required` says (§3.2.1 item 1);
+   - exactly one: the entry refers to it, whatever `required` says (§3.2.1 item 1). When the
+     attachment declares no parameters, such as one written before ENV_PARAMS, and the entry
+     has `required: false` and supplies parameters, its parameters are ignored
+     (`Attachments::ignores_parameters`): the entry still refers to the attachment, so it
+     still requests an `ON_REQUEST` one, but it supplies no values, and its values are not
+     resolved or checked (constraints 5 and 6). A warning is recorded at
+     `JobTemplate -> steps[i] -> dependencies[j] -> parameters`, naming the Environment and the
+     ignored keys (capped as other name lists are). The Environment's status stays `Entered`;
+     `CreatedJob` does not otherwise record that the values were ignored;
    - none: with `required` true or absent, an error at
      `JobTemplate -> steps[i] -> dependencies[j] -> environment` naming the Environment and the
      attached documents; with `required: false`, the entry is ignored and a warning is recorded
@@ -925,8 +933,9 @@ that has entries lists both.
    [Environment enableIf](#environment-enableif-env_params)).
    (A Step whose entry names an ambiguous attachment is stopped, so the one mistake is not
    also reported as "must supply" or "does not supply" errors.) The entry's format strings resolve against its frozen `symtab`. A key the
-   attachment does not declare is an error (constraint 5), including any key for an
-   attachment that declares no parameters, such as one written before ENV_PARAMS; and a parameter
+   attachment does not declare is an error (constraint 5), including any key of a
+   `required: true` entry for an attachment that declares no parameters, such as one written
+   before ENV_PARAMS (a `required: false` entry's are ignored, step 2); and a parameter
    without a `default` of an attachment the Step enters that the
    Step does not supply is an error at `JobTemplate -> steps[i]` (constraint 7 over the
    combined Job, §3.2.1 last paragraph). The lists in these messages are capped as template
@@ -1381,7 +1390,9 @@ reports only once the Step's step 1–4 errors are fixed):
    as `"true"`) is enabled or not only
    when the Job is created, so every attachment it may name is skipped for its Step. Its name
    is resolved either way (Template Schemas §3.2.1), so a name that two or more attachments
-   define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.5 rule 5);
+   define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.5 rule 5).
+   An enabled `required: false` entry whose parameters an attachment that declares none
+   ignores gets step 2's warning, and supplies nothing to items 3–5;
 3. step 3 above, without resolving anything that needs Job Parameter values
    (`DeclaringEnvironment::check_step_statically`): constraint 5; for each supplied value, a
    literal converted and checked as at submission (type and constraints; a PATH value of any

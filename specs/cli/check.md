@@ -133,7 +133,10 @@ stage that needs no Job Parameter values:
   absent, and one whose `enableIf` is an expression (an expression field, Template Schemas
   §7.5, so even a constant one such as `"true"`) is checked only by `openjd run`, as is
   every attachment it may name, for its Step;
-- for a resolved entry, every key names a declared parameter (constraint 5); and, when the
+- a `required: false` entry that resolves to an attached Environment that declares no
+  parameters, and that supplies some, is a warning: its parameters are ignored (Template
+  Schemas §3.2.1 item 1), and it still requests an `ON_REQUEST` Environment;
+- for any other resolved entry, every key names a declared parameter (constraint 5); and, when the
   attached Environment's own `enableIf` is absent or `true`, or is certainly unresolved for the
   Step (it reads only values that stay unknown, see [validation.md](../model/validation.md)),
   every literal value converts and satisfies its definition (constraint 6; a PATH value of

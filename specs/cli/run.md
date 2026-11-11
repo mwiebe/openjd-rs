@@ -339,7 +339,9 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
   error at its path (`JobTemplate -> steps[0] -> dependencies[1] -> parameters -> X`), with
   `--environment`, and for `JobTemplate`, at the Job Template's paths (`steps[0] -> ...`),
   without it; followed, like every job-creation error, by the Job Template's help text. A
-  `required: false` entry that resolves to nothing has no effect. An entry whose `enableIf`
+  `required: false` entry that resolves to nothing has no effect, and one that resolves to an
+  attached Environment that declares no parameters supplies no values: its parameters are
+  ignored, and it still requests an `ON_REQUEST` Environment. An entry whose `enableIf`
   is `false` supplies nothing; its name is resolved too, and one that matches nothing has no
   effect, whatever `required` says;
 - fixes each Step's Environment set (`job::Step::environments`): every Environment with
@@ -359,8 +361,9 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
   Environments it does not disable (constraint 5 for every one), as
   job creation does for the Job Template's own;
 - returns warnings, which are printed to stderr as `WARNING: <path>: <message>`: one per
-  `required: false` entry that resolves to nothing, and one per attached Environment named
-  like a `jobEnvironments` entry (§3.2.1 item 4).
+  `required: false` entry that resolves to nothing, one per `required: false` entry whose
+  parameters an attached Environment that declares none ignores (§3.2.1 item 1), and one per
+  attached Environment named like a `jobEnvironments` entry (§3.2.1 item 4).
 
 `CreatedJob::environment_documents` records which document each `job_environments` entry comes
 from. When neither the Job Template nor any attached Environment Template lists `ENV_PARAMS`,

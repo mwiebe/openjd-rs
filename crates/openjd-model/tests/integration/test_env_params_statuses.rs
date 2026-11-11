@@ -427,6 +427,61 @@ fn an_on_request_environment_is_listed_only_when_requested() {
 // ── Attached Environment Templates ─────────────────────────────────
 
 #[test]
+fn an_optional_entry_whose_parameters_are_ignored_still_requests_and_declines() {
+    // §3.2.1 item 1: an attached Environment that declares no parameters
+    // ignores a `required: false` entry's parameters, and the entry keeps
+    // its other effects. S requests the ON_REQUEST `Lic` with values, so it
+    // enters `Lic`; T's entry for the BY_DEFAULT `Plain` is disabled, so it
+    // declines `Plain` (§3.2 item 3.2); U does neither.
+    let lic = env("name: Lic, activation: ON_REQUEST");
+    let plain = "specificationVersion: environment-2023-09\n\
+                 environment: {name: Plain, variables: {V: p}}\n";
+    let jt = format!(
+        "{HEAD}steps:\n\
+         - name: S\n  dependencies:\n  \
+         - {{environment: Lic, required: false, parameters: {{Product: maya}}}}\n  \
+         - {{environment: Plain, required: false, parameters: {{Packages: x}}}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: T\n  dependencies:\n  \
+         - {{environment: Plain, required: false, enableIf: false, parameters: {{Packages: x}}}}\n  \
+         script: {{actions: {{onRun: {{command: x}}}}}}\n\
+         - name: U\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
+    );
+    let created = create(&jt, &[&lic, plain]);
+    assert_eq!(
+        statuses(&created, 0),
+        [
+            "attached Lic@EnvironmentTemplate[0]: entered",
+            "attached Plain@EnvironmentTemplate[1]: entered"
+        ]
+    );
+    assert_eq!(
+        statuses(&created, 1),
+        ["attached Plain@EnvironmentTemplate[1]: declined"]
+    );
+    assert_eq!(
+        statuses(&created, 2),
+        ["attached Plain@EnvironmentTemplate[1]: entered"]
+    );
+    for step in 0..3 {
+        assert!(not_found(&created, step).is_empty());
+    }
+    // One warning per ignored enabled entry; none for the disabled one.
+    let paths: Vec<String> = created
+        .warnings
+        .iter()
+        .map(|w| w.to_string().split(": ").next().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "JobTemplate -> steps[0] -> dependencies[0] -> parameters",
+            "JobTemplate -> steps[0] -> dependencies[1] -> parameters"
+        ]
+    );
+}
+
+#[test]
 fn a_group_spans_an_attachment_and_a_job_environment() {
     // §4 item 7: attached Environments come first in the Job's Environment
     // order, so an entered attachment supersedes a Job Environment of its

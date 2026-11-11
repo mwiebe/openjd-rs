@@ -154,7 +154,9 @@ pub fn create_job(
 ///    one an enabled entry requests, and a disabled entry for an `ALWAYS`
 ///    one is an error naming the Step and the Environment;
 /// 5. the Step gets its effective values for each Environment in its set
-///    (an entry's undeclared key is an error here, constraint 5);
+///    (an entry's undeclared key is an error here, constraint 5, except that
+///    an attachment that declares no parameters ignores a `required: false`
+///    entry's `parameters`, with a warning, §3.2.1 item 1);
 /// 6. the Environments are taken in the Job's Environment order: one whose
 ///    `exclusiveGroup` (§4 item 7) an earlier one that remains in the Step's
 ///    set already has is superseded, which disables it for the Step, and its
