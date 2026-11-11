@@ -1593,11 +1593,13 @@ pub enum ModelError {
         start: Option<usize>,
         end: Option<usize>,
         /// The `ExpressionError` behind a `create_job` resolution failure
-        /// (job name, host-requirement names, amount `min`/`max`, attribute
-        /// `anyOf`/`allOf` values; an amount bound whose text is not a
-        /// finite number is `Expression` instead), or carried by a converted
-        /// `FormatStringValidationError`; otherwise `None`. Also returned
-        /// by `Error::source()`.
+        /// (job name; in a Step's own host requirements, names, amount
+        /// `min`/`max`, attribute `anyOf`/`allOf` values; an amount bound
+        /// whose text is not a finite number is `Expression` instead), or
+        /// carried by a converted `FormatStringValidationError`; otherwise
+        /// `None`. Also returned by `Error::source()`. With ENV_PARAMS, an
+        /// Environment's host requirement resolution failure is a
+        /// `ModelValidation` error at its field instead, with no `source`.
         source: Option<openjd_expr::ExpressionError>,
     },
 

@@ -1450,11 +1450,10 @@ fn attribute_value_resolution_failure_keeps_expression_error() {
     assert_division_by_zero_source(&err);
     // The prototype names the field of a Step's attribute value error, since
     // a FormatStringError has no path of its own.
-    assert!(
-        err.to_string().starts_with(
-            "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: Division by zero"
-        ),
-        "{err}"
+    assert_eq!(
+        err.to_string(),
+        "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: \
+         Division by zero\n  10 // Param.N\n  ~~~^~~~~~~~~~"
     );
 }
 
@@ -1479,11 +1478,10 @@ fn attribute_values_expression_resolution_failure_keeps_expression_error() {
         &["EXPR", "ENV_PARAMS", "FEATURE_BUNDLE_1"],
     );
     assert_division_by_zero_source(&err);
-    assert!(
-        err.to_string().starts_with(
-            "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: Division by zero"
-        ),
-        "{err}"
+    assert_eq!(
+        err.to_string(),
+        "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: \
+         Division by zero\n  ['v' + string(10 // Param.N)]\n                ~~~^~~~~~~~~~"
     );
 }
 
