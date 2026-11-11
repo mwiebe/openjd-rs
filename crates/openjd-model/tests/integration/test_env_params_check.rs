@@ -217,14 +217,98 @@ fn an_optional_entrys_parameters_to_an_environment_that_declares_none_are_ignore
 
 #[test]
 fn a_required_entrys_parameters_to_an_environment_that_declares_none_are_rejected() {
+    let expected = [
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment \
+                     'Conda' (EnvironmentTemplate[0]) declares no parameters, so this entry must \
+                     not supply any; it supplies Packages.",
+    ];
+    let jt = steps_naming("Conda", true, "{Packages: x}");
+    check_err_same_as_apply(&jt, &[OLD_CONDA], &expected);
+    // `required` absent means `true`.
     check_err_same_as_apply(
-        &steps_naming("Conda", true, "{Packages: x}"),
+        &jt.replace("    required: true\n", ""),
         &[OLD_CONDA],
-        &[
-            "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment 'Conda' \
-           (EnvironmentTemplate[0]) declares no parameters, so this entry must not supply any; \
-           it supplies Packages.",
-        ],
+        &expected,
+    );
+}
+
+#[test]
+fn an_always_environment_that_declares_none_ignores_an_optional_entrys_parameters() {
+    // §3.2.1 item 1 holds whatever the attachment's `activation`.
+    let always = "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n\
+                  environment: {name: Conda, activation: ALWAYS, \
+                  script: {actions: {onEnter: {command: x}}}}\n";
+    let jt = job_ok(&steps_naming("Conda", false, "{Packages: [a, b]}"));
+    let envs = vec![env_ok(always)];
+    let expected = [
+        "JobTemplate -> steps[0] -> dependencies[0] -> parameters: Environment 'Conda' \
+                     (EnvironmentTemplate[0]) declares no parameters, and this entry has \
+                     'required: false', so its parameters are ignored: Packages. The Step's \
+                     Sessions get no values from it (Template Schemas §3.2.1 item 1).",
+    ];
+    assert_eq!(check(&jt, &envs).unwrap(), expected);
+    let values = job_params_with(&jt, &[], &envs);
+    let created =
+        create_job_with_environment_templates(&jt, &attach(&envs), &values, &template_ctx(&jt))
+            .unwrap();
+    let applied: Vec<String> = created
+        .warnings
+        .iter()
+        .map(SubmissionWarning::to_string)
+        .collect();
+    assert_eq!(applied, expected);
+    assert_eq!(
+        created.environment_statuses[0].environments[0].status,
+        openjd_model::EnvironmentStatus::Entered
+    );
+}
+
+#[test]
+fn ignored_parameters_warnings_keep_entry_order_among_the_other_warnings() {
+    // An unreachable attachment's warning comes first, then each Step's
+    // entries' warnings in Step and entry order, whatever their kind, in
+    // both check and job creation.
+    let jt = job_ok(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+jobEnvironments:
+- {name: Shadow, variables: {V: x}}
+steps:
+- name: S
+  dependencies:
+  - {environment: Missing, required: false}
+  - {environment: Conda, required: false, parameters: {P: a}}
+  script: {actions: {onRun: {command: x}}}
+- name: T
+  dependencies:
+  - {environment: Missing2, required: false}
+  - {environment: Conda, required: false, parameters: {Q: b}}
+  script: {actions: {onRun: {command: x}}}
+"#,
+    );
+    let envs = vec![
+        env_ok(OLD_CONDA),
+        env_ok(&OLD_CONDA.replace("name: Conda", "name: Shadow")),
+    ];
+    let paths = |w: Vec<String>| -> Vec<String> {
+        w.iter()
+            .map(|w| w.split(": ").next().unwrap().to_string())
+            .collect()
+    };
+    let checked = check(&jt, &envs).unwrap();
+    let applied = apply(&jt, &envs, &[]).unwrap();
+    assert_eq!(checked, applied);
+    assert_eq!(
+        paths(checked),
+        [
+            "EnvironmentTemplate[1] -> environment -> name",
+            "JobTemplate -> steps[0] -> dependencies[0] -> environment",
+            "JobTemplate -> steps[0] -> dependencies[1] -> parameters",
+            "JobTemplate -> steps[1] -> dependencies[0] -> environment",
+            "JobTemplate -> steps[1] -> dependencies[1] -> parameters",
+        ]
     );
 }
 
