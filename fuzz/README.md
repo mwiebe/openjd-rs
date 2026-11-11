@@ -39,7 +39,7 @@ Windows-specific steps; call `cargo fuzz` directly only with the same flag and
 - It puts the directory holding `clang_rt.asan_dynamic-x86_64.dll` on `PATH`
   (without it the binaries exit with `STATUS_DLL_NOT_FOUND`). It finds the
   directory from `VCToolsInstallDir` or `vswhere`; set `FUZZ_ASAN_DLL_DIR` to
-  override.
+  override (for example, to match a non-default toolset rustc links with).
 
 ## Layout
 
@@ -184,7 +184,9 @@ until all three steps agree.
 1. The crashing input is in `fuzz/artifacts/<target>/` (CI uploads it as a
    workflow artifact).
 2. Reproduce: `cargo +nightly fuzz run <target> <file>`, or minimize with
-   `cargo +nightly fuzz tmin <target> <file>`.
+   `cargo +nightly fuzz tmin <target> <file>`. On Windows, add
+   `--no-include-main-msvc` and put the ASan runtime's directory on `PATH`
+   (see Quick start).
 3. Fix it, add a unit test in the crate, and copy the input to
    `fuzz/regressions/<target>/`. Inputs for generated (`*_gen`) targets are
    interpreted by the generator, so a generator change can make them

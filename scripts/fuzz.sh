@@ -55,10 +55,10 @@ IS_WINDOWS=0
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) IS_WINDOWS=1 ;; esac
 
 # Windows (MSVC) runs the fuzz binaries against the ASan runtime DLL that
-# ships with the Visual C++ tools the linker came from. Put its directory on
-# PATH: FUZZ_ASAN_DLL_DIR if set, else the tools that rustc links with (the
-# developer prompt's VCToolsInstallDir, else vswhere's latest installation's
-# default tools version).
+# ships with the Visual C++ tools. Put its directory on PATH:
+# FUZZ_ASAN_DLL_DIR if set, else the developer prompt's VCToolsInstallDir,
+# else the newest Visual Studio with the x64 tools (prerelease included, as
+# rustc's linker lookup does) and its default tools version.
 ASAN_DLL=clang_rt.asan_dynamic-x86_64.dll
 asan_path_ready=0
 windows_asan_path() {
@@ -67,13 +67,16 @@ windows_asan_path() {
     if [[ -z "$dir" && -n "${VCToolsInstallDir:-}" ]]; then
         dir="$(cygpath -u "$VCToolsInstallDir")/bin/Hostx64/x64"
     fi
-    if [[ -z "$dir" ]]; then
+    local program_files_x86
+    program_files_x86="$(printenv 'ProgramFiles(x86)' || true)"
+    if [[ -z "$dir" && -n "$program_files_x86" ]]; then
         local vswhere install version
-        vswhere="$(cygpath -u "$(printenv 'ProgramFiles(x86)')")/Microsoft Visual Studio/Installer/vswhere.exe"
+        vswhere="$(cygpath -u "$program_files_x86")/Microsoft Visual Studio/Installer/vswhere.exe"
         if [[ -x "$vswhere" ]]; then
-            install="$("$vswhere" -latest -products '*' \
+            # A failing vswhere falls through to the message below.
+            install="$("$vswhere" -latest -prerelease -products '*' \
                 -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
-                -property installationPath | tr -d '\r')"
+                -property installationPath 2> /dev/null | tr -d '\r')" || install=""
             local version_file="$install/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
             if [[ -n "$install" && -f "$version_file" ]]; then
                 version="$(tr -d '\r\n ' < "$version_file")"
