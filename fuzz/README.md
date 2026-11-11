@@ -27,6 +27,20 @@ scripts/fuzz.sh dict                         # regenerate dicts/expr.dict
 python3 scripts/check_fuzz_api_coverage.py --generate --report
 ```
 
+On Windows, run `scripts/fuzz.sh` from Git Bash with the Visual C++ x64 build
+tools installed (MSVC's AddressSanitizer). The script handles two
+Windows-specific steps; call `cargo fuzz` directly only with the same flag and
+`PATH`:
+
+- It passes `--no-include-main-msvc`. cargo-fuzz otherwise adds the
+  `/include:main` linker flag to every crate, and `crc-fast` (an
+  `openjd-snapshots` dependency that also builds a DLL) fails to link with it.
+  `build.rs` adds the flag back for the fuzz binaries only.
+- It puts the directory holding `clang_rt.asan_dynamic-x86_64.dll` on `PATH`
+  (without it the binaries exit with `STATUS_DLL_NOT_FOUND`). It finds the
+  directory from `VCToolsInstallDir` or `vswhere`; set `FUZZ_ASAN_DLL_DIR` to
+  override.
+
 ## Layout
 
 | Path | What |
@@ -39,6 +53,7 @@ python3 scripts/check_fuzz_api_coverage.py --generate --report
 | `regressions/<target>/` | Inputs that found bugs. `known-*` files reproduce open known issues. |
 | `dicts/expr.dict` | Dictionary for text targets; function names come from the live function library. |
 | `api_coverage.toml` | Public functions deliberately not fuzzed, each with a reason. |
+| `build.rs` | On MSVC, links libFuzzer's `main` into the fuzz binaries (see Quick start). |
 
 ## Targets
 

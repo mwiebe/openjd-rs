@@ -29,6 +29,11 @@
 #   FUZZ_JOBS       parallel libFuzzer workers per target for `run` (default 1)
 #   FUZZ_WORK_DIR   writable corpus root `run` grows (default fuzz/work);
 #                   CI caches it between runs so coverage accumulates
+#   FUZZ_ASAN_DLL_DIR  Windows only: directory holding the MSVC ASan runtime
+#                   (clang_rt.asan_dynamic-x86_64.dll); found automatically
+#                   from the Visual C++ tools when unset
+#
+# Windows: run from Git Bash with the Visual C++ x64 tools installed.
 #
 # Every run uses the committed corpus as read-only seeds and grows
 # FUZZ_WORK_DIR/<target>. A crash leaves its input in fuzz/artifacts/<target>/;
@@ -46,7 +51,58 @@ FUZZ_DIR="$REPO_ROOT/fuzz"
 FUZZ_WORK_DIR="${FUZZ_WORK_DIR:-$FUZZ_DIR/work}"
 cd "$REPO_ROOT"
 
-cargo_fuzz() { cargo "+${FUZZ_TOOLCHAIN}" fuzz "$@"; }
+IS_WINDOWS=0
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) IS_WINDOWS=1 ;; esac
+
+# Windows (MSVC) runs the fuzz binaries against the ASan runtime DLL that
+# ships with the Visual C++ tools the linker came from. Put its directory on
+# PATH: FUZZ_ASAN_DLL_DIR if set, else the tools that rustc links with (the
+# developer prompt's VCToolsInstallDir, else vswhere's latest installation's
+# default tools version).
+ASAN_DLL=clang_rt.asan_dynamic-x86_64.dll
+asan_path_ready=0
+windows_asan_path() {
+    [[ "$asan_path_ready" -eq 1 ]] && return
+    local dir="${FUZZ_ASAN_DLL_DIR:-}"
+    if [[ -z "$dir" && -n "${VCToolsInstallDir:-}" ]]; then
+        dir="$(cygpath -u "$VCToolsInstallDir")/bin/Hostx64/x64"
+    fi
+    if [[ -z "$dir" ]]; then
+        local vswhere install version
+        vswhere="$(cygpath -u "$(printenv 'ProgramFiles(x86)')")/Microsoft Visual Studio/Installer/vswhere.exe"
+        if [[ -x "$vswhere" ]]; then
+            install="$("$vswhere" -latest -products '*' \
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 \
+                -property installationPath | tr -d '\r')"
+            local version_file="$install/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+            if [[ -n "$install" && -f "$version_file" ]]; then
+                version="$(tr -d '\r\n ' < "$version_file")"
+                dir="$install/VC/Tools/MSVC/$version/bin/Hostx64/x64"
+            fi
+        fi
+    fi
+    if [[ -z "$dir" || ! -f "$dir/$ASAN_DLL" ]]; then
+        echo "fuzz.sh: can't find $ASAN_DLL (looked in '${dir:-<no Visual C++ tools found>}');" \
+            "install the Visual C++ x64 tools or set FUZZ_ASAN_DLL_DIR" >&2
+        exit 1
+    fi
+    PATH="$(cygpath -u "$dir"):$PATH"
+    asan_path_ready=1
+}
+
+# On Windows, cargo-fuzz's `/include:main` linker flag would reach every
+# crate, and a dependency that also builds a DLL fails to link with it;
+# fuzz/build.rs adds the flag for the fuzz binaries only.
+cargo_fuzz() {
+    if [[ "$IS_WINDOWS" -eq 1 && "$1" != list ]]; then
+        local sub="$1"
+        shift
+        windows_asan_path
+        cargo "+${FUZZ_TOOLCHAIN}" fuzz "$sub" --no-include-main-msvc "$@"
+    else
+        cargo "+${FUZZ_TOOLCHAIN}" fuzz "$@"
+    fi
+}
 
 # Exits non-zero if `cargo fuzz list` fails. Callers read it with
 # `targets="$(...)"` before the loop: a failure inside a here-string or
