@@ -1327,9 +1327,14 @@ fn wrap_hook_timeout_from_param_fails_at_create_job() {
 
 /// Create a job from `template` with `Param.N = 0` and return the error.
 fn create_with_zero_n(template: &str) -> openjd_model::ModelError {
+    create_with_zero_n_supporting(template, &["EXPR", "FEATURE_BUNDLE_1"])
+}
+
+/// [`create_with_zero_n`] with `supported` as the supported extensions.
+fn create_with_zero_n_supporting(template: &str, supported: &[&str]) -> openjd_model::ModelError {
     let jt = decode_job_template(
         yaml_val(template),
-        Some(&["EXPR", "FEATURE_BUNDLE_1"]),
+        Some(supported),
         &CallerLimits::default(),
     )
     .expect("template passes validation");
@@ -1443,9 +1448,41 @@ fn attribute_value_resolution_failure_keeps_expression_error() {
         r#"{"attributes": [{"name": "attr.worker.os.family", "anyOf": ["v{{ 10 // Param.N }}"]}]}"#,
     ));
     assert_division_by_zero_source(&err);
+    // The prototype names the field of a Step's attribute value error, since
+    // a FormatStringError has no path of its own.
     assert!(
-        err.to_string()
-            .starts_with("Format string error: Division by zero"),
+        err.to_string().starts_with(
+            "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: Division by zero"
+        ),
+        "{err}"
+    );
+}
+
+#[test]
+fn attribute_values_expression_resolution_failure_keeps_expression_error() {
+    // With ENV_PARAMS, `anyOf` may be one `list[string]?` expression; its
+    // resolution failure keeps the ExpressionError like a list item's.
+    let err = create_with_zero_n_supporting(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "ENV_PARAMS", "FEATURE_BUNDLE_1"],
+        "name": "Test",
+        "parameterDefinitions": [{"name": "N", "type": "INT"}],
+        "steps": [{
+            "name": "S",
+            "hostRequirements": {"attributes": [
+                {"name": "attr.worker.os.family", "anyOf": "{{ ['v' + string(10 // Param.N)] }}"}
+            ]},
+            "script": {"actions": {"onRun": {"command": "echo"}}}
+        }]
+    }"#,
+        &["EXPR", "ENV_PARAMS", "FEATURE_BUNDLE_1"],
+    );
+    assert_division_by_zero_source(&err);
+    assert!(
+        err.to_string().starts_with(
+            "Format string error: steps[0] -> hostRequirements -> attributes[0] -> anyOf: Division by zero"
+        ),
         "{err}"
     );
 }
