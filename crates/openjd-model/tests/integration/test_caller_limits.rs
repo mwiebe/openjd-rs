@@ -1044,3 +1044,63 @@ fn max_step_environment_entries_counts_entries_without_env_params() {
         "pass 11 also reports the entries: {msg}"
     );
 }
+
+#[test]
+fn max_step_environment_entries_is_not_checked_after_decoding() {
+    // The limit is checked only by template validation. A template decoded
+    // with no limit passes `check_environment_templates` and `create_job`
+    // even when their context sets it to 0.
+    let entries = optional_environment_entries(2);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let jt = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &CallerLimits::default(),
+    )
+    .unwrap();
+    let ctx = jt
+        .default_validation_context()
+        .with_caller_limits(step_env_entries_limits(Some(0)));
+    let checked = openjd_model::check_environment_templates(&jt, &[], &ctx);
+    assert!(checked.is_ok(), "{:?}", checked.err());
+    let params = preprocess_job_parameters(
+        &jt,
+        &Default::default(),
+        &[],
+        &PathParameterOptions::new(test_tmp_dir(), test_tmp_dir()),
+    )
+    .unwrap();
+    let job = create_job(&jt, &params, &ctx);
+    assert!(job.is_ok(), "{:?}", job.err());
+}
+
+#[test]
+fn max_step_environment_entries_does_not_count_a_null_or_formless_entry() {
+    // An entry whose `environment` is null, and one with no form at all,
+    // name no Environment and do not count; §3.2 constraint 1 rejects both.
+    let entries = [
+        r#"{"environment": "E0", "required": false}"#,
+        r#"{"environment": null}"#,
+        r#"{"required": false}"#,
+    ];
+    let msg = decode_job_template(
+        template_with_dependencies(&entries),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(1)),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(!msg.contains("exceeds caller limit"), "{msg}");
+    assert!(
+        msg.contains(
+            "steps[1] -> dependencies[1]:\n\tmust have exactly one of 'dependsOn', 'step', or 'environment'."
+        ),
+        "{msg}"
+    );
+    assert!(
+        msg.contains(
+            "steps[1] -> dependencies[2]:\n\tmust have exactly one of 'dependsOn', 'step', or 'environment'."
+        ),
+        "{msg}"
+    );
+}
