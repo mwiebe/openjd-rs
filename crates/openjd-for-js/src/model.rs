@@ -259,6 +259,8 @@ pub struct JsCallerLimits {
     #[serde(default)]
     pub max_env_count: Option<usize>,
     #[serde(default)]
+    pub max_step_environment_entries: Option<usize>,
+    #[serde(default)]
     pub max_task_count: Option<u64>,
     #[serde(default)]
     pub max_step_script_size: Option<usize>,
@@ -284,11 +286,12 @@ impl JsCallerLimits {
     }
 
     /// Convert to the Rust-side struct for a call into
-    /// `openjd_model`. Cheap — copies ten `Option` scalars.
+    /// `openjd_model`. Cheap — copies eleven `Option` scalars.
     pub fn as_rust(&self) -> openjd_model::CallerLimits {
         openjd_model::CallerLimits {
             max_step_count: self.max_step_count,
             max_env_count: self.max_env_count,
+            max_step_environment_entries: self.max_step_environment_entries,
             max_task_count: self.max_task_count,
             max_step_script_size: self.max_step_script_size,
             max_environment_size: self.max_environment_size,

@@ -737,6 +737,7 @@ fn caller_limits_default_is_all_none() {
     let limits = CallerLimits::default();
     assert!(limits.max_step_count.is_none());
     assert!(limits.max_env_count.is_none());
+    assert!(limits.max_step_environment_entries.is_none());
     assert!(limits.max_task_count.is_none());
     assert!(limits.max_step_script_size.is_none());
     assert!(limits.max_environment_size.is_none());
@@ -762,5 +763,205 @@ fn multiple_caller_limits_all_checked() {
     assert!(
         msg.contains("total environments (1) exceeds caller limit of 0"),
         "Expected env count error, got: {msg}"
+    );
+}
+
+// ══════════════════════════════════════════════════════════════
+// max_step_environment_entries
+// ══════════════════════════════════════════════════════════════
+
+/// The extension allowlist for the `ENV_PARAMS` templates below.
+const ENV_PARAMS: &[&str] = &["EXPR", "ENV_PARAMS"];
+
+/// An `ENV_PARAMS` template whose Step `B` has the given `dependencies`
+/// entries (each a JSON object) and whose Step `A` has none.
+fn template_with_dependencies(entries: &[&str]) -> serde_json::Value {
+    yaml_val(&format!(
+        r#"{{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "ENV_PARAMS"],
+        "name": "Test",
+        "steps": [
+            {{"name": "A", "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}}},
+            {{"name": "B", "dependencies": [{}],
+             "script": {{"actions": {{"onRun": {{"command": "echo"}}}}}}}}
+        ]
+    }}"#,
+        entries.join(", ")
+    ))
+}
+
+fn optional_environment_entries(n: usize) -> Vec<String> {
+    (0..n)
+        .map(|i| format!(r#"{{"environment": "Env{i}", "required": false}}"#))
+        .collect()
+}
+
+fn step_env_entries_limits(max: Option<usize>) -> CallerLimits {
+    CallerLimits {
+        max_step_environment_entries: max,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn max_step_environment_entries_at_limit_is_accepted() {
+    let entries = optional_environment_entries(3);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let result = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(3)),
+    );
+    assert!(
+        result.is_ok(),
+        "3 entries at a limit of 3: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn max_step_environment_entries_one_over_is_rejected_at_the_dependencies_path() {
+    let entries = optional_environment_entries(4);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let err = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(3)),
+    )
+    .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "Model validation error: 1 validation error for JobTemplate\n\
+         steps[1] -> dependencies:\n\
+         \texceeds caller limit of 3 'environment' entries (4 entries)."
+    );
+}
+
+#[test]
+fn max_step_environment_entries_none_imposes_no_limit() {
+    let entries = optional_environment_entries(200);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let result = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(None),
+    );
+    assert!(result.is_ok(), "no limit: {:?}", result.err());
+}
+
+#[test]
+fn max_step_environment_entries_does_not_count_step_entries() {
+    // One `environment:` entry plus a `dependsOn` and a `step` entry
+    // (naming Step A in two entries is a duplicate, so the `step` entry
+    // names a third Step).
+    let doc = yaml_val(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "ENV_PARAMS"],
+        "name": "Test",
+        "steps": [
+            {"name": "A", "script": {"actions": {"onRun": {"command": "echo"}}}},
+            {"name": "C", "script": {"actions": {"onRun": {"command": "echo"}}}},
+            {"name": "B", "dependencies": [
+                {"dependsOn": "A"}, {"step": "C"}, {"environment": "E", "required": false}
+             ],
+             "script": {"actions": {"onRun": {"command": "echo"}}}}
+        ]
+    }"#,
+    );
+    let result = decode_job_template(doc, Some(ENV_PARAMS), &step_env_entries_limits(Some(1)));
+    assert!(result.is_ok(), "only 1 entry counts: {:?}", result.err());
+}
+
+#[test]
+fn max_step_environment_entries_counts_disabled_entries() {
+    let entries = [
+        r#"{"environment": "E0", "required": false}"#,
+        r#"{"environment": "E1", "required": false, "enableIf": false}"#,
+    ];
+    let err = decode_job_template(
+        template_with_dependencies(&entries),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(1)),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("exceeds caller limit of 1 'environment' entries (2 entries)."),
+        "a disabled entry counts: {err}"
+    );
+}
+
+#[test]
+fn max_step_environment_entries_applies_to_each_step_separately() {
+    // Two Steps with 2 entries each, at a limit of 2: the limit is per
+    // Step, not summed over the template.
+    let doc = yaml_val(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "extensions": ["EXPR", "ENV_PARAMS"],
+        "name": "Test",
+        "steps": [
+            {"name": "A", "dependencies": [
+                {"environment": "E0", "required": false}, {"environment": "E1", "required": false}
+             ],
+             "script": {"actions": {"onRun": {"command": "echo"}}}},
+            {"name": "B", "dependencies": [
+                {"environment": "E0", "required": false}, {"environment": "E1", "required": false}
+             ],
+             "script": {"actions": {"onRun": {"command": "echo"}}}}
+        ]
+    }"#,
+    );
+    let result = decode_job_template(doc, Some(ENV_PARAMS), &step_env_entries_limits(Some(2)));
+    assert!(
+        result.is_ok(),
+        "2 per Step at a limit of 2: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn max_step_environment_entries_zero_rejects_any_entry() {
+    let entries = optional_environment_entries(1);
+    let refs: Vec<&str> = entries.iter().map(String::as_str).collect();
+    let err = decode_job_template(
+        template_with_dependencies(&refs),
+        Some(ENV_PARAMS),
+        &step_env_entries_limits(Some(0)),
+    )
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("steps[1] -> dependencies:\n\texceeds caller limit of 0 'environment' entries (1 entries)."),
+        "{err}"
+    );
+}
+
+#[test]
+fn max_step_environment_entries_counts_entries_without_env_params() {
+    // Without ENV_PARAMS pass 11 rejects each `environment:` entry; the
+    // limit still counts them as written.
+    let doc = yaml_val(
+        r#"{
+        "specificationVersion": "jobtemplate-2023-09",
+        "name": "Test",
+        "steps": [
+            {"name": "B", "dependencies": [{"environment": "E0"}, {"environment": "E1"}],
+             "script": {"actions": {"onRun": {"command": "echo"}}}}
+        ]
+    }"#,
+    );
+    let msg = decode_job_template(doc, None, &step_env_entries_limits(Some(1)))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        msg.contains("steps[0] -> dependencies:\n\texceeds caller limit of 1 'environment' entries (2 entries)."),
+        "{msg}"
+    );
+    assert!(
+        msg.contains("ENV_PARAMS"),
+        "pass 11 also reports the entries: {msg}"
     );
 }

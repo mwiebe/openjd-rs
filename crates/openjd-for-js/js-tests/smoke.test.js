@@ -1400,6 +1400,34 @@ describe("decodeJobTemplate CallerLimits enforcement (F4)", () => {
     ).toThrow(/[Ss]tep/);
   });
 
+  it("applies maxStepEnvironmentEntries to a Step's environment: entries", () => {
+    const doc = JSON.stringify({
+      specificationVersion: "jobtemplate-2023-09",
+      extensions: ["EXPR", "ENV_PARAMS"],
+      name: "T",
+      steps: [
+        {
+          name: "S1",
+          dependencies: [
+            { environment: "A", required: false },
+            { environment: "B", required: false },
+          ],
+          script: { actions: { onRun: { command: "x" } } },
+        },
+      ],
+    });
+    expect(() =>
+      mod.decodeJobTemplate(doc, undefined, { maxStepEnvironmentEntries: 1 })
+    ).toThrow(
+      "steps[0] -> dependencies:\n\texceeds caller limit of 1 'environment' entries (2 entries)."
+    );
+    const t = mod.decodeJobTemplate(doc, undefined, {
+      maxStepEnvironmentEntries: 2,
+    });
+    expect(t.name).toBe("T");
+    t.free();
+  });
+
   it("accepts template when no caller limits are passed (default)", () => {
     const t = mod.decodeJobTemplate(MINIMAL_TEMPLATE);
     expect(t.name).toBe("T");

@@ -151,6 +151,16 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   must exist, no duplicates (a `step` and a `dependsOn` entry naming one Step are
   duplicates). The `environment:` form, and the `step` form's gate, are checked in pass 11,
   and cycle detection sees the `dependsOn` and `step` entries as one graph.
+- Caller limit `CallerLimits::max_step_environment_entries` (opt-in; Template Schemas §3
+  item 4 sets no maximum on `dependencies` but lets an implementation constrain it): the
+  number of entries with an `environment` key in one Step's `dependencies`, counted as
+  written. A disabled entry (`enableIf` that is or resolves to `false`) and a
+  `required: false` entry that names no Environment count; `dependsOn` and `step` entries
+  do not. The count is literal, so this pass is the only stage that checks it: job creation
+  and `check_environment_templates` do not change how many entries a Step has. Entries are
+  counted with or without ENV_PARAMS (without it, pass 11 also rejects each one). The error
+  is at `steps[i] -> dependencies`: "exceeds caller limit of N 'environment' entries (M
+  entries)."
 - Host requirements: a Step's, and with ENV_PARAMS a `jobEnvironments` entry's or an
   Environment Template's `environment`'s (§4 item 5; each checked on its own, §3.3.3,
   through `validate_host_requirements_in_profile`): amounts/attributes validation,

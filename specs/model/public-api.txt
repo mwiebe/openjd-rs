@@ -2300,6 +2300,7 @@ pub openjd_model::types::CallerLimits::max_eval_operations: core::option::Option
 pub openjd_model::types::CallerLimits::max_resolved_arg_len: core::option::Option<usize>
 pub openjd_model::types::CallerLimits::max_resolved_data_len: core::option::Option<usize>
 pub openjd_model::types::CallerLimits::max_step_count: core::option::Option<usize>
+pub openjd_model::types::CallerLimits::max_step_environment_entries: core::option::Option<usize>
 pub openjd_model::types::CallerLimits::max_step_script_size: core::option::Option<usize>
 pub openjd_model::types::CallerLimits::max_task_count: core::option::Option<u64>
 pub openjd_model::types::CallerLimits::max_template_size: core::option::Option<usize>
@@ -2675,6 +2676,7 @@ pub openjd_model::CallerLimits::max_eval_operations: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_resolved_arg_len: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_resolved_data_len: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_step_count: core::option::Option<usize>
+pub openjd_model::CallerLimits::max_step_environment_entries: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_step_script_size: core::option::Option<usize>
 pub openjd_model::CallerLimits::max_task_count: core::option::Option<u64>
 pub openjd_model::CallerLimits::max_template_size: core::option::Option<usize>

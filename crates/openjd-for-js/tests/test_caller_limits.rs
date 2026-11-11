@@ -31,6 +31,7 @@ fn default_is_all_none() {
     let limits = JsCallerLimits::default();
     assert!(limits.max_step_count.is_none());
     assert!(limits.max_env_count.is_none());
+    assert!(limits.max_step_environment_entries.is_none());
     assert!(limits.max_task_count.is_none());
     assert!(limits.max_step_script_size.is_none());
     assert!(limits.max_environment_size.is_none());
@@ -73,6 +74,7 @@ fn as_rust_propagates_all_fields() {
     let mut limits = JsCallerLimits::new();
     limits.max_step_count = Some(7);
     limits.max_env_count = Some(8);
+    limits.max_step_environment_entries = Some(13);
     limits.max_task_count = Some(9);
     limits.max_step_script_size = Some(10);
     limits.max_environment_size = Some(11);
@@ -82,6 +84,7 @@ fn as_rust_propagates_all_fields() {
 
     assert_eq!(rust.max_step_count, Some(7));
     assert_eq!(rust.max_env_count, Some(8));
+    assert_eq!(rust.max_step_environment_entries, Some(13));
     assert_eq!(rust.max_task_count, Some(9));
     assert_eq!(rust.max_step_script_size, Some(10));
     assert_eq!(rust.max_environment_size, Some(11));
@@ -98,6 +101,7 @@ fn deserializes_camel_case_keys() {
     let json = r#"{
         "maxStepCount": 1,
         "maxEnvCount": 2,
+        "maxStepEnvironmentEntries": 7,
         "maxTaskCount": 3,
         "maxStepScriptSize": 4,
         "maxEnvironmentSize": 5,
@@ -106,6 +110,7 @@ fn deserializes_camel_case_keys() {
     let limits: JsCallerLimits = serde_json::from_str(json).expect("camelCase keys deserialize");
     assert_eq!(limits.max_step_count, Some(1));
     assert_eq!(limits.max_env_count, Some(2));
+    assert_eq!(limits.max_step_environment_entries, Some(7));
     assert_eq!(limits.max_task_count, Some(3));
     assert_eq!(limits.max_step_script_size, Some(4));
     assert_eq!(limits.max_environment_size, Some(5));

@@ -1386,6 +1386,12 @@ impl Default for ModelProfile { /* ... */ }
 pub struct CallerLimits {
     pub max_step_count: Option<usize>,
     pub max_env_count: Option<usize>,
+    /// Cap on the `environment:` entries (ENV_PARAMS) in one Step's
+    /// `dependencies`, counted as written (disabled and `required:
+    /// false` entries count; `dependsOn` and `step` entries do not).
+    /// Template Schemas §3 sets no maximum. Checked at template
+    /// validation only, at `steps[i] -> dependencies`.
+    pub max_step_environment_entries: Option<usize>,
     pub max_task_count: Option<u64>,
     pub max_step_script_size: Option<usize>,
     pub max_environment_size: Option<usize>,

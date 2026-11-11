@@ -248,6 +248,20 @@ pub fn validate_structure(
                     errors.add(&dep_path, format!("duplicate dependency '{depends_on}'."));
                 }
             }
+            // Caller-imposed limit on the Step's `environment:` entries,
+            // counted as written (Template Schemas §3 lets an
+            // implementation constrain `dependencies`).
+            if let Some(max) = ctx.caller_limits.max_step_environment_entries {
+                let count = deps.iter().filter(|d| d.environment.is_some()).count();
+                if count > max {
+                    errors.add(
+                        &deps_path,
+                        format!(
+                            "exceeds caller limit of {max} 'environment' entries ({count} entries)."
+                        ),
+                    );
+                }
+            }
         }
 
         // Host requirements

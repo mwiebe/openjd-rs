@@ -562,6 +562,20 @@ pub struct CallerLimits {
     /// Maximum number of environments (job + all step environments combined)
     /// in a job template.
     pub max_env_count: Option<usize>,
+    /// Maximum number of `environment:` entries (`ENV_PARAMS`) in one
+    /// Step's `dependencies`. Template Schemas §3 sets no maximum on
+    /// `dependencies` but lets an implementation constrain it.
+    ///
+    /// Every entry with an `environment` key counts as written, whatever
+    /// its `enableIf` or `required`: a disabled entry counts, and so does a
+    /// `required: false` entry that names no Environment. `dependsOn` and
+    /// `step` entries do not count. Checked per Step at template
+    /// validation, where the count is literal, and reported at the Step's
+    /// `dependencies` path. Job creation and
+    /// [`check_environment_templates`](crate::check_environment_templates)
+    /// do not check it again: neither Job Parameter values nor attached
+    /// Environment Templates change how many entries a Step has.
+    pub max_step_environment_entries: Option<usize>,
     /// Maximum total task count across all steps in a job template.
     /// Checked after parameter space ranges are resolved in `create_job`.
     pub max_task_count: Option<u64>,
