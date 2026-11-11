@@ -740,7 +740,6 @@ impl<'a> Attachments<'a> {
     }
 }
 
-/// The names of `env`'s parameters without a `default`.
 /// The warning for an entry whose `parameters` an attachment that declares
 /// none ignores (§3.2.1 item 1), naming the Environment by `label` and the
 /// ignored keys, capped as the other name lists are.
@@ -756,6 +755,7 @@ fn ignored_parameters_message(
     )
 }
 
+/// The names of `env`'s parameters without a `default`.
 fn required_names(env: &crate::template::Environment) -> Vec<&str> {
     env.env_parameter_definitions
         .iter()
@@ -1761,8 +1761,8 @@ fn certainly_entered_per_step(
 ///   (§3.2.1 items 1–3), with a `required: false` entry that resolves to
 ///   nothing reported as a warning, and one whose `parameters` an
 ///   attachment that declares none ignores (§3.2.1 item 1) reported as a
-///   warning and checked as an entry with no `parameters`. An entry whose `enableIf` is `false` is
-///   resolved too, but supplies nothing and has no effect when it matches
+///   warning and checked as an entry with no `parameters`. An entry whose
+///   `enableIf` is `false` is resolved too, but supplies nothing and has no effect when it matches
 ///   no attachment (§3.2.1): it declines a `BY_DEFAULT` attachment, which
 ///   the checks below then leave out for its Step, requests no
 ///   `ON_REQUEST` one, and is an error for an `ALWAYS` one, naming the

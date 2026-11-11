@@ -229,6 +229,77 @@ fn a_required_entrys_parameters_to_an_environment_that_declares_none_are_rejecte
 }
 
 #[test]
+fn a_disabled_optional_entry_to_an_environment_that_declares_none_gets_no_warning() {
+    // §3.2.1 item 1 applies to an enabled entry only: a disabled one
+    // supplies nothing whatever it names (§3.2 item 3.2), so neither check
+    // nor job creation warns about its parameters.
+    let jt = steps_naming("Conda", false, "{Packages: x}").replace(
+        "    required: false\n",
+        "    required: false\n    enableIf: false\n",
+    );
+    let jt = job_ok(&jt);
+    let envs = vec![env_ok(OLD_CONDA)];
+    assert_eq!(check(&jt, &envs).unwrap(), Vec::<String>::new());
+    assert_eq!(apply(&jt, &envs, &[]).unwrap(), Vec::<String>::new());
+}
+
+/// Two Steps, the first with no entry; the second with entries for `Conda`
+/// and `Other`, each `required: false` with parameters.
+const TWO_STEPS_TWO_ENTRIES: &str = r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+steps:
+- name: S
+  script: {actions: {onRun: {command: x}}}
+- name: T
+  dependencies:
+  - {environment: Conda, required: false, parameters: {P: a}}
+  - {environment: Other, required: false, parameters: {Q: b}}
+  script: {actions: {onRun: {command: x}}}
+"#;
+
+#[test]
+fn every_ignored_entry_of_a_later_step_gets_its_own_warning_with_the_documents_label() {
+    // Each enabled `required: false` entry is decided on its own, on any
+    // Step, and the warning names the attachment by its label.
+    let jt = job_ok(TWO_STEPS_TWO_ENTRIES);
+    let envs = vec![
+        env_ok(OLD_CONDA),
+        env_ok(&OLD_CONDA.replace("name: Conda", "name: Other")),
+    ];
+    let attached = vec![
+        AttachedEnvironmentTemplate::new(&envs[0]).with_label("queue/conda.yaml"),
+        AttachedEnvironmentTemplate::new(&envs[1]),
+    ];
+    let expected = [
+        "JobTemplate -> steps[1] -> dependencies[0] -> parameters: Environment 'Conda' \
+         (queue/conda.yaml) declares no parameters, and this entry has 'required: false', so its \
+         parameters are ignored: P. The Step's Sessions get no values from it (Template Schemas \
+         §3.2.1 item 1).",
+        "JobTemplate -> steps[1] -> dependencies[1] -> parameters: Environment 'Other' \
+         (EnvironmentTemplate[1]) declares no parameters, and this entry has 'required: false', \
+         so its parameters are ignored: Q. The Step's Sessions get no values from it (Template \
+         Schemas §3.2.1 item 1).",
+    ];
+    let checked: Vec<String> = check_environment_templates(&jt, &attached, &template_ctx(&jt))
+        .unwrap()
+        .iter()
+        .map(SubmissionWarning::to_string)
+        .collect();
+    assert_eq!(checked, expected);
+    let values = job_params_with(&jt, &[], &envs);
+    let created =
+        create_job_with_environment_templates(&jt, &attached, &values, &template_ctx(&jt)).unwrap();
+    let applied: Vec<String> = created
+        .warnings
+        .iter()
+        .map(SubmissionWarning::to_string)
+        .collect();
+    assert_eq!(applied, expected);
+}
+
+#[test]
 fn an_ignored_entry_still_requests_an_on_request_environment() {
     // §3.2.1 item 1: the entry still refers to the attachment, so the Step
     // requests the ON_REQUEST `Lic`, and its literal host requirements
