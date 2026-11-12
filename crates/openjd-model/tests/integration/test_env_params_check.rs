@@ -448,7 +448,7 @@ fn a_literal_of_the_wrong_type_is_rejected() {
         &[wrong_type],
     );
     // An `enableIf` that also reads a Job Parameter is undetermined before
-    // job creation (§7.5 rule 5), so check leaves the value to job
+    // job creation (§7.6 rule 5), so check leaves the value to job
     // creation, which rejects it.
     let conda = CONDA.replace(
         "\"Env.Param.Packages != ''\"",
@@ -811,7 +811,7 @@ fn an_entry_disabled_by_an_expression_is_named_at_job_creation() {
 #[test]
 fn a_constant_expression_that_disables_an_always_entry_is_named_at_job_creation() {
     // A constant expression is still an expression, unknown before the Job
-    // is created (§7.5 rule 5), so `check` accepts the entry and job
+    // is created (§7.6 rule 5), so `check` accepts the entry and job
     // creation reports the §4 item 4 error (`specs/cli/check.md`). That
     // error, of §7.4.1 step 4, stops the Step, so its constraint 7 is not
     // checked.

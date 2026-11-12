@@ -289,7 +289,7 @@ validated by
 extensions (the default); a document that lists `ENV_PARAMS` must also list `EXPR`, so both
 must be supported (Template Schemas §1.1 item 3). The `JobTemplate` wrapper exposes no getter
 for them. An entry's
-`enableIf` is an expression field of type `bool` (Template Schemas §7.5): a JSON boolean is
+`enableIf` is an expression field of type `bool` (Template Schemas §7.6): a JSON boolean is
 used as written, and a string holds one expression written without `{{ }}`, so `"false"` is
 an expression evaluated by `createJob`. A number, a `null`, a `{{ }}` value, or an
 expression whose type is not `bool` is rejected by `decodeJobTemplate` with the field's path;

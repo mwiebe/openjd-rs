@@ -93,7 +93,7 @@ pub fn execute(args: CheckArgs) -> Result<(), Box<dyn std::error::Error>> {
 /// stderr. Format-string values, non-literal `default`s and host
 /// requirements, and entries and Environments whose `enableIf` is an
 /// expression (even a constant one; it is an expression field, Template
-/// Schemas §7.5) are left to `openjd run`, which has the Job Parameter
+/// Schemas §7.6) are left to `openjd run`, which has the Job Parameter
 /// values; an Environment whose `enableIf` is the scalar `false` is not
 /// entered, and its values and parameters without a `default` are not
 /// checked (§3.2.2), so the value checks and constraint 7 are made only

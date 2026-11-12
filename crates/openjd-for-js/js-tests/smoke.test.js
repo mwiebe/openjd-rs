@@ -994,27 +994,27 @@ describe("createJob", () => {
       opts.free();
       template.free();
     }
-    // Template Schemas §7.5: no {{ }}, no conversion to bool, no null.
+    // Template Schemas §7.6: no {{ }}, no conversion to bool, no null.
     for (const [enableIf, message] of [
       [
         "{{ true }}",
         "\tInvalid expression: Set literals are not supported. An expression field takes an " +
-          "expression without '{{ }}' (Template Schemas §7.5).\n  {{ true }}\n  ^~~~~~~~~~",
+          "expression without '{{ }}' (Template Schemas §7.6).\n  {{ true }}\n  ^~~~~~~~~~",
       ],
       [
         "Job.Name",
         "\thas type string, which does not fit type bool; an expression field converts no " +
-          "type except int to float (Template Schemas §7.5).",
+          "type except int to float (Template Schemas §7.6).",
       ],
       [
         1,
         "\tthe integer scalar 1 does not fit type bool: an expression field of type bool " +
-          "takes a boolean scalar or a string holding one expression (Template Schemas §7.5).",
+          "takes a boolean scalar or a string holding one expression (Template Schemas §7.6).",
       ],
       [
         null,
         "\tmust not be null: an expression field of type bool takes a boolean scalar or a " +
-          "string holding one expression (Template Schemas §7.5).",
+          "string holding one expression (Template Schemas §7.6).",
       ],
     ]) {
       const doc = structuredClone(ENV_PARAMS_JOB);
@@ -1048,13 +1048,13 @@ describe("createJob", () => {
     ]);
     opts.free();
     template.free();
-    // The §7.5 rules apply to it, with its path.
+    // The §7.6 rules apply to it, with its path.
     doc.jobEnvironments[1].enableIf = 1;
     expect(() => mod.decodeJobTemplate(JSON.stringify(doc))).toThrow(
       "Model validation error: 1 validation error for JobTemplate\n" +
         "jobEnvironments[1] -> enableIf:\n" +
         "\tthe integer scalar 1 does not fit type bool: an expression field of type bool " +
-        "takes a boolean scalar or a string holding one expression (Template Schemas §7.5).",
+        "takes a boolean scalar or a string holding one expression (Template Schemas §7.6).",
     );
   });
 

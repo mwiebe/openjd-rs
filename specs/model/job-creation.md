@@ -430,15 +430,15 @@ budgets template validation and the session runtime apply.
 
 **`enableIf`** (§3.2 item 3.2). Each `environment:` entry's `enableIf` is decided after the
 Step's `let` bindings and before the entry's name is resolved (§7.4.1). It is an expression
-field of type `bool` (§7.5), resolved by the expression-field checker's `resolve` (see
+field of type `bool` (§7.6), resolved by the expression-field checker's `resolve` (see
 [template-types.md](template-types.md#expression-fields-75)) in the Step's template scope
 (below), under the template-scope profile and library pass 8 checked it with, the caller's
 evaluation budgets, and POSIX paths: an `enableIf` is
-evaluated in template scope, not in a host context (Template Schemas §7.5, the
+evaluated in template scope, not in a host context (Template Schemas §7.6, the
 paragraph after its rules; spec `5535230`), and reads the `let` bindings with the values job
 creation computed for the Step, as the entry's values do: a boolean scalar is its
 value; an expression must resolve to `true` or `false`. A `null` result ("resolved to null,
-which does not fit type bool (Template Schemas §7.5)."), another type ("resolved to a value
+which does not fit type bool (Template Schemas §7.6)."), another type ("resolved to a value
 of type T, which does not fit type bool …"), or an evaluation failure ("could not be
 evaluated: <error>") is reported at `steps[i] -> dependencies[j] -> enableIf`, and that
 entry's Environment gets no values for the Step, so the one mistake is reported once. A
@@ -1130,7 +1130,7 @@ decide it, by what the expression can read:
   full template scope as job creation built it; an `enableIf` is not host context). A disabled Step Environment is
   dropped from `job::Step::step_environments`; when that leaves none the field is `None`. An
   error (a `null` result: "resolved to null, which does not fit type bool (Template Schemas
-  §7.5)."; another type; or an evaluation failure) is an error at
+  §7.6)."; another type; or an evaluation failure) is an error at
   `steps[i] -> stepEnvironments[j] -> enableIf`, filed under §7.4.1 step 6 after the Step's
   Job Environments, and the Step Environment is kept. It is evaluated earlier than §7.4.1
   lists it, which changes no result (plan 3 A38).
@@ -1376,7 +1376,7 @@ reports only once the Step's step 1–4 errors are fixed):
    for an unreachable attachment is reported only when its own `enableIf` is absent or `true`,
    or certainly unresolved with no values supplied (see
    [validation.md](validation.md#pass-11-env_params-gating)), since one with `false` is not entered and
-   one with any other expression is undetermined (§7.5 rule 5), and only when some Step is
+   one with any other expression is undetermined (§7.6 rule 5), and only when some Step is
    known to enter it after the group rule of item 3 (it is entered by its `activation` and
    `enableIf` alone, and no earlier attachment of its `exclusiveGroup` is known to be entered
    or undetermined for that Step). That error is reported after item 3's errors (job creation
@@ -1390,7 +1390,7 @@ reports only once the Step's step 1–4 errors are fixed):
    as `"true"`) is enabled or not only
    when the Job is created, so every attachment it may name is skipped for its Step. Its name
    is resolved either way (Template Schemas §3.2.1), so a name that two or more attachments
-   define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.5 rule 5).
+   define is the §3.2.1 item 3 error here, whatever the `enableIf` resolves to (§7.6 rule 5).
    An enabled `required: false` entry whose parameters an attachment that declares none
    ignores gets step 2's warning, and supplies nothing to items 3–5;
 3. step 3 above, without resolving anything that needs Job Parameter values
@@ -1405,7 +1405,7 @@ reports only once the Step's step 1–4 errors are fixed):
    [validation.md](validation.md#pass-11-env_params-gating); the constraint 7 message then carries the
    unresolved note): one whose `enableIf` is `false` is disabled, and one whose `enableIf` is
    any other expression is undetermined, so a violation need not hold whatever it resolves to
-   (§3.2.2, §7.5 rule 5). They are also made only for an attachment no earlier attachment of
+   (§3.2.2, §7.6 rule 5). They are also made only for an attachment no earlier attachment of
    its `exclusiveGroup` may supersede: each attachment's state for the Step (entered when it
    is entered and its `enableIf` is as above; not entered when it is not entered or its
    `enableIf` is the scalar `false`; undetermined otherwise, including an attachment an

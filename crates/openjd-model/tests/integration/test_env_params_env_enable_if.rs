@@ -3,10 +3,10 @@
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
 //! `ENV_PARAMS`: `enableIf` on an `<Environment>` (Template Schemas §4
-//! item 6), an expression field of type `bool` (§7.5).
+//! item 6), an expression field of type `bool` (§7.6).
 //!
 //! Template validation: gating (§4 item 6), placement on every
-//! position, the two scopes (§7.3.2), the §7.5 form rules, and
+//! position, the two scopes (§7.3.2), the §7.6 form rules, and
 //! the single-layer rule counting only Environments certainly entered.
 //! Job creation (§7.4.1): resolution once per Step with its effective
 //! values, and every effect of a disabled Environment (not entered, no
@@ -29,7 +29,7 @@ use crate::env_params_common::{
 
 const NOT_FIT_INT: &str = "the integer scalar 1 does not fit type bool: an expression field of \
                            type bool takes a boolean scalar or a string holding one expression \
-                           (Template Schemas §7.5).";
+                           (Template Schemas §7.6).";
 
 /// Create the Job from `jt_src` with `env_srcs` attached, in order.
 fn create(
@@ -114,7 +114,7 @@ fn needs_env_params_in_every_position() {
     env_ok(&et("extensions: [ENV_PARAMS, EXPR]\n"));
 }
 
-// ── Template validation: §7.5 forms ─────────────────────────────────
+// ── Template validation: §7.6 forms ─────────────────────────────────
 
 #[test]
 fn expression_field_rules_apply_in_every_position() {
@@ -131,18 +131,18 @@ fn expression_field_rules_apply_in_every_position() {
          script: {actions: {onRun: {command: x}}}\n",
         &[
             "jobEnvironments[0] -> enableIf:\n\tInvalid expression: Set literals are not supported. \
-             An expression field takes an expression without '{{ }}' (Template Schemas §7.5).\n  \
+             An expression field takes an expression without '{{ }}' (Template Schemas §7.6).\n  \
              {{ true }}\n  ^~~~~~~~~~",
             "jobEnvironments[1] -> enableIf:\n\thas type string, which does not fit type bool; an \
-             expression field converts no type except int to float (Template Schemas §7.5).",
+             expression field converts no type except int to float (Template Schemas §7.6).",
             "jobEnvironments[2] -> enableIf:\n\tmust not be null: an expression field of type bool \
-             takes a boolean scalar or a string holding one expression (Template Schemas §7.5).",
+             takes a boolean scalar or a string holding one expression (Template Schemas §7.6).",
             &format!("jobEnvironments[3] -> enableIf:\n\t{NOT_FIT_INT}"),
             "jobEnvironments[4] -> enableIf:\n\thas type nulltype, which does not fit type bool \
-             (Template Schemas §7.5).",
+             (Template Schemas §7.6).",
             "steps[0] -> stepEnvironments[0] -> enableIf:\n\thas type string, which does not fit \
              type bool; an expression field converts no type except int to float (Template \
-             Schemas §7.5).",
+             Schemas §7.6).",
         ],
     );
     env_err(
@@ -490,7 +490,7 @@ fn a_disabled_environment_is_not_held_to_constraint_7() {
     // §3.2.2: constraint 7 does not apply to a Step for which the
     // Environment is disabled. With the scalar `false` it is disabled for
     // every Step, which template validation knows; with an expression it is
-    // undetermined there (§7.5 rule 5), and job creation decides it.
+    // undetermined there (§7.6 rule 5), and job creation decides it.
     let jt = |enable_if: &str| {
         format!(
             "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -766,7 +766,7 @@ fn a_null_result_is_an_error_naming_the_steps() {
         "JobTemplate",
         &[
             "jobEnvironments[1] -> enableIf:\n\tresolved to null, which does not fit \
-           type bool (Template Schemas §7.5). Resolved for Steps 'B' and 'C'.",
+           type bool (Template Schemas §7.6). Resolved for Steps 'B' and 'C'.",
         ],
     );
 }
@@ -881,7 +881,7 @@ steps:
         "JobTemplate",
         &[
             "steps[0] -> stepEnvironments[0] -> enableIf:\n\tresolved to null, which does not fit \
-           type bool (Template Schemas §7.5).",
+           type bool (Template Schemas §7.6).",
         ],
     );
 }
@@ -1206,7 +1206,7 @@ fn a_failed_job_environment_enable_if_is_reported_with_the_single_layer_rule() {
         "JobTemplate",
         &[
             "jobEnvironments[0] -> enableIf:\n\tresolved to null, which does not fit \
-           type bool (Template Schemas §7.5). Resolved for Step 'S'.",
+           type bool (Template Schemas §7.6). Resolved for Step 'S'.",
             "steps[0]:\n\tits Sessions would enter 2 Environments that define wrap hooks \
            (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Outer', 'Inner' \
            (stepEnvironments). A Session may have at most one Environment defining wrap hooks \
@@ -1256,7 +1256,7 @@ fn disabled_environments_name_each_environments_document() {
 
 #[test]
 fn a_step_environment_reads_its_let_with_posix_paths() {
-    // An enableIf is a TEMPLATE-scope field (§7.5): the `let` binding it
+    // An enableIf is a TEMPLATE-scope field (§7.6): the `let` binding it
     // reads has the value job creation computed with POSIX paths.
     let created = create_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
@@ -1369,7 +1369,7 @@ fn literal_enabled_is_known_only_for_an_absent_field_or_a_boolean_scalar() {
 #[test]
 fn a_job_environments_enable_if_evaluates_paths_in_posix_form() {
     // A Job or attached Environment's enableIf has its hostRequirements
-    // scope and resolves as they do, with POSIX paths (§7.5).
+    // scope and resolves as they do, with POSIX paths (§7.6).
     let created = create_ok(
         "specificationVersion: jobtemplate-2023-09\nextensions: [ENV_PARAMS, EXPR]\nname: J\n\
          jobEnvironments:\n- {name: E, enableIf: \"string(path('C:\\\\a') / 'b') == 'C:\\\\a/b'\", \

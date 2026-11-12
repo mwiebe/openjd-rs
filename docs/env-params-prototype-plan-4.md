@@ -28,7 +28,7 @@ this plan says otherwise.
 | D3 | **`userInterface`, `objectType`, `dataFlow`** permitted, with the Job Parameter's shape and constraints, informational only. | §4.5 items 2–3 |
 | D4 | **`RawParam.*` of any type** in an Environment's `hostRequirements` and `enableIf`. | §4 item 5.1, item 6 constraints 1–2 |
 | D5 | **§3.3.3 item 4:** a one-value `anyOf` is the `allOf` of that value and combines with an `allOf` by union. | §3.3.3 |
-| D6 | §7.5 rule 5 adds a "should report at the earliest stage" preference. | §7.5 |
+| D6 | §7.6 rule 5 adds a "should report at the earliest stage" preference. | §7.6 |
 | D7 | ExprLang §1.2.2 `Job.EnvNames` row defers to §7.3.1. | ExprLang |
 
 ## Baseline
@@ -47,7 +47,7 @@ implemented (plan 2 A27, plan 3 A35): JT-153–JT-155 and JB-111 pass. D5 has no
 | # | Crate | Module | Change |
 |---|-------|--------|--------|
 | D1 | openjd-model | `job/create_job/env_params.rs` (`DeclaringEnvironment`, `resolve_step_entries`, `JobEnvironments`, `StepSelection`), `external.rs` (`apply_environment_templates`, `check_environment_templates`; `apply_environment_enable_if` removed), `mod.rs`, `template/expr_field.rs` (progressive resolve) | Values computed first with deferred checks; the Environment's `enableIf` decided with known/unresolved values; checks and constraint 7 reported only where not disabled. A Job Environment's `enableIf` moves from the submission stage into the `create_job` body. |
-| D1 | openjd-model | `template/validate_v2023_09/env_params.rs` (constraint 6 literal values, constraint 7, the constraint 7 note), `format_strings.rs` (pass 8 target type of entry values) | Checked only for an Environment whose `enableIf` is absent or `true`, or certainly unresolved for the Step (§7.5 rule 5; R3). |
+| D1 | openjd-model | `template/validate_v2023_09/env_params.rs` (constraint 6 literal values, constraint 7, the constraint 7 note), `format_strings.rs` (pass 8 target type of entry values) | Checked only for an Environment whose `enableIf` is absent or `true`, or certainly unresolved for the Step (§7.6 rule 5; R3). |
 | D2 | openjd-model | `validate_v2023_09/env_params.rs` (`check_definition`), `job/create_job/env_params.rs` (`to_transport`, new `canonical_range_expr`) | RANGE_EXPR allowed with `EXPR`; values stored canonically. |
 | D3 | openjd-model | `validate_v2023_09/env_params.rs`, `template/parameters.rs` (`has_user_interface` removed), `template/env_parameters.rs` | Rejections removed. |
 | D5 | openjd-model | `job/create_job/host_requirements.rs` (`combine`) | One-value `anyOf` joins the `allOf`. |
@@ -68,7 +68,7 @@ implemented (plan 2 A27, plan 3 A35): JT-153–JT-155 and JB-111 pass. D5 has no
    whose `enableIf` is absent or `true`, or certainly unresolved for the Step.** A literal `false` disables it; an
    expression may. The exception is an expression that reads only the Environment's own values, each a literal or
    absent, and is unresolved with them: job creation evaluates it with the same values, so it is unresolved
-   whatever the Job Parameters are, and the failure is certain. §7.5 rule 5's "should" prefers reporting it early,
+   whatever the Job Parameters are, and the failure is certain. §7.6 rule 5's "should" prefers reporting it early,
    README item 18 lists JB-114 among such certain failures, and the baseline reported JB-114's shape early, so the
    prototype keeps that report (A45). A known result, as of a constant expression (JT-152), stays unknown, as rule 5
    says. The attachment-level error of an unreachable attachment (§3.2.1 items 3–4) follows the same rule (A46).
@@ -89,7 +89,7 @@ Numbered after plan 3's A38.
 | A42 | Whether §4.5 point 1 (a literal `default` checked whether or not used) still applies when the Environment is disabled for every Step that takes it. | Yes: it checks the definition, not a Step's value. A resolved `default` is checked only for a Step the Environment is not disabled for, naming the first. | Yes |
 | A43 | How "equal when they denote the same integers" shows in a Session that runs two Steps whose RANGE_EXPR values are written differently. | Values are stored canonically, so the Session sees one form: `1,3,5,7,9` reaches `Env.Param.*` as `1-9:2`. | Yes |
 | A44 | §3.3.3 item 4 with several `anyOf`s: whether "one value" is tested before or after item 2's intersection; where the joined value goes. The order changes the outcome: Step `anyOf [a]`, E1 `anyOf [b, c]`, E2 `allOf [x]` is a conflict when item 2 applies first, and satisfiable (`allOf [x, a]`, `anyOf [b, c]`) when item 4 does. | After the intersection; it is appended to the `allOf`'s union. | Yes |
-| A45 | Whether a template-validation check may evaluate an `enableIf` expression with the literal values it reads (JB-114: it reads only the missing parameter, so it is unresolved for every Job Parameter value). §7.5 rule 5 calls the value unknown before its stage; README item 18 counts JB-114 among the certain failures the "should" prefers early. | Yes, only for a result that stays unresolved at job creation (R3); a known result stays unknown. | Yes |
+| A45 | Whether a template-validation check may evaluate an `enableIf` expression with the literal values it reads (JB-114: it reads only the missing parameter, so it is unresolved for every Job Parameter value). §7.6 rule 5 calls the value unknown before its stage; README item 18 counts JB-114 among the certain failures the "should" prefers early. | Yes, only for a result that stays unresolved at job creation (R3); a known result stays unknown. | Yes |
 | A46 | Whether an unreachable `ALWAYS` attachment with parameters no Step can supply (§3.2.1 items 3–4) is an error when its `enableIf` disables it. | Not when it is disabled for every Step: no Session enters it. Job creation decides it per Step with the parameters unknown; `check_environment_templates` reports it only for an `enableIf` that is absent, `true`, or certainly unresolved (R3). | Yes (no conformance test) |
 | A47 | Whether a value that fails to resolve, not only one that fails to convert (a format string or a resolved `default` whose expression fails, such as an index out of range or a division by zero), is unknown to the `enableIf` and unchecked where the Environment is disabled. §3.2.2 names "a value that does not convert". | Yes: any value that does not yield a value of the parameter's type is unknown, and its error is reported only where the Environment is not disabled. | Yes |
 | A48 | Whether a value that a document without `EXPR` may not supply (constraint 6, last sentence), but that would convert, is known to the `enableIf`. §3.2.2 names only missing and unconvertible values as unknown. | Unknown, at every stage: job creation reports the value and does not convert it. | Yes |
@@ -99,7 +99,7 @@ Numbered after plan 3's A38.
 * **A39, A42, A43, A44** above.
 * **§7.4 and failed `enableIf`s (A40).** §7.4 now orders the `enableIf` before constraint 7 but says nothing of an
   `enableIf` whose evaluation fails.
-* **§7.5 rule 5 and README item 18 (A45).** Rule 5 makes an expression `enableIf` unknown before job creation, so it
+* **§7.6 rule 5 and README item 18 (A45).** Rule 5 makes an expression `enableIf` unknown before job creation, so it
   forbids reporting JB-114 at template validation, while item 18 says JB-114 may be rejected at either stage and the
   new "should" prefers the earliest stage. The two should be reconciled: rule 5 could say that an expression field
   whose value depends only on values that stay unknown at its own stage is known to be unresolved there. The

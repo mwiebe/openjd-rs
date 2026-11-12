@@ -74,7 +74,7 @@ Currently implements `2023-09` with extensions:
   follow-up.
 - `ENV_PARAMS` (Environment Parameters RFC, draft) — prototype, implemented to the spec at
   `af53020`. Its changes since `87be017` are to Template Schemas §4.5 item 3, the NOTE after
-  §4.5's items, the sentence after the §7.4.1 steps, and §7.5's sentence on `path` semantics
+  §4.5's items, the sentence after the §7.4.1 steps, and §7.6's sentence on `path` semantics
   ("whatever path format the Job's paths have"): `2892d96` accepts a PATH or LIST[PATH] value
   absolute in any path format, and `af53020` uses it as given, with no check of its form. The prototype also
   evaluates every Environment parameter value, and the Step `let` bindings it reads, with POSIX
@@ -108,7 +108,7 @@ Currently implements `2023-09` with extensions:
   `hostRequirements`, `enableIf` (an expression field, §4 item 6), and `exclusiveGroup`
   (§4 item 7),
   the `step:` and `environment:` forms of `<StepDependency>`, the latter with `enableIf` (an
-  expression field, Template Schemas §7.5; see
+  expression field, Template Schemas §7.6; see
   [template-types.md](template-types.md#expression-fields-75)), `Job.EnvNames`, and the
   `Env.Param.*` / `Env.RawParam.*` scopes (see [validation.md](validation.md) § Pass 11 and
   § Environment parameter scopes), and so are, at job creation in the Template Schemas §7.4.1

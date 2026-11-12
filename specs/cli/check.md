@@ -131,7 +131,7 @@ stage that needs no Job Parameter values:
   missing `required` Environment and an ambiguous name are errors, and a `required: false`
   entry that resolves to nothing is a warning. An entry whose `enableIf` is `false` is as if
   absent, and one whose `enableIf` is an expression (an expression field, Template Schemas
-  §7.5, so even a constant one such as `"true"`) is checked only by `openjd run`, as is
+  §7.6, so even a constant one such as `"true"`) is checked only by `openjd run`, as is
   every attachment it may name, for its Step;
 - a `required: false` entry that resolves to an attached Environment that declares no
   parameters, and that supplies some, is a warning: its parameters are ignored (Template
@@ -150,7 +150,7 @@ stage that needs no Job Parameter values:
   Environment whose `enableIf` is `false` is disabled, so its
   values are not checked and it is not held to constraint 7 (Template Schemas §3.2.2); for
   one whose `enableIf` is an expression a violation is not certain without Job Parameter
-  values (§7.5 rule 5), so `openjd run` makes those checks. Nor are they made for an
+  values (§7.6 rule 5), so `openjd run` makes those checks. Nor are they made for an
   attached Environment that an earlier one of its `exclusiveGroup` supersedes or may
   supersede (Template Schemas §4 item 7, and the bullets after item 10): one is checked
   only when every earlier one of its group is known not to be entered;
@@ -196,7 +196,7 @@ A Step's entry with `enableIf: false` naming an attached Environment declines it
 error naming the Step and the Environment when it is `ALWAYS` (Template Schemas §3.2 item
 3.2). An entry whose `enableIf` is an expression is not reported here, even when it names an
 attached `ALWAYS` Environment and the expression is constant, such as `"false"`: an expression
-field's value is unknown until the Job is created (§7.5 rule 5), so §4 item 4 has the error
+field's value is unknown until the Job is created (§7.6 rule 5), so §4 item 4 has the error
 reported then. `check` accepts such a template, and `openjd run` rejects it when the
 expression is `false`. When an `ALWAYS` Environment's missing parameters are reported and the
 Step's entry for it was disabled by `enableIf: false`, the message says so. A note marks an Environment whose own

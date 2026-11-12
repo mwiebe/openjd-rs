@@ -13,7 +13,7 @@
 //! not checked against their type and constraints, though constraint 5 still
 //! applies. Template validation and `check_environment_templates` check
 //! constraints 6 and 7 only for an Environment whose `enableIf` is absent or
-//! `true` (§7.5 rule 5). Two RANGE_EXPR values are equal when they denote the
+//! `true` (§7.6 rule 5). Two RANGE_EXPR values are equal when they denote the
 //! same integers.
 
 use openjd_model::template::EnvironmentTemplate;
@@ -63,7 +63,7 @@ fn check(jt_src: &str, env_srcs: &[&str]) -> Result<(), ModelError> {
     check_environment_templates(&jt, &attached, &template_ctx(&jt)).map(|_| ())
 }
 
-// ── Template validation (§3.2 checked-at paragraph, §7.5 rule 5) ────
+// ── Template validation (§3.2 checked-at paragraph, §7.6 rule 5) ────
 
 /// A Job Environment `E` with the given `enableIf` line (empty for none)
 /// and parameters `Mode` (STRING, `allowedValues: [a, b]`), `N` (INT), and
@@ -647,7 +647,7 @@ fn a_range_expr_value_that_does_not_parse_is_rejected() {
         &[&at],
     );
     // An enableIf that also reads Job.Name is undetermined at template
-    // validation (§7.5 rule 5); job creation finds it unresolved and
+    // validation (§7.6 rule 5); job creation finds it unresolved and
     // rejects the literal.
     let jt = jt.replace(
         "\"len(Env.Param.Frames) > 3\"",
@@ -790,7 +790,7 @@ fn an_attachments_failed_enable_if_is_reported_once_and_the_attachment_is_still_
              for Step 'B', which does not supply this parameter: could not be resolved as a value \
              of type INT: Cannot convert 'many' to int: invalid digit found in string",
             "EnvironmentTemplate[0] -> environment -> enableIf:\n\tresolved to null, which does not \
-           fit type bool (Template Schemas §7.5). Resolved for Steps 'B' and 'C'.",
+           fit type bool (Template Schemas §7.6). Resolved for Steps 'B' and 'C'.",
             &layers(0),
             &layers(1),
         ],
@@ -816,7 +816,7 @@ fn an_attachments_failed_enable_if_still_reports_missing_parameters_and_host_con
               steps:\n- name: S\n  hostRequirements:\n    amounts: [{name: amount.worker.vcpu, \
               max: 4}]\n  script: {actions: {onRun: {command: x}}}\n";
     let enable_if = "EnvironmentTemplate[0] -> environment -> enableIf:\n\tresolved to null, \
-                     which does not fit type bool (Template Schemas §7.5). Resolved for Step 'S'.";
+                     which does not fit type bool (Template Schemas §7.6). Resolved for Step 'S'.";
     create_err(
         jt,
         &[&att("{name: P, type: STRING}, ")],
@@ -867,7 +867,7 @@ fn an_unreachable_attachment_whose_enable_if_fails_is_reported_saying_so() {
         "Submission",
         &[
             "EnvironmentTemplate[0] -> environment -> enableIf:\n\tresolved to null, which does \
-             not fit type bool (Template Schemas §7.5). Resolved for Step 'S'.",
+             not fit type bool (Template Schemas §7.6). Resolved for Step 'S'.",
             "EnvironmentTemplate[0] -> environment -> envParameterDefinitions:\n\tEnvironment \
              'Gpu' has the same name as a jobEnvironments entry of the Job Template, so no \
              'environment:' dependency can reach it (Template Schemas §3.2.1 item 4), and it has \
@@ -1280,7 +1280,7 @@ const LIC_MISSING: &str = "steps[0]:\n\tmust supply, in an 'environment:' depend
 
 #[test]
 fn a_certain_failure_is_reported_at_template_validation() {
-    // §7.5 rule 5's preference: an enableIf that reads only values that
+    // §7.6 rule 5's preference: an enableIf that reads only values that
     // stay unknown at job creation (a missing parameter, a literal that
     // does not convert) is certainly unresolved, so the Environment is
     // certainly not disabled, and its checks fail already at template
@@ -1312,7 +1312,7 @@ fn a_certain_failure_is_reported_at_template_validation() {
 
 #[test]
 fn a_known_enable_if_stays_unknown_before_job_creation() {
-    // §7.5 rule 5: an expression whose value the literals decide, a
+    // §7.6 rule 5: an expression whose value the literals decide, a
     // constant included, is unknown at template validation, so nothing is
     // reported there; job creation decides it.
     for enable_if in ["true", "Env.Param.Mode == 'off'"] {
@@ -1376,7 +1376,7 @@ fn an_entry_that_may_be_disabled_gives_no_certain_values() {
     // The entry's own enableIf is an expression, so whether it supplies
     // anything is undetermined at template validation; E's enableIf, which
     // reads the missing N, is then not certainly unresolved with the
-    // entry's values, so nothing is reported early (§7.5 rule 5). Disabled,
+    // entry's values, so nothing is reported early (§7.6 rule 5). Disabled,
     // the entry leaves E (ON_REQUEST) unentered, and the Job is created.
     let jt = |entry_enable_if: &str| {
         format!(
@@ -1503,7 +1503,7 @@ fn constraint_7_reads_the_entrys_values_before_job_creation() {
     // With X: 2 supplied, the enableIf is known `false` with the entry's
     // values: not certainly unresolved, so template validation reports
     // nothing, and job creation disables E. With X: 1 it is known `true`,
-    // which also stays unknown at template validation (§7.5 rule 5); job
+    // which also stays unknown at template validation (§7.6 rule 5); job
     // creation then reports the missing Y.
     for activation in ["BY_DEFAULT", "ON_REQUEST"] {
         let jt = x_and_y(activation, "{X: 2}");

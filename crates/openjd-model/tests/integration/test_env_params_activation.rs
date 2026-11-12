@@ -99,7 +99,7 @@ fn one_env(activation: &str, enable_if: &str) -> String {
 #[test]
 fn an_always_environment_with_a_literal_false_enable_if_is_rejected() {
     // JT-170, ET-44: a literal `false` is known at template validation
-    // (§7.5 rule 5).
+    // (§7.6 rule 5).
     job_err(
         &one_env("ALWAYS", "false"),
         &[&literal_false("jobEnvironments[0]", "Lic")],
@@ -167,7 +167,7 @@ fn constraint_7_treats_an_always_environment_as_entered_at_template_validation()
         ],
     );
     // BY_DEFAULT: the enableIf may disable Lic for the Step, so the check
-    // waits for job creation (§7.5 rule 5), where it is false and Lic is
+    // waits for job creation (§7.6 rule 5), where it is false and Lic is
     // not entered.
     let created = create_ok(&required_unsupplied("BY_DEFAULT"), &[]);
     assert_eq!(entered(&created.job, 0), Vec::<String>::new());

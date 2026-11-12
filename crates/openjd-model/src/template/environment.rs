@@ -45,7 +45,7 @@ pub struct Environment {
     /// `stepEnvironments` entry.
     pub host_requirements: Option<HostRequirements>,
     /// §4 item 6 `enableIf` (`ENV_PARAMS`): an expression field
-    /// of type `bool` (§7.5) deciding whether a Step's Sessions enter this
+    /// of type `bool` (§7.6) deciding whether a Step's Sessions enter this
     /// Environment. Permitted on every position: a `jobEnvironments` entry,
     /// a `stepEnvironments` entry, and an Environment Template's
     /// `environment`. Template validation checks it in the scope §7.3.2 gives:
@@ -87,7 +87,7 @@ impl Environment {
     }
 
     /// Whether `enableIf` is known before the Job is created (§4, after item
-    /// 10; §7.5 item 1): `Some(true)` when it is absent or the boolean
+    /// 10; §7.6 item 1): `Some(true)` when it is absent or the boolean
     /// scalar `true`, `Some(false)` for the scalar `false`, and `None`
     /// otherwise, an expression included (even a constant one such as
     /// `"true"`, which is evaluated when the Job is created).
@@ -164,7 +164,7 @@ impl Environment {
 }
 
 /// What is known before the Job is created about whether a Step's Sessions
-/// enter one Environment (§4, after item 10; §7.5 rule 5).
+/// enter one Environment (§4, after item 10; §7.6 rule 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Known {
     /// Known to be entered.
@@ -210,7 +210,7 @@ pub(crate) fn apply_exclusive_groups<'g>(
 }
 
 /// What a Step's `environment:` entry for one Environment is known to be
-/// before the Job is created (§3.2 item 3.2, checked-at paragraph; §7.5 rule
+/// before the Job is created (§3.2 item 3.2, checked-at paragraph; §7.6 rule
 /// 5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KnownEntry {

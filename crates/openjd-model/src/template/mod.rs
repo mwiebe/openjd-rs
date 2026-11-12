@@ -55,7 +55,7 @@ pub use step::{
 pub use env_parameters::{
     EnvironmentParameterDefinition, EnvironmentParameterValue, EnvironmentParameterValueMap,
 };
-// expr_field (Template Schemas §7.5)
+// expr_field (Template Schemas §7.6)
 pub use expr_field::ExprField;
 // environment
 pub(crate) use environment::{apply_exclusive_groups, Known, KnownEntry};

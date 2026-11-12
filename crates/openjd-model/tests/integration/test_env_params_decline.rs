@@ -163,7 +163,7 @@ fn a_literal_false_entry_for_an_always_job_environment_is_rejected_at_validation
 
 #[test]
 fn an_expression_entry_for_an_always_job_environment_is_rejected_at_job_creation() {
-    // Not known to be disabled at template validation (§7.5 rule 5). The
+    // Not known to be disabled at template validation (§7.6 rule 5). The
     // error, of §7.4.1 step 4, stops the Step, so its constraint 7 is not
     // checked.
     let src = lic("ALWAYS", MODE_ON, "maya");
@@ -352,7 +352,7 @@ fn an_expression_entrys_parameters_are_checked_only_if_it_is_enabled() {
     // The entry may be disabled, and a disabled entry's parameters are not
     // checked (§3.2 item 3.2), so its undeclared key, its literal outside
     // `allowedValues`, and its mistyped format string are not errors at
-    // template validation (§7.5 rule 5). Disabled at job creation, they
+    // template validation (§7.6 rule 5). Disabled at job creation, they
     // are still not; enabled, each is.
     let src = lic("BY_DEFAULT", MODE_ON, "houdini").replace(
         "parameters: {Product: houdini}",
@@ -778,7 +778,7 @@ steps:
 fn an_ambiguous_entry_with_an_expression_enable_if_is_reported_at_check() {
     // A disabled entry's name is resolved as an enabled one's is, so the
     // §3.2.1 item 3 error holds whatever the expression resolves to, and
-    // check reports it (§7.5 rule 5), as job creation does.
+    // check reports it (§7.6 rule 5), as job creation does.
     let conda = conda("BY_DEFAULT");
     let expected = "JobTemplate -> steps[0] -> dependencies[0] -> environment:\n\tnames \
                     Environment 'Conda', which 2 attached Environment Templates define \

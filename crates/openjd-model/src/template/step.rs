@@ -393,7 +393,7 @@ pub struct StepDependency {
     #[serde(default)]
     pub required: Option<bool>,
     /// Whether the entry is in effect (`ENV_PARAMS`, §3.2 item 3.2): an
-    /// expression field of type `bool` (§7.5), resolved when the Job is
+    /// expression field of type `bool` (§7.6), resolved when the Job is
     /// created. Absent means enabled. A disabled entry supplies nothing,
     /// and its effect depends on the `activation` of the Environment it
     /// names: it requests no `ON_REQUEST` Environment, declines a
@@ -477,7 +477,7 @@ impl StepDependency {
     /// scalar `true`, `Some(false)` for the scalar `false`, and `None` for
     /// any other value, an expression included, even a constant one such
     /// as `"true"`, whose value is known only when the Job is created
-    /// (§3.2, checked-at paragraph; §7.5 item 1).
+    /// (§3.2, checked-at paragraph; §7.6 item 1).
     #[must_use]
     pub fn literal_enabled(&self) -> Option<bool> {
         match &self.enable_if {

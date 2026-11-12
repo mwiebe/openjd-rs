@@ -190,7 +190,7 @@ the Job; an `environment:` entry does not delay scheduling (§3.2 item 3), so
 it is not part of the Step dependency graph, and a list left empty by the filter becomes
 `None`.
 
-### Expression fields (§7.5)
+### Expression fields (§7.6)
 
 ```rust
 pub enum ExprField {
@@ -211,14 +211,14 @@ Environment's own `enableIf` (below), both of type `bool`.
 
 Decoding is by hand and accepts every scalar, so that template validation, which knows the
 target type, reports a scalar that does not fit (`enableIf: 1`) at the field's path with the
-§7.5 rule, rather than serde reporting it without one. A string is always `Expression`, never
+§7.6 rule, rather than serde reporting it without one. A string is always `Expression`, never
 read as a scalar: `"true"` is the expression `true`. A list or a map is a decode error that
 names the field ("enableIf must be a boolean, integer, float, or string (an expression field,
-Template Schemas §7.5)"), as is an integer above `i64::MAX` that fits `u64` ("enableIf: the
+Template Schemas §7.6)"), as is an integer above `i64::MAX` that fits `u64` ("enableIf: the
 integer N is out of range for an expression field …"). A larger integer, or one below
 `i64::MIN`, arrives from JSON number parsing as a float and decodes as `Float`. Decode errors
 carry no path, which is why the message names the field. A present `null` is an error, not an
-omitted field (§7.5), so an optional `enableIf` is declared `#[serde(default, deserialize_with =
+omitted field (§7.6), so an optional `enableIf` is declared `#[serde(default, deserialize_with =
 "expr_field::deserialize_enable_if")]`: an absent key is `None`, a present `null` is
 `Some(ExprField::Null)`, and template validation rejects it at the field's path. (A later
 expression field adds a `deserialize_with` that names it; `ExprField`'s own `Deserialize`,
@@ -228,16 +228,16 @@ out of range for an expression field …". A plain `Option<ExprField>` reads a p
 `Eq` are written by hand, comparing a float's bits (a decoded value is never NaN; `-0.0` and
 `0.0` are unequal); `as_bool()` returns the boolean scalar, `None` otherwise.
 
-The crate-private checker in `template/expr_field.rs` applies §7.5 for a target type `G`,
+The crate-private checker in `template/expr_field.rs` applies §7.6 for a target type `G`,
 given the field's scope (a symbol table) and an `ExprFieldEval` (profile, library, budgets;
 paths are always POSIX, since an expression field is evaluated in template scope, not a host
-context: Template Schemas §7.5, the paragraph after its rules; spec `5535230`):
+context: Template Schemas §7.6, the paragraph after its rules; spec `5535230`):
 
 - `validate` (template validation, rules 1, 2, 4): a scalar must fit `G` (only `int` widens to
   `float`), a `null` is an error, and an expression must parse under the document's profile,
   evaluate against the scope (unknown names are errors), and have a static type that fits
   `G`. A parse error of a value that contains `{{` adds "An expression field takes an
-  expression without '{{ }}' (Template Schemas §7.5)." after the message, before the
+  expression without '{{ }}' (Template Schemas §7.6)." after the message, before the
   expression and caret lines (". " before it, or " " after a summary that ends in `.`, `?`,
   or `!`). A float scalar is quoted in Rust's shortest round-trip form, which keeps a whole
   number's fraction (`3.0`; `1e3` is quoted `1000.0`), and a non-finite one (only a template
@@ -348,7 +348,7 @@ requires EXPR; see [validation.md](validation.md#entry-points)), and pass 8 chec
 scope (see [validation.md](validation.md#environment-enableif-env_params)). `literal_enabled()` is
 `Some(true)` for an absent `enableIf` or the boolean scalar `true`, `Some(false)` for the
 scalar `false`, and `None` for anything else, a constant expression such as `"true"` included:
-what template validation may count as entered or not (§4, after item 10; §7.5 item 1). Job
+what template validation may count as entered or not (§4, after item 10; §7.6 item 1). Job
 creation resolves it once per Step whose Sessions would otherwise enter the Environment and
 for which it is not superseded (see
 [job-creation.md](job-creation.md#environment-enableif-env_params)); no job type records it,

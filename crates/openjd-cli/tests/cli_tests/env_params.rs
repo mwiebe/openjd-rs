@@ -976,7 +976,7 @@ fn check_rejects_env_params_without_expr() {
 #[test]
 fn check_reports_expression_field_errors_for_enable_if() {
     // An entry's enableIf is an expression field of type bool (Template
-    // Schemas §3.2 constraint 9, §7.5): written without {{ }}, of a type
+    // Schemas §3.2 constraint 9, §7.6): written without {{ }}, of a type
     // that fits bool with no conversion, and never null. An Environment's
     // own enableIf (§4 item 6) is an expression field of type bool too.
     let dir = tempfile::tempdir().unwrap();
@@ -998,16 +998,16 @@ fn check_reports_expression_field_errors_for_enable_if() {
         "ERROR: Model validation error: 4 validation errors for JobTemplate\n\
          jobEnvironments[3] -> enableIf:\n\tthe integer scalar 1 does not fit type bool: an \
          expression field of type bool takes a boolean scalar or a string holding one expression \
-         (Template Schemas §7.5).\n\
+         (Template Schemas §7.6).\n\
          steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Set literals are not \
          supported. An expression field takes an expression without '{{ }}' (Template Schemas \
-         §7.5).\n  {{ true }}\n  ^~~~~~~~~~\n\
+         §7.6).\n  {{ true }}\n  ^~~~~~~~~~\n\
          steps[0] -> dependencies[1] -> enableIf:\n\thas type string, which does not fit type \
          bool; an expression field converts no type except int to float (Template Schemas \
-         §7.5).\n\
+         §7.6).\n\
          steps[0] -> dependencies[2] -> enableIf:\n\tmust not be null: an expression field of \
          type bool takes a boolean scalar or a string holding one expression (Template Schemas \
-         §7.5).\n"
+         §7.6).\n"
     );
 }
 

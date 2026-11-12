@@ -1097,7 +1097,7 @@ pub(crate) struct StepEntries<'a> {
 }
 
 /// Whether `dep` is enabled (§3.2 item 3.2): `true` when its `enableIf` is
-/// absent, and otherwise the value of the expression field (§7.5) of type
+/// absent, and otherwise the value of the expression field (§7.6) of type
 /// `bool`, resolved in `symtab`. `None` after reporting, at `<entry> ->
 /// enableIf`, a value that fails to evaluate or does not resolve to `true`
 /// or `false` (`null` included).
@@ -1111,7 +1111,7 @@ fn entry_enabled(
     resolve_enable_if(dep.enable_if.as_ref(), symtab, policy, entry_path, errors)
 }
 
-/// The value of an `enableIf` (an expression field of type `bool`, §7.5)
+/// The value of an `enableIf` (an expression field of type `bool`, §7.6)
 /// at `owner_path -> enableIf`, resolved in `symtab` with the profile and
 /// library of the Step's template scope: `true` when it is absent. `None`
 /// after reporting a value that fails to evaluate or does not resolve to
@@ -1183,7 +1183,7 @@ fn resolve_enable_if(
 /// Step's `let` bindings), the scope of an entry's
 /// format strings and `enableIf` (§7.3.2). Both resolve in it as it is,
 /// with POSIX paths: they are TEMPLATE-scope fields, not host context
-/// (Expression Language §1.2.1, §7.5).
+/// (Expression Language §1.2.1, §7.6).
 pub(crate) fn resolve_step_entries<'a>(
     st: &template::StepTemplate,
     step_index: usize,

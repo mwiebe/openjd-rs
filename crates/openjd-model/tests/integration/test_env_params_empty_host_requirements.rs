@@ -410,7 +410,7 @@ fn a_static_list_result_is_checked_at_template_validation() {
     )));
 }
 
-// ── Template validation: duplicates after discarding (§3.3, §7.5 rule 5) ──
+// ── Template validation: duplicates after discarding (§3.3, §7.6 rule 5) ──
 
 #[test]
 fn a_duplicate_that_may_be_discarded_is_not_an_error_at_template_validation() {
@@ -447,7 +447,7 @@ fn a_duplicate_that_is_kept_whatever_the_values_is_an_error() {
 
 #[test]
 fn a_duplicate_whose_bounds_cannot_be_null_is_an_error_at_template_validation() {
-    // §7.5 rule 5: a bound or expression whose static type has no `null`
+    // §7.6 rule 5: a bound or expression whose static type has no `null`
     // keeps its requirement whatever the values are, so the duplicate holds
     // for every value and is reported at once.
     job_err(

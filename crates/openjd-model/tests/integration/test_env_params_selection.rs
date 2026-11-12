@@ -266,7 +266,7 @@ fn enable_if_decodes_as_an_expression_field() {
         Some(ExprField::Expression("wanted and Step.Name == 'S'".into()))
     );
     assert_eq!(dep.literal_enabled(), None);
-    // A string is never read as a scalar (§7.5 item 1): "true" is the
+    // A string is never read as a scalar (§7.6 item 1): "true" is the
     // expression `true`, whose value is known only at job creation.
     let dep = dep_of(&job_ok(&enable_if(r#""true""#)));
     assert_eq!(dep.enable_if, Some(ExprField::Expression("true".into())));
@@ -290,7 +290,7 @@ fn an_enable_if_that_is_not_a_scalar_or_a_string_is_a_decode_error() {
         assert_eq!(
             err,
             "Validation error: 'jobtemplate-2023-09' failed checks: enableIf must be a boolean, \
-             integer, float, or string (an expression field, Template Schemas §7.5)"
+             integer, float, or string (an expression field, Template Schemas §7.6)"
         );
     }
 }
@@ -303,7 +303,7 @@ fn an_enable_if_scalar_must_be_a_boolean() {
             &[&format!(
                 "steps[0] -> dependencies[0] -> enableIf:\n\tthe {kind} does not fit type bool: \
                  an expression field of type bool takes a boolean scalar or a string holding \
-                 one expression (Template Schemas §7.5)."
+                 one expression (Template Schemas §7.6)."
             )],
         );
     }
@@ -318,27 +318,27 @@ fn a_null_enable_if_is_an_error_not_an_omitted_field() {
             &dep_src,
             &["steps[0] -> dependencies[0] -> enableIf:\n\tmust not be null: an expression field \
                of type bool takes a boolean scalar or a string holding one expression (Template \
-               Schemas §7.5)."],
+               Schemas §7.6)."],
         );
     }
 }
 
 #[test]
 fn an_enable_if_written_as_a_format_string_is_a_parse_error() {
-    // §7.5 rule 1, with the hint that an expression field takes no `{{ }}`.
+    // §7.6 rule 1, with the hint that an expression field takes no `{{ }}`.
     job_err(
         &enable_if(r#""{{ true }}""#),
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Set literals are not \
            supported. An expression field takes an expression without '{{ }}' (Template \
-           Schemas §7.5).\n  {{ true }}\n  ^~~~~~~~~~",
+           Schemas §7.6).\n  {{ true }}\n  ^~~~~~~~~~",
         ],
     );
     job_err(
         &enable_if(r#""x{{ true }}""#),
         &["steps[0] -> dependencies[0] -> enableIf:\n\tInvalid expression: Syntax error: invalid \
            syntax. An expression field takes an expression without '{{ }}' (Template Schemas \
-           §7.5).\n  x{{ true }}\n   ^"],
+           §7.6).\n  x{{ true }}\n   ^"],
     );
     // A `{{` inside a string literal is text, and the hint is not added to
     // an unrelated parse error.
@@ -366,7 +366,7 @@ steps:
   dependencies: [{environment: A}, {environment: B, enableIf: "1"}]
   script: {actions: {onRun: {command: x}}}
 "#,
-        &["steps[0] -> dependencies[1] -> enableIf:\n\thas type int, which does not fit type bool; an expression field converts no type except int to float (Template Schemas §7.5)."],
+        &["steps[0] -> dependencies[1] -> enableIf:\n\thas type int, which does not fit type bool; an expression field converts no type except int to float (Template Schemas §7.6)."],
     );
 }
 
@@ -410,13 +410,13 @@ steps:
 
 #[test]
 fn enable_if_must_fit_type_bool() {
-    // §7.5 rule 2: no conversion to `bool` (JT-97, JT-149).
+    // §7.6 rule 2: no conversion to `bool` (JT-97, JT-149).
     job_err(
         &enable_if(r#""Param.Count""#),
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\thas type int, which does not fit type \
            bool; an expression field converts no type except int to float (Template Schemas \
-           §7.5).",
+           §7.6).",
         ],
     );
     job_err(
@@ -424,7 +424,7 @@ fn enable_if_must_fit_type_bool() {
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\thas type string, which does not fit type \
            bool; an expression field converts no type except int to float (Template Schemas \
-           §7.5).",
+           §7.6).",
         ],
     );
     job_err(
@@ -432,7 +432,7 @@ fn enable_if_must_fit_type_bool() {
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\thas type bool | string, which does not \
            fit type bool; an expression field converts no type except int to float (Template \
-           Schemas §7.5).",
+           Schemas §7.6).",
         ],
     );
     // An expression of type nulltype is an error...
@@ -440,11 +440,11 @@ fn enable_if_must_fit_type_bool() {
         &enable_if(r#""null""#),
         &[
             "steps[0] -> dependencies[0] -> enableIf:\n\thas type nulltype, which does not fit \
-           type bool (Template Schemas §7.5).",
+           type bool (Template Schemas §7.6).",
         ],
     );
     // ...while `bool?` passes template validation; job creation rejects a
-    // `null` result (§7.5 rule 2).
+    // `null` result (§7.6 rule 2).
     job_ok(&enable_if(r#""null if Param.Count > 5 else true""#));
     // A constant expression of type bool is accepted.
     job_ok(&enable_if(r#""false""#));
@@ -473,7 +473,7 @@ fn enable_if_has_the_scope_of_a_parameters_value() {
 
 #[test]
 fn enable_if_is_checked_with_the_template_scope_library_and_posix_paths() {
-    // A host-only function is not in the template-scope library (§7.5,
+    // A host-only function is not in the template-scope library (§7.6,
     // after its rules)...
     job_err(
         &enable_if(r#""apply_path_mapping('/a') == '/a'""#),

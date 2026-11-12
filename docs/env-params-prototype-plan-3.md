@@ -21,7 +21,7 @@ plan 2.
   `wiki/How-Jobs-Are-Run.md` ("HJAR"), and `wiki/2026-02-Expression-Language.md` ("ExprLang"). Section numbers are
   Schemas sections. `git diff 408910f 2a5a930` is the change this plan covers; `2a5a930` is the merge of
   `rfc-env-params-refine` (`4cc7269`, `208f01e`, `633887c`, `ff3d261`, `3b75f87`). PR 4 also follows `5535230`,
-  a later single commit that adds §7.5 rule 5 (the stage rule for early checks) and states that both `enableIf`
+  a later single commit that adds §7.6 rule 5 (the stage rule for early checks) and states that both `enableIf`
   fields are evaluated in template scope; its conformance tests are those of `2a5a930`.
 * **Conformance suite.** `conformance-tests/2023-09/ENV_PARAMS/` at `2a5a930` (unchanged at `5535230`): 149 `job_templates/`, 42
   `env_templates/`, and 101 `jobs/` files (292). New since `408910f`: JT-124–JT-149, ET-39–ET-42, JB-93–JB-101. 32 files
@@ -39,7 +39,7 @@ plan 2.
 | D1 | **Rename** `parameterDefinitions` → `envParameterDefinitions` on `<Environment>`. The top-level Job Parameter `parameterDefinitions` of a Job Template or Environment Template is unchanged. | §4 item 3; §1.2.1; §3.2 items 4, constraint 5; §3.2.1 item 1; ExprLang |
 | D2 | **Rename** `runScope: <RunScope>` → `activation: <EnvironmentActivation>`, values `ALL` → `ALWAYS`, `ONLY_REQUESTED` → `ON_REQUEST`. Default `ALWAYS`. Same constraints. | §4 item 4; every text that cited the old names |
 | D3 | **`step: <StepName>`**, a synonym of `dependsOn:` in `<StepDependency>`, `ENV_PARAMS`-gated. Every `dependsOn` rule applies; a `step:` and a `dependsOn:` entry naming one Step are duplicates; one dependency graph. Constraint 1 becomes "exactly one of *dependsOn*, *step*, or *environment*". | §3.2 item 1, constraint 1; RFC Validation table: the `ENV_PARAMS`-listing rule, the constraint 1 rule, and the `step`-obeys-`dependsOn` rule |
-| D4 | **Expression fields** (`@expr <type>`). A value is a boolean, integer, or float scalar that fits the target type, used as written, or a string holding one expression with no `{{ }}`. A YAML null is an error, not an omitted field. The static type must *fit* the target (ExprLang §1.2.3 step 1); only `int` → `float` widening applies; `U?` is accepted where `U` fits, and a `null` result is an evaluation error even on an optional field; a `nulltype` expression is an error; `unresolved[U]` checks as `U`. `{{` is a parse error, and the message should say that an expression field takes no `{{ }}`. Each field's definition gives its scopes and stage. Errors other than evaluation errors are template-validation errors. | new §7.5; Notations list; §7.4 annotation paragraph; ExprLang §1.3.2 note |
+| D4 | **Expression fields** (`@expr <type>`). A value is a boolean, integer, or float scalar that fits the target type, used as written, or a string holding one expression with no `{{ }}`. A YAML null is an error, not an omitted field. The static type must *fit* the target (ExprLang §1.2.3 step 1); only `int` → `float` widening applies; `U?` is accepted where `U` fits, and a `null` result is an evaluation error even on an optional field; a `nulltype` expression is an error; `unresolved[U]` checks as `U`. `{{` is a parse error, and the message should say that an expression field takes no `{{ }}`. Each field's definition gives its scopes and stage. Errors other than evaluation errors are template-validation errors. | new §7.6; Notations list; §7.4 annotation paragraph; ExprLang §1.3.2 note |
 | D5 | **Entry `enableIf` is `@expr bool`.** Same scopes and stage as before. For the checked-at paragraph, only an absent `enableIf` or a boolean scalar counts as known at template validation; a constant expression such as `"true"` defers to job creation. | §3.2 item 5, constraint 9, checked-at ¶ |
 | D6 | **`enableIf` on every `<Environment>`** (`@expr bool`, `ENV_PARAMS` and `EXPR`), on `jobEnvironments`, `stepEnvironments`, and an Environment Template's `environment`. Resolved at job creation once per Step whose Sessions would otherwise enter it, with that Step's effective values; `null` is an error. Scopes: a Job Environment or Environment Template has exactly its `hostRequirements` scopes (§4 item 5.1); a Step Environment has `RawParam.*`, non-PATH `Param.*`, `Job.Name`, `Job.EnvNames`, `Step.Name`, and the Step's `let`. Never `Task.*`, `Session.*`, `Env.File.*`, or another Environment's parameters. | §4 item 6 |
 | D7 | **Effects of a disabled Environment** for a Step: not entered or exited, no `variables`, not in the stack, no host requirements (and its `hostRequirements` are not resolved for that Step). `Job.EnvNames` still lists it. Constraint 7 is checked over the set *before* Environment `enableIf`, so it never exempts a Step. A check over a Step's Environment set (the `WRAP_ACTIONS` single-layer rule) is made at template validation only when every relevant `enableIf` is absent or a boolean scalar (a `false` scalar counting as not entered), otherwise at job creation. | §4 item 6 tail; §3.2 constraint 7; §3.2.1 last ¶s; §3.3.3 last ¶; `Job.EnvNames` row |
@@ -258,7 +258,7 @@ gate. `4--activation-unknown.invalid` (both directories) must name `ALWAYS` and 
 
 **PR 3 (9).** After R1/R2 the first eight reach the old `enableIf` form check, which rejects them for the wrong reason, or, for
 `3.2--enable-if-braces.invalid`, accepts them: the prototype accepts `enableIf: "{{ true }}"`, so **PR 2 turns JT-98
-from pass to fail**, and PR 3 turns it back. Each must fail on its §7.5 rule: job_templates `3.2--enable-if-braces`
+from pass to fail**, and PR 3 turns it back. Each must fail on its §7.6 rule: job_templates `3.2--enable-if-braces`
 (rule 1, with the "without `{{ }}`" hint), `3.2--enable-if-not-bool` (rule 2, `int` does not fit `bool`),
 `3.2--enable-if-reads-path-param` and `3.2--enable-if-reads-task-param` (scope), `3.2--enable-if-string` (rule 2,
 `string` does not fit `bool`); jobs `3.2--enable-if-null` (null at job creation), `3.2--required-param-entry-disabled-by-expression`
@@ -327,15 +327,15 @@ Q1–Q12 extend plan 2's P1–P8.
 3. **Q3. One expression-field type and checker, used by both `enableIf` fields.** A new public
    `template::ExprField` replaces `template::EnableIf`: `Bool(bool)`, `Int(i64)`, `Float(f64)`, or
    `Expression(String)` (the text, not a `FormatString`). Decoding accepts any JSON/YAML boolean, number, or string,
-   so that a scalar of the wrong type (`enableIf: 1`) is reported by template validation with its path and the §7.5
-   rule rather than by serde. A present `null` is an error (§7.5) reported at the field's path at template validation;
+   so that a scalar of the wrong type (`enableIf: 1`) is reported by template validation with its path and the §7.6
+   rule rather than by serde. A present `null` is an error (§7.6) reported at the field's path at template validation;
    since `Option<ExprField>` with `serde(default)` would read it as absent, the field uses a `deserialize_with` that
    distinguishes present-null (the mechanism is PR 3's choice). A crate-private checker takes the field, its target
    `ExprType`, and its symbol table:
    * at template validation it parses the string with `ParsedExpression` under the document's profile; on a parse
      error whose text contains `{{` it adds "an expression field takes an expression without '{{ }}' (Template
-     Schemas §7.5)"; it type-checks against the symbol table and applies the fit rule (Q4);
-   * at job creation it evaluates and checks the value: `null` is an error naming §7.5 and the field's section, an
+     Schemas §7.6)"; it type-checks against the symbol table and applies the fit rule (Q4);
+   * at job creation it evaluates and checks the value: `null` is an error naming §7.6 and the field's section, an
      `int` widens for a `float` target, and anything else that does not fit is an error.
    A boolean, integer, or float scalar is checked for fit and used as written. `Float(f64)` is not `Eq`, while
    `StepDependency` derives `PartialEq, Eq` (`template/step.rs:340`, `specs/model/public-api.md:450`): PR 3 either
@@ -347,7 +347,7 @@ Q1–Q12 extend plan 2's P1–P8.
    The `{{` hint follows the parse error's message and precedes its expression and caret lines, so
    the error stays one block. `template::Environment::enable_if` is added now, decoded with the
    same type and rejected by pass 11 as not yet implemented, so PR 4 adds its semantics only. The
-   checker's messages are generic over the target type and name §7.5 only, not the field's own
+   checker's messages are generic over the target type and name §7.6 only, not the field's own
    section (the path names the field). A list or map value is a decode error naming the field.
 4. **Q4. The fit rule, over openjd-expr's public type API.** For static type `T` and target `G`: an
    `unresolved[U]` is checked as `U`; if `G` admits `nulltype`, `T` must satisfy `G`; otherwise `T = nulltype` is an
@@ -425,7 +425,7 @@ Numbered after plan 2's A23–A32. CT-n is the conformance README's "Rules witho
 | A33 | Whether an Environment's effective values are checked for a Step for which its `enableIf` is `false`: §7.4 checks them (constraint 7 included) before Environment `enableIf`, but §4.5 item 2's "checked only where it becomes an effective value, that is, for each Step that enters the Environment without supplying the parameter" could be read as excusing a Step that never enters. | Checked: §7.4's order is explicit, and the enableIf may itself read the values (Q8). | Yes: one sentence in §4 item 6. |
 | A34 | The meaning of "every Environment involved" for the single-layer rule (§4 item 6 tail). | The wrapping Environments that the Step's Sessions would enter by `activation` and enabled entries, plus its wrapping Step Environments; a non-wrapping Environment's `enableIf` does not defer the check (Q9). | Yes. |
 | A35 | `RawParam.<PATH>` of a Job Parameter in an Environment `enableIf` (CT-14 extends to it). | Permitted, as A27 for `hostRequirements`, since the scopes are the same. | Yes, with A27. |
-| A36 | Where a present YAML `null` for an expression field is reported. §7.5 makes it an error; it does not say at which stage. | Template validation, at the field's path (§7.5 rule 4 puts the other form errors there). | No. |
+| A36 | Where a present YAML `null` for an expression field is reported. §7.6 makes it an error; it does not say at which stage. | Template validation, at the field's path (§7.6 rule 4 puts the other form errors there). | No. |
 | A37 | Whether the `{{` hint applies when the parse fails for another reason too. | Added whenever the text contains `{{`, since it is a "should". | No. |
 | A38 | Whether §7.4's order constrains which errors are reported together, as well as the result. | It constrains the result only: a Step Environment `enableIf` error is reported by the `create_job` body, before the submission stage's errors (Q7). | No. |
 
@@ -490,7 +490,7 @@ Counts assume Linux (3 Windows-only tests skipped). base, EXPR, and WRAP_ACTIONS
   checker for template validation and job creation, entry `enableIf` switched to it, pass 11's form check replaced,
   pass 8's type check replaced, `entry_enabled` replaced, and `check_environment_templates`' notion of a literal
   entry.
-* **Tests.** Every §7.5 rule against entry `enableIf`: each scalar (`true`, `false`, `1`, `1.0`), a string
+* **Tests.** Every §7.6 rule against entry `enableIf`: each scalar (`true`, `false`, `1`, `1.0`), a string
   expression, `"true"` deferring constraint 7 to job creation, `{{ }}` with the hint, a parse error, `string` and
   `int` rejected for `bool`, `bool?` accepted and `null` rejected at job creation, a `nulltype` expression, an
   `unresolved` operand, present-null rejected; the strict rule must hold where the old code coerced. The checker's
@@ -536,7 +536,7 @@ Counts assume Linux (3 Windows-only tests skipped). base, EXPR, and WRAP_ACTIONS
 Not prototype work; recorded so the RFC author can decide.
 
 * **A33–A35** above.
-* *Both PR 4 items below were adopted by the spec at `5535230`: §7.5 rule 5 (a check made before evaluation fails
+* *Both PR 4 items below were adopted by the spec at `5535230`: §7.6 rule 5 (a check made before evaluation fails
   only when the failure holds for every value the unknown fields could take), applied in §3.2's checked-at
   paragraph and §4 item 6's tail; and §3.2 item 5 / §4 item 6 stating that both `enableIf` fields are evaluated in
   template scope (POSIX paths, no path mapping, template-scope `let` values). The prototype matches `5535230`;
@@ -554,7 +554,7 @@ Not prototype work; recorded so the RFC author can decide.
   reads `let` bindings with the values job creation computed; only an entry's parameter values follow the
   submission path format (an implementation choice; since spec `2892d96`, §4.5 no longer names a submission path
   format). *Superseded (spec `af53020`): entry parameter values evaluate with POSIX semantics too, so every
-  job-creation evaluation does (Expression Language §1.2.1).* The spec could say so in §3.2 item 5 and §4 item 6 (or in §7.5 for every expression
+  job-creation evaluation does (Expression Language §1.2.1).* The spec could say so in §3.2 item 5 and §4 item 6 (or in §7.6 for every expression
   field resolved at job creation).
 * **ExprLang §1.2.2 still disagrees with Schemas §7.3.1** (plan 2): "every template can also read" `Job.EnvNames`,
   "in entry order", without §7.3.1's exclusions or its order wording. The delta did not touch that row.

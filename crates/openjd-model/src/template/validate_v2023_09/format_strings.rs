@@ -279,7 +279,7 @@ fn validate_env_param_value_fs(
 /// or `true`. A Step's values for an Environment are not checked against
 /// their types where it is disabled (§3.2.2), so for any other one whose
 /// `enableIf` is `false` or an expression they are checked with no target
-/// type (§7.5 rule 5), unless
+/// type (§7.6 rule 5), unless
 /// the expression is certainly unresolved for the entry
 /// (`env_params::enable_if_certainly_unresolved`). One with an
 /// `exclusiveGroup` (§4 item 7) may be superseded, which disables it, so
@@ -315,7 +315,7 @@ fn job_env_param_types(jt: &JobTemplate) -> JobEnvParamTypes<'_> {
 ///
 /// A value of an entry whose `enableIf` is absent or `true` (a disabled
 /// entry's parameters are not checked, §3.2 item 3.2, and one whose `enableIf`
-/// is an expression may be disabled, §7.5 rule 5), for a parameter of a
+/// is an expression may be disabled, §7.6 rule 5), for a parameter of a
 /// `jobEnvironments` entry with `activation:
 /// ALWAYS`, or whose own `enableIf` is absent or `true` or certainly
 /// unresolved for the entry,
@@ -349,7 +349,7 @@ fn validate_env_entry_values(
         // certainly enabled. A disabled entry's parameters are not checked
         // (§3.2 item 3.2), so only a certainly enabled entry's values are
         // typed here; an expression entry's are typed when the Job is
-        // created, if it is enabled (§7.5 rule 5).
+        // created, if it is enabled (§7.6 rule 5).
         let job_env = job_env_types
             .get(env_name)
             .filter(|_| dep.literal_enabled() == Some(true))
@@ -387,7 +387,7 @@ fn validate_env_entry_values(
 
 /// Pass-8 check of each `environment:` entry's `enableIf` (`ENV_PARAMS`,
 /// §3.2 item 3.2 and constraint 9): an expression field of type
-/// `bool` (§7.5), checked against `symtab`, the Step's template scope,
+/// `bool` (§7.6), checked against `symtab`, the Step's template scope,
 /// which is the scope of a `parameters` value. A scalar must be a boolean,
 /// a `null` is an error, and an expression must parse and have a type that
 /// fits `bool` (a `bool?` is accepted, its `null` being an error when the
@@ -414,7 +414,7 @@ fn validate_enable_if(
 }
 
 /// Pass-8 check of an Environment's own `enableIf` (`ENV_PARAMS`, §4 item
-/// 6): an expression field of type `bool` (§7.5), checked
+/// 6): an expression field of type `bool` (§7.6), checked
 /// against `symtab`, the scope §7.3.2 gives it. For a
 /// `jobEnvironments` entry or an Environment Template's `environment` that
 /// is its `hostRequirements` scope (§7.3.2); for a `stepEnvironments`
@@ -1254,7 +1254,7 @@ impl<'a> FsEval<'a> {
         opts
     }
 
-    /// The evaluator for an expression field (§7.5) parsed under
+    /// The evaluator for an expression field (§7.6) parsed under
     /// `profile`, with this evaluator's library and budgets and the POSIX
     /// path format, as [`budgeted`](Self::budgeted) uses.
     fn expr_field_eval<'b>(&'b self, profile: &'b openjd_expr::ExprProfile) -> ExprFieldEval<'b> {
@@ -2095,7 +2095,7 @@ struct HostRequirementsStandards<'a> {
 }
 
 /// Whether a field that resolved as `sr` is certainly present after
-/// resolution, whatever the unknown values are (§7.5 rule 5): a literal
+/// resolution, whatever the unknown values are (§7.6 rule 5): a literal
 /// (`sr` is `None` for one), a fully static value that is not `null`, or
 /// an expression whose static type cannot be `null`. That type is the one
 /// after coercion to the field's target type (`float?` for an amount
@@ -2284,7 +2284,7 @@ fn validate_host_requirements_fs(
             }
             // With ENV_PARAMS an amount whose bounds may both resolve to
             // `null` may be discarded, so it is not compared here (§3.3,
-            // and §7.5 rule 5); job creation compares the amounts it keeps.
+            // and §7.6 rule 5); job creation compares the amounts it keeps.
             let kept = !standards.env_params || present;
             known_names.push(compared_name(
                 known_capability_name(&amt.name, sr.as_ref()),

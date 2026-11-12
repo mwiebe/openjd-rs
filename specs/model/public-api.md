@@ -482,7 +482,7 @@ the boolean scalar `true` (an expression, even a constant one, is left to
 job creation), constraint 5; for an attachment with `activation: ALWAYS`
 or whose own `enableIf` is absent or `true`, or certainly unresolved for the Step
 (see validation.md, pass 11) (one with `false` is disabled, and one
-with an expression is undetermined, Template Schemas §3.2.2, §7.5 rule 5),
+with an expression is undetermined, Template Schemas §3.2.2, §7.6 rule 5),
 and that no earlier attachment of its `exclusiveGroup` supersedes or may
 supersede (§4 item 7),
 constraint 6 for literal values, the single-expression rule, and
@@ -686,7 +686,7 @@ impl StepDependency {
     pub fn literal_enabled(&self) -> Option<bool>;
 }
 
-/// §7.5 expression field (`@expr <type>`), as written. A YAML/JSON
+/// §7.6 expression field (`@expr <type>`), as written. A YAML/JSON
 /// boolean decodes as `Bool`, an integer as `Int`, another number as
 /// `Float`, a string as `Expression`, and a present `null` as `Null`
 /// (rejected by template validation); a list, a map, or an integer above
@@ -872,7 +872,7 @@ impl JobParameterDefinition {
     /// parameter (§4.5 item 4). It changes nothing for the other types. For
     /// INT and FLOAT a `String` value is parsed as an `<intstring>` or
     /// `<floatstring>`, ignoring white space around the number (Template
-    /// Schemas §7.5).
+    /// Schemas §7.6).
     pub fn check_constraints(
         &self,
         value: &openjd_expr::ExprValue,

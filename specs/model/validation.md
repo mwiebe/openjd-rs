@@ -219,7 +219,7 @@ The largest pass. Validates template structure using `EffectiveRules`. Key check
   `AttributeRequirement::may_be_discarded`). Pass 8 also compares a requirement that has a bound
   or an expression field that is certainly present: fully static and not `null`, or of a
   static type, after coercion to the field's target type, with no `nulltype` member
-  (`certainly_present`; `{{Param.F}}` for a FLOAT `F`), and job creation compares the rest after discarding. This follows §7.5 rule 5: an
+  (`certainly_present`; `{{Param.F}}` for a FLOAT `F`), and job creation compares the rest after discarding. This follows §7.6 rule 5: an
   error is reported early exactly when it holds whatever the unknown values resolve to
   (conformance JB-138). Without ENV_PARAMS nothing
   is discarded, so every literal duplicate is reported.
@@ -362,19 +362,19 @@ symbols are added either way (see the first item).
   `Env.*` are not in it. A step-level `let` is itself template scope, so it cannot carry a
   PATH `Param.*` into an entry.
 - **An `environment:` entry's `enableIf`** (§3.2 item 3.2, constraint 9) is an expression
-  field of type `bool` (§7.5), checked by `validate_enable_if` with the expression-field
+  field of type `bool` (§7.6), checked by `validate_enable_if` with the expression-field
   checker (see [template-types.md](template-types.md#expression-fields-75)) against the same
   table, for every well-formed `environment:` entry that has one. A scalar other than a boolean
   gets "the integer scalar 1 does not fit type bool: an
   expression field of type bool takes a boolean scalar or a string holding one expression
-  (Template Schemas §7.5)."; a present `null` gets "must not be null: …" with the same
+  (Template Schemas §7.6)."; a present `null` gets "must not be null: …" with the same
   tail. An expression must parse ("Invalid expression: <error>" with the expression and
   caret; a value containing `{{` adds "An expression field takes an expression without
-  '{{ }}' (Template Schemas §7.5)." after the error message), its names must be in the table,
+  '{{ }}' (Template Schemas §7.6)." after the error message), its names must be in the table,
   and its static type must fit `bool`: "has type T, which does not fit type bool; an
-  expression field converts no type except int to float (Template Schemas §7.5).", or for
-  `nulltype` "has type nulltype, which does not fit type bool (Template Schemas §7.5).". A
-  `bool?` is accepted; its `null` is a job-creation error (§7.5 rule 2). No conversion
+  expression field converts no type except int to float (Template Schemas §7.6).", or for
+  `nulltype` "has type nulltype, which does not fit type bool (Template Schemas §7.6).". A
+  `bool?` is accepted; its `null` is a job-creation error (§7.6 rule 2). No conversion
   applies: a `string` or `int` expression is an error whatever its value.
 - **An Environment's own `enableIf`** (§4 item 6): see
   [Environment enableIf](#environment-enableif-env_params).
@@ -392,13 +392,13 @@ to job creation. The target type is known for a `default` and for an entry that 
 type, since its definitions are not known until the Job is created; so is an entry for a
 `jobEnvironments` entry whose own `enableIf` is not absent or `true`, since a Step's values
 for an Environment disabled for it are not checked against their type (§3.2.2), and for an
-expression `enableIf` whether it is disabled is not known here (§7.5 rule 5), unless the
+expression `enableIf` whether it is disabled is not known here (§7.6 rule 5), unless the
 expression is certainly unresolved for an entry whose own `enableIf` is absent or `true` (see
 [Pass 11](#pass-11-env_params-gating)).
 
 ### Environment enableIf (ENV_PARAMS)
 
-An Environment's own `enableIf` (§4 item 6) is an expression field of type `bool` (§7.5),
+An Environment's own `enableIf` (§4 item 6) is an expression field of type `bool` (§7.6),
 checked by `validate_env_enable_if` with the expression-field checker and the messages of an
 entry's `enableIf` (above), when the document lists ENV_PARAMS (pass 11 reports it
 otherwise). Its table depends on where the Environment is:
@@ -419,7 +419,7 @@ parameters, a PATH `Env.Param.*`, or, for a Job Environment, `Step.Name` or a `l
 its definitions included. It is disabled for every Step (§3.2.2), so constraint 7 and the
 checks of the Steps' values for it (constraint 6, and the target type of a format-string
 value below) do not apply to it; for an Environment whose `enableIf` is an expression they
-are undetermined at template validation and left to job creation (pass 11, below; §7.5 rule
+are undetermined at template validation and left to job creation (pass 11, below; §7.6 rule
 5). For the
 single-layer rule an Environment whose `enableIf` is absent or `true` counts as entered, the
 scalar `false` as not entered, and an expression defers to job creation (see
@@ -709,7 +709,7 @@ Consequences of the target types worth naming:
   error too, so no value of that type is valid. A static `[]` alone is left to the
   empty-list message. The
   specification checks the elements only at job creation; openjd-rs reports the error
-  earlier because it holds for every value, as §7.5 rule 5 allows. An expression that
+  earlier because it holds for every value, as §7.6 rule 5 allows. An expression that
   may also resolve to `null`, such as `list[int]?`, is accepted, since `null` omits the
   field. A list of `bool` is accepted: its string forms are identifiers.
 - The length bound for list-item fields only applies when the resolution
@@ -789,7 +789,7 @@ Validates or rejects features gated behind `WRAP_ACTIONS` (RFC 0008):
   whatever the expressions resolve to. The rule for every set-dependent check made before
   job creation is to fail only when the failure is certain at that stage; with two certainly
   entered wrapping Environments and a third whose `enableIf` is an expression, the template is
-  rejected here, since no Job could be created from it (Template Schemas §7.5 rule 5 and the
+  rejected here, since no Job could be created from it (Template Schemas §7.6 rule 5 and the
   paragraph after §4 item 10; spec `5535230`). Two
   `ON_REQUEST` wrap envs requested by different steps are valid.
 
@@ -908,7 +908,7 @@ pass 6:
   `<Identifier>` of at most `max_identifier_len` characters.
 - Constraint 8: `required: false` is rejected on an entry that names a
   `jobEnvironments` entry.
-- Constraint 9 (`enableIf`, §3.2 item 3.2): an expression field of type `bool` (§7.5), whose
+- Constraint 9 (`enableIf`, §3.2 item 3.2): an expression field of type `bool` (§7.6), whose
   value pass 8 checks. A boolean, number, string, or `null` decodes, except an integer above
   `i64::MAX` that fits `u64`; that and a list or a map are decode errors naming `enableIf`.
   Constraint 1's "only with `environment`" is checked for `enableIf` in pass 6, with
@@ -921,7 +921,7 @@ pass 6:
 - For an entry that names a `jobEnvironments` entry and whose `enableIf` is absent or the
   boolean scalar `true` (a disabled entry's parameters are not checked, §3.2 item 3.2; an
   entry whose `enableIf` is any other expression, even a constant one, may be disabled, so job
-  creation checks it if it resolves to `true`, §7.5 rule 5; plan A28, decided 2026-11-03):
+  creation checks it if it resolves to `true`, §7.6 rule 5; plan A28, decided 2026-11-03):
   constraint 5 (every key names a
   declared parameter; an environment that declares none rejects an entry with any, and a
   `required: false` entry cannot name a Job Environment, constraint 8, so the exception for
@@ -932,7 +932,7 @@ pass 6:
   must be a single `{{ }}` expression (a list type has no string form, so another value cannot
   convert). For an Environment whose `enableIf` is `false` these value checks do not apply
   (§3.2.2), and for one whose `enableIf` is any other expression a violation is not certain
-  here (§7.5 rule 5), so job creation makes them for the Steps it does not disable (plan 4
+  here (§7.6 rule 5), so job creation makes them for the Steps it does not disable (plan 4
   A39). Pass 8 likewise checks a format-string value against the parameter's type only for
   such an Environment, and only for an entry whose `enableIf` is absent or the scalar `true`. An `enableIf` expression is certainly unresolved for a Step
   (`enable_if_certainly_unresolved`) when it reads only the Environment's `Env.Param.*` /
@@ -942,7 +942,7 @@ pass 6:
   `unresolved[T]` for the
   rest is unresolved: job creation evaluates it with the same values, so the Environment is
   not disabled whatever the Job Parameters are, and a failure of its checks is certain here,
-  which §7.5 rule 5 prefers to report at the earliest stage (JB-114's shape; plan 4 A45). A
+  which §7.6 rule 5 prefers to report at the earliest stage (JB-114's shape; plan 4 A45). A
   known result, as of a constant expression, stays unknown here. The
   first undeclared key of an entry lists the declared names (once each, at most 50 names
   and 512 characters, then "and N more"; the first name is always listed, however long);
@@ -957,11 +957,11 @@ pass 6:
   (above; with the values of its entry, if one requests it), is checked: one whose `enableIf`
   is `false` is disabled for every Step and is not held to constraint 7, and one whose
   `enableIf` is any other expression may be disabled, so a violation is not certain and the
-  check is left to job creation (§3.2.2, §7.5 rule 5). One with an `exclusiveGroup` is left
+  check is left to job creation (§3.2.2, §7.6 rule 5). One with an `exclusiveGroup` is left
   to job creation too, since it may be superseded. For a certainly unresolved one the
   Environment's group gets the unresolved note below. Whether
   an entry is enabled is known here only when its `enableIf` is absent or a boolean scalar
-  (§3.2, checked-at paragraph; §7.5 item 1): an entry whose `enableIf` is `false` supplies
+  (§3.2, checked-at paragraph; §7.6 item 1): an entry whose `enableIf` is `false` supplies
   and requests nothing, and declines a `BY_DEFAULT` Environment, which then requires nothing of
   the Step (§3.2 item 3.2); for an `ALWAYS` one it is an error (below), and template
   validation still checks the Environment as entered, so its parameters then all need their
@@ -999,7 +999,7 @@ pass 6:
   dependencies[j] -> enableIf`: "is false, so Step 'S' would decline Environment 'E', whose
   activation is ALWAYS: no Step can leave out an ALWAYS Environment (Template Schemas §3.2
   item 3.2)." An expression `enableIf`, and an entry naming an external Environment, are left
-  to job creation (§7.5 rule 5).
+  to job creation (§7.6 rule 5).
 
 An entry that names no `jobEnvironments` entry names an external Environment, whose
 definitions are unknown until the Job is created, so only the checks above that do not

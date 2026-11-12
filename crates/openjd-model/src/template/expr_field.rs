@@ -2,7 +2,7 @@
 // Copyright by contributors to this project.
 // SPDX-License-Identifier: (Apache-2.0 OR MIT)
 
-//! Expression fields per Template Schemas §7.5 (`@expr <type>`).
+//! Expression fields per Template Schemas §7.6 (`@expr <type>`).
 //!
 //! An expression field holds one Expression Language expression, written
 //! without `{{ }}`, or a boolean, integer, or float scalar used as written.
@@ -18,7 +18,7 @@ use openjd_expr::{
 };
 use serde::{Deserialize, Deserializer};
 
-/// The value of an expression field (Template Schemas §7.5), as written.
+/// The value of an expression field (Template Schemas §7.6), as written.
 ///
 /// A YAML or JSON boolean decodes as [`Bool`](Self::Bool), an integer as
 /// [`Int`](Self::Int), a number with a fraction or exponent as
@@ -46,7 +46,7 @@ pub enum ExprField {
     Float(f64),
     /// A string: the source of one expression, without `{{ }}`.
     Expression(String),
-    /// A present `null`, which template validation rejects (§7.5). An
+    /// A present `null`, which template validation rejects (§7.6). An
     /// absent field is `None` in the `Option` that holds an `ExprField`,
     /// never this.
     Null,
@@ -104,7 +104,7 @@ impl ExprField {
                     let prefix = field.map(|f| format!("{f}: ")).unwrap_or_default();
                     Err(format!(
                         "{prefix}the integer {n} is out of range for an expression field \
-                         (Template Schemas §7.5)"
+                         (Template Schemas §7.6)"
                     ))
                 }
             }
@@ -113,10 +113,10 @@ impl ExprField {
             _ => Err(match field {
                 Some(f) => format!(
                     "{f} must be a boolean, integer, float, or string (an expression field, \
-                     Template Schemas §7.5)"
+                     Template Schemas §7.6)"
                 ),
                 None => "an expression field must be a boolean, integer, float, or string \
-                         (Template Schemas §7.5)"
+                         (Template Schemas §7.6)"
                     .to_string(),
             }),
         }
@@ -132,7 +132,7 @@ impl<'de> Deserialize<'de> for ExprField {
 
 /// `deserialize_with` for an optional `enableIf` (§3.2 item 3.2, §4 item 6):
 /// a present `null` becomes `Some(ExprField::Null)` rather than `None`, so
-/// that template validation reports it at the field's path (§7.5). Pair it
+/// that template validation reports it at the field's path (§7.6). Pair it
 /// with `#[serde(default)]`, which gives `None` when the key is absent. A
 /// value of another kind is a decode error that names `enableIf`.
 pub(crate) fn deserialize_enable_if<'de, D: Deserializer<'de>>(
@@ -148,7 +148,7 @@ pub(crate) fn deserialize_enable_if<'de, D: Deserializer<'de>>(
 /// under, the function library, and the caller's evaluation budgets. The
 /// scope (the symbol table) is passed per call. Paths are always POSIX:
 /// both expression fields today (the two `enableIf`s) are evaluated in
-/// template scope, not a host context (Template Schemas §7.5, the paragraph
+/// template scope, not a host context (Template Schemas §7.6, the paragraph
 /// after its rules; spec 5535230).
 pub(crate) struct ExprFieldEval<'a> {
     pub(crate) profile: &'a ExprProfile,
@@ -161,7 +161,7 @@ impl ExprFieldEval<'_> {
     fn parse(&self, source: &str) -> Result<ParsedExpression, String> {
         ParsedExpression::with_profile(source, self.profile).map_err(|e| {
             let text = e.to_string();
-            // §7.5 rule 1: a value written as a Format String is a parse
+            // §7.6 rule 1: a value written as a Format String is a parse
             // error, and the message should say why.
             let text = if source.contains("{{") {
                 with_format_string_hint(&text, &e.message())
@@ -181,7 +181,7 @@ impl ExprFieldEval<'_> {
             .with_library(self.library)
             // Both expression fields (the two `enableIf`s) are evaluated
             // in template scope, not a host context: POSIX paths always
-            // (Template Schemas §7.5, after its rules; spec 5535230). A
+            // (Template Schemas §7.6, after its rules; spec 5535230). A
             // later expression field in a host context would need a path
             // format here.
             .with_path_format(PathFormat::Posix);
@@ -196,7 +196,7 @@ impl ExprFieldEval<'_> {
 }
 
 /// `text`, a rendered expression error whose first part is `summary`,
-/// with the §7.5 rule 1 hint after the summary. The hint goes before the
+/// with the §7.6 rule 1 hint after the summary. The hint goes before the
 /// expression and caret lines that follow, so the error stays one block of
 /// indented continuation lines. When `text` does not start with `summary`
 /// the hint goes before the first line break.
@@ -213,13 +213,13 @@ fn with_format_string_hint(text: &str, summary: &str) -> String {
     };
     format!(
         "{}{sep}An expression field takes an expression without '{{{{ }}}}' (Template Schemas \
-         §7.5).{}",
+         §7.6).{}",
         &text[..at],
         &text[at..]
     )
 }
 
-/// Why a static type does not fit a target type (§7.5 rule 2).
+/// Why a static type does not fit a target type (§7.6 rule 2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FitError {
     /// The type is `nulltype`, and the target does not admit it.
@@ -237,7 +237,7 @@ fn admits_null(target: &ExprType) -> bool {
 }
 
 /// `t` with every `int` replaced by `float`, inside lists and choices too:
-/// the one conversion §7.5 rule 2 applies.
+/// the one conversion §7.6 rule 2 applies.
 fn widen_int(t: &ExprType) -> ExprType {
     match t.code() {
         TypeCode::Int => ExprType::FLOAT,
@@ -253,7 +253,7 @@ fn fits_widened(t: &ExprType, target: &ExprType) -> bool {
     t.satisfies(target) || widen_int(t).satisfies(target)
 }
 
-/// §7.5 rule 2 at template validation: whether an expression of static
+/// §7.6 rule 2 at template validation: whether an expression of static
 /// type `t` is accepted for a field of type `target`.
 ///
 /// `unresolved[U]` is checked as `U`. Where `target` admits `nulltype`,
@@ -292,7 +292,7 @@ pub(crate) fn check_static_type(t: &ExprType, target: &ExprType) -> Result<(), F
     }
 }
 
-/// Why a value does not fit a target type (§7.5 rule 2), at evaluation.
+/// Why a value does not fit a target type (§7.6 rule 2), at evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ValueFitError {
     /// The value is `null`, and the target does not admit `nulltype`. An
@@ -303,7 +303,7 @@ pub(crate) enum ValueFitError {
     Mismatch(ExprType),
 }
 
-/// §7.5 rule 2 at evaluation: `value` as the field's value, with an `int`
+/// §7.6 rule 2 at evaluation: `value` as the field's value, with an `int`
 /// widened to `float` (element-wise) where only that fits.
 pub(crate) fn check_value(value: ExprValue, target: &ExprType) -> Result<ExprValue, ValueFitError> {
     if matches!(value, ExprValue::Null) && !admits_null(target) {
@@ -355,14 +355,14 @@ fn scalar_value(field: &ExprField, target: &ExprType) -> Option<Result<ExprValue
             Ok(v) => (ExprValue::Float(v), "float", format!("{f:?}")),
             Err(_) => {
                 return Some(Err(format!(
-                    "the float scalar {f:?} is not a finite number (Template Schemas §7.5)."
+                    "the float scalar {f:?} is not a finite number (Template Schemas §7.6)."
                 )))
             }
         },
         ExprField::Null => {
             return Some(Err(format!(
                 "must not be null: an expression field of type {target} takes {} (Template \
-                 Schemas §7.5).",
+                 Schemas §7.6).",
                 accepted_forms(target)
             )))
         }
@@ -371,13 +371,13 @@ fn scalar_value(field: &ExprField, target: &ExprType) -> Option<Result<ExprValue
     Some(check_value(value, target).map_err(|_| {
         format!(
             "the {kind} scalar {text} does not fit type {target}: an expression field of type \
-             {target} takes {} (Template Schemas §7.5).",
+             {target} takes {} (Template Schemas §7.6).",
             accepted_forms(target)
         )
     }))
 }
 
-/// Template validation of an expression field against `target` (§7.5
+/// Template validation of an expression field against `target` (§7.6
 /// rules 1, 2, and 4), with `symtab` the field's scope at template
 /// validation. Returns the message to report at the field's path.
 ///
@@ -401,16 +401,16 @@ pub(crate) fn validate(
         .map_err(|e| format!("Invalid expression: {e}"))?;
     check_static_type(&value.expr_type(), target).map_err(|e| match e {
         FitError::NullType => {
-            format!("has type nulltype, which does not fit type {target} (Template Schemas §7.5).")
+            format!("has type nulltype, which does not fit type {target} (Template Schemas §7.6).")
         }
         FitError::Mismatch(t) => format!(
             "has type {t}, which does not fit type {target}; an expression field converts no \
-             type except int to float (Template Schemas §7.5)."
+             type except int to float (Template Schemas §7.6)."
         ),
     })
 }
 
-/// Evaluate an expression field against `target` (§7.5), with `symtab`
+/// Evaluate an expression field against `target` (§7.6), with `symtab`
 /// the field's scope at its stage. Returns the value, an `int` widened
 /// where `target` wants a `float`, or the message to report at the
 /// field's path: a failed evaluation, a `null` result, or a result that
@@ -437,11 +437,11 @@ pub(crate) fn resolve(
 fn fit_result(value: ExprValue, target: &ExprType) -> Result<ExprValue, String> {
     check_value(value, target).map_err(|e| match e {
         ValueFitError::Null => {
-            format!("resolved to null, which does not fit type {target} (Template Schemas §7.5).")
+            format!("resolved to null, which does not fit type {target} (Template Schemas §7.6).")
         }
         ValueFitError::Mismatch(t) => format!(
             "resolved to a value of type {t}, which does not fit type {target} (Template \
-             Schemas §7.5)."
+             Schemas §7.6)."
         ),
     })
 }
@@ -643,7 +643,7 @@ mod tests {
                 Err(
                     "the integer scalar 1 does not fit type bool: an expression field of type \
                      bool takes a boolean scalar or a string holding one expression (Template \
-                     Schemas §7.5)."
+                     Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -652,7 +652,7 @@ mod tests {
                 Err(
                     "the float scalar 3.0 does not fit type bool: an expression field of type \
                      bool takes a boolean scalar or a string holding one expression (Template \
-                     Schemas §7.5)."
+                     Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -661,7 +661,7 @@ mod tests {
                 Err(
                     "the float scalar 1.5 does not fit type int: an expression field of type \
                      int takes an integer scalar or a string holding one expression (Template \
-                     Schemas §7.5)."
+                     Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -670,7 +670,7 @@ mod tests {
                 Err(
                     "must not be null: an expression field of type float | int takes an \
                      integer or float scalar or a string holding one expression (Template \
-                     Schemas §7.5)."
+                     Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -679,7 +679,7 @@ mod tests {
                 Err(
                     "the boolean scalar true does not fit type string: an expression field \
                      of type string takes a string holding one expression (Template Schemas \
-                     §7.5)."
+                     §7.6)."
                         .to_string()
                 )
             );
@@ -716,14 +716,14 @@ mod tests {
                 validate(&expr("Param.Mode"), &ExprType::BOOL, &st, ev),
                 Err(
                     "has type string, which does not fit type bool; an expression field \
-                     converts no type except int to float (Template Schemas §7.5)."
+                     converts no type except int to float (Template Schemas §7.6)."
                         .to_string()
                 )
             );
             assert_eq!(
                 validate(&expr("None"), &ExprType::BOOL, &st, ev),
                 Err(
-                    "has type nulltype, which does not fit type bool (Template Schemas §7.5)."
+                    "has type nulltype, which does not fit type bool (Template Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -731,7 +731,7 @@ mod tests {
                 validate(&expr("{{ true }}"), &ExprType::BOOL, &st, ev),
                 Err(
                     "Invalid expression: Set literals are not supported. An expression field \
-                     takes an expression without '{{ }}' (Template Schemas §7.5).\n  {{ true }}\n  \
+                     takes an expression without '{{ }}' (Template Schemas §7.6).\n  {{ true }}\n  \
                      ^~~~~~~~~~"
                         .to_string()
                 )
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn format_string_hint_placement() {
         let hint = "An expression field takes an expression without '{{ }}' (Template Schemas \
-                    §7.5).";
+                    §7.6).";
         // After the summary, before the expression and caret lines.
         assert_eq!(
             with_format_string_hint("Bad thing\n  {{x}}\n  ^", "Bad thing"),
@@ -842,7 +842,7 @@ mod tests {
                     ev
                 ),
                 Err(
-                    "the float scalar NaN is not a finite number (Template Schemas §7.5)."
+                    "the float scalar NaN is not a finite number (Template Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -879,7 +879,7 @@ mod tests {
                     ev
                 ),
                 Err(
-                    "resolved to null, which does not fit type bool (Template Schemas §7.5)."
+                    "resolved to null, which does not fit type bool (Template Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -887,7 +887,7 @@ mod tests {
                 resolve(&expr("Param.Mode"), &ExprType::BOOL, &st, ev),
                 Err(
                     "resolved to a value of type string, which does not fit type bool \
-                     (Template Schemas §7.5)."
+                     (Template Schemas §7.6)."
                         .to_string()
                 )
             );
@@ -915,12 +915,12 @@ mod tests {
         assert_eq!(
             d("[true]").expect_err("list").to_string(),
             "an expression field must be a boolean, integer, float, or string (Template Schemas \
-             §7.5)"
+             §7.6)"
         );
         assert_eq!(
             d("18446744073709551615").expect_err("u64").to_string(),
             "the integer 18446744073709551615 is out of range for an expression field (Template \
-             Schemas §7.5)"
+             Schemas §7.6)"
         );
         // Beyond u64 (or below i64), JSON number parsing gives a float.
         assert_eq!(
@@ -938,7 +938,7 @@ mod tests {
             e("{}"),
             Err(
                 "enableIf must be a boolean, integer, float, or string (an expression field, \
-                 Template Schemas §7.5)"
+                 Template Schemas §7.6)"
                     .to_string()
             )
         );
@@ -946,7 +946,7 @@ mod tests {
             e("18446744073709551615"),
             Err(
                 "enableIf: the integer 18446744073709551615 is out of range for an expression \
-                 field (Template Schemas §7.5)"
+                 field (Template Schemas §7.6)"
                     .to_string()
             )
         );

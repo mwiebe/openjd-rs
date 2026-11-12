@@ -1768,7 +1768,7 @@ fn certainly_entered_per_step(
 ///   `ON_REQUEST` one, and is an error for an `ALWAYS` one, naming the
 ///   Step and the Environment (§3.2 item 3.2); an ambiguous name is an error
 ///   either way. One whose `enableIf` is an expression (an expression
-///   field, §7.5, so even a constant one such as `"true"`) is checked only
+///   field, §7.6, so even a constant one such as `"true"`) is checked only
 ///   when the Job is created, and so is every attachment it may name, for
 ///   its Step;
 /// - for an entry that resolves, constraint 5 (keys); and, when the
@@ -1790,7 +1790,7 @@ fn certainly_entered_per_step(
 ///   its values nor constraint 7 apply (Template Schemas §3.2.2); any other
 ///   one whose `enableIf` is
 ///   an expression is undetermined, so a violation is not certain here
-///   (§7.5 rule 5) and job creation makes those checks. Nor do they apply
+///   (§7.6 rule 5) and job creation makes those checks. Nor do they apply
 ///   to an attachment an earlier one of its `exclusiveGroup` supersedes or
 ///   may supersede (§4 item 7, and the bullets after item 10): an
 ///   attachment's state for the Step goes through the group rule, and only
@@ -1971,7 +1971,7 @@ pub fn check_environment_templates(
                 // for this Step (§3.2, checked-at paragraph). Its name is
                 // resolved either way (§3.2.1), so a name that two
                 // attachments define is an error whatever the `enableIf`
-                // resolves to, and is reported now (§7.5 rule 5).
+                // resolves to, and is reported now (§7.6 rule 5).
                 None => {
                     if let Some(candidates) = set.by_name.get(name) {
                         if candidates.len() > 1 {
@@ -2083,7 +2083,7 @@ pub fn check_environment_templates(
         // for one known not to be: its own `enableIf` is absent or `true`,
         // or is certainly unresolved with the Step's values (one whose
         // `enableIf` is `false` is disabled, and any other expression is
-        // undetermined, §7.5 rule 5), and no earlier attachment of its
+        // undetermined, §7.6 rule 5), and no earlier attachment of its
         // `exclusiveGroup` may supersede it (§4 item 7, and the paragraph
         // after item 10). The Job Template's own Environments come after
         // the attachments in the Job's Environment order, so they supersede
@@ -2248,7 +2248,7 @@ pub fn check_environment_templates(
     // An unreachable attachment's parameters are needed only where it is
     // not disabled, which is known here only for an `enableIf` that is
     // absent or `true`, or certainly unresolved with no values supplied
-    // (§3.2.2, §7.5 rule 5), and where no earlier Environment of its
+    // (§3.2.2, §7.6 rule 5), and where no earlier Environment of its
     // `exclusiveGroup` may supersede it (§4 item 7): that is, where some
     // Step is known to enter it. Reported after the Steps' values, as job
     // creation reports it.

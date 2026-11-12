@@ -380,7 +380,7 @@ fn a_null_enable_if_is_an_error() {
         &src,
         &[],
         "JobTemplate",
-        &["steps[0] -> dependencies[0] -> enableIf:\n\tresolved to null, which does not fit type bool (Template Schemas §7.5)."],
+        &["steps[0] -> dependencies[0] -> enableIf:\n\tresolved to null, which does not fit type bool (Template Schemas §7.6)."],
     );
     create_ok(&src, &[], &[("Mode", "off")]);
 }
@@ -419,7 +419,7 @@ fn an_enable_if_that_resolves_to_another_type_is_an_error() {
     assert_errors(
         &err,
         "JobTemplate",
-        &["steps[0] -> dependencies[0] -> enableIf:\n\tresolved to a value of type int, which does not fit type bool (Template Schemas §7.5)."],
+        &["steps[0] -> dependencies[0] -> enableIf:\n\tresolved to a value of type int, which does not fit type bool (Template Schemas §7.6)."],
     );
 }
 
@@ -452,7 +452,7 @@ fn constraint_7_is_checked_at_job_creation_for_an_expression_enable_if() {
 
 #[test]
 fn a_constant_expression_enable_if_defers_constraint_7_to_job_creation() {
-    // §3.2 checked-at paragraph and §7.5 item 1: only an absent enableIf or
+    // §3.2 checked-at paragraph and §7.6 item 1: only an absent enableIf or
     // a boolean scalar is known at template validation. "true" is the
     // expression `true`, so template validation accepts the missing value
     // and job creation, which evaluates it, rejects it; "false" disables
@@ -492,7 +492,7 @@ steps:
 fn enable_if_is_evaluated_with_posix_paths() {
     // An `enableIf` is a TEMPLATE-scope expression field, not host
     // context: path operations use POSIX paths, so `.name` never splits on
-    // `\` (§7.5), as for an entry's parameter values (Expression Language
+    // `\` (§7.6), as for an entry's parameter values (Expression Language
     // §1.2.1).
     let jt = job_ok(&ENABLE_IF_CONTEXT.replace("ENABLE", r#""path(Param.P).name == 'b.txt'""#));
     let job = create_job(&jt, &job_params(&jt, &[]), &template_ctx(&jt)).unwrap();

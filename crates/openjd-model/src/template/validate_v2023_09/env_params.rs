@@ -46,14 +46,14 @@
 //!   name a `jobEnvironments` entry of the same Job Template, unless their
 //!   `enableIf` is `false`; and constraint 7 over each Step's Environment
 //!   set, for entries whose `enableIf` is absent or a boolean scalar (the
-//!   checked-at paragraph; §7.5 item 1), where a `false` one declines a
+//!   checked-at paragraph; §7.6 item 1), where a `false` one declines a
 //!   `BY_DEFAULT` Environment (§3.2 item 3.2). Constraints 6 and 7 are checked
 //!   only for an Environment with `activation: ALWAYS`, which cannot be
 //!   disabled (§3.2.2 item 6), or whose own `enableIf` is absent or `true`, or
 //!   certainly unresolved for the Step ([`enable_if_certainly_unresolved`]): they
 //!   do not apply to a Step for which it is disabled (§3.2.2), so for one
 //!   whose `enableIf` is `false` they never apply, and for one whose
-//!   `enableIf` is an expression a violation is not certain here (§7.5
+//!   `enableIf` is an expression a violation is not certain here (§7.6
 //!   rule 5).
 //!
 //! §3.2 constraint 1 (exactly one of `dependsOn`, `step`, and
@@ -106,7 +106,7 @@ struct JobEnvIndex<'a> {
     /// absent or `true`. Constraints 6 and 7 do not apply to a Step for which it is
     /// disabled (§3.2.2), so for any other Environment (a literal `false`,
     /// disabled; an expression, undetermined) they are not checked here
-    /// (§7.5 rule 5): a violation need not hold whatever the `enableIf`
+    /// (§7.6 rule 5): a violation need not hold whatever the `enableIf`
     /// resolves to, since `false` would remove it. The exception is an
     /// `enableIf` that is certainly unresolved for the Step
     /// ([`enable_if_certainly_unresolved`]), which is checked per entry.
@@ -491,7 +491,7 @@ fn check_environment(
 ) {
     // §4 item 6: `enableIf` needs ENV_PARAMS in the document,
     // on every position (a `stepEnvironments` entry included). Its value,
-    // an expression field of type `bool` (§7.5), is checked against its
+    // an expression field of type `bool` (§7.6), is checked against its
     // scope in pass 8.
     if env.enable_if.is_some() && !active {
         errors.add(
@@ -518,7 +518,7 @@ fn check_environment(
             && env.literal_enabled() == Some(false)
         {
             // §4 item 4 and §3.2.2 item 6: an `ALWAYS` Environment cannot
-            // be disabled, and a literal `false` is known here (§7.5
+            // be disabled, and a literal `false` is known here (§7.6
             // rule 5). An expression is decided at job creation.
             errors.add(
                 &path_field(env_path, "enableIf"),
@@ -690,7 +690,7 @@ fn check_definition(
 /// Constraints 5 and 6 apply only to an entry whose `enableIf` is absent or
 /// `true`: a disabled entry's parameters are not checked (§3.2 item 3.2), and
 /// one whose `enableIf` is an expression may be disabled, so job creation
-/// checks it (§7.5 rule 5). Constraint 6 is also skipped for a Job
+/// checks it (§7.6 rule 5). Constraint 6 is also skipped for a Job
 /// Environment whose own `enableIf` is not absent or `true` (§3.2.2).
 #[allow(clippy::too_many_arguments)]
 fn check_environment_entry<'a>(
@@ -725,7 +725,7 @@ fn check_environment_entry<'a>(
     }
     // §3.2 item 3.2: a disabled entry for an `ALWAYS` Environment is an
     // error, known here for a literal `false` on an entry naming a Job
-    // Environment (§7.5 rule 5); job creation reports the others.
+    // Environment (§7.6 rule 5); job creation reports the others.
     if dep.literal_enabled() == Some(false)
         && job_env.is_some_and(|e| e.activation == EnvironmentActivation::Always)
     {
@@ -766,7 +766,7 @@ fn check_environment_entry<'a>(
     // A disabled entry's parameters are not checked (§3.2 item 3.2):
     // constraints 5 and 6 apply only to an enabled entry. One whose
     // `enableIf` is an expression may be disabled, so they are checked for
-    // it only when the Job is created (§7.5 rule 5). Constraints 2–4 and 8,
+    // it only when the Job is created (§7.6 rule 5). Constraints 2–4 and 8,
     // above, apply to entries as written.
     let job_env = job_env.filter(|_| dep.literal_enabled() == Some(true));
     // Constraint 6 applies to the values of an Environment that is not
@@ -840,7 +840,7 @@ fn check_environment_entry<'a>(
         // Environment that is certainly not disabled: a Step's values for
         // an Environment disabled for it are not checked against their
         // types and constraints (§3.2.2), so for any other Environment a
-        // violation is not certain here (§7.5 rule 5).
+        // violation is not certain here (§7.6 rule 5).
         if !values_checked {
             continue;
         }
@@ -863,7 +863,7 @@ fn check_environment_entry<'a>(
 /// ON_REQUEST` that the Step requests with an enabled `environment:` entry.
 ///
 /// Whether an entry is enabled is known here only when its `enableIf` is
-/// absent or a boolean scalar (§3.2, checked-at paragraph; §7.5 item 1).
+/// absent or a boolean scalar (§3.2, checked-at paragraph; §7.6 item 1).
 /// An entry whose `enableIf` is an expression, even a constant one such as
 /// `"true"`, defers the check for its Environment to job creation. An
 /// `enableIf: false` entry supplies nothing: it declines a `BY_DEFAULT`
@@ -882,7 +882,7 @@ fn check_environment_entry<'a>(
 /// checked here, the latter with the unresolved note. Any other one whose
 /// `enableIf` is `false` is disabled for every Step; one whose `enableIf` is any other
 /// expression is undetermined, and disabled it requires nothing, so a
-/// violation need not hold whatever it resolves to (§7.5 rule 5) and the
+/// violation need not hold whatever it resolves to (§7.6 rule 5) and the
 /// check is left to job creation.
 ///
 /// Linear: a Step costs O(its entries), plus O(50) to list the missing
@@ -1097,7 +1097,7 @@ fn check_required_parameters_supplied(
 
 /// Whether `env`'s own `enableIf` (§4 item 6) is certainly unresolved for
 /// a Step that supplies `supplied` (its enabled `environment:` entry's
-/// `parameters`, if any), before job creation (§3.2.2, §7.5 rule 5).
+/// `parameters`, if any), before job creation (§3.2.2, §7.6 rule 5).
 ///
 /// That holds when the expression reads only `Env.Param.*` and
 /// `Env.RawParam.*` of the Environment, every value it reads is a literal
@@ -1108,7 +1108,7 @@ fn check_required_parameters_supplied(
 /// Parameters are, the Environment is not disabled for the Step, and a
 /// check that applies only to an Environment that is not disabled fails at
 /// job creation if it fails here. A known result (`true` or `false`), as of
-/// a constant expression, stays unknown before job creation (§7.5 rule 5),
+/// a constant expression, stays unknown before job creation (§7.6 rule 5),
 /// so this returns `false` for it, and for anything else that cannot be
 /// decided here (a format-string value or `default`, another symbol, a
 /// parse or evaluation error).
