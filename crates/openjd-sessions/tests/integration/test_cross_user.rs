@@ -503,9 +503,10 @@ async fn test_cross_user_failed_helper_subprocess_makes_session_ending_only() {
         script: None,
         variables: None,
         resolved_symtab: None,
+        enabled: true,
     };
     let id = session
-        .enter_environment(&env, None, None, None)
+        .enter_environment(&env, None, None, None, &Default::default())
         .await
         .unwrap();
 
@@ -525,7 +526,7 @@ async fn test_cross_user_failed_helper_subprocess_makes_session_ending_only() {
     assert_eq!(session.state(), SessionState::ReadyEnding);
 
     session
-        .exit_environment(&id, None, true, None)
+        .exit_environment(&id, None, true, None, &Default::default())
         .await
         .unwrap();
     assert_eq!(session.state(), SessionState::ReadyEnding);
