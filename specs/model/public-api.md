@@ -860,8 +860,8 @@ impl JobParameterDefinition {
     pub fn allowed_values_f64(&self) -> Option<Vec<f64>>;
     pub fn allowed_values_strings(&self) -> Option<Vec<String>>;
 
-    /// Validate an already-coerced ExprValue against this definition's
-    /// constraints. `preprocess_job_parameters` and `create_job` do not call
+    /// Validate an ExprValue against this definition's constraints.
+    /// `preprocess_job_parameters` and `create_job` do not call
     /// it: they check the merged definition
     /// (`MergedParameterDefinition::check_constraints`). Used directly for
     /// Environment parameter values, with `AsWrittenAndCanonical`.

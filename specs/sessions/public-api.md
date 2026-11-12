@@ -1135,6 +1135,7 @@ pub enum SessionError {
     /// permanent (a tokio token can't be reset), so the session can't be
     /// returned to Ready; only `exit_environment` and `cleanup` remain.
     SessionCanceled,
+
     /// ENV_PARAMS: `enter_environment_with_parameters` was given values
     /// for another Environment, or a table that is not one entry per
     /// bare parameter name in transport form. Raised before any state is

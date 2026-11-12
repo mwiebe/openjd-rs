@@ -272,7 +272,7 @@ where `resolved_symtab`, `identifier` and `os_env_vars` are all optional:
 7. Processes `ActionMessage` values via `drive_action()` — env var changes from
    `openjd_env`/`openjd_unset_env` are applied to the environment's change set
 8. On success: state → `Ready` (or `ReadyEnding` if `ending_only`)
-9. On failure: `ending_only` is set and state → `ReadyEnding`
+9. On `onEnter` failure: `ending_only` is set and state → `ReadyEnding`
 
 ### Which Environments a Session enters (ENV_PARAMS)
 

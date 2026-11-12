@@ -55,6 +55,7 @@ pub enum SessionError {
 
     #[error("The session was canceled through its session-wide cancel token and cannot be continued.")]
     SessionCanceled,
+
     #[error("Environment '{environment}': invalid Environment parameter values: {reason}")]
     InvalidEnvironmentParameters { environment: String, reason: String },
 }
@@ -155,6 +156,7 @@ ending-only again. Rather than return the session to `Ready` under a cancellatio
 can't undo, `clear_ending_only()` refuses and leaves the session `ReadyEnding`; only
 `exit_environment()` and `cleanup()` remain. Per-action cancels (`cancel_action()` and
 `SessionCancelHandle`) don't raise this — they install a fresh token per action.
+
 ### InvalidEnvironmentParameters
 
 Returned by `enter_environment_with_parameters` (ENV_PARAMS) when its values name

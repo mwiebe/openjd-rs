@@ -1691,7 +1691,10 @@ fn numeric_param_check_constraints_ignores_white_space_around_the_number() {
     let jt = decode_job_template(v, None, &CallerLimits::default()).unwrap();
     let params = jt.parameter_definitions.as_ref().unwrap();
     let check = |i: usize, s: &str| {
-        params[i].check_constraints(&openjd_expr::ExprValue::String(s.to_string()))
+        params[i].check_constraints(
+            &openjd_expr::ExprValue::String(s.to_string()),
+            RangeExprLengthCheck::AsWritten,
+        )
     };
     for value in [" 7 ", "\t7\n", "\u{a0}7\u{3000}"] {
         check(0, value).unwrap_or_else(|e| panic!("{value:?}: {e}"));

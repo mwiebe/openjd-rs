@@ -570,7 +570,7 @@ async fn neither_a_task_nor_another_environment_sees_an_environments_values() {
         format_error(err),
         "argument: Undefined variable: 'Env.Param.Tag'.\n  Env.Param.Tag\n  ~~~~~~~~~~^~~"
     );
-    session.set_state_for_test(SessionState::Ready);
+    session.clear_ending_only().unwrap();
 
     let b = env("B", on_enter(echo("{{Env.RawParam.Tag}}")));
     let err = session
@@ -951,7 +951,7 @@ async fn the_task_and_exit_wrap_hooks_do_not_see_the_wrapped_environments_values
         format_error(err),
         "argument: Undefined variable: 'Env.Param.Tag'.\n  Env.Param.Tag\n  ~~~~~~~~~~^~~"
     );
-    session.set_state_for_test(SessionState::Ready);
+    session.clear_ending_only().unwrap();
 
     let err = session
         .exit_environment(&inner_id, None, true, None)
