@@ -444,7 +444,9 @@ requests) and each of its own Step Environments; an `ON_REQUEST` one it does
 not request is not listed. They are listed in the Job's Environment order
 (`StepEnvironmentStatus::scope` `Attached`, then `Job`, then `Step`), each
 with one [`EnvironmentStatus`]: `Declined` for a `BY_DEFAULT` one a disabled
-entry declines (step 4; its `enableIf` is not evaluated), `Superseded` for
+entry declines (step 4; its `enableIf` is not evaluated; never an attached
+Environment whose Environment Template does not list ENV_PARAMS, which
+behaves as `ALWAYS` and is always `Entered`), `Superseded` for
 one an earlier member of its `exclusiveGroup` that remains in the set
 supersedes (step 6; its `enableIf` is not evaluated, so a `false` one is
 still `Superseded`), `Disabled` for one its own `enableIf` turns off (step
@@ -469,7 +471,8 @@ entries that resolved to no Environment (each also a warning); a disabled
 entry that names nothing has no effect and is not listed. For a Job
 Template without ENV_PARAMS every one of its own Environments is
 `Entered`; an attached Environment Template that lists ENV_PARAMS can
-still be `Disabled` or `Superseded`. [`create_job`] returns only the Job;
+still be `Disabled` or `Superseded`, and one that does not is always
+`Entered`. [`create_job`] returns only the Job;
 a caller that wants the statuses calls
 [`create_job_with_environment_templates`] with no attachments, which is
 what `create_job` does. `CreatedJob` has public fields and is not `#[non_exhaustive]`, so
@@ -620,7 +623,11 @@ permitted on every position), and an `exclusive_group: Option<String>` field
 
 ```rust
 impl template::Environment {
-    /// `activation` with its default (`EnvironmentActivation::ByDefault`) applied.
+    /// `activation` with its default (`EnvironmentActivation::ByDefault`)
+    /// applied, as it applies in a document that lists ENV_PARAMS. An
+    /// Environment from a document that does not list it behaves as
+    /// `ALWAYS`, with no effect from a disabled entry; this method does not
+    /// know the document, and job creation applies the rule to attachments.
     #[must_use] pub fn activation(&self) -> EnvironmentActivation;
     /// `Some(true)` when `enableIf` is absent or the boolean scalar `true`,
     /// `Some(false)` for the scalar `false`, `None` otherwise (an
@@ -638,7 +645,8 @@ pub enum EnvironmentActivation {
                 // Environment from a document without ENV_PARAMS behaves
                 // as ALWAYS, but a disabled entry has no effect on it
     #[default]
-    ByDefault,  // BY_DEFAULT: every Session enters it, except a Step's that
+    ByDefault,  // BY_DEFAULT, the default in a document that lists
+                // ENV_PARAMS: every Session enters it, except a Step's that
                 // declines it with a disabled entry, for which its
                 // enableIf is false, or for which an earlier one of its
                 // exclusiveGroup supersedes it
