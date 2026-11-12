@@ -4213,6 +4213,8 @@ mod cleanup_failure_log_tests {
             debug_collect_stdout: false,
             echo_openjd_directives: true,
             sticky_bit_policy: crate::tempdir::StickyBitPolicy::Disabled,
+            control_flow: false,
+            output_callback: None,
         })
         .unwrap();
         let wd = session.working_directory().to_path_buf();
