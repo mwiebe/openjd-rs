@@ -309,7 +309,9 @@ name, symbol table, and, for a job or template environment, its index in the
 combined Job's `job_environments` and the Environment parameter values it was
 entered with. A failed enter action marks the session
 failed but still records the environment (the session keeps a failed-enter environment on its stack),
-prints the failing action's `Process exited with code: N` line, and skips
+prints the failing action's `Process exited with code: N` line when it has an
+exit code (a failure before the action starts, such as a symbol table that can't
+be built, has none), and skips
 entering further environments and running tasks. Step environments are
 unwound to the pre-step baseline at the end of each step (or after a step-env
 enter failure); before the next step, job and template environments are unwound
@@ -317,7 +319,9 @@ to the prefix that step keeps; final cleanup then exits every remaining recorded
 environment in LIFO order. This is the OpenJD cleanup guarantee (extended to wrapped
 exits by RFC 0008 "Lifecycle and cleanup guarantees"): every environment
 entered or attempted has its `onExit` (or substituted `onWrapEnvExit`) run
-before the session ends. An environment rejected before entry is not recorded
+before the session ends, unless the exit call itself fails before its action
+starts (for example when the exit's symbol table can't be built), which the
+session counts as the exit. An environment rejected before entry is not recorded
 and not exited.
 
 ## Environment Templates and Environment Parameters (ENV_PARAMS)
