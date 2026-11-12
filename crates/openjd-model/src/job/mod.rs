@@ -165,9 +165,11 @@ pub struct Step {
     pub environment_parameters: Option<Vec<EnvironmentParameterValues>>,
     /// The Job Environments this Step's Sessions enter (`ENV_PARAMS`,
     /// Template Schemas §4 item 4, §3.2.2), in the order of
-    /// [`Job::job_environments`]: every one with `activation: ALWAYS`, every
-    /// one with `activation: BY_DEFAULT` that the Step does not decline with a
-    /// disabled `environment:` entry (§3.2 item 3.2), and every one with
+    /// [`Job::job_environments`]: every one with `activation: ALWAYS` or from
+    /// an Environment Template that does not list `ENV_PARAMS`, which behaves
+    /// as `ALWAYS` and on which a disabled entry has no effect (§4 item 4),
+    /// every one with `activation: BY_DEFAULT` that the Step does not decline
+    /// with a disabled `environment:` entry (§3.2 item 3.2), and every one with
     /// `activation: ON_REQUEST` that an enabled entry of the Step requests,
     /// less any whose own
     /// `enableIf` (§4 item 6) is `false` for the Step (for an `ALWAYS` one,

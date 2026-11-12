@@ -1144,7 +1144,9 @@ pub struct job::Step {
     /// ENV_PARAMS: the Job Environments the Step's Sessions enter, in
     /// `Job::job_environments` order, by `activation`, the Step's entries
     /// (an enabled one requests an `ON_REQUEST` Environment, a disabled one
-    /// declines a `BY_DEFAULT` one), each Environment's own `enableIf`, and
+    /// declines a `BY_DEFAULT` one and has no effect on one from an
+    /// Environment Template that does not list ENV_PARAMS), each
+    /// Environment's own `enableIf`, and
     /// each `exclusiveGroup` (§4 item 7); `None` means every one, and a
     /// created Job never holds `Some` of the full list. Serde: default,
     /// skipped when `None`.

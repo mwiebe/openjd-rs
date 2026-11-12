@@ -397,8 +397,10 @@ pub struct StepDependency {
     /// created. Absent means enabled. A disabled entry supplies nothing,
     /// and its effect depends on the `activation` of the Environment it
     /// names: it requests no `ON_REQUEST` Environment, declines a
-    /// `BY_DEFAULT` one, so the Step's Sessions do not enter it, and is an
-    /// error for an `ALWAYS` one. A present `null` decodes as
+    /// `BY_DEFAULT` one, so the Step's Sessions do not enter it, is an
+    /// error for an `ALWAYS` one, and has no effect on an Environment from
+    /// a document that does not list `ENV_PARAMS`, which behaves as
+    /// `ALWAYS` (§4 item 4). A present `null` decodes as
     /// [`ExprField::Null`], which template validation rejects.
     #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
     pub enable_if: Option<ExprField>,
