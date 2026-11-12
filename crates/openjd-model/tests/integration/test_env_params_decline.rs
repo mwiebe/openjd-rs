@@ -1100,11 +1100,16 @@ fn an_enabled_entry_for_an_environment_from_a_document_without_env_params_keeps_
         ]
     );
     let src = pre_extension_entry("true", MODE_ON, "{Packages: colmap}");
-    let err = create(&src, &[PRE_EXTENSION_CONDA], &[("Mode", "on")]).unwrap_err();
-    assert!(
-        err.to_string()
-            .contains("declares no parameters, so this entry must not supply"),
-        "{err}"
+    create_err(
+        &src,
+        &[PRE_EXTENSION_CONDA],
+        &[("Mode", "on")],
+        "Submission",
+        &[
+            "JobTemplate -> steps[0] -> dependencies[0] -> parameters:\n\tEnvironment 'Conda' \
+           (EnvironmentTemplate[0]) declares no parameters, so this entry must not supply any; \
+           it supplies Packages.",
+        ],
     );
     let src = pre_extension_entry("true", MODE_ON, "");
     let created = create_ok(&src, &[PRE_EXTENSION_CONDA], &[("Mode", "on")]);

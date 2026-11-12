@@ -253,7 +253,8 @@ CLI and the entire adaptive adjustment block is skipped. The iterator uses its
 Environments are entered and exited in a strict order:
 
 For each step, the `env_templates` and `job_envs` are only those the step enters (every one
-with `activation: ALWAYS`, every `BY_DEFAULT` one the step does not decline with a disabled
+with `activation: ALWAYS` or from an Environment Template that does not list ENV_PARAMS,
+which a disabled entry cannot decline, every `BY_DEFAULT` one the step does not decline with a disabled
 `environment:` entry, and each `ON_REQUEST` one the step requests,
 less any whose own `enableIf` is `false` for it and any its `exclusiveGroup` supersedes; see [One Session, re-entering
 Environments between Steps](#one-session-re-entering-environments-between-steps)):
@@ -345,7 +346,9 @@ leaves `Env.RawParam.<name>` as given. Its submission stage:
   is `false` supplies nothing; its name is resolved too, and one that matches nothing has no
   effect, whatever `required` says;
 - fixes each Step's Environment set (`job::Step::environments`): every Environment with
-  `activation: ALWAYS`, every `BY_DEFAULT` one that no disabled entry of the Step declines
+  `activation: ALWAYS` or from an Environment Template that does not list ENV_PARAMS (on
+  which a disabled entry has no effect, Template Schemas §4 item 4), every `BY_DEFAULT` one
+  that no disabled entry of the Step declines
   (Template Schemas §3.2 item 3.2), and each `ON_REQUEST` one an enabled entry of the
   Step requests, less any whose own `enableIf` (Template Schemas §4 item 6) is `false` for
   the Step (for an `ALWAYS` one, that is an error naming the Step and the Environment, as is a
@@ -389,8 +392,9 @@ order), in one Session, as it did before `ENV_PARAMS`, and moves the Session bet
 that way.
 
 Before each Step, `job_environment_targets` lists the combined job environments the Step
-enters (`job::Step::enters_environment`: every one with `activation: ALWAYS`, each
-`BY_DEFAULT` one it does not decline, each
+enters (`job::Step::enters_environment`: every one with `activation: ALWAYS` or from an
+Environment Template that does not list ENV_PARAMS, each `BY_DEFAULT` one it does not
+decline, each
 `ON_REQUEST` one it requests, less any whose own `enableIf` is `false` for it or that its
 `exclusiveGroup` supersedes), in Job order,
 each with the Step's values for it. `RunContext::move_to_job_environments` keeps the longest

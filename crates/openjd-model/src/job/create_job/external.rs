@@ -448,7 +448,7 @@ impl<'a> Attachments<'a> {
         // How the messages below say the attachment is entered. An
         // `ALWAYS` one cannot be disabled (§3.2.2 item 6), whatever its
         // `enableIf`.
-        let entered = |env: &crate::template::Environment, activation| match activation {
+        let entered = |env: &crate::template::Environment| match env.activation() {
             EnvironmentActivation::ByDefault if env.enable_if.is_some() => ENTERED_ENABLE_IF,
             // With a group, an earlier Environment of it may supersede this
             // one for some Steps (§4 item 7).
@@ -472,11 +472,6 @@ impl<'a> Attachments<'a> {
                 .template
                 .profile()
                 .has_extension(ModelExtension::EnvParams);
-            let activation = if pre_extension {
-                EnvironmentActivation::Always
-            } else {
-                env.activation()
-            };
             let att_ctx = att
                 .template
                 .default_validation_context()
@@ -491,7 +486,7 @@ impl<'a> Attachments<'a> {
                 // With `activation: ON_REQUEST` no Session enters it,
                 // since no entry can request it.
                 let required = required_names(env);
-                if !required.is_empty() && activation != EnvironmentActivation::OnRequest {
+                if !required.is_empty() && env.activation() != EnvironmentActivation::OnRequest {
                     unreachable_required.push((
                         doc,
                         path_field(&env_path, "envParameterDefinitions"),
@@ -503,7 +498,7 @@ impl<'a> Attachments<'a> {
                              rejected (§3.2.1).",
                             env.name,
                             capped_name_list(required.iter().copied(), required.len()),
-                            entered(env, activation)
+                            entered(env)
                         ),
                     ));
                 }
@@ -546,8 +541,7 @@ impl<'a> Attachments<'a> {
             };
             unreachable.insert(doc);
             let required = required_names(env);
-            let activation = declaring[doc].activation;
-            if required.is_empty() || activation == EnvironmentActivation::OnRequest {
+            if required.is_empty() || env.activation() == EnvironmentActivation::OnRequest {
                 continue;
             }
             unreachable_required.push((
@@ -565,7 +559,7 @@ impl<'a> Attachments<'a> {
                     others.len(),
                     capped_name_list(others.iter().map(|d| doc_names[*d].as_str()), others.len()),
                     capped_name_list(required.iter().copied(), required.len()),
-                    entered(env, activation)
+                    entered(env)
                 ),
             ));
         }

@@ -262,7 +262,7 @@ impl<'a> DeclaringEnvironment<'a> {
                 env.activation()
             },
             pre_extension,
-            certainly_enabled: pre_extension || env.certainly_not_disabled(),
+            certainly_enabled: env.certainly_not_disabled(),
             label,
             defs,
             enable_if: env.enable_if.as_ref(),
