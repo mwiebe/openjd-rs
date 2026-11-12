@@ -102,7 +102,9 @@ Currently implements `2023-09` with extensions:
   and [job-creation.md](job-creation.md)); and `ac63711`, under which a disabled
   `environment:` entry declines a `BY_DEFAULT` Environment and is an error for an `ALWAYS`
   one (§3.2 item 3.2; no separate plan; see
-  [job-creation.md](job-creation.md#environment-parameter-values-env_params)). A document that lists `ENV_PARAMS` must also list `EXPR` (Template Schemas §1.1
+  [job-creation.md](job-creation.md#environment-parameter-values-env_params)); and the RFC's
+  rule that an Environment from a document that does not list `ENV_PARAMS` behaves as
+  `ALWAYS` with no `enableIf`, on which a disabled entry has no effect (§4 item 4). A document that lists `ENV_PARAMS` must also list `EXPR` (Template Schemas §1.1
   item 3, §1.2 item 3; see [validation.md](validation.md#entry-points)). Decode and
   template validation are implemented: Environment `envParameterDefinitions`, `activation`,
   `hostRequirements`, `enableIf` (an expression field, §4 item 6), and `exclusiveGroup`

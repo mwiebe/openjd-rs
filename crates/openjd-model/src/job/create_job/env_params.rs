@@ -113,8 +113,18 @@ pub(crate) struct DeclaringEnvironment<'a> {
     pub(crate) env: &'a template::Environment,
     /// The Environment's `name`.
     pub(crate) name: &'a str,
-    /// The Environment's `activation`, with its default applied.
+    /// The Environment's `activation`, with its default applied: `ALWAYS`
+    /// for an Environment from a document that does not list `ENV_PARAMS`
+    /// (`pre_extension`), whatever it writes (§4 item 4).
     pub(crate) activation: template::EnvironmentActivation,
+    /// Whether the Environment comes from an Environment Template that does
+    /// not list `ENV_PARAMS`. It behaves as `ALWAYS` with no `enableIf`, and
+    /// a Step's disabled `environment:` entry for it has no effect and is
+    /// not an error (§4 item 4, §3.2 item 3.2). Always `false` for a Job
+    /// Environment, which is taken as written: a Job Template that does not
+    /// list `ENV_PARAMS` has no entries and no `enableIf`, so every Session
+    /// enters its Environments whichever `activation` they are read as.
+    pub(crate) pre_extension: bool,
     /// Whether the Environment is known before job creation not to be
     /// disabled for any Step: its `activation` is `ALWAYS`, which cannot be
     /// disabled (§3.2.2 item 6), or its own `enableIf` (§4 item 6) is
@@ -227,10 +237,14 @@ pub(crate) struct PendingValues<'a> {
 impl<'a> DeclaringEnvironment<'a> {
     /// Set up `env`, whose path is `env_path`. A duplicated parameter name
     /// is a template-validation error, so names are taken as unique.
+    /// `pre_extension` is whether `env` comes from an Environment Template
+    /// that does not list `ENV_PARAMS` (see
+    /// [`pre_extension`](Self::pre_extension)).
     pub(crate) fn new(
         document: job::Document,
         env: &'a template::Environment,
         env_path: &[PathElement],
+        pre_extension: bool,
     ) -> Self {
         let defs = env.env_parameter_definitions.as_deref().unwrap_or(&[]);
         let label = if document.is_job_template() {
@@ -242,8 +256,13 @@ impl<'a> DeclaringEnvironment<'a> {
             document,
             env,
             name: &env.name,
-            activation: env.activation(),
-            certainly_enabled: env.certainly_not_disabled(),
+            activation: if pre_extension {
+                template::EnvironmentActivation::Always
+            } else {
+                env.activation()
+            },
+            pre_extension,
+            certainly_enabled: pre_extension || env.certainly_not_disabled(),
             label,
             defs,
             enable_if: env.enable_if.as_ref(),
@@ -972,6 +991,7 @@ impl<'a> JobEnvironments<'a> {
                 job::Document::JobTemplate,
                 env,
                 &env_path,
+                false,
             ));
         }
         for de in &environments {

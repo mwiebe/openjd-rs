@@ -381,8 +381,10 @@ before any Step `let`; evaluates each `environment:` entry's `enableIf`
 after the Step's `let`; fixes each Step's Environment set from each
 Environment's `activation` and the Step's entries (an enabled entry
 requests an `ON_REQUEST` Environment, and a disabled one, which supplies
-nothing, declines a `BY_DEFAULT` one and is an error naming the Step and
-the Environment for an `ALWAYS` one), recording it in
+nothing, declines a `BY_DEFAULT` one, is an error naming the Step and
+the Environment for an `ALWAYS` one, and has no effect on an attached
+one whose Environment Template does not list `ENV_PARAMS`, which behaves
+as `ALWAYS` with no `enableIf`), recording it in
 `job::Step::environments`; computes each
 Step's effective Environment parameter values for the Environments in
 its set into `job::Step::environment_parameters`; resolves each
@@ -632,7 +634,9 @@ impl template::Environment {
 pub enum EnvironmentActivation {
     Always,     // ALWAYS: every Session enters it; its enableIf being false
                 // for a Step, or a Step's disabled entry for it, is an
-                // error (§4 item 4, §3.2.2 item 6, §3.2 item 3.2)
+                // error (§4 item 4, §3.2.2 item 6, §3.2 item 3.2). An
+                // Environment from a document without ENV_PARAMS behaves
+                // as ALWAYS, but a disabled entry has no effect on it
     #[default]
     ByDefault,  // BY_DEFAULT: every Session enters it, except a Step's that
                 // declines it with a disabled entry, for which its

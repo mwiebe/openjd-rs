@@ -320,7 +320,14 @@ pub enum EnvironmentActivation {  // serde: SCREAMING_SNAKE_CASE
 }
 ```
 
-`activation()` applies the default (§4 item 4: absent means `BY_DEFAULT`). `BY_DEFAULT` and
+`activation()` applies the default (§4 item 4: absent means `BY_DEFAULT` in a document that
+lists ENV_PARAMS). An Environment from a document that does not list ENV_PARAMS behaves as
+`ALWAYS` with no `enableIf`, except that a Step's disabled entry for it has no effect and is
+not an error; `activation()` does not know the document, so job creation applies this to each
+attached Environment Template that does not list the extension (see
+[job-creation.md](job-creation.md#environment-parameter-values-env_params)). In a Job
+Template without ENV_PARAMS the readings agree, since it has no entries and no `enableIf`.
+`BY_DEFAULT` and
 `ALWAYS` are both entered by every Step's Sessions; under `BY_DEFAULT` a Step may decline it
 with a disabled `environment:` entry (§3.2 item 3.2), the Environment's own
 `enableIf` may leave a Step out, and an earlier Environment of its `exclusiveGroup` may

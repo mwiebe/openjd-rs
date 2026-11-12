@@ -466,6 +466,12 @@ and what it means depends on the `activation` of the Environment it names (§3.2
   parameter without a `default` is also reported missing there, with the note that the entry
   is disabled.
 
+An attached Environment whose Environment Template does not list ENV_PARAMS behaves as
+`ALWAYS` with no `enableIf`, but a disabled entry naming it has no effect and is not an error
+(§4 item 4; see the submission stage, step 2). Job Environments are taken as written: a Job
+Template that does not list ENV_PARAMS has no entries and no `enableIf`, so every Session
+enters its Environments whichever `activation` they are read as.
+
 A disabled entry's name is resolved, as an enabled one's is, to learn the `activation`: against
 `jobEnvironments` here, and, for one that names none, against the attached Environments in the
 submission stage, which job creation keeps it for, by name and position
@@ -906,7 +912,11 @@ that has entries lists both.
    has no effect; with `BY_DEFAULT` the Step declines the attachment (step 3); with `ALWAYS`
    it is the error at `JobTemplate -> steps[i] -> dependencies[j] -> enableIf` that job
    creation reports for a Job Environment (see [Environment parameter
-   values](#environment-parameter-values-env_params)), a §7.4.1 step 4 error.
+   values](#environment-parameter-values-env_params)), a §7.4.1 step 4 error. One match whose
+   Environment Template does not list ENV_PARAMS has no effect and is not an error: such an
+   attachment behaves as `activation: ALWAYS` with no `enableIf` (§4 item 4,
+   `DeclaringEnvironment::pre_extension`), so every Step's Sessions enter it and its status is
+   `Entered`, whatever the entry's `required` and `enableIf` say.
    An attachment named like a Step's `stepEnvironments` entry is unreachable from that
    Step only because template validation rejects an entry naming one (constraint 2); other
    Steps reach it (§3.2.1 item 5). If its `activation` is `ALWAYS` or `BY_DEFAULT` and it has parameters without a
@@ -915,7 +925,8 @@ that has entries lists both.
 3. A Step with an error from §7.4.1 steps 1–4 (here, or in job creation) is stopped: none of
    the rest of this step, or steps 6–8 below, is done for it, and it counts as entering no
    Environment (see [Error order](#error-order)). For every other Step:
-   its Sessions enter every attachment with `activation: ALWAYS`, every one with
+   its Sessions enter every attachment with `activation: ALWAYS` or from an Environment
+   Template that does not list ENV_PARAMS, every one with
    `BY_DEFAULT` that a disabled entry of the Step does not decline (its own `enableIf` is then
    not evaluated for the Step, and no value check applies), and
    each one with `activation: ON_REQUEST` that one of its enabled entries refers to (§3.2.1,
@@ -1236,7 +1247,7 @@ Environment, not just that they do not:
 
 | Environment | Decided in | Status |
 | --- | --- | --- |
-| `ALWAYS`, or `BY_DEFAULT` that no disabled entry declines, or `ON_REQUEST` that an enabled entry requests | job creation proper (Job Environments, `StepSelection::job_environment_statuses`) or the submission stage (attached) | `Entered`, until step 6 changes it |
+| `ALWAYS` (which includes an attachment whose Environment Template does not list ENV_PARAMS, whatever its entry says), or `BY_DEFAULT` that no disabled entry declines, or `ON_REQUEST` that an enabled entry requests | job creation proper (Job Environments, `StepSelection::job_environment_statuses`) or the submission stage (attached) | `Entered`, until step 6 changes it |
 | `BY_DEFAULT` that a disabled entry declines (§7.4.1 step 4) | the same | `Declined`; its `enableIf` is not evaluated and it takes no group |
 | `ON_REQUEST` that no enabled entry requests | the same | not listed |
 | An earlier one of its `exclusiveGroup` remains in the set (step 6) | the submission stage, in the Job's Environment order | `Superseded`, with `superseded_by` naming that earlier one; its `enableIf` is not evaluated |
@@ -1385,8 +1396,9 @@ reports only once the Step's step 1–4 errors are fixed):
    names no `jobEnvironments` entry (the first entry for a name; a repeat is a
    template-validation error), with `required` defaulting to `true`. An entry whose `enableIf`
    is `false` is matched as step 2 matches a disabled entry: it declines a `BY_DEFAULT`
-   attachment, which items 3–5 then leave out for its Step, and is the error for an `ALWAYS`
-   one. One whose `enableIf` is an expression (even a constant one such
+   attachment, which items 3–5 then leave out for its Step, is the error for an `ALWAYS`
+   one, and has no effect on one whose Environment Template does not list ENV_PARAMS. One
+   whose `enableIf` is an expression (even a constant one such
    as `"true"`) is enabled or not only
    when the Job is created, so every attachment it may name is skipped for its Step. Its name
    is resolved either way (Template Schemas §3.2.1), so a name that two or more attachments
@@ -1426,7 +1438,9 @@ reports only once the Step's step 1–4 errors are fixed):
    Step whose only wrapping layers are the Job Template's own ungrouped Environments and its
    Step Environments passed template validation, which counts them the same way, so it adds
    no error; a grouped Job Environment is counted only here), over the wrapping Environments the Step's Sessions
-   certainly enter, in Session order: attachments with `activation: ALWAYS`, those with
+   certainly enter, in Session order: attachments with `activation: ALWAYS` or from an
+   Environment Template that does not list ENV_PARAMS, whatever the Step's entry for one says
+   (`template::Environment::known_state_in`), those with
    `BY_DEFAULT` for which the Step has no entry or an enabled one (a disabled entry declines
    it, and an expression entry may), and the `ON_REQUEST` ones an enabled entry resolved to;
    Job Environments in the same way, with an entry enabled by an absent or boolean-scalar

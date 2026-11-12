@@ -194,7 +194,9 @@ stage that needs no Job Parameter values:
 A Step's entry with `enableIf: false` naming an attached Environment declines it when its
 `activation` is `BY_DEFAULT`, so the checks above leave it out for that Step, and is an
 error naming the Step and the Environment when it is `ALWAYS` (Template Schemas §3.2 item
-3.2). An entry whose `enableIf` is an expression is not reported here, even when it names an
+3.2). It has no effect on an attached Environment whose Environment Template does not list
+ENV_PARAMS, which behaves as `ALWAYS` with no `enableIf` (§4 item 4): the checks above count
+it as entered by every Step, whatever the Step's entry for it says. An entry whose `enableIf` is an expression is not reported here, even when it names an
 attached `ALWAYS` Environment and the expression is constant, such as `"false"`: an expression
 field's value is unknown until the Job is created (§7.6 rule 5), so §4 item 4 has the error
 reported then. `check` accepts such a template, and `openjd run` rejects it when the

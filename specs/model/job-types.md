@@ -134,7 +134,8 @@ Session knows which values to path-map. PATH values are the unmapped strings, of
 
 `Step::environments` lists the Job Environments the Step's Sessions enter (Template Schemas §4
 item 4 `activation`, §3.2.2), in `Job::job_environments` order, each as the `(document,
-environment)` key `EnvironmentParameterValues` uses: every one with `activation: ALWAYS`,
+environment)` key `EnvironmentParameterValues` uses: every one with `activation: ALWAYS`
+or from an Environment Template that does not list ENV_PARAMS (§4 item 4),
 every one with `BY_DEFAULT` that no disabled `environment:` entry of the Step declines (§3.2
 item 3.2), and every one with `activation: ON_REQUEST` that an enabled `environment:` entry
 of the Step requests, less any whose own `enableIf` (§4 item 6) is `false` for the Step (for

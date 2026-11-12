@@ -14,6 +14,10 @@
 //!   validation for a literal `false` on an entry naming a Job
 //!   Environment, otherwise when the Job is created.
 //!
+//! An Environment from a document that does not list `ENV_PARAMS` behaves
+//! as `ALWAYS` with no `enableIf`, except that a disabled entry for it has
+//! no effect and is not an error (§4 item 4).
+//!
 //! A disabled entry's name is resolved, against `jobEnvironments` and then
 //! the attached Environments (§3.2.1), to learn the `activation`; one that
 //! matches no attachment has no effect, whatever `required` says.
@@ -22,7 +26,7 @@ use openjd_model::job::{Document, Job};
 use openjd_model::template::EnvironmentTemplate;
 use openjd_model::{
     check_environment_templates, create_job_with_environment_templates,
-    AttachedEnvironmentTemplate, CreatedJob, ModelError,
+    AttachedEnvironmentTemplate, CreatedJob, EnvironmentStatus, ModelError,
 };
 
 use crate::env_params_common::{
@@ -987,4 +991,183 @@ steps:
 "#;
     let created = create_ok(src, &[&conda("ALWAYS")], &[]);
     assert!(!enters(&created, 0, &Document::JobTemplate, "Conda"));
+}
+
+// ── An Environment from a document without ENV_PARAMS (§4 item 4) ───
+
+/// An Environment Template that does not list `ENV_PARAMS`, with a Job
+/// Parameter and an Environment `Conda` that reads it, as Deadline Cloud's
+/// Conda queue environment written before the extension does.
+const PRE_EXTENSION_CONDA: &str = r#"
+specificationVersion: environment-2023-09
+parameterDefinitions: [{name: CondaPackages, type: STRING, default: ""}]
+environment:
+  name: Conda
+  variables: {P: "{{Param.CondaPackages}}"}
+"#;
+
+/// A Job Template whose Step A has an entry for `Conda` with `required`
+/// `required`, `enableIf` `enable_if`, and `parameters` `parameters` (none
+/// when empty), and whose Step B has no entry.
+fn pre_extension_entry(required: &str, enable_if: &str, parameters: &str) -> String {
+    let parameters = if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("    parameters: {parameters}\n")
+    };
+    format!(
+        r#"
+specificationVersion: jobtemplate-2023-09
+extensions: [ENV_PARAMS, EXPR]
+name: J
+parameterDefinitions: [{{name: Mode, type: STRING, default: "off"}}]
+steps:
+- name: A
+  dependencies:
+  - environment: Conda
+    required: {required}
+    enableIf: {enable_if}
+{parameters}  script: {{actions: {{onRun: {{command: x}}}}}}
+- name: B
+  script: {{actions: {{onRun: {{command: x}}}}}}
+"#
+    )
+}
+
+#[test]
+fn a_disabled_entry_has_no_effect_on_an_environment_from_a_document_without_env_params() {
+    // JB-169–JB-171: the attachment behaves as ALWAYS with no enableIf, so
+    // a disabled entry naming it neither declines it nor is the error it
+    // is for an ALWAYS one (compare
+    // a_disabled_entry_for_an_attached_always_environment_is_rejected_at_job_creation),
+    // whatever `required` says, and whether its enableIf is a literal or
+    // an expression that resolves to false. Both Steps enter it.
+    let att = Document::environment_template(0, None);
+    for required in ["true", "false"] {
+        for enable_if in ["false", MODE_ON] {
+            for parameters in ["", "{Packages: colmap}"] {
+                let case = format!("required {required}, enableIf {enable_if}, {parameters:?}");
+                let src = pre_extension_entry(required, enable_if, parameters);
+                job_ok(&src);
+                assert_eq!(
+                    check(&src, &[PRE_EXTENSION_CONDA]).unwrap(),
+                    Vec::<String>::new(),
+                    "{case}"
+                );
+                let created = create_ok(&src, &[PRE_EXTENSION_CONDA], &[]);
+                for step in 0..2 {
+                    assert!(enters(&created, step, &att, "Conda"), "{case}, step {step}");
+                    let statuses = &created.environment_statuses[step].environments;
+                    assert_eq!(statuses.len(), 1, "{case}");
+                    assert_eq!(statuses[0].status, EnvironmentStatus::Entered, "{case}");
+                }
+                // A disabled entry supplies nothing, so nothing is ignored
+                // and there is no warning.
+                assert!(
+                    created.warnings.is_empty(),
+                    "{case}: {:?}",
+                    created.warnings
+                );
+                assert_eq!(created.job.steps[0].environment_parameters, None, "{case}");
+                assert!(
+                    created.disabled_environments[0].environments.is_empty(),
+                    "{case}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_enabled_entry_for_an_environment_from_a_document_without_env_params_keeps_the_q4_rules() {
+    // Enabled by an expression that resolves to true: a `required: false`
+    // entry's parameters are ignored with a warning, and the Environment is
+    // entered (JB-172); a `required: true` entry's parameters are an error
+    // (JB-165), and one without parameters is accepted (JB-20).
+    let att = Document::environment_template(0, None);
+    let src = pre_extension_entry("false", MODE_ON, "{Packages: colmap}");
+    let created = create_ok(&src, &[PRE_EXTENSION_CONDA], &[("Mode", "on")]);
+    assert!(enters(&created, 0, &att, "Conda"));
+    assert_eq!(created.job.steps[0].environment_parameters, None);
+    let warnings: Vec<String> = created.warnings.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        warnings,
+        [
+            "JobTemplate -> steps[0] -> dependencies[0] -> parameters: Environment 'Conda' \
+             (EnvironmentTemplate[0]) declares no parameters, and this entry has 'required: \
+             false', so its parameters are ignored: Packages. The Step's Sessions get no values \
+             from it (Template Schemas §3.2.1 item 1)."
+        ]
+    );
+    let src = pre_extension_entry("true", MODE_ON, "{Packages: colmap}");
+    let err = create(&src, &[PRE_EXTENSION_CONDA], &[("Mode", "on")]).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("declares no parameters, so this entry must not supply"),
+        "{err}"
+    );
+    let src = pre_extension_entry("true", MODE_ON, "");
+    let created = create_ok(&src, &[PRE_EXTENSION_CONDA], &[("Mode", "on")]);
+    assert!(enters(&created, 0, &att, "Conda"));
+}
+
+#[test]
+fn an_environment_that_lists_env_params_and_omits_activation_is_still_declined() {
+    // The rule is about the document: the same Environment in a template
+    // that lists ENV_PARAMS is BY_DEFAULT, so the disabled entry declines
+    // it (JB-140).
+    let listed = PRE_EXTENSION_CONDA.replace(
+        "specificationVersion: environment-2023-09\n",
+        "specificationVersion: environment-2023-09\nextensions: [ENV_PARAMS, EXPR]\n",
+    );
+    let att = Document::environment_template(0, None);
+    let created = create_ok(&pre_extension_entry("false", "false", ""), &[&listed], &[]);
+    assert!(!enters(&created, 0, &att, "Conda"));
+    assert!(enters(&created, 1, &att, "Conda"));
+    assert_eq!(
+        created.environment_statuses[0].environments[0].status,
+        EnvironmentStatus::Declined
+    );
+}
+
+#[test]
+fn an_attached_wrapper_from_a_document_without_env_params_is_a_layer_whatever_the_entry_says() {
+    // JB-173, JB-174: the attachment lists WRAP_ACTIONS but not ENV_PARAMS,
+    // so it behaves as ALWAYS, and with the Job Environment W1 every Step
+    // has two layers, whatever its entry for Docker says. `check` knows it
+    // even for an expression entry, which job creation also rejects. With
+    // ENV_PARAMS listed, Docker is BY_DEFAULT and a literal false entry
+    // declines it.
+    let attached = "specificationVersion: environment-2023-09\nextensions: [WRAP_ACTIONS, \
+                    EXPR]\nenvironment:\n  name: Docker\n  script:\n    actions:\n      \
+                    onWrapEnvEnter: {command: x}\n      onWrapTaskRun: {command: x}\n      \
+                    onWrapEnvExit: {command: x}\n";
+    let src = |entry: &str| {
+        wrap_job(
+            &[wrap_env("W1", "BY_DEFAULT")],
+            &format!("- name: A\n{entry}  script: {{actions: {{onRun: {{command: x}}}}}}\n"),
+        )
+    };
+    let two = "JobTemplate -> steps[0]:\n\tits Sessions would enter 2 Environments that define \
+               wrap hooks (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit): 'Docker' \
+               (EnvironmentTemplate[0]), 'W1'. A Session may have at most one Environment \
+               defining wrap hooks (RFC 0008).";
+    for entry in [
+        "",
+        "  dependencies: [{environment: Docker, enableIf: false}]\n",
+        "  dependencies: [{environment: Docker, required: false, enableIf: false}]\n",
+        "  dependencies: [{environment: Docker, enableIf: \"Job.Name == 'J'\"}]\n",
+        "  dependencies: [{environment: Docker, enableIf: \"Job.Name == 'K'\"}]\n",
+        "  dependencies: [{environment: Docker}]\n",
+    ] {
+        let src = src(entry);
+        job_ok(&src);
+        let err = check(&src, &[attached]).unwrap_err();
+        assert_errors(&err.to_string(), "Submission", &[two]);
+        create_err(&src, &[attached], &[], "Submission", &[two]);
+    }
+    let listed = attached.replace("[WRAP_ACTIONS, ", "[ENV_PARAMS, WRAP_ACTIONS, ");
+    let declined = src("  dependencies: [{environment: Docker, enableIf: false}]\n");
+    assert_eq!(check(&declined, &[&listed]).unwrap(), Vec::<String>::new());
+    create_ok(&declined, &[&listed], &[]);
 }

@@ -16,8 +16,10 @@
 //! [`apply_environment_templates`] then resolves those entries against the
 //! attached Environment Templates by name, fixes the part of each Step's
 //! Environment set that the attachments contribute (§4 item 4
-//! `activation`; a disabled entry declines a `BY_DEFAULT` attachment and is
-//! an error for an `ALWAYS` one, §3.2 item 3.2), computes every Step's
+//! `activation`; an attachment from an Environment Template that does not
+//! list `ENV_PARAMS` behaves as `ALWAYS`; a disabled entry declines a
+//! `BY_DEFAULT` attachment, is an error for an `ALWAYS` one, and has no
+//! effect on a pre-extension one, §3.2 item 3.2), computes every Step's
 //! effective values for each attached Environment it would enter, decides
 //! each attachment's own `enableIf` (§4 item 6) per Step with the values
 //! that are known, checks constraint 5 for every attachment and
@@ -226,7 +228,9 @@ pub enum EnvironmentStatus {
     Entered,
     /// A `BY_DEFAULT` Environment that a disabled `environment:` entry of
     /// the Step declines (§3.2 item 3.2, §7.4.1 step 4). Its own `enableIf`
-    /// is not evaluated for the Step.
+    /// is not evaluated for the Step. Never an attached Environment whose
+    /// Environment Template does not list `ENV_PARAMS`: it behaves as
+    /// `ALWAYS`, and a disabled entry has no effect on it (§4 item 4).
     Declined,
     /// Its own `enableIf` (§4 item 6) is `false` for the Step (§7.4.1 step
     /// 6).
@@ -312,7 +316,9 @@ pub struct OptionalEntryNotFound {
 /// the Step. An `ON_REQUEST` Environment the Step does not request is not
 /// listed. A Job Template without `ENV_PARAMS` has neither `activation`,
 /// `enableIf` nor `exclusiveGroup`, so its own Environments are all
-/// `Entered`; only attached ones can be otherwise.
+/// `Entered`; only attached ones can be otherwise. An attached one whose
+/// Environment Template does not list `ENV_PARAMS` behaves as `ALWAYS`
+/// (Template Schemas §4 item 4), so it is `Entered` too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StepEnvironmentStatuses {
     /// The considered Environments in the Job's Environment order: attached
@@ -442,7 +448,7 @@ impl<'a> Attachments<'a> {
         // How the messages below say the attachment is entered. An
         // `ALWAYS` one cannot be disabled (§3.2.2 item 6), whatever its
         // `enableIf`.
-        let entered = |env: &crate::template::Environment| match env.activation() {
+        let entered = |env: &crate::template::Environment, activation| match activation {
             EnvironmentActivation::ByDefault if env.enable_if.is_some() => ENTERED_ENABLE_IF,
             // With a group, an earlier Environment of it may supersede this
             // one for some Steps (§4 item 7).
@@ -460,6 +466,17 @@ impl<'a> Attachments<'a> {
         };
         for (doc, att) in attached.iter().enumerate() {
             let env = att.template.environment();
+            // §4 item 4: an Environment from a document that does not list
+            // `ENV_PARAMS` behaves as `ALWAYS`.
+            let pre_extension = !att
+                .template
+                .profile()
+                .has_extension(ModelExtension::EnvParams);
+            let activation = if pre_extension {
+                EnvironmentActivation::Always
+            } else {
+                env.activation()
+            };
             let att_ctx = att
                 .template
                 .default_validation_context()
@@ -474,7 +491,7 @@ impl<'a> Attachments<'a> {
                 // With `activation: ON_REQUEST` no Session enters it,
                 // since no entry can request it.
                 let required = required_names(env);
-                if !required.is_empty() && env.activation() != EnvironmentActivation::OnRequest {
+                if !required.is_empty() && activation != EnvironmentActivation::OnRequest {
                     unreachable_required.push((
                         doc,
                         path_field(&env_path, "envParameterDefinitions"),
@@ -486,7 +503,7 @@ impl<'a> Attachments<'a> {
                              rejected (§3.2.1).",
                             env.name,
                             capped_name_list(required.iter().copied(), required.len()),
-                            entered(env)
+                            entered(env, activation)
                         ),
                     ));
                 }
@@ -512,6 +529,7 @@ impl<'a> Attachments<'a> {
                 job::Document::environment_template(doc, att.label),
                 env,
                 &env_path,
+                pre_extension,
             ));
             contexts.push(att_ctx);
         }
@@ -528,7 +546,8 @@ impl<'a> Attachments<'a> {
             };
             unreachable.insert(doc);
             let required = required_names(env);
-            if required.is_empty() || env.activation() == EnvironmentActivation::OnRequest {
+            let activation = declaring[doc].activation;
+            if required.is_empty() || activation == EnvironmentActivation::OnRequest {
                 continue;
             }
             unreachable_required.push((
@@ -546,7 +565,7 @@ impl<'a> Attachments<'a> {
                     others.len(),
                     capped_name_list(others.iter().map(|d| doc_names[*d].as_str()), others.len()),
                     capped_name_list(required.iter().copied(), required.len()),
-                    entered(env)
+                    entered(env, activation)
                 ),
             ));
         }
@@ -816,13 +835,17 @@ const EVERY_ATTACHED: &str = "every attached Environment with activation ALWAYS,
 /// effect, whatever `required` says, and no constraint 5 or 6 check is
 /// made, since it supplies nothing (§3.2.1). One that matches an
 /// `ON_REQUEST` attachment has no effect; one that matches a `BY_DEFAULT`
-/// one declines it for the Step; and one that matches an `ALWAYS` one is an
-/// error naming the Step and the Environment (§3.2 item 3.2, §7.4.1 step 4).
+/// one declines it for the Step; one that matches an `ALWAYS` one is an
+/// error naming the Step and the Environment (§3.2 item 3.2, §7.4.1 step
+/// 4); and one that matches an attachment whose Environment Template does
+/// not list `ENV_PARAMS` has no effect, since that attachment behaves as
+/// `ALWAYS` with no `enableIf` and no Step can leave it out (§4 item 4).
 ///
 /// A Step with an error from §7.4.1 steps 1–4, here or in job creation, is
 /// stopped: steps 5–8 are not taken for it. For every other Step, its
 /// Sessions would enter every attached Environment with `activation:
-/// ALWAYS`, every one with `BY_DEFAULT` it does not decline, and each one
+/// ALWAYS` or from a document that does not list `ENV_PARAMS`, every one
+/// with `BY_DEFAULT` it does not decline, and each one
 /// with `activation: ON_REQUEST` that one of its enabled entries refers to.
 /// For each one it enters that declares parameters, the Step gets
 /// effective values from its entry if one refers to it and from the
@@ -983,6 +1006,11 @@ pub(crate) fn apply_environment_templates(
                         EnvironmentActivation::ByDefault => {
                             step_declined.insert(doc);
                         }
+                        // From a document that does not list `ENV_PARAMS`:
+                        // it behaves as `ALWAYS`, and the entry has no
+                        // effect and is not an error (§4 item 4, §3.2 item
+                        // 3.2, §7.4.1 step 4).
+                        EnvironmentActivation::Always if de.pre_extension => {}
                         // No Step can leave it out (§3.2.2 item 6): a
                         // §7.4.1 step 4 error, which stops the Step.
                         EnvironmentActivation::Always => {
@@ -1635,7 +1663,8 @@ fn wrap_layers_message(layers: &[String]) -> String {
 /// The `WRAP_ACTIONS` single-layer rule for [`check_environment_templates`]:
 /// for each Step, the wrapping Environments its Sessions certainly enter,
 /// in the order a Session enters them: the attachments with `activation:
-/// ALWAYS`, the `BY_DEFAULT` ones the Step has no entry for or an enabled
+/// ALWAYS` or from a document that does not list `ENV_PARAMS` (§4 item
+/// 4), the `BY_DEFAULT` ones the Step has no entry for or an enabled
 /// one, and the `ON_REQUEST` ones an enabled entry resolved to, then the
 /// Job Environments in the same way, then its Step Environments; each only
 /// when its own `enableIf` is absent or the scalar `true` (§4, after item
@@ -1716,6 +1745,16 @@ fn certainly_entered_per_step(
     attached: &[AttachedEnvironmentTemplate<'_>],
     known: &[Vec<KnownEntry>],
 ) -> Vec<Vec<bool>> {
+    // §4 item 4: an attachment from a document that does not list
+    // `ENV_PARAMS` is known to be entered, whatever the Step's entry is.
+    let lists_env_params: Vec<bool> = attached
+        .iter()
+        .map(|a| {
+            a.template
+                .profile()
+                .has_extension(ModelExtension::EnvParams)
+        })
+        .collect();
     let own_envs = job_template.job_environments.as_deref().unwrap_or(&[]);
     job_template
         .steps
@@ -1725,9 +1764,10 @@ fn certainly_entered_per_step(
             let states = attached
                 .iter()
                 .zip(known)
-                .map(|(a, k)| {
+                .zip(&lists_env_params)
+                .map(|((a, k), lists)| {
                     let env = a.template.environment();
-                    (env.group(), env.known_state(*k))
+                    (env.group(), env.known_state_in(*lists, *k))
                 })
                 .chain(own_envs.iter().map(|env| {
                     (
@@ -1765,9 +1805,11 @@ fn certainly_entered_per_step(
 ///   `enableIf` is `false` is resolved too, but supplies nothing and has no effect when it matches
 ///   no attachment (§3.2.1): it declines a `BY_DEFAULT` attachment, which
 ///   the checks below then leave out for its Step, requests no
-///   `ON_REQUEST` one, and is an error for an `ALWAYS` one, naming the
-///   Step and the Environment (§3.2 item 3.2); an ambiguous name is an error
-///   either way. One whose `enableIf` is an expression (an expression
+///   `ON_REQUEST` one, is an error for an `ALWAYS` one, naming the
+///   Step and the Environment (§3.2 item 3.2), and has no effect on one
+///   whose Environment Template does not list `ENV_PARAMS`, which behaves
+///   as `ALWAYS` (§4 item 4) and is entered whatever the entry says; an
+///   ambiguous name is an error either way. One whose `enableIf` is an expression (an expression
 ///   field, §7.6, so even a constant one such as `"true"`) is checked only
 ///   when the Job is created, and so is every attachment it may name, for
 ///   its Step;
@@ -1812,7 +1854,9 @@ fn certainly_entered_per_step(
 ///   template validation, which counts them the same way; it counts no
 ///   grouped one), over the wrapping
 ///   Environments its Sessions certainly enter: attachments with `activation:
-///   ALWAYS`, those with `BY_DEFAULT` that no entry of the Step disables or
+///   ALWAYS` or from a document that does not list `ENV_PARAMS` (whatever
+///   the Step's entry for one says), those with `BY_DEFAULT` that no entry
+///   of the Step disables or
 ///   may disable, and the `ON_REQUEST` ones an enabled entry resolved to,
 ///   Job Environments in the same way, with an entry whose `enableIf` is
 ///   absent or the scalar `true` enabled,
@@ -1953,6 +1997,9 @@ pub fn check_environment_templates(
                                 EnvironmentActivation::ByDefault => {
                                     step_declined.insert(doc);
                                 }
+                                // No effect on a pre-extension one, which
+                                // behaves as `ALWAYS` (§4 item 4).
+                                EnvironmentActivation::Always if de.pre_extension => {}
                                 EnvironmentActivation::Always => errors.add(
                                     &path_field(&entry_path, "enableIf"),
                                     always_entry_disabled_message(&step.name, &de.label),
@@ -2058,6 +2105,7 @@ pub fn check_environment_templates(
                     job::Document::JobTemplate,
                     env,
                     &path_index(&path_field(&job_path, "jobEnvironments"), k),
+                    false,
                 ),
             )
         })

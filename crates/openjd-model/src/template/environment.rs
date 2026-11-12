@@ -30,9 +30,10 @@ pub struct Environment {
     /// `ENV_PARAMS` and on a `stepEnvironments` entry.
     pub env_parameter_definitions: Option<Vec<EnvironmentParameterDefinition>>,
     /// §4 item 4 `activation` (`ENV_PARAMS` extension): which Sessions enter
-    /// this Environment. Absent means [`EnvironmentActivation::ByDefault`]; see
-    /// [`activation`](Self::activation). Template validation rejects the
-    /// field without `ENV_PARAMS` and on a `stepEnvironments` entry.
+    /// this Environment. Absent means [`EnvironmentActivation::ByDefault`] in
+    /// a document that lists `ENV_PARAMS`; see [`activation`](Self::activation).
+    /// Template validation rejects the field without `ENV_PARAMS` and on a
+    /// `stepEnvironments` entry.
     pub activation: Option<EnvironmentActivation>,
     /// §4 item 5 `hostRequirements` (`ENV_PARAMS` extension): requirements
     /// on the Worker Host that every Session entering this Environment must
@@ -80,7 +81,20 @@ pub struct Environment {
 
 impl Environment {
     /// `activation` with its default applied (§4 item 4: absent means
-    /// `BY_DEFAULT`).
+    /// `BY_DEFAULT`), as it applies in a document that lists `ENV_PARAMS`.
+    ///
+    /// An Environment from a document that does not list `ENV_PARAMS`
+    /// behaves as one with `activation: ALWAYS` and no `enableIf`, except
+    /// that a Step's disabled `environment:` entry for it has no effect and
+    /// is not an error (§4 item 4, §3.2 item 3.2). Job creation applies this
+    /// to each attached Environment Template that does not list the
+    /// extension; see
+    /// [`create_job_with_environment_templates`](crate::create_job_with_environment_templates).
+    /// This method does not know the document, so it returns the value as
+    /// written, or `BY_DEFAULT`. In a Job Template that does not list
+    /// `ENV_PARAMS` the two readings agree: no Step has an `environment:`
+    /// entry and no Environment has an `enableIf`, so every Session enters
+    /// every Job Environment either way.
     #[must_use]
     pub fn activation(&self) -> EnvironmentActivation {
         self.activation.unwrap_or_default()
@@ -133,8 +147,17 @@ impl Environment {
     /// disabled entry declines it, or when it is `ON_REQUEST` and no
     /// enabled entry requests it; and undetermined otherwise.
     pub(crate) fn known_state(&self, entry: KnownEntry) -> Known {
+        self.known_state_in(true, entry)
+    }
+
+    /// [`known_state`](Self::known_state) for an Environment of a document
+    /// that lists `ENV_PARAMS` exactly when `lists_env_params`. One from a
+    /// document that does not list it behaves as `ALWAYS` with no
+    /// `enableIf`, and a disabled entry has no effect on it (§4 item 4,
+    /// §3.2 item 3.2), so it is known to be entered whatever `entry` is.
+    pub(crate) fn known_state_in(&self, lists_env_params: bool, entry: KnownEntry) -> Known {
         let activation = self.activation();
-        if activation == EnvironmentActivation::Always {
+        if !lists_env_params || activation == EnvironmentActivation::Always {
             return Known::Entered;
         }
         let requested = match (activation, entry) {
@@ -219,8 +242,9 @@ pub(crate) enum KnownEntry {
     /// An entry whose `enableIf` is absent or the boolean scalar `true`.
     Enabled,
     /// An entry whose `enableIf` is the boolean scalar `false`: it
-    /// requests nothing, declines a `BY_DEFAULT` Environment, and is an
-    /// error for an `ALWAYS` one.
+    /// requests nothing, declines a `BY_DEFAULT` Environment, is an error
+    /// for an `ALWAYS` one, and has no effect on one from a document that
+    /// does not list `ENV_PARAMS`.
     Disabled,
     /// An entry whose `enableIf` is an expression, even a constant one,
     /// decided when the Job is created.
@@ -265,15 +289,20 @@ pub enum EnvironmentActivation {
     /// `environment:` entry for it (§3.2 item 3.2). Each is reported naming
     /// the Step and the Environment: at template validation when it is
     /// known then (a literal `false`, on the Environment, or on an entry
-    /// naming a Job Environment), otherwise when the Job is created.
+    /// naming a Job Environment), otherwise when the Job is created. An
+    /// Environment from a document that does not list `ENV_PARAMS` behaves
+    /// as `ALWAYS`, but a disabled entry for it has no effect and is not an
+    /// error (see [`Environment::activation`]).
     Always,
     /// `BY_DEFAULT`: every Session of the Job enters the Environment, in its
     /// position in the Job's Environment order, except the Sessions of a
     /// Step that declines it with a disabled `environment:` entry (§3.2
     /// item 3.2), of a Step for which its `enableIf` is `false`, and of a
     /// Step for which an earlier Environment of its `exclusiveGroup`
-    /// supersedes it (§4 item 7). The default, and the behavior of every
-    /// Environment without the extension.
+    /// supersedes it (§4 item 7). The default in a document that lists
+    /// `ENV_PARAMS`. An Environment from a document that does not list it
+    /// behaves as `ALWAYS` instead, except that a disabled entry for it has
+    /// no effect (see [`Environment::activation`]).
     #[default]
     ByDefault,
     /// `ON_REQUEST`: only the Sessions of a Step that requests the

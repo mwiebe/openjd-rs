@@ -431,9 +431,13 @@ fn an_optional_entry_whose_parameters_are_ignored_still_requests_and_declines() 
     // §3.2.1 item 1: an attached Environment that declares no parameters
     // ignores a `required: false` entry's parameters, and the entry keeps
     // its other effects. S requests the ON_REQUEST `Lic` with values, so it
-    // enters `Lic`; T's entry for the BY_DEFAULT `Plain` is disabled, so it
-    // declines `Plain` (§3.2 item 3.2); U does neither.
+    // enters `Lic`. `Zero` lists ENV_PARAMS, declares no parameters and is
+    // BY_DEFAULT, so T's disabled entry for it declines it (§3.2 item 3.2).
+    // `Plain`'s Environment Template does not list ENV_PARAMS, so it
+    // behaves as ALWAYS and T's disabled entry for it has no effect (§4
+    // item 4): every Step enters it. U has no entries.
     let lic = env("name: Lic, activation: ON_REQUEST");
+    let zero = env("name: Zero");
     let plain = "specificationVersion: environment-2023-09\n\
                  environment: {name: Plain, variables: {V: p}}\n";
     let jt = format!(
@@ -443,30 +447,38 @@ fn an_optional_entry_whose_parameters_are_ignored_still_requests_and_declines() 
          - {{environment: Plain, required: false, parameters: {{Packages: x}}}}\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n\
          - name: T\n  dependencies:\n  \
+         - {{environment: Zero, required: false, enableIf: false, parameters: {{Packages: x}}}}\n  \
          - {{environment: Plain, required: false, enableIf: false, parameters: {{Packages: x}}}}\n  \
          script: {{actions: {{onRun: {{command: x}}}}}}\n\
          - name: U\n  script: {{actions: {{onRun: {{command: x}}}}}}\n"
     );
-    let created = create(&jt, &[&lic, plain]);
+    let created = create(&jt, &[&lic, &zero, plain]);
     assert_eq!(
         statuses(&created, 0),
         [
             "attached Lic@EnvironmentTemplate[0]: entered",
-            "attached Plain@EnvironmentTemplate[1]: entered"
+            "attached Zero@EnvironmentTemplate[1]: entered",
+            "attached Plain@EnvironmentTemplate[2]: entered"
         ]
     );
     assert_eq!(
         statuses(&created, 1),
-        ["attached Plain@EnvironmentTemplate[1]: declined"]
+        [
+            "attached Zero@EnvironmentTemplate[1]: declined",
+            "attached Plain@EnvironmentTemplate[2]: entered"
+        ]
     );
     assert_eq!(
         statuses(&created, 2),
-        ["attached Plain@EnvironmentTemplate[1]: entered"]
+        [
+            "attached Zero@EnvironmentTemplate[1]: entered",
+            "attached Plain@EnvironmentTemplate[2]: entered"
+        ]
     );
     for step in 0..3 {
         assert!(not_found(&created, step).is_empty());
     }
-    // One warning per ignored enabled entry; none for the disabled one.
+    // One warning per ignored enabled entry; none for the disabled ones.
     let paths: Vec<String> = created
         .warnings
         .iter()
