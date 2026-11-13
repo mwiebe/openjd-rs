@@ -27,11 +27,12 @@ use crate::job::{
     self, binding::steps_key, BindingError, GroupState, MaterializationGroup, PendingBinding,
     StepBinding, StepInputs,
 };
+use crate::template::expr_field::{self, ExprFieldEval};
 use crate::template::validate_v2023_09::steps_scope::{
     add_control_flow_scope, StepLocation, StepsFieldScope, StepsReader,
 };
 use crate::template::validate_v2023_09::EffectiveLimits;
-use crate::template::{self, BoolOrFormatString, JobTemplate, StepEntry, StepTemplate};
+use crate::template::{self, BoolOrFormatString, ExprField, JobTemplate, StepEntry, StepTemplate};
 use crate::types::{JobParameterValues, ValidationContext};
 
 /// Everything a binding needs from the Job besides the Step and its inputs.
@@ -146,13 +147,17 @@ pub(super) struct StepGroups {
 }
 
 impl StepGroups {
-    pub(super) fn of(st: &StepTemplate) -> Self {
+    /// The groups of `st`, a Step of `jt`.
+    pub(super) fn of(jt: &JobTemplate, st: &StepTemplate) -> Self {
         let lets = LetRefs::of(st);
         let mut groups = Self::default();
 
-        if let Some(BoolOrFormatString::FormatString(fs)) = &st.enable_if {
+        if let Some(field) = &st.enable_if {
             // enableIf may not read `let` (validation), so no expansion.
-            groups.enablement = steps_symbols(fs.accessed_symbols());
+            groups.enablement = steps_symbols(expr_field::accessed_symbols(
+                field,
+                &template_expr_profile(jt),
+            ));
         }
 
         let mut tasks_syms = Vec::new();
@@ -338,7 +343,7 @@ pub(super) fn bind_step(
 ) -> Result<job::Step, GroupFailure> {
     use MaterializationGroup::*;
     let st = site.st;
-    let groups = StepGroups::of(st);
+    let groups = StepGroups::of(cx.jt, st);
     let path = site.path.as_slice();
     let prior_pending = match prior.map(|s| &s.binding) {
         Some(StepBinding::PendingInputs(p)) => Some(p),
@@ -420,7 +425,8 @@ pub(super) fn bind_step(
             });
             return Ok(step);
         }
-        let enabled = evaluate_enable_if(
+        let enabled = evaluate_condition(
+            cx.jt,
             st.enable_if.as_ref(),
             &step_symtab,
             cx.budgets,
@@ -540,9 +546,57 @@ pub(super) fn bind_step(
     }
 }
 
-/// Evaluate an `enableIf`, with target type `bool` (a `null` result is an
+/// The Expression Language profile of `jt`'s template scope, with no host
+/// context: the profile template validation checks its expression fields
+/// with, and so the one job creation parses and evaluates them with.
+pub(super) fn template_expr_profile(jt: &JobTemplate) -> openjd_expr::ExprProfile {
+    jt.profile().to_expr_profile(openjd_expr::HostContext::None)
+}
+
+/// Evaluate a condition of `jt`: a Step's or a loop's `enableIf`, or a loop's
+/// `while` or `until`. Each is an expression field of type `bool` (RFC 0010's
+/// Template Schemas §7.6), so a `null` result, or a result of another type,
+/// is an error reported at `path`. `None` (the field is absent) is `true`.
+pub(super) fn evaluate_condition(
+    jt: &JobTemplate,
+    field: Option<&ExprField>,
+    symtab: &SymbolTable,
+    budgets: EvalBudgets,
+    path: &[PathElement],
+) -> Result<bool, ModelError> {
+    let Some(field) = field else {
+        return Ok(true);
+    };
+    let profile = template_expr_profile(jt);
+    let library = openjd_expr::FunctionLibrary::for_profile(&profile);
+    let ev = ExprFieldEval {
+        profile: &profile,
+        library: &library,
+        memory_limit: budgets.memory,
+        operation_limit: budgets.operations,
+    };
+    match expr_field::resolve(field, &ExprType::BOOL, symtab, &ev) {
+        Ok(ExprValue::Bool(b)) => Ok(b),
+        // `resolve` returns only values that fit `bool`.
+        Ok(other) => unreachable!("an expression field of type bool resolved to {other:?}"),
+        Err(message) => Err(error_at_path(path, expr_field::with_source(message, field))),
+    }
+}
+
+/// A validation error with one `message` at `path`.
+fn error_at_path(path: &[PathElement], message: String) -> ModelError {
+    let mut errors = ValidationErrors::default();
+    errors.add(path, message);
+    match errors.into_result("JobTemplate") {
+        Err(e) => e,
+        Ok(()) => unreachable!("one error was added"),
+    }
+}
+
+/// Evaluate an Environment's `enableIf`, a YAML bool or a format string (see
+/// [`BoolOrFormatString`]), with target type `bool` (a `null` result is an
 /// error). `None` (no `enableIf`) is `true`.
-pub(super) fn evaluate_enable_if(
+pub(super) fn evaluate_env_enable_if(
     enable_if: Option<&BoolOrFormatString>,
     symtab: &SymbolTable,
     budgets: EvalBudgets,
@@ -553,14 +607,7 @@ pub(super) fn evaluate_enable_if(
         Some(BoolOrFormatString::Bool(b)) => return Ok(*b),
         Some(BoolOrFormatString::FormatString(fs)) => fs,
     };
-    let fail = |message: String| {
-        let mut errors = ValidationErrors::default();
-        errors.add(path, message);
-        match errors.into_result("JobTemplate") {
-            Err(e) => e,
-            Ok(()) => unreachable!("one error was added"),
-        }
-    };
+    let fail = |message: String| error_at_path(path, message);
     let value = fs
         .resolve_with(
             symtab,
@@ -768,7 +815,7 @@ fn evaluate_remaining(
     )?;
     for (j, env) in st.step_environments.iter().flatten().enumerate() {
         let env_path = path_index(&path_field(path, "stepEnvironments"), j);
-        let enabled = match evaluate_enable_if(
+        let enabled = match evaluate_env_enable_if(
             env.enable_if.as_ref(),
             step_symtab,
             cx.budgets,
@@ -966,7 +1013,7 @@ pub(super) fn step_creation_inputs(
     st: &StepTemplate,
     built: &[Option<Built>],
 ) -> Result<StepInputs, ModelError> {
-    let groups = StepGroups::of(st);
+    let groups = StepGroups::of(jt, st);
     creation_inputs(
         jt,
         st.dependencies.as_deref().unwrap_or(&[]),

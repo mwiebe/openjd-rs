@@ -211,7 +211,7 @@ fn a_bound_or_skipped_step_is_returned_unchanged() {
 /// `C` with a dynamic `enableIf` that reads `Q`, and a range that would fail
 /// unless `Ok` is false.
 fn dynamic_enable_if() -> String {
-    p_q_c("    enableIf: '{{Steps.Q.Output.Gpu > 0}}'\n").replace(
+    p_q_c("    enableIf: 'Steps.Q.Output.Gpu > 0'\n").replace(
         "range: '{{range(Steps.P.Output.Count)}}'",
         "range: '{{range(Steps.P.Output.Count) if Param.Ok else fail(\"bad range\")}}'",
     )
@@ -286,12 +286,12 @@ fn null_enable_if() -> String {
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: R
     dependencies: [{{dependsOn: P}}]
-    enableIf: '{{{{Steps.P.Output.Count > 0}}}}'
+    enableIf: 'Steps.P.Output.Count > 0'
     outputVariables: [{{name: Go, type: BOOL}}]
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: C
     dependencies: [{{dependsOn: R}}]
-    enableIf: '{{{{Steps.R.Output.Go}}}}'
+    enableIf: 'Steps.R.Output.Go'
     script: {{actions: {{onRun: {{command: echo}}}}}}
 ",
         header("[EXPR, CONTROL_FLOW]")
@@ -325,7 +325,7 @@ fn an_enable_if_that_resolves_to_null_fails_the_step() {
             "Step 'C' failed in its enablement group:\n{}",
             expected(&[(
                 "steps[2] -> enableIf",
-                "Cannot coerce nulltype to bool\n  Steps.R.Output.Go\n  ~~~~~~~~~~~~~~~^~",
+                "resolved to null, which does not fit type bool (Template Schemas §7.6).\n  Steps.R.Output.Go",
             )])
         )
     );
@@ -565,15 +565,15 @@ fn an_enable_if_that_reads_a_producer_skipped_at_creation_is_decided_then() {
 steps:
   - name: C
     dependencies: [{{dependsOn: P}}]
-    enableIf: '{{{{Steps.P.Output.Count == null}}}}'
+    enableIf: 'Steps.P.Output.Count == null'
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: P
-    enableIf: '{{{{Param.Run}}}}'
+    enableIf: 'Param.Run'
     outputVariables: [{{name: Count, type: INT}}, {{name: Go, type: BOOL}}]
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: D
     dependencies: [{{dependsOn: P}}]
-    enableIf: '{{{{Steps.P.Output.Count != null}}}}'
+    enableIf: 'Steps.P.Output.Count != null'
     script: {{actions: {{onRun: {{command: echo}}}}}}
 ",
         header("[EXPR, CONTROL_FLOW]")
@@ -584,8 +584,8 @@ steps:
     assert_eq!(step(&job, "D").binding, StepBinding::Skipped);
     // An enableIf that is null at creation fails job creation.
     let null = template.replace(
-        "    enableIf: '{{Steps.P.Output.Count != null}}'\n",
-        "    enableIf: '{{Steps.P.Output.Go}}'\n",
+        "    enableIf: 'Steps.P.Output.Count != null'\n",
+        "    enableIf: 'Steps.P.Output.Go'\n",
     );
     let err = Fixture::new(&null, &[])
         .create()
@@ -594,7 +594,7 @@ steps:
         err.to_string(),
         expected(&[(
             "steps[2] -> enableIf",
-            "Cannot coerce nulltype to bool\n  Steps.P.Output.Go\n  ~~~~~~~~~~~~~~~^~",
+            "resolved to null, which does not fit type bool (Template Schemas §7.6).\n  Steps.P.Output.Go",
         )])
     );
 }
@@ -685,10 +685,7 @@ fn p_and_q(job: &openjd_model::job::Job, go: bool, gpu: i64, count: Option<i64>)
 fn a_known_enablement_is_kept() {
     // enableIf is decided true with Go=true; a later call whose inputs say
     // Go=false does not decide it again.
-    let f = Fixture::new(
-        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
-        &[],
-    );
+    let f = Fixture::new(&go_gpu_count("    enableIf: 'Steps.P.Output.Go'\n"), &[]);
     let mut job = f.job();
     let c = f
         .advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
@@ -785,10 +782,7 @@ fn a_step_bound_by_advancing_is_then_returned_unchanged() {
 
 #[test]
 fn a_step_skipped_by_advancing_is_then_returned_unchanged() {
-    let f = Fixture::new(
-        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
-        &[],
-    );
+    let f = Fixture::new(&go_gpu_count("    enableIf: 'Steps.P.Output.Go'\n"), &[]);
     let mut job = f.job();
     let c = f
         .advance(&mut job, "C", |j| p_and_q(j, false, 0, None), 0)
@@ -894,10 +888,7 @@ fn a_template_that_is_not_the_jobs_is_a_caller_error() {
 
 #[test]
 fn every_group_reports_that_it_waits_for_enablement() {
-    let f = Fixture::new(
-        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
-        &[],
-    );
+    let f = Fixture::new(&go_gpu_count("    enableIf: 'Steps.P.Output.Go'\n"), &[]);
     let job = f.job();
     let c = step(&job, "C");
     assert_eq!(
@@ -931,7 +922,7 @@ fn every_group_reports_that_it_waits_for_enablement() {
     script: {{actions: {{onRun: {{command: echo}}}}}}
   - name: C
     dependencies: [{{dependsOn: P}}]
-    enableIf: '{{{{Steps.P.Output.Go}}}}'
+    enableIf: 'Steps.P.Output.Go'
     script: {{actions: {{onRun: {{command: echo}}}}}}
 ",
             header("[EXPR, CONTROL_FLOW]")
@@ -1035,10 +1026,7 @@ fn every_known_groups_inputs_must_be_given_again() {
         refused("host selection", "Steps.Q.Output.Gpu")
     );
     // Enablement known from P, then only Q.
-    let f = Fixture::new(
-        &go_gpu_count("    enableIf: '{{Steps.P.Output.Go}}'\n"),
-        &[],
-    );
+    let f = Fixture::new(&go_gpu_count("    enableIf: 'Steps.P.Output.Go'\n"), &[]);
     let mut job = f.job();
     f.advance(&mut job, "C", |j| p_and_q(j, true, 0, None), 0)
         .unwrap();
@@ -1331,7 +1319,7 @@ fn input_symbols_cover_scripts_and_waiting_groups() {
   - {{name: E, variables: {{V: '{{{{Steps.P.Output.Mx}}}}'}}}}
   script: {{actions: {{onRun: {{command: 'echo {{{{Steps.P.RawOutput.Mx}}}}'}}}}}}
 - name: S
-  enableIf: '{{{{1 > 2}}}}'
+  enableIf: '1 > 2'
   dependencies: [{{dependsOn: P}}]
   script: {{actions: {{onRun: {{command: 'echo {{{{Steps.P.Output.Mx}}}}'}}}}}}
 ",

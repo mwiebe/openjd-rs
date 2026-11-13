@@ -25,7 +25,7 @@ steps:
           initial: "{{''}}"
           next: "{{Steps.ListPage.Output.NextToken}}"
       # The first request has no token, and the last page returns none.
-      while: "{{Loop.Iteration == 0 or Loop.Token != ''}}"
+      while: "Loop.Iteration == 0 or Loop.Token != ''"
       maxIterations: 1000
       steps:
         - name: ListPage

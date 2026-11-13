@@ -978,13 +978,13 @@ steps:
   - name: S0
     script: {actions: {onRun: {command: echo}}}
   - name: S1
-    enableIf: '{{len(Job.Name) == 1}}'
+    enableIf: 'len(Job.Name) == 1'
     stepEnvironments:
       - {name: SE0, enableIf: true, variables: {B: b}}
       - {name: SE1, enableIf: false, variables: {B: b}}
     script: {actions: {onRun: {command: echo}}}
   - name: S2
-    enableIf: '{{len(Job.Name) != 1}}'
+    enableIf: 'len(Job.Name) != 1'
     script: {actions: {onRun: {command: echo}}}
 ",
     )

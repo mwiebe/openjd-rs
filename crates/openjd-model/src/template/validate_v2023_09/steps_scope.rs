@@ -911,7 +911,7 @@ steps:
       - {name: B, type: BOOL}
     script: {actions: {onRun: {command: x}}}
   - name: M
-    enableIf: "{{true}}"
+    enableIf: "true"
     parameterSpace:
       taskParameterDefinitions:
         - {name: S, type: STRING, range: [a]}

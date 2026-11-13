@@ -53,7 +53,7 @@ steps:
           minLength: 1
           initial: "{{list(Param.Frames)}}"
           next: "{{Steps.CheckPass.Output.NoisyFrames}}"
-      until: "{{len(Steps.CheckPass.Output.NoisyFrames) == 0}}"
+      until: "len(Steps.CheckPass.Output.NoisyFrames) == 0"
       maxIterations: "{{Param.MaxPasses}}"
       steps:
         - name: RenderPass

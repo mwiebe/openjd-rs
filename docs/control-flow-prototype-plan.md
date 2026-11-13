@@ -4,8 +4,9 @@ Status: every PR below is merged into `control-flow-prototype`. PRs 1–7 were m
 `ec0070d`, and the loop PRs 8–11 at `c3f5ee2`, `fc78e69`, `d1236d8`, and `6553952`. A later change, merged at
 `d157b09`, makes `openjd run --step-inputs` need only the outputs that the Step or loop run alone reads. The
 prototype at `d157b09` was last verified against commit `69a9e95` of the spec branch, which is later than the input
-commit `c3f583b` below (see the Conformance paragraph of [Test strategy](#test-strategy)). Target branch:
-`control-flow-prototype`.
+commit `c3f583b` below (see the Conformance paragraph of [Test strategy](#test-strategy)). A later change makes a
+Step's and a loop's `enableIf` and a loop's `while` and `until` expression fields, as the spec branch now defines
+them ([M6](#m6-expression-field-conditions)). Target branch: `control-flow-prototype`.
 
 This plan maps the draft `CONTROL_FLOW` extension onto the openjd-rs crates. Its inputs are on branch
 `rfc-control-flow` of openjd-specifications, at commit `c3f583b`:
@@ -118,7 +119,8 @@ Each of these was checked against the code at `be266ed`, before the prototype, o
   from `evaluate_job_output`.
 * `template::StepTemplate` (`template/step.rs:233`) gets
   `enable_if: Option<BoolOrFormatString>` and `output_variables: Option<Vec<OutputVariableDefinition>>`.
-  `template::Environment` (`template/environment.rs:17`) gets `enable_if`.
+  `template::Environment` (`template/environment.rs:17`) gets `enable_if`. (M6 later made the Step's
+  `enable_if` an `Option<ExprField>`; the Environment's is still a `BoolOrFormatString`.)
 * `OutputVariableDefinition`: reuse the job-parameter machinery instead of a parallel set of structs. Deserialize the
   same discriminated union as `JobParameterDefinition`, reject `default`, `userInterface`, and (for `PATH` and
   `LIST[PATH]`) `dataFlow` in validation, keep `objectType` without checking it, and wrap the result in a newtype.
@@ -186,7 +188,8 @@ family:
   every Step with an `<Identifier>` name (with `add_steps_scope` in a mode that skips the direct-dependency rule and
   seeds `PATH`-typed values only in their `Raw` forms), with the target type made optional.
 * `enableIf` is validated with target type `bool`, not `bool?`. Its symbol table has no `let` names, no `Task.*`, and
-  no `Session.*`.
+  no `Session.*`. (M6 later made a Step's `enableIf` an expression field, which accepts `bool?` and fails on its
+  `null` when it is evaluated.)
 * The step-graph cycle check (`structure.rs:1118`) is unchanged. Dependency names are already checked at
   `structure.rs:217`.
 
@@ -551,6 +554,30 @@ the API leaves room for one:
   old one. `evaluate_job_output` can be called again with the new inputs. If that re-evaluation fails, the output
   keeps its earlier value and is marked stale, which is the caller's job.
 
+### M6. Expression-field conditions
+
+Added after the PRs below were merged. The spec branch now makes a Step's and a loop's `enableIf`, and a loop's
+`while` and `until`, expression fields of type `bool` (RFC 0011 §`<StepTemplate>` and Design Choice 12, RFC 0013
+§`<LoopDefinition>`), defined by RFC 0010's Template Schemas §7.6. That settles A8.
+
+* `template/expr_field.rs` holds `ExprField` (`Bool`, `Int`, `Float`, `Expression`, `Null`) and the crate-private
+  checks `validate`, `resolve`, and `accessed_symbols`. It is ported as code from the `ENV_PARAMS` prototype of RFC
+  0010 (branch `env-params-prototype`), whose numbering of the section was §7.5; that branch is not merged. Each
+  field has a `deserialize_with` that keeps a present `null`, so that validation reports it.
+* `StepTemplate::enable_if`, `StepLoop::enable_if`, `LoopDefinition::while_condition`, and `until_condition` are
+  `Option<ExprField>`, a public API change. An Environment's `enableIf` stays a `BoolOrFormatString`: RFC 0011 now
+  leaves it to RFC 0010, which needs `ENV_PARAMS`, and the conformance tests for it are still written in the earlier
+  form.
+* Pass 8 (`validate_condition`) runs the `Steps.*` and `Loop.*` reference scan, then §7.6 rules 1, 2, and 4 with
+  target `bool`: a `{{ }}` value is a parse error whose message says the field takes an expression without `{{ }}`,
+  only `bool`, `bool?`, and a literal `true` or `false` are accepted, and a `null` value or a `nulltype` expression is
+  an error.
+* Job creation, step input binding, and the loop functions evaluate them with `binding::evaluate_condition`, in the
+  same stages and scopes as before. A `null` result fails the Step or loop. Every message names the field's path and
+  the expression.
+* Symbol collection for the group inputs, the boundary inputs, and `job::Loop::expression_inputs` parses the
+  expression under the template's profile.
+
 ### Model specs to update
 
 `specs/model/template-types.md`, `validation.md`, `job-creation.md`, `job-types.md`, `parameter-space.md`,
@@ -905,7 +932,8 @@ and RFC 0012's chunked-Step rules apply to each instance unchanged.
 * `StepLoop` has `name`, `description`, `enable_if: Option<BoolOrFormatString>`, `dependencies`, the
   `<LoopDefinition>` (serde name `loop`), and `output_variables: Option<Vec<LoopOutputVariableDefinition>>`.
   `LoopDefinition` has `variables: Option<Vec<LoopVariableDefinition>>`, `while_condition` and
-  `until_condition` (`Option<BoolOrFormatString>`, serde names `while` and `until`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
+  `until_condition` (`Option<BoolOrFormatString>`, serde names `while` and `until`; M6 later made these three
+  `Option<ExprField>`), `max_iterations: IntOrFormatString` (`template/task_parameters.rs:286`), and the
   body, `steps`. The body is parsed so that an entry with a `loop` key fails with a message that says loops do not
   nest (`3.8.1--nested-loop`), not as an unknown field of a `<StepTemplate>`.
 * `LoopVariableDefinition` and `LoopOutputVariableDefinition` reuse the job-parameter machinery as
@@ -1467,12 +1495,15 @@ the same format as `EXPR/jobs/*.test.yaml`, including the `7.4--*` progressive-b
 (`job_templates/1.1--loop-*`, `job_templates/3.8*`, and `jobs/3.8.5--*`). Each file's header cites the RFC (0011, 0012,
 or 0013) that holds its rule. Run it against the prototype from PR 6 on, as the `AGENTS.md` conformance slice does for
 the other extensions: from the openjd-specifications checkout, with this build's `openjd` first on `PATH`,
-`uv run --with pyyaml python3.12 conformance-tests/run_openjd_cli_tests.py '2023-09/CONTROL_FLOW/*'`, and the full
+`uv run --no-project --with pyyaml --python 3.12 python run_openjd_cli_tests.py '2023-09/CONTROL_FLOW/*'` from
+`conformance-tests/`, and the full
 suite with `'2023-09/*'`. PR 7a ran the non-loop slice, PR 8 the loop `job_templates`, and PRs 10 and 11 the whole
 set. At `6553952`, against the spec at `c3f583b`, all 363 CONTROL_FLOW tests passed on Linux, and so did all 1,594
 tests of the full 2023-09 suite that run there (its 19 Windows-only tests are skipped on Linux). At `d157b09`,
 against the spec at `69a9e95`, whose set has 418 tests (4 `env_templates`, 199 `job_templates`, and 215 `jobs`), all
-418 pass on Linux, and the full 2023-09 suite passes 1,649 tests, with the 19 Windows-only tests skipped. Raise any
+418 pass on Linux, and the full 2023-09 suite passes 1,649 tests, with the 19 Windows-only tests skipped. With M6,
+against the spec at `cd45188`, whose set has 436 tests (4 `env_templates`, 216 `job_templates`, and 216 `jobs`), all
+436 pass on Linux, and so do all 1,726 tests of the full 2023-09 suite that run there. Raise any
 disagreement between a test and an RFC on the RFC rather than changing the prototype to match the test.
 
 **Python parity (Q7)**: not applicable until openjd-model-for-python implements the extension. The M3 parser and the
@@ -1533,11 +1564,9 @@ RFC 0013 §Limits items 2 and 4; those three items are not yet updated here.
   `"on"`, or `"1"` for `BOOL`. RFC 0012's table shows none of these cases. RFC 0012 should name one conversion and
   add these rows (or make output conversion stricter). The prototype uses EXPR coercion, which is RFC 0012's
   normative text.
-* **A8. `enableIf` that is not a single whole-field expression.** RFC 0011 doesn't say how `enableIf: "yes"` (no
-  braces) or `enableIf: "{{Param.X}} "` (text around the expression) resolves. EXPR's string-to-bool coercion would
-  accept the first and reject `"true "`. Require a YAML `bool` or a single whole-field expression, or state the
-  coercion. RFC 0013 gives a loop's `while` and `until` the same `<bool> | <FormatString>` form, so the answer applies
-  to them too.
+* ~~**A8. `enableIf` that is not a single whole-field expression.**~~ Resolved: a Step's and a loop's `enableIf`, and
+  a loop's `while` and `until`, are now expression fields, written without `{{ }}`, with no conversion from a
+  string ([M6](#m6-expression-field-conditions)).
 * ~~**A9. `Task.OutputFile` in TEMPLATE-scope action fields.**~~ Resolved: `Task.OutputFile` no longer exists.
 * ~~**A10. The output file's integrity.**~~ Resolved: there is no session-supplied file. For `@` files, RFC 0012
   §File values now requires the opened file to be a regular file inside the Session working directory, checked on

@@ -10,6 +10,7 @@ mod actions;
 mod constrained_strings;
 mod environment;
 mod environment_template;
+pub(crate) mod expr_field;
 mod expr_parameters;
 mod host_requirements;
 mod job_template;
@@ -50,6 +51,8 @@ pub use output_variables::{
     BoolOrFormatString, JobOutputDefinition, LoopOutputVariableDefinition, LoopVariableDefinition,
     OutputVariableDefinition,
 };
+// expr_field (expression fields, RFC 0010's Template Schemas §7.6)
+pub use expr_field::ExprField;
 // step_loop (CONTROL_FLOW, RFC 0013)
 pub use step_loop::{LoopDefinition, StepEntry, StepLoop, StepTemplateRef};
 // step

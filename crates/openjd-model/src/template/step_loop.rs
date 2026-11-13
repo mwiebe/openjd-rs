@@ -16,9 +16,8 @@
 use serde::Deserialize;
 
 use super::constrained_strings::Description;
-use super::output_variables::{
-    BoolOrFormatString, LoopOutputVariableDefinition, LoopVariableDefinition,
-};
+use super::expr_field::ExprField;
+use super::output_variables::{LoopOutputVariableDefinition, LoopVariableDefinition};
 use super::step::{StepDependency, StepTemplate};
 use super::task_parameters::IntOrFormatString;
 use crate::error::PathElement;
@@ -113,7 +112,7 @@ impl StepEntry {
     }
 
     /// The entry's `enableIf`, if any.
-    pub fn enable_if(&self) -> Option<&BoolOrFormatString> {
+    pub fn enable_if(&self) -> Option<&ExprField> {
         match self {
             Self::Step(s) => s.enable_if.as_ref(),
             Self::Loop(l) => l.enable_if.as_ref(),
@@ -152,8 +151,10 @@ pub struct StepLoop {
     pub name: String,
     /// For display, as on `<StepTemplate>`.
     pub description: Option<Description>,
-    /// Whether the loop runs, with the meaning and scope of a Step's.
-    pub enable_if: Option<BoolOrFormatString>,
+    /// Whether the loop runs, with the meaning and scope of a Step's: an
+    /// expression field of type `bool` (RFC 0010's Template Schemas §7.6).
+    #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
+    pub enable_if: Option<ExprField>,
     /// The top-level Steps and loops the loop depends on.
     pub dependencies: Option<Vec<StepDependency>>,
     /// The loop's variables, condition, bound, and body.
@@ -192,12 +193,22 @@ pub struct LoopDefinition {
     /// The loop variables, read as `Loop.<name>` and `RawLoop.<name>`.
     pub variables: Option<Vec<LoopVariableDefinition>>,
     /// Whether to run another iteration, checked before each iteration,
-    /// including the first.
-    #[serde(rename = "while")]
-    pub while_condition: Option<BoolOrFormatString>,
-    /// Whether to stop, checked after each iteration.
-    #[serde(rename = "until")]
-    pub until_condition: Option<BoolOrFormatString>,
+    /// including the first: an expression field of type `bool` (RFC 0010's
+    /// Template Schemas §7.6).
+    #[serde(
+        rename = "while",
+        default,
+        deserialize_with = "super::expr_field::deserialize_while"
+    )]
+    pub while_condition: Option<ExprField>,
+    /// Whether to stop, checked after each iteration: an expression field of
+    /// type `bool`, as `while` is.
+    #[serde(
+        rename = "until",
+        default,
+        deserialize_with = "super::expr_field::deserialize_until"
+    )]
+    pub until_condition: Option<ExprField>,
     /// The most iterations the loop may run, from 1 to 1,000.
     pub max_iterations: IntOrFormatString,
     /// The body: the Steps that run in each iteration.

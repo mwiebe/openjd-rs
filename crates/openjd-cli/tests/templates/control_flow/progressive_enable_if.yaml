@@ -29,7 +29,7 @@ steps:
         args: [-c, "print('openjd_output_var: Cpus=1'); print('openjd_output_var: Enable=false')"]
 - name: C
   dependencies: [{dependsOn: P}, {dependsOn: Q}]
-  enableIf: "{{Steps.Q.Output.Enable}}"
+  enableIf: "Steps.Q.Output.Enable"
   parameterSpace:
     taskParameterDefinitions:
     - name: I

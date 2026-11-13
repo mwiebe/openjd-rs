@@ -7,8 +7,9 @@
 use super::actions::{Action, CancelationMode, StepActions};
 use super::constrained_strings::Description;
 use super::environment::{EmbeddedFile, Environment};
+use super::expr_field::ExprField;
 use super::host_requirements::HostRequirements;
-use super::output_variables::{BoolOrFormatString, OutputVariableDefinition};
+use super::output_variables::OutputVariableDefinition;
 use super::task_parameters::StepParameterSpaceDefinition;
 use crate::error::PathElement;
 use crate::format_string::FormatString;
@@ -238,8 +239,11 @@ impl SimpleActionKind {
 pub struct StepTemplate {
     pub name: String,
     pub description: Option<Description>,
-    /// Whether the Step runs (`CONTROL_FLOW`, RFC 0011).
-    pub enable_if: Option<BoolOrFormatString>,
+    /// Whether the Step runs (`CONTROL_FLOW`, RFC 0011): an expression
+    /// field of type `bool` (RFC 0010's Template Schemas §7.6). A present
+    /// `null` is kept as [`ExprField::Null`] so validation can report it.
+    #[serde(default, deserialize_with = "super::expr_field::deserialize_enable_if")]
+    pub enable_if: Option<ExprField>,
     #[serde(rename = "let")]
     pub let_bindings: Option<Vec<String>>,
     pub dependencies: Option<Vec<StepDependency>>,

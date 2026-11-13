@@ -5,11 +5,11 @@ name: SkipI
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P
-      enableIf: "{{Loop.Iteration >= 1}}"
+      enableIf: "Loop.Iteration >= 1"
       outputVariables:
       - {name: V, type: INT}
       script:

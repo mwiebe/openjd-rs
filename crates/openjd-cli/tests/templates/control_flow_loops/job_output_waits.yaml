@@ -12,9 +12,9 @@ steps:
     actions:
       onRun: {command: python, args: ['-c', "print('openjd_output_var: V=4')"]}
 - name: L
-  enableIf: "{{False}}"
+  enableIf: "False"
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P

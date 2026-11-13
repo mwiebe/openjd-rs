@@ -38,7 +38,7 @@ short-circuiting), so users see all problems at once.
 | 5 | `limits.rs` | Enforce numeric limits (name lengths, counts); FEATURE_BUNDLE_1 raises many limits |
 | 6 | `structure.rs` | Structural validation (uniqueness, required fields, dependencies) |
 | 7 | `feature_bundle_1.rs` | Gate FEATURE_BUNDLE_1 features (simple actions, endOfLine) |
-| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` and `Loop.*` scopes, types `enableIf` as `bool`, and checks a loop's own expressions (RFC 0013) |
+| 8 | `format_strings.rs` | Validate format string variable references; adapts scopes and expression complexity based on EXPR; with CONTROL_FLOW, seeds and checks the `Steps.*` and `Loop.*` scopes, checks `enableIf`, `while`, and `until` as expression fields of type `bool`, and checks a loop's own expressions (RFC 0013) |
 | 9 | `task_chunking.rs` | Gate TASK_CHUNKING features (ChunkInt parameters) |
 | 10 | `wrap_actions.rs` | Gate WRAP_ACTIONS features (onWrapEnvEnter, onWrapTaskRun, onWrapEnvExit) and enforce the single-wrap-layer-per-session rule (RFC 0008) |
 | 11 | `control_flow.rs` | Gate CONTROL_FLOW features (`enableIf`, `outputVariables`, `jobOutputDefinitions`, loops) and enforce their structural rules (RFC 0011, RFC 0012, RFC 0013) |
@@ -421,7 +421,36 @@ their expressions are not type-checked.
 `Steps.*` of the Step's direct dependencies, with no `let` names, `Task.*`, or
 `Session.*`. A Step Environment's `enableIf` uses the same table. A Job Environment's
 uses `Param.*` (minus `PATH`), `RawParam.*`, and `Job.Name`, with the reference scan
-rejecting any `Steps.*`. The target type is `bool`, not `bool?`, so EXPR's coercion
+rejecting any `Steps.*`. Without `CONTROL_FLOW` pass 8 does not look at `enableIf`; pass
+11 rejects the field.
+
+A Step's `enableIf` (and a loop's `enableIf`, `while`, and `until`, below) is an
+expression field of target type `bool` (RFC 0010's Template Schemas §7.6;
+`validate_condition` calls `expr_field::validate` under the template-scope profile). The
+reference scan runs first, as for a format string, so a `Steps.*`, `Loop.*`, or
+`RawLoop.*` reference the field may not read gets the messages of the tables above and
+the field is not evaluated. Then:
+
+| Value | Result |
+|---|---|
+| `true` or `false` | accepted, with no check |
+| another scalar (`1`, `1.5`) | `the integer scalar 1 does not fit type bool: an expression field of type bool takes a boolean scalar or a string holding one expression (Template Schemas §7.6).` (`the float scalar 1.5 ...`) |
+| `null` | `must not be null: an expression field of type bool takes a boolean scalar or a string holding one expression (Template Schemas §7.6).` |
+| a string that does not parse | `Invalid expression: <parse error>` with the expression and a caret. When the value contains `{{`, the summary is followed by `An expression field takes an expression without '{{ }}' (Template Schemas §7.6).`, so `'{{Param.Run}}'` reads `Invalid expression: Set literals are not supported. An expression field takes an expression without '{{ }}' (Template Schemas §7.6).` |
+| a name that is not available | `Invalid expression: Undefined variable: 'run'.` with the expression and a caret |
+| static type `bool`, `bool?`, or `unresolved[bool]` | accepted; a `bool?`'s `null` fails when it is evaluated |
+| static type `nulltype` (`'null'`) | `has type nulltype, which does not fit type bool (Template Schemas §7.6).` |
+| any other static type | `has type string, which does not fit type bool; an expression field converts no type except int to float (Template Schemas §7.6).` (or `int`, and so on) |
+
+A type message is followed by the expression on a line of its own
+(`expr_field::with_source`). No string converts to `bool`: `'Param.Mode'` for a STRING
+parameter is a type error whatever its value, so a condition over a string is written as
+a comparison (`"Param.Mode == 'on'"`), and the string `'true'` is the expression `true`,
+which is accepted.
+
+An Environment's `enableIf` keeps its earlier format-string form
+([template-types.md](template-types.md) § BoolOrFormatString), since RFC 0011 leaves it to
+RFC 0010 and `ENV_PARAMS`. Its target type is `bool`, not `bool?`, so EXPR's coercion
 rejects an `int` (`Cannot coerce int to bool`) or a static `null`
 (`Cannot coerce nulltype to bool`); an unresolved `bool?`, such as a conditional
 producer's output, is accepted and checked when concrete. A YAML `bool` needs no check. A
@@ -430,8 +459,7 @@ literal string, or text around an expression, resolves to a string (Expression L
 `"true"`/`"yes"`/`"on"`/`"1"` and `"false"`/`"no"`/`"off"`/`"0"`, case-insensitive). A
 literal, or a string that is fully static (`'x{{1}}'`), is converted here, and fails with
 `must resolve to a bool: Cannot convert 'maybe' to bool.`; one that depends on an
-unresolved symbol is converted when it is evaluated. Without `CONTROL_FLOW` pass 8 does not
-look at `enableIf`; pass 11 rejects the field.
+unresolved symbol is converted when it is evaluated.
 
 **Job output values.** Each `jobOutputDefinitions[k] -> value` is checked against a table
 of its own (`validate_job_output_values`): `Param.*` (minus `PATH` and `LIST[PATH]`
@@ -521,15 +549,17 @@ variable named `Iteration` (pass 11 rejects it) is not seeded. The reference mes
 
 | Field | Path | Also reads | Target type |
 |---|---|---|---|
-| `enableIf` | `steps[i] -> enableIf` | `Step.Name` (the loop's name), the loop's dependencies | `bool`, as a Step's `enableIf` |
+| `enableIf` | `steps[i] -> enableIf` | `Step.Name` (the loop's name), the loop's dependencies | `bool`, an expression field, as a Step's `enableIf` |
 | `maxIterations` (a format string) | `steps[i] -> loop -> maxIterations` | nothing | `int`, 1 to 1,000 when static (`maxIterations must be from 1 to 1000.`) |
 | each `initial` | `steps[i] -> loop -> variables[k] -> initial` | the loop's dependencies | the variable's type |
-| `while` | `steps[i] -> loop -> while` | the loop's dependencies, `Loop.*` | `bool` |
-| `until` | `steps[i] -> loop -> until` | the loop's dependencies, its body Steps, `Loop.*` | `bool` |
+| `while` | `steps[i] -> loop -> while` | the loop's dependencies, `Loop.*` | `bool`, an expression field |
+| `until` | `steps[i] -> loop -> until` | the loop's dependencies, its body Steps, `Loop.*` | `bool`, an expression field |
 | each `next` | `steps[i] -> loop -> variables[k] -> next` | as `until` | the variable's type |
 | each output `value` | `steps[i] -> outputVariables[k] -> value` | as `until` | the output's type, or under `APPEND` its element type |
 
-None of them reads `let` names, `Task.*`, or `Session.*`. The variable and output targets
+None of them reads `let` names, `Task.*`, or `Session.*`. `enableIf`, `while`, and `until`
+are checked as a Step's `enableIf` is (above), and `maxIterations`, `initial`, `next`, and
+the output `value`s are format strings. The variable and output targets
 are not made optional (`ResolvedConstraint::LoopValue`), because a `null` result is an
 error: a static `null` fails with `Cannot coerce nulltype to int`. As everywhere in
 EXPR, an unresolved `T?`, such as a conditional body Step's output, is accepted where `T`
@@ -866,13 +896,18 @@ definition's, which would list `default` and `userInterface`:
 - a `collect` that is not `ONCE`, `LAST`, or `APPEND` (case-sensitive);
 - a `unit` that is not a string;
 - a `name` that is not an `<Identifier>`;
-- an `enableIf` that is a number, list, or mapping, or a string that is not a well-formed
-  format string.
+- a Step's or a loop's `enableIf`, or a loop's `while` or `until`, that is a list or a
+  mapping (`enableIf must be a boolean, integer, float, or string (an expression field,
+  Template Schemas §7.6)`), or an integer above `i64::MAX`;
+- an Environment's `enableIf` that is a number, list, or mapping, or a string that is not
+  a well-formed format string.
 
-An explicit `null` for `enableIf`, `outputVariables`, `jobOutputDefinitions`, or an
-output's `collect`, `unit`, `default`, `userInterface`, or `dataFlow` means the field is
-omitted, as for the
-template's other optional fields, so it is neither gated nor reported.
+An explicit `null` for an Environment's `enableIf`, `outputVariables`,
+`jobOutputDefinitions`, or an output's `collect`, `unit`, `default`, `userInterface`, or
+`dataFlow` means the field is omitted, as for the template's other optional fields, so it
+is neither gated nor reported. A `null` for a Step's or a loop's `enableIf`, or a loop's
+`while` or `until`, is not: an expression field's `null` is an error (§7.6), reported by
+pass 8 with the extension and gated by pass 11 without it.
 
 **Loops** (RFC 0013 §Validation items 1, 5, 6, and the literal form of 7), with the
 extension:

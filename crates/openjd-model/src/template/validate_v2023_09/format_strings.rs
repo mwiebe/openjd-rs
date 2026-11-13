@@ -20,6 +20,7 @@ use openjd_expr::value::ExprValue;
 use openjd_expr::FormatString;
 
 use crate::error::{path_field, path_index, PathElement, ValidationErrors};
+use crate::template::expr_field::{self, ExprFieldEval};
 use crate::template::*;
 use crate::types::{ModelExtension, ValidationContext};
 
@@ -433,9 +434,11 @@ enum ResolvedConstraint<'a> {
     /// fully static multi-segment string must convert to `ty`, as for
     /// [`Self::JobOutputValue`].
     LoopValue { ty: &'a ExprType },
-    /// RFC 0011 `enableIf`, on a Step or an Environment: target type
-    /// `bool`, not `bool?`, so a `null` result is an error rather than an
-    /// omitted field. A whole-field expression's static non-bool value,
+    /// An Environment's `enableIf`, in its format-string form (see
+    /// [`BoolOrFormatString`]): target type `bool`, not `bool?`, so a `null`
+    /// result is an error rather than an omitted field. A Step's and a
+    /// loop's `enableIf` and a loop's `while` and `until` are expression
+    /// fields, checked by [`validate_condition`] instead. A whole-field expression's static non-bool value,
     /// `null` included, fails EXPR's coercion; a fully static multi-segment
     /// string must be one of the spellings `string` → `bool` accepts.
     Bool,
@@ -827,7 +830,7 @@ fn check_resolved_constraint(
                 check_string_is_bool(text, path, errors);
             }
         }
-        // As for `enableIf`: a whole-field expression was already resolved
+        // As for an Environment's `enableIf`: a whole-field expression was already resolved
         // with the target type; a multi-segment string resolves to text,
         // which is then converted. When the text is fully static it is
         // converted here; otherwise its type must be one that a string can
@@ -955,6 +958,19 @@ impl<'a> FsEval<'a> {
             opts = opts.with_operation_limit(o);
         }
         opts
+    }
+
+    /// The evaluator for an expression field (RFC 0010's Template Schemas
+    /// §7.6) parsed under `profile`, with this evaluator's library and
+    /// budgets and the POSIX path format, as [`budgeted`](Self::budgeted)
+    /// uses.
+    fn expr_field_eval<'b>(&'b self, profile: &'b openjd_expr::ExprProfile) -> ExprFieldEval<'b> {
+        ExprFieldEval {
+            profile,
+            library: self.lib,
+            memory_limit: self.memory_limit,
+            operation_limit: self.operation_limit,
+        }
     }
 
     /// Apply the caller budgets and the POSIX path format (see the
@@ -1423,18 +1439,19 @@ fn check_steps_refs_only(
     }
 }
 
-/// Validate an RFC 0011 `enableIf` (Step or Environment) against `symtab`,
-/// the restricted scope its location allows.
+/// Validate an Environment's `enableIf` against `symtab`, the restricted
+/// scope its location allows.
 ///
-/// A YAML bool needs no check. A format string resolves as any typed field
-/// does (Expression Language §1.3.2): a single whole-field expression with
-/// target type `bool`, not `bool?`; anything else to a string, which is
-/// then converted to `bool` by EXPR's implicit `string` → `bool` coercion
-/// (§1.2.3: `"true"`/`"yes"`/`"on"`/`"1"` and `"false"`/`"no"`/`"off"`/`"0"`,
-/// case-insensitive). A literal string, or a string whose value is fully
-/// static, is converted here; one that depends on unresolved symbols is
-/// converted when it is evaluated.
-fn validate_enable_if(
+/// An Environment's `enableIf` keeps its earlier format-string form (see
+/// [`BoolOrFormatString`]). A YAML bool needs no check. A format string
+/// resolves as any typed field does (Expression Language §1.3.2): a single
+/// whole-field expression with target type `bool`, not `bool?`; anything
+/// else to a string, which is then converted to `bool` by EXPR's implicit
+/// `string` → `bool` coercion (§1.2.3: `"true"`/`"yes"`/`"on"`/`"1"` and
+/// `"false"`/`"no"`/`"off"`/`"0"`, case-insensitive). A literal string, or a
+/// string whose value is fully static, is converted here; one that depends
+/// on unresolved symbols is converted when it is evaluated.
+fn validate_env_enable_if(
     enable_if: Option<&BoolOrFormatString>,
     symtab: &SymbolTable,
     ev: &FsEval<'_>,
@@ -1458,8 +1475,47 @@ fn validate_enable_if(
     );
 }
 
+/// Validate a condition: a Step's or a loop's `enableIf` (RFC 0011
+/// §Validation item 6), or a loop's `while` or `until` (RFC 0013
+/// §Validation item 10). Each is an expression field of type `bool` (RFC
+/// 0010's Template Schemas §7.6 rules 1, 2, and 4), checked against
+/// `symtab`, the restricted scope its location allows, under `profile`,
+/// the template-scope profile.
+///
+/// A boolean scalar needs no check, and any other scalar or a `null` is
+/// an error. An expression must parse (a value written as a format string
+/// does not), and its static type must fit `bool`: `bool?` is accepted,
+/// its `null` failing the Step or loop when it is evaluated. A `Steps.*`,
+/// `Loop.*`, or `RawLoop.*` reference that the field may not read is
+/// explained one by one, as for a format string, and the field is not
+/// evaluated.
+fn validate_condition(
+    field: Option<&ExprField>,
+    symtab: &SymbolTable,
+    ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
+    path: &[PathElement],
+    errors: &mut ValidationErrors,
+) {
+    let Some(field) = field else {
+        return;
+    };
+    let steps_errors = ev.steps_errors(&expr_field::accessed_symbols(field, profile));
+    if !steps_errors.is_empty() {
+        for message in steps_errors {
+            errors.add(path, message);
+        }
+        return;
+    }
+    if let Err(message) =
+        expr_field::validate(field, &ExprType::BOOL, symtab, &ev.expr_field_eval(profile))
+    {
+        errors.add(path, expr_field::with_source(message, field));
+    }
+}
+
 /// EXPR's implicit `string` → `bool` coercion (§1.2.3) applied to the text an
-/// `enableIf` resolves to, reporting a failure at `path`.
+/// Environment's `enableIf` resolves to, reporting a failure at `path`.
 fn check_string_is_bool(text: &str, path: &[PathElement], errors: &mut ValidationErrors) {
     if let Err(message) =
         ExprValue::String(text.to_string()).coerce(&ExprType::BOOL, PathFormat::Posix)
@@ -1562,13 +1618,17 @@ const MAX_ITERATIONS_CONSTRAINT: ResolvedConstraint<'static> = ResolvedConstrain
 ///
 /// None of them may read `Task.*`, `Session.*`, or `let` names, and only
 /// `enableIf` reads `Step.Name` (the loop's name). Each target type is not
-/// made optional, so a `null` result is an error.
+/// made optional, so a `null` result is an error. `enableIf`, `while`, and
+/// `until` are expression fields (RFC 0010's Template Schemas §7.6), checked
+/// by [`validate_condition`] under `profile`, the template-scope profile;
+/// the others are format strings.
 fn validate_loop_expressions(
     jt: &JobTemplate,
     entry: usize,
     l: &StepLoop,
     expr_active: bool,
     template_ev: &FsEval<'_>,
+    profile: &openjd_expr::ExprProfile,
     errors: &mut ValidationErrors,
 ) {
     let entry_path = path_index(&path_field(&[], "steps"), entry);
@@ -1599,10 +1659,11 @@ fn validate_loop_expressions(
     };
 
     let (symtab, ev) = scope_of(LoopField::EnableIf);
-    validate_enable_if(
+    validate_condition(
         l.enable_if.as_ref(),
         &symtab,
         &ev,
+        profile,
         &path_field(&entry_path, "enableIf"),
         errors,
     );
@@ -1649,10 +1710,11 @@ fn validate_loop_expressions(
     ] {
         if cond.is_some() {
             let (symtab, ev) = scope_of(field);
-            validate_enable_if(
+            validate_condition(
                 cond.as_ref(),
                 &symtab,
                 &ev,
+                profile,
                 &path_field(&loop_path, key),
                 errors,
             );
@@ -2334,7 +2396,7 @@ pub fn validate_format_strings(
             if cf_active {
                 // RFC 0011 <Environment> enableIf constraint 1: Param.*
                 // (minus PATH), RawParam.*, and Job.Name.
-                validate_enable_if(
+                validate_env_enable_if(
                     env.enable_if.as_ref(),
                     &env_template_symtab,
                     &env_template_ev,
@@ -2395,13 +2457,14 @@ pub fn validate_format_strings(
         let step_template_ev = template_ev.with_steps(step_refs(reader, StepsFieldScope::Template));
         let step_host_ev = host_ev.with_steps(step_refs(reader, StepsFieldScope::Host));
 
-        // RFC 0011 <StepTemplate> enableIf: target type `bool`, in the
-        // restricted scope of `step_enable_if_symtab`.
+        // RFC 0011 <StepTemplate> enableIf: an expression field of type
+        // `bool`, in the restricted scope of `step_enable_if_symtab`.
         if cf_active {
-            validate_enable_if(
+            validate_condition(
                 step.enable_if.as_ref(),
                 &step_enable_if_symtab(reader),
                 &step_template_ev,
+                &template_profile,
                 &path_field(&step_path, "enableIf"),
                 errors,
             );
@@ -2741,7 +2804,7 @@ pub fn validate_format_strings(
                 if cf_active {
                     // RFC 0011 <Environment> enableIf constraint 2: the
                     // Step's own enableIf scope.
-                    validate_enable_if(
+                    validate_env_enable_if(
                         env.enable_if.as_ref(),
                         &step_enable_if_symtab(reader),
                         &step_template_ev,
@@ -2833,7 +2896,15 @@ pub fn validate_format_strings(
     if cf_active {
         for (i, entry) in jt.steps.iter().enumerate() {
             if let StepEntry::Loop(l) = entry {
-                validate_loop_expressions(jt, i, l, expr_active, &template_ev, errors);
+                validate_loop_expressions(
+                    jt,
+                    i,
+                    l,
+                    expr_active,
+                    &template_ev,
+                    &template_profile,
+                    errors,
+                );
             }
         }
     }

@@ -14,7 +14,7 @@ name: T
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: W

@@ -1704,27 +1704,22 @@ fn a_host_selection_let_error_is_collected() {
 }
 
 #[test]
-fn an_enable_if_with_text_that_is_not_a_bool_fails() {
-    for (enable_if, x) in [("a{{Param.X}}", "b"), ("{{Param.X}}x", "true")] {
-        let template = tpl(
-            CF,
-            "  - {name: X, type: STRING}\n",
-            &format!("  - name: S\n    enableIf: '{enable_if}'\n{ECHO}"),
-        );
-        let err = Fixture::new(&template, &[("X", x)])
-            .create()
-            .expect_err(enable_if);
-        let resolved = enable_if.replace("{{Param.X}}", x);
-        assert_eq!(
-            err.to_string(),
-            expected(&[(
-                "steps[0] -> enableIf",
-                &format!(
-                    "'{enable_if}' resolved to '{resolved}', which does not convert to a bool."
-                ),
-            )])
-        );
-    }
+fn an_enable_if_that_fails_to_evaluate_fails_job_creation() {
+    let template = tpl(
+        CF,
+        "  - {name: X, type: STRING}\n",
+        &format!("  - name: S\n    enableIf: 'int(Param.X) > 0'\n{ECHO}"),
+    );
+    let err = Fixture::new(&template, &[("X", "b")])
+        .create()
+        .expect_err("int('b') fails");
+    assert_eq!(
+        err.to_string(),
+        expected(&[(
+            "steps[0] -> enableIf",
+            "could not be evaluated: Cannot convert 'b' to int\n  int(Param.X) > 0\n  ^~~~~~~~~~~~"
+        )])
+    );
 }
 
 #[test]
@@ -1973,16 +1968,17 @@ fn the_1024_cap_on_resolved_float_and_string_ranges() {
 }
 
 #[test]
-fn an_enable_if_with_text_resolving_to_a_bool_spelling_is_decided() {
-    for (s, want) in [("se", StepBinding::Skipped), ("ue", StepBinding::Bound)] {
-        let prefix = if s == "se" { "fal" } else { "tr" };
+fn an_enable_if_comparing_a_string_parameter_is_decided() {
+    // An expression field converts no string to bool (RFC 0010's Template
+    // Schemas §7.6 rule 2), so a STRING parameter is compared.
+    for (s, want) in [("no", StepBinding::Skipped), ("yes", StepBinding::Bound)] {
         let template = tpl(
             CF,
             "  - {name: S, type: STRING}\n",
-            &format!("  - name: S\n    enableIf: '{prefix}{{{{Param.S}}}}'\n{ECHO}"),
+            &format!("  - name: S\n    enableIf: \"Param.S == 'yes'\"\n{ECHO}"),
         );
         let job = Fixture::new(&template, &[("S", s)]).job();
-        assert_eq!(step(&job, "S").binding, want, "{prefix}{s}");
+        assert_eq!(step(&job, "S").binding, want, "{s}");
     }
 }
 

@@ -42,8 +42,10 @@
 //!   and a `unit` as for an output variable. Pass 6 checks loop names,
 //!   dependencies, the body's shape, and cycles; pass 8 the expressions.
 //!
-//! The `Steps.*` scope rules, the typing of `enableIf`, and the scope and
-//! typing of a job output's `value` belong to pass 8.
+//! The `Steps.*` scope rules, the form and typing of `enableIf`, `while`,
+//! and `until` (a Step's and a loop's `enableIf` and a loop's `while` and
+//! `until` are expression fields, RFC 0010's Template Schemas §7.6), and the
+//! scope and typing of a job output's `value` belong to pass 8.
 
 use std::collections::{BTreeSet, HashSet};
 

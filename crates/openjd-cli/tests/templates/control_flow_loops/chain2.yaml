@@ -5,7 +5,7 @@ name: Chain
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: P
@@ -19,7 +19,7 @@ steps:
           onRun: {command: python, args: ['-c', "print('openjd_output_var: V={{Task.Param.I}}')"]}
     - name: Q
       dependencies: [{dependsOn: P}]
-      enableIf: "{{len(Steps.P.Output.V) > 0}}"
+      enableIf: "len(Steps.P.Output.V) > 0"
       script:
         actions:
           onRun: {command: python, args: ['-c', "print('Q ran {{Steps.P.Output.V}}')"]}

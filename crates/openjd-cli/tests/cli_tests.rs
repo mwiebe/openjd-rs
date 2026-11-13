@@ -5267,7 +5267,7 @@ steps:
       onRun: {command: python, args: [-c, "print('openjd_output_var: Go=GO'); print('openjd_output_var: Os=\"linux\"')"]}
 - name: C
   dependencies: [{dependsOn: P}]
-  enableIf: "{{Steps.P.Output.Go}}"
+  enableIf: "Steps.P.Output.Go"
   hostRequirements:
     attributes:
     - {name: attr.worker.os.family, anyOf: ["{{Steps.P.Output.Os}}"]}
@@ -6098,7 +6098,7 @@ steps:
   script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Go=false')"]}}}
 - name: S
   dependencies: [{dependsOn: R}]
-  enableIf: "{{Steps.R.Output.Go}}"
+  enableIf: "Steps.R.Output.Go"
   parameterSpace:
     taskParameterDefinitions:
     - {name: I, type: INT, range: [1]}
@@ -6235,7 +6235,7 @@ steps:
   script: {actions: {onRun: {command: python, args: [-c, "print({{w}}, {{Steps.K.TaskParam.I}})"]}}}
 - name: D
   dependencies: [{dependsOn: P}]
-  enableIf: "{{Steps.P.Output.Num > 1}}"
+  enableIf: "Steps.P.Output.Num > 1"
   script: {actions: {onRun: {command: x}}}
 jobOutputDefinitions:
 - {name: J, type: INT, value: "{{(Steps.S.Output.W or 0) + len(Steps.K.TaskParam.I) + Steps.P.Output.Num}}"}
@@ -6253,7 +6253,7 @@ steps:
   script: {actions: {onRun: {command: python, args: [-c, "print('openjd_output_var: Num=2'); print('openjd_output_var: L=[\"s3://b/x\", \"s3://b/y\"]')"]}}}
 - name: C
   dependencies: [{dependsOn: P}]
-  enableIf: "{{len(Steps.P.RawOutput.L) == 2}}"
+  enableIf: "len(Steps.P.RawOutput.L) == 2"
   parameterSpace:
     taskParameterDefinitions:
     - {name: F, type: INT, range: "{{range(Steps.P.Output.Num)}}"}
@@ -6862,7 +6862,7 @@ steps:
       type: INT
       initial: "{{{{1}}}}"
       next: "{{{{Loop.X * 10}}}}"
-    until: "{{{{Loop.Iteration >= 1}}}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 5
     steps:
     - name: P
@@ -7145,7 +7145,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{Steps.B.Output.N}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: W
@@ -7351,7 +7351,7 @@ steps:
         let template = two_iterations()
             .replace(
                 "- name: L\n  loop:",
-                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+                "- name: L\n  enableIf: \"False\"\n  loop:",
             )
             .replace(
                 "range: \"{{Steps.L.Output.H}}\"",
@@ -7455,7 +7455,7 @@ steps:
         let skipped = two_iterations()
             .replace(
                 "- name: L\n  loop:",
-                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+                "- name: L\n  enableIf: \"False\"\n  loop:",
             )
             .replace(
                 "range: \"{{Steps.L.Output.H}}\"",
@@ -7533,7 +7533,7 @@ steps:
 - name: L
   dependencies: [{dependsOn: A}]
   loop:
-    until: "{{Loop.Iteration + 1 >= len(Steps.A.Output.V)}}"
+    until: "Loop.Iteration + 1 >= len(Steps.A.Output.V)"
     maxIterations: 5
     steps:
     - name: B
@@ -7589,11 +7589,11 @@ steps:
 - name: L
   dependencies: [{dependsOn: A}]
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: Q
-      enableIf: "{{Loop.Iteration >= 1}}"
+      enableIf: "Loop.Iteration >= 1"
       script:
         actions:
           onRun:
@@ -7644,7 +7644,7 @@ steps:
         args: ['-c', "print('openjd_output_var: N=1')"]
 - name: A
   dependencies: [{dependsOn: Z}]
-  enableIf: "{{Steps.Z.Output.N > 0}}"
+  enableIf: "Steps.Z.Output.N > 0"
   outputVariables:
   - {name: Base, type: INT}
   script:
@@ -7655,11 +7655,11 @@ steps:
 - name: L
   dependencies: [{dependsOn: A}]
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: Q
-      enableIf: "{{Loop.Iteration >= 1}}"
+      enableIf: "Loop.Iteration >= 1"
       script:
         actions:
           onRun:
@@ -7727,7 +7727,7 @@ name: Nullable
 steps:
 - name: M
   loop:
-    until: "{{True}}"
+    until: "True"
     maxIterations: 1
     steps:
     - name: W
@@ -7759,10 +7759,10 @@ steps:
         // A while loop's LAST output, and one of a loop with an enableIf, is
         // T?.
         for nullable in [
-            until.replace("until: \"{{True}}\"", "while: \"{{False}}\""),
+            until.replace("until: \"True\"", "while: \"False\""),
             until.replace(
                 "- name: M\n  loop:",
-                "- name: M\n  enableIf: \"{{True}}\"\n  loop:",
+                "- name: M\n  enableIf: \"True\"\n  loop:",
             ),
         ] {
             let job = write(&nullable);
@@ -7800,7 +7800,7 @@ steps:
         );
         // A loop the target does not read.
         let two_loops = format!(
-            "{}- name: L2\n  loop:\n    until: \"{{{{True}}}}\"\n    maxIterations: 1\n    steps:\n    - name: W2\n      script: {{actions: {{onRun: {{command: python, args: ['-c', 'pass']}}}}}}\n  outputVariables:\n  - {{name: G, type: INT, collect: LAST, value: \"{{{{1}}}}\"}}\n",
+            "{}- name: L2\n  loop:\n    until: \"True\"\n    maxIterations: 1\n    steps:\n    - name: W2\n      script: {{actions: {{onRun: {{command: python, args: ['-c', 'pass']}}}}}}\n  outputVariables:\n  - {{name: G, type: INT, collect: LAST, value: \"{{{{1}}}}\"}}\n",
             two_iterations()
         );
         let job = write(&two_loops);
@@ -7821,7 +7821,7 @@ steps:
         let skipped = two_iterations()
             .replace(
                 "- name: L\n  loop:",
-                "- name: L\n  enableIf: \"{{False}}\"\n  loop:",
+                "- name: L\n  enableIf: \"False\"\n  loop:",
             )
             .replace(
                 "range: \"{{Steps.L.Output.H}}\"",
@@ -7895,7 +7895,7 @@ name: Wrap
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: W
@@ -8013,7 +8013,7 @@ steps:
         let template = format!(
             "{}- name: D\n  dependencies: [{{dependsOn: L}}]\n  script: {{actions: {{onRun: {{command: python, args: ['-c', 'pass']}}}}}}\n",
             READS_DEPENDENCY
-                .replace("- name: L\n  dependencies:", "- name: L\n  enableIf: \"{{False}}\"\n  dependencies:")
+                .replace("- name: L\n  dependencies:", "- name: L\n  enableIf: \"False\"\n  dependencies:")
                 .replace("print('openjd_output_var: N=2'); ", "import sys; sys.exit(1); ")
         );
         let job = write(&template);
@@ -8686,7 +8686,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{2}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: W
@@ -8738,7 +8738,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{0}}", next: "{{Loop.K + 1}}"}
-    until: "{{Loop.K >= 1}}"
+    until: "Loop.K >= 1"
     maxIterations: 5
     steps:
     - name: W
@@ -8824,11 +8824,11 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{Steps.B.Output.N}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: W
-      enableIf: "{{Loop.Iteration > 0}}"
+      enableIf: "Loop.Iteration > 0"
       script: {actions: {onRun: {command: python, args: [-c, "print('W {{Steps.B.Output.Text}}')"]}}}
 "#,
         );
@@ -8906,7 +8906,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{1}}", next: "{{Loop.K - 1}}"}
-    until: "{{Loop.K <= 0}}"
+    until: "Loop.K <= 0"
     maxIterations: 5
     steps:
     - name: X
@@ -8919,11 +8919,11 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{Steps.A.Output.N}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: V
-      enableIf: "{{Loop.Iteration > 0}}"
+      enableIf: "Loop.Iteration > 0"
       script: {actions: {onRun: {command: python, args: [-c, "print('V {{Steps.A.Output.T}}')"]}}}
 "#,
         );
@@ -8962,7 +8962,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{Steps.S.Output.N}}", next: "{{Loop.K - 1}}"}
-    while: "{{Loop.K > 0}}"
+    while: "Loop.K > 0"
     maxIterations: 5
     steps:
     - name: W
@@ -9040,7 +9040,7 @@ steps:
   loop:
     variables:
     - {name: K, type: INT, initial: "{{1}}", next: "{{Loop.K - 1}}"}
-    until: "{{Loop.K <= 0}}"
+    until: "Loop.K <= 0"
     maxIterations: 5
     steps:
     - name: X

@@ -37,6 +37,7 @@ src/
 │   ├── task_parameters.rs    # Task parameter definitions (§3.4)
 │   ├── step.rs               # StepTemplate, SimpleAction (§3)
 │   ├── output_variables.rs   # OutputVariableDefinition, JobOutputDefinition, LoopVariableDefinition, LoopOutputVariableDefinition, BoolOrFormatString (CONTROL_FLOW)
+│   ├── expr_field.rs         # ExprField: expression fields (RFC 0010's Template Schemas §7.6), for enableIf, while, until (CONTROL_FLOW)
 │   ├── step_loop.rs          # StepEntry, StepLoop, LoopDefinition, StepTemplateRef (CONTROL_FLOW, RFC 0013)
 │   ├── environment.rs        # Environment, EmbeddedFile (§4, §6)
 │   ├── actions.rs            # Action, CancelationMode (§5)

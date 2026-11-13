@@ -14,7 +14,7 @@ steps:
   loop:
     variables:
     - {name: X, type: INT, initial: "{{Steps.A.Output.N}}", next: "{{Loop.X + 1}}"}
-    while: "{{Loop.X > 0}}"
+    while: "Loop.X > 0"
     maxIterations: 2
     steps:
     - name: P

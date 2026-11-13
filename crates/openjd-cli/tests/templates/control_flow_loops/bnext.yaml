@@ -7,7 +7,7 @@ steps:
   loop:
     variables:
     - {name: X, type: INT, initial: "{{0}}", next: "{{Steps.P.Output.V}}"}
-    until: "{{Loop.Iteration >= 1}}"
+    until: "Loop.Iteration >= 1"
     maxIterations: 3
     steps:
     - name: P

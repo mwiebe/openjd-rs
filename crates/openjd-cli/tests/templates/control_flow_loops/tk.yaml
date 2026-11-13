@@ -5,7 +5,7 @@ name: SkipI
 steps:
 - name: L
   loop:
-    until: "{{Loop.Iteration >= 0}}"
+    until: "Loop.Iteration >= 0"
     maxIterations: 2
     steps:
     - name: O
