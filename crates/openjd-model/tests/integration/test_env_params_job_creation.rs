@@ -1050,6 +1050,9 @@ fn floats_compare_by_their_text_not_by_value() {
         (r#"{Fs: ["1.50"]}"#, r#"{Fs: ["1.5"]}"#),
         (r#"{Fs: ["2.5", "1.50"]}"#, r#"{Fs: ["2.5", "1.5"]}"#),
         (r#"{F: "1e2"}"#, r#"{F: "100.0"}"#),
+        // A YAML number has no text of its own: 1.50 is written 1.5.
+        (r#"{F: 1.50}"#, r#"{F: "1.50"}"#),
+        (r#"{Fs: [1.50]}"#, r#"{Fs: ["1.50"]}"#),
     ] {
         let job = pair(a, b);
         assert!(
@@ -1072,6 +1075,7 @@ fn floats_written_alike_are_equal() {
         (r#"{F: "3.10"}"#, r#"{F: " 3.10 "}"#),
         (r#"{F: "3.10"}"#, r#"{F: "{{ 3.10 }}"}"#),
         (r#"{Fs: ["1.50", "2"]}"#, r#"{Fs: [" 1.50 ", "2"]}"#),
+        (r#"{F: 1.50}"#, r#"{F: "1.5"}"#),
     ] {
         let job = pair(a, b);
         assert!(

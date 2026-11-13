@@ -236,6 +236,16 @@ impl Step {
     /// deserialized Job that holds another spelling; and in matching
     /// Environments by `(document, environment)`, so the order of the list
     /// does not matter.
+    ///
+    /// A FLOAT given as a YAML or JSON number has no text of its own, so
+    /// `create_job` writes it in shortest form: the number `1.50` is `1.5`,
+    /// equal to `"1.5"` and not to `"1.50"`. The comparison assumes values in
+    /// the form `create_job` writes them. A deserialized Job whose INT, BOOL,
+    /// or FLOAT values are spelled another way (`"007"` for an INT, `"yes"`
+    /// for a BOOL) compares them by that text, so values a Session would
+    /// render alike can compare unequal. That can cost an exit and enter
+    /// that was not needed, but never shares an Environment between values
+    /// it can tell apart.
     #[must_use]
     pub fn environment_values_equal(&self, other: &Step) -> bool {
         fn index(

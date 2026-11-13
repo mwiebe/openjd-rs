@@ -180,7 +180,9 @@ same types and the same string form, the text `{{Env.RawParam.<name>}}` gives th
 compares by its transport form, which is that string form (for a list, the string forms of its
 elements in order): a FLOAT, or an element of a `LIST[FLOAT]`, keeps the text it was written with,
 so `3.10` and `3.1` are not equal although they are the same number, while `"3.10"` and
-`" 3.10 "` are equal (the white space is not part of the text); a STRING compares by code points,
+`" 3.10 "` are equal (the white space is not part of the text), and a FLOAT given as a YAML or JSON
+number is written in shortest form, so the number `1.50` equals `"1.5"` and not `"1.50"`; a STRING
+compares by code points,
 with no Unicode normalization; INT `1`, `"1"`, and `"01"` are equal (all resolve to the INT 1) and
 BOOL `"yes"` equals `true`; PATH values compare by unmapped string. The one exception is a
 `range_expr` value, which compares by the integers it denotes, so `1-3` and `1,2,3` are equal even
@@ -191,7 +193,10 @@ and job creation stores that, see
 list, including itself, on either side. So for the Steps of a Job from `create_job`, the derived
 `==` on `environment_parameters` agrees with this comparison except for the order of the list.
 `EnvironmentParameterValues::values_equal` applies the same rule to one Environment's values. A
-scheduler can key Sessions on the transport form; it needs no numeric comparison.
+scheduler can key Sessions on the transport form; it needs no numeric comparison. The comparison
+assumes values in the form `create_job` writes them: a deserialized Job whose INT, BOOL, or FLOAT
+values are spelled another way (`"007"`, `"yes"`) compares them by that text, which can cost an
+unneeded exit and enter but never shares an Environment between values a Session can tell apart.
 
 ### StepScript, StepActions, Action
 
